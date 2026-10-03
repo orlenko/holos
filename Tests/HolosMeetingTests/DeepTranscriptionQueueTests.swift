@@ -90,16 +90,11 @@ private func queue(_ ids: [String], runNow: Set<String> = []) -> DeepTranscripti
     #expect(DeepTranscriptionSchedule.stateText(sessionID: "C", queue: items, running: nil, power: .ac) == nil)
 }
 
-@Test func aPassStillRunningFromBeforeARelaunchBlocksTheOthers() {
-    let items = queue(["A", "B"], runNow: ["B"])
-    var situation = DeepTranscriptionSchedule.Situation(enabled: true, modelInstalled: true, power: .ac,
-                                                        waitingFor: "A")
-    #expect(DeepTranscriptionSchedule.next(items, situation) == .run("A"), "Only A is tried until it can be had.")
-    situation.inUse = ["A"]
-    #expect(DeepTranscriptionSchedule.next(items, situation) == .idle)
-    #expect(DeepTranscriptionSchedule.isLeaseConflict(
+@Test func aCommandRefusedForAnotherProcessStaysQueued() {
+    #expect(DeepTranscriptionSchedule.isBusyElsewhere(
         "Error: Another Voice is Local process is processing this session."))
-    #expect(!DeepTranscriptionSchedule.isLeaseConflict("Error: This session has no saved audio."))
+    #expect(DeepTranscriptionSchedule.isBusyElsewhere("Error: " + DeepTranscriptionLock.busyMessage))
+    #expect(!DeepTranscriptionSchedule.isBusyElsewhere("Error: This session has no saved audio."))
 }
 
 @Test func reviewOwnsItsMeetingUntilItCloses() {
@@ -137,32 +132,53 @@ private func queue(_ ids: [String], runNow: Set<String> = []) -> DeepTranscripti
                                                 queue: DeepTranscriptionQueue()).isEmpty, "Never turned on.")
 }
 
-@Test func aPassThatSurvivesARelaunchIsFoundByItsProcess() {
+@Test func aStartedPassIsSavedWithoutAProcessIdentity() throws {
     var items = queue(["A", "B"], runNow: ["B"])
-    items.markStarted("A", pid: 4_242, start: 77)
-    // Saved and read back with the queue.
-    var reread = DeepTranscriptionQueue.decode(items.encoded())
-    #expect(reread.items.first?.pid == 4_242 && reread.items.first?.pidStart == 77)
-    // Still running (same pid, same start time): it is the pass running, and B waits even though it is Run Now.
-    let survivor = reread.survivor { pid, start in pid == 4_242 && start == 77 }
-    #expect(survivor?.sessionID == "A")
-    let situation = DeepTranscriptionSchedule.Situation(enabled: true, modelInstalled: true, power: .ac,
-                                                        running: survivor?.sessionID)
-    #expect(DeepTranscriptionSchedule.next(reread, situation) == .idle)
-    // The pid reused by another process (another start time): gone, and A runs again.
-    #expect(reread.survivor { _, start in start == 99 } == nil)
-    #expect(reread.items.allSatisfy { $0.pid == nil } && reread.contains("A"))
-    reread.markStarted("A", pid: 5, start: 6)
-    reread.clearStarted("A")
-    #expect(reread.items.first?.pid == nil)
+    items.markStarted("A")
+    let data = try #require(items.encoded())
+    #expect(DeepTranscriptionQueue.decode(data) == items)
+    let raw = String(decoding: data, as: UTF8.self)
+    #expect(!raw.contains("pid"))
+    items.clearStarted("A")
+    #expect(items.items[0].started == nil)
+    // A queue saved by an earlier version, with the running pass's pid and start time: read as started.
+    let old = Data(#"{"schemaVersion":1,"items":[{"sessionID":"A","path":"/m/A.holos","queuedAt":"2027-01-15T08:00:00Z","runNow":false,"pid":4242,"pidStart":77},{"sessionID":"B","path":"/m/B.holos","queuedAt":"2027-01-15T08:00:00Z","runNow":true}]}"#.utf8)
+    let read = DeepTranscriptionQueue.decode(old)
+    #expect(read.items.map(\.sessionID) == ["A", "B"])
+    #expect(read.items[0].started == true && read.items[1].started == nil)
+    #expect(!String(decoding: read.encoded() ?? Data(), as: UTF8.self).contains("pid"))
+}
+
+@Test func atLaunchAPassThatEndedUnseenIsSettled() {
+    // A automatic and B Run Now were started before the app quit; C waits.
+    var items = queue(["A", "B", "C"], runNow: ["B"])
+    items.markStarted("A")
+    items.markStarted("B")
+    // The lock is free: both ended. B is only checked next (no --force); A stays queued with the setting on.
+    var on = items
+    on.settleStarted(running: nil, enabled: true)
+    #expect(on.items.map(\.sessionID) == ["A", "B", "C"] && on.items.allSatisfy { $0.started == nil })
+    #expect(!DeepTranscriptionSchedule.forces(on.items[1]) && on.items[1].verifyOnly == true)
+    // With the setting off, the automatic one it kept while it ran is taken off.
+    var off = items
+    off.settleStarted(running: nil, enabled: false)
+    #expect(off.items.map(\.sessionID) == ["B", "C"])
+    // The lock is held by B's pass: B is still running and stays as it is.
+    var held = items
+    held.settleStarted(running: "B", enabled: false)
+    #expect(held.items.map(\.sessionID) == ["B", "C"] && held.items[0].started == true)
+    #expect(DeepTranscriptionSchedule.forces(held.items[0]))
+    // It ends later, unseen too.
+    held.settleEnded("B", enabled: false)
+    #expect(held.items[0].verifyOnly == true && held.items[0].started == nil)
 }
 
 @Test func turningTheSettingOffKeepsTheRunningPassUntilItEnds() {
     var items = queue(["A", "B", "C"], runNow: ["C"])
-    items.markStarted("A", pid: 7, start: 8)
+    items.markStarted("A")
     items.removeAutomatic(keeping: "A")
     #expect(items.items.map(\.sessionID) == ["A", "C"])
-    #expect(items.items.first?.pid == 7, "The running pass's process record stays.")
+    #expect(items.items.first?.started == true, "The running pass's item stays.")
 }
 
 @Test func anAdoptedRunNowPassIsOnlyCheckedAfterItEnds() {
@@ -174,4 +190,20 @@ private func queue(_ ids: [String], runNow: Set<String> = []) -> DeepTranscripti
     // A queue saved before this field reads as before.
     let old = Data(#"{"schemaVersion":1,"items":[{"sessionID":"A","path":"/m/A.holos","queuedAt":"2027-01-15T08:00:00Z","runNow":true}]}"#.utf8)
     #expect(DeepTranscriptionQueue.decode(old).items.first.map(DeepTranscriptionSchedule.forces) == true)
+}
+
+@Test func aFailedRunNowSaysWhy() {
+    let record = PostProcessingRecord(sessionID: "S", state: .partial, stages: [
+        StageOutcome(stage: .transcript, result: .skipped, message: "No transcript to label."),
+        StageOutcome(stage: .deepTranscription, result: .failed, message: "Kept the transcript as it was. 1 stretch of audio could not be transcribed."),
+        StageOutcome(stage: .diarize, result: .failed, message: "Speaker labelling failed."),
+    ], pid: 1, startedAt: date, updatedAt: date)
+    #expect(DeepTranscriptionSchedule.failureText(code: 3, record: record, errors: "")
+        == "Kept the transcript as it was. 1 stretch of audio could not be transcribed.\nSpeaker labelling failed.")
+    // Refused before it ran: the error, not the progress lines before it.
+    let errors = "Loading the deep transcription model…\nTranscribing (microphone)… 10 %\nError: The deep transcription model is not installed.\n"
+    #expect(DeepTranscriptionSchedule.failureText(code: 1, record: nil, errors: errors)
+        == "The deep transcription model is not installed.")
+    #expect(DeepTranscriptionSchedule.failureText(code: 137, record: nil, errors: "")
+        == "The command stopped unexpectedly (signal 9).")
 }

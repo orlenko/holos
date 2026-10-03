@@ -1018,7 +1018,10 @@ Face) uses the network.
   interrupted pass starts over. The Meetings list shows "Final transcript queued", "… waits
   for power" or "… in progress…"; a meeting's right-click menu offers Make Final Transcript
   Now (also on battery; it labels speakers again, names carried over) and Cancel Final
-  Transcript. Meetings saved while the app was closed are queued when it next opens.
+  Transcript. Meetings saved while the app was closed are queued when it next opens. One pass
+  runs at a time on the Mac: the command holds a lock file for its whole life, and the app
+  knows a pass is running (also one started before a relaunch or in Terminal) only from that
+  lock. A Make Final Transcript Now that fails or is incomplete says why in an alert.
 - *Evaluation.* `voiceislocal eval local <session> --backend whisper` makes the same
   transcription as a candidate, so `eval compare --local latest` measures it against a
   cloud run without changing the meeting.

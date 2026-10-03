@@ -12,16 +12,43 @@ public struct DeepTranscriptionQueue: Codable, Sendable, Equatable {
         public var queuedAt: Date
         /// Asked for from the meeting's menu: runs whatever the power source, and before automatic items.
         public var runNow: Bool
-        /// While its pass runs: the command's pid and start time (`ProcessSpawner.startTime`), so after a relaunch the
-        /// app can tell the pass still running (detached) from a reused pid, wait for it, and cancel it.
-        public var pid: Int32?
-        public var pidStart: UInt64?
-        /// A Run Now pass that ran (it survived a relaunch and ended unseen): the next run only checks its result, without
+        /// Its pass was started and not yet seen to end. No process identity is saved: whether a pass is running is
+        /// only known from `DeepTranscriptionLock`, so after a relaunch with the lock free, a started item's pass
+        /// ended unseen (`settleStarted`).
+        public var started: Bool?
+        /// A Run Now pass that ran (it ended unseen, after a relaunch): the next run only checks its result, without
         /// `--force`, so it keeps the transcript made rather than making it again.
         public var verifyOnly: Bool?
 
         public init(sessionID: String, path: String, queuedAt: Date, runNow: Bool = false) {
             self.sessionID = sessionID; self.path = path; self.queuedAt = queuedAt; self.runNow = runNow
+        }
+
+        private enum CodingKeys: String, CodingKey {
+            case sessionID, path, queuedAt, runNow, started, verifyOnly
+            /// Saved by earlier versions while a pass ran (with `pidStart`): read as `started`, never written.
+            case pid
+        }
+
+        public init(from decoder: any Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            sessionID = try container.decode(String.self, forKey: .sessionID)
+            path = try container.decode(String.self, forKey: .path)
+            queuedAt = try container.decode(Date.self, forKey: .queuedAt)
+            runNow = try container.decode(Bool.self, forKey: .runNow)
+            verifyOnly = try container.decodeIfPresent(Bool.self, forKey: .verifyOnly)
+            let legacyPID = (try? container.decodeIfPresent(Int32.self, forKey: .pid)) ?? nil
+            started = try container.decodeIfPresent(Bool.self, forKey: .started) ?? (legacyPID == nil ? nil : true)
+        }
+
+        public func encode(to encoder: any Encoder) throws {
+            var container = encoder.container(keyedBy: CodingKeys.self)
+            try container.encode(sessionID, forKey: .sessionID)
+            try container.encode(path, forKey: .path)
+            try container.encode(queuedAt, forKey: .queuedAt)
+            try container.encode(runNow, forKey: .runNow)
+            try container.encodeIfPresent(started, forKey: .started)
+            try container.encodeIfPresent(verifyOnly, forKey: .verifyOnly)
         }
     }
 
@@ -45,7 +72,7 @@ public struct DeepTranscriptionQueue: Codable, Sendable, Equatable {
     }
 
     /// Drops every item not asked for from the menu (the setting was turned off), except `keeping`: the pass running
-    /// now, whose process record must stay until it ends.
+    /// now, whose item stays until it ends (then it is taken off, `settleEnded`).
     public mutating func removeAutomatic(keeping: String? = nil) {
         items.removeAll { !$0.runNow && $0.sessionID != keeping }
     }
@@ -58,34 +85,38 @@ public struct DeepTranscriptionQueue: Codable, Sendable, Equatable {
 
     public func contains(_ sessionID: String) -> Bool { items.contains { $0.sessionID == sessionID } }
 
-    /// Records the process running `sessionID`'s pass (saved with the queue).
-    public mutating func markStarted(_ sessionID: String, pid: Int32, start: UInt64?) {
+    /// Marks `sessionID`'s pass started (saved with the queue).
+    public mutating func markStarted(_ sessionID: String) {
         guard let index = items.firstIndex(where: { $0.sessionID == sessionID }) else { return }
-        items[index].pid = pid
-        items[index].pidStart = start
+        items[index].started = true
     }
 
-    /// Forgets the process of `sessionID`'s pass (it ended, or was stopped to run again later).
+    /// `sessionID`'s pass ended as the app saw it, or was stopped to run again from the start later.
     public mutating func clearStarted(_ sessionID: String) {
         guard let index = items.firstIndex(where: { $0.sessionID == sessionID }) else { return }
-        items[index].pid = nil
-        items[index].pidStart = nil
+        items[index].started = nil
     }
 
-    /// The pass still running from before a relaunch: the item whose recorded process `isAlive` (same pid, same start
-    /// time). Items whose process is gone are forgotten (`clearStarted`) and wait to run again.
-    public mutating func survivor(isAlive: (Int32, UInt64?) -> Bool) -> Item? {
-        var found: Item?
-        for index in items.indices {
-            guard let pid = items[index].pid else { continue }
-            if found == nil, isAlive(pid, items[index].pidStart) {
-                found = items[index]
-            } else {
-                items[index].pid = nil
-                items[index].pidStart = nil
-            }
+    /// `sessionID`'s pass ended without the app seeing how (it was started before a relaunch): a Run Now item is only
+    /// checked next (`verifyOnly`: the pass may have made the transcript, which `--force` would make again); an
+    /// automatic one stays queued while the setting is on (`enabled`: the next run keeps a transcript made, or makes
+    /// it), and is taken off when it is off.
+    public mutating func settleEnded(_ sessionID: String, enabled: Bool) {
+        guard let index = items.firstIndex(where: { $0.sessionID == sessionID }) else { return }
+        items[index].started = nil
+        if items[index].runNow {
+            items[index].verifyOnly = true
+        } else if !enabled {
+            items.remove(at: index)
         }
-        return found
+    }
+
+    /// At launch, once `DeepTranscriptionLock` is known: every started item's pass ended unseen (`settleEnded`),
+    /// except `running`'s, the meeting of the pass holding the lock.
+    public mutating func settleStarted(running: String?, enabled: Bool) {
+        for item in items where item.started == true && item.sessionID != running {
+            settleEnded(item.sessionID, enabled: enabled)
+        }
     }
 
     /// The queue as saved; one that cannot be read (damaged, or a newer schema) is empty.
@@ -120,14 +151,11 @@ public enum DeepTranscriptionSchedule {
         /// Meetings another command of the app is working on (Label Speakers, a relabel, a delete…), and meetings open
         /// (or opening, or still saving) in Review, which owns their transcript and labels until it closes.
         public var inUse: Set<String>
-        /// A pass the app started before it was quit may still be running, detached: its meeting's command was refused
-        /// for the processing lease. Until that meeting can be had again only it is tried, so two passes never run.
-        public var waitingFor: String?
 
         public init(enabled: Bool, modelInstalled: Bool, power: Power, meetingBusy: Bool = false,
-                    running: String? = nil, inUse: Set<String> = [], waitingFor: String? = nil) {
+                    running: String? = nil, inUse: Set<String> = []) {
             self.enabled = enabled; self.modelInstalled = modelInstalled; self.power = power
-            self.meetingBusy = meetingBusy; self.running = running; self.inUse = inUse; self.waitingFor = waitingFor
+            self.meetingBusy = meetingBusy; self.running = running; self.inUse = inUse
         }
     }
 
@@ -145,10 +173,6 @@ public enum DeepTranscriptionSchedule {
     /// AC power (or has no battery), `waitForPower` on battery. Meetings in use by another command wait their turn.
     public static func next(_ queue: DeepTranscriptionQueue, _ situation: Situation) -> Decision {
         guard situation.running == nil, !situation.meetingBusy, situation.modelInstalled else { return .idle }
-        if let waiting = situation.waitingFor {
-            guard queue.contains(waiting), !situation.inUse.contains(waiting) else { return .idle }
-            return .run(waiting)
-        }
         let ready = queue.items.filter { !situation.inUse.contains($0.sessionID) }
         if let asked = ready.first(where: \.runNow) { return .run(asked.sessionID) }
         guard situation.enabled, let first = ready.first else { return .idle }
@@ -161,10 +185,11 @@ public enum DeepTranscriptionSchedule {
         !audioDeleted && [.complete, .transcriptionIncomplete, .recovered, .audioOnly].contains(state)
     }
 
-    /// Whether a command's error output says another process holds the meeting's processing lease (a pass started
-    /// before a relaunch, still running).
-    public static func isLeaseConflict(_ errorOutput: String) -> Bool {
-        errorOutput.contains("processing this session")
+    /// Whether a command's error output says it could not start for another process: one holding the meeting's
+    /// processing lease (another command on it), or another pass holding `DeepTranscriptionLock` (one started in
+    /// Terminal a moment before). The meeting then stays queued and is tried again later.
+    public static func isBusyElsewhere(_ errorOutput: String) -> Bool {
+        errorOutput.contains("processing this session") || errorOutput.contains(DeepTranscriptionLock.busyMessage)
     }
 
     /// A meeting the app finds at launch, for `reconcile`.
@@ -210,6 +235,23 @@ public enum DeepTranscriptionSchedule {
     /// is in one language (several are not supported yet).
     public static func queuesAfterMeeting(enabled: Bool, modelInstalled: Bool, languages: Int) -> Bool {
         enabled && modelInstalled && languages <= 1
+    }
+
+    /// Why a Make Final Transcript Now pass did not finish (exit `code`), for the app's alert: the messages of the
+    /// stages its record (`--json` output) says failed, and of the deep transcription stage when it was skipped; else
+    /// the command's last error line that is not progress; else how it ended.
+    public static func failureText(code: Int32, record: PostProcessingRecord?, errors: String) -> String {
+        let stages = (record?.stages ?? []).filter { stage in
+            stage.result == .failed || (stage.result == .skipped && stage.stage == .deepTranscription)
+        }.compactMap { $0.message?.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
+        if !stages.isEmpty { return stages.joined(separator: "\n") }
+        let lines = errors.split(separator: "\n").map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty && !$0.hasSuffix("%") && !$0.hasSuffix("…") }
+        if let last = lines.last {
+            return last.hasPrefix("Error: ") ? String(last.dropFirst("Error: ".count)) : last
+        }
+        return code > 128 ? "The command stopped unexpectedly (signal \(code - 128))."
+            : "The command ended with code \(code)."
     }
 
     /// What the Meetings list's State column says of a queued or running meeting; nil for the others.

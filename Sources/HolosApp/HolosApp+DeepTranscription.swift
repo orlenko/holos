@@ -39,18 +39,22 @@ final class DeepTranscriptionAppState {
     var considered: [String] = UserDefaults.standard.stringArray(forKey: consideredKey) ?? [] {
         didSet { UserDefaults.standard.set(considered, forKey: Self.consideredKey) }
     }
-    /// The pass running now: its meeting and the child's pid (0 while it starts).
+    /// The pass running now: its meeting and pid. For a pass this app started, its own child's pid (0 while it
+    /// starts), which no other process can have until the app reaps it; for one it found holding
+    /// `DeepTranscriptionLock` (`runningDetached`), the pid the lock's holder wrote.
     var running: (sessionID: String, pid: Int32)?
-    /// The running pass was started before this launch and survived it (detached): the app cannot wait for it, so the
-    /// timer checks whether its process is still there.
+    /// The running pass holds the lock but is not this app's child (started before a relaunch, or in Terminal): the
+    /// app cannot wait for it, so the timer checks the lock, and it is signalled only through the lock.
     var runningDetached = false
+    /// At launch, the items whose pass was started before were settled once the lock could be read.
+    var settled = false
     /// The pass stopped because a meeting started: it stays queued and runs again from the start afterwards.
     var preempted: String?
-    /// A meeting whose command was refused because another process holds it: a pass started before the app was
-    /// quit, still running. Only it is tried until it can be had, so two passes never run at once.
-    var waitingFor: String?
-    /// Starting the command failed (a transient process limit): tried again after this.
+    /// Starting the command failed (a transient process limit), or another process held the meeting or the lock:
+    /// tried again after this.
     var retryAfter: Date?
+    /// Counts every turn of the setting on or off: a scan begun before one is dropped when it ends.
+    var activation = 0
     /// The launch check of meetings that finished while the app was closed ran.
     var reconciled = false
     /// `voiceislocal doctor --json` deepTranscriptionModel ("installed", "downloading", "notInstalled"); "unknown" when
@@ -92,7 +96,7 @@ extension HolosAppDelegate {
     /// while another process downloads it, and retries the queue.
     func setUpDeepTranscription() {
         meeting.deep.power = PowerSource.current()
-        adoptSurvivingDeepTranscription()
+        adoptLockedDeepTranscription()
         meeting.deep.timer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated {
                 guard let self else { return }
@@ -103,7 +107,7 @@ extension HolosAppDelegate {
                 }
                 // A download started before this launch (detached) ends without telling this app.
                 if self.meeting.deep.model == "downloading" { self.refreshSpeakerModels() }
-                self.checkDetachedDeepTranscription()
+                self.checkLockedDeepTranscription()
                 self.scheduleDeepTranscription()
             }
         }
@@ -117,45 +121,48 @@ extension HolosAppDelegate {
         scheduleDeepTranscription()
     }
 
-    // MARK: - A pass that survived a relaunch
+    // MARK: - A pass the app did not start
 
-    /// Whether `pid` is still the process that was started at `start` (a pid can be reused by another process).
-    nonisolated static func isAlive(_ pid: Int32, start: UInt64?) -> Bool {
-        guard pid > 0, kill(pid, 0) == 0 || errno == EPERM else { return false }
-        guard let start else { return true }
-        return ProcessSpawner.startTime(of: pid) == start
-    }
-
-    /// At launch: a pass the app started before it was quit may still be running (maintenance commands are detached).
-    /// Found by the pid and start time saved in the queue, it is the running pass: it holds its meeting, nothing else
-    /// starts (not even Run Now), Cancel can signal it, and the timer notices when it ends.
-    private func adoptSurvivingDeepTranscription() {
-        guard let survivor = meeting.deep.queue.survivor(isAlive: { Self.isAlive($0, start: $1) }),
-              let pid = survivor.pid else { return }
-        meeting.deep.running = (survivor.sessionID, pid)
+    /// A pass holding `DeepTranscriptionLock` that is not this app's child: one the app started before it was quit
+    /// (maintenance commands are detached), or one started in Terminal. It is the running pass: it holds its meeting,
+    /// nothing else starts (not even Run Now), Cancel signals it through the lock, and the timer notices when it ends.
+    /// A meeting already recording (attached at launch, before this) stops it at once. The first time the lock is
+    /// known, every item whose pass was started before this launch, except the one holding the lock, ended unseen
+    /// (`DeepTranscriptionQueue.settleStarted`). Returns whether a pass holds the lock.
+    @discardableResult
+    private func adoptLockedDeepTranscription() -> Bool {
+        let state = DeepTranscriptionLock.state()
+        // Held by a pass that has not written itself yet: running, but which one is known at the next look.
+        if state == .held(nil) { return true }
+        let holder: DeepTranscriptionLock.Holder? = if case .held(let holder) = state { holder } else { nil }
+        if !meeting.deep.settled {
+            meeting.deep.settled = true
+            meeting.deep.queue.settleStarted(running: holder?.sessionID, enabled: DeepTranscriptionAppState.enabled)
+        }
+        guard let holder else { return false }
+        meeting.deep.running = (holder.sessionID, holder.pid)
         meeting.deep.runningDetached = true
-        _ = meeting.controller?.beginUsing(survivor.sessionID, for: Self.deepRunningText)
-        Self.deepLog.notice("Deep transcription of \(survivor.sessionID, privacy: .public) is still running from before")
+        _ = meeting.controller?.beginUsing(holder.sessionID, for: Self.deepRunningText)
+        Self.deepLog.notice("Deep transcription of \(holder.sessionID, privacy: .public) is running in another process")
+        deepTranscriptionMeetingStateChanged()
+        updateDeepStates()
+        return true
     }
 
-    /// The timer: a surviving pass whose process is gone ended (its result is not known here). Its meeting stays
-    /// queued, unless it was cancelled, and its next run finds the transcript made (and keeps it) or makes it.
-    private func checkDetachedDeepTranscription() {
+    /// The timer: the pass found holding the lock let go of it, so its process ended (its result is not known here).
+    /// Its meeting stays queued (unless it was cancelled, or is automatic with the setting off), and its next run
+    /// finds the transcript made (and keeps it) or makes it: a Run Now one is only checked (`settleEnded`).
+    private func checkLockedDeepTranscription() {
         guard meeting.deep.runningDetached, let running = meeting.deep.running else { return }
-        let start = meeting.deep.queue.items.first { $0.sessionID == running.sessionID }?.pidStart
         // Still running (also after Cancel, until the signal ends it).
-        if Self.isAlive(running.pid, start: start) { return }
-        meeting.deep.queue.clearStarted(running.sessionID)
+        if case .held(let holder) = DeepTranscriptionLock.state(), (holder?.sessionID ?? running.sessionID)
+            == running.sessionID { return }
         if meeting.deep.preempted == running.sessionID {
+            // Stopped for a meeting: runs again from the start.
             meeting.deep.preempted = nil
-        } else if let item = meeting.deep.queue.items.first(where: { $0.sessionID == running.sessionID }) {
-            if item.runNow {
-                // It ran: the next run checks the result instead of forcing another full pass.
-                meeting.deep.queue.markVerifyOnly(running.sessionID)
-            } else if !DeepTranscriptionAppState.enabled {
-                // Kept only while it ran; the setting is off.
-                meeting.deep.queue.remove(running.sessionID)
-            }
+            meeting.deep.queue.clearStarted(running.sessionID)
+        } else {
+            meeting.deep.queue.settleEnded(running.sessionID, enabled: DeepTranscriptionAppState.enabled)
         }
         meeting.deep.running = nil
         meeting.deep.runningDetached = false
@@ -165,15 +172,23 @@ extension HolosAppDelegate {
         scheduleDeepTranscription()
     }
 
+    /// Sends SIGTERM to the running pass: this app's own child by its pid (not reaped yet, so still that process), or
+    /// a pass found holding the lock only while it still holds it (checked again right before the signal, so the pid
+    /// is still its own). Returns whether it was signalled.
+    @discardableResult
+    private func stopRunningDeepTranscription() -> Bool {
+        guard let running = meeting.deep.running else { return false }
+        if meeting.deep.runningDetached { return DeepTranscriptionLock.signal(running.sessionID) }
+        return running.pid > 0 && kill(running.pid, SIGTERM) == 0
+    }
+
     /// A meeting is starting, recording, or saving: the pass running now is stopped (SIGTERM; it publishes nothing,
     /// or says it was cancelled late) and stays queued, so the meeting has the Mac to itself; it runs again afterwards.
     func deepTranscriptionMeetingStateChanged() {
         guard let controller = meeting.controller, meetingIsBusy(controller.state),
-              let running = meeting.deep.running, running.pid > 0, meeting.deep.preempted == nil else { return }
-        let start = meeting.deep.queue.items.first { $0.sessionID == running.sessionID }?.pidStart
-        guard Self.isAlive(running.pid, start: start) else { return }
+              let running = meeting.deep.running, meeting.deep.preempted == nil,
+              stopRunningDeepTranscription() else { return }
         meeting.deep.preempted = running.sessionID
-        kill(running.pid, SIGTERM)
         Self.deepLog.notice("Deep transcription of \(running.sessionID, privacy: .public) stopped for a meeting")
         updateDeepStates()
     }
@@ -198,10 +213,12 @@ extension HolosAppDelegate {
     func queueDeepTranscriptionAfterMeeting(sessionID: String) {
         guard DeepTranscriptionAppState.enabled, meeting.deep.model == "installed", let root = meeting.controller?.root,
               let directory = try? SessionLocator.resolve(sessionID, root: root) else { return }
+        let activation = meeting.deep.activation
         // Reading the languages can mean decoding a long meeting's transcript: off the main actor.
         Task { [weak self] in
             let languages = await Task.detached { Self.languageCount(directory) }.value
-            guard let self, DeepTranscriptionSchedule.queuesAfterMeeting(
+            // The setting was turned off (and maybe on again) while it was read: that turning off took it off.
+            guard let self, self.meeting.deep.activation == activation, DeepTranscriptionSchedule.queuesAfterMeeting(
                 enabled: DeepTranscriptionAppState.enabled, modelInstalled: self.meeting.deep.model == "installed",
                 languages: languages) else { return }
             self.meeting.deep.queue.enqueue(sessionID: sessionID, path: directory.path, at: Date())
@@ -220,6 +237,7 @@ extension HolosAppDelegate {
         meeting.deep.reconciled = true
         let considered = Set(meeting.deep.considered)
         let queue = meeting.deep.queue
+        let activation = meeting.deep.activation
         Task { [weak self] in
             let found = await Task.detached { () -> [DeepTranscriptionSchedule.Candidate] in
                 let candidates = SessionCatalog.list(root: root)
@@ -237,8 +255,8 @@ extension HolosAppDelegate {
                                                            queue: queue)
             }.value
             // The setting may have been turned off (or off and on again) while the folder was read.
-            guard let self, !found.isEmpty, DeepTranscriptionAppState.enabled,
-                  DeepTranscriptionAppState.enabledSince == since else { return }
+            guard let self, !found.isEmpty, self.meeting.deep.activation == activation,
+                  DeepTranscriptionAppState.enabled, DeepTranscriptionAppState.enabledSince == since else { return }
             for candidate in found {
                 // Checked again against the queue and the meetings considered now: the user may have run, cancelled,
                 // or queued one while the folder was read.
@@ -287,16 +305,10 @@ extension HolosAppDelegate {
     /// Meetings › Cancel Final Transcript: takes the meeting off the queue and stops its pass (SIGTERM: the command
     /// cancels and says whether the new transcript was already published).
     func cancelDeepTranscription(_ sessionID: String) {
-        // The process is signalled only when it is still the one started for this pass (pid and start time saved in
-        // the queue), also when it survived a relaunch; the timer then notices it ended.
-        let start = meeting.deep.queue.items.first { $0.sessionID == sessionID }?.pidStart
-        if let running = meeting.deep.running, running.sessionID == sessionID, running.pid > 0,
-           Self.isAlive(running.pid, start: start) {
-            kill(running.pid, SIGTERM)
-        }
+        // A pass found holding the lock is signalled only while it still holds it; the timer then notices it ended.
+        if meeting.deep.running?.sessionID == sessionID { stopRunningDeepTranscription() }
         if meeting.deep.preempted == sessionID { meeting.deep.preempted = nil }
         meeting.deep.queue.remove(sessionID)
-        if meeting.deep.waitingFor == sessionID { meeting.deep.waitingFor = nil }
         updateDeepStates()
     }
 
@@ -305,14 +317,14 @@ extension HolosAppDelegate {
         guard let controller = meeting.controller, let maintenance = meeting.maintenance else { return }
         if let retryAfter = meeting.deep.retryAfter, retryAfter > Date() { return }
         meeting.deep.retryAfter = nil
+        // A pass holding the lock is the one running, whoever started it: one at a time on this Mac.
+        if meeting.deep.running == nil, adoptLockedDeepTranscription() { return }
         let busy = meetingIsBusy(controller.state)
-        if let waiting = meeting.deep.waitingFor, !meeting.deep.queue.contains(waiting) { meeting.deep.waitingFor = nil }
         // Review owns a meeting while it is open, opening, or still saving.
         let inUse = Set(controller.sessionsInUse.keys).union(controller.sessionsUnderReview())
         let situation = DeepTranscriptionSchedule.Situation(
             enabled: DeepTranscriptionAppState.enabled, modelInstalled: meeting.deep.model == "installed",
-            power: meeting.deep.power, meetingBusy: busy, running: meeting.deep.running?.sessionID, inUse: inUse,
-            waitingFor: meeting.deep.waitingFor)
+            power: meeting.deep.power, meetingBusy: busy, running: meeting.deep.running?.sessionID, inUse: inUse)
         guard case .run(let sessionID) = DeepTranscriptionSchedule.next(meeting.deep.queue, situation),
               let item = meeting.deep.queue.items.first(where: { $0.sessionID == sessionID }) else {
             updateDeepStates()
@@ -320,7 +332,6 @@ extension HolosAppDelegate {
         }
         guard FileManager.default.fileExists(atPath: item.path) else {
             meeting.deep.queue.remove(sessionID)
-            if meeting.deep.waitingFor == sessionID { meeting.deep.waitingFor = nil }
             updateDeepStates()
             return
         }
@@ -342,7 +353,7 @@ extension HolosAppDelegate {
             }
             meeting.deep.running = (sessionID, pid)
             meeting.deep.runningDetached = false
-            meeting.deep.queue.markStarted(sessionID, pid: pid, start: ProcessSpawner.startTime(of: pid))
+            meeting.deep.queue.markStarted(sessionID)
             Self.deepLog.notice("Deep transcription of \(sessionID, privacy: .public) started")
         } catch {
             // Kept queued: the scheduler tries again in a minute.
@@ -360,9 +371,14 @@ extension HolosAppDelegate {
         let errorText = (try? AtomicFile.readIfPresent(errors, maxBytes: 1 << 16)).flatMap {
             $0.map { String(decoding: $0, as: UTF8.self) }
         } ?? ""
+        let record = (try? AtomicFile.readIfPresent(output, maxBytes: 16 << 20)).flatMap {
+            $0.flatMap { try? HolosJSON.decoder().decode(PostProcessingRecord.self, from: $0) }
+        }
         Self.removeFile(output)
         Self.removeFile(errors)
         meeting.deep.queue.clearStarted(sessionID)
+        let item = meeting.deep.queue.items.first { $0.sessionID == sessionID }
+        var failure: String?
         let lateCancel = errorText.split(separator: "\n").first { $0.hasPrefix("Cancelled after the new transcript") }
         if meeting.deep.preempted == sessionID {
             // Stopped for a meeting: stays queued, and runs again from the start once the meeting is saved (an
@@ -372,32 +388,40 @@ extension HolosAppDelegate {
                meeting.deep.queue.items.first(where: { $0.sessionID == sessionID })?.runNow == false {
                 meeting.deep.queue.remove(sessionID)
             }
-        } else if code == 1, DeepTranscriptionSchedule.isLeaseConflict(errorText) {
-            // A pass from before a relaunch still holds the meeting: it stays queued, and nothing else starts until it
-            // can be had again (then the queued one finds the transcript made, or makes it).
-            meeting.deep.waitingFor = sessionID
+        } else if code == 1, DeepTranscriptionSchedule.isBusyElsewhere(errorText) {
+            // Another command holds the meeting, or a pass started in Terminal holds the lock: stays queued, and is
+            // tried again in a minute (a pass holding the lock is then the one running).
             meeting.deep.retryAfter = Date().addingTimeInterval(60)
         } else {
+            // Asked for from the menu and not done (a cancel takes it off the queue first): the user is told why.
+            if item?.runNow == true, code != 0, lateCancel == nil {
+                failure = DeepTranscriptionSchedule.failureText(code: code, record: record, errors: errorText)
+            }
             // Done, refused (exit 1: no model, deleted audio, several languages), partial (3), or cancelled: off the
             // queue either way. Only a pass the app did not see end (a quit, a crash) stays queued, and runs again
             // from the start at the next launch. Off the queue before the meeting is let go of, since letting go
             // schedules the next pass.
             meeting.deep.queue.remove(sessionID)
-            if meeting.deep.waitingFor == sessionID { meeting.deep.waitingFor = nil }
         }
         meeting.deep.running = nil
         meeting.controller?.endUsing(sessionID)
         Self.deepLog.notice("Deep transcription of \(sessionID, privacy: .public) ended with \(code, privacy: .public)")
+        meeting.maintenanceEnded[sessionID, default: 0] += 1
+        meeting.meetingsPane?.refresh()
+        updateDeepStates()
+        scheduleDeepTranscription()
         if let lateCancel {
             // The new transcript was already current when the pass stopped: its labels and files may be behind.
             showDeepAlert("A final transcript was cancelled after it was saved.",
                           String(lateCancel).replacingOccurrences(of: "Run voiceislocal session diarize on the meeting",
                                                                   with: "Choose Label Speakers in Meetings"))
+        } else if let failure, let item {
+            let name = (try? SessionArchive.readManifest(at: URL(fileURLWithPath: item.path)).name).map {
+                Self.short($0)
+            } ?? "the meeting"
+            showDeepAlert(code == 3 ? "The final transcript of “\(name)” is not complete."
+                              : "The final transcript of “\(name)” was not made.", failure)
         }
-        meeting.maintenanceEnded[sessionID, default: 0] += 1
-        meeting.meetingsPane?.refresh()
-        updateDeepStates()
-        scheduleDeepTranscription()
     }
 
     /// The Meetings list's State column for queued and running passes.
@@ -462,14 +486,12 @@ extension HolosAppDelegate {
             return
         }
         DeepTranscriptionAppState.enabled = on
+        meeting.deep.activation += 1
         if on {
             DeepTranscriptionAppState.enabledSince = Date()
         } else {
-            // The pass running now keeps its item (and process record) until it ends.
+            // The pass running now keeps its item until it ends (then it is taken off).
             meeting.deep.queue.removeAutomatic(keeping: meeting.deep.running?.sessionID)
-            if let waiting = meeting.deep.waitingFor, !meeting.deep.queue.contains(waiting) {
-                meeting.deep.waitingFor = nil
-            }
         }
         updateSettings()
         updateDeepStates()
