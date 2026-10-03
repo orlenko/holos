@@ -156,6 +156,8 @@ extension HolosAppDelegate: NSMenuDelegate {
             rebuildMenu()
         }
         meeting.meetingsPane?.update(meetingState: state)
+        // A meeting needs the Mac: a final transcript in progress is stopped and runs again afterwards.
+        deepTranscriptionMeetingStateChanged()
     }
 
     private func handleMeetingEffect(_ effect: MeetingEffect) {

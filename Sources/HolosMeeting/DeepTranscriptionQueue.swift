@@ -12,6 +12,10 @@ public struct DeepTranscriptionQueue: Codable, Sendable, Equatable {
         public var queuedAt: Date
         /// Asked for from the meeting's menu: runs whatever the power source, and before automatic items.
         public var runNow: Bool
+        /// While its pass runs: the command's pid and start time (`ProcessSpawner.startTime`), so after a relaunch the
+        /// app can tell the pass still running (detached) from a reused pid, wait for it, and cancel it.
+        public var pid: Int32?
+        public var pidStart: UInt64?
 
         public init(sessionID: String, path: String, queuedAt: Date, runNow: Bool = false) {
             self.sessionID = sessionID; self.path = path; self.queuedAt = queuedAt; self.runNow = runNow
@@ -43,6 +47,36 @@ public struct DeepTranscriptionQueue: Codable, Sendable, Equatable {
     }
 
     public func contains(_ sessionID: String) -> Bool { items.contains { $0.sessionID == sessionID } }
+
+    /// Records the process running `sessionID`'s pass (saved with the queue).
+    public mutating func markStarted(_ sessionID: String, pid: Int32, start: UInt64?) {
+        guard let index = items.firstIndex(where: { $0.sessionID == sessionID }) else { return }
+        items[index].pid = pid
+        items[index].pidStart = start
+    }
+
+    /// Forgets the process of `sessionID`'s pass (it ended, or was stopped to run again later).
+    public mutating func clearStarted(_ sessionID: String) {
+        guard let index = items.firstIndex(where: { $0.sessionID == sessionID }) else { return }
+        items[index].pid = nil
+        items[index].pidStart = nil
+    }
+
+    /// The pass still running from before a relaunch: the item whose recorded process `isAlive` (same pid, same start
+    /// time). Items whose process is gone are forgotten (`clearStarted`) and wait to run again.
+    public mutating func survivor(isAlive: (Int32, UInt64?) -> Bool) -> Item? {
+        var found: Item?
+        for index in items.indices {
+            guard let pid = items[index].pid else { continue }
+            if found == nil, isAlive(pid, items[index].pidStart) {
+                found = items[index]
+            } else {
+                items[index].pid = nil
+                items[index].pidStart = nil
+            }
+        }
+        return found
+    }
 
     /// The queue as saved; one that cannot be read (damaged, or a newer schema) is empty.
     public static func decode(_ data: Data?) -> DeepTranscriptionQueue {

@@ -136,3 +136,23 @@ private func queue(_ ids: [String], runNow: Set<String> = []) -> DeepTranscripti
     #expect(DeepTranscriptionSchedule.reconcile(candidates, enabledSince: nil, considered: [],
                                                 queue: DeepTranscriptionQueue()).isEmpty, "Never turned on.")
 }
+
+@Test func aPassThatSurvivesARelaunchIsFoundByItsProcess() {
+    var items = queue(["A", "B"], runNow: ["B"])
+    items.markStarted("A", pid: 4_242, start: 77)
+    // Saved and read back with the queue.
+    var reread = DeepTranscriptionQueue.decode(items.encoded())
+    #expect(reread.items.first?.pid == 4_242 && reread.items.first?.pidStart == 77)
+    // Still running (same pid, same start time): it is the pass running, and B waits even though it is Run Now.
+    let survivor = reread.survivor { pid, start in pid == 4_242 && start == 77 }
+    #expect(survivor?.sessionID == "A")
+    let situation = DeepTranscriptionSchedule.Situation(enabled: true, modelInstalled: true, power: .ac,
+                                                        running: survivor?.sessionID)
+    #expect(DeepTranscriptionSchedule.next(reread, situation) == .idle)
+    // The pid reused by another process (another start time): gone, and A runs again.
+    #expect(reread.survivor { _, start in start == 99 } == nil)
+    #expect(reread.items.allSatisfy { $0.pid == nil } && reread.contains("A"))
+    reread.markStarted("A", pid: 5, start: 6)
+    reread.clearStarted("A")
+    #expect(reread.items.first?.pid == nil)
+}

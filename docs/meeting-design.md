@@ -4782,7 +4782,8 @@ carried over.
   meeting is queued if the setting is on, the model installed, and neither meeting.json nor the
   current transcript names more than one language. The queue is saved in UserDefaults
   (`deepTranscriptionQueue`) on every change. At launch, once the model is known installed, the
-  meetings that finished while the app was closed (a recorder saves and post-processes on its
+  meetings that finished while the app was closed (read off the main actor, and queued only if
+  the setting is still on, with the same activation time, when the read ends) (a recorder saves and post-processes on its
   own after the app quits), started since the setting was turned on, finished (not recording,
   processing, or interrupted), in one language, with no `deepTranscribed` event and never queued
   before (`deepTranscriptionConsidered`), are queued too.
@@ -4797,10 +4798,21 @@ carried over.
   State column, other actions on it refused) and is taken off the queue however it ends (done,
   partial, refused, or cancelled). A pass the app did not see end (the app quit or crashed) stays
   queued and runs again from the start at the next launch. The command itself is detached and
-  may still be running then: the second one is refused by the processing lease (exit 1, "…
-  processing this session"), the meeting stays queued, and only it is tried, every minute,
-  until it can be had (`waitingFor`), so two passes never run at once. A command that cannot be
-  started at all stays queued and is tried again after a minute. Maintenance commands, like this one, keep running after the
+  may still be running then: the queue saves the command's pid and start time
+  (`ProcessSpawner.startTime`) with its meeting, so at launch a process with the same pid and
+  start time is adopted as the running pass (it holds its meeting, nothing else starts, not even
+  Run Now, Cancel can signal it, and the 30 s timer notices when it ends; its meeting stays
+  queued, and the next run keeps the transcript it made or makes it). A pid reused by another
+  process has another start time and is not adopted. As a further guard, a command refused by
+  the processing lease (exit 1, "… processing this session") keeps its meeting queued and only it
+  is tried, every minute, until it can be had (`waitingFor`, cleared whenever its meeting leaves
+  the queue). A command that cannot be started at all stays queued and is tried again after a
+  minute.
+- *Meetings first.* When a meeting starts (or one that failed may still be capturing or
+  post-processing, by its recorder's liveness) while a pass runs, the pass is stopped (SIGTERM;
+  it publishes nothing) and stays queued, so it runs again from the start once the meeting is
+  saved. A pass cancelled after it already published its transcript says so in an alert (the
+  labels and files may be behind: Label Speakers finishes them). Maintenance commands, like this one, keep running after the
   app quits.
 - *Meetings list.* The State column shows "Final transcript queued", "… waits for power", or
   "… in progress…". Right-clicking a finished meeting offers Make Final Transcript Now
