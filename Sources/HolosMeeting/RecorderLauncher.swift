@@ -48,7 +48,7 @@ import Synchronization
         Bundle.main.bundleURL.appendingPathComponent("Contents/MacOS/voiceislocal", isDirectory: false)
     }
 
-    /// ["record", "start", "--session-id", id, "--name=<name>", "--source", src,
+    /// ["record", "start", "--session-id", id, "--name=<name>", "--source", src, ("--default-name")?,
     ///  ("--locale=<locale>" | "--languages=<first>,<second>…")?, ("--app", id)?, ("--others-in-room")?,
     ///  ("--microphone", "default" | "built-in")?, ("--expected-speakers", n)?, ("--vocabulary-file", path)?,
     ///  "--no-live-text", "--directory", root.path]
@@ -60,6 +60,7 @@ import Synchronization
                                              vocabularyFile: URL?) -> [String] {
         var arguments = ["record", "start", "--session-id", sessionID, "--name=\(settings.name)",
                          "--source", settings.source.rawValue]
+        if settings.nameIsDefault { arguments.append("--default-name") }
         if settings.locales.count > 1 {
             arguments.append("--languages=\(settings.locales.joined(separator: ","))")
         } else if let locale = settings.locale {
@@ -158,7 +159,8 @@ import Synchronization
                                        expectedSpeakers: settings.expectedSpeakers, liveText: false,
                                        microphone: settings.microphone,
                                        languages: settings.locales.count > 1 ? settings.locales : [],
-                                       screenWindow: settings.screenWindow)
+                                       screenWindow: settings.screenWindow,
+                                       nameSource: settings.nameIsDefault ? .default : .user)
         let stop = ManualStopSource()
         let log = Self.labellingLog(in: logDirectory, sessionID: sessionID)
         let labelling = LabellingStarted()

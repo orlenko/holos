@@ -23,6 +23,9 @@ public struct MeetingStartSettings: Codable, Sendable, Equatable {
     /// the first, "Also detect" up to two more. Empty leaves the choice to the recorder's own default.
     public var locales: [String]
     public var screenWindow: ScreenWindowSelection?
+    /// The name is the one Voice is Local suggested (the start panel's untouched field, or an empty one): the Meetings
+    /// list may show a generated title instead (docs/meeting-design.md §4.17). Any name the user typed is theirs.
+    public var nameIsDefault = false
 
     /// The language the recorder transcribes in, or nil for the recorder's default.
     public var locale: String? { locales.first }
@@ -38,6 +41,7 @@ public struct MeetingStartSettings: Codable, Sendable, Equatable {
 
     private enum CodingKeys: String, CodingKey {
         case name, source, applicationBundleID, othersInRoom, expectedSpeakers, microphone, locales, screenWindow
+        case nameIsDefault
     }
 
     /// Settings saved before meetings had a language (or a microphone choice) decode with none.
@@ -51,6 +55,7 @@ public struct MeetingStartSettings: Codable, Sendable, Equatable {
                   microphone: try container.decodeIfPresent(MicrophoneSelection.self, forKey: .microphone),
                   locales: try container.decodeIfPresent([String].self, forKey: .locales) ?? [],
                   screenWindow: try container.decodeIfPresent(ScreenWindowSelection.self, forKey: .screenWindow))
+        nameIsDefault = try container.decodeIfPresent(Bool.self, forKey: .nameIsDefault) ?? false
     }
 
     /// "Meeting 2026-09-23 14:00" in `timeZone`.
@@ -70,7 +75,10 @@ public struct MeetingStartSettings: Codable, Sendable, Equatable {
     public func normalized(now: Date = Date(), timeZone: TimeZone = .current) -> MeetingStartSettings {
         var settings = self
         settings.name = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        if settings.name.isEmpty { settings.name = Self.defaultName(now: now, timeZone: timeZone) }
+        if settings.name.isEmpty {
+            settings.name = Self.defaultName(now: now, timeZone: timeZone)
+            settings.nameIsDefault = true
+        }
         if source == .microphone { settings.applicationBundleID = nil }
         if source != .microphoneAndSystem { settings.othersInRoom = false }
         if source == .system { settings.microphone = nil }

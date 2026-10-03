@@ -592,4 +592,145 @@ private func situation(enabled: Bool = true, available: Bool = true, busy: Bool 
     _ = await run(session, ScriptedSummaryModel())
     found = MeetingSummarySchedule.scan(root: temp.url)
     #expect(found.first?.needsSummary == false)
+    #expect(found.first?.finished == true)
+}
+
+// MARK: - Review fixes
+
+@Test func textWithoutSpacesIsCutBetweenCharacters() {
+    // A long Chinese monologue: sentences end with "。" and no space, and one run has no sentence end at all.
+    let sentence = String(repeating: "我们决定先重写解析器然后发布测试版", count: 3) + "。"
+    let unbroken = String(repeating: "会议记录没有标点符号的长段落", count: 40)
+    let text = String(repeating: sentence, count: 20) + unbroken
+    let parts = MeetingSummarizer.parts([MeetingSummaryLine(speaker: "李", text: text)], budget: 120)
+    let pieces = parts.flatMap { $0 }
+    #expect(pieces.count > 2)
+    for piece in pieces {
+        #expect(piece.hasPrefix("李: "))
+        #expect(MeetingSummarizer.estimatedTokens(piece) <= 120)
+    }
+    let rejoined = pieces.map { String($0.dropFirst("李: ".count)) }.joined().replacingOccurrences(of: " ", with: "")
+    #expect(rejoined == text)
+    #expect(MeetingSummarizer.sentences("第一句。第二句！第三句") == ["第一句。", "第二句！", "第三句"])
+    // Grapheme clusters stay whole.
+    let flags = String(repeating: "🇨🇦", count: 100)
+    #expect(MeetingSummarizer.characterRuns(flags, budget: 10).allSatisfy { $0.allSatisfy { $0 == "🇨🇦" } })
+}
+
+private struct UnexpectedModelError: Error {}
+
+@Test func anUnexpectedModelErrorFailsTheRunAndKeepsTheOldSummary() async throws {
+    let failing = ScriptedSummaryModel(notes: { prompt in
+        if prompt.contains("Part 2 of") { throw UnexpectedModelError() }
+        return ["Notes."]
+    })
+    await #expect(throws: UnexpectedModelError.self) {
+        _ = try await MeetingSummarizer(model: failing.model(contextTokens: 400)).summarize(input(lines(30)))
+    }
+
+    let temp = try TemporaryDirectory("summary")
+    defer { temp.remove() }
+    let session = try await summarizeSession(in: temp.url)
+    _ = await run(session, ScriptedSummaryModel())
+    let before = SessionFixtures.text(SessionPaths.summary(session))
+    let outcome = await run(session, ScriptedSummaryModel(summary: { _ in throw UnexpectedModelError() }), force: true)
+    #expect(outcome.status == .failed)
+    #expect(SessionFixtures.text(SessionPaths.summary(session)) == before)
+}
+
+@Test func theRecordSaysHowManyPartsWereLeftOut() async throws {
+    let refusedFirst = ScriptedSummaryModel(notes: { prompt in
+        if prompt.contains("Part 1 of") { throw MeetingSummaryModelError.refused }
+        return ["Notes."]
+    })
+    let result = try await MeetingSummarizer(model: refusedFirst.model(contextTokens: 400)).summarize(input(lines(30)))
+    #expect(result.stats.skippedParts == 1)
+
+    let temp = try TemporaryDirectory("summary")
+    defer { temp.remove() }
+    let session = try await summarizeSession(in: temp.url)
+    let outcome = await run(session, ScriptedSummaryModel())
+    #expect(outcome.summary?.parts == 1)
+    #expect(outcome.summary?.skippedParts == 0)
+}
+
+@Test func aCancelledRunWritesNothing() async throws {
+    let temp = try TemporaryDirectory("summary")
+    defer { temp.remove() }
+    let session = try await summarizeSession(in: temp.url)
+    let scripted = ScriptedSummaryModel(summary: { _ in
+        try await Task.sleep(for: .seconds(3_600))
+        return MeetingSummaryDraft(title: "Never", summary: "Never.")
+    })
+    let task = Task { await run(session, scripted) }
+    #expect(await eventually { scripted.summaryCalls.value.count == 1 })
+    task.cancel()
+    let outcome = await task.value
+    #expect(outcome.status == .cancelled)
+    #expect(outcome.status.retriesLater)
+    #expect(!SessionFixtures.exists(SessionPaths.summary(session)))
+}
+
+@Test func onlyFinishedMeetingsAreSummarized() {
+    #expect(MeetingSummarySchedule.isFinished(.complete))
+    #expect(MeetingSummarySchedule.isFinished(.recovered))
+    #expect(!MeetingSummarySchedule.isFinished(.interrupted))
+    #expect(!MeetingSummarySchedule.isFinished(.processing))
+    let interrupted = MeetingSummarySchedule.Candidate(sessionID: "a", path: "/a.holos", createdAt: scheduleNow,
+                                                       transcriptID: "T", summaryTranscriptID: nil, idle: true,
+                                                       finished: false)
+    #expect(MeetingSummarySchedule.next([interrupted], situation()) == .wait)
+    #expect(MeetingSummarySchedule.next([interrupted], situation(requested: ["a"])) == .wait)
+}
+
+@Test func aMeetingQueuedForAFinalTranscriptIsSummarizedAfterIt() {
+    var waiting = situation()
+    waiting.finalTranscriptQueued = ["a"]
+    #expect(MeetingSummarySchedule.next([candidate("a")], waiting) == .wait)
+    waiting.requested = ["a"]
+    #expect(MeetingSummarySchedule.next([candidate("a")], waiting) == .run(sessionID: "a", path: "/a.holos",
+                                                                           force: true))
+}
+
+@Test func summariesAndFinalTranscriptsShareOneLock() throws {
+    let temp = try TemporaryDirectory("summary")
+    defer { temp.remove() }
+    let url = temp.url.appendingPathComponent("deep-transcription.lock")
+    let summary = DeepTranscriptionLock.Holder(pid: 42, sessionID: "S", force: false,
+                                               kind: DeepTranscriptionLock.Holder.summaryKind)
+    let taken = try #require(try DeepTranscriptionLock.take(summary, at: url))
+    let state = DeepTranscriptionLock.state(at: url)
+    #expect(state == .held(summary))
+    #expect(!state.isDeepPass)
+    // A final transcript cannot start meanwhile.
+    #expect(try DeepTranscriptionLock.take(DeepTranscriptionLock.Holder(pid: 43, sessionID: "S", force: false),
+                                           at: url, wait: .milliseconds(50)) == nil)
+    taken.release()
+    let deep = try #require(try DeepTranscriptionLock.take(
+        DeepTranscriptionLock.Holder(pid: 43, sessionID: "S", force: false), at: url))
+    #expect(DeepTranscriptionLock.state(at: url).isDeepPass)
+    deep.release()
+    // A holder written by a build from before summaries reads as a deep pass.
+    let older = try HolosJSON.decoder().decode(DeepTranscriptionLock.Holder.self,
+                                               from: Data(#"{"force":false,"pid":7,"sessionID":"S"}"#.utf8))
+    #expect(!older.isSummary)
+}
+
+@Test func aNameTheUserGaveIsTheirsWhateverItLooksLike() throws {
+    let root = URL(fileURLWithPath: "/tmp/sessions")
+    var typed = MeetingStartSettings(name: "Meeting 2026-10-03 14:00", source: .microphone)
+    #expect(!typed.normalized().nameIsDefault)
+    #expect(!ChildProcessLauncher.arguments(typed.normalized(), sessionID: "S", root: root, vocabularyFile: nil)
+        .contains("--default-name"))
+    typed.name = "  "
+    #expect(typed.normalized().nameIsDefault)
+    var suggested = MeetingStartSettings(name: "Weekly sync", source: .microphone)
+    suggested.nameIsDefault = true
+    #expect(ChildProcessLauncher.arguments(suggested, sessionID: "S", root: root, vocabularyFile: nil)
+        .contains("--default-name"))
+    let decoded = try HolosJSON.decoder().decode(MeetingStartSettings.self,
+                                                 from: Data(#"{"name":"x","source":"mic","othersInRoom":false}"#.utf8))
+    #expect(!decoded.nameIsDefault)
+    #expect(RecordingOptions(name: "Meeting", source: .microphone, locale: "en-CA", backend: .speech, root: root)
+        .nameSource == .user)
 }

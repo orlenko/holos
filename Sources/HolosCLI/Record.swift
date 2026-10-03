@@ -31,7 +31,10 @@ struct Record: AsyncParsableCommand {
                 or not allowed). The defaults here are unchanged for scripts. With mic+system, speaker \
                 labelling leaves the microphone's echo of the system audio out of the labelled transcript.
                 """)
-        @Option(help: "Session display name.") var name = "Meeting"
+        @Option(help: "Session display name (default: Meeting).") var name: String?
+        /// The app's start panel passes it when the user left the name it suggested: the Meetings list may then show a
+        /// generated title instead (docs/meeting-design.md §4.17).
+        @Flag(help: .hidden) var defaultName = false
         @Option(help: """
             Audio sources: mic (the built-in microphone unless --microphone default), system, or mic+system (the \
             system default input, such as a headset, and system audio).
@@ -92,7 +95,7 @@ struct Record: AsyncParsableCommand {
             // again."); mic+system records the system default input, and without any input device system audio alone.
             // With --languages, the first is transcribed live, and every one again after the recording (§4.14).
             let (locale, languages) = await meetingLanguages.resolved(recognition)
-            let options = RecordingOptions(name: name, source: source, locale: locale,
+            let options = RecordingOptions(name: name ?? "Meeting", source: source, locale: locale,
                                            backend: recognition.backend, root: directory.map(fileURL) ?? HolosPaths.sessions,
                                            duration: duration, recordOnly: recordOnly, applicationBundleID: app,
                                            vocabulary: vocabulary, sessionID: sessionId, othersInRoom: othersInRoom,
@@ -102,7 +105,8 @@ struct Record: AsyncParsableCommand {
                                            languages: languages,
                                            screenWindow: screenWindow.flatMap { id in screenOwner.map {
                                                ScreenWindowSelection(windowID: id, ownerPID: $0)
-                                           } })
+                                           } },
+                                           nameSource: name == nil || defaultName ? .default : .user)
             let dependencies = RecordingDependencies.live(stop: SignalStopController(), reporter: ConsoleReporter(),
                 postProcess: noPostprocess || recordOnly ? nil : recordingPostProcessHook())
             let outcome = try await RecordingWorkflow.run(options, dependencies: dependencies)

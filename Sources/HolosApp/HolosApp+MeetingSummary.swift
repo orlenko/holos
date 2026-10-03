@@ -29,8 +29,13 @@ final class MeetingSummaryAppState {
     var attempted: [String: String] = [:]
     /// Meetings refused for now (busy, transcript changed, stopped for a meeting): skipped until then.
     var delayedUntil: [String: Date] = [:]
-    /// Summarize Again, newest last.
-    var requested: [String] = []
+    /// Summarize Again, newest last: saved on every change, and kept until the run ends for good (written, current,
+    /// failed, unavailable), so a request that had to wait (a meeting started, another job ran, the app quit) runs
+    /// later, forced.
+    static let requestsKey = "meetingSummaryRequests"
+    var requested: [String] = UserDefaults.standard.stringArray(forKey: requestsKey) ?? [] {
+        didSet { UserDefaults.standard.set(requested, forKey: Self.requestsKey) }
+    }
     /// The run going now was stopped because a meeting started.
     var preempted: String?
     var scanning = false
@@ -71,6 +76,15 @@ extension HolosAppDelegate {
         meeting.summaries.requested.append(summary.id)
         meeting.summaries.delayedUntil[summary.id] = nil
         scheduleMeetingSummaries()
+    }
+
+    /// Meetings › Cancel Summarize: the request is dropped, and a run of it going now stops (SIGTERM; nothing is
+    /// written).
+    func cancelMeetingSummary(_ sessionID: String) {
+        meeting.summaries.requested.removeAll { $0 == sessionID }
+        if let running = meeting.summaries.running, running.sessionID == sessionID, running.pid > 0 {
+            kill(running.pid, SIGTERM)
+        }
     }
 
     /// A meeting is starting, recording, or saving: a summary being made now is stopped (it writes nothing) and made
@@ -115,11 +129,12 @@ extension HolosAppDelegate {
             running: nil,
             inUse: Set(controller.sessionsInUse.keys).union(controller.sessionsUnderReview()),
             attempted: meeting.summaries.attempted, delayedUntil: meeting.summaries.delayedUntil,
-            requested: meeting.summaries.requested, onBattery: PowerSource.current() == .battery, now: now)
+            requested: meeting.summaries.requested, onBattery: PowerSource.current() == .battery,
+            finalTranscriptQueued: Set((meeting.deep.queue.items + meeting.deep.queue.pending).map(\.sessionID)),
+            now: now)
         guard case .run(let sessionID, let path, let force) = MeetingSummarySchedule.next(candidates, situation)
         else { return }
         let transcriptID = candidates.first { $0.sessionID == sessionID }?.transcriptID
-        meeting.summaries.requested.removeAll { $0 == sessionID }
         let output = Self.temporaryFile("summary")
         let errors = Self.temporaryFile("summary-err")
         meeting.summaries.running = (sessionID, 0)
@@ -153,15 +168,20 @@ extension HolosAppDelegate {
         meeting.summaries.running = nil
         let status = outcome.map { SessionSummarizeCommand.Status($0.status) }
         if preempted || status?.retriesLater == true {
-            // Stopped for a meeting, held by another command, or the transcript changed: tried again in a minute.
+            // Stopped for a meeting, held by another command or job, or the transcript changed: tried again in a
+            // minute, and a request stays.
             meeting.summaries.delayedUntil[sessionID] = Date().addingTimeInterval(60)
-        } else if code != 0, let transcriptID {
-            // Failed, or Apple Intelligence cannot be used for it: not again for this transcript.
-            meeting.summaries.attempted[sessionID] = transcriptID
+        } else {
+            // Done for good: written, up to date, failed, or Apple Intelligence cannot be used for it.
+            meeting.summaries.requested.removeAll { $0 == sessionID }
+            // A failure is not tried again automatically for this transcript.
+            if code != 0, let transcriptID { meeting.summaries.attempted[sessionID] = transcriptID }
         }
         Self.summaryLog.notice("Summary of \(sessionID, privacy: .public) ended with \(code, privacy: .public) (\(outcome?.status ?? "no result", privacy: .public))")
         meeting.meetingsPane?.update(summarizing: nil)
         meeting.meetingsPane?.refresh()
+        // A final transcript waits while a summary runs (they share the background job lock).
+        scheduleDeepTranscription()
         scheduleMeetingSummaries()
     }
 

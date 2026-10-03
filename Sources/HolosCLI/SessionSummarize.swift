@@ -4,6 +4,7 @@ import FoundationModels
 import HolosCore
 import HolosDictation
 import HolosMeeting
+import HolosStorage
 
 extension Session {
     /// `voiceislocal session summarize` (docs/meeting-design.md §4.17).
@@ -18,7 +19,8 @@ extension Session {
                 of the current transcript is kept unless --force; Voice is Local makes one after each meeting, and \
                 again when a final transcript replaces the recorded one. Needs Apple Intelligence turned on. Exits \
                 0 when the summary was written or is up to date, 3 when it was written but the transcript files \
-                could not be rewritten, and 1 otherwise (the reason is printed).
+                could not be rewritten, and 1 otherwise (the reason is printed), also when another summary or a final \
+                transcript is being made: one runs at a time on this Mac. Ctrl-C stops it without writing anything.
                 """)
 
         @Argument(help: "Path to a .holos folder, or a session ID.") var path: String
@@ -31,7 +33,29 @@ extension Session {
                 session: session, force: force, selfName: VoiceProfileService.ownName(),
                 profileNames: VoiceProfileService.profileNames(),
                 applyRecognition: VoiceProfileService.recognitionAllowed())
-            let outcome = await SessionSummarizeCommand.run(request) { OnDeviceSummary.model(language: $0) }
+            // One expensive background job at a time on this Mac, held for the command's whole life: a final transcript
+            // waits for it and it waits for one, also across an app relaunch (docs/meeting-design.md §4.17).
+            let sessionID = (try? SessionArchive.readManifest(at: session).id)
+                ?? session.deletingPathExtension().lastPathComponent
+            let outcome: SessionSummarizeCommand.Outcome
+            if let held = try DeepTranscriptionLock.take(
+                DeepTranscriptionLock.Holder(pid: getpid(), sessionID: sessionID, force: force,
+                                             kind: DeepTranscriptionLock.Holder.summaryKind)) {
+                defer { held.release() }
+                // Ctrl-C or SIGTERM (the app, when a meeting starts) cancels it; nothing is written once cancelled
+                // before the save, and the save itself is never cut short.
+                let work = CancellableStart<SessionSummarizeCommand.Outcome>()
+                let interrupt = InterruptCancellation(notice: {
+                    Console.error("Stopping… (press Ctrl-C again to quit at once)")
+                }) { work.cancel() }
+                defer { interrupt.restore() }
+                outcome = try await work.start {
+                    await SessionSummarizeCommand.run(request) { OnDeviceSummary.model(language: $0) }
+                }.value
+            } else {
+                outcome = SessionSummarizeCommand.Outcome(sessionID: sessionID, status: .busy,
+                                                          message: DeepTranscriptionLock.busyMessage, exitCode: 1)
+            }
             if json {
                 try Console.json(outcome)
                 if outcome.exitCode != 0 { Console.error(outcome.message) }

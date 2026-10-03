@@ -176,9 +176,8 @@ extension HolosAppDelegate: NSMenuDelegate {
             meeting.notice = nil
             meeting.meetingsPane?.refresh()
             // The meeting's own post-processing ran in the recorder: the final transcript can follow (§4.16), and its
-            // title and summary (§4.17).
+            // title and summary once that is decided (§4.17).
             queueDeepTranscriptionAfterMeeting(sessionID: sessionID)
-            scheduleMeetingSummaries()
         case .offerNaming, .clearNamingOffer:
             // `MeetingController.namingOffer` changed; the menu and the status item show it.
             break
@@ -682,6 +681,9 @@ extension HolosAppDelegate: NSMenuDelegate {
             if runNow { self?.runDeepTranscriptionNow(summary) } else { self?.cancelDeepTranscription(summary.id) }
         }
         pane.onSummarize = { [weak self] summary in self?.summarizeMeetingAgain(summary) }
+        pane.onCancelSummary = { [weak self] id in self?.cancelMeetingSummary(id) }
+        pane.summaryRequested = { [weak self] id in self?.meeting.summaries.requested.contains(id) ?? false }
+        pane.summaryUnavailableReason = { [weak self] in self?.meetingSummaryUnavailableReason }
         pane.update(summarizing: meeting.summaries.running?.sessionID)
         pane.update(meetingState: controller.state)
         meeting.meetingsPane = pane

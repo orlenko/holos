@@ -53,9 +53,11 @@ public enum SessionSummarizeCommand {
         /// The current transcript changed while the summary was made: try again.
         public static let changed = Status("changed")
         public static let failed = Status("failed")
+        /// Stopped (Ctrl-C, or SIGTERM from the app when a meeting starts) before anything was written.
+        public static let cancelled = Status("cancelled")
 
         /// Whether the app tries again later for the same transcript.
-        public var retriesLater: Bool { self == .busy || self == .changed }
+        public var retriesLater: Bool { self == .busy || self == .changed || self == .cancelled }
     }
 
     public struct Outcome: Sendable, Encodable {
@@ -162,14 +164,21 @@ public enum SessionSummarizeCommand {
             }
         } catch {
             if error is CancellationError {
-                return outcome(.failed, "Summarizing was cancelled.", transcriptID: transcriptID)
+                return outcome(.cancelled, "Summarizing was cancelled; nothing was written.",
+                               transcriptID: transcriptID)
             }
             return outcome(.failed, error.localizedDescription, transcriptID: transcriptID)
         }
         let record = MeetingSummaryRecord(
             sessionID: id, transcriptID: transcriptID, title: made.draft.title, summary: made.draft.summary,
-            points: made.draft.points, actions: made.draft.actions, model: summaryModel.name, language: input.language)
+            points: made.draft.points, actions: made.draft.actions, model: summaryModel.name, language: input.language,
+            parts: made.stats.parts, skippedParts: made.stats.skippedParts)
 
+        // A cancellation that came while the model answered writes nothing.
+        if Task.isCancelled {
+            return outcome(.cancelled, "Summarizing was cancelled; nothing was written.",
+                           transcriptID: transcriptID)
+        }
         // Saved under the lease, only for the transcript that is still current.
         let lease: ProcessingLease
         do {
@@ -186,6 +195,12 @@ public enum SessionSummarizeCommand {
             result = try await lease.withUse(for: session) { () async throws -> Outcome in
                 guard try SessionFiles.readableCurrentTranscriptID(session: session) == transcriptID else {
                     return outcome(.changed, "The transcript changed while it was summarized; try again.",
+                                   transcriptID: transcriptID)
+                }
+                // The last point where a cancellation stops it: from here summary.json (one atomic write) and the
+                // transcript files are written together.
+                if Task.isCancelled {
+                    return outcome(.cancelled, "Summarizing was cancelled; nothing was written.",
                                    transcriptID: transcriptID)
                 }
                 try MeetingSummaryStore.write(record, session: session)

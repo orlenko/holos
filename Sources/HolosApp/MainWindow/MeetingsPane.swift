@@ -68,8 +68,13 @@ final class MeetingsPane: NSViewController, NSTableViewDataSource, NSTableViewDe
     private var summarizing: String?
     /// The meeting's menu: Make Final Transcript Now (true) and Cancel Final Transcript (false) (§4.16).
     var onDeepTranscription: ((_ runNow: Bool, SessionSummary) -> Void)?
-    /// The meeting's menu: Summarize Again.
+    /// The meeting's menu: Summarize Again, and Cancel Summarize while that request waits or runs.
     var onSummarize: ((SessionSummary) -> Void)?
+    var onCancelSummary: ((String) -> Void)?
+    /// Whether the meeting's Summarize Again is waiting or running.
+    var summaryRequested: (String) -> Bool = { _ in false }
+    /// Why Apple Intelligence cannot summarize here (Summarize is off with it as the tooltip); nil when it can.
+    var summaryUnavailableReason: () -> String? = { nil }
     private var pendingSelection: String?
     private var refreshTask: Task<Void, Never>?
     private var loading = false
@@ -904,11 +909,22 @@ extension MeetingsPane: NSMenuDelegate {
                                    action: #selector(summarizeAgain(_:)), keyEquivalent: "")
         summarize.target = self
         summarize.representedObject = summary.id
-        summarize.toolTip = "Writes the title and summary again from the transcript with Apple Intelligence, on this "
-            + "Mac. A name you gave the meeting is kept."
-        summarize.isEnabled = onSummarize != nil && summary.transcriptID != nil && !isLive
-            && summarizing != summary.id
+        let unavailable = summaryUnavailableReason()
+        // Asked for and waiting (or running): it can be cancelled instead.
+        let requested = summaryRequested(summary.id)
+        summarize.toolTip = unavailable.map { "Apple Intelligence cannot summarize meetings on this Mac: \($0)." }
+            ?? "Writes the title and summary again from the transcript with Apple Intelligence, on this Mac. A name "
+            + "you gave the meeting is kept."
+        summarize.isEnabled = onSummarize != nil && unavailable == nil && summary.transcriptID != nil && !isLive
+            && summarizing != summary.id && !requested
+            && MeetingSummarySchedule.isFinished(summary.state)
         menu.addItem(summarize)
+        if requested {
+            let cancel = NSMenuItem(title: "Cancel Summarize", action: #selector(cancelSummary(_:)), keyEquivalent: "")
+            cancel.target = self
+            cancel.representedObject = summary.id
+            menu.addItem(cancel)
+        }
 
         let queuedOrRunning = deepStates[summary.id] != nil || deepRunning == summary.id
         if !queuedOrRunning || deepQueuedAutomatically.contains(summary.id) {
@@ -943,6 +959,11 @@ extension MeetingsPane: NSMenuDelegate {
         guard let id = sender.representedObject as? String, let summary = sessions.first(where: { $0.id == id })
         else { return }
         onSummarize?(summary)
+    }
+
+    @objc private func cancelSummary(_ sender: NSMenuItem) {
+        guard let id = sender.representedObject as? String else { return }
+        onCancelSummary?(id)
     }
 
     @objc private func runDeepTranscription(_ sender: NSMenuItem) {

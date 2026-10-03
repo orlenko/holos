@@ -105,7 +105,8 @@ public struct MeetingSummaryStats: Sendable, Equatable, Codable {
 ///    about", one or two sentences of summary, at most five key points and five action items, and no refusal.
 ///
 /// The transcript is data: every prompt says so, and fences it. A part the model refuses, or does not answer within
-/// `callTimeout`, is left out; more than half of them left out, or two calls in a row that time out, fail the run.
+/// `callTimeout`, is left out; more than half of them left out, two calls in a row that time out, or any other model
+/// error fail the run. The record says how many parts were left out.
 public struct MeetingSummarizer: Sendable {
     public enum Failure: Error, Sendable, Equatable {
         case emptyTranscript
@@ -211,8 +212,9 @@ public struct MeetingSummarizer: Sendable {
                 case .refused: return nil
                 }
             }
-            if error is CancellationError { throw CancellationError() }
-            return nil
+            // Anything else (a missing asset, a decoding or internal error) fails the run: leaving the part out
+            // would publish a summary of part of the meeting as if it were whole.
+            throw error ?? CancellationError()
         }
     }
 
@@ -357,7 +359,7 @@ public struct MeetingSummarizer: Sendable {
         return pieces
     }
 
-    /// Sentences of `text`, cut after ".", "!", "?" or "…" followed by a space.
+    /// Sentences of `text`, cut after ".", "!", "?" or "…" followed by a space, and after "。", "！" or "？".
     static func sentences(_ text: String) -> [String] {
         var result: [String] = []
         var current = ""
@@ -368,22 +370,46 @@ public struct MeetingSummarizer: Sendable {
                 current = ""
             } else {
                 current.append(character)
+                // Chinese and Japanese end a sentence without a space after it.
+                if "。！？".contains(character) {
+                    result.append(current)
+                    current = ""
+                }
             }
             previous = character
         }
         if !current.isEmpty { result.append(current) }
-        return result.filter { !$0.isEmpty }
+        return result.filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
     }
 
-    /// Runs of whole words that fit `budget`.
+    /// Runs of whole words that fit `budget`; a word longer than that (text without spaces: Chinese, Japanese,
+    /// Thai) is cut between characters, never inside one.
     static func wordRuns(_ text: String, budget: Int) -> [String] {
         var runs: [String] = []
         var current = ""
-        for word in text.split(separator: " ") {
-            let joined = current.isEmpty ? String(word) : current + " " + word
+        for word in text.split(separator: " ").flatMap({ characterRuns(String($0), budget: budget) }) {
+            let joined = current.isEmpty ? word : current + " " + word
             if estimatedTokens(joined) > budget, !current.isEmpty {
                 runs.append(current)
-                current = String(word)
+                current = word
+            } else {
+                current = joined
+            }
+        }
+        if !current.isEmpty { runs.append(current) }
+        return runs
+    }
+
+    /// `word` itself when it fits `budget`, else runs of its characters (grapheme clusters) that each do.
+    static func characterRuns(_ word: String, budget: Int) -> [String] {
+        guard estimatedTokens(word) > budget else { return [word] }
+        var runs: [String] = []
+        var current = ""
+        for character in word {
+            let joined = current + String(character)
+            if estimatedTokens(joined) > budget, !current.isEmpty {
+                runs.append(current)
+                current = String(character)
             } else {
                 current = joined
             }

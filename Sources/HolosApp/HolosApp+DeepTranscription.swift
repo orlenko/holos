@@ -166,14 +166,19 @@ extension HolosAppDelegate {
     // MARK: - Queue
 
     /// After a meeting is saved and its own post-processing ended: queued when the setting is on, the model
-    /// installed, and the meeting in one language.
+    /// installed, and the meeting in one language. Its summary is looked for once that is decided (§4.17), so a
+    /// meeting about to get a final transcript is summarized after it, not before.
     func queueDeepTranscriptionAfterMeeting(sessionID: String) {
         guard DeepTranscriptionAppState.enabled, meeting.deep.model == "installed", let root = meeting.controller?.root,
-              let directory = try? SessionLocator.resolve(sessionID, root: root) else { return }
+              let directory = try? SessionLocator.resolve(sessionID, root: root) else {
+            scheduleMeetingSummaries()
+            return
+        }
         let activation = meeting.deep.activation
         // Reading the languages can mean decoding a long meeting's transcript: off the main actor.
         Task { [weak self] in
             let languages = await Task.detached { Self.languageCount(directory) }.value
+            defer { self?.scheduleMeetingSummaries() }
             // The setting was turned off (and maybe on again) while it was read: that turning off took it off.
             // Checked against the live queue and the meetings considered: the user may have asked for it (and maybe
             // cancelled it) while it was read.
@@ -294,13 +299,16 @@ extension HolosAppDelegate {
         }
         guard let controller = meeting.controller, let maintenance = meeting.maintenance else { return }
         // Another process's pass holds the lock: wait for it (checked again every 30 s). One at a time on this Mac.
+        // A meeting summary shares the lock (§4.17), this app's own while it starts too: wait for it, without saying
+        // another final transcript runs.
         if meeting.deep.running == nil {
-            let other = DeepTranscriptionLock.state() != .free
+            let lock = DeepTranscriptionLock.state()
+            let other = lock.isDeepPass
             if other != meeting.deep.otherPassRunning {
                 meeting.deep.otherPassRunning = other
                 updateDeepStates()
             }
-            if other { return }
+            if lock != .free || meeting.summaries.running != nil { return }
         }
         if let retryAfter = meeting.deep.retryAfter, retryAfter > Date() { return }
         meeting.deep.retryAfter = nil
@@ -533,7 +541,9 @@ extension HolosAppDelegate {
         let own = meeting.controller?.sessionsInUse[sessionID] == Self.deepRunningText
             && meeting.deep.running?.sessionID == sessionID
         var other = false
-        if !own, case .held(let holder?) = DeepTranscriptionLock.state() { other = holder.sessionID == sessionID }
+        if !own, case .held(let holder?) = DeepTranscriptionLock.state(), !holder.isSummary {
+            other = holder.sessionID == sessionID
+        }
         guard own || other else { return false }
         let alert = NSAlert()
         alert.messageText = "Final transcript in progress"

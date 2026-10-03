@@ -21,7 +21,7 @@ public enum SessionImportCommand {
         /// meeting.json, and post-processing merges the transcript from one transcription in each. Empty: `locale`
         /// only.
         public var languages: [String]
-        /// Where `name` came from (`--name`: `user`; the file's name: `default`); nil infers it from the name.
+        /// Where `name` came from (`--name`: `user`; the file's name: `default`); nil is `user`.
         public var nameSource: MeetingNameSource?
 
         public init(file: URL, name: String, root: URL, locale: String, backend: SpeechBackend,

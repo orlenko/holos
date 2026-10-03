@@ -421,7 +421,10 @@ private func isFailed(_ state: MeetingState) -> String? {
     let normalized = MeetingStartSettings(name: "  ", source: .microphone, applicationBundleID: "us.zoom.xos",
                                           othersInRoom: true, expectedSpeakers: 50)
         .normalized(now: date, timeZone: TimeZone(identifier: "UTC")!)
-    #expect(normalized == MeetingStartSettings(name: "Meeting 2026-09-23 14:00", source: .microphone))
+    // The made-up name is recorded as Voice is Local's, so a generated title may stand for it (§4.17).
+    var expected = MeetingStartSettings(name: "Meeting 2026-09-23 14:00", source: .microphone)
+    expected.nameIsDefault = true
+    #expect(normalized == expected)
 }
 
 @Test func startSettingsKeepEachLanguageOnceInOrder() throws {

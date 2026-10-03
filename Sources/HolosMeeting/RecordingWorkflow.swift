@@ -39,13 +39,18 @@ public struct RecordingOptions: Sendable, Equatable {
     /// merges the transcript. Empty: `locale` only.
     public var languages: [String]
     public var screenWindow: ScreenWindowSelection?
+    /// Where `name` came from (docs/meeting-design.md §4.17): `user` when the user gave it (the start panel's field,
+    /// `--name`), whatever it looks like; `default` for a name Voice is Local made up.
+    public var nameSource: MeetingNameSource
 
     /// `microphone` nil chooses it from `source`: `.builtIn` for `mic`, `.systemDefault` otherwise.
     public init(name: String, source: AudioSource, locale: String, backend: SpeechBackend, root: URL,
                 duration: Double? = nil, recordOnly: Bool = false, applicationBundleID: String? = nil,
                 vocabulary: [String] = [], sessionID: String? = nil, othersInRoom: Bool = false,
                 expectedSpeakers: Int? = nil, liveText: Bool = true, microphone: MicrophoneSelection? = nil,
-                languages: [String] = [], screenWindow: ScreenWindowSelection? = nil) {
+                languages: [String] = [], screenWindow: ScreenWindowSelection? = nil,
+                nameSource: MeetingNameSource = .user) {
+        self.nameSource = nameSource
         self.name = name; self.source = source; self.locale = locale; self.backend = backend; self.root = root
         self.duration = duration; self.recordOnly = recordOnly; self.applicationBundleID = applicationBundleID
         self.vocabulary = vocabulary; self.sessionID = sessionID; self.othersInRoom = othersInRoom
@@ -480,7 +485,7 @@ private final class Recorder {
                                othersInRoom: options.othersInRoom, applicationBundleID: options.applicationBundleID,
                                expectedSpeakers: options.expectedSpeakers,
                                languages: options.languages.count > 1 ? options.languages : nil,
-                               nameSource: MeetingNaming.sourceForNewMeeting(name: options.name))
+                               nameSource: options.nameSource)
         try AtomicFile.create(try HolosJSON.encoder().encode(info), at: SessionPaths.meetingInfo(directory))
         if !options.vocabulary.isEmpty {
             try AtomicFile.create(try HolosJSON.encoder().encode(MeetingVocabulary(strings: options.vocabulary)),

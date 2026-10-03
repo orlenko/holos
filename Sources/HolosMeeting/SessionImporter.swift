@@ -108,7 +108,7 @@ public enum SessionImporter {
             let info = MeetingInfo(sessionID: archive.id, mode: .inPerson, othersInRoom: false, origin: .imported,
                                    importedFileName: file.lastPathComponent,
                                    languages: languages.count > 1 ? languages : nil,
-                                   nameSource: nameSource ?? MeetingNaming.sourceForNewMeeting(name: name))
+                                   nameSource: nameSource ?? .user)
             try AtomicFile.create(try HolosJSON.encoder().encode(info), at: SessionPaths.meetingInfo(directory))
             if !vocabulary.isEmpty {
                 try AtomicFile.create(try HolosJSON.encoder().encode(MeetingVocabulary(strings: vocabulary)),

@@ -19,11 +19,15 @@ public enum MeetingSummarySchedule {
         public var summaryTranscriptID: String?
         /// Not recording, saving or post-processing (no writer, no processing lease).
         public var idle: Bool
+        /// Finished as a final transcript requires it (`isFinished`): an interrupted or still processing meeting
+        /// waits for Recover or its save, so a partial transcript is never summarized.
+        public var finished: Bool
 
         public init(sessionID: String, path: String, createdAt: Date, transcriptID: String?,
-                    summaryTranscriptID: String?, idle: Bool) {
+                    summaryTranscriptID: String?, idle: Bool, finished: Bool = true) {
             self.sessionID = sessionID; self.path = path; self.createdAt = createdAt
             self.transcriptID = transcriptID; self.summaryTranscriptID = summaryTranscriptID; self.idle = idle
+            self.finished = finished
         }
 
         /// The summary is missing or of an earlier transcript.
@@ -54,15 +58,19 @@ public enum MeetingSummarySchedule {
         public var requested: [String]
         /// On battery only meetings from the last `recentOnBattery` are summarized; the rest wait for power.
         public var onBattery: Bool
+        /// Meetings a final transcript is queued for: their transcript is about to change, so they are summarized
+        /// after it (automatically; a request still runs).
+        public var finalTranscriptQueued: Set<String>
         public var now: Date
 
         public init(enabled: Bool, modelAvailable: Bool, meetingBusy: Bool, deepPassRunning: Bool, running: String?,
                     inUse: Set<String> = [], attempted: [String: String] = [:], delayedUntil: [String: Date] = [:],
-                    requested: [String] = [], onBattery: Bool = false, now: Date = Date()) {
+                    requested: [String] = [], onBattery: Bool = false, finalTranscriptQueued: Set<String> = [],
+                    now: Date = Date()) {
             self.enabled = enabled; self.modelAvailable = modelAvailable; self.meetingBusy = meetingBusy
             self.deepPassRunning = deepPassRunning; self.running = running; self.inUse = inUse
             self.attempted = attempted; self.delayedUntil = delayedUntil; self.requested = requested
-            self.onBattery = onBattery; self.now = now
+            self.onBattery = onBattery; self.finalTranscriptQueued = finalTranscriptQueued; self.now = now
         }
     }
 
@@ -81,7 +89,8 @@ public enum MeetingSummarySchedule {
         guard situation.modelAvailable, situation.running == nil, !situation.meetingBusy,
               !situation.deepPassRunning else { return .wait }
         func ready(_ candidate: Candidate) -> Bool {
-            candidate.idle && candidate.transcriptID != nil && !situation.inUse.contains(candidate.sessionID)
+            candidate.idle && candidate.finished && candidate.transcriptID != nil
+                && !situation.inUse.contains(candidate.sessionID)
                 && (situation.delayedUntil[candidate.sessionID].map { $0 <= situation.now } ?? true)
         }
         // Asked for by the user: also with the setting off, and also when the summary is current.
@@ -94,6 +103,7 @@ public enum MeetingSummarySchedule {
         let due = candidates
             .filter { candidate in
                 ready(candidate) && candidate.needsSummary
+                    && !situation.finalTranscriptQueued.contains(candidate.sessionID)
                     && situation.attempted[candidate.sessionID] != candidate.transcriptID
                     && (!situation.onBattery
                         || situation.now.timeIntervalSince(candidate.createdAt) <= recentOnBattery)
@@ -101,6 +111,12 @@ public enum MeetingSummarySchedule {
             .sorted { $0.createdAt != $1.createdAt ? $0.createdAt > $1.createdAt : $0.sessionID < $1.sessionID }
         guard let first = due.first else { return .wait }
         return .run(sessionID: first.sessionID, path: first.path, force: false)
+    }
+
+    /// A meeting that can be summarized: finished as `DeepTranscriptionSchedule.isFinished` says (saved, recovered,
+    /// audio only, transcript incomplete), with or without its audio.
+    public static func isFinished(_ state: SessionState) -> Bool {
+        DeepTranscriptionSchedule.isFinished(state, audioDeleted: false)
     }
 
     /// The meetings under `root`, as `next` needs them: lock probes, the transcript pointer and summary.json only (no
@@ -112,9 +128,11 @@ public enum MeetingSummarySchedule {
             let processing = (try? SessionArchive.isProcessing(at: session)) ?? true
             let transcriptID = (try? SessionArchive.currentTranscriptID(at: session)) ?? nil
             let summary = MeetingSummaryStore.readIfUsable(session: session, sessionID: manifest.id)
+            let state = SessionCatalog.state(manifestStatus: manifest.status,
+                                             liveness: RecorderChannel.liveness(session: session))
             return Candidate(sessionID: manifest.id, path: session.path, createdAt: manifest.createdAt,
                              transcriptID: transcriptID, summaryTranscriptID: summary?.transcriptID,
-                             idle: !active && !processing)
+                             idle: !active && !processing, finished: isFinished(state))
         }
     }
 }

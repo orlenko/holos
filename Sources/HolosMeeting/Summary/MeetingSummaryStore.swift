@@ -25,13 +25,18 @@ public struct MeetingSummaryRecord: Codable, Sendable, Equatable {
     /// The language it is written in ("fr-CA").
     public var language: String?
     public var createdAt: Date
+    /// The transcript parts it was made from, and how many of them the model refused or did not answer in time (left
+    /// out of it).
+    public var parts: Int?
+    public var skippedParts: Int?
 
     public init(schemaVersion: Int = currentVersion, sessionID: String, transcriptID: String, title: String,
                 summary: String, points: [String] = [], actions: [String] = [], model: String,
-                language: String? = nil, createdAt: Date = Date()) {
+                language: String? = nil, createdAt: Date = Date(), parts: Int? = nil, skippedParts: Int? = nil) {
         self.schemaVersion = schemaVersion; self.sessionID = sessionID; self.transcriptID = transcriptID
         self.title = title; self.summary = summary; self.points = points; self.actions = actions
         self.model = model; self.language = language; self.createdAt = createdAt
+        self.parts = parts; self.skippedParts = skippedParts
     }
 }
 
@@ -111,11 +116,6 @@ public enum MeetingNaming {
     /// (`isDefaultName`) and `user` for any other.
     public static func source(stored: MeetingNameSource?, name: String) -> MeetingNameSource {
         stored ?? (isDefaultName(name) ? .default : .user)
-    }
-
-    /// The source a new meeting's name gets: `default` for a name Voice is Local made up, else `user`.
-    public static func sourceForNewMeeting(name: String) -> MeetingNameSource {
-        isDefaultName(name) ? .default : .user
     }
 
     /// What the Meetings list shows: the user's name, else the generated title, else the name.
