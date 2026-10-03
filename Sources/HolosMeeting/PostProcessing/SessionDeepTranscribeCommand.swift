@@ -45,7 +45,9 @@ public enum SessionDeepTranscribeCommand {
         }
         guard !manifest.chunks.isEmpty else { throw HolosError.invalidInput("This session has no saved audio.") }
         let meeting = try SessionFiles.meetingInfo(session: session, manifest: manifest)
-        let merged = (try? SessionFiles.currentTranscript(session: session))??.languages != nil
+        // A transcript made in one language named with `session languages` has `languages` too; only several count.
+        let mergedLanguages = (try? SessionFiles.currentTranscript(session: session))??.languages ?? []
+        let merged = DictationLanguage.meetingLanguages(mergedLanguages).count > 1
         if DictationLanguage.meetingLanguages(meeting.languages ?? []).count > 1 || merged {
             throw HolosError.invalidInput(DeepTranscriptionStage.severalLanguages)
         }

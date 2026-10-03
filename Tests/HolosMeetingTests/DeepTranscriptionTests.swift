@@ -516,6 +516,56 @@ func theCommandRefusesWhatItCannotDo() async throws {
 }
 
 @Test(.timeLimit(.minutes(1)))
+func aSessionWithoutATranscriptGetsItsFirstOne() async throws {
+    let temp = try TemporaryDirectory("deep")
+    defer { temp.remove() }
+    // Recorded with --record-only (or imported with --no-transcribe): audio, no transcript. The quiet tone is above
+    // the silence threshold, so with no recorded words to compare, the audio level alone decides.
+    let session = try await SessionFixtures.makeSession(in: temp.url, name: "Weekly engineering sync",
+                                                        mode: .inPerson, transcript: nil)
+    let transcriber = ScriptedTranscriber(script: scriptedHearing)
+    let outcome = try await deepRun(session, deepDependencies(transcriber))
+    #expect(outcome.exitCode == 0, "\(outcome.summary)")
+    #expect(outcome.record.stages.first { $0.stage == .transcript }?.result == .skipped)
+    let deep = try currentTranscript(session)
+    #expect(deep.engine == "whisper:test" && outcome.record.transcriptID == deep.id)
+    #expect(deep.segments.count == 5, "Four passages and the audible \"Thank you.\"; the loop's repeats are left out.")
+    #expect(try deepEvents(session).last?.details["base"] == "")
+    #expect(try SessionFixtures.view(session).transcriptID == deep.id, "Speakers are labelled on it.")
+}
+
+@Test(.timeLimit(.minutes(1)))
+func aSilentSessionWithoutATranscriptGetsNone() async throws {
+    let temp = try TemporaryDirectory("deep")
+    defer { temp.remove() }
+    let session = try await SessionFixtures.makeSession(in: temp.url, mode: .inPerson, transcript: nil, tone: 0)
+    let outcome = try await deepRun(session, deepDependencies(ScriptedTranscriber(script: scriptedHearing)))
+    #expect(outcome.exitCode == 1)
+    #expect(deepStage(outcome.record)?.message == "No transcript was made. No words were recognized when the "
+        + "meeting was transcribed again.")
+    #expect(try SessionArchive.currentTranscriptID(at: session) == nil)
+}
+
+@Test(.timeLimit(.minutes(1)))
+func aTranscriptMadeInOneNamedLanguageUsesThatLanguage() async throws {
+    let temp = try TemporaryDirectory("deep")
+    defer { temp.remove() }
+    let (session, recorded) = try await deepSession(in: temp.url)
+    // What `session languages --languages fr-CA` leaves: a merge of one language.
+    var french = recorded
+    french.id = UUID().uuidString
+    french.locale = "fr-CA"
+    french.languages = ["fr-CA"]
+    try await SessionFixtures.saveTranscript(french, in: session)
+    let transcriber = ScriptedTranscriber(script: scriptedHearing)
+    let outcome = try await deepRun(session, deepDependencies(transcriber))
+    #expect(outcome.exitCode == 0, "\(outcome.summary)")
+    #expect(transcriber.requests.value.first?.language == "fr")
+    let deep = try currentTranscript(session)
+    #expect(deep.engine == "whisper:test" && deep.locale == "fr-CA")
+}
+
+@Test(.timeLimit(.minutes(1)))
 func ordinaryPostProcessingNeverRunsThePass() async throws {
     let temp = try TemporaryDirectory("deep")
     defer { temp.remove() }

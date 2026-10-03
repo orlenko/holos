@@ -145,14 +145,36 @@ public final class WhisperKitTranscriber: DeepTranscriber, @unchecked Sendable {
             }
             try Task.checkCancellation()
         }
-        return outcomes.enumerated().map { index, outcome in
-            switch outcome {
-            case .success(let results): return results
-            case .failure(let error):
+        for (index, outcome) in outcomes.enumerated() {
+            if case .failure(let error) = outcome {
                 Self.log.error("Deep transcription: a chunk at \(chunks[index].seekOffsetIndex / WhisperKit.sampleRate, privacy: .public) s could not be decoded: \(String(describing: error), privacy: .public)")
-                return []
             }
         }
+        return try Self.requireAll(outcomes, startSeconds: chunks.map {
+            Double($0.seekOffsetIndex) / Double(WhisperKit.sampleRate)
+        })
+    }
+
+    /// Every chunk's results; throws `incomplete` naming the chunks that could not be decoded (also on their own), so a
+    /// pass never publishes a transcript that leaves audio out without saying so.
+    static func requireAll<T>(_ outcomes: [Result<T, any Error>], startSeconds: [Double]) throws -> [T] {
+        var results: [T] = []
+        var failed: [Int] = []
+        for (index, outcome) in outcomes.enumerated() {
+            switch outcome {
+            case .success(let value): results.append(value)
+            case .failure: failed.append(index)
+            }
+        }
+        guard failed.isEmpty else {
+            let starts = failed.map { index in
+                index < startSeconds.count ? "\(Int(startSeconds[index].rounded())) s" : "?"
+            }
+            let what = failed.count == 1 ? "1 stretch of audio" : "\(failed.count) stretches of audio"
+            throw HolosError.incomplete("\(what) (from \(starts.joined(separator: ", "))) could not be transcribed, "
+                + "so the transcript would leave it out.")
+        }
+        return results
     }
 
     /// The prompt's tokens as the decoder takes them: a leading space (as Whisper's own previous-text context has),

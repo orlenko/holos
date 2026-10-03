@@ -57,8 +57,9 @@ enum DeepTranscriptionStage {
     struct Request {
         var session: URL
         var manifest: SessionManifest
-        /// The current transcript, as the languages stage left it.
-        var transcript: Transcript
+        /// The current transcript, as the languages stage left it; nil for a session recorded or imported without one,
+        /// which then gets its first transcript from this pass.
+        var transcript: Transcript?
         var lease: ProcessingLease
         /// Asked for by name (`PostProcessingOptions.deepTranscribe`); nothing is done or recorded otherwise.
         var requested: Bool
@@ -68,8 +69,8 @@ enum DeepTranscriptionStage {
     }
 
     struct Outcome {
-        /// The transcript the later stages use.
-        var transcript: Transcript
+        /// The transcript the later stages use (nil when there was none and none was made).
+        var transcript: Transcript?
         /// For the final record's message.
         var note: String?
         /// Why the stage did not do what it was asked; makes the post-processing partial.
@@ -93,6 +94,8 @@ enum DeepTranscriptionStage {
     static func run(_ request: Request, dependencies: DeepTranscriptionDependencies,
                     recorder: StageRecorder) async throws -> Outcome {
         let current = request.transcript
+        // What a failure says first: what became of the current transcript.
+        let keptText = current == nil ? "No transcript was made." : kept
         let unchanged = Outcome(transcript: current)
         guard request.requested else { return unchanged }
         let started = recorder.begin(.deepTranscription, message: "Preparing to transcribe the meeting again…")
@@ -108,13 +111,15 @@ enum DeepTranscriptionStage {
             events = try SessionArchive.readEvents(at: request.session).events
             meeting = try SessionFiles.meetingInfo(session: request.session, manifest: request.manifest)
         } catch let error where !(error is CancellationError) {
-            return fail("\(kept) \(error.localizedDescription)")
+            return fail("\(keptText) \(error.localizedDescription)")
         }
-        let base = recordedBase(of: current, events: events, session: request.session)
-        if DictationLanguage.meetingLanguages(meeting.languages ?? []).count > 1 || base.unfixed.languages != nil {
+        let base = current.map { recordedBase(of: $0, events: events, session: request.session) }
+        // A transcript of one language named with `session languages` has `languages` too: only several count.
+        if DictationLanguage.meetingLanguages(meeting.languages ?? []).count > 1
+            || DictationLanguage.meetingLanguages(base?.unfixed.languages ?? []).count > 1 {
             return fail(severalLanguages, .skipped)
         }
-        if base.unfixed.engine == dependencies.engine, !request.force {
+        if let base, base.unfixed.engine == dependencies.engine, !request.force {
             let message = "The meeting was already transcribed with \(DeepTranscriptionModel.displayName)."
             recorder.end(.deepTranscription, .succeeded, message, since: started)
             return Outcome(transcript: current, note: message)
@@ -125,10 +130,10 @@ enum DeepTranscriptionStage {
                 return fail(audioDeleted, .skipped)
             }
         } catch let error where !(error is CancellationError) {
-            return fail("\(kept) \(error.localizedDescription)")
+            return fail("\(keptText) \(error.localizedDescription)")
         }
         let tracks = Set(request.manifest.chunks.map(\.track)).sorted()
-        guard !tracks.isEmpty else { return fail("\(kept) This meeting has no saved audio.", .skipped) }
+        guard !tracks.isEmpty else { return fail("\(keptText) This meeting has no saved audio.", .skipped) }
         guard dependencies.modelStatus() == .installed else { return fail(DeepTranscriptionModel.missingModelMessage) }
         // Read as the rebuild reads it: missing or damaged is none, one from a newer Holos is refused.
         let vocabulary: [String]
@@ -137,7 +142,7 @@ enum DeepTranscriptionStage {
             vocabulary = try TranscriptRebuilder.sessionVocabulary(request.session)
             wordList = try dependencies.wordList()
         } catch let error where !(error is CancellationError) {
-            return fail("\(kept) \(error.localizedDescription)")
+            return fail("\(keptText) \(error.localizedDescription)")
         }
 
         recorder.progress(.deepTranscription, track: nil, fraction: nil,
@@ -147,7 +152,7 @@ enum DeepTranscriptionStage {
             transcriber = try await dependencies.makeTranscriber()
         } catch {
             if error is CancellationError || Task.isCancelled { throw CancellationError() }
-            return fail("\(kept) \(error.localizedDescription)")
+            return fail("\(keptText) \(error.localizedDescription)")
         }
         try Task.checkCancellation()
         let prompt: DeepTranscriptionPrompt.Prompt
@@ -159,9 +164,10 @@ enum DeepTranscriptionStage {
                 tokenCount: { try await transcriber.promptTokenCount($0) })
         } catch {
             if error is CancellationError || Task.isCancelled { throw CancellationError() }
-            return fail("\(kept) The vocabulary prompt could not be made: \(error.localizedDescription)")
+            return fail("\(keptText) The vocabulary prompt could not be made: \(error.localizedDescription)")
         }
-        let locale = meeting.languages?.first ?? request.manifest.locale
+        // The current transcript's language (a one-language merge's), else the meeting's.
+        let locale = base?.unfixed.locale ?? meeting.languages?.first ?? request.manifest.locale
         let pass: Pass
         do {
             pass = try await transcribe(tracks: tracks, request: request, transcriber: transcriber,
@@ -171,17 +177,18 @@ enum DeepTranscriptionStage {
             return fail(failure.message, failure.result)
         } catch {
             if error is CancellationError || Task.isCancelled { throw CancellationError() }
-            return fail("\(kept) The meeting could not be transcribed again: \(error.localizedDescription)")
+            return fail("\(keptText) The meeting could not be transcribed again: \(error.localizedDescription)")
         }
 
-        let (segments, guarded) = Self.segments(pass.segments, reference: base.reference)
-        guard LanguageStage.hasWords(segments) || !LanguageStage.hasWords(current.segments) else {
-            return fail("\(kept) No words were recognized when the meeting was transcribed again.")
+        // Without a recorded transcript, the silence guard has no words to look for: the audio level alone decides.
+        let (segments, guarded) = Self.segments(pass.segments, reference: base?.reference)
+        guard LanguageStage.hasWords(segments) || !(current.map { LanguageStage.hasWords($0.segments) } ?? true) else {
+            return fail("\(keptText) No words were recognized when the meeting was transcribed again.")
         }
         let deep = Transcript(source: request.session.path, locale: locale, backend: request.manifest.backend,
                               segments: segments, engine: transcriber.engine)
         let details = [
-            "transcriptID": deep.id, "base": base.reference?.id ?? "", "engine": transcriber.engine,
+            "transcriptID": deep.id, "base": base?.reference?.id ?? "", "engine": transcriber.engine,
             "language": locale, "tracks": tracks.joined(separator: ","),
             "seconds": String(format: "%.1f", pass.seconds), "segments": String(segments.count),
             "words": String(segments.reduce(0) { $0 + $1.words.count }),
@@ -193,7 +200,7 @@ enum DeepTranscriptionStage {
                 return fail(problem, .skipped)
             }
         } catch let error where !(error is CancellationError) {
-            return fail("\(kept) The new transcript could not be saved: \(error.localizedDescription)")
+            return fail("\(keptText) The new transcript could not be saved: \(error.localizedDescription)")
         }
         log.notice("Session \(request.manifest.id, privacy: .public): deep transcription made \(segments.count, privacy: .public) segments; dropped \(guarded.droppedSilent, privacy: .public) silent and \(guarded.droppedRepeats, privacy: .public) repeated")
         recorder.end(.deepTranscription, .succeeded,
@@ -382,8 +389,9 @@ enum DeepTranscriptionStage {
     /// Why the transcript must not be replaced now: its speaker labels were edited and `force` was not given. Nil when
     /// it may be.
     private static func editedHeadProblem(_ request: Request) -> String? {
+        guard let transcript = request.transcript else { return nil }
         do {
-            guard let head = try SpeakerAnalysis.headState(session: request.session, transcript: request.transcript),
+            guard let head = try SpeakerAnalysis.headState(session: request.session, transcript: transcript),
                   head.needsForce(request.force) else { return nil }
             return editedHead
         } catch {

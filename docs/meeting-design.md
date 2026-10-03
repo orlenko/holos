@@ -4607,7 +4607,10 @@ without a prompt it leaves the logits to WhisperKit's own.
 *Chunks and the prompt* (`WhisperKitTranscriber`). The pass cuts each piece into WhisperKit's
 voice-activity chunks itself (`VADAudioChunker`, at most 30 s each) and decodes them with
 `transcribeWithOptions`, so a chunk whose decoding fails is seen and decoded again on its own
-(WhisperKit's own `.vad` path drops it without a trace). Even with both fixes a prompt can
+(WhisperKit's own `.vad` path drops it without a trace). A chunk that fails again fails the
+pass (`incomplete`, naming where the audio starts): the transcript is kept and the record is
+partial, rather than a "successful" transcript that silently leaves up to 30 s out (which
+recovery would also count as holding all of the audio). Even with both fixes a prompt can
 make the model stop early in a chunk: on ten minutes of a real call's system track, the words
 of the recorded transcript with no Whisper word within 3 s were 30 of 1,820 without a prompt,
 433 with a 10-term invented prompt, and 383 with the timestamp fix. So each chunk is decoded
@@ -4633,7 +4636,9 @@ skips it.
    that base is a deep transcript (`Transcript.engine` "whisper:…"), the recorded transcript
    it replaced is the one its `deepTranscribed` event names; otherwise the current transcript
    is the recorded one.
-2. *Skips.* A meeting with several languages in meeting.json, or a merged current transcript:
+2. *Skips.* A meeting with several languages in meeting.json, or a current transcript merged from
+   several (one made in a single language named with `session languages` has `languages` too
+   and is transcribed again, in that transcript's language):
    `skipped`, "This meeting is in several languages; deep transcription handles meetings in
    one language for now, so the transcript was kept." (WhisperKit can detect a language per
    window but not limit detection to the meeting's languages, so v1 does not try.) A base this
@@ -4684,6 +4689,12 @@ skips it.
    the new words exactly as on Apple's. Recovery treats a deep transcript as standing for the
    recorded one (`TranscriptRebuilder.recordedTranscriptID`) and as holding all of the saved
    audio (`mergeHoldsAllAudio`), as it does a merge.
+9. *No transcript yet.* A session recorded with `--record-only` or imported with
+   `--no-transcribe` has saved audio and no transcript; the pass makes its first one (stage 1
+   is `skipped`, the languages stage does not run, and the meeting's language is meeting.json's
+   or the manifest's). With no recorded words to look for, the silence guard drops every
+   segment over near-silent audio (the level alone). Nothing recognized: no transcript is made
+   and the record is `failed` ("No transcript was made. …", exit 1).
 
 **Validation** (a copy of the user's 53-minute call, both tracks, release build on the M4
 Pro; numbers only). The pass took 1,163 s for 6,348 s of audio (about 11 minutes per hour of

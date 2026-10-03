@@ -225,7 +225,7 @@ public struct MeetingPostProcessor: Sendable {
         if let current {
             recorder.end(.transcript, .succeeded, since: started)
             journal.update { $0.transcriptID = current.id }
-        } else if options.languages == nil {
+        } else if options.languages == nil && !options.deepTranscribe {
             recorder.end(.transcript, .skipped, "This meeting has no transcript.", since: started)
             return recorder.finalRecord(state: .skipped,
                                         message: "This meeting has no transcript, so there is nothing to label.")
@@ -238,26 +238,32 @@ public struct MeetingPostProcessor: Sendable {
 
         // Stage 1b: a meeting in several languages (§4.14), before the speakers, so they are labelled on the final text.
         // Not run for a relabel that keeps the transcript (`keepTranscript`).
-        let languages = options.keepTranscript && options.languages == nil
+        // Without a transcript the deep pass (asked for by name) makes the first one from the saved audio.
+        let languages = (options.keepTranscript || (current == nil && options.deepTranscribe)) && options.languages == nil
             ? LanguageStage.Outcome(transcript: current)
             : try await LanguageStage.run(
                 LanguageStage.Request(session: session, manifest: manifest, transcript: current, lease: lease,
                                       requested: options.languages, force: options.force),
                 dependencies: languageDetection, recorder: recorder)
-        guard let merged = languages.transcript else {
+        let merged = languages.transcript
+        if merged == nil, !(options.deepTranscribe && !options.keepTranscript) {
             let message = languages.problem ?? "This meeting has no transcript, so there is nothing to label."
             return recorder.finalRecord(state: .failed, message: message)
         }
 
         // Stage 1b′: the deep transcription pass, only when asked for by name (§4.16): the saved audio transcribed
-        // again with the local Whisper model, which becomes the base of live corrections and word fixes.
+        // again with the local Whisper model, which becomes the base of live corrections and word fixes. For a
+        // session recorded or imported without a transcript, it makes the first one.
         let deep = options.keepTranscript || !options.deepTranscribe
             ? DeepTranscriptionStage.Outcome(transcript: merged)
             : try await DeepTranscriptionStage.run(
                 DeepTranscriptionStage.Request(session: session, manifest: manifest, transcript: merged, lease: lease,
                                                requested: true, force: options.force, freeSpace: freeSpace),
                 dependencies: deepTranscription, recorder: recorder)
-        let recognized = deep.transcript
+        guard let recognized = deep.transcript else {
+            let message = deep.problem ?? "This meeting has no transcript, so there is nothing to label."
+            return recorder.finalRecord(state: .failed, message: message)
+        }
 
         // Stage 1c: exact corrections made in the live view, reconciled by phrase ID or by track, time, and words.
         // They become the base for automatic fixes, so one provenance map never has to compose overlapping edits.

@@ -151,6 +151,18 @@ import HolosCore
         #expect(!WhisperKitTranscriber.keepsPlain(prompted: 0, plain: 0))
     }
 
+    @Test func aChunkThatCannotBeDecodedFailsThePass() throws {
+        struct Broken: Error {}
+        let fine: [Result<[Int], any Error>] = [.success([1]), .success([])]
+        #expect(try WhisperKitTranscriber.requireAll(fine, startSeconds: [0, 30]) == [[1], []])
+        let broken: [Result<[Int], any Error>] = [.success([1]), .failure(Broken()), .failure(Broken())]
+        let error = #expect(throws: HolosError.self) {
+            _ = try WhisperKitTranscriber.requireAll(broken, startSeconds: [0, 30, 60])
+        }
+        #expect(error?.localizedDescription.hasPrefix("2 stretches of audio (from 30 s, 60 s) could not be transcribed")
+            == true, "Never published as a transcript that silently leaves the audio out.")
+    }
+
     @Test func localesMapToWhisperLanguages() {
         #expect(DeepTranscriptionModel.whisperLanguage("en-CA") == "en")
         #expect(DeepTranscriptionModel.whisperLanguage("fr_CA") == "fr")
