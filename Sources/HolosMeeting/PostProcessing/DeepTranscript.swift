@@ -281,7 +281,9 @@ public enum DeepTranscriptGuards {
     /// recorded transcript (`reference`, nil when there is none) has no word within `referencePaddingSeconds`; then
     /// each repeat past the first in a run of at least `repeatRunLength` consecutive segments with the same text
     /// (compared lowercased, letters and digits only), each starting within
-    /// `repeatGapSeconds` of the one before. The rest keep their order.
+    /// `repeatGapSeconds` of the one before, with no other track's speech starting between them (the same reply given
+    /// to each of several questions is not a loop; the same text on the other track, its echo, does not count). The
+    /// rest keep their order.
     public static func apply(_ segments: [DeepHeardSegment], reference: [TranscriptSegment]?,
                              silenceThresholdDB: Double = silenceThresholdDB) -> Result {
         let heard = ReferenceWords(reference ?? [])
@@ -294,16 +296,36 @@ public enum DeepTranscriptGuards {
             return !silent
         }
         var drop = Set<Int>()
+        let keys = audible.map { normalized($0.text) }
+        // Every track's segments in time order: other-track speech between two passages breaks a run.
+        let timeline = audible.indices.sorted { (audible[$0].start, $0) < (audible[$1].start, $1) }
+        let starts = timeline.map { audible[$0].start }
+        func interrupted(after first: Int, before second: Int, key: String) -> Bool {
+            // The first segment starting after `first` (binary search).
+            var low = 0, high = starts.count
+            while low < high {
+                let middle = (low + high) / 2
+                if starts[middle] <= audible[first].start { low = middle + 1 } else { high = middle }
+            }
+            var position = low
+            while position < timeline.count, starts[position] < audible[second].start {
+                let other = timeline[position]
+                if audible[other].track != audible[first].track, keys[other] != key { return true }
+                position += 1
+            }
+            return false
+        }
         var byTrack: [String: [Int]] = [:]
         for index in audible.indices { byTrack[audible[index].track, default: []].append(index) }
         for indices in byTrack.values {
             let ordered = indices.sorted { (audible[$0].start, $0) < (audible[$1].start, $1) }
             var runStart = 0
             while runStart < ordered.count {
-                let key = normalized(audible[ordered[runStart]].text)
+                let key = keys[ordered[runStart]]
                 var runEnd = runStart + 1
-                while runEnd < ordered.count, !key.isEmpty, normalized(audible[ordered[runEnd]].text) == key,
-                      audible[ordered[runEnd]].start - audible[ordered[runEnd - 1]].end <= repeatGapSeconds {
+                while runEnd < ordered.count, !key.isEmpty, keys[ordered[runEnd]] == key,
+                      audible[ordered[runEnd]].start - audible[ordered[runEnd - 1]].end <= repeatGapSeconds,
+                      !interrupted(after: ordered[runEnd - 1], before: ordered[runEnd], key: key) {
                     runEnd += 1
                 }
                 if !key.isEmpty, runEnd - runStart >= repeatRunLength {

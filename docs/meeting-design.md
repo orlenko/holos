@@ -4703,8 +4703,9 @@ skips it.
    −50 dBFS RMS and where the recorded transcript has no word within 0.5 s is dropped
    (`droppedSilent`); then each repeat past the first of 3 or more consecutive segments with
    the same text (lowercased, letters and digits), each starting within 5 s of the end of the
-   one before, is dropped (`droppedRepeats`): the same short answer said again minutes later is
-   not a loop. The
+   one before, with no other track's speech (other text than theirs, so an echo does not count)
+   starting between them, is dropped (`droppedRepeats`): the same short answer said again
+   minutes later, or given to each of several questions from the other side, is not a loop. The
    threshold, measured on a 53-minute call (both tracks, the recorded transcript's word
    spans against one-second windows with no word near them): words' p1 −47 dBFS (mic) and
    −43 dBFS (system), p50 −22 and −21; wordless seconds' p50 −64 and −72. Below −50 dBFS
@@ -4780,7 +4781,8 @@ Apple's recognizer. A run resumed with `--run` keeps the language it began with,
 current transcript's is now. Without `--language`, a meeting whose meeting.json or current
 transcript names several languages is refused, as the pass refuses it (`--language` evaluates
 one of them). A current transcript that cannot be read is an error, never a run without a
-reference. An explicit `--language` Whisper has no token for is refused.
+reference. An explicit `--language` Whisper has no token for is refused. Each track's render
+needs the same free space as the pass's (the render plus 1 GB), checked before it is written.
 
 **Tests.** `DeepTranscriptionTests` (prompt order and cap; quietest cut; time mapping through
 a shortened gap; word offsets and punctuation; the silence guard needing both conditions,

@@ -254,6 +254,14 @@ private func deepStage(_ record: PostProcessingRecord) -> StageOutcome? {
     // A loop must run back to back: a gap of more than `repeatGapSeconds` ends it.
     let broken = [segment("Again.", 0), segment("Again.", 1), segment("Again.", 9), segment("Again.", 10)]
     #expect(DeepTranscriptGuards.apply(broken, reference: nil).droppedRepeats == 0)
+    // The same short reply given three times in a few seconds while the other track asks between them: answers.
+    let replies = [segment("Yes.", 0), segment("Ready?", 1.2, track: "system"), segment("Yes.", 2.4),
+                   segment("Sure?", 3.6, track: "system"), segment("Yes.", 4.8)]
+    #expect(DeepTranscriptGuards.apply(replies, reference: nil).droppedRepeats == 0)
+    // Other-track speech before or after the loop, not between its passages, does not break it.
+    let around = [segment("Hello?", 0, track: "system"), segment("Loop.", 1), segment("Loop.", 2), segment("Loop.", 3),
+                  segment("Bye.", 4.5, track: "system")]
+    #expect(DeepTranscriptGuards.apply(around, reference: nil).droppedRepeats == 2)
     let result = DeepTranscriptGuards.apply(segments, reference: nil)
     #expect(result.droppedRepeats == 5)
     #expect(result.kept.map { "\($0.track):\($0.text)" } == [
@@ -698,6 +706,28 @@ func aWhisperEvalOfAMeetingInSeveralLanguagesNeedsALanguage() async throws {
         session: session, options: EvalLocal.Options(language: "fr-CA", wordFixes: false, backend: .whisper),
         vocabulary: [], dependencies: noSpeech, deepTranscription: deepDependencies(transcriber))
     #expect(record.languages == ["fr-CA"] && record.completedAt != nil)
+}
+
+@Test(.timeLimit(.minutes(1)))
+func aWhisperEvalChecksDiskSpaceBeforeRendering() async throws {
+    let temp = try TemporaryDirectory("deep")
+    defer { temp.remove() }
+    let (session, _) = try await deepSession(in: temp.url)
+    let transcriber = ScriptedTranscriber(script: scriptedHearing)
+    let lease = try SessionArchive.acquireProcessingLease(at: session)
+    defer { lease.release() }
+    let error = await #expect(throws: HolosError.self) {
+        _ = try await EvalLocal.run(session: session, options: EvalLocal.Options(wordFixes: false, backend: .whisper),
+                                    vocabulary: [], dependencies: noSpeech,
+                                    deepTranscription: deepDependencies(transcriber), freeSpace: FixedFreeSpace(1_000))
+    }
+    #expect(error?.localizedDescription == DeepTranscriptionStage.noDiskSpace)
+    #expect(transcriber.calls.value == 0)
+    let rendered = EvalLocal.runIDs(in: session).flatMap { id in
+        ((try? FileManager.default.contentsOfDirectory(atPath: EvalPaths.localRun(id, in: session).path)) ?? [])
+            .filter { $0.hasSuffix(".caf") }
+    }
+    #expect(rendered.isEmpty, "Nothing was rendered.")
 }
 
 @Test(.timeLimit(.minutes(1)))

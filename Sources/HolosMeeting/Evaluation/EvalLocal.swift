@@ -317,6 +317,7 @@ public enum EvalLocal {
                            dependencies: LanguageDetectionDependencies = .live, now: Date = Date(),
                            wordFixes: WordFixDependencies = .none,
                            deepTranscription: DeepTranscriptionDependencies = .none,
+                           freeSpace: any FreeSpaceProvider = VolumeFreeSpace(),
                            progress: @escaping @Sendable (String) -> Void = { _ in }) async throws -> LocalRunRecord {
         guard try !SessionArchive.isActive(at: session) else {
             throw HolosError.unavailable("This session is still recording; stop it first.")
@@ -534,7 +535,7 @@ public enum EvalLocal {
                 segments = try await transcribeDeep(session: session, manifest: manifest, track: track,
                                                     language: language, record: record,
                                                     transcriber: whisper.transcriber, reference: whisper.reference,
-                                                    note: progress) { percent in
+                                                    freeSpace: freeSpace, note: progress) { percent in
                     progress("  \(label): \(percent) %")
                 }
             } else {
@@ -669,9 +670,16 @@ public enum EvalLocal {
     /// tens of percent and `note` what the guards left out.
     private static func transcribeDeep(session: URL, manifest: SessionManifest, track: LocalRunRecord.Track,
                                        language: String, record: LocalRunRecord, transcriber: any DeepTranscriber,
-                                       reference: Transcript?, note: @escaping @Sendable (String) -> Void,
+                                       reference: Transcript?, freeSpace: any FreeSpaceProvider,
+                                       note: @escaping @Sendable (String) -> Void,
                                        progress: @escaping @Sendable (Int) -> Void) async throws -> [TranscriptSegment] {
         let total = max(1e-9, TrackRenderer.renderedSeconds(manifest: manifest, track: track.track))
+        // The whole track is rendered before it is transcribed: refused, as the pass refuses it, when the render would
+        // not fit with the headroom kept free. Unmeasurable: tried (a render that runs out of space fails).
+        if let free = try? freeSpace.availableBytes(at: EvalPaths.localRun(record.id, in: session)),
+           !SpeakerAnalysis.renderAllowed(freeBytes: free, renderSeconds: total) {
+            throw HolosError.unavailable(DeepTranscriptionStage.noDiskSpace)
+        }
         let step = LockedValue(0)
         do {
             let heard = try await DeepTranscriptionStage.transcribeTrack(
