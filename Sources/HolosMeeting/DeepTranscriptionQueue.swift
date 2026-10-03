@@ -22,8 +22,41 @@ public struct DeepTranscriptionQueue: Codable, Sendable, Equatable {
 
     public var schemaVersion = 1
     public private(set) var items: [Item] = []
+    /// Run Now requests whose meeting's languages are still being read (`reserveRunNow`), saved with the queue so a
+    /// quit meanwhile does not lose them (the app reads the languages again at launch). Their meetings are not
+    /// started meanwhile: a queued automatic item would run without `--force`.
+    public private(set) var pending: [Item] = []
 
     public init(items: [Item] = []) { self.items = items }
+
+    private enum CodingKeys: String, CodingKey { case schemaVersion, items, pending }
+
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        schemaVersion = try container.decode(Int.self, forKey: .schemaVersion)
+        items = try container.decode([Item].self, forKey: .items)
+        pending = try container.decodeIfPresent([Item].self, forKey: .pending) ?? []
+    }
+
+    /// Reserves a Run Now request for `sessionID` until its languages are read (`resolveRunNow`); a queued item stays
+    /// as it is meanwhile.
+    public mutating func reserveRunNow(sessionID: String, path: String, at date: Date) {
+        pending.removeAll { $0.sessionID == sessionID }
+        pending.append(Item(sessionID: sessionID, path: path, queuedAt: date, runNow: true))
+    }
+
+    /// Ends `sessionID`'s reservation: `accepted` (one language) queues it as Run Now (upgrading a queued item in
+    /// place); refused, the meeting stays as it was before the request. False when there was none (cancelled
+    /// meanwhile): nothing changes.
+    @discardableResult
+    public mutating func resolveRunNow(_ sessionID: String, accepted: Bool) -> Bool {
+        guard let index = pending.firstIndex(where: { $0.sessionID == sessionID }) else { return false }
+        let request = pending.remove(at: index)
+        if accepted { enqueue(sessionID: sessionID, path: request.path, at: request.queuedAt, runNow: true) }
+        return true
+    }
+
+    public func isPending(_ sessionID: String) -> Bool { pending.contains { $0.sessionID == sessionID } }
 
     /// Adds `sessionID` at the end, or (already queued) keeps its place, upgraded to `runNow` when asked.
     public mutating func enqueue(sessionID: String, path: String, at date: Date, runNow: Bool = false) {
@@ -35,8 +68,10 @@ public struct DeepTranscriptionQueue: Codable, Sendable, Equatable {
         items.append(Item(sessionID: sessionID, path: path, queuedAt: date, runNow: runNow))
     }
 
+    /// Takes `sessionID` off the queue, and ends a Run Now reservation for it (Cancel).
     public mutating func remove(_ sessionID: String) {
         items.removeAll { $0.sessionID == sessionID }
+        pending.removeAll { $0.sessionID == sessionID }
     }
 
     /// Drops every item not asked for from the menu (the setting was turned off), except `keeping`: the app's pass
@@ -90,15 +125,15 @@ public enum DeepTranscriptionSchedule {
         /// Meetings another command of the app is working on (Label Speakers, a relabel, a delete…), and meetings open
         /// (or opening, or still saving) in Review, which owns their transcript and labels until it closes.
         public var inUse: Set<String>
-        /// Meetings asked for with Run Now whose languages are still being read: not started meanwhile (a queued
-        /// automatic item would run without `--force`).
-        public var pendingRunNow: Set<String>
+        /// Meetings whose last command was refused because another command held them (its processing lease): skipped
+        /// for a while, so the others are not held up by it.
+        public var delayed: Set<String>
 
         public init(enabled: Bool, modelInstalled: Bool, power: Power, meetingBusy: Bool = false,
-                    running: String? = nil, inUse: Set<String> = [], pendingRunNow: Set<String> = []) {
+                    running: String? = nil, inUse: Set<String> = [], delayed: Set<String> = []) {
             self.enabled = enabled; self.modelInstalled = modelInstalled; self.power = power
             self.meetingBusy = meetingBusy; self.running = running; self.inUse = inUse
-            self.pendingRunNow = pendingRunNow
+            self.delayed = delayed
         }
     }
 
@@ -117,7 +152,8 @@ public enum DeepTranscriptionSchedule {
     public static func next(_ queue: DeepTranscriptionQueue, _ situation: Situation) -> Decision {
         guard situation.running == nil, !situation.meetingBusy, situation.modelInstalled else { return .idle }
         let ready = queue.items.filter {
-            !situation.inUse.contains($0.sessionID) && !situation.pendingRunNow.contains($0.sessionID)
+            !situation.inUse.contains($0.sessionID) && !situation.delayed.contains($0.sessionID)
+                && !queue.isPending($0.sessionID)
         }
         if let asked = ready.first(where: \.runNow) { return .run(asked.sessionID) }
         guard situation.enabled, let first = ready.first else { return .idle }
@@ -130,11 +166,25 @@ public enum DeepTranscriptionSchedule {
         !audioDeleted && [.complete, .transcriptionIncomplete, .recovered, .audioOnly].contains(state)
     }
 
-    /// Whether a command's error output says it could not start for another process: one holding the meeting's
-    /// processing lease (another command on it), or another pass holding `DeepTranscriptionLock` (one started in
-    /// Terminal a moment before). The meeting then stays queued and is tried again later.
-    public static func isBusyElsewhere(_ errorOutput: String) -> Bool {
-        errorOutput.contains("processing this session") || errorOutput.contains(DeepTranscriptionLock.busyMessage)
+    /// What becomes of a queue item when the app's pass on it ended (`passEnded`).
+    public enum PassEnd: Sendable, Equatable {
+        /// Off the queue: done, refused, partial, failed, or cancelled.
+        case done
+        /// Stopped for a meeting: stays queued and runs again from the start afterwards.
+        case keepPreempted
+        /// Could not start for another process: another command held the meeting (only this item waits,
+        /// `global` false) or another pass held `DeepTranscriptionLock` (everything waits). Stays queued.
+        case retryLater(global: Bool)
+    }
+
+    /// What becomes of the item of a pass that ended with `code` (its error output `errors`). Exit 0 is done even when
+    /// the pass was signalled for a meeting (`preempted`): the signal can reach a pass that already finished.
+    public static func passEnded(code: Int32, preempted: Bool, errors: String) -> PassEnd {
+        if code == 0 { return .done }
+        if preempted { return .keepPreempted }
+        if code == 1, errors.contains(DeepTranscriptionLock.busyMessage) { return .retryLater(global: true) }
+        if code == 1, errors.contains("processing this session") { return .retryLater(global: false) }
+        return .done
     }
 
     /// A meeting the app finds at launch, for `reconcile`.
@@ -194,7 +244,8 @@ public enum DeepTranscriptionSchedule {
     /// Whether a meeting's menu offers Make Final Transcript Now: not while the app's pass runs on it, nor when it is
     /// already asked for; a meeting queued automatically is upgraded by it (`enqueue` with `runNow`).
     public static func offersRunNow(sessionID: String, queue: DeepTranscriptionQueue, running: String?) -> Bool {
-        running != sessionID && queue.items.first(where: { $0.sessionID == sessionID })?.runNow != true
+        running != sessionID && !queue.isPending(sessionID)
+            && queue.items.first(where: { $0.sessionID == sessionID })?.runNow != true
     }
 
     /// Why a Make Final Transcript Now pass did not finish (exit `code`), for the app's alert: the messages of the
@@ -219,8 +270,10 @@ public enum DeepTranscriptionSchedule {
     public static func stateText(sessionID: String, queue: DeepTranscriptionQueue, running: String?,
                                  power: Power, otherPassRunning: Bool = false) -> String? {
         if running == sessionID { return "Final transcript in progress…" }
-        guard let item = queue.items.first(where: { $0.sessionID == sessionID }) else { return nil }
+        let item = queue.items.first { $0.sessionID == sessionID }
+        guard item != nil || queue.isPending(sessionID) else { return nil }
         if otherPassRunning, running == nil { return "Waiting for another final transcript to finish" }
+        guard let item, !queue.isPending(sessionID) else { return "Final transcript queued" }
         if !item.runNow, power == .battery { return "Final transcript waits for power" }
         return "Final transcript queued"
     }

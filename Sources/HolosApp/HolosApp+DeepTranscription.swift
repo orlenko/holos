@@ -53,8 +53,11 @@ final class DeepTranscriptionAppState {
     var retryAfter: Date?
     /// Counts every turn of the setting on or off: a scan begun before one is dropped when it ends.
     var activation = 0
-    /// Meetings asked for with Run Now whose languages are being read: the scheduler does not start them meanwhile.
-    var pendingRunNow: Set<String> = []
+    /// Meetings whose command was refused because another command held them: skipped until then, so the others
+    /// are not held up (another pass holding the lock delays everything, `retryAfter`).
+    var delayed: [String: Date] = [:]
+    /// Counts the 30 s timer's ticks: some checks run every other one.
+    var ticks = 0
     /// `voiceislocal doctor --json` deepTranscriptionModel ("installed", "downloading", "notInstalled"); "unknown" when
     /// doctor ran but did not report it, "unavailable" when it could not run; nil before the first check.
     var model: String?
@@ -91,9 +94,14 @@ extension HolosAppDelegate {
     static let deepRunningText = "Final transcript in progress…"
 
     /// At launch: every 30 s checks the power source (and so notices AC power coming back), checks the model again
-    /// while another process downloads it, and retries the queue.
+    /// while another process downloads it (every 60 s while it is not installed and the setting is on or Settings
+    /// shows, so an install in Terminal is noticed), and retries the queue. Run Now requests whose languages were
+    /// being read when the app quit are read again.
     func setUpDeepTranscription() {
         meeting.deep.power = PowerSource.current()
+        for request in meeting.deep.queue.pending {
+            checkRunNowLanguages(sessionID: request.sessionID, directory: URL(fileURLWithPath: request.path), name: nil)
+        }
         meeting.deep.timer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated {
                 guard let self else { return }
@@ -102,8 +110,15 @@ extension HolosAppDelegate {
                     self.meeting.deep.power = power
                     self.updateDeepStates()
                 }
-                // A download started before this launch (detached) ends without telling this app.
-                if self.meeting.deep.model == "downloading" { self.refreshSpeakerModels() }
+                // A download started before this launch (detached) ends without telling this app; one started in
+                // Terminal begins without telling it.
+                self.meeting.deep.ticks += 1
+                if self.meeting.deep.model == "downloading" {
+                    self.refreshSpeakerModels()
+                } else if self.meeting.deep.model != "installed", self.meeting.deep.ticks % 2 == 0,
+                          DeepTranscriptionAppState.enabled || self.settingsShowing {
+                    self.refreshSpeakerModels()
+                }
                 self.scheduleDeepTranscription()
             }
         }
@@ -228,27 +243,31 @@ extension HolosAppDelegate {
                           "Recover it first if it was interrupted, or wait until it is saved.")
             return
         }
-        let directory = summary.directory
-        // Reserved at once: a queued automatic item is not started without --force while its languages are read, and
-        // considered, so a scan that ends meanwhile does not queue it again once it is cancelled.
-        meeting.deep.pendingRunNow.insert(summary.id)
+        // Reserved at once, and saved with the queue: a queued automatic item is not started without --force while the
+        // languages are read, a quit meanwhile does not lose the request, and the meeting is considered, so a scan
+        // that ends meanwhile does not queue it again once it is cancelled.
+        meeting.deep.queue.reserveRunNow(sessionID: summary.id, path: summary.directory.path, at: Date())
         meeting.deep.consider(summary.id)
+        updateDeepStates()
+        checkRunNowLanguages(sessionID: summary.id, directory: summary.directory, name: summary.name)
+    }
+
+    /// Reads the languages of a reserved Run Now request off the main actor, then queues it (one language) or leaves
+    /// the meeting as it was with an alert (several). Cancelled meanwhile, nothing happens.
+    private func checkRunNowLanguages(sessionID: String, directory: URL, name: String?) {
         Task { [weak self] in
             let languages = await Task.detached { Self.languageCount(directory) }.value
-            // Cancelled meanwhile (the reservation is gone): nothing is queued.
-            guard let self, self.meeting.deep.pendingRunNow.remove(summary.id) != nil else { return }
-            guard languages <= 1 else {
-                // Refused: the meeting stays as it was (an automatic item stays queued).
-                self.scheduleDeepTranscription()
-                self.showDeepAlert("“\(Self.short(summary.name))” is in several languages.",
-                                   "Deep transcription handles meetings in one language for now; its transcript stays "
-                                       + "as it is.")
-                return
-            }
-            self.meeting.deep.queue.enqueue(sessionID: summary.id, path: directory.path, at: Date(), runNow: true)
-            self.meeting.deep.retryAfter = nil
+            guard let self, self.meeting.deep.queue.isPending(sessionID) else { return }
+            let accepted = languages <= 1
+            self.meeting.deep.queue.resolveRunNow(sessionID, accepted: accepted)
+            if accepted { self.meeting.deep.retryAfter = nil }
             self.updateDeepStates()
             self.scheduleDeepTranscription()
+            guard !accepted else { return }
+            let shown = name ?? (try? SessionArchive.readManifest(at: directory).name) ?? "The meeting"
+            self.showDeepAlert("“\(Self.short(shown))” is in several languages.",
+                               "Deep transcription handles meetings in one language for now; its transcript stays as it "
+                                   + "is.")
         }
     }
 
@@ -260,7 +279,7 @@ extension HolosAppDelegate {
             kill(running.pid, SIGTERM)
         }
         if meeting.deep.preempted == sessionID { meeting.deep.preempted = nil }
-        meeting.deep.pendingRunNow.remove(sessionID)
+        meeting.deep.delayed[sessionID] = nil
         meeting.deep.queue.remove(sessionID)
         updateDeepStates()
     }
@@ -286,12 +305,14 @@ extension HolosAppDelegate {
         if let retryAfter = meeting.deep.retryAfter, retryAfter > Date() { return }
         meeting.deep.retryAfter = nil
         let busy = meetingIsBusy(controller.state)
+        let now = Date()
+        meeting.deep.delayed = meeting.deep.delayed.filter { $0.value > now }
         // Review owns a meeting while it is open, opening, or still saving.
         let inUse = Set(controller.sessionsInUse.keys).union(controller.sessionsUnderReview())
         let situation = DeepTranscriptionSchedule.Situation(
             enabled: DeepTranscriptionAppState.enabled, modelInstalled: meeting.deep.model == "installed",
             power: meeting.deep.power, meetingBusy: busy, running: meeting.deep.running?.sessionID, inUse: inUse,
-            pendingRunNow: meeting.deep.pendingRunNow)
+            delayed: Set(meeting.deep.delayed.keys))
         guard case .run(let sessionID) = DeepTranscriptionSchedule.next(meeting.deep.queue, situation),
               let item = meeting.deep.queue.items.first(where: { $0.sessionID == sessionID }) else {
             updateDeepStates()
@@ -344,19 +365,22 @@ extension HolosAppDelegate {
         let item = meeting.deep.queue.items.first { $0.sessionID == sessionID }
         var failure: String?
         let lateCancel = errorText.split(separator: "\n").first { $0.hasPrefix("Cancelled after the new transcript") }
-        if meeting.deep.preempted == sessionID {
+        let preempted = meeting.deep.preempted == sessionID
+        if preempted { meeting.deep.preempted = nil }
+        switch DeepTranscriptionSchedule.passEnded(code: code, preempted: preempted, errors: errorText) {
+        case .keepPreempted:
             // Stopped for a meeting: stays queued, and runs again from the start once the meeting is saved (an
-            // automatic one only while the setting is on).
-            meeting.deep.preempted = nil
-            if !DeepTranscriptionAppState.enabled,
-               meeting.deep.queue.items.first(where: { $0.sessionID == sessionID })?.runNow == false {
-                meeting.deep.queue.remove(sessionID)
+            // automatic one only while the setting is on, which the scheduler applies).
+            break
+        case .retryLater(let global):
+            // Stays queued. Another command holds the meeting: only it waits a minute, the others go on. Another
+            // process's pass holds the lock: everything waits.
+            if global {
+                meeting.deep.retryAfter = Date().addingTimeInterval(60)
+            } else {
+                meeting.deep.delayed[sessionID] = Date().addingTimeInterval(60)
             }
-        } else if code == 1, DeepTranscriptionSchedule.isBusyElsewhere(errorText) {
-            // Another command holds the meeting, or another process's pass holds the lock: stays queued, and is
-            // tried again in a minute.
-            meeting.deep.retryAfter = Date().addingTimeInterval(60)
-        } else {
+        case .done:
             // Asked for from the menu and not done (a cancel takes it off the queue first): the user is told why.
             if item?.runNow == true, code != 0, lateCancel == nil {
                 failure = DeepTranscriptionSchedule.failureText(code: code, record: record, errors: errorText)
@@ -366,6 +390,7 @@ extension HolosAppDelegate {
             // from the start at the next launch. Off the queue before the meeting is let go of, since letting go
             // schedules the next pass.
             meeting.deep.queue.remove(sessionID)
+            meeting.deep.delayed[sessionID] = nil
         }
         meeting.deep.running = nil
         meeting.controller?.endUsing(sessionID)
@@ -395,7 +420,7 @@ extension HolosAppDelegate {
     /// The Meetings list's State column for queued and running passes.
     func updateDeepStates() {
         var states: [String: String] = [:]
-        for item in meeting.deep.queue.items {
+        for item in meeting.deep.queue.items + meeting.deep.queue.pending {
             if let text = DeepTranscriptionSchedule.stateText(sessionID: item.sessionID, queue: meeting.deep.queue,
                                                               running: meeting.deep.running?.sessionID,
                                                               power: meeting.deep.power,
@@ -521,6 +546,12 @@ extension HolosAppDelegate {
         NSApplication.shared.activate()
         if alert.runModal() == .alertSecondButtonReturn { cancelDeepTranscription(sessionID) }
         return true
+    }
+
+    /// Whether Settings shows in the main window (the deep transcription row with it).
+    private var settingsShowing: Bool {
+        guard let mainWindow, mainWindow.isVisible else { return false }
+        return mainWindow.current == .settings
     }
 
     /// Whether a deep transcription was journaled for the meeting.

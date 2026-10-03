@@ -4779,7 +4779,9 @@ carried over.
   when it ends: at launch, on every 30 s tick, and after every pass however it ended (a busy
   exit, a preemption), so none is left behind to come back when it is turned on again. Run Now
   items stay. While another process downloads the model, the doctor check runs again every 30 s;
-  when doctor cannot run at all the row says the tool is missing.
+  while the model is not installed and the setting is on or Settings shows, every 60 s, so an
+  install started in Terminal is noticed (and its meetings found, as on any change to
+  installed). When doctor cannot run at all the row says the tool is missing.
 - *Queue* (`DeepTranscriptionQueue`, `DeepTranscriptionSchedule`, pure, in HolosMeeting). When
   the recorder reports a meeting finished (its own post-processing ran in the recorder), the
   meeting is queued if the setting is on, the model installed, and neither meeting.json nor the
@@ -4827,8 +4829,10 @@ carried over.
   model already made (a no-op); a Run Now one with `--force`, so a Run Now whose pass did finish
   before the quit is transcribed a second time (a known cost, accepted for simplicity). Turning
   the setting off keeps the running pass's item until it ends. A command refused by the
-  processing lease (another command on the meeting) or by the lock stays queued and is tried
-  again after a minute, as is one that cannot be started at all.
+  processing lease (another command on the meeting) stays queued and only its meeting waits a
+  minute (`delayed`): the next ready meeting runs meanwhile. One refused by the lock (another
+  pass started a moment before), or one that cannot be started at all, stays queued and
+  everything waits a minute (`passEnded`).
 - *Review waits.* Opening Review (from Meetings, or the menu bar's Name Speakers, all through
   `openReview`) for a meeting the app's pass works on (its `sessionsInUse` entry) says "Final
   transcript in progress" and that Review opens when it finishes, which it then does, and offers
@@ -4843,8 +4847,9 @@ carried over.
   post-processing, by its recorder's liveness, or a recorder the app launched has not exited,
   even without a session folder: `MeetingController.recorderMayStillRun`, which a start checks
   too) while the app's pass runs, the pass is stopped (SIGTERM; it publishes nothing) and stays
-  queued, so it runs again from the start once the meeting is saved. Another process's pass is
-  left running. A pass cancelled after it already published its transcript says so in an alert (the
+  queued, so it runs again from the start once the meeting is saved, unless it exited 0 (the
+  signal reached a pass that had already finished: done). Another process's pass is left
+  running. A pass cancelled after it already published its transcript says so in an alert (the
   labels and files may be behind: Label Speakers finishes them). Maintenance commands, like this one, keep running after the
   app quits.
 - *Meetings list.* The State column shows "Final transcript queued", "… waits for power",
@@ -4854,10 +4859,11 @@ carried over.
   single turns do not), as asking for it by name means; refused with an alert without the model,
   for a meeting that is not finished, or for one in several languages. A meeting queued
   automatically offers it too (it upgrades the item, so it runs next whatever the power source).
-  The request is reserved at once, before its languages are read off the main actor: the
-  meeting is not started meanwhile (a queued automatic item would run without `--force`) and is
-  considered; a Cancel meanwhile ends the reservation, and a refusal (several languages)
-  leaves the meeting as it was.
+  The request is reserved at once, before its languages are read off the main actor, and saved
+  with the queue (`pending`; a quit meanwhile does not lose it: the languages are read again at
+  the next launch): the meeting is not started meanwhile (a queued automatic item would run
+  without `--force`), shows as queued, and is considered; a Cancel meanwhile ends the
+  reservation, and a refusal (several languages) leaves the meeting as it was.
   While a meeting is queued or the app's own pass runs on it, Cancel Final Transcript (SIGTERM: the command cancels and says whether the new
   transcript was already published).
 - *Tests.* `DeepTranscriptionQueueTests` (order and run-now upgrade, saving and damaged data,

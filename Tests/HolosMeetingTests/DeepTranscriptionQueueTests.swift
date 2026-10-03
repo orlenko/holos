@@ -122,13 +122,6 @@ private func queue(_ ids: [String], runNow: Set<String> = []) -> DeepTranscripti
     #expect(DeepTranscriptionSchedule.stateText(sessionID: "C", queue: items, running: nil, power: .ac) == nil)
 }
 
-@Test func aCommandRefusedForAnotherProcessStaysQueued() {
-    #expect(DeepTranscriptionSchedule.isBusyElsewhere(
-        "Error: Another Voice is Local process is processing this session."))
-    #expect(DeepTranscriptionSchedule.isBusyElsewhere("Error: " + DeepTranscriptionLock.busyMessage))
-    #expect(!DeepTranscriptionSchedule.isBusyElsewhere("Error: This session has no saved audio."))
-}
-
 @Test func reviewOwnsItsMeetingUntilItCloses() {
     let items = queue(["A"])
     let situation = DeepTranscriptionSchedule.Situation(enabled: true, modelInstalled: true, power: .ac,
@@ -218,16 +211,65 @@ private func queue(_ ids: [String], runNow: Set<String> = []) -> DeepTranscripti
         == "The command stopped unexpectedly (signal 9).")
 }
 
-@Test func aRunNowWhoseLanguagesAreBeingReadIsNotStartedWithoutForce() {
+@Test func aRunNowWhoseLanguagesAreBeingReadIsSavedAndNotStartedWithoutForce() throws {
     // A queued automatically, waiting for power; the user asks for Run Now and its languages are being read.
+    var items = queue(["A", "B"])
+    items.reserveRunNow(sessionID: "A", path: "/m/A.holos", at: date)
+    // Saved with the queue: a quit meanwhile does not lose it (the app reads the languages again at launch).
+    var reread = DeepTranscriptionQueue.decode(items.encoded())
+    #expect(reread == items && reread.isPending("A") && reread.items[0].runNow == false)
+    // AC power comes back meanwhile: A is not started as the automatic pass it still is; B may run.
+    let situation = DeepTranscriptionSchedule.Situation(enabled: true, modelInstalled: true, power: .ac)
+    #expect(DeepTranscriptionSchedule.next(reread, situation) == .run("B"))
+    #expect(DeepTranscriptionSchedule.stateText(sessionID: "A", queue: reread, running: nil, power: .battery)
+        == "Final transcript queued")
+    #expect(!DeepTranscriptionSchedule.offersRunNow(sessionID: "A", queue: reread, running: nil))
+    // In one language: A becomes Run Now (and runs first, with --force).
+    var accepted = reread
+    let wasPending = accepted.resolveRunNow("A", accepted: true)
+    #expect(wasPending && !accepted.isPending("A") && accepted.items[0].runNow)
+    #expect(DeepTranscriptionSchedule.next(accepted, situation) == .run("A"))
+    // Refused (several languages): A stays as it was, automatic.
+    let refusedA = reread.resolveRunNow("A", accepted: false)
+    #expect(refusedA && !reread.isPending("A") && reread.items.map(\.sessionID) == ["A", "B"])
+    #expect(!reread.items[0].runNow)
+    // A meeting not queued before: refused, it is not queued at all; cancelled, the reservation goes.
+    var fresh = queue([])
+    fresh.reserveRunNow(sessionID: "C", path: "/m/C.holos", at: date)
+    #expect(DeepTranscriptionSchedule.stateText(sessionID: "C", queue: fresh, running: nil, power: .ac)
+        == "Final transcript queued")
+    var refused = fresh
+    refused.resolveRunNow("C", accepted: false)
+    #expect(refused.items.isEmpty && !refused.isPending("C"))
+    fresh.remove("C")
+    let late = fresh.resolveRunNow("C", accepted: true)
+    #expect(!fresh.isPending("C") && !late, "Cancelled meanwhile: nothing queued.")
+    #expect(fresh.items.isEmpty)
+    // A queue saved before reservations existed reads with none.
+    let old = Data(#"{"schemaVersion":1,"items":[{"sessionID":"A","path":"/m/A.holos","queuedAt":"2027-01-15T08:00:00Z","runNow":false}]}"#.utf8)
+    #expect(DeepTranscriptionQueue.decode(old).items.count == 1 && DeepTranscriptionQueue.decode(old).pending.isEmpty)
+}
+
+@Test func howAPassEndedDecidesItsItem() {
+    // Done (exit 0) even when a meeting's preemption signal reached it too late to stop it.
+    #expect(DeepTranscriptionSchedule.passEnded(code: 0, preempted: true, errors: "") == .done)
+    #expect(DeepTranscriptionSchedule.passEnded(code: 143, preempted: true, errors: "") == .keepPreempted)
+    // Another command holds the meeting: only this item waits; another pass holds the lock: everything waits.
+    #expect(DeepTranscriptionSchedule.passEnded(
+        code: 1, preempted: false, errors: "Error: Another Voice is Local process is processing this session.")
+        == .retryLater(global: false))
+    #expect(DeepTranscriptionSchedule.passEnded(code: 1, preempted: false,
+                                                errors: "Error: " + DeepTranscriptionLock.busyMessage)
+        == .retryLater(global: true))
+    #expect(DeepTranscriptionSchedule.passEnded(code: 1, preempted: false, errors: "Error: No saved audio.") == .done)
+    #expect(DeepTranscriptionSchedule.passEnded(code: 3, preempted: false, errors: "") == .done)
+}
+
+@Test func aMeetingAnotherCommandHoldsDoesNotHoldUpTheOthers() {
     let items = queue(["A", "B"])
     let situation = DeepTranscriptionSchedule.Situation(enabled: true, modelInstalled: true, power: .ac,
-                                                        pendingRunNow: ["A"])
-    // AC power comes back meanwhile: A is not started as the automatic pass it still is; B may run.
+                                                        delayed: ["A"])
     #expect(DeepTranscriptionSchedule.next(items, situation) == .run("B"))
-    var onlyA = situation
-    onlyA.inUse = ["B"]
-    #expect(DeepTranscriptionSchedule.next(items, onlyA) == .idle)
 }
 
 @Test func theLaunchCheckRunsAgainWhenTheModelBecomesInstalled() {
