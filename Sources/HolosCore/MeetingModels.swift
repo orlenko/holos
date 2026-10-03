@@ -139,6 +139,10 @@ public enum MeetingEventKind {
     public static let wordsFixed = "wordsFixed"
     /// transcriptID, base, applied, unmatched: live text hints reconciled with the finished transcript.
     public static let liveHintsApplied = "liveHintsApplied"
+    /// transcriptID, base, engine, language, tracks, seconds, segments, words, droppedSilent, droppedRepeats,
+    /// promptTerms: journaled before a transcript made from the saved audio by the deep transcription pass is saved as
+    /// current; `base` is the recorded transcript it replaced, which is kept (docs/meeting-design.md §4.16)
+    public static let deepTranscribed = "deepTranscribed"
 }
 
 // MARK: - Meeting setup (meeting.json, vocabulary.json)
@@ -273,6 +277,9 @@ public struct PostProcessingStage: OpenStringCode {
     /// Learned corrections and the word list's "often heard as" terms applied to the final transcript, which becomes a
     /// new revision (docs/design.md "Meeting word fixes").
     public static let wordFixes = PostProcessingStage("wordFixes")
+    /// The saved audio transcribed again with a local Whisper model after the meeting, which becomes a new current
+    /// revision before live corrections and word fixes (docs/meeting-design.md §4.16).
+    public static let deepTranscription = PostProcessingStage("deepTranscription")
     public static let render = PostProcessingStage("render")
     public static let diarize = PostProcessingStage("diarize")
     public static let align = PostProcessingStage("align")

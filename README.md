@@ -292,6 +292,32 @@ It exits 0 when done (also without speaker models), 3 when the words could not b
 skipped, and 1 when nothing could be done. Speakers are labelled again on the new text
 (names carry over); running it again with the same corrections and terms changes nothing.
 
+### Deep transcription after meetings
+
+Once a meeting is over, nothing waits for its final transcript, so the saved audio can be
+transcribed again by a larger model on this Mac: Whisper large-v3 turbo through WhisperKit,
+prompted with the meeting's name, your word list and the names of the people you know. On a
+real 53-minute call it halved the word error rate of the live transcript (20.9 % to 11–14 %
+against a cloud reference) and got about twice as many word-list terms right; it takes about
+11 minutes per hour of audio on an M4 Pro. Nothing leaves the Mac; the model itself is a
+one-time download of about 1.6 GB:
+
+```sh
+voiceislocal setup --whisper                       # download and check the model (resumes if interrupted)
+voiceislocal session deep-transcribe <session>     # transcribe a finished meeting again
+voiceislocal session deep-transcribe <session> --force   # again, or over edited speaker labels
+voiceislocal eval local <session> --backend whisper      # the same, as a candidate for eval compare
+```
+
+Passages written over silence where the live transcript has no words ("Thank you." in a
+gap) and runs of three or more identical passages are left out. The result is a new
+version of the transcript (the one before is kept); live corrections, word fixes, speaker
+labels (names carry over) and the transcript files follow as after a recording. It exits 0
+when done, 3 when the files were written but the meeting was not transcribed again (edited
+speaker labels without `--force`, a failure) or speaker labelling was skipped, and 1 when
+nothing could be done (no model, deleted audio, or a meeting in several languages, which is
+not supported yet).
+
 ## Quick start
 
 ```sh
@@ -304,6 +330,7 @@ voiceislocal="$BIN_DIR/voiceislocal"
 # languages (en-CA when none is supported); session retranscribe uses the session's own.
 # Scripts that need the same locale on every Mac pass --locale.
 "$voiceislocal" setup --speakers               # download the speaker models (about 21 MB)
+"$voiceislocal" setup --whisper                # download the deep transcription model (about 1.6 GB)
 "$voiceislocal" transcribe ./meeting.wav       # local file to finalized timed text
 "$voiceislocal" transcribe ./meeting.wav --json
 
@@ -317,6 +344,7 @@ voiceislocal="$BIN_DIR/voiceislocal"
 "$voiceislocal" session diarize /path/to/session.holos
 "$voiceislocal" session languages <session> --languages fr-CA,en-CA   # mixed French and English
 "$voiceislocal" session fix-words <session>    # fix misheard words with today's corrections and terms
+"$voiceislocal" session deep-transcribe <session>   # transcribe again with the local Whisper model
 "$voiceislocal" session list                   # sessions, newest first, with state and size
 "$voiceislocal" speakers list <session>        # a session's speakers; also rename, merge, assign, ...
 "$voiceislocal" speakers rename <session> S2 "Maria"

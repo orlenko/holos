@@ -139,13 +139,18 @@ public struct Transcript: Codable, Sendable, Equatable {
     /// The original revision underlying live text corrections. Kept through automatic word-fix revisions so untimed
     /// words and speaker edits can be mapped in the same stable word space.
     public var liveCorrectedFrom: String?
+    /// What recognized the words when it was not Apple's speech recognition (`backend`): "whisper:<model>" for a
+    /// transcript made by the deep transcription pass after a meeting (docs/meeting-design.md §4.16), and every
+    /// revision made from it (live corrections, word fixes). Nil otherwise, so other transcripts encode as before.
+    public var engine: String?
 
     public init(id: String = UUID().uuidString, createdAt: Date = Date(), source: String,
                 locale: String, backend: SpeechBackend, segments: [TranscriptSegment] = [],
-                languages: [String]? = nil, fixedFrom: String? = nil, liveCorrectedFrom: String? = nil) {
+                languages: [String]? = nil, fixedFrom: String? = nil, liveCorrectedFrom: String? = nil,
+                engine: String? = nil) {
         self.id = id; self.createdAt = createdAt; self.source = source
         self.locale = locale; self.backend = backend; self.segments = segments; self.languages = languages
-        self.fixedFrom = fixedFrom; self.liveCorrectedFrom = liveCorrectedFrom
+        self.fixedFrom = fixedFrom; self.liveCorrectedFrom = liveCorrectedFrom; self.engine = engine
     }
 
     public var text: String { segments.map(\.text).joined(separator: " ") }

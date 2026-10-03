@@ -482,7 +482,7 @@ enum WordFixStage {
         }
         let fixed = Transcript(source: base.source, locale: base.locale, backend: base.backend, segments: segments,
                                languages: base.languages, fixedFrom: base.id,
-                               liveCorrectedFrom: base.liveCorrectedFrom)
+                               liveCorrectedFrom: base.liveCorrectedFrom, engine: base.engine)
         return Computed(transcript: fixed, counts: WordFixes.Counts(fixed), asked: asked, notes: notes,
                         unavailable: unavailable, termChecksComplete: termChecksComplete)
     }
@@ -533,7 +533,7 @@ enum WordFixStage {
         }
         return Transcript(source: live.source, locale: live.locale, backend: live.backend, segments: segments,
                           languages: live.languages, fixedFrom: live.id,
-                          liveCorrectedFrom: live.liveCorrectedFrom)
+                          liveCorrectedFrom: live.liveCorrectedFrom, engine: live.engine)
     }
 
     private static func priorFixes(in transcript: Transcript) -> [PriorFix] {

@@ -43,16 +43,21 @@ public struct PostProcessingOptions: Sendable, Equatable {
     /// fix, `force` with it lets it replace a transcript whose speaker labels were edited, and when it leaves the
     /// transcript as it was the speaker labels stay as they are. `keepTranscript` skips the stage.
     public var fixWords: Bool
+    /// Run the deep transcription pass (`voiceislocal session deep-transcribe`, docs/meeting-design.md §4.16): the saved
+    /// audio is transcribed again with the local Whisper model and the result becomes the current transcript before
+    /// live corrections, word fixes, and speakers. `force` with it transcribes again a transcript the model already
+    /// made and replaces one whose speaker labels were edited. `keepTranscript` skips the stage.
+    public var deepTranscribe: Bool
 
     public init(speakers: SpeakerCountHint? = nil, force: Bool = false, keepDerived: Bool = false,
                 othersInRoom: Bool? = nil, engineOverrides: [String: String] = [:], forceVoiceData: Bool = false,
                 stopReason: StopReason? = nil, languages: [String]? = nil, keepTranscript: Bool = false,
-                reconcileLiveHints: Bool = false, fixWords: Bool = false) {
+                reconcileLiveHints: Bool = false, fixWords: Bool = false, deepTranscribe: Bool = false) {
         self.speakers = speakers; self.force = force; self.keepDerived = keepDerived
         self.othersInRoom = othersInRoom; self.engineOverrides = engineOverrides
         self.forceVoiceData = forceVoiceData; self.stopReason = stopReason; self.languages = languages
         self.keepTranscript = keepTranscript; self.reconcileLiveHints = reconcileLiveHints
-        self.fixWords = fixWords
+        self.fixWords = fixWords; self.deepTranscribe = deepTranscribe
     }
 }
 
@@ -60,7 +65,9 @@ public struct PostProcessingOptions: Sendable, Equatable {
 ///
 /// Stages, in order: 0 checks and `postprocess.json` `running`; 1 `transcript` (the current revision); 1b
 /// `languages` for a meeting in several languages: the audio transcribed again in each language and the transcript
-/// merged passage by passage, which becomes current (§4.14; nothing is recorded for one language); 1c live text
+/// merged passage by passage, which becomes current (§4.14; nothing is recorded for one language); 1b′
+/// `deepTranscription`, only when asked for by name: the saved audio transcribed again with the local Whisper model,
+/// which becomes current (§4.16); 1c live text
 /// hints; 1d `wordFixes`: learned corrections and the word list's "often heard as" terms applied to that transcript,
 /// which becomes a new current revision (`WordFixStage`; nothing is recorded without corrections or such terms);
 /// 2 track policies; 3 the head decision (an edited head of this transcript is kept unless `force`); 4 `render` each
@@ -77,6 +84,7 @@ public struct MeetingPostProcessor: Sendable {
     let profiles: SpeakerProfileStore?
     let languageDetection: LanguageDetectionDependencies
     let wordFixes: WordFixDependencies
+    let deepTranscription: DeepTranscriptionDependencies
     let screenOCR: MeetingScreenOCR.Recognizer
 
     /// `diarizer == nil` (speaker models not installed) gives speaker-less exports and the setup hint.
@@ -84,13 +92,15 @@ public struct MeetingPostProcessor: Sendable {
     /// some person has voice samples, stage 7 compares the new run's speakers with them (distances only), and the
     /// exports show people's current names; without it nothing is recognized. `languages` transcribes and tells
     /// languages apart for a meeting in several (stage 1b); it is used only for such a meeting. `wordFixes` gives the
-    /// corrections, word list and model of stage 1d; `.none` fixes nothing.
+    /// corrections, word list and model of stage 1d; `.none` fixes nothing. `deepTranscription` gives the model and
+    /// prompt sources of the deep transcription pass, which runs only with `options.deepTranscribe`.
     public init(diarizer: (any SpeakerDiarizer)? = nil, options: PostProcessingOptions = .init(),
                 freeSpace: any FreeSpaceProvider = VolumeFreeSpace(), profiles: SpeakerProfileStore? = nil,
                 languages: LanguageDetectionDependencies = .live, wordFixes: WordFixDependencies = .none,
+                deepTranscription: DeepTranscriptionDependencies = .none,
                 screenOCR: @escaping MeetingScreenOCR.Recognizer = { try MeetingScreenOCR.recognize($0, languages: $1) }) {
         self.diarizer = diarizer; self.options = options; self.freeSpace = freeSpace; self.profiles = profiles
-        self.languageDetection = languages; self.wordFixes = wordFixes
+        self.languageDetection = languages; self.wordFixes = wordFixes; self.deepTranscription = deepTranscription
         self.screenOCR = screenOCR
     }
 
@@ -239,6 +249,16 @@ public struct MeetingPostProcessor: Sendable {
             return recorder.finalRecord(state: .failed, message: message)
         }
 
+        // Stage 1b′: the deep transcription pass, only when asked for by name (§4.16): the saved audio transcribed
+        // again with the local Whisper model, which becomes the base of live corrections and word fixes.
+        let deep = options.keepTranscript || !options.deepTranscribe
+            ? DeepTranscriptionStage.Outcome(transcript: merged)
+            : try await DeepTranscriptionStage.run(
+                DeepTranscriptionStage.Request(session: session, manifest: manifest, transcript: merged, lease: lease,
+                                               requested: true, force: options.force, freeSpace: freeSpace),
+                dependencies: deepTranscription, recorder: recorder)
+        let recognized = deep.transcript
+
         // Stage 1c: exact corrections made in the live view, reconciled by phrase ID or by track, time, and words.
         // They become the base for automatic fixes, so one provenance map never has to compose overlapping edits.
         // A relabel explicitly promising to keep the transcript does not introduce a text revision.
@@ -246,14 +266,14 @@ public struct MeetingPostProcessor: Sendable {
         if options.keepTranscript && !options.reconcileLiveHints {
             do {
                 liveText = LiveHintStage.TextOutcome(
-                    transcript: merged, hints: try LiveHintStore.read(session: session).hints)
+                    transcript: recognized, hints: try LiveHintStore.read(session: session).hints)
             } catch {
                 liveText = LiveHintStage.TextOutcome(
-                    transcript: merged, hints: [],
+                    transcript: recognized, hints: [],
                     problem: "Live corrections could not be read: \(error.localizedDescription)")
             }
         } else {
-            liveText = try await LiveHintStage.applyText(session: session, transcript: merged, lease: lease)
+            liveText = try await LiveHintStage.applyText(session: session, transcript: recognized, lease: lease)
         }
 
         // Stage 1d: learned corrections and the word list's terms, on the live-corrected final text, before the
@@ -281,7 +301,7 @@ public struct MeetingPostProcessor: Sendable {
         // (§4.14).
         let speakers: SpeakerResult
         let keepsExistingLabels = liveText.labelsPreserved || fixes.labelsPreserved
-            || ((options.languages != nil || options.fixWords) && transcript.id == current?.id)
+            || ((options.languages != nil || options.fixWords || options.deepTranscribe) && transcript.id == current?.id)
         if keepsExistingLabels,
            let kept = keptLabels(session: session, manifest: manifest, transcript: transcript, recorder: recorder,
                                  reason: liveText.labelsPreserved
@@ -324,7 +344,7 @@ public struct MeetingPostProcessor: Sendable {
         try Task.checkCancellation()
         // A language that could not be detected, like a speaker stage that failed, makes the result partial; the
         // speakers' own message follows a language problem when they were labelled.
-        let problems = [languages.problem, fixes.problem, liveText.problem, speakers.problem,
+        let problems = [languages.problem, deep.problem, fixes.problem, liveText.problem, speakers.problem,
                         liveSpeakers.problem].compactMap { $0 }
         if !problems.isEmpty {
             let message = (problems + (speakers.problem == nil ? [speakers.message].compactMap { $0 } : []))
@@ -332,7 +352,8 @@ public struct MeetingPostProcessor: Sendable {
             return recorder.finalRecord(state: .partial, message: message, runID: speakers.runID,
                                         othersInRoom: speakers.othersInRoom)
         }
-        let notes = [languages.note, fixes.note, liveText.note, speakers.message, liveSpeakers.note].compactMap { $0 }
+        let notes = [languages.note, deep.note, fixes.note, liveText.note, speakers.message,
+                     liveSpeakers.note].compactMap { $0 }
         return recorder.finalRecord(state: .succeeded, message: notes.isEmpty ? nil : notes.joined(separator: " "),
                                     runID: speakers.runID, othersInRoom: speakers.othersInRoom)
     }

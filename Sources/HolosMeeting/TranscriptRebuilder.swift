@@ -293,11 +293,18 @@ public enum TranscriptRebuilder {
 
     /// The transcript that stands for `transcriptID` in the rebuild's bookkeeping: for a transcript merged from the
     /// meeting's languages (docs/meeting-design.md §4.14; its `languagesDetected` event names it), the recorded
-    /// transcript it was merged from (`base`), which the merge replaced as current without undoing the rebuild; else
+    /// transcript it was merged from (`base`), which the merge replaced as current without undoing the rebuild; for a
+    /// deep transcript (§4.16, or one fixed from it), the recorded transcript it replaced (its `deepTranscribed`
+    /// event's `base`); else
     /// `transcriptID` itself, or for a transcript whose words were fixed (`WordFixStage`) the one it was fixed from.
     static func recordedTranscriptID(_ transcriptID: String, events: [ArchiveEvent]) -> String {
+        let unfixed = WordFixStage.unfixedID(transcriptID, events: events)
+        // A deep transcript (§4.16) stands for the recorded transcript it replaced, as a merge does.
+        if let base = DeepTranscriptionStage.deepEvent(of: unfixed, events: events)?.details["base"], !base.isEmpty {
+            return WordFixStage.unfixedID(base, events: events)
+        }
         guard let base = LanguageStage.mergeEvent(of: transcriptID, events: events)?.details["base"], !base.isEmpty
-        else { return WordFixStage.unfixedID(transcriptID, events: events) }
+        else { return unfixed }
         return WordFixStage.unfixedID(base, events: events)
     }
 
@@ -308,6 +315,11 @@ public enum TranscriptRebuilder {
     /// audio that a rebuild without `transcribe` (`transcribed: false`) left out, so that rebuild counts as
     /// transcribed for it.
     static func mergeHoldsAllAudio(_ transcriptID: String, events: [ArchiveEvent]) -> Bool {
+        // A deep transcript made after the last recovery transcribed all of the saved audio (§4.16).
+        if let deep = DeepTranscriptionStage.deepEvent(of: WordFixStage.unfixedID(transcriptID, events: events),
+                                                       events: events), deep.sequence > lastRecovery(events) {
+            return true
+        }
         guard let merge = LanguageStage.mergeEvent(of: transcriptID, events: events),
               let base = merge.details["base"], !base.isEmpty else { return false }
         let recovered = lastRecovery(events)

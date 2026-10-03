@@ -19,6 +19,7 @@ let package = Package(
     dependencies: [
         .package(url: "https://github.com/apple/swift-argument-parser.git", from: "1.5.0"),
         .package(url: "https://github.com/FluidInference/FluidAudio.git", exact: "0.17.1"),
+        .package(url: "https://github.com/argmaxinc/WhisperKit.git", exact: "1.1.0"),
     ],
     targets: [
         .target(name: "HolosCore"),
@@ -38,13 +39,18 @@ let package = Package(
         .target(name: "HolosDiarization", dependencies: [
             "HolosCore", .product(name: "FluidAudio", package: "FluidAudio"),
         ]),
+        // Deep transcription after a meeting (docs/meeting-design.md §4.16): WhisperKit's Core ML Whisper models. Only
+        // the command-line tool links it; the app runs the pass through voiceislocal.
+        .target(name: "HolosWhisper", dependencies: [
+            "HolosCore", .product(name: "WhisperKit", package: "WhisperKit"),
+        ]),
         .executableTarget(name: "HolosApp", dependencies: [
             "HolosCore", "HolosAudio", "HolosSpeech", "HolosDesktop", "HolosDictation",
             "HolosStorage", "HolosSpeakers", "HolosMeeting", "HolosSynthesis", "HolosContent",
         ]),
         .executableTarget(name: "HolosCLI", dependencies: [
             "HolosCore", "HolosSpeech", "HolosSynthesis", "HolosStorage", "HolosAudio", "HolosContent",
-            "HolosMeeting", "HolosSpeakers", "HolosDiarization", "HolosDictation",
+            "HolosMeeting", "HolosSpeakers", "HolosDiarization", "HolosDictation", "HolosWhisper",
             .product(name: "ArgumentParser", package: "swift-argument-parser"),
         ], linkerSettings: [.unsafeFlags([
             "-Xlinker", "-sectcreate", "-Xlinker", "__TEXT", "-Xlinker", "__info_plist", "-Xlinker", cliInfoPlist,
@@ -62,6 +68,9 @@ let package = Package(
         .testTarget(name: "HolosSpeakersTests", dependencies: ["HolosSpeakers", "HolosCore"]),
         .testTarget(name: "HolosMeetingTests", dependencies: [
             "HolosMeeting", "HolosCore", "HolosStorage", "HolosAudio", "HolosSpeakers", "HolosSynthesis",
+        ]),
+        .testTarget(name: "HolosWhisperTests", dependencies: [
+            "HolosWhisper", "HolosMeeting", "HolosCore", "HolosSynthesis", "HolosAudio", "HolosStorage",
         ]),
         .testTarget(name: "HolosDiarizationTests", dependencies: [
             "HolosDiarization", "HolosSpeakers", "HolosSynthesis", "HolosAudio", "HolosCore",

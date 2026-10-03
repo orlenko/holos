@@ -977,6 +977,45 @@ words with the on-device model:
    saved to the old head while the new transcript's speakers are being labelled is an edit
    of the replaced labels: names carry over, turn-level changes do not (§4.14 step 6).
 
+### Deep transcription after meetings
+
+The live transcript is what Apple's recognizer heard while the meeting ran; it misses
+names and jargon (on a 53-minute call, 20.9 % WER against a cloud reference and 31 of 82
+word-list terms). Nothing waits for the final transcript, so after the meeting the saved
+audio can be transcribed again by a larger local model: Whisper large-v3 turbo through
+WhisperKit, on the Neural Engine, prompted with the word list, measured 11–14 % WER and
+56–66 of 82 terms on the same call. With the checks below the pass takes about 11 minutes per hour
+of audio on an M4 Pro (each chunk is decoded with and without the prompt).
+Everything stays on the Mac; only the one-time model download (about 1.6 GB, from Hugging
+Face) uses the network.
+
+- *Model.* `voiceislocal setup --whisper` downloads it into Application Support
+  (`Models/whisperkit/`), resuming an interrupted download, and loads it once before it
+  counts as installed; `voiceislocal doctor` reports it.
+- *The pass.* `voiceislocal session deep-transcribe <session> [--force]` renders each
+  track to 16 kHz (long gaps shortened, as for speaker labels), transcribes it in pieces
+  with the meeting's language and a prompt made of the meeting's name, the word list and
+  people's names (the terms this meeting's vocabulary used first, within the 111 prompt
+  tokens WhisperKit keeps), and maps the words back to session time. Whisper's known failures are
+  guarded against: a passage over near-silence (below −50 dBFS) where the live transcript
+  has no words ("Thank you." in a capture gap) is left out, and so is each repeat of a
+  passage written three or more times in a row.
+- *Versions and what follows.* The result is a new transcript revision (`engine`
+  "whisper:<model>"; the recorded one is kept), journaled as `deepTranscribed`. Live
+  corrections, meeting word fixes, speaker labels (names carry over), recognition and the
+  exports then run on it as after a recording, including the echo filter of calls. Edited
+  speaker labels are respected as the other text-changing stages respect them: the pass
+  is skipped with the standard message unless `--force`. A transcript the model already
+  made is kept unless `--force`.
+- *Languages.* Meetings in several languages are not transcribed again yet: Whisper's
+  language detection cannot be limited to the meeting's languages, so the pass says so and
+  keeps the merged transcript.
+- *Evaluation.* `voiceislocal eval local <session> --backend whisper` makes the same
+  transcription as a candidate, so `eval compare --local latest` measures it against a
+  cloud run without changing the meeting.
+
+docs/meeting-design.md §4.16 has the stage, files, thresholds and measurements.
+
 ### Meetings
 
 Record the microphone and remote/system audio into **separate timed tracks**. A
