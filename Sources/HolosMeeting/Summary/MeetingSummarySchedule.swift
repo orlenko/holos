@@ -22,17 +22,19 @@ public enum MeetingSummarySchedule {
         /// Finished as a final transcript requires it (`isFinished`): an interrupted or still processing meeting
         /// waits for Recover or its save, so a partial transcript is never summarized.
         public var finished: Bool
+        /// summary.json says the transcript files were not rewritten with it (`exportsPending`).
+        public var exportsPending: Bool
 
         public init(sessionID: String, path: String, createdAt: Date, transcriptID: String?,
-                    summaryTranscriptID: String?, idle: Bool, finished: Bool = true) {
+                    summaryTranscriptID: String?, idle: Bool, finished: Bool = true, exportsPending: Bool = false) {
             self.sessionID = sessionID; self.path = path; self.createdAt = createdAt
             self.transcriptID = transcriptID; self.summaryTranscriptID = summaryTranscriptID; self.idle = idle
-            self.finished = finished
+            self.finished = finished; self.exportsPending = exportsPending
         }
 
-        /// The summary is missing or of an earlier transcript.
+        /// The summary is missing or of an earlier transcript, or the transcript files still miss it.
         public var needsSummary: Bool {
-            transcriptID != nil && transcriptID != summaryTranscriptID
+            transcriptID != nil && (transcriptID != summaryTranscriptID || exportsPending)
         }
     }
 
@@ -132,7 +134,8 @@ public enum MeetingSummarySchedule {
                                              liveness: RecorderChannel.liveness(session: session))
             return Candidate(sessionID: manifest.id, path: session.path, createdAt: manifest.createdAt,
                              transcriptID: transcriptID, summaryTranscriptID: summary?.transcriptID,
-                             idle: !active && !processing, finished: isFinished(state))
+                             idle: !active && !processing, finished: isFinished(state),
+                             exportsPending: summary?.exportsPending == true)
         }
     }
 }

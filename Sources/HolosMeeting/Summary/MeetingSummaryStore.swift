@@ -29,6 +29,9 @@ public struct MeetingSummaryRecord: Codable, Sendable, Equatable {
     /// out of it).
     public var parts: Int?
     public var skippedParts: Int?
+    /// Set while the transcript files are being rewritten with it, and left set when that failed: the next run
+    /// rewrites them without making the summary again.
+    public var exportsPending: Bool?
 
     public init(schemaVersion: Int = currentVersion, sessionID: String, transcriptID: String, title: String,
                 summary: String, points: [String] = [], actions: [String] = [], model: String,
@@ -133,6 +136,14 @@ public enum MeetingSummarySource {
     public static func input(document: ExportDocument, selfName: String) -> MeetingSummaryInput {
         let projection = document.projection.flatMap { $0.transcriptID == document.transcript.id ? $0 : nil }
         var labels: [String: String] = [:]
+        if projection == nil {
+            // Without speaker labels the turns are named by track ("Microphone", "System audio"), which are not
+            // people: the microphone of a call is the user, the system audio the others; a microphone in the room is
+            // anyone in it.
+            labels["Microphone"] = document.metadata.source == .microphoneAndSystem ? selfName : unnamedSpeaker
+            labels["System audio"] = "Others"
+            labels["Unknown speaker"] = unnamedSpeaker
+        }
         for speaker in projection?.speakers ?? [] where labels[speaker.label] == nil {
             labels[speaker.label] = isUnnamedChannel(speaker) ? selfName : speaker.name
         }
@@ -143,6 +154,9 @@ public enum MeetingSummarySource {
                                    durationSeconds: document.metadata.durationSeconds,
                                    people: projection.map { people($0) } ?? [])
     }
+
+    /// What a turn of nobody known is called in the prompt.
+    static let unnamedSpeaker = "Someone"
 
     /// The people a projection names (an explicit name, a linked or automatically matched person), most talk first;
     /// "Speaker 2" and the unnamed channel speaker ("Me") are not people.
@@ -167,13 +181,14 @@ public enum MeetingSummarySource {
         speaker.provenance == .channelAssumption && !isNamed(speaker)
     }
 
-    /// The language most of the transcript's words are in: for a transcript merged from several languages, the
-    /// segments' languages counted by words (ties go to the preferred one, `locale`); else `locale`.
+    /// The language most of the transcript is in: for a transcript merged from several languages, the segments'
+    /// languages weighed by their characters (grapheme clusters other than spaces, so Chinese, Japanese and Thai,
+    /// written without spaces, count as much as they say; ties go to the preferred one, `locale`); else `locale`.
     public static func mainLanguage(_ transcript: Transcript) -> String {
         guard let languages = transcript.languages, languages.count > 1 else { return transcript.locale }
         var words: [String: Int] = [:]
         for segment in transcript.segments {
-            words[segment.language ?? transcript.locale, default: 0] += segment.text.split(whereSeparator: \.isWhitespace).count
+            words[segment.language ?? transcript.locale, default: 0] += segment.text.filter { !$0.isWhitespace }.count
         }
         let order = [transcript.locale] + languages.filter { $0 != transcript.locale }
         return order.max { (words[$0] ?? 0) < (words[$1] ?? 0) } ?? transcript.locale

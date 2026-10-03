@@ -120,6 +120,13 @@ public enum SessionSummarizeCommand {
             return outcome(.noTranscript, "This meeting has no transcript to summarize.")
         }
         guard MeetingSummaryStore.needsSummary(record: existing, transcriptID: transcriptID, force: request.force) else {
+            // Up to date, unless the transcript files were not rewritten with it: that is done now.
+            if let existing, existing.exportsPending == true {
+                return await save(existing, request: request, transcriptID: transcriptID,
+                                  message: "Rewrote the transcript files with the summary.") {
+                    outcome($0, $1, transcriptID: $2, code: $3)
+                }
+            }
             var done = outcome(.current, "The summary is up to date.", transcriptID: transcriptID, code: 0)
             done.summary = existing
             return done
@@ -179,37 +186,50 @@ public enum SessionSummarizeCommand {
             return outcome(.cancelled, "Summarizing was cancelled; nothing was written.",
                            transcriptID: transcriptID)
         }
-        // Saved under the lease, only for the transcript that is still current.
+        var result = await save(record, request: request, transcriptID: transcriptID,
+                                message: "Summarized the meeting.") { outcome($0, $1, transcriptID: $2, code: $3) }
+        result.stats = made.stats
+        log.notice("Session \(id, privacy: .public): summary \(result.status.rawValue, privacy: .public) in \(made.stats.calls, privacy: .public) calls")
+        return result
+    }
+
+    /// Saves `record` under the processing lease, only while `transcriptID` is still current, then rewrites the
+    /// transcript files with it. The record is written with `exportsPending` first and again without it once the
+    /// files are rewritten, so a failure there leaves it set and the next run rewrites them (without asking the model).
+    private static func save(_ record: MeetingSummaryRecord, request: Request, transcriptID: String, message: String,
+                             outcome: (Status, String, String?, Int32) -> Outcome) async -> Outcome {
+        let session = request.session
         let lease: ProcessingLease
         do {
             lease = try SessionArchive.acquireProcessingLease(at: session)
         } catch {
-            var busy = outcome(.busy, "Another Voice is Local command is working on this meeting; try again.",
-                               transcriptID: transcriptID)
-            busy.stats = made.stats
-            return busy
+            return outcome(.busy, "Another Voice is Local command is working on this meeting; try again.",
+                           transcriptID, 1)
         }
         defer { lease.release() }
-        var result: Outcome
         do {
-            result = try await lease.withUse(for: session) { () async throws -> Outcome in
+            return try await lease.withUse(for: session) { () async throws -> Outcome in
                 guard try SessionFiles.readableCurrentTranscriptID(session: session) == transcriptID else {
                     return outcome(.changed, "The transcript changed while it was summarized; try again.",
-                                   transcriptID: transcriptID)
+                                   transcriptID, 1)
                 }
-                // The last point where a cancellation stops it: from here summary.json (one atomic write) and the
+                // The last point where a cancellation stops it: from here summary.json (atomic writes) and the
                 // transcript files are written together.
                 if Task.isCancelled {
-                    return outcome(.cancelled, "Summarizing was cancelled; nothing was written.",
-                                   transcriptID: transcriptID)
+                    return outcome(.cancelled, "Summarizing was cancelled; nothing was written.", transcriptID, 1)
                 }
-                try MeetingSummaryStore.write(record, session: session)
-                var written = outcome(.written, "Summarized the meeting.", transcriptID: transcriptID, code: 0)
-                written.summary = record
-                // The transcript files show the summary.
+                var pending = record
+                pending.exportsPending = true
+                try MeetingSummaryStore.write(pending, session: session)
+                var written = outcome(.written, message, transcriptID, 0)
+                written.summary = pending
                 do {
                     try SessionExports.regenerate(session: session, profileNames: request.profileNames,
                                                   applyRecognition: request.applyRecognition)
+                    var done = record
+                    done.exportsPending = nil
+                    try MeetingSummaryStore.write(done, session: session)
+                    written.summary = done
                     written.exportsUpdated = true
                 } catch {
                     written.message += " The transcript files were not rewritten: \(error.localizedDescription)"
@@ -218,11 +238,7 @@ public enum SessionSummarizeCommand {
                 return written
             }
         } catch {
-            result = outcome(.failed, "Cannot save the summary: \(error.localizedDescription)",
-                             transcriptID: transcriptID)
+            return outcome(.failed, "Cannot save the summary: \(error.localizedDescription)", transcriptID, 1)
         }
-        result.stats = made.stats
-        log.notice("Session \(id, privacy: .public): summary \(result.status.rawValue, privacy: .public) in \(made.stats.calls, privacy: .public) calls")
-        return result
     }
 }

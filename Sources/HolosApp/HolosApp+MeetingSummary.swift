@@ -167,7 +167,10 @@ extension HolosAppDelegate {
         if preempted { meeting.summaries.preempted = nil }
         meeting.summaries.running = nil
         let status = outcome.map { SessionSummarizeCommand.Status($0.status) }
-        if preempted || status?.retriesLater == true {
+        let requested = meeting.summaries.requested.contains(sessionID)
+        // A result the command reports decides: a summary it saved counts even when a meeting started at the very
+        // end (SIGTERM cannot stop the save). Without one, a run stopped for a meeting is tried again.
+        if status.map(\.retriesLater) ?? preempted {
             // Stopped for a meeting, held by another command or job, or the transcript changed: tried again in a
             // minute, and a request stays.
             meeting.summaries.delayedUntil[sessionID] = Date().addingTimeInterval(60)
@@ -176,6 +179,12 @@ extension HolosAppDelegate {
             meeting.summaries.requested.removeAll { $0 == sessionID }
             // A failure is not tried again automatically for this transcript.
             if code != 0, let transcriptID { meeting.summaries.attempted[sessionID] = transcriptID }
+            // Asked for from the meeting's menu and not made: the user is told why (as Make Final Transcript Now),
+            // for example a language Apple Intelligence does not support.
+            if requested, code != 0, status != .written {
+                showSummaryAlert("The meeting was not summarized.",
+                                 outcome?.message ?? "The summary command stopped (code \(code)).")
+            }
         }
         Self.summaryLog.notice("Summary of \(sessionID, privacy: .public) ended with \(code, privacy: .public) (\(outcome?.status ?? "no result", privacy: .public))")
         meeting.meetingsPane?.update(summarizing: nil)
@@ -188,5 +197,14 @@ extension HolosAppDelegate {
     /// The part of `voiceislocal session summarize --json` the app reads.
     private struct SummaryOutcome: Decodable {
         var status: String
+        var message: String?
+    }
+
+    private func showSummaryAlert(_ title: String, _ text: String) {
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.informativeText = text
+        NSApplication.shared.activate()
+        alert.runModal()
     }
 }

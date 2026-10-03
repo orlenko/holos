@@ -716,6 +716,64 @@ private struct UnexpectedModelError: Error {}
     #expect(!older.isSummary)
 }
 
+@Test func transcriptFilesThatFailedAreRewrittenWithoutAskingTheModelAgain() async throws {
+    let temp = try TemporaryDirectory("summary")
+    defer { temp.remove() }
+    let session = try await summarizeSession(in: temp.url)
+    // A file where exports/ should be: the transcript files cannot be written.
+    let exports = SessionPaths.exports(session)
+    try? FileManager.default.removeItem(at: exports)
+    #expect(FileManager.default.createFile(atPath: exports.path, contents: Data("x".utf8)))
+    let scripted = ScriptedSummaryModel()
+    let first = await run(session, scripted)
+    #expect(first.status == .written)
+    #expect(first.exitCode == 3)
+    let manifest = try SessionArchive.readManifest(at: session)
+    #expect(try MeetingSummaryStore.read(session: session, sessionID: manifest.id)?.exportsPending == true)
+    #expect(MeetingSummarySchedule.scan(root: temp.url).first?.needsSummary == true)
+
+    try FileManager.default.removeItem(at: exports)
+    let again = await run(session, scripted)
+    #expect(again.status == .written)
+    #expect(again.exitCode == 0)
+    #expect(again.exportsUpdated)
+    #expect(scripted.summaryCalls.value.count == 1)
+    #expect(try MeetingSummaryStore.read(session: session, sessionID: manifest.id)?.exportsPending == nil)
+    #expect(SessionFixtures.text(SessionPaths.export("md", in: session)).contains("## Summary"))
+    #expect(MeetingSummarySchedule.scan(root: temp.url).first?.needsSummary == false)
+}
+
+private func trackDocument(source: AudioSource) -> ExportDocument {
+    let transcript = SessionFixtures.transcript([
+        SessionFixtures.segment(["Can", "you", "hear", "me"], track: "mic", start: 0),
+        SessionFixtures.segment(["Yes", "we", "can"], track: "system", start: 5),
+    ])
+    let metadata = ExportMetadata(sessionID: "S", name: "Meeting", createdAt: SessionFixtures.date,
+                                  durationSeconds: 10, source: source, locale: "en-CA", backend: .speech,
+                                  timeZone: TimeZone(identifier: "UTC")!)
+    return ExportDocument(metadata: metadata, transcript: transcript)
+}
+
+@Test func tracksWithoutSpeakerLabelsAreNotPresentedAsPeople() {
+    let call = MeetingSummarySource.input(document: trackDocument(source: .microphoneAndSystem), selfName: "Robin")
+    #expect(call.lines.map(\.speaker) == ["Robin", "Others"])
+    let room = MeetingSummarySource.input(document: trackDocument(source: .microphone), selfName: "Robin")
+    #expect(!room.lines.map(\.speaker).contains { ["Microphone", "System audio", "Robin"].contains($0) })
+}
+
+@Test func theMainLanguageCountsCharactersNotSpaces() {
+    var transcript = SessionFixtures.transcript([
+        SessionFixtures.segment(["我们决定先重写解析器然后在下周发布测试版本并通知所有人"], track: "mic", start: 0),
+        SessionFixtures.segment(["ok", "yes", "sure"], track: "mic", start: 10),
+        SessionFixtures.segment(["fine", "thanks"], track: "mic", start: 12),
+    ])
+    transcript.languages = ["en-CA", "zh-CN"]
+    transcript.segments[0].language = "zh-CN"
+    transcript.segments[1].language = "en-CA"
+    transcript.segments[2].language = "en-CA"
+    #expect(MeetingSummarySource.mainLanguage(transcript) == "zh-CN")
+}
+
 @Test func aNameTheUserGaveIsTheirsWhateverItLooksLike() throws {
     let root = URL(fileURLWithPath: "/tmp/sessions")
     var typed = MeetingStartSettings(name: "Meeting 2026-10-03 14:00", source: .microphone)
