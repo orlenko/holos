@@ -1017,7 +1017,8 @@ Face) uses the network.
   (on battery it waits for the power adapter); the queue survives a quit or crash, and an
   interrupted pass starts over. The Meetings list shows "Final transcript queued", "… waits
   for power" or "… in progress…"; a meeting's right-click menu offers Make Final Transcript
-  Now (also on battery) and Cancel Final Transcript.
+  Now (also on battery; it labels speakers again, names carried over) and Cancel Final
+  Transcript. Meetings saved while the app was closed are queued when it next opens.
 - *Evaluation.* `voiceislocal eval local <session> --backend whisper` makes the same
   transcription as a candidate, so `eval compare --local latest` measures it against a
   cloud run without changing the meeting.

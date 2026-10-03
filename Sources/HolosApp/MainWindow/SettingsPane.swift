@@ -685,6 +685,10 @@ final class SettingsPane: NSViewController, MainSectionContent {
         case "unknown":
             set(.deepTranscriptionModel, .problem, "Could not check the model; `voiceislocal doctor` shows why",
                 button: download)
+        case "unavailable":
+            set(.deepTranscriptionModel, .problem,
+                "The voiceislocal tool is missing from VoiceIsLocal.app; rebuild Voice is Local with scripts/build-app.sh",
+                button: nil)
         case let other?:
             set(.deepTranscriptionModel, .problem, "Status unknown (\(other))", button: download)
         case nil:

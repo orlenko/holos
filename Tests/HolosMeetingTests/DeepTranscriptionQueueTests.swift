@@ -89,3 +89,50 @@ private func queue(_ ids: [String], runNow: Set<String> = []) -> DeepTranscripti
         == "Final transcript queued")
     #expect(DeepTranscriptionSchedule.stateText(sessionID: "C", queue: items, running: nil, power: .ac) == nil)
 }
+
+@Test func aPassStillRunningFromBeforeARelaunchBlocksTheOthers() {
+    let items = queue(["A", "B"], runNow: ["B"])
+    var situation = DeepTranscriptionSchedule.Situation(enabled: true, modelInstalled: true, power: .ac,
+                                                        waitingFor: "A")
+    #expect(DeepTranscriptionSchedule.next(items, situation) == .run("A"), "Only A is tried until it can be had.")
+    situation.inUse = ["A"]
+    #expect(DeepTranscriptionSchedule.next(items, situation) == .idle)
+    #expect(DeepTranscriptionSchedule.isLeaseConflict(
+        "Error: Another Voice is Local process is processing this session."))
+    #expect(!DeepTranscriptionSchedule.isLeaseConflict("Error: This session has no saved audio."))
+}
+
+@Test func reviewOwnsItsMeetingUntilItCloses() {
+    let items = queue(["A"])
+    let situation = DeepTranscriptionSchedule.Situation(enabled: true, modelInstalled: true, power: .ac,
+                                                        inUse: ["A"])
+    #expect(DeepTranscriptionSchedule.next(items, situation) == .idle)
+}
+
+@Test func onlyFinishedMeetingsCanBeTranscribedAgain() {
+    for state in [SessionState.complete, .transcriptionIncomplete, .recovered, .audioOnly] {
+        #expect(DeepTranscriptionSchedule.isFinished(state, audioDeleted: false))
+        #expect(!DeepTranscriptionSchedule.isFinished(state, audioDeleted: true))
+    }
+    for state in [SessionState.recording, .processing, .interrupted, .incomplete, .failed, .damaged] {
+        #expect(!DeepTranscriptionSchedule.isFinished(state, audioDeleted: false))
+    }
+}
+
+@Test func meetingsThatFinishedWhileTheAppWasClosedAreQueuedOnce() {
+    func candidate(_ id: String, after seconds: Double, finished: Bool = true, languages: Int = 1,
+                   deep: Bool = false) -> DeepTranscriptionSchedule.Candidate {
+        .init(sessionID: id, path: "/m/\(id).holos", createdAt: date.addingTimeInterval(seconds), finished: finished,
+              languages: languages, hasDeepTranscript: deep)
+    }
+    let candidates = [
+        candidate("before", after: -60), candidate("A", after: 60), candidate("live", after: 70, finished: false),
+        candidate("two", after: 80, languages: 2), candidate("done", after: 90, deep: true),
+        candidate("seen", after: 100), candidate("queued", after: 110), candidate("B", after: 120),
+    ]
+    let found = DeepTranscriptionSchedule.reconcile(candidates, enabledSince: date, considered: ["seen"],
+                                                    queue: queue(["queued"]))
+    #expect(found.map(\.sessionID) == ["A", "B"])
+    #expect(DeepTranscriptionSchedule.reconcile(candidates, enabledSince: nil, considered: [],
+                                                queue: DeepTranscriptionQueue()).isEmpty, "Never turned on.")
+}

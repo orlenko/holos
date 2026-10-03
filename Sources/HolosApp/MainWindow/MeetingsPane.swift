@@ -798,13 +798,16 @@ extension MeetingsPane: NSMenuDelegate {
             item.representedObject = summary.id
             menu.addItem(item)
         } else {
-            let item = NSMenuItem(title: "Make Final Transcript Now", action: #selector(runDeepTranscription(_:)),
-                                  keyEquivalent: "")
+            let item = NSMenuItem(title: "Make Final Transcript Now (relabels speakers)",
+                                  action: #selector(runDeepTranscription(_:)), keyEquivalent: "")
             item.target = self
             item.representedObject = summary.id
-            item.toolTip = "Transcribes the saved audio again with the local Whisper model now, also on battery."
-            item.isEnabled = summary.transcriptID != nil && !summary.audioDeleted && running[summary.id] == nil
-                && summary.state != .recording
+            item.toolTip = "Transcribes the saved audio again with the local Whisper model now, also on battery, and "
+                + "labels speakers again: names carry over, edits of single turns do not."
+            // As the command's precheck requires: a finished meeting (not recording, processing, or interrupted) with
+            // its audio.
+            item.isEnabled = DeepTranscriptionSchedule.isFinished(summary.state, audioDeleted: summary.audioDeleted)
+                && running[summary.id] == nil
             menu.addItem(item)
         }
     }

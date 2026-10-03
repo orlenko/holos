@@ -1139,8 +1139,7 @@ extension HolosAppDelegate: NSMenuDelegate {
                 let object = data.flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }
                 // The tool ran but reported nothing usable: unknown, not missing.
                 self.meeting.speakerModels = object?["speakerModels"] as? String ?? "unknown"
-                self.meeting.deep.model = object?["deepTranscriptionModel"] as? String ?? "unknown"
-                self.scheduleDeepTranscription()
+                self.deepModelChecked(object?["deepTranscriptionModel"] as? String ?? "unknown")
                 self.updateSettings()
                 self.meeting.startPanel?.refresh()
                 if self.meeting.speakerModels == "verified" { self.meeting.controller?.runAutoRelabel() }
@@ -1148,6 +1147,7 @@ extension HolosAppDelegate: NSMenuDelegate {
         } catch {
             meeting.checkingSpeakerModels = false
             meeting.speakerModels = "unavailable"
+            deepModelChecked("unavailable")
             Self.removeFile(output)
             Self.meetingLog.error("Cannot check the speaker models (\(ProcessSpawner.logCategory(error), privacy: .public)): \(error.localizedDescription, privacy: .private)")
         }

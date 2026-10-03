@@ -4773,15 +4773,22 @@ carried over.
 - *Settings › Meetings.* A "Final transcript" row with the model's state from `voiceislocal
   doctor --json` (`deepTranscriptionModel`) and Download (1.6 GB), showing `setup --whisper`'s
   progress; and the checkbox "Deep transcription after meetings", off by default and disabled
-  until the model is installed (UserDefaults `deepTranscriptionAfterMeetings`). Turning it off
-  takes the automatic passes off the queue.
+  until the model is installed (UserDefaults `deepTranscriptionAfterMeetings`; turning it on
+  records when, `deepTranscriptionEnabledSince`). Turning it off takes the automatic passes off
+  the queue. While another process downloads the model, the doctor check runs again every 30 s;
+  when doctor cannot run at all the row says the tool is missing.
 - *Queue* (`DeepTranscriptionQueue`, `DeepTranscriptionSchedule`, pure, in HolosMeeting). When
   the recorder reports a meeting finished (its own post-processing ran in the recorder), the
-  meeting is queued if the setting is on, the model installed, and meeting.json names at most
-  one language. The queue is saved in UserDefaults (`deepTranscriptionQueue`) on every change.
+  meeting is queued if the setting is on, the model installed, and neither meeting.json nor the
+  current transcript names more than one language. The queue is saved in UserDefaults
+  (`deepTranscriptionQueue`) on every change. At launch, once the model is known installed, the
+  meetings that finished while the app was closed (a recorder saves and post-processes on its
+  own after the app quits), started since the setting was turned on, finished (not recording,
+  processing, or interrupted), in one language, with no `deepTranscribed` event and never queued
+  before (`deepTranscriptionConsidered`), are queued too.
   The next pass runs when none is running, no meeting is starting, recording, or saving, the
-  model is installed, and no other command uses the meeting (`MeetingController.
-  sessionsInUse`): a meeting asked for from its menu first, whatever the power source; else the
+  model is installed, and no other command or Review uses the meeting (`MeetingController.
+  sessionsInUse`, `sessionsUnderReview`: open, opening, or still saving): a meeting asked for from its menu first, whatever the power source; else the
   oldest queued meeting when the setting is on and the Mac is on AC power (or has no battery),
   otherwise it waits ("Final transcript waits for power"). The power source (IOKit's providing
   power source) is read every 30 s, which also retries the queue; a command letting go of a
@@ -4789,18 +4796,24 @@ carried over.
 - *Running.* The pass holds the meeting (`beginUsing`, "Final transcript in progress…" in the
   State column, other actions on it refused) and is taken off the queue however it ends (done,
   partial, refused, or cancelled). A pass the app did not see end (the app quit or crashed) stays
-  queued and runs again from the start at the next launch; the command itself is detached and
-  may still be running then, in which case the second one is refused by the processing lease
-  (exit 1) and the first finishes. Maintenance commands, like this one, keep running after the
+  queued and runs again from the start at the next launch. The command itself is detached and
+  may still be running then: the second one is refused by the processing lease (exit 1, "…
+  processing this session"), the meeting stays queued, and only it is tried, every minute,
+  until it can be had (`waitingFor`), so two passes never run at once. A command that cannot be
+  started at all stays queued and is tried again after a minute. Maintenance commands, like this one, keep running after the
   app quits.
 - *Meetings list.* The State column shows "Final transcript queued", "… waits for power", or
-  "… in progress…". Right-clicking a meeting offers Make Final Transcript Now (also on battery;
-  refused with an alert without the model or for a meeting in several languages) or, while it
-  is queued or running, Cancel Final Transcript (SIGTERM: the command cancels, publishes
-  nothing, records "Post-processing was cancelled.").
+  "… in progress…". Right-clicking a finished meeting offers Make Final Transcript Now
+  (relabels speakers): it runs next, also on battery, with `--force`, so a transcript the model
+  made before is made again and edited speaker labels are replaced (names carry over, edits of
+  single turns do not), as asking for it by name means; refused with an alert without the model,
+  for a meeting that is not finished, or for one in several languages. While a pass is queued or
+  running, Cancel Final Transcript (SIGTERM: the command cancels and says whether the new
+  transcript was already published).
 - *Tests.* `DeepTranscriptionQueueTests` (order and run-now upgrade, saving and damaged data,
-  one at a time, AC/battery/no battery, busy meetings and meetings in use, run-now on battery,
-  the setting off, queuing only one-language meetings, the State column's texts). The Settings
+  one at a time, AC/battery/no battery, busy meetings, meetings in use or in Review, run-now on
+  battery, the setting off, queuing only one-language meetings, the State column's texts, a pass
+  surviving a relaunch blocking the others, finished states, the launch check). The Settings
   row, the menu, and the power switch are not exercised by tests and need a manual check.
 
 **Contract additions.** `Transcript.engine: String?` (left out of the JSON when nil),

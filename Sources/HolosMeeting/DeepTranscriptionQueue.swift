@@ -73,13 +73,17 @@ public enum DeepTranscriptionSchedule {
         public var meetingBusy: Bool
         /// The pass running now, if any (one at a time).
         public var running: String?
-        /// Meetings another command of the app is working on (Label Speakers, a relabel, a delete…).
+        /// Meetings another command of the app is working on (Label Speakers, a relabel, a delete…), and meetings open
+        /// (or opening, or still saving) in Review, which owns their transcript and labels until it closes.
         public var inUse: Set<String>
+        /// A pass the app started before it was quit may still be running, detached: its meeting's command was refused
+        /// for the processing lease. Until that meeting can be had again only it is tried, so two passes never run.
+        public var waitingFor: String?
 
         public init(enabled: Bool, modelInstalled: Bool, power: Power, meetingBusy: Bool = false,
-                    running: String? = nil, inUse: Set<String> = []) {
+                    running: String? = nil, inUse: Set<String> = [], waitingFor: String? = nil) {
             self.enabled = enabled; self.modelInstalled = modelInstalled; self.power = power
-            self.meetingBusy = meetingBusy; self.running = running; self.inUse = inUse
+            self.meetingBusy = meetingBusy; self.running = running; self.inUse = inUse; self.waitingFor = waitingFor
         }
     }
 
@@ -97,10 +101,59 @@ public enum DeepTranscriptionSchedule {
     /// AC power (or has no battery), `waitForPower` on battery. Meetings in use by another command wait their turn.
     public static func next(_ queue: DeepTranscriptionQueue, _ situation: Situation) -> Decision {
         guard situation.running == nil, !situation.meetingBusy, situation.modelInstalled else { return .idle }
+        if let waiting = situation.waitingFor {
+            guard queue.contains(waiting), !situation.inUse.contains(waiting) else { return .idle }
+            return .run(waiting)
+        }
         let ready = queue.items.filter { !situation.inUse.contains($0.sessionID) }
         if let asked = ready.first(where: \.runNow) { return .run(asked.sessionID) }
         guard situation.enabled, let first = ready.first else { return .idle }
         return situation.power == .battery ? .waitForPower : .run(first.sessionID)
+    }
+
+    /// Whether a meeting is finished as `voiceislocal session deep-transcribe` requires it: saved, recovered, or saved
+    /// as audio only; not recording, processing, interrupted (Recover first), damaged, or with its audio deleted.
+    public static func isFinished(_ state: SessionState, audioDeleted: Bool) -> Bool {
+        !audioDeleted && [.complete, .transcriptionIncomplete, .recovered, .audioOnly].contains(state)
+    }
+
+    /// Whether a command's error output says another process holds the meeting's processing lease (a pass started
+    /// before a relaunch, still running).
+    public static func isLeaseConflict(_ errorOutput: String) -> Bool {
+        errorOutput.contains("processing this session")
+    }
+
+    /// A meeting the app finds at launch, for `reconcile`.
+    public struct Candidate: Sendable, Equatable {
+        public var sessionID: String
+        public var path: String
+        public var createdAt: Date
+        /// `isFinished`.
+        public var finished: Bool
+        /// The most languages named by meeting.json or the current transcript.
+        public var languages: Int
+        /// A deep transcription was journaled for it (`deepTranscribed`).
+        public var hasDeepTranscript: Bool
+
+        public init(sessionID: String, path: String, createdAt: Date, finished: Bool, languages: Int,
+                    hasDeepTranscript: Bool) {
+            self.sessionID = sessionID; self.path = path; self.createdAt = createdAt; self.finished = finished
+            self.languages = languages; self.hasDeepTranscript = hasDeepTranscript
+        }
+    }
+
+    /// Meetings that finished while the app was closed (the recorder saves and post-processes them on its own): the
+    /// finished ones in one language, started after the setting was turned on (`enabledSince`), with no deep
+    /// transcript, not considered before (`considered`: queued once already, whatever came of it) and not queued, in
+    /// the order given (oldest first is the caller's).
+    public static func reconcile(_ candidates: [Candidate], enabledSince: Date?, considered: Set<String>,
+                                 queue: DeepTranscriptionQueue) -> [Candidate] {
+        guard let enabledSince else { return [] }
+        return candidates.filter { candidate in
+            candidate.finished && candidate.languages <= 1 && !candidate.hasDeepTranscript
+                && candidate.createdAt >= enabledSince && !considered.contains(candidate.sessionID)
+                && !queue.contains(candidate.sessionID)
+        }
     }
 
     /// Whether a meeting that just finished saving is queued: the setting is on, the model installed, and the meeting
