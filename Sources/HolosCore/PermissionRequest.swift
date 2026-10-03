@@ -8,11 +8,11 @@ public enum PrivacyPermission: String, CaseIterable, Sendable {
 /// What one "Open Settings" click does. A permission not granted yet is asked for first: asking is what adds Voice
 /// is Local to the list in System Settings (again, after its entry was removed), and macOS then shows its own prompt,
 /// whose "Open System Settings" button leads to the page. macOS shows that prompt only once per entry, so when Voice
-/// is Local is still the active app a moment after asking, no prompt came and the page is opened directly. One
-/// click never shows both the prompt and the page.
+/// is Local never lost the focus during `promptWait` after asking, no prompt came and the page is opened directly; a
+/// prompt that appears late or is dismissed quickly still took the focus. One click never shows both.
 public enum PermissionRequest {
-    /// How long after asking a prompt has to take the focus.
-    public static let promptWait: Duration = .milliseconds(800)
+    /// How long after asking the app watches for a prompt taking the focus.
+    public static let promptWait: Duration = .milliseconds(1500)
 
     /// Whether to ask macOS first.
     public static func asks(granted: Bool) -> Bool { !granted }

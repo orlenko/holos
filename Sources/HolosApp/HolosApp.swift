@@ -1606,18 +1606,23 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
     }
 
     /// One step per click (`PermissionRequest`): a permission not granted is asked for (which adds Voice is Local
-    /// to the list, again after its entry was removed); the page opens only when macOS showed no prompt, judged by
-    /// Voice is Local still being the active app a moment later, or when the permission is granted.
+    /// to the list, again after its entry was removed); the page opens only when Voice is Local never lost the focus
+    /// during the prompt window, which a system prompt (even a late or quickly dismissed one) would take.
     private func requestPermission(_ permission: PrivacyPermission, granted: Bool, anchor: String,
                                    ask: () -> Void) {
         guard PermissionRequest.asks(granted: granted) else {
             openPrivacySettings(anchor)
             return
         }
+        let lostFocus = LostFocusFlag()
+        let observer = NotificationCenter.default.addObserver(
+            forName: NSApplication.didResignActiveNotification, object: nil, queue: .main) { _ in lostFocus.set() }
         ask()
         Task { @MainActor [weak self] in
             try? await Task.sleep(for: PermissionRequest.promptWait)
-            if PermissionRequest.opensSettings(granted: false, stillActiveAfterAsking: NSApp.isActive) {
+            NotificationCenter.default.removeObserver(observer)
+            if PermissionRequest.opensSettings(granted: false,
+                                               stillActiveAfterAsking: !lostFocus.value && NSApp.isActive) {
                 self?.openPrivacySettings(anchor)
             }
         }
@@ -1674,4 +1679,12 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func quit() { NSApplication.shared.terminate(nil) }
+}
+
+/// Set once the app resigned active while a permission prompt could appear.
+private final class LostFocusFlag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var lost = false
+    func set() { lock.withLock { lost = true } }
+    var value: Bool { lock.withLock { lost } }
 }

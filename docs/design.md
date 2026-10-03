@@ -215,7 +215,7 @@ Permissions (Microphone, Accessibility, System audio, Input Monitoring only
 after macOS refused the hotkey tap; each Open Settings click does one thing: a permission not
 granted is asked for, which adds Voice is Local to the list (again after its entry was removed)
 and lets macOS show its own prompt that leads to System Settings; the page is opened directly
-only when no prompt took the focus within 0.8 s, or when the permission is granted, so a click
+only when Voice is Local never lost the focus during the 1.5 s after asking, or when the permission is granted, so a click
 never shows both), Dictation (on/off, hold-to-talk shortcut, language,
 speech model, fillers, Apple Intelligence fix, preview and its opacity), Meetings (record
 system audio, speaker labels, a link to People for remembered voices), Reading (default
