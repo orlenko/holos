@@ -44,16 +44,3 @@ private func lockFile() throws -> (URL, URL) {
     flock(fd, LOCK_UN)
     #expect(DeepTranscriptionLock.state(at: url) == .free)
 }
-
-@Test func onlyThePassHoldingTheLockIsSignalled() throws {
-    let (folder, url) = try lockFile()
-    defer { try? FileManager.default.removeItem(at: folder) }
-    // Signal 0 checks the process without signalling it.
-    #expect(!DeepTranscriptionLock.signal("S1", 0, at: url), "Nothing holds it.")
-    let taken = try #require(try DeepTranscriptionLock.take(
-        DeepTranscriptionLock.Holder(pid: getpid(), sessionID: "S1", force: false), at: url, wait: .zero))
-    #expect(DeepTranscriptionLock.signal("S1", 0, at: url))
-    #expect(!DeepTranscriptionLock.signal("S2", 0, at: url), "Another meeting's pass.")
-    taken.release()
-    #expect(!DeepTranscriptionLock.signal("S1", 0, at: url), "Its pid may belong to another process once it ended.")
-}

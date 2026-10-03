@@ -5,8 +5,8 @@ import HolosCore
 /// The one deep transcription pass running on this Mac (docs/meeting-design.md §4.16, "App"): `voiceislocal session
 /// deep-transcribe` holds an exclusive `flock` on `<supportRoot>/deep-transcription.lock` for its whole life and
 /// writes who it is into the file once it holds it. The kernel lets go of the lock when the process ends, however it
-/// ends, so while the lock is held its holder is alive and the pid it wrote is still its own: the app decides that a
-/// pass is running only by trying the lock, and saves no process identity of its own.
+/// ends, so while the lock is held a pass is running: the app starts none of its own until the lock is free, and
+/// never signals or adopts a pass it did not start (what the holder wrote is for display and Review only).
 public enum DeepTranscriptionLock {
     /// Who holds the lock, as it wrote it.
     public struct Holder: Codable, Sendable, Equatable {
@@ -99,16 +99,6 @@ public enum DeepTranscriptionLock {
         }
         flock(fd, LOCK_UN)
         return .free
-    }
-
-    /// Signals the pass on `sessionID` with `signal`, only while it still holds the lock (checked again right before
-    /// the signal): its pid is then its own. Returns whether it was signalled.
-    @discardableResult
-    public static func signal(_ sessionID: String, _ signal: Int32 = SIGTERM, at url: URL = url) -> Bool {
-        guard case .held(let holder?) = state(at: url), holder.sessionID == sessionID, holder.pid > 0 else {
-            return false
-        }
-        return kill(holder.pid, signal) == 0
     }
 
     private static func errnoText(_ code: Int32) -> String { String(cString: strerror(code)) }

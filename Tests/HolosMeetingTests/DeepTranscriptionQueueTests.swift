@@ -132,64 +132,42 @@ private func queue(_ ids: [String], runNow: Set<String> = []) -> DeepTranscripti
                                                 queue: DeepTranscriptionQueue()).isEmpty, "Never turned on.")
 }
 
-@Test func aStartedPassIsSavedWithoutAProcessIdentity() throws {
-    var items = queue(["A", "B"], runNow: ["B"])
-    items.markStarted("A")
-    let data = try #require(items.encoded())
-    #expect(DeepTranscriptionQueue.decode(data) == items)
-    let raw = String(decoding: data, as: UTF8.self)
-    #expect(!raw.contains("pid"))
-    items.clearStarted("A")
-    #expect(items.items[0].started == nil)
-    // A queue saved by an earlier version, with the running pass's pid and start time: read as started.
-    let old = Data(#"{"schemaVersion":1,"items":[{"sessionID":"A","path":"/m/A.holos","queuedAt":"2027-01-15T08:00:00Z","runNow":false,"pid":4242,"pidStart":77},{"sessionID":"B","path":"/m/B.holos","queuedAt":"2027-01-15T08:00:00Z","runNow":true}]}"#.utf8)
+@Test func aQueueSavedByAnEarlierVersionIsReadWithoutItsProcessFields() throws {
+    // Saved while a pass ran (pid and start time), and after an unseen end (started, verifyOnly).
+    let old = Data(#"{"schemaVersion":1,"items":[{"sessionID":"A","path":"/m/A.holos","queuedAt":"2027-01-15T08:00:00Z","runNow":false,"pid":4242,"pidStart":77,"started":true},{"sessionID":"B","path":"/m/B.holos","queuedAt":"2027-01-15T08:00:00Z","runNow":true,"verifyOnly":true}]}"#.utf8)
     let read = DeepTranscriptionQueue.decode(old)
     #expect(read.items.map(\.sessionID) == ["A", "B"])
-    #expect(read.items[0].started == true && read.items[1].started == nil)
-    #expect(!String(decoding: read.encoded() ?? Data(), as: UTF8.self).contains("pid"))
+    let raw = String(decoding: try #require(read.encoded()), as: UTF8.self)
+    #expect(!raw.contains("pid") && !raw.contains("started") && !raw.contains("verifyOnly"))
+    #expect(DeepTranscriptionQueue.decode(read.encoded()) == read)
 }
 
-@Test func atLaunchAPassThatEndedUnseenIsSettled() {
-    // A automatic and B Run Now were started before the app quit; C waits.
-    var items = queue(["A", "B", "C"], runNow: ["B"])
-    items.markStarted("A")
-    items.markStarted("B")
-    // The lock is free: both ended. B is only checked next (no --force); A stays queued with the setting on.
-    var on = items
-    on.settleStarted(running: nil, enabled: true)
-    #expect(on.items.map(\.sessionID) == ["A", "B", "C"] && on.items.allSatisfy { $0.started == nil })
-    #expect(!DeepTranscriptionSchedule.forces(on.items[1]) && on.items[1].verifyOnly == true)
-    // With the setting off, the automatic one it kept while it ran is taken off.
-    var off = items
-    off.settleStarted(running: nil, enabled: false)
-    #expect(off.items.map(\.sessionID) == ["B", "C"])
-    // The lock is held by B's pass: B is still running and stays as it is.
-    var held = items
-    held.settleStarted(running: "B", enabled: false)
-    #expect(held.items.map(\.sessionID) == ["B", "C"] && held.items[0].started == true)
-    #expect(DeepTranscriptionSchedule.forces(held.items[0]))
-    // It ends later, unseen too.
-    held.settleEnded("B", enabled: false)
-    #expect(held.items[0].verifyOnly == true && held.items[0].started == nil)
+@Test func aPassCutShortRunsAgainWithTheFlagsItWasQueuedWith() {
+    // A (automatic) and B (Run Now) were running or waiting when the app quit; nothing records which.
+    let items = DeepTranscriptionQueue.decode(queue(["A", "B"], runNow: ["B"]).encoded())
+    let ready = DeepTranscriptionSchedule.Situation(enabled: true, modelInstalled: true, power: .ac)
+    // Run Now goes first and keeps --force (a pass of it that did finish before the quit is made again).
+    #expect(DeepTranscriptionSchedule.next(items, ready) == .run("B"))
+    #expect(DeepTranscriptionSchedule.forces(items.items[1]))
+    // The automatic one runs without it: the command keeps a transcript the model already made.
+    #expect(!DeepTranscriptionSchedule.forces(items.items[0]))
+}
+
+@Test func queuedMeetingsWaitForAnotherProcessesPass() {
+    let items = queue(["A", "B"], runNow: ["B"])
+    for id in ["A", "B"] {
+        #expect(DeepTranscriptionSchedule.stateText(sessionID: id, queue: items, running: nil, power: .battery,
+                                                    otherPassRunning: true)
+            == "Waiting for another final transcript to finish")
+    }
+    #expect(DeepTranscriptionSchedule.stateText(sessionID: "C", queue: items, running: nil, power: .ac,
+                                                otherPassRunning: true) == nil)
 }
 
 @Test func turningTheSettingOffKeepsTheRunningPassUntilItEnds() {
     var items = queue(["A", "B", "C"], runNow: ["C"])
-    items.markStarted("A")
     items.removeAutomatic(keeping: "A")
     #expect(items.items.map(\.sessionID) == ["A", "C"])
-    #expect(items.items.first?.started == true, "The running pass's item stays.")
-}
-
-@Test func anAdoptedRunNowPassIsOnlyCheckedAfterItEnds() {
-    var items = queue(["A"], runNow: ["A"])
-    #expect(DeepTranscriptionSchedule.forces(items.items[0]))
-    items.markVerifyOnly("A")
-    #expect(!DeepTranscriptionSchedule.forces(items.items[0]), "Not made again with --force.")
-    #expect(DeepTranscriptionQueue.decode(items.encoded()).items[0].verifyOnly == true)
-    // A queue saved before this field reads as before.
-    let old = Data(#"{"schemaVersion":1,"items":[{"sessionID":"A","path":"/m/A.holos","queuedAt":"2027-01-15T08:00:00Z","runNow":true}]}"#.utf8)
-    #expect(DeepTranscriptionQueue.decode(old).items.first.map(DeepTranscriptionSchedule.forces) == true)
 }
 
 @Test func aFailedRunNowSaysWhy() {

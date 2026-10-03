@@ -4804,55 +4804,58 @@ carried over.
   `flock` on `<supportRoot>/deep-transcription.lock` for its whole life and writes `{pid,
   sessionID, force}` into it once it holds it; a second pass finds it held (it retries for 2 s,
   since a probe holds it for an instant) and exits 1 with "Another final transcript is being
-  made…". The kernel lets go of the lock when the process ends, however it ends, so the app
-  decides that a pass is running only by trying the lock (a shared, non-blocking `flock`): held
-  means alive, and the pid and meeting it wrote are trustworthy while it is held; free means
-  nothing runs, whatever the queue says. No process identity is saved in the queue (an earlier
-  version's `pid` is read as `started` and never written again). A pass holding the lock that
-  is not the app's own child (started before a relaunch, since maintenance commands are
-  detached, or in Terminal) is the running pass: it holds its meeting, nothing else starts (not
-  even Run Now), a meeting already recording at launch stops it at once, Cancel signals the pid
-  read from the lock after checking again right before the signal that the lock is still held
-  for that meeting, and the 30 s timer notices when the lock is free. The app's own child is
-  signalled by its pid, which no other process can have until the app reaps it. A queue item is
-  marked `started` when its pass starts; the first time the lock is known after launch, every
-  started item except the lock holder's ended unseen (`settleStarted`), as does an adopted pass
-  when the lock frees (`settleEnded`): a Run Now item is only checked next (`verifyOnly`, no
-  `--force`, so it keeps the transcript the pass made, or makes it if the pass was cut short);
-  an automatic one stays queued while the setting is on (the next run keeps a transcript made,
-  or makes it) and is taken off when it is off. Turning the setting off keeps the running
-  pass's item until it ends. A command refused by the processing lease (another command on the
-  meeting) or by the lock stays queued and is tried again after a minute, as is one that cannot
-  be started at all.
+  made…". The kernel lets go of the lock when the process ends, however it ends.
+- *The app manages only its own pass.* A lock held by any other process (a pass started in
+  Terminal, or one the app started before it was quit, since maintenance commands are
+  detached) only means "busy": the app starts nothing while it is held, checks again every
+  30 s, and its queued meetings show "Waiting for another final transcript to finish". It never
+  adopts such a pass, never holds its meeting, and never cancels, preempts, or signals it (it is
+  the user's own run, or one that finishes on its own). The app's own child is signalled (Cancel,
+  a meeting starting) by its spawn pid, which no other process can have until the app reaps it.
+  The queue saves no process identity (keys an earlier version saved, `pid`, `pidStart`,
+  `started`, `verifyOnly`, are ignored). A pass cut short by a quit or a crash, or still running
+  from before a relaunch, stays queued and runs again once the lock is free, with the flags it
+  was queued with: an automatic one without `--force`, so the command keeps a transcript the
+  model already made (a no-op); a Run Now one with `--force`, so a Run Now whose pass did finish
+  before the quit is transcribed a second time (a known cost, accepted for simplicity). Turning
+  the setting off keeps the running pass's item until it ends. A command refused by the
+  processing lease (another command on the meeting) or by the lock stays queued and is tried
+  again after a minute, as is one that cannot be started at all.
+- *Review waits.* Opening Review (from Meetings, or the menu bar's Name Speakers, all through
+  `openReview`) for a meeting the app's pass works on (its `sessionsInUse` entry) says "Final
+  transcript in progress" and that Review opens when it finishes, which it then does, and offers
+  Cancel Final Transcript. For a meeting another process's pass works on (the lock's holder)
+  it says so and opens nothing. The scheduler already leaves meetings open in Review alone.
 - *Stale scans.* Every turn of the setting on or off counts an activation; the after-meeting
   language read and the launch check snapshot it and drop their result when it changed, so a
   scan begun before the setting was turned off never queues afterwards, even if it was turned on
   again. Launch-time results are also checked against the queue and the meetings considered
   right before each is queued.
 - *Meetings first.* When a meeting starts (or one that failed may still be capturing or
-  post-processing, by its recorder's liveness) while a pass runs, the pass is stopped (SIGTERM;
-  it publishes nothing) and stays queued, so it runs again from the start once the meeting is
-  saved. A pass cancelled after it already published its transcript says so in an alert (the
+  post-processing, by its recorder's liveness, or a recorder the app launched has not exited,
+  even without a session folder: `MeetingController.recorderMayStillRun`, which a start checks
+  too) while the app's pass runs, the pass is stopped (SIGTERM; it publishes nothing) and stays
+  queued, so it runs again from the start once the meeting is saved. Another process's pass is
+  left running. A pass cancelled after it already published its transcript says so in an alert (the
   labels and files may be behind: Label Speakers finishes them). Maintenance commands, like this one, keep running after the
   app quits.
-- *Meetings list.* The State column shows "Final transcript queued", "… waits for power", or
-  "… in progress…". Right-clicking a finished meeting offers Make Final Transcript Now
+- *Meetings list.* The State column shows "Final transcript queued", "… waits for power",
+  "Waiting for another final transcript to finish", or "… in progress…". Right-clicking a finished meeting offers Make Final Transcript Now
   (relabels speakers): it runs next, also on battery, with `--force`, so a transcript the model
   made before is made again and edited speaker labels are replaced (names carry over, edits of
   single turns do not), as asking for it by name means; refused with an alert without the model,
-  for a meeting that is not finished, or for one in several languages. While a pass is queued or
-  running, Cancel Final Transcript (SIGTERM: the command cancels and says whether the new
+  for a meeting that is not finished, or for one in several languages. While a meeting is queued
+  or the app's own pass runs on it, Cancel Final Transcript (SIGTERM: the command cancels and says whether the new
   transcript was already published).
 - *Tests.* `DeepTranscriptionQueueTests` (order and run-now upgrade, saving and damaged data,
   one at a time, AC/battery/no battery, busy meetings, meetings in use or in Review, run-now on
   battery, the setting off, queuing only one-language meetings, the State column's texts,
-  commands refused for another process, the queue saved without a process identity and an
-  older queue's `pid` read as started, settling passes that ended unseen at launch (Run Now
-  checked, automatic kept or dropped by the setting), the failure text of Run Now, finished
-  states, the launch check), `DeepTranscriptionLockTests` (held only while taken, the holder
-  read while held, a second pass refused, a holder not written yet, signalling only the holder
-  of a held lock). The Settings row, the menu, the alerts, and the power switch are not
-  exercised by tests and need a manual check.
+  commands refused for another process, an earlier version's queue read without its process
+  fields, a pass cut short running again with its flags, waiting for another process's pass,
+  the failure text of Run Now, finished states, the launch check), `DeepTranscriptionLockTests`
+  (held only while taken, the holder read while held, a second pass refused, a holder not
+  written yet). The Settings row, the menu, the alerts, Review waiting, and the power switch
+  are not exercised by tests and need a manual check.
 
 **Contract additions.** `Transcript.engine: String?` (left out of the JSON when nil),
 `PostProcessingStage.deepTranscription`, `MeetingEventKind.deepTranscribed`.

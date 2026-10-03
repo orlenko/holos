@@ -206,7 +206,7 @@ struct MeetingControllerTuning: Sendable {
         // dismissed) has not exited: it may be waiting at a permission prompt without a session folder, so its
         // liveness says nothing. It would record alongside a new one once the prompt is answered. One an earlier run of
         // the app launched (the app quit from the failure, or crashed) is found by its saved pid and start time.
-        if !unexitedRecorders.isEmpty || launchedRecordersStillRun() {
+        if recorderMayStillRun() {
             throw HolosError.unavailable(MeetingReducer.stillStopping)
         }
         // A meeting started in a terminal since the last rescan (every 3 s) is followed instead: a second recorder
@@ -594,6 +594,13 @@ struct MeetingControllerTuning: Sendable {
         var launched = loadLaunchedRecorders()
         launched[sessionID] = [Int(pid), Int(started)]
         saveLaunchedRecorders(launched)
+    }
+
+    /// Whether a recorder this app launched (in this run, or an earlier one by its saved pid and start time) has not
+    /// exited, though it may have no session folder or status yet (a start that timed out at a permission prompt). A
+    /// new recorder does not start meanwhile, nor does other heavy work (a deep transcription pass).
+    public func recorderMayStillRun() -> Bool {
+        !unexitedRecorders.isEmpty || launchedRecordersStillRun()
     }
 
     /// True while a saved launched recorder still runs: one of this run whose exit was not reported, or one whose
