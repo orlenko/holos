@@ -70,6 +70,9 @@ public enum ScreenContextStore {
     public static let maximumFrames = 1_000
     public static let maximumImageBytes = 1 << 20
     public static let maximumTotalImageBytes = 256 << 20
+    /// Snapshots are of the whole display, downscaled so neither side exceeds this: about point resolution on a 5K
+    /// display, so slide text stays legible to OCR.
+    public static let maximumImageDimension = 2560
     public static func directory(_ session: URL) -> URL { session.appendingPathComponent("screen", isDirectory: true) }
     public static func manifest(_ session: URL) -> URL { directory(session).appendingPathComponent("context.json") }
     public static func image(_ id: String, session: URL) throws -> URL {

@@ -1069,6 +1069,16 @@ splitting a sentence across a speaker turn. Manual rename/split/merge/reassignme
 are edits over machine results. Reprocessing creates a new revision and flags
 ambiguous transfers of existing human edits instead of silently discarding them.
 
+Optionally capture the screen during a meeting (Settings › Meetings, off by default;
+the start panel's "Capture screen" for one meeting), so text on slides and shared
+screens can help the transcript (meeting-design §4.15). It is the whole main display,
+not a chosen window: picking a window in every meeting proved impractical, and since
+no online model is involved the images never leave the Mac. Voice is Local's own
+windows are excluded, so the live transcript is not read back into the context. Only
+changes that hold still are kept, Vision OCR runs on this Mac after the recording, and
+images and text are deleted with the meeting audio. OCR is untrusted evidence for the
+user's word-list questions, never an automatic transcript edit.
+
 With strict Apple-only dependencies, ship timestamped text, manual speaker tagging,
 and distinguishable source tracks first. Fully automatic multi-speaker labels remain
 a requirement for the eventual Otter subset, not something the native baseline
