@@ -3,6 +3,7 @@ import Foundation
 @testable import HolosAudio
 import HolosCore
 import HolosStorage
+import ImageIO
 import ScreenCaptureKit
 import Testing
 
@@ -31,11 +32,11 @@ private func deliver(_ receiver: ScreenFrameReceiver, image: CGImage? = nil, tim
     }
 }
 
-@Test @MainActor func screenCaptureDeniedPermissionNeverQueriesWindowsOrStartsAStream() async throws {
+@Test @MainActor func screenCaptureDeniedPermissionNeverQueriesDisplaysOrStartsAStream() async throws {
     let (root, archive) = try await screenCaptureFixture()
     defer { try? FileManager.default.removeItem(at: root) }
     let capture = MeetingScreenCapture(permissionCheck: { false })
-    capture.start(selection: .init(windowID: 123, ownerPID: 456), session: archive.directory, origin: 0)
+    capture.start(.display, session: archive.directory, origin: 0)
     await capture.stop()
     let record = try #require(try ScreenContextStore.read(session: archive.directory, sessionID: archive.id))
     #expect(record.failure == "captureFailed" && record.frames.isEmpty && record.captureID == nil)
@@ -123,4 +124,124 @@ func screenCaptureEncodedImageAndTotalByteCapsStopRatherThanSilentlyDrop(totalCa
     #expect(result.failure == "storageLimit" && result.frames.isEmpty && result.captureID == nil)
     #expect(try SessionArchive.readManifest(at: archive.directory).status == ArchiveStatus.recording)
     try await archive.finish(status: ArchiveStatus.audioOnly)
+}
+
+@Test func screenCaptureKeepsAChangeOnlyOnceItSettles() async throws {
+    let (root, archive) = try await screenCaptureFixture()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let receiver = ScreenFrameReceiver(session: archive.directory, origin: 0)
+    let white = try screenCaptureImage(gray: 1), black = try screenCaptureImage(gray: 0)
+    let gray = try screenCaptureImage(gray: 0.5)
+    await deliver(receiver, image: white, time: 1)
+    await deliver(receiver, image: black, time: 3)   // a new slide: not kept yet, and the first frame ends at 1
+    await deliver(receiver, image: black, time: 5)   // still there: kept from when it was first seen
+    await deliver(receiver, image: gray, time: 7)    // another one, then nothing changes on screen
+    await deliver(receiver, time: 9, status: .idle)  // settled: kept from 7 to 9
+    await deliver(receiver, image: white, time: 11)  // a video-like flicker that never settles
+    await deliver(receiver, image: black, time: 13)
+    await receiver.close()
+    let record = try #require(try ScreenContextStore.read(session: archive.directory, sessionID: archive.id))
+    #expect(record.frames.map(\.start) == [1, 3, 7])
+    #expect(record.frames.map(\.end) == [1, 5, 9])
+    let images = try FileManager.default.contentsOfDirectory(atPath: ScreenContextStore.directory(archive.directory).path)
+        .filter { $0.hasSuffix(".jpg") }
+    #expect(images.count == 3, "An unsettled change is never written.")
+    try await archive.finish(status: ArchiveStatus.audioOnly)
+}
+
+@Test func fiveKFramesAreStoredWithinTheDimensionAndByteBounds() async throws {
+    let (root, archive) = try await screenCaptureFixture()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let receiver = ScreenFrameReceiver(session: archive.directory, origin: 0)
+    let display: CGImage = try #require(syntheticDisplay())
+    await deliver(receiver, image: display, time: 1)
+    await receiver.close()
+    let record = try #require(try ScreenContextStore.read(session: archive.directory, sessionID: archive.id))
+    let frame = try #require(record.frames.first)
+    let data = try #require(try AtomicFile.readIfPresent(ScreenContextStore.image(frame.id, session: archive.directory),
+                                                         maxBytes: ScreenContextStore.maximumImageBytes))
+    let image = try #require(CGImageSourceCreateWithData(data as CFData, nil)
+        .flatMap { CGImageSourceCreateImageAtIndex($0, 0, nil) })
+    #expect(image.width == 2560 && image.height == 1440)
+    #expect(record.imageBytes == data.count && data.count <= ScreenContextStore.maximumImageBytes)
+    try await archive.finish(status: ArchiveStatus.audioOnly)
+}
+
+@Test func denseFramesAreReencodedSmallerInsteadOfEndingTheCapture() throws {
+    // Random noise is the worst case for JPEG: at quality 0.65 a 2560×1440 frame of it is far above 1 MiB.
+    let width = 2560, height = 1440
+    var generator = SystemRandomNumberGenerator()
+    var pixels = [UInt8](repeating: 0, count: width * height * 4)
+    for index in pixels.indices { pixels[index] = UInt8.random(in: 0...255, using: &generator) }
+    let image = try pixels.withUnsafeMutableBytes { bytes -> CGImage in
+        let context = try #require(CGContext(data: bytes.baseAddress, width: width, height: height, bitsPerComponent: 8,
+            bytesPerRow: width * 4, space: CGColorSpace(name: CGColorSpace.sRGB)!,
+            bitmapInfo: CGImageAlphaInfo.noneSkipFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue))
+        return try #require(context.makeImage())
+    }
+    let data = try ScreenFrameEncoding.jpeg(image)
+    #expect(data.count <= ScreenContextStore.maximumImageBytes)
+}
+
+@Test func displayFilterLeavesOutOnlyVoiceIsLocal() {
+    struct App { var bundle: String; var pid: Int32 }
+    let apps = [
+        App(bundle: "ca.orlenko.holos.app", pid: 10), App(bundle: "ca.orlenko.holos.cli", pid: 11),
+        App(bundle: "com.example.slides", pid: 12), App(bundle: "com.example.call", pid: 13),
+        App(bundle: "com.example.dev-build", pid: 14), App(bundle: "", pid: 15),
+    ]
+    let excluded = ScreenCapturePlan.excluded(apps, bundleIdentifier: \.bundle, processID: \.pid,
+                                              currentProcessID: 15, currentBundleIdentifier: nil)
+    #expect(excluded.map(\.pid) == [10, 11, 15], "the app, its recorder tool, and this process")
+    let devBuild = ScreenCapturePlan.excluded(apps, bundleIdentifier: \.bundle, processID: \.pid,
+                                              currentProcessID: 99, currentBundleIdentifier: "com.example.dev-build")
+    #expect(devBuild.map(\.pid) == [10, 11, 14])
+    #expect(ScreenCapturePlan.excluded(apps, bundleIdentifier: \.bundle, processID: \.pid,
+                                       currentProcessID: 99, currentBundleIdentifier: "").map(\.pid) == [10, 11])
+}
+
+@Test func displayPlanPicksTheMainDisplayAndBoundsTheFrameSize() {
+    #expect(ScreenCapturePlan.display([3, 1, 2] as [CGDirectDisplayID], id: { $0 }, main: 1) == 1)
+    #expect(ScreenCapturePlan.display([3, 2] as [CGDirectDisplayID], id: { $0 }, main: 1) == 3)
+    #expect(ScreenCapturePlan.display([] as [CGDirectDisplayID], id: { $0 }, main: 1) == nil)
+    #expect(ScreenCapturePlan.size(pixelWidth: 5120, pixelHeight: 2880) == (2560, 1440))
+    #expect(ScreenCapturePlan.size(pixelWidth: 6016, pixelHeight: 3384) == (2560, 1440))
+    #expect(ScreenCapturePlan.size(pixelWidth: 1920, pixelHeight: 1080) == (1920, 1080))
+    #expect(ScreenCapturePlan.size(pixelWidth: 2880, pixelHeight: 1864) == (2560, 1657))
+    #expect(ScreenCapturePlan.size(pixelWidth: 0, pixelHeight: 0) == (2, 2))
+}
+
+/// Process CPU for the per-sample work on synthetic 5K frames: fingerprint every sample, and for kept frames the
+/// downscale and JPEG encode. Prints numbers; no timing assertion.
+@Test(.enabled(if: ProcessInfo.processInfo.environment["HOLOS_SCREEN_BENCHMARK"] == "1"))
+func screenFiveKFrameCPUBenchmark() throws {
+    let frames = try (0..<4).map { try #require(syntheticDisplay(offset: $0 * 90)) }
+    func cpu() -> Double {
+        var usage = rusage(); getrusage(RUSAGE_SELF, &usage)
+        return Double(usage.ru_utime.tv_sec + usage.ru_stime.tv_sec)
+            + Double(usage.ru_utime.tv_usec + usage.ru_stime.tv_usec) / 1_000_000
+    }
+    let samples = 20
+    var start = cpu()
+    for index in 0..<samples { _ = ScreenFrameDifference.fingerprint(frames[index % frames.count]) }
+    let fingerprint = (cpu() - start) / Double(samples)
+    start = cpu()
+    var bytes = 0
+    for index in 0..<samples { bytes += try ScreenFrameEncoding.jpeg(frames[index % frames.count]).count }
+    let encode = (cpu() - start) / Double(samples)
+    // The stream delivers 2560×1440 BGRA buffers; the receiver copies each through a software CIContext.
+    var buffer: CVPixelBuffer?
+    CVPixelBufferCreate(nil, 2560, 1440, kCVPixelFormatType_32BGRA, nil, &buffer)
+    let pixels = try #require(buffer)
+    let context = CIContext(options: [.useSoftwareRenderer: true])
+    start = cpu()
+    for _ in 0..<samples {
+        let input = CIImage(cvPixelBuffer: pixels)
+        _ = try #require(context.createCGImage(input, from: input.extent))
+    }
+    let convert = (cpu() - start) / Double(samples)
+    print("Synthetic 5K: fingerprint \(String(format: "%.1f", fingerprint * 1000)) ms CPU per sample; "
+        + "downscale+JPEG \(String(format: "%.1f", encode * 1000)) ms CPU per kept frame; "
+        + "\(bytes / samples / 1024) KiB per JPEG; 2560×1440 buffer copy "
+        + "\(String(format: "%.1f", convert * 1000)) ms CPU per sample")
 }

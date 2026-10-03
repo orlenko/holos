@@ -70,9 +70,7 @@ import Synchronization
         if let microphone = settings.microphone { arguments += ["--microphone", microphone.argument] }
         if let expected = settings.expectedSpeakers { arguments += ["--expected-speakers", String(expected)] }
         if let vocabularyFile { arguments += ["--vocabulary-file", vocabularyFile.path] }
-        if let screen = settings.screenWindow {
-            arguments += ["--screen-window", String(screen.windowID), "--screen-owner", String(screen.ownerPID)]
-        }
+        if let screen = settings.screen { arguments += ["--screen", screen.rawValue] }
         arguments += ["--no-live-text", "--directory", root.path]
         return arguments
     }
@@ -158,7 +156,7 @@ import Synchronization
                                        expectedSpeakers: settings.expectedSpeakers, liveText: false,
                                        microphone: settings.microphone,
                                        languages: settings.locales.count > 1 ? settings.locales : [],
-                                       screenWindow: settings.screenWindow)
+                                       screen: settings.screen)
         let stop = ManualStopSource()
         let log = Self.labellingLog(in: logDirectory, sessionID: sessionID)
         let labelling = LabellingStarted()

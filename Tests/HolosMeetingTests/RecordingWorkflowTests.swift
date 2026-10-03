@@ -100,15 +100,15 @@ func recordOnlySavesAudioAndFinishesAudioOnly() async throws {
 }
 
 @Test(.timeLimit(.minutes(1))) @MainActor
-func screenWindowRequestIsOptionalAndDoesNotChangeAudioOutcome() async throws {
+func screenCaptureRequestIsOptionalAndDoesNotChangeAudioOutcome() async throws {
     let temp = try TemporaryDirectory("screen-options")
     defer { temp.remove() }
     let captures = threeMicFrames()
     var options = RecordingOptions.testing(root: temp.url, recordOnly: true)
-    options.screenWindow = ScreenWindowSelection(windowID: 12, ownerPID: 34)
+    options.screen = .display
     let outcome = try await record(options, captures: captures, stopAfterConsuming: 3)
     #expect(outcome.archiveStatus == ArchiveStatus.audioOnly && outcome.transcriptErrors.isEmpty)
-    #expect(captures.requests.first?.screenWindow == options.screenWindow)
+    #expect(captures.requests.first?.screen == .display)
     #expect(captures.requests.first?.sessionDirectory == outcome.directory)
     #expect(try ScreenContextStore.read(session: outcome.directory, sessionID: outcome.sessionID) == nil,
             "The fake audio capture never creates a real screen stream or asks for a permission.")
@@ -119,7 +119,7 @@ private struct ScreenOCRSequenceReporter: RecordingReporter {
     let observed: SharedValue<Bool>
     func phrase(_ segment: TranscriptSegment, track: String) {}
     func message(_ text: String) {
-        guard text.hasPrefix("Recognizing text in saved meeting window snapshots") else { return }
+        guard text.hasPrefix("Recognizing text in saved screen snapshots") else { return }
         if let session = sessionFolders(in: root).first {
             observed.set((try? SessionArchive.currentTranscriptID(at: session)) != nil)
         }
@@ -135,7 +135,7 @@ func screenOCRStartsOnlyAfterLiveSpeechHasDrainedAndTranscriptIsDurable() async 
         TranscriptSegment(start: 0, end: 0.3, text: "Invented example", track: "mic"),
     ])])
     var options = RecordingOptions.testing(root: temp.url)
-    options.screenWindow = .init(windowID: 12, ownerPID: 34)
+    options.screen = .display
     let observed = SharedValue(false)
     let stop = ManualStopSource()
     let dependencies = RecordingDependencies.testing(captures: captures, speech: speech, stop: stop,

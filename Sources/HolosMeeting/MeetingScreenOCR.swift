@@ -99,7 +99,8 @@ public enum MeetingScreenOCR {
                       let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
                       let width = properties[kCGImagePropertyPixelWidth] as? Int,
                       let height = properties[kCGImagePropertyPixelHeight] as? Int,
-                      (1...1600).contains(width), (1...1600).contains(height),
+                      (1...ScreenContextStore.maximumImageDimension).contains(width),
+                      (1...ScreenContextStore.maximumImageDimension).contains(height),
                       let image = CGImageSourceCreateImageAtIndex(source, 0, nil) else {
                     record.failure = "imageUnavailable"
                     try ScreenContextStore.update(session: session, sessionID: sessionID) {
