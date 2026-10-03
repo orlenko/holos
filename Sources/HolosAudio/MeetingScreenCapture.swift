@@ -303,7 +303,11 @@ final class ScreenFrameReceiver: NSObject, SCStreamOutput, SCStreamDelegate, Sen
                     let previous = value.previous
                     if ScreenFrameDifference.settledChange(fingerprint, retained: value.fingerprint,
                                                            previousSample: previous?.fingerprint) {
-                        kept = (image, fingerprint, value.fingerprint == nil ? time : previous?.time ?? time)
+                        // From the previous sample only when it showed this very picture; a picture that settled
+                        // in part but still differs elsewhere (a slide build's next bullet) is new at this sample.
+                        let shownBefore = value.fingerprint != nil
+                            && previous.map { ScreenFrameDifference.unchanged(fingerprint, comparedWith: $0.fingerprint) } == true
+                        kept = (image, fingerprint, shownBefore ? previous?.time ?? time : time)
                     } else if ScreenFrameDifference.meaningful(fingerprint, comparedWith: value.fingerprint) {
                         // A slide that just changed, a scroll, or a moving video: wait for the next sample.
                         value.previous = Sample(fingerprint: fingerprint, time: time, image: image)

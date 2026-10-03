@@ -22,6 +22,17 @@ private func screenCaptureImage(gray: CGFloat) throws -> CGImage {
     return try #require(context.makeImage())
 }
 
+/// White 640×360 (16×9 tiles of 40×40) with black rectangles, in pixels.
+private func screenCaptureImage(black rectangles: [CGRect]) throws -> CGImage {
+    let context = try #require(CGContext(data: nil, width: 640, height: 360, bitsPerComponent: 8,
+        bytesPerRow: 640, space: CGColorSpaceCreateDeviceGray(), bitmapInfo: 0))
+    context.setFillColor(gray: 1, alpha: 1)
+    context.fill(CGRect(x: 0, y: 0, width: 640, height: 360))
+    context.setFillColor(gray: 0, alpha: 1)
+    for rectangle in rectangles { context.fill(rectangle) }
+    return try #require(context.makeImage())
+}
+
 private func deliver(_ receiver: ScreenFrameReceiver, image: CGImage? = nil, time: Double,
                      status: SCFrameStatus = .complete) async {
     await withCheckedContinuation { continuation in
@@ -146,6 +157,27 @@ func screenCaptureEncodedImageAndTotalByteCapsStopRatherThanSilentlyDrop(totalCa
     let images = try FileManager.default.contentsOfDirectory(atPath: ScreenContextStore.directory(archive.directory).path)
         .filter { $0.hasSuffix(".jpg") }
     #expect(images.count == 3, "An unsettled change is never written.")
+    try await archive.finish(status: ArchiveStatus.audioOnly)
+}
+
+@Test func aSettledChangeThatStillDiffersFromThePendingSampleStartsAtItsOwnTime() async throws {
+    let (root, archive) = try await screenCaptureFixture()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let receiver = ScreenFrameReceiver(session: archive.directory, origin: 0)
+    // A slide build: the left half fills in, then a bullet appears on the right while the left half holds still.
+    let half = CGRect(x: 0, y: 0, width: 320, height: 360)
+    let bullet = CGRect(x: 440, y: 120, width: 40, height: 40)
+    let blank = try screenCaptureImage(black: [])
+    let built = try screenCaptureImage(black: [half])
+    let withBullet = try screenCaptureImage(black: [half, bullet])
+    await deliver(receiver, image: blank, time: 1)
+    await deliver(receiver, image: built, time: 3)       // pending
+    await deliver(receiver, image: withBullet, time: 5)  // the left half settled, but this picture is new at 5
+    await deliver(receiver, image: withBullet, time: 7)
+    await receiver.close()
+    let record = try #require(try ScreenContextStore.read(session: archive.directory, sessionID: archive.id))
+    #expect(record.frames.map(\.start) == [1, 5], "the saved picture, with its bullet, was not on screen at 3")
+    #expect(record.frames.map(\.end) == [1, 7])
     try await archive.finish(status: ArchiveStatus.audioOnly)
 }
 

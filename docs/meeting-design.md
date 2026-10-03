@@ -4535,8 +4535,10 @@ A sample becomes a keyframe when at least 10% of the tiles (15) both differ from
 last retained frame and are unchanged since the previous sample (`settledChange`): a
 new slide or a finished scroll settles one sample later (or at the next idle sample,
 which means nothing changed), while a video tile that keeps moving never counts, even
-when it covers half the display. The keyframe starts at the sample where its content
-first appeared. A change that never settles (shown under two seconds, or still moving
+when it covers half the display. The keyframe starts at the previous sample only when
+that sample showed the same picture (no tile differs); a picture that settled in part
+but still differs elsewhere (a slide build's next bullet, or a video beside the slide)
+starts at its own sample. A change that never settles (shown under two seconds, or still moving
 at stop) is dropped. The first frame, and the first after a gap, is kept at once. This
 can miss sparse edits, colour-only changes, or a slide in a window under a tenth of the
 display; it is a heuristic, not a semantic slide detector. Similar samples and idle

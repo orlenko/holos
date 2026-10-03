@@ -60,6 +60,11 @@ public enum ScreenFrameDifference {
         return enough(tiles.filter { $0 }.count)
     }
 
+    /// No tile differs at all: the same picture, as far as the fingerprint can tell.
+    public static func unchanged(_ next: [UInt8], comparedWith previous: [UInt8]) -> Bool {
+        changedTiles(next, previous).map { !$0.contains(true) } ?? false
+    }
+
     /// Enough tiles differ from `retained` and are unchanged since `previousSample`. True without a retained
     /// fingerprint (the first frame, or the first after a gap); without a previous sample, any change counts.
     public static func settledChange(_ next: [UInt8], retained: [UInt8]?, previousSample: [UInt8]?) -> Bool {
