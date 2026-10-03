@@ -391,8 +391,10 @@ timeline and larger local-model benchmark are follow-ups, not completed features
   passages and 15,786 words (the recorded transcript had 17,193), 14 passages over silence
   and 2 repeats left out; word starts agreed with the recorded transcript's within 0.13 s at
   the median (98 % within 1 s); recorded words with no deep word within 3 s fell from about
-  500 s of speech per track before the prompt workarounds to about 65 s. Term accuracy was
-  not measured again.
+  500 s of speech per track before the prompt workarounds to about 65 s. Against a cloud
+  reference (system track, `eval local --backend whisper`): 14.6 % WER (339 deletions) and 63 of
+  82 word-list terms, against Apple's 20.9 % and 31 of 82, after WhisperKit's first-token check,
+  which emptied whole chunks (725 deletions), was turned off.
 - Main window (docs/design.md "Main window"): **Open Voice is Local** (⌘0) opens one
   window with a sidebar: History (⌘1), Corrections (⌘2), Meetings (⌘3), People (⌘4),
   Reading (⌘5), and Settings (⌘,), with a
@@ -653,9 +655,7 @@ Still requiring real-machine or user-data validation:
   keeps the recognizer's words for comparison. The model is asked one place at a time (at
   most 500 per run).
 - Deep transcription: meetings in several languages are not transcribed again yet; the app does
-  not queue or run the pass on its own yet (a follow-up PR); the vocabulary-term gain was
-  measured before these workarounds and needs measuring again with `eval local --backend
-  whisper` against a cloud run.
+  not queue or run the pass on its own yet (a follow-up PR); accuracy was measured on one meeting.
 - Live transcript: selecting a finalized phrase while recording can correct its text or name
   its speaker. The app saves a timed hint, carries text into the final/replayed transcript,
   learns safe correction pairs, keeps a shared pair until the last confirming live edit is

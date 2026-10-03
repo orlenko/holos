@@ -4618,6 +4618,21 @@ without the prompt too, and keeps the prompted result only when it has at least 
 plain result's words: 0 of 1,820 left uncovered, 7 of 28 chunks kept without the prompt, at
 about 2.8 times the time of a plain pass (70 s for the ten minutes on the test Mac).
 
+*Empty chunks* (found by evaluating the first version against a cloud reference). Whole chunks
+still came back with no words at random, in both decodes, and the dropped 20–30 s stretches
+gave the system track 725 deletions (Apple's: 192; plain `whisperkit-cli` with the same prompt:
+425). A decode that is empty is `<|startoftranscript|><|en|><|transcribe|><|0.00|><|endoftext|>`
+at temperature 1.0: WhisperKit's first-token log-probability check (`firstTokenLogProbThreshold`,
+−1.5 by default; Whisper itself has no such check) judged the first token unlikely, which a prompt
+makes common, and sent the chunk through every fallback temperature to an end-of-text. On the
+piece of the call at 572–1144 s, 12 of about 40 prompted chunks were empty with it, none of the
+audible ones without it. So the check is off (the compression-ratio and log-probability
+fallbacks stay). Chunks are also at most 20 s (a 110-token prompt leaves about 110 tokens of
+WhisperKit's 224 for the words, which 30 s of fast speech can exceed), and a chunk that still
+gives no words over audio above −50 dBFS is decoded again in two halves split at its quietest
+100 ms (twice at most, down to 4 s halves). A decode's words count its text when it has no word
+timings, so the plain-or-prompted choice never takes text for silence.
+
 **Model files** (`WhisperModels`). `<supportRoot>/Models/whisperkit/<model>/` (or
 `$HOLOS_WHISPER_MODELS_DIR/<model>/`), as WhisperKit's Hugging Face download lays it out,
 with the large-v3 tokenizer (`models/openai/whisper-large-v3/tokenizer.json`, fetched by the
@@ -4701,6 +4716,15 @@ skips it.
    or the manifest's). With no recorded words to look for, the silence guard drops every
    segment over near-silent audio (the level alone). Nothing recognized: no transcript is made
    and the record is `failed` ("No transcript was made. …", exit 1).
+
+**Evaluation against a cloud reference** (the same call's system track, the user's scorer:
+jiwer after normalization, terms of the word list; `eval local --backend whisper` with today's
+vocabulary and word fixes): Apple 20.9 % WER (192 deletions), 31/82 terms; plain
+`whisperkit-cli` turbo with the same prompt and VAD 13.7 % (425 deletions), 63/82; this pass
+before the empty-chunk fix 19.5 % (725 deletions), 58/82; after it 14.6 % (521 substitutions,
+339 deletions, 293 insertions), 63/82 (+3 extra). Recorded words with no word of the candidate
+within 3 s on that track: 349 before, 56 after. The candidate took about 15 minutes for both
+tracks (106 minutes of audio, with the test suite running alongside).
 
 **Validation** (a copy of the user's 53-minute call, both tracks, release build on the M4
 Pro; numbers only). The pass took 1,163 s for 6,348 s of audio (about 11 minutes per hour of

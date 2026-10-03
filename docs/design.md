@@ -984,8 +984,9 @@ names and jargon (on a 53-minute call, 20.9 % WER against a cloud reference and 
 word-list terms). Nothing waits for the final transcript, so after the meeting the saved
 audio can be transcribed again by a larger local model: Whisper large-v3 turbo through
 WhisperKit, on the Neural Engine, prompted with the word list, measured 11–14 % WER and
-56–66 of 82 terms on the same call. With the checks below the pass takes about 11 minutes per hour
-of audio on an M4 Pro (each chunk is decoded with and without the prompt).
+56–66 of 82 terms on the same call; the pass as built measured 14.6 % and 63 of 82 there. It
+takes about 8–11 minutes per hour of audio on an M4 Pro (each chunk is decoded with and without
+the prompt).
 Everything stays on the Mac; only the one-time model download (about 1.6 GB, from Hugging
 Face) uses the network.
 

@@ -298,8 +298,8 @@ Once a meeting is over, nothing waits for its final transcript, so the saved aud
 transcribed again by a larger model on this Mac: Whisper large-v3 turbo through WhisperKit,
 prompted with the meeting's name, your word list and the names of the people you know. On a
 real 53-minute call it halved the word error rate of the live transcript (20.9 % to 11–14 %
-against a cloud reference) and got about twice as many word-list terms right; it takes about
-11 minutes per hour of audio on an M4 Pro. Nothing leaves the Mac; the model itself is a
+against a cloud reference; 14.6 % as built) and got about twice as many word-list terms right
+(63 of 82 against 31); it takes about 8–11 minutes per hour of audio on an M4 Pro. Nothing leaves the Mac; the model itself is a
 one-time download of about 1.6 GB:
 
 ```sh
