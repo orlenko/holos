@@ -1545,15 +1545,16 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
         case .microphone:
             if AudioCapture.microphonePermission == "notDetermined" { requestMicrophone() }
             else { openPrivacySettings("Privacy_Microphone") }
+        // Allow… and System Settings… (`PermissionButtons`) each do one thing: asking adds Voice is Local to the
+        // list (again after its entry was removed), and macOS shows its own prompt only while it still will.
         case .accessibility:
-            if !AXIsProcessTrusted() {
-                // Asking adds Holos to the Accessibility list; macOS shows its own prompt only once.
-                let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
-                _ = AXIsProcessTrustedWithOptions(options)
-            }
+            let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
+            _ = AXIsProcessTrustedWithOptions(options)
+        case .accessibilitySettings:
             openPrivacySettings("Privacy_Accessibility")
         case .inputMonitoring:
-            if !CGPreflightListenEventAccess() { _ = CGRequestListenEventAccess() }
+            _ = CGRequestListenEventAccess()
+        case .inputMonitoringSettings:
             openPrivacySettings("Privacy_ListenEvent")
         case .assets: installAssets()
         case .dictation: toggleEnabled()
@@ -1591,9 +1592,9 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
         case .toggleDeepTranscription:
             toggleDeepTranscription()
         case .systemAudio:
-            // Asking adds Holos to the Screen & System Audio Recording list; macOS shows its own prompt only once,
-            // and the permission takes effect after Holos is reopened.
-            if !CGPreflightScreenCaptureAccess() { _ = CGRequestScreenCaptureAccess() }
+            // Screen & System Audio Recording takes effect after Voice is Local is reopened.
+            _ = CGRequestScreenCaptureAccess()
+        case .systemAudioSettings:
             openPrivacySettings("Privacy_ScreenCapture")
         case .people:
             showMainWindow(.people)

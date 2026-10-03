@@ -21,7 +21,7 @@ the microphone's.
 
 1. Start from a clean permission state (`tccutil reset Microphone ca.orlenko.holos.app` and
    `tccutil reset ScreenCapture ca.orlenko.holos.app`), then open Voice is Local.
-2. Open **Setup…** and choose **Open Settings** on the "System audio" row. Note which app macOS
+2. Open **Setup…** and choose **Allow…** on the "System audio" row. Note which app macOS
    names in the screen and system audio prompt, turn Voice is Local on under Screen & System Audio
    Recording, and quit and reopen Voice is Local. The System audio row now shows the granted mark.
 3. Choose **Start Meeting Recording…**. The panel shows the name, what will be recorded
@@ -419,7 +419,8 @@ Result: Pending.
 ### H16b: The Advanced setting and a missing System audio permission
 
 1. Open **Setup…**. The "System audio" row says meetings record the computer's audio; without the
-   permission it shows the pending mark (not the orange problem mark) and **Open Settings**.
+   permission it shows the pending mark (not the orange problem mark), **Allow…**, and the
+   **System Settings…** link.
    **Advanced** is collapsed. Expand it: "Record the computer's audio (system sound) in meetings" is
    checked. Close Setup and open it again: Advanced is collapsed again.
 2. Uncheck it. The System audio row says it is not needed while the setting is off. Open **Start
