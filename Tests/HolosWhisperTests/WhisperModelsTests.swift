@@ -101,6 +101,28 @@ import Testing
         #expect(WhisperModels.status(root: root, model: model) == .installed)
     }
 
+    @Test func aForcedSetupDownloadsAgainFromScratch() async throws {
+        let root = try temporaryFolder()
+        defer { try? FileManager.default.removeItem(at: root) }
+        // An earlier download left files behind (maybe damaged ones the downloader would keep).
+        let staging = WhisperModels.stagingFolder(root: root, model: model)
+        try writeFakeModel(in: staging)
+        let leftover = Mutex<Bool>(true)
+        let notices = Mutex<[String]>([])
+        try await WhisperModels.setUp(
+            root: root, model: model, force: true,
+            download: { staging, model, _ in
+                leftover.withLock { $0 = FileManager.default.fileExists(atPath: WhisperModels.modelFolder(
+                    in: staging, model: model).appendingPathComponent("AudioEncoder.mlmodelc").path) }
+                try self.writeFakeModel(in: staging)
+                return WhisperModels.modelFolder(in: staging, model: model)
+            },
+            check: { _, _ in }, notice: { line in notices.withLock { $0.append(line) } }, progress: { _ in })
+        #expect(!leftover.withLock { $0 }, "--force starts from an empty folder.")
+        #expect(notices.withLock { $0 }.first?.hasPrefix("Downloading") == true)
+        #expect(WhisperModels.status(root: root, model: model) == .installed)
+    }
+
     @Test func removeDeletesTheInstallAndTheDownload() async throws {
         let root = try temporaryFolder()
         defer { try? FileManager.default.removeItem(at: root) }

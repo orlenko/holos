@@ -883,6 +883,25 @@ func audibleStretchesTheModelLeftEmptyFailThePassWhereWordsWereHeard() async thr
     #expect(fine.exitCode == 0)
 }
 
+@Test func adjacentEmptyStretchesCountTheirRecordedWordsTogether() {
+    // Three recorded words at 5, 6, and 7 s; a retry split left the stretch as two empty halves of 1 and 2 words.
+    let reference = SessionFixtures.transcript([
+        SessionFixtures.segment(["one", "two", "three"], track: "mic", start: 5, wordSeconds: 1),
+    ])
+    func unheard(_ start: Double, _ end: Double, track: String = "mic") -> DeepHeardSegment {
+        DeepHeardSegment(track: track, start: start, end: end, text: "", levelDB: -30, unheard: true)
+    }
+    let split = DeepTranscriptionStage.lost([unheard(5.6, 8), unheard(4.5, 5.6)], reference: reference)
+    #expect(split.count == 1 && split.first?.start == 4.5 && split.first?.end == 8, "1 + 2 words are 3 lost words.")
+    // Within a second of each other they are one stretch too.
+    #expect(DeepTranscriptionStage.lost([unheard(4.5, 5.5), unheard(6.4, 8)], reference: reference).count == 1)
+    // Further apart, each is judged alone (1 and 1 word: music or noise).
+    #expect(DeepTranscriptionStage.lost([unheard(4.5, 5.5), unheard(6.8, 7.5)], reference: reference).isEmpty)
+    // Stretches of different tracks are never joined.
+    #expect(DeepTranscriptionStage.lost([unheard(4.5, 5.6), unheard(5.6, 8, track: "system")],
+                                        reference: reference).isEmpty)
+}
+
 @Test func localesMapToWhisperLanguageTokens() {
     #expect(DeepTranscriptionModel.whisperLanguage("nb-NO") == "no")
     #expect(DeepTranscriptionModel.whisperLanguage("fil-PH") == "tl")

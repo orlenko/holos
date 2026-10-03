@@ -115,7 +115,7 @@ public enum WhisperModels {
     typealias Check = @Sendable (_ modelFolder: URL, _ tokenizerBase: URL) async throws -> Void
 
     /// `voiceislocal setup --whisper` (network). An installed model is kept unless `force`. Otherwise downloads into
-    /// `<root>/<model>.download` (resuming an unfinished download), loads it once offline-ready (fetching the tokenizer
+    /// `<root>/<model>.download` (resuming an unfinished download; `force` deletes it first and starts over), loads it once offline-ready (fetching the tokenizer
     /// with it), writes the marker, and renames the folder into place, replacing an older install in one rename.
     /// `notice` gets one line for stderr saying which case applies; `progress` 0...1 from any thread. Throws
     /// `unavailable` while another process installs it.
@@ -145,6 +145,10 @@ public enum WhisperModels {
             return
         }
         let staging = stagingFolder(root: root, model: model)
+        // Forced: downloaded again from scratch, so a damaged file an earlier download left is not kept as done.
+        if force, FileManager.default.fileExists(atPath: staging.path) {
+            try FileManager.default.removeItem(at: staging)
+        }
         let resuming = FileManager.default.fileExists(atPath: staging.path)
         notice(resuming
             ? "Resuming the deep transcription model download (\(DeepTranscriptionModel.displayName), about 1.6 GB)…"

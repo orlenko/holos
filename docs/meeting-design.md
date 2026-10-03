@@ -4637,7 +4637,9 @@ gives no words over audio above −50 dBFS is decoded again in two halves split 
 timings, so the plain-or-prompted choice never takes text for silence. A stretch above −50 dBFS
 that is still empty after the halvings is reported (`DeepTranscribedSegment.unheard`), and the
 pass fails (transcript kept, record partial) when the recorded transcript has at least 3 words
-there: speech it would leave out. Where the recorded transcript has fewer (music, noise, a
+there: speech it would leave out. Empty stretches on a track at most 1 s apart (the halves of
+a retry, the pieces of one stretch) are joined before their recorded words are counted, so
+words spread over several of them still count together. Where the recorded transcript has fewer (music, noise, a
 quiet room's hum), the empty stretch is accepted: the live recognizer's words are the speech
 evidence, rather than an energy-based voice detector that cannot tell music from speech.
 
@@ -4658,7 +4660,7 @@ therefore cannot make the pass publish without it.
 with the large-v3 tokenizer (`models/openai/whisper-large-v3/tokenizer.json`, fetched by the
 first load) and `installed.json` written last. `voiceislocal setup --whisper [--force]`
 downloads into `<model>.download/` (kept on failure, so the next run resumes: the downloader
-continues partial files), loads the model once there, writes the marker, and renames it into
+continues partial files; `--force` deletes it first and downloads everything again), loads the model once there, writes the marker, and renames it into
 place (swapping out an older install). Status from files only: `installed` (marker, Core ML
 models, tokenizer), `downloading` (another process holds `.<model>.install.lock`), else
 `notInstalled`; `voiceislocal doctor` prints it (`deepTranscriptionModel` in `--json`).

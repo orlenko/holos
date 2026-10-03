@@ -385,11 +385,24 @@ enum DeepTranscriptionStage {
     /// speech; fewer (or no recorded transcript) is taken for music or noise, which Whisper rightly writes nothing for.
     static let lostSpeechWords = DeepTranscriptionRequest.recordedSpeechWords
 
-    /// The audible stretches the model left empty (`unheard`, after its retries) where the recorded transcript has at
-    /// least `lostSpeechWords` words on the same track: speech the pass would leave out.
+    /// Empty stretches on one track at most this far apart are one stretch: a retry split (or the plan's pieces) can
+    /// cut one omitted stretch into several, each with fewer recorded words than the whole.
+    static let lostJoinSeconds = 1.0
+
+    /// The audible stretches the model left empty (`unheard`, after its retries), adjacent ones on a track joined
+    /// (`lostJoinSeconds`), where the recorded transcript has at least `lostSpeechWords` words on the same track:
+    /// speech the pass would leave out.
     static func lost(_ unheard: [DeepHeardSegment], reference: Transcript?) -> [DeepHeardSegment] {
         guard let reference else { return [] }
-        return unheard.filter { span in
+        var joined: [DeepHeardSegment] = []
+        for span in unheard.sorted(by: { ($0.track, $0.start) < ($1.track, $1.start) }) {
+            if let last = joined.last, last.track == span.track, span.start - last.end <= lostJoinSeconds {
+                joined[joined.count - 1].end = max(last.end, span.end)
+            } else {
+                joined.append(span)
+            }
+        }
+        return joined.sorted { $0.start < $1.start }.filter { span in
             let words = reference.segments.filter { ($0.track ?? span.track) == span.track }
                 .flatMap { WordTiming.effectiveWords(of: $0) }
                 .filter { $0.start >= span.start && $0.start < span.end }
