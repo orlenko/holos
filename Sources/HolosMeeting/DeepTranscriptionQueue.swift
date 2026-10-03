@@ -160,6 +160,20 @@ public enum DeepTranscriptionSchedule {
         return situation.power == .battery ? .waitForPower : .run(first.sessionID)
     }
 
+    /// `next`, taking off the queue each meeting it picks whose folder is gone (`exists` of its path is false; deleted
+    /// from Meetings while queued) and picking again, so the next ready meeting runs in the same call.
+    public static func nextPresent(_ queue: inout DeepTranscriptionQueue, _ situation: Situation,
+                                   exists: (String) -> Bool) -> Decision {
+        while true {
+            let decision = next(queue, situation)
+            guard case .run(let sessionID) = decision,
+                  let item = queue.items.first(where: { $0.sessionID == sessionID }), !exists(item.path) else {
+                return decision
+            }
+            queue.remove(sessionID)
+        }
+    }
+
     /// Whether a meeting is finished as `voiceislocal session deep-transcribe` requires it: saved, recovered, or saved
     /// as audio only; not recording, processing, interrupted (Recover first), damaged, or with its audio deleted.
     public static func isFinished(_ state: SessionState, audioDeleted: Bool) -> Bool {
@@ -177,11 +191,16 @@ public enum DeepTranscriptionSchedule {
         case retryLater(global: Bool)
     }
 
-    /// What becomes of the item of a pass that ended with `code` (its error output `errors`). Exit 0 is done even when
-    /// the pass was signalled for a meeting (`preempted`): the signal can reach a pass that already finished.
+    /// The exit code of a pass the app's SIGTERM stopped: 128 + 15, both from the command (its cancellation exit) and
+    /// for a process the signal killed (`ChildWatcher`).
+    public static let terminatedExitCode: Int32 = 128 + 15
+
+    /// What becomes of the item of a pass that ended with `code` (its error output `errors`). A pass signalled for a
+    /// meeting (`preempted`) is kept only when the signal ended it (`terminatedExitCode`): the signal can reach a
+    /// pass that already finished, done or failed, and that end stands.
     public static func passEnded(code: Int32, preempted: Bool, errors: String) -> PassEnd {
         if code == 0 { return .done }
-        if preempted { return .keepPreempted }
+        if preempted, code == terminatedExitCode { return .keepPreempted }
         if code == 1, errors.contains(DeepTranscriptionLock.busyMessage) { return .retryLater(global: true) }
         if code == 1, errors.contains("processing this session") { return .retryLater(global: false) }
         return .done

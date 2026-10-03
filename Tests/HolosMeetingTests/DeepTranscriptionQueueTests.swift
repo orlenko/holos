@@ -253,7 +253,13 @@ private func queue(_ ids: [String], runNow: Set<String> = []) -> DeepTranscripti
 @Test func howAPassEndedDecidesItsItem() {
     // Done (exit 0) even when a meeting's preemption signal reached it too late to stop it.
     #expect(DeepTranscriptionSchedule.passEnded(code: 0, preempted: true, errors: "") == .done)
-    #expect(DeepTranscriptionSchedule.passEnded(code: 143, preempted: true, errors: "") == .keepPreempted)
+    #expect(DeepTranscriptionSchedule.passEnded(code: 143, preempted: true, errors: "") == .keepPreempted,
+            "Stopped by the SIGTERM (128 + 15, as the command and a killed process both report it).")
+    // A failure or partial result that ended before the signal could stop it is an ordinary end.
+    #expect(DeepTranscriptionSchedule.passEnded(code: 1, preempted: true, errors: "Error: No saved audio.") == .done)
+    #expect(DeepTranscriptionSchedule.passEnded(code: 3, preempted: true, errors: "") == .done)
+    #expect(DeepTranscriptionSchedule.passEnded(code: 137, preempted: true, errors: "") == .done, "Not our signal.")
+    #expect(DeepTranscriptionSchedule.passEnded(code: 143, preempted: false, errors: "") == .done, "A Cancel.")
     // Another command holds the meeting: only this item waits; another pass holds the lock: everything waits.
     #expect(DeepTranscriptionSchedule.passEnded(
         code: 1, preempted: false, errors: "Error: Another Voice is Local process is processing this session.")
@@ -279,4 +285,15 @@ private func queue(_ ids: [String], runNow: Set<String> = []) -> DeepTranscripti
     #expect(!DeepTranscriptionSchedule.reconcilesOnModelChange(from: "installed", to: "installed"),
             "A repeated doctor check of an installed model does not scan again.")
     #expect(!DeepTranscriptionSchedule.reconcilesOnModelChange(from: "installed", to: "notInstalled"))
+}
+
+@Test func aVanishedMeetingIsDroppedAndTheNextOneRuns() {
+    // A and B were deleted from Meetings while queued; C is ready.
+    var items = queue(["A", "B", "C"])
+    let situation = DeepTranscriptionSchedule.Situation(enabled: true, modelInstalled: true, power: .ac)
+    let decision = DeepTranscriptionSchedule.nextPresent(&items, situation) { $0 == "/m/C.holos" }
+    #expect(decision == .run("C") && items.items.map(\.sessionID) == ["C"])
+    // Nothing left that exists: idle, and the queue is empty.
+    var gone = queue(["A"])
+    #expect(DeepTranscriptionSchedule.nextPresent(&gone, situation) { _ in false } == .idle && gone.items.isEmpty)
 }

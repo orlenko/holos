@@ -313,13 +313,14 @@ extension HolosAppDelegate {
             enabled: DeepTranscriptionAppState.enabled, modelInstalled: meeting.deep.model == "installed",
             power: meeting.deep.power, meetingBusy: busy, running: meeting.deep.running?.sessionID, inUse: inUse,
             delayed: Set(meeting.deep.delayed.keys))
-        guard case .run(let sessionID) = DeepTranscriptionSchedule.next(meeting.deep.queue, situation),
-              let item = meeting.deep.queue.items.first(where: { $0.sessionID == sessionID }) else {
-            updateDeepStates()
-            return
+        // A meeting deleted while queued is taken off, and the next ready one is picked in the same call.
+        var queue = meeting.deep.queue
+        let decision = DeepTranscriptionSchedule.nextPresent(&queue, situation) {
+            FileManager.default.fileExists(atPath: $0)
         }
-        guard FileManager.default.fileExists(atPath: item.path) else {
-            meeting.deep.queue.remove(sessionID)
+        if queue != meeting.deep.queue { meeting.deep.queue = queue }
+        guard case .run(let sessionID) = decision,
+              let item = meeting.deep.queue.items.first(where: { $0.sessionID == sessionID }) else {
             updateDeepStates()
             return
         }

@@ -4803,7 +4803,8 @@ carried over.
   oldest queued meeting when the setting is on and the Mac is on AC power (or has no battery),
   otherwise it waits ("Final transcript waits for power"). The power source (IOKit's providing
   power source) is read every 30 s, which also retries the queue; a command letting go of a
-  meeting retries it too.
+  meeting retries it too. A meeting picked whose folder is gone (deleted while queued) is taken
+  off the queue and the next ready one is picked in the same call (`nextPresent`).
 - *Running.* The pass holds the meeting (`beginUsing`, "Final transcript in progress…" in the
   State column, other actions on it refused) and is taken off the queue however it ends (done,
   partial, refused, or cancelled). A Make Final Transcript Now pass that does not finish (exit 1
@@ -4847,8 +4848,10 @@ carried over.
   post-processing, by its recorder's liveness, or a recorder the app launched has not exited,
   even without a session folder: `MeetingController.recorderMayStillRun`, which a start checks
   too) while the app's pass runs, the pass is stopped (SIGTERM; it publishes nothing) and stays
-  queued, so it runs again from the start once the meeting is saved, unless it exited 0 (the
-  signal reached a pass that had already finished: done). Another process's pass is left
+  queued, so it runs again from the start once the meeting is saved, but only when the signal
+  ended it (exit 143, 128 + SIGTERM, as the command's cancellation and a killed process both
+  report it): a pass the signal reached after it had already ended (done, failed, or partial)
+  ends as it did, with its alert for a Run Now. Another process's pass is left
   running. A pass cancelled after it already published its transcript says so in an alert (the
   labels and files may be behind: Label Speakers finishes them). Maintenance commands, like this one, keep running after the
   app quits.
