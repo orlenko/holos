@@ -4766,6 +4766,43 @@ about 65 s of speech per track (217 and 269 words), against about 500 s per trac
 timestamp rules and the plain-chunk check. Speakers were labelled again on it with names
 carried over.
 
+**App.** The app does not link WhisperKit; it runs `voiceislocal setup --whisper` and
+`voiceislocal session deep-transcribe <session> --json` as maintenance commands
+(`HolosApp+DeepTranscription.swift`).
+
+- *Settings › Meetings.* A "Final transcript" row with the model's state from `voiceislocal
+  doctor --json` (`deepTranscriptionModel`) and Download (1.6 GB), showing `setup --whisper`'s
+  progress; and the checkbox "Deep transcription after meetings", off by default and disabled
+  until the model is installed (UserDefaults `deepTranscriptionAfterMeetings`). Turning it off
+  takes the automatic passes off the queue.
+- *Queue* (`DeepTranscriptionQueue`, `DeepTranscriptionSchedule`, pure, in HolosMeeting). When
+  the recorder reports a meeting finished (its own post-processing ran in the recorder), the
+  meeting is queued if the setting is on, the model installed, and meeting.json names at most
+  one language. The queue is saved in UserDefaults (`deepTranscriptionQueue`) on every change.
+  The next pass runs when none is running, no meeting is starting, recording, or saving, the
+  model is installed, and no other command uses the meeting (`MeetingController.
+  sessionsInUse`): a meeting asked for from its menu first, whatever the power source; else the
+  oldest queued meeting when the setting is on and the Mac is on AC power (or has no battery),
+  otherwise it waits ("Final transcript waits for power"). The power source (IOKit's providing
+  power source) is read every 30 s, which also retries the queue; a command letting go of a
+  meeting retries it too.
+- *Running.* The pass holds the meeting (`beginUsing`, "Final transcript in progress…" in the
+  State column, other actions on it refused) and is taken off the queue however it ends (done,
+  partial, refused, or cancelled). A pass the app did not see end (the app quit or crashed) stays
+  queued and runs again from the start at the next launch; the command itself is detached and
+  may still be running then, in which case the second one is refused by the processing lease
+  (exit 1) and the first finishes. Maintenance commands, like this one, keep running after the
+  app quits.
+- *Meetings list.* The State column shows "Final transcript queued", "… waits for power", or
+  "… in progress…". Right-clicking a meeting offers Make Final Transcript Now (also on battery;
+  refused with an alert without the model or for a meeting in several languages) or, while it
+  is queued or running, Cancel Final Transcript (SIGTERM: the command cancels, publishes
+  nothing, records "Post-processing was cancelled.").
+- *Tests.* `DeepTranscriptionQueueTests` (order and run-now upgrade, saving and damaged data,
+  one at a time, AC/battery/no battery, busy meetings and meetings in use, run-now on battery,
+  the setting off, queuing only one-language meetings, the State column's texts). The Settings
+  row, the menu, and the power switch are not exercised by tests and need a manual check.
+
 **Contract additions.** `Transcript.engine: String?` (left out of the JSON when nil),
 `PostProcessingStage.deepTranscription`, `MeetingEventKind.deepTranscribed`.
 
@@ -4804,7 +4841,8 @@ download and load check, resume after a failed load, removal, the prompt rows an
 speech (rendered by the system synthesizer to a file, never played) in a session end to end;
 `HOLOS_DEEP_MEASURE_SESSION=<copy of a session>` prints the level measurements above, `HOLOS_DEEP_COMPARE_SESSION=<copy that deep-transcribe ran on>` the word-time agreement and uncovered stretches, and `HOLOS_DEEP_PROBE_SESSION=<copy>` (with `HOLOS_DEEP_PROBE_PROMPT`) the coverage of ten minutes of one track.
 
-**Follow-ups.** Meetings in several languages. Measuring the vocabulary terms the pass gets
+**Follow-ups.** Meetings in several languages. A notification when a final transcript
+is ready. Measuring the vocabulary terms the pass gets
 right against a cloud reference on more meetings (`eval local --backend whisper`, then `eval
 compare`), now that the prompt is checked chunk by chunk. Upstream reports for the three
 WhisperKit prompt problems worked around here.

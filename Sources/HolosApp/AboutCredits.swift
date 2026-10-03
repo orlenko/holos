@@ -47,7 +47,16 @@ enum AboutCredits {
         Speech & Language, 2022.
         """
 
-    static var text: String { [license, fluidAudio, readability, models].joined(separator: "\n\n") }
+    static let whisper = """
+        Final transcripts are made by the bundled voiceislocal tool with WhisperKit 1.1.0 \
+        (https://github.com/argmaxinc/WhisperKit, tag v1.1.0), MIT License, Copyright (c) 2024 argmax, inc., which \
+        includes parts of Hugging Face's swift-transformers (Apache License 2.0). The model, \
+        openai_whisper-large-v3-v20240930_turbo from https://huggingface.co/argmaxinc/whisperkit-coreml (MIT), is \
+        Argmax's Core ML conversion of OpenAI's Whisper large-v3-turbo (MIT), downloaded by \
+        `voiceislocal setup --whisper` and not included in the app; see THIRD_PARTY_NOTICES.md.
+        """
+
+    static var text: String { [license, fluidAudio, readability, models, whisper].joined(separator: "\n\n") }
 
     /// The credits as the About panel shows them.
     static func attributed() -> NSAttributedString {

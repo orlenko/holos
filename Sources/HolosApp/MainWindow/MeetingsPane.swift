@@ -56,6 +56,12 @@ final class MeetingsPane: NSViewController, NSTableViewDataSource, NSTableViewDe
     private var sessions: [SessionSummary] = []
     /// Maintenance commands running, by session ID.
     private var running: [String: String] = [:]
+    /// Deep transcription passes queued or running, by session ID: what the State column says
+    /// (`DeepTranscriptionSchedule.stateText`), and the one running.
+    private var deepStates: [String: String] = [:]
+    private var deepRunning: String?
+    /// The meeting's menu: Make Final Transcript Now (true) and Cancel Final Transcript (false) (§4.16).
+    var onDeepTranscription: ((_ runNow: Bool, SessionSummary) -> Void)?
     private var pendingSelection: String?
     private var refreshTask: Task<Void, Never>?
     private var loading = false
@@ -101,6 +107,10 @@ final class MeetingsPane: NSViewController, NSTableViewDataSource, NSTableViewDe
         table.onReturn = { [weak self] in self?.openSelection() }
         table.onDelete = { [weak self] in self?.deleteMeeting() }
         table.setAccessibilityLabel("Meetings")
+        let menu = NSMenu()
+        menu.delegate = self
+        menu.autoenablesItems = false
+        table.menu = menu
         let scroll = NSScrollView()
         scroll.documentView = table
         scroll.hasVerticalScroller = true
@@ -318,6 +328,15 @@ final class MeetingsPane: NSViewController, NSTableViewDataSource, NSTableViewDe
         updateLiveHeader()
     }
 
+    /// The deep transcription passes queued or running (§4.16).
+    func update(deepStates: [String: String], running: String?) {
+        guard deepStates != self.deepStates || running != deepRunning else { return }
+        self.deepStates = deepStates
+        deepRunning = running
+        table.reloadData()
+        updateButtons()
+    }
+
     /// Reads the catalog off the main actor, then shows it.
     func refresh() {
         guard !loading else { return }
@@ -401,7 +420,7 @@ final class MeetingsPane: NSViewController, NSTableViewDataSource, NSTableViewDe
                 cell.font = .systemFont(ofSize: NSFont.systemFontSize, weight: .semibold)
                 cell.toolTip = "Double-click or press Return to watch the live transcript."
             } else {
-                cell.stringValue = running[summary.id] ?? Self.stateText(summary)
+                cell.stringValue = running[summary.id] ?? deepStates[summary.id] ?? Self.stateText(summary)
             }
         case .speakers:
             cell.stringValue = Self.speakersText(summary.speakerState)
@@ -761,5 +780,44 @@ final class PreviewingWindow: NSWindow {
             panel.dataSource = nil
             panel.delegate = nil
         }
+    }
+}
+
+// MARK: - The meeting's menu
+
+extension MeetingsPane: NSMenuDelegate {
+    /// The row clicked: Make Final Transcript Now, or Cancel Final Transcript while it is queued or running.
+    func menuNeedsUpdate(_ menu: NSMenu) {
+        menu.removeAllItems()
+        guard table.clickedRow >= 0, table.clickedRow < sessions.count else { return }
+        let summary = sessions[table.clickedRow]
+        if deepStates[summary.id] != nil || deepRunning == summary.id {
+            let item = NSMenuItem(title: "Cancel Final Transcript", action: #selector(cancelDeepTranscription(_:)),
+                                  keyEquivalent: "")
+            item.target = self
+            item.representedObject = summary.id
+            menu.addItem(item)
+        } else {
+            let item = NSMenuItem(title: "Make Final Transcript Now", action: #selector(runDeepTranscription(_:)),
+                                  keyEquivalent: "")
+            item.target = self
+            item.representedObject = summary.id
+            item.toolTip = "Transcribes the saved audio again with the local Whisper model now, also on battery."
+            item.isEnabled = summary.transcriptID != nil && !summary.audioDeleted && running[summary.id] == nil
+                && summary.state != .recording
+            menu.addItem(item)
+        }
+    }
+
+    @objc private func runDeepTranscription(_ sender: NSMenuItem) {
+        guard let id = sender.representedObject as? String, let summary = sessions.first(where: { $0.id == id })
+        else { return }
+        onDeepTranscription?(true, summary)
+    }
+
+    @objc private func cancelDeepTranscription(_ sender: NSMenuItem) {
+        guard let id = sender.representedObject as? String, let summary = sessions.first(where: { $0.id == id })
+        else { return }
+        onDeepTranscription?(false, summary)
     }
 }
