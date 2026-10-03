@@ -45,6 +45,17 @@ public struct DeepTranscriptionQueue: Codable, Sendable, Equatable {
         items.removeAll { !$0.runNow && $0.sessionID != keeping }
     }
 
+    /// The one rule for automatic items while the setting is off (`enabled` false): all of them are dropped, except
+    /// the one the app's own pass is running on (`running`), which goes when it ends. Applied at launch, on every
+    /// scheduler tick, and when a pass ends, so none is left behind. Run Now items stay. Returns whether any was dropped.
+    @discardableResult
+    public mutating func dropAutomatic(enabled: Bool, running: String?) -> Bool {
+        guard !enabled else { return false }
+        let before = items.count
+        removeAutomatic(keeping: running)
+        return items.count != before
+    }
+
     public func contains(_ sessionID: String) -> Bool { items.contains { $0.sessionID == sessionID } }
 
     /// The queue as saved; one that cannot be read (damaged, or a newer schema) is empty.
@@ -161,9 +172,17 @@ public enum DeepTranscriptionSchedule {
     }
 
     /// Whether a meeting that just finished saving is queued: the setting is on, the model installed, and the meeting
-    /// is in one language (several are not supported yet).
-    public static func queuesAfterMeeting(enabled: Bool, modelInstalled: Bool, languages: Int) -> Bool {
-        enabled && modelInstalled && languages <= 1
+    /// is in one language (several are not supported yet), and the user did not act on it while its languages were
+    /// read (`queued` now, or `considered`: asked for, maybe cancelled since).
+    public static func queuesAfterMeeting(enabled: Bool, modelInstalled: Bool, languages: Int, queued: Bool = false,
+                                          considered: Bool = false) -> Bool {
+        enabled && modelInstalled && languages <= 1 && !queued && !considered
+    }
+
+    /// Whether a meeting's menu offers Make Final Transcript Now: not while the app's pass runs on it, nor when it is
+    /// already asked for; a meeting queued automatically is upgraded by it (`enqueue` with `runNow`).
+    public static func offersRunNow(sessionID: String, queue: DeepTranscriptionQueue, running: String?) -> Bool {
+        running != sessionID && queue.items.first(where: { $0.sessionID == sessionID })?.runNow != true
     }
 
     /// Why a Make Final Transcript Now pass did not finish (exit `code`), for the app's alert: the messages of the

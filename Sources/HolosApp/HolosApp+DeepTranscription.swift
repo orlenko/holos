@@ -157,9 +157,12 @@ extension HolosAppDelegate {
         Task { [weak self] in
             let languages = await Task.detached { Self.languageCount(directory) }.value
             // The setting was turned off (and maybe on again) while it was read: that turning off took it off.
+            // Checked against the live queue and the meetings considered: the user may have asked for it (and maybe
+            // cancelled it) while it was read.
             guard let self, self.meeting.deep.activation == activation, DeepTranscriptionSchedule.queuesAfterMeeting(
                 enabled: DeepTranscriptionAppState.enabled, modelInstalled: self.meeting.deep.model == "installed",
-                languages: languages) else { return }
+                languages: languages, queued: self.meeting.deep.queue.contains(sessionID),
+                considered: self.meeting.deep.considered.contains(sessionID)) else { return }
             self.meeting.deep.queue.enqueue(sessionID: sessionID, path: directory.path, at: Date())
             self.meeting.deep.consider(sessionID)
             self.updateDeepStates()
@@ -255,6 +258,12 @@ extension HolosAppDelegate {
 
     /// Starts the next pass when `DeepTranscriptionSchedule` says so.
     func scheduleDeepTranscription() {
+        // With the setting off, automatic items go (the app's running pass keeps its own until it ends): at launch,
+        // on every 30 s tick, and after every pass, however it ended.
+        if meeting.deep.queue.dropAutomatic(enabled: DeepTranscriptionAppState.enabled,
+                                            running: meeting.deep.running?.sessionID) {
+            updateDeepStates()
+        }
         guard let controller = meeting.controller, let maintenance = meeting.maintenance else { return }
         // Another process's pass holds the lock: wait for it (checked again every 30 s). One at a time on this Mac.
         if meeting.deep.running == nil {
@@ -384,7 +393,12 @@ extension HolosAppDelegate {
                 states[item.sessionID] = text
             }
         }
-        meeting.meetingsPane?.update(deepStates: states, running: meeting.deep.running?.sessionID)
+        let offersRunNow = Set(meeting.deep.queue.items.map(\.sessionID).filter {
+            DeepTranscriptionSchedule.offersRunNow(sessionID: $0, queue: meeting.deep.queue,
+                                                   running: meeting.deep.running?.sessionID)
+        })
+        meeting.meetingsPane?.update(deepStates: states, running: meeting.deep.running?.sessionID,
+                                     queuedAutomatically: offersRunNow)
     }
 
     // MARK: - Model

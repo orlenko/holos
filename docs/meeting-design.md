@@ -4774,13 +4774,19 @@ carried over.
   doctor --json` (`deepTranscriptionModel`) and Download (1.6 GB), showing `setup --whisper`'s
   progress; and the checkbox "Deep transcription after meetings", off by default and disabled
   until the model is installed (UserDefaults `deepTranscriptionAfterMeetings`; turning it on
-  records when, `deepTranscriptionEnabledSince`). Turning it off takes the automatic passes off
-  the queue. While another process downloads the model, the doctor check runs again every 30 s;
+  records when, `deepTranscriptionEnabledSince`). While it is off, automatic items are dropped
+  from the queue (`dropAutomatic`), except the one the app's own pass is running on, which goes
+  when it ends: at launch, on every 30 s tick, and after every pass however it ended (a busy
+  exit, a preemption), so none is left behind to come back when it is turned on again. Run Now
+  items stay. While another process downloads the model, the doctor check runs again every 30 s;
   when doctor cannot run at all the row says the tool is missing.
 - *Queue* (`DeepTranscriptionQueue`, `DeepTranscriptionSchedule`, pure, in HolosMeeting). When
   the recorder reports a meeting finished (its own post-processing ran in the recorder), the
   meeting is queued if the setting is on, the model installed, and neither meeting.json nor the
-  current transcript names more than one language. The queue is saved in UserDefaults
+  current transcript names more than one language (read off the main actor; when the read ends,
+  the meeting is queued only if the setting did not change meanwhile and the user did not act
+  on it: not in the queue, not considered, so a Run Now asked for and cancelled meanwhile stays
+  cancelled). The queue is saved in UserDefaults
   (`deepTranscriptionQueue`) on every change. At launch, once the model is known installed, the
   meetings that finished while the app was closed (read off the main actor, and queued only if
   the setting is still on, with the same activation time, when the read ends) (a recorder saves and post-processes on its
@@ -4844,8 +4850,9 @@ carried over.
   (relabels speakers): it runs next, also on battery, with `--force`, so a transcript the model
   made before is made again and edited speaker labels are replaced (names carry over, edits of
   single turns do not), as asking for it by name means; refused with an alert without the model,
-  for a meeting that is not finished, or for one in several languages. While a meeting is queued
-  or the app's own pass runs on it, Cancel Final Transcript (SIGTERM: the command cancels and says whether the new
+  for a meeting that is not finished, or for one in several languages. A meeting queued
+  automatically offers it too (it upgrades the item, so it runs next whatever the power source).
+  While a meeting is queued or the app's own pass runs on it, Cancel Final Transcript (SIGTERM: the command cancels and says whether the new
   transcript was already published).
 - *Tests.* `DeepTranscriptionQueueTests` (order and run-now upgrade, saving and damaged data,
   one at a time, AC/battery/no battery, busy meetings, meetings in use or in Review, run-now on

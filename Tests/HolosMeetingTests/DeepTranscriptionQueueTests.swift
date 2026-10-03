@@ -75,6 +75,38 @@ private func queue(_ ids: [String], runNow: Set<String> = []) -> DeepTranscripti
     #expect(!DeepTranscriptionSchedule.queuesAfterMeeting(enabled: true, modelInstalled: true, languages: 2))
     #expect(!DeepTranscriptionSchedule.queuesAfterMeeting(enabled: false, modelInstalled: true, languages: 1))
     #expect(!DeepTranscriptionSchedule.queuesAfterMeeting(enabled: true, modelInstalled: false, languages: 1))
+    // The user acted on the meeting while its languages were read (Run Now, maybe cancelled since): left alone.
+    #expect(!DeepTranscriptionSchedule.queuesAfterMeeting(enabled: true, modelInstalled: true, languages: 1,
+                                                          queued: true))
+    #expect(!DeepTranscriptionSchedule.queuesAfterMeeting(enabled: true, modelInstalled: true, languages: 1,
+                                                          considered: true))
+}
+
+@Test func withTheSettingOffOnlyRunNowItemsAndTheRunningPassStay() {
+    var items = queue(["A", "B", "C"], runNow: ["B"])
+    // On: nothing is dropped.
+    let on = items.dropAutomatic(enabled: true, running: nil)
+    #expect(!on && items.items.count == 3)
+    // Off while the app's pass on A runs: A stays until it ends.
+    let whileRunning = items.dropAutomatic(enabled: false, running: "A")
+    #expect(whileRunning && items.items.map(\.sessionID) == ["A", "B"])
+    // Off with nothing of the app's running (at launch, on every tick, after a busy exit): every automatic item goes.
+    let idle = items.dropAutomatic(enabled: false, running: nil)
+    #expect(idle && items.items.map(\.sessionID) == ["B"])
+    let again = items.dropAutomatic(enabled: false, running: nil)
+    #expect(!again, "Nothing left to drop.")
+}
+
+@Test func runNowIsOfferedForAnAutomaticallyQueuedMeeting() {
+    let items = queue(["A", "B"], runNow: ["B"])
+    #expect(DeepTranscriptionSchedule.offersRunNow(sessionID: "A", queue: items, running: nil))
+    #expect(!DeepTranscriptionSchedule.offersRunNow(sessionID: "B", queue: items, running: nil), "Already asked for.")
+    #expect(DeepTranscriptionSchedule.offersRunNow(sessionID: "C", queue: items, running: nil), "Not queued.")
+    #expect(!DeepTranscriptionSchedule.offersRunNow(sessionID: "A", queue: items, running: "A"), "Running.")
+    // Asked for, the automatic item is upgraded in place.
+    var upgraded = items
+    upgraded.enqueue(sessionID: "A", path: "/m/A.holos", at: date, runNow: true)
+    #expect(upgraded.items.map(\.sessionID) == ["A", "B"] && upgraded.items[0].runNow)
 }
 
 @Test func theMeetingsListSaysWhereAPassStands() {

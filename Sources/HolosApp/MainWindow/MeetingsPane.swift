@@ -60,6 +60,8 @@ final class MeetingsPane: NSViewController, NSTableViewDataSource, NSTableViewDe
     /// (`DeepTranscriptionSchedule.stateText`), and the one running.
     private var deepStates: [String: String] = [:]
     private var deepRunning: String?
+    /// Queued meetings whose menu also offers Make Final Transcript Now (queued automatically): it upgrades them.
+    private var deepQueuedAutomatically: Set<String> = []
     /// The meeting's menu: Make Final Transcript Now (true) and Cancel Final Transcript (false) (§4.16).
     var onDeepTranscription: ((_ runNow: Bool, SessionSummary) -> Void)?
     private var pendingSelection: String?
@@ -329,7 +331,8 @@ final class MeetingsPane: NSViewController, NSTableViewDataSource, NSTableViewDe
     }
 
     /// The deep transcription passes queued or running (§4.16).
-    func update(deepStates: [String: String], running: String?) {
+    func update(deepStates: [String: String], running: String?, queuedAutomatically: Set<String> = []) {
+        deepQueuedAutomatically = queuedAutomatically
         guard deepStates != self.deepStates || running != deepRunning else { return }
         self.deepStates = deepStates
         deepRunning = running
@@ -786,18 +789,14 @@ final class PreviewingWindow: NSWindow {
 // MARK: - The meeting's menu
 
 extension MeetingsPane: NSMenuDelegate {
-    /// The row clicked: Make Final Transcript Now, or Cancel Final Transcript while it is queued or running.
+    /// The row clicked: Make Final Transcript Now (also for a meeting queued automatically, which it upgrades), and
+    /// Cancel Final Transcript while it is queued or running.
     func menuNeedsUpdate(_ menu: NSMenu) {
         menu.removeAllItems()
         guard table.clickedRow >= 0, table.clickedRow < sessions.count else { return }
         let summary = sessions[table.clickedRow]
-        if deepStates[summary.id] != nil || deepRunning == summary.id {
-            let item = NSMenuItem(title: "Cancel Final Transcript", action: #selector(cancelDeepTranscription(_:)),
-                                  keyEquivalent: "")
-            item.target = self
-            item.representedObject = summary.id
-            menu.addItem(item)
-        } else {
+        let queuedOrRunning = deepStates[summary.id] != nil || deepRunning == summary.id
+        if !queuedOrRunning || deepQueuedAutomatically.contains(summary.id) {
             let item = NSMenuItem(title: "Make Final Transcript Now (relabels speakers)",
                                   action: #selector(runDeepTranscription(_:)), keyEquivalent: "")
             item.target = self
@@ -808,6 +807,13 @@ extension MeetingsPane: NSMenuDelegate {
             // its audio.
             item.isEnabled = DeepTranscriptionSchedule.isFinished(summary.state, audioDeleted: summary.audioDeleted)
                 && running[summary.id] == nil
+            menu.addItem(item)
+        }
+        if queuedOrRunning {
+            let item = NSMenuItem(title: "Cancel Final Transcript", action: #selector(cancelDeepTranscription(_:)),
+                                  keyEquivalent: "")
+            item.target = self
+            item.representedObject = summary.id
             menu.addItem(item)
         }
     }
