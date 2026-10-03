@@ -774,6 +774,63 @@ private func trackDocument(source: AudioSource) -> ExportDocument {
     #expect(MeetingSummarySource.mainLanguage(transcript) == "zh-CN")
 }
 
+@Test func notesThatRefuseCountAsARefusedPart() async throws {
+    for refusal in ["I'm sorry, but I can't help with that.", "I’M SORRY, I cannot summarize this.",
+                    "As an AI language model, I cannot do that.", "Je ne peux pas résumer ce passage."] {
+        let scripted = ScriptedSummaryModel(notes: { prompt in
+            prompt.contains("Part 1 of") ? [refusal] : ["The team planned the release."]
+        })
+        let result = try await MeetingSummarizer(model: scripted.model(contextTokens: 400)).summarize(input(lines(30)))
+        #expect(result.stats.skippedParts == 1)
+        let final = try #require(scripted.summaryCalls.value.first)
+        #expect(!final.prompt.contains(refusal))
+    }
+    let allRefused = ScriptedSummaryModel(notes: { _ in ["I am unable to help with this request."] })
+    await #expect(throws: MeetingSummarizer.Failure.self) {
+        _ = try await MeetingSummarizer(model: allRefused.model(contextTokens: 400)).summarize(input(lines(30)))
+    }
+}
+
+@Test func unassignedTurnsAreSomeoneWithSpeakerLabelsToo() async throws {
+    let temp = try TemporaryDirectory("summary")
+    defer { temp.remove() }
+    let (session, _, _) = try await SessionFixtures.labelledSession(in: temp.url, track: "mic")
+    try SessionFixtures.appendEdits([.reassignTurns(turnIDs: ["T1"], to: nil)], session: session)
+    let scripted = ScriptedSummaryModel()
+    _ = await run(session, scripted)
+    let prompt = try #require(scripted.summaryCalls.value.first?.prompt)
+    #expect(prompt.contains("Someone: mict1w1"))
+    #expect(!prompt.contains("Unknown speaker"))
+}
+
+@Test func aRequestASummaryAlreadyAnswersIsDone() {
+    let asked = scheduleNow.addingTimeInterval(-600 + 0.7)
+    let request = MeetingSummarySchedule.Request(sessionID: "a", requestedAt: asked)
+    func made(_ at: Date?, summary: String? = "T", pending: Bool = false) -> MeetingSummarySchedule.Candidate {
+        MeetingSummarySchedule.Candidate(sessionID: "a", path: "/a.holos", createdAt: scheduleNow, transcriptID: "T",
+                                         summaryTranscriptID: summary, idle: true, exportsPending: pending,
+                                         summaryCreatedAt: at)
+    }
+    // Made by a command that finished while the app was closed.
+    #expect(MeetingSummarySchedule.satisfied([request], by: [made(asked.addingTimeInterval(120))]) == ["a"])
+    // The same second counts (dates are kept to the second).
+    #expect(MeetingSummarySchedule.satisfied([request], by: [made(scheduleNow.addingTimeInterval(-600))]) == ["a"])
+    // Older than the request, of another transcript, or with its files not rewritten: still to do.
+    #expect(MeetingSummarySchedule.satisfied([request], by: [made(asked.addingTimeInterval(-60))]).isEmpty)
+    #expect(MeetingSummarySchedule.satisfied([request], by: [made(scheduleNow, summary: "T0")]).isEmpty)
+    #expect(MeetingSummarySchedule.satisfied([request], by: [made(scheduleNow, pending: true)]).isEmpty)
+    #expect(MeetingSummarySchedule.satisfied([request], by: [made(nil, summary: nil)]).isEmpty)
+}
+
+@Test func transcriptFilesLeftWithoutTheirSummaryAreRewrittenWithTheSettingOff() {
+    let pending = MeetingSummarySchedule.Candidate(sessionID: "a", path: "/a.holos", createdAt: scheduleNow,
+                                                   transcriptID: "T", summaryTranscriptID: "T", idle: true,
+                                                   exportsPending: true)
+    #expect(MeetingSummarySchedule.next([pending], situation(enabled: false))
+        == .run(sessionID: "a", path: "/a.holos", force: false))
+    #expect(MeetingSummarySchedule.next([candidate("b")], situation(enabled: false)) == .wait)
+}
+
 @Test func aNameTheUserGaveIsTheirsWhateverItLooksLike() throws {
     let root = URL(fileURLWithPath: "/tmp/sessions")
     var typed = MeetingStartSettings(name: "Meeting 2026-10-03 14:00", source: .microphone)

@@ -31,10 +31,25 @@ final class MeetingSummaryAppState {
     var delayedUntil: [String: Date] = [:]
     /// Summarize Again, newest last: saved on every change, and kept until the run ends for good (written, current,
     /// failed, unavailable), so a request that had to wait (a meeting started, another job ran, the app quit) runs
-    /// later, forced.
-    static let requestsKey = "meetingSummaryRequests"
-    var requested: [String] = UserDefaults.standard.stringArray(forKey: requestsKey) ?? [] {
-        didSet { UserDefaults.standard.set(requested, forKey: Self.requestsKey) }
+    /// later, forced. Each keeps when it was asked for, so one a command finished while the app was closed is
+    /// recognized as done (`MeetingSummarySchedule.satisfied`).
+    static let requestsKey = "meetingSummaryRequestQueue"
+    var requests: [MeetingSummarySchedule.Request] = MeetingSummaryAppState.loadRequests() {
+        didSet {
+            UserDefaults.standard.set(try? HolosJSON.encoder(pretty: false).encode(requests), forKey: Self.requestsKey)
+        }
+    }
+
+    /// The meetings asked for, oldest first.
+    var requested: [String] { requests.map(\.sessionID) }
+
+    func removeRequest(_ sessionID: String) {
+        requests.removeAll { $0.sessionID == sessionID }
+    }
+
+    private static func loadRequests() -> [MeetingSummarySchedule.Request] {
+        guard let data = UserDefaults.standard.data(forKey: requestsKey) else { return [] }
+        return (try? HolosJSON.decoder().decode([MeetingSummarySchedule.Request].self, from: data)) ?? []
     }
     /// The run going now was stopped because a meeting started.
     var preempted: String?
@@ -72,8 +87,8 @@ extension HolosAppDelegate {
 
     /// Meetings › Summarize Again: made next (forced), also with the setting off.
     func summarizeMeetingAgain(_ summary: SessionSummary) {
-        meeting.summaries.requested.removeAll { $0 == summary.id }
-        meeting.summaries.requested.append(summary.id)
+        meeting.summaries.removeRequest(summary.id)
+        meeting.summaries.requests.append(MeetingSummarySchedule.Request(sessionID: summary.id, requestedAt: Date()))
         meeting.summaries.delayedUntil[summary.id] = nil
         scheduleMeetingSummaries()
     }
@@ -81,7 +96,7 @@ extension HolosAppDelegate {
     /// Meetings › Cancel Summarize: the request is dropped, and a run of it going now stops (SIGTERM; nothing is
     /// written).
     func cancelMeetingSummary(_ sessionID: String) {
-        meeting.summaries.requested.removeAll { $0 == sessionID }
+        meeting.summaries.removeRequest(sessionID)
         if let running = meeting.summaries.running, running.sessionID == sessionID, running.pid > 0 {
             kill(running.pid, SIGTERM)
         }
@@ -119,9 +134,11 @@ extension HolosAppDelegate {
               meeting.summaries.running == nil else { return }
         let now = Date()
         meeting.summaries.delayedUntil = meeting.summaries.delayedUntil.filter { $0.value > now }
-        // A request for a meeting that is gone is dropped.
+        // A request for a meeting that is gone is dropped, and so is one a summary made since already answers (a
+        // command that finished while the app was closed).
         let listed = Set(candidates.map(\.sessionID))
-        meeting.summaries.requested.removeAll { !listed.contains($0) }
+        let satisfied = MeetingSummarySchedule.satisfied(meeting.summaries.requests, by: candidates)
+        meeting.summaries.requests.removeAll { !listed.contains($0.sessionID) || satisfied.contains($0.sessionID) }
         let situation = MeetingSummarySchedule.Situation(
             enabled: MeetingSummaryAppState.enabled, modelAvailable: OnDeviceFix.unavailableReason == nil,
             meetingBusy: meetingIsBusy(controller.state),
@@ -176,9 +193,15 @@ extension HolosAppDelegate {
             meeting.summaries.delayedUntil[sessionID] = Date().addingTimeInterval(60)
         } else {
             // Done for good: written, up to date, failed, or Apple Intelligence cannot be used for it.
-            meeting.summaries.requested.removeAll { $0 == sessionID }
-            // A failure is not tried again automatically for this transcript.
-            if code != 0, let transcriptID { meeting.summaries.attempted[sessionID] = transcriptID }
+            meeting.summaries.removeRequest(sessionID)
+            if status == .written, code != 0 {
+                // Saved, but its transcript files were not rewritten (`exportsPending`): rewritten later, without the
+                // model, after a delay.
+                meeting.summaries.delayedUntil[sessionID] = Date().addingTimeInterval(300)
+            } else if code != 0, let transcriptID {
+                // A failure is not tried again automatically for this transcript.
+                meeting.summaries.attempted[sessionID] = transcriptID
+            }
             // Asked for from the meeting's menu and not made: the user is told why (as Make Final Transcript Now),
             // for example a language Apple Intelligence does not support.
             if requested, code != 0, status != .written {

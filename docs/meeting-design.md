@@ -4969,8 +4969,10 @@ never write "Speaker 2" or "Unknown speaker" as a name. It writes in the languag
 words are in (the meeting's locale; for a merged transcript, the segments' languages weighed by
 their characters other than spaces, so Chinese, Japanese and Thai count as much as they say).
 Without speaker labels the turns are named by track: the microphone of a call becomes the user,
-the system audio "Others", and a microphone in the room "Someone", never "Microphone". A part the model refuses (a refusal or guardrail) or does not answer in time is left out and
-counted (more than half left out fails the run); a part too long for the context is split in two
+the system audio "Others", and a microphone in the room "Someone", never "Microphone"; a turn
+nobody was assigned to is "Someone" with speaker labels too. A part the model refuses (a refusal or guardrail, or notes that read as one: "I'm sorry",
+"I cannot", "As an AI…", one list of openings, any case) or does not answer in time is left out
+and counted (more than half left out fails the run); a part too long for the context is split in two
 and asked again (twice at most); two calls in a row that time out stop the run; a rate limit
 stops it as `busy`; any other model error fails the run, so a summary of part of the meeting is
 never saved as a whole one, and an older summary stays.
@@ -5021,7 +5023,11 @@ is stopped (SIGTERM; nothing is written) and made again a minute later. `busy`, 
 until the app starts again. On battery only meetings from the last two days are summarized. A
 meeting's menu offers Summarize (Again), which runs with `--force`, also with the setting off;
 the request is saved and stays until it ends for good (written, up to date, failed, unavailable)
-or Cancel Summarize drops it, so a request that had to wait runs later. Summarize is off, with
+or Cancel Summarize drops it, so a request that had to wait runs later. Each keeps when it was
+asked for; one that summary.json already answers (of the current transcript, its files written,
+made at or after the request, to the second) is dropped, so a command that finished while the
+app was closed is not run again. A summary saved without its transcript files is not counted as
+tried: its files are rewritten (without the model) five minutes later, also with the setting off. Summarize is off, with
 the reason as its tooltip, when Apple Intelligence cannot be used; a request that ends without a
 summary (a language it does not support, a failure) says why in an alert. A result the command
 reports decides how a run ended: a summary saved just as a meeting started counts.

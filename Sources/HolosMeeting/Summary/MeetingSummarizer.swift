@@ -230,7 +230,9 @@ public struct MeetingSummarizer: Sendable {
                 return nil
             }
             let cleaned = MeetingSummaryDraft.cleanList(notes, limit: 6)
-            return cleaned.isEmpty ? nil : cleaned
+            // A refusal written as a note ("I'm sorry, I cannot…") is a refused part: it is left out and counted.
+            guard !cleaned.isEmpty, !cleaned.contains(where: MeetingSummaryDraft.isRefusal) else { return nil }
+            return cleaned
         } catch MeetingSummaryModelError.contextExceeded {
             guard depth < 2, part.count > 1 else { return nil }
             let half = part.count / 2
@@ -261,8 +263,9 @@ public struct MeetingSummarizer: Sendable {
                 } catch MeetingSummaryModelError.contextExceeded {
                     found = nil
                 }
-                let cleaned = MeetingSummaryDraft.cleanList(found ?? [], limit: 6)
-                // A batch the model would not condense keeps its first notes.
+                let condensed = MeetingSummaryDraft.cleanList(found ?? [], limit: 6)
+                let cleaned = condensed.contains(where: MeetingSummaryDraft.isRefusal) ? [] : condensed
+                // A batch the model would not condense (or refused to) keeps its first notes.
                 next.append(cleaned.isEmpty ? Array(batch.flatMap { $0 }.prefix(6)) : cleaned)
             }
             current = next
@@ -574,10 +577,17 @@ extension MeetingSummaryDraft {
     /// A refusal or an assistant's aside rather than a summary.
     static func isRefusal(_ text: String) -> Bool {
         let lowered = text.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
-        let openings = ["i'm sorry", "i am sorry", "i cannot", "i can't", "i can not", "as an ai", "sorry,",
-                        "je suis désolé", "désolé", "je ne peux pas", "en tant qu'ia"]
-        return openings.contains { lowered.hasPrefix($0) }
+            .replacingOccurrences(of: "’", with: "'")
+        return refusalOpenings.contains { lowered.hasPrefix($0) }
     }
+
+    /// How a refusal or an assistant's aside begins (lowercase, straight apostrophes): the one list every answer,
+    /// note and condensed note is checked against.
+    static let refusalOpenings = [
+        "i'm sorry", "i am sorry", "sorry,", "i apologize", "i cannot", "i can't", "i can not", "i'm unable",
+        "i am unable", "i won't", "i will not", "as an ai", "as a language model", "i'm not able", "i am not able",
+        "je suis désolé", "désolé", "je ne peux pas", "en tant qu'ia", "je ne suis pas en mesure",
+    ]
 
     /// One line: whitespace collapsed, trimmed, and a speaker label the model repeated ("Speaker 3 will…", "Unknown
     /// speaker") written as "someone", since it names nobody.

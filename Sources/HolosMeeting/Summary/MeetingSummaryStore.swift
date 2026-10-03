@@ -142,8 +142,9 @@ public enum MeetingSummarySource {
             // anyone in it.
             labels["Microphone"] = document.metadata.source == .microphoneAndSystem ? selfName : unnamedSpeaker
             labels["System audio"] = "Others"
-            labels["Unknown speaker"] = unnamedSpeaker
         }
+        // A turn nobody was assigned to, with or without speaker labels.
+        labels["Unknown speaker"] = unnamedSpeaker
         for speaker in projection?.speakers ?? [] where labels[speaker.label] == nil {
             labels[speaker.label] = isUnnamedChannel(speaker) ? selfName : speaker.name
         }

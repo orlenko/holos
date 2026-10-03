@@ -24,12 +24,20 @@ public enum MeetingSummarySchedule {
         public var finished: Bool
         /// summary.json says the transcript files were not rewritten with it (`exportsPending`).
         public var exportsPending: Bool
+        /// When summary.json was made.
+        public var summaryCreatedAt: Date?
 
         public init(sessionID: String, path: String, createdAt: Date, transcriptID: String?,
-                    summaryTranscriptID: String?, idle: Bool, finished: Bool = true, exportsPending: Bool = false) {
+                    summaryTranscriptID: String?, idle: Bool, finished: Bool = true, exportsPending: Bool = false,
+                    summaryCreatedAt: Date? = nil) {
             self.sessionID = sessionID; self.path = path; self.createdAt = createdAt
             self.transcriptID = transcriptID; self.summaryTranscriptID = summaryTranscriptID; self.idle = idle
-            self.finished = finished; self.exportsPending = exportsPending
+            self.finished = finished; self.exportsPending = exportsPending; self.summaryCreatedAt = summaryCreatedAt
+        }
+
+        /// Only the transcript files are left to rewrite: no model call is needed.
+        public var onlyExportsPending: Bool {
+            exportsPending && transcriptID != nil && transcriptID == summaryTranscriptID
         }
 
         /// The summary is missing or of an earlier transcript, or the transcript files still miss it.
@@ -101,10 +109,10 @@ public enum MeetingSummarySchedule {
                 return .run(sessionID: id, path: candidate.path, force: true)
             }
         }
-        guard situation.enabled else { return .wait }
+        // With the setting off, only transcript files left without their summary are rewritten (no model call).
         let due = candidates
             .filter { candidate in
-                ready(candidate) && candidate.needsSummary
+                ready(candidate) && candidate.needsSummary && (situation.enabled || candidate.onlyExportsPending)
                     && !situation.finalTranscriptQueued.contains(candidate.sessionID)
                     && situation.attempted[candidate.sessionID] != candidate.transcriptID
                     && (!situation.onBattery
@@ -113,6 +121,32 @@ public enum MeetingSummarySchedule {
             .sorted { $0.createdAt != $1.createdAt ? $0.createdAt > $1.createdAt : $0.sessionID < $1.sessionID }
         guard let first = due.first else { return .wait }
         return .run(sessionID: first.sessionID, path: first.path, force: false)
+    }
+
+    /// A Summarize Again the user asked for, saved until it ends for good (the app's queue).
+    public struct Request: Codable, Sendable, Equatable {
+        public var sessionID: String
+        public var requestedAt: Date
+
+        public init(sessionID: String, requestedAt: Date) {
+            self.sessionID = sessionID; self.requestedAt = requestedAt
+        }
+    }
+
+    /// The requests a summary already answers: summary.json is of the current transcript, its files are written,
+    /// and it was made at or after the request (to the second, as the file keeps dates). A request saved before a
+    /// quit whose command finished without the app is then not made again.
+    public static func satisfied(_ requests: [Request], by candidates: [Candidate]) -> Set<String> {
+        var done: Set<String> = []
+        for request in requests {
+            guard let candidate = candidates.first(where: { $0.sessionID == request.sessionID }),
+                  let made = candidate.summaryCreatedAt, candidate.transcriptID != nil,
+                  candidate.summaryTranscriptID == candidate.transcriptID, !candidate.exportsPending,
+                  made.timeIntervalSince1970 >= request.requestedAt.timeIntervalSince1970.rounded(.down)
+            else { continue }
+            done.insert(request.sessionID)
+        }
+        return done
     }
 
     /// A meeting that can be summarized: finished as `DeepTranscriptionSchedule.isFinished` says (saved, recovered,
@@ -135,7 +169,8 @@ public enum MeetingSummarySchedule {
             return Candidate(sessionID: manifest.id, path: session.path, createdAt: manifest.createdAt,
                              transcriptID: transcriptID, summaryTranscriptID: summary?.transcriptID,
                              idle: !active && !processing, finished: isFinished(state),
-                             exportsPending: summary?.exportsPending == true)
+                             exportsPending: summary?.exportsPending == true,
+                             summaryCreatedAt: summary?.createdAt)
         }
     }
 }
