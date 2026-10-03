@@ -217,3 +217,24 @@ private func queue(_ ids: [String], runNow: Set<String> = []) -> DeepTranscripti
     #expect(DeepTranscriptionSchedule.failureText(code: 137, record: nil, errors: "")
         == "The command stopped unexpectedly (signal 9).")
 }
+
+@Test func aRunNowWhoseLanguagesAreBeingReadIsNotStartedWithoutForce() {
+    // A queued automatically, waiting for power; the user asks for Run Now and its languages are being read.
+    let items = queue(["A", "B"])
+    let situation = DeepTranscriptionSchedule.Situation(enabled: true, modelInstalled: true, power: .ac,
+                                                        pendingRunNow: ["A"])
+    // AC power comes back meanwhile: A is not started as the automatic pass it still is; B may run.
+    #expect(DeepTranscriptionSchedule.next(items, situation) == .run("B"))
+    var onlyA = situation
+    onlyA.inUse = ["B"]
+    #expect(DeepTranscriptionSchedule.next(items, onlyA) == .idle)
+}
+
+@Test func theLaunchCheckRunsAgainWhenTheModelBecomesInstalled() {
+    #expect(DeepTranscriptionSchedule.reconcilesOnModelChange(from: nil, to: "installed"), "The first check.")
+    #expect(DeepTranscriptionSchedule.reconcilesOnModelChange(from: "downloading", to: "installed"))
+    #expect(DeepTranscriptionSchedule.reconcilesOnModelChange(from: "notInstalled", to: "installed"))
+    #expect(!DeepTranscriptionSchedule.reconcilesOnModelChange(from: "installed", to: "installed"),
+            "A repeated doctor check of an installed model does not scan again.")
+    #expect(!DeepTranscriptionSchedule.reconcilesOnModelChange(from: "installed", to: "notInstalled"))
+}

@@ -4787,12 +4787,14 @@ carried over.
   the meeting is queued only if the setting did not change meanwhile and the user did not act
   on it: not in the queue, not considered, so a Run Now asked for and cancelled meanwhile stays
   cancelled). The queue is saved in UserDefaults
-  (`deepTranscriptionQueue`) on every change. At launch, once the model is known installed, the
-  meetings that finished while the app was closed (read off the main actor, and queued only if
+  (`deepTranscriptionQueue`) on every change. Whenever the model becomes installed (doctor's
+  first report at launch, or after it was missing or downloading) and whenever the setting is
+  turned on, the meetings that finished while the app was closed (read off the main actor, and queued only if
   the setting is still on, with the same activation time, when the read ends) (a recorder saves and post-processes on its
   own after the app quits), started since the setting was turned on, finished (not recording,
   processing, or interrupted), in one language, with no `deepTranscribed` event and never queued
-  before (`deepTranscriptionConsidered`), are queued too.
+  before (`deepTranscriptionConsidered`, never capped: forgetting one could queue a meeting the
+  user cancelled), are queued too; so are meetings that finished while the model was missing.
   The next pass runs when none is running, no meeting is starting, recording, or saving, the
   model is installed, and no other command or Review uses the meeting (`MeetingController.
   sessionsInUse`, `sessionsUnderReview`: open, opening, or still saving): a meeting asked for from its menu first, whatever the power source; else the
@@ -4852,6 +4854,10 @@ carried over.
   single turns do not), as asking for it by name means; refused with an alert without the model,
   for a meeting that is not finished, or for one in several languages. A meeting queued
   automatically offers it too (it upgrades the item, so it runs next whatever the power source).
+  The request is reserved at once, before its languages are read off the main actor: the
+  meeting is not started meanwhile (a queued automatic item would run without `--force`) and is
+  considered; a Cancel meanwhile ends the reservation, and a refusal (several languages)
+  leaves the meeting as it was.
   While a meeting is queued or the app's own pass runs on it, Cancel Final Transcript (SIGTERM: the command cancels and says whether the new
   transcript was already published).
 - *Tests.* `DeepTranscriptionQueueTests` (order and run-now upgrade, saving and damaged data,

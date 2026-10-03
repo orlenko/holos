@@ -90,11 +90,15 @@ public enum DeepTranscriptionSchedule {
         /// Meetings another command of the app is working on (Label Speakers, a relabel, a delete…), and meetings open
         /// (or opening, or still saving) in Review, which owns their transcript and labels until it closes.
         public var inUse: Set<String>
+        /// Meetings asked for with Run Now whose languages are still being read: not started meanwhile (a queued
+        /// automatic item would run without `--force`).
+        public var pendingRunNow: Set<String>
 
         public init(enabled: Bool, modelInstalled: Bool, power: Power, meetingBusy: Bool = false,
-                    running: String? = nil, inUse: Set<String> = []) {
+                    running: String? = nil, inUse: Set<String> = [], pendingRunNow: Set<String> = []) {
             self.enabled = enabled; self.modelInstalled = modelInstalled; self.power = power
             self.meetingBusy = meetingBusy; self.running = running; self.inUse = inUse
+            self.pendingRunNow = pendingRunNow
         }
     }
 
@@ -112,7 +116,9 @@ public enum DeepTranscriptionSchedule {
     /// AC power (or has no battery), `waitForPower` on battery. Meetings in use by another command wait their turn.
     public static func next(_ queue: DeepTranscriptionQueue, _ situation: Situation) -> Decision {
         guard situation.running == nil, !situation.meetingBusy, situation.modelInstalled else { return .idle }
-        let ready = queue.items.filter { !situation.inUse.contains($0.sessionID) }
+        let ready = queue.items.filter {
+            !situation.inUse.contains($0.sessionID) && !situation.pendingRunNow.contains($0.sessionID)
+        }
         if let asked = ready.first(where: \.runNow) { return .run(asked.sessionID) }
         guard situation.enabled, let first = ready.first else { return .idle }
         return situation.power == .battery ? .waitForPower : .run(first.sessionID)
@@ -177,6 +183,12 @@ public enum DeepTranscriptionSchedule {
     public static func queuesAfterMeeting(enabled: Bool, modelInstalled: Bool, languages: Int, queued: Bool = false,
                                           considered: Bool = false) -> Bool {
         enabled && modelInstalled && languages <= 1 && !queued && !considered
+    }
+
+    /// Whether the app checks again for meetings that finished while it could not queue them: when the model becomes
+    /// installed (doctor's first report, or after it was missing or downloading), not on every report of it.
+    public static func reconcilesOnModelChange(from previous: String?, to model: String) -> Bool {
+        model == "installed" && previous != "installed"
     }
 
     /// Whether a meeting's menu offers Make Final Transcript Now: not while the app's pass runs on it, nor when it is

@@ -17,10 +17,9 @@ final class DeepTranscriptionAppState {
     /// When it was last turned on: meetings started since then and found finished at launch are queued.
     static let enabledSinceKey = "deepTranscriptionEnabledSince"
     static let queueKey = "deepTranscriptionQueue"
-    /// Meetings queued once already (whatever came of it), so the launch check never queues them again.
+    /// Meetings queued once already (whatever came of it), so the launch check never queues them again. Not capped:
+    /// a few dozen bytes per meeting, and forgetting one could queue a meeting the user cancelled.
     static let consideredKey = "deepTranscriptionConsidered"
-    /// The most meetings `considered` remembers (the newest).
-    static let consideredLimit = 1_000
 
     static var enabled: Bool {
         get { UserDefaults.standard.bool(forKey: enabledKey) }
@@ -54,8 +53,8 @@ final class DeepTranscriptionAppState {
     var retryAfter: Date?
     /// Counts every turn of the setting on or off: a scan begun before one is dropped when it ends.
     var activation = 0
-    /// The launch check of meetings that finished while the app was closed ran.
-    var reconciled = false
+    /// Meetings asked for with Run Now whose languages are being read: the scheduler does not start them meanwhile.
+    var pendingRunNow: Set<String> = []
     /// `voiceislocal doctor --json` deepTranscriptionModel ("installed", "downloading", "notInstalled"); "unknown" when
     /// doctor ran but did not report it, "unavailable" when it could not run; nil before the first check.
     var model: String?
@@ -67,7 +66,7 @@ final class DeepTranscriptionAppState {
 
     func consider(_ sessionID: String) {
         guard !considered.contains(sessionID) else { return }
-        considered = Array((considered + [sessionID]).suffix(Self.consideredLimit))
+        considered.append(sessionID)
     }
 }
 
@@ -113,8 +112,12 @@ extension HolosAppDelegate {
 
     /// The doctor check reported the model (or could not run).
     func deepModelChecked(_ model: String) {
+        let previous = meeting.deep.model
         meeting.deep.model = model
-        reconcileDeepTranscription()
+        // Meetings that finished while the model was missing or downloading were not queued: found again now.
+        if DeepTranscriptionSchedule.reconcilesOnModelChange(from: previous, to: model) {
+            reconcileDeepTranscription()
+        }
         scheduleDeepTranscription()
     }
 
@@ -174,9 +177,8 @@ extension HolosAppDelegate {
     /// was closed (in child-recorder mode a recorder saves and post-processes on its own after the app quits),
     /// started since the setting was turned on, in one language, with no deep transcript, and not queued before.
     func reconcileDeepTranscription() {
-        guard !meeting.deep.reconciled, DeepTranscriptionAppState.enabled, meeting.deep.model == "installed",
+        guard DeepTranscriptionAppState.enabled, meeting.deep.model == "installed",
               let root = meeting.controller?.root, let since = DeepTranscriptionAppState.enabledSince else { return }
-        meeting.deep.reconciled = true
         let considered = Set(meeting.deep.considered)
         let queue = meeting.deep.queue
         let activation = meeting.deep.activation
@@ -227,17 +229,23 @@ extension HolosAppDelegate {
             return
         }
         let directory = summary.directory
+        // Reserved at once: a queued automatic item is not started without --force while its languages are read, and
+        // considered, so a scan that ends meanwhile does not queue it again once it is cancelled.
+        meeting.deep.pendingRunNow.insert(summary.id)
+        meeting.deep.consider(summary.id)
         Task { [weak self] in
             let languages = await Task.detached { Self.languageCount(directory) }.value
-            guard let self else { return }
+            // Cancelled meanwhile (the reservation is gone): nothing is queued.
+            guard let self, self.meeting.deep.pendingRunNow.remove(summary.id) != nil else { return }
             guard languages <= 1 else {
+                // Refused: the meeting stays as it was (an automatic item stays queued).
+                self.scheduleDeepTranscription()
                 self.showDeepAlert("“\(Self.short(summary.name))” is in several languages.",
                                    "Deep transcription handles meetings in one language for now; its transcript stays "
                                        + "as it is.")
                 return
             }
             self.meeting.deep.queue.enqueue(sessionID: summary.id, path: directory.path, at: Date(), runNow: true)
-            self.meeting.deep.consider(summary.id)
             self.meeting.deep.retryAfter = nil
             self.updateDeepStates()
             self.scheduleDeepTranscription()
@@ -252,6 +260,7 @@ extension HolosAppDelegate {
             kill(running.pid, SIGTERM)
         }
         if meeting.deep.preempted == sessionID { meeting.deep.preempted = nil }
+        meeting.deep.pendingRunNow.remove(sessionID)
         meeting.deep.queue.remove(sessionID)
         updateDeepStates()
     }
@@ -281,7 +290,8 @@ extension HolosAppDelegate {
         let inUse = Set(controller.sessionsInUse.keys).union(controller.sessionsUnderReview())
         let situation = DeepTranscriptionSchedule.Situation(
             enabled: DeepTranscriptionAppState.enabled, modelInstalled: meeting.deep.model == "installed",
-            power: meeting.deep.power, meetingBusy: busy, running: meeting.deep.running?.sessionID, inUse: inUse)
+            power: meeting.deep.power, meetingBusy: busy, running: meeting.deep.running?.sessionID, inUse: inUse,
+            pendingRunNow: meeting.deep.pendingRunNow)
         guard case .run(let sessionID) = DeepTranscriptionSchedule.next(meeting.deep.queue, situation),
               let item = meeting.deep.queue.items.first(where: { $0.sessionID == sessionID }) else {
             updateDeepStates()
@@ -453,6 +463,7 @@ extension HolosAppDelegate {
         meeting.deep.activation += 1
         if on {
             DeepTranscriptionAppState.enabledSince = Date()
+            reconcileDeepTranscription()
         } else {
             // The pass running now keeps its item until it ends (then it is taken off).
             meeting.deep.queue.removeAutomatic(keeping: meeting.deep.running?.sessionID)
