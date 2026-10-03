@@ -6,7 +6,8 @@ import os
 /// `DeepTranscriber` over WhisperKit (docs/meeting-design.md §4.16): the installed Whisper model on the Neural Engine,
 /// with the decoding settings measured for meetings: the meeting's language when it has one, the vocabulary prompt on
 /// every chunk, voice-activity chunking, word timestamps, and WhisperKit's default temperature fallback and
-/// compression-ratio and log-probability thresholds (which kept it out of the repetition loops whisper.cpp fell into).
+/// compression-ratio and log-probability thresholds (which kept it out of the repetition loops whisper.cpp fell into),
+/// but not its first-token log-probability check, which emptied whole chunks.
 /// Loads only from the install folder; it never downloads. One transcription at a time: the stage calls it from one
 /// task (hence `@unchecked Sendable` around WhisperKit's non-Sendable pipeline).
 public final class WhisperKitTranscriber: DeepTranscriber, @unchecked Sendable {
@@ -53,40 +54,28 @@ public final class WhisperKitTranscriber: DeepTranscriber, @unchecked Sendable {
         try Task.checkCancellation()
         guard !request.samples.isEmpty else { return [] }
         let tokens = request.prompt.isEmpty ? nil : try promptTokens(request.prompt)
-        let options = DecodingOptions(
-            verbose: false, task: .transcribe, language: request.language, usePrefillPrompt: true,
-            detectLanguage: request.language == nil, skipSpecialTokens: true, withoutTimestamps: false,
-            wordTimestamps: true, promptTokens: tokens, chunkingStrategy: .vad)
-        // WhisperKit's own VAD path drops a chunk whose decoding fails without a trace; chunked here instead, each
-        // chunk's result is seen, and a failed one is decoded again on its own.
-        let window = kit.featureExtractor.windowSamples ?? Constants.defaultWindowSamples
-        let chunks = try await VADAudioChunker().chunkAll(audioArray: request.samples, maxChunkLength: window,
+        let options = Self.decodingOptions(language: request.language, promptTokens: tokens)
+        // WhisperKit's own VAD path drops a chunk whose decoding fails without a trace; chunked here instead (at most
+        // `maxChunkSeconds` each), each chunk's result is seen, and a failed one is decoded again on its own.
+        let chunks = try await VADAudioChunker().chunkAll(audioArray: request.samples,
+                                                          maxChunkLength: Int(maxChunkSeconds * 16_000),
                                                           decodeOptions: options)
-        var prompted = try await decode(chunks, options: options)
-        // A prompt can make the model stop early in a chunk and leave speech out (§4.16). Each chunk is decoded without
-        // it too, and keeps the prompted result only when that has at least `promptedShare` of the plain one's words.
+        var plainOptions: DecodingOptions?
         if tokens != nil {
-            var plainOptions = options
-            plainOptions.promptTokens = nil
-            let plain = try await decode(chunks, options: plainOptions)
-            var replaced = 0
-            for index in prompted.indices where Self.keepsPlain(prompted: Self.wordCount(prompted[index]),
-                                                                plain: Self.wordCount(plain[index])) {
-                prompted[index] = plain[index]
-                replaced += 1
-            }
-            fallbacks += replaced
-            Self.log.info("Deep transcription: \(replaced, privacy: .public) of \(chunks.count, privacy: .public) chunks kept without the prompt")
+            plainOptions = options
+            plainOptions?.promptTokens = nil
         }
+        let decoded = try await decodeChosen(chunks.map { Span(offset: $0.seekOffsetIndex, samples: $0.audioSamples) },
+                                             options: options, plain: plainOptions, depth: 0)
         chunkCount += chunks.count
-        let results: [TranscriptionResult] = prompted.enumerated().flatMap { index, found -> [TranscriptionResult] in
-            let seconds = Float(chunks[index].seekOffsetIndex) / Float(WhisperKit.sampleRate)
-            for result in found {
+        let results: [TranscriptionResult] = decoded.flatMap { span -> [TranscriptionResult] in
+            let seconds = Float(span.offset) / Float(WhisperKit.sampleRate)
+            for result in span.results {
                 result.segments = result.segments.map {
                     TranscriptionUtilities.updateSegmentTimings(segment: $0, seekTime: seconds)
                 }
             }
-            return found
+            return span.results
         }
         guard let tokenizer = kit.tokenizer else { throw HolosError.unavailable("The model's tokenizer is not loaded.") }
         let special = tokenizer.specialTokens.specialTokenBegin
@@ -108,9 +97,35 @@ public final class WhisperKitTranscriber: DeepTranscriber, @unchecked Sendable {
     }
 
     /// Chunks decoded without their prompt's result, because the prompted one had fewer than `promptedShare` of its
-    /// words, and chunks decoded, since the transcriber was loaded (for the log and the opt-in probe).
+    /// words, chunks decoded, and chunks decoded again in halves after they gave no words, since the transcriber was
+    /// loaded (for the log and the opt-in probes).
     private(set) var fallbacks = 0
     private(set) var chunkCount = 0
+    private(set) var splits = 0
+
+    /// Each chunk decoded with a prompt since the transcriber was loaded: where it starts in its piece, its length, the
+    /// words of both decodes, and which was kept (for the opt-in probe).
+    struct ChunkDecision: Sendable, Equatable {
+        var start: Double
+        var seconds: Double
+        var promptedWords: Int
+        var plainWords: Int
+        var keptPlain: Bool
+    }
+
+    private(set) var chunkLog: [ChunkDecision] = []
+
+    /// The longest chunk given to the model. Whisper's window is 30 s, but WhisperKit's decoder holds 224 tokens in
+    /// all, the prompt's included: a prompt of 110 tokens leaves room for about 80 words, which 30 s of fast speech
+    /// exceeds, and such a chunk came back empty (§4.16). 20 s chunks leave room for the words of fast speech.
+    let maxChunkSeconds = 20.0
+
+    /// A chunk that gave no words though its audio is not near-silent is decoded again in two halves, split at its
+    /// quietest moment, down to this length and at most `maximumSplitDepth` times.
+    static let minimumSplitSeconds = 4.0
+    static let maximumSplitDepth = 2
+    /// Near-silence, as the deep transcription guards measure it (dBFS).
+    static let silenceDB = -50.0
 
     /// A prompted chunk is kept when it has at least this share of the words the same chunk has without the prompt.
     static let promptedShare = 0.85
@@ -121,38 +136,132 @@ public final class WhisperKitTranscriber: DeepTranscriber, @unchecked Sendable {
         Double(prompted) < promptedShare * Double(plain)
     }
 
-    private static func wordCount(_ results: [TranscriptionResult]) -> Int {
+    /// The words of a decode: a segment's timed words, or its text's words when it has no timings.
+    static func wordCount(_ results: [TranscriptionResult]) -> Int {
         results.reduce(0) { total, result in
-            total + result.segments.reduce(0) { $0 + ($1.words?.count ?? $1.text.split(separator: " ").count) }
+            total + result.segments.reduce(0) { count, segment in
+                let timed = segment.words?.count ?? 0
+                return count + (timed > 0 ? timed : withoutSpecialTokens(segment.text).split(separator: " ").count)
+            }
         }
+    }
+
+    /// The decoding settings of every chunk: `language` (nil: detected), the prompt, timestamps and word timestamps,
+    /// WhisperKit's default temperature fallback and compression-ratio, log-probability and no-speech thresholds, and
+    /// no first-token check: WhisperKit's (not in Whisper itself) sent whole chunks of speech through every fallback
+    /// temperature to an empty result, most often with a prompt (on ten minutes of a call, 12 of about 40 chunks).
+    static func decodingOptions(language: String?, promptTokens: [Int]?) -> DecodingOptions {
+        DecodingOptions(
+            verbose: false, task: .transcribe, language: language, usePrefillPrompt: true,
+            detectLanguage: language == nil, skipSpecialTokens: true, withoutTimestamps: false,
+            wordTimestamps: true, promptTokens: promptTokens, firstTokenLogProbThreshold: nil,
+            chunkingStrategy: .vad)
+    }
+
+    /// A stretch of the request's samples, `offset` samples from its start.
+    private struct Span {
+        var offset: Int
+        var samples: [Float]
+    }
+
+    /// `spans` decoded with the prompt and (with `plain`) without it, the better kept per span (`keepsPlain`); a span
+    /// that gave no words in either though its audio is not near-silent (`needsSplit`) is decoded again in halves.
+    private func decodeChosen(_ spans: [Span], options: DecodingOptions, plain: DecodingOptions?,
+                              depth: Int) async throws -> [(offset: Int, results: [TranscriptionResult])] {
+        guard !spans.isEmpty else { return [] }
+        var chosen = try await decode(spans.map(\.samples), offsets: spans.map(\.offset), options: options)
+        var plainResults: [[TranscriptionResult]]?
+        if let plain {
+            plainResults = try await decode(spans.map(\.samples), offsets: spans.map(\.offset), options: plain)
+        }
+        var out: [(offset: Int, results: [TranscriptionResult])] = []
+        for index in spans.indices {
+            if let plainResults {
+                let promptedWords = Self.wordCount(chosen[index]), plainWords = Self.wordCount(plainResults[index])
+                let keepsPlain = Self.keepsPlain(prompted: promptedWords, plain: plainWords)
+                chunkLog.append(ChunkDecision(start: Double(spans[index].offset) / 16_000,
+                                              seconds: Double(spans[index].samples.count) / 16_000,
+                                              promptedWords: promptedWords, plainWords: plainWords,
+                                              keptPlain: keepsPlain))
+                if keepsPlain {
+                    chosen[index] = plainResults[index]
+                    fallbacks += 1
+                }
+            }
+            let span = spans[index]
+            if Self.needsSplit(words: Self.wordCount(chosen[index]), seconds: Double(span.samples.count) / 16_000,
+                               levelDB: Self.levelDB(span.samples), depth: depth) {
+                splits += 1
+                let cut = Self.quietestCut(span.samples)
+                let halves = [Span(offset: span.offset, samples: Array(span.samples[..<cut])),
+                              Span(offset: span.offset + cut, samples: Array(span.samples[cut...]))]
+                out += try await decodeChosen(halves, options: options, plain: plain, depth: depth + 1)
+            } else {
+                out.append((span.offset, chosen[index]))
+            }
+        }
+        if depth == 0 {
+            Self.log.info("Deep transcription: \(self.fallbacks, privacy: .public) chunks kept without the prompt, \(self.splits, privacy: .public) decoded again in halves")
+        }
+        return out
+    }
+
+    /// Whether a chunk is decoded again in halves: it gave no words, its audio is not near-silent, it is long enough to
+    /// halve, and it was not halved too often already.
+    static func needsSplit(words: Int, seconds: Double, levelDB: Double, depth: Int) -> Bool {
+        words == 0 && levelDB > silenceDB && seconds >= 2 * minimumSplitSeconds && depth < maximumSplitDepth
+    }
+
+    /// RMS level of `samples` in dBFS (-120 for silence).
+    static func levelDB(_ samples: [Float]) -> Double {
+        guard !samples.isEmpty else { return -120 }
+        var sum = 0.0
+        for sample in samples { sum += Double(sample) * Double(sample) }
+        let rms = (sum / Double(samples.count)).squareRoot()
+        return rms > 0 ? max(-120, 20 * log10(rms)) : -120
+    }
+
+    /// Where to halve `samples`: the middle of the quietest 100 ms in their middle half.
+    static func quietestCut(_ samples: [Float]) -> Int {
+        let frame = 1_600
+        let lower = samples.count / 4, upper = samples.count * 3 / 4
+        guard upper - lower >= frame else { return samples.count / 2 }
+        var best = (energy: Double.infinity, start: lower)
+        var start = lower
+        while start + frame <= upper {
+            var energy = 0.0
+            for index in start..<(start + frame) { energy += Double(samples[index] * samples[index]) }
+            if energy < best.energy { best = (energy, start) }
+            start += frame
+        }
+        return best.start + frame / 2
     }
 
     /// Each chunk decoded with `options` (one window each); a chunk whose decoding fails is decoded again on its own,
     /// and one that fails again is empty (logged).
-    private func decode(_ chunks: [AudioChunk], options: DecodingOptions) async throws -> [[TranscriptionResult]] {
+    private func decode(_ chunks: [[Float]], offsets: [Int], options: DecodingOptions) async throws
+        -> [[TranscriptionResult]] {
         var single = options
         single.chunkingStrategy = nil
         single.clipTimestamps = []
         let stop: TranscriptionCallback = { _ in Task.isCancelled ? false : nil }
-        var outcomes = await kit.transcribeWithOptions(audioArrays: chunks.map(\.audioSamples),
+        var outcomes = await kit.transcribeWithOptions(audioArrays: chunks,
                                                        decodeOptionsArray: Array(repeating: single, count: chunks.count),
                                                        callback: stop)
         try Task.checkCancellation()
         for index in outcomes.indices {
             guard case .failure = outcomes[index] else { continue }
             outcomes[index] = await Result {
-                try await kit.transcribe(audioArray: chunks[index].audioSamples, decodeOptions: single, callback: stop)
+                try await kit.transcribe(audioArray: chunks[index], decodeOptions: single, callback: stop)
             }
             try Task.checkCancellation()
         }
         for (index, outcome) in outcomes.enumerated() {
             if case .failure(let error) = outcome {
-                Self.log.error("Deep transcription: a chunk at \(chunks[index].seekOffsetIndex / WhisperKit.sampleRate, privacy: .public) s could not be decoded: \(String(describing: error), privacy: .public)")
+                Self.log.error("Deep transcription: a chunk at \(offsets[index] / WhisperKit.sampleRate, privacy: .public) s could not be decoded: \(String(describing: error), privacy: .public)")
             }
         }
-        return try Self.requireAll(outcomes, startSeconds: chunks.map {
-            Double($0.seekOffsetIndex) / Double(WhisperKit.sampleRate)
-        })
+        return try Self.requireAll(outcomes, startSeconds: offsets.map { Double($0) / Double(WhisperKit.sampleRate) })
     }
 
     /// Every chunk's results; throws `incomplete` naming the chunks that could not be decoded (also on their own), so a

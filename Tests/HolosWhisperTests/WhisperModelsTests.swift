@@ -163,6 +163,31 @@ import HolosCore
             == true, "Never published as a transcript that silently leaves the audio out.")
     }
 
+    @Test func chunksAreDecodedWithoutTheFirstTokenCheck() {
+        // Regression: WhisperKit's first-token log-probability check emptied whole chunks of speech, most often with a
+        // prompt, leaving 20–30 s stretches out of the transcript.
+        let options = WhisperKitTranscriber.decodingOptions(language: "en", promptTokens: [11, 12])
+        #expect(options.firstTokenLogProbThreshold == nil)
+        #expect(options.compressionRatioThreshold == 2.4 && options.logProbThreshold == -1.0,
+                "The fallback thresholds stay WhisperKit's defaults.")
+        #expect(options.wordTimestamps && !options.withoutTimestamps && options.promptTokens == [11, 12])
+        #expect(WhisperKitTranscriber.decodingOptions(language: nil, promptTokens: nil).detectLanguage)
+    }
+
+    @Test func aChunkWithSpeechButNoWordsIsDecodedAgainInHalves() {
+        // A 20 s chunk of speech that came back empty (its words did not fit the decoder): halved.
+        #expect(WhisperKitTranscriber.needsSplit(words: 0, seconds: 20, levelDB: -25, depth: 0))
+        #expect(!WhisperKitTranscriber.needsSplit(words: 3, seconds: 20, levelDB: -25, depth: 0))
+        #expect(!WhisperKitTranscriber.needsSplit(words: 0, seconds: 20, levelDB: -70, depth: 0), "Silence stays empty.")
+        #expect(!WhisperKitTranscriber.needsSplit(words: 0, seconds: 6, levelDB: -25, depth: 0), "Too short to halve.")
+        #expect(!WhisperKitTranscriber.needsSplit(words: 0, seconds: 20, levelDB: -25,
+                                                  depth: WhisperKitTranscriber.maximumSplitDepth))
+        var samples = [Float](repeating: 0.3, count: 16_000 * 10)
+        for index in 70_000..<71_600 { samples[index] = 0 }
+        #expect(abs(WhisperKitTranscriber.quietestCut(samples) - 70_800) <= 1_600, "Halved in the pause.")
+        #expect(WhisperKitTranscriber.levelDB(samples) > -12 && WhisperKitTranscriber.levelDB([0, 0]) == -120)
+    }
+
     @Test func localesMapToWhisperLanguages() {
         #expect(DeepTranscriptionModel.whisperLanguage("en-CA") == "en")
         #expect(DeepTranscriptionModel.whisperLanguage("fr_CA") == "fr")
