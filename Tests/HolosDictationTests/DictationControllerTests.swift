@@ -109,6 +109,32 @@ private func eventually(_ condition: () -> Bool) async -> Bool {
     return condition()
 }
 
+/// Advances watchdog sleeps explicitly. Even cancelled sleeps can return late, as a platform callback can.
+@MainActor
+private final class DictationSleeper {
+    private(set) var durations: [Duration] = []
+    private(set) var completed = 0
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    func sleep(_ duration: Duration) async throws {
+        try Task.checkCancellation()
+        durations.append(duration)
+        await withCheckedContinuation { waiters.append($0) }
+        completed += 1
+    }
+
+    func advance() {
+        guard !waiters.isEmpty else { return }
+        waiters.removeFirst().resume()
+    }
+
+    func drain() {
+        let pending = waiters
+        waiters.removeAll()
+        for waiter in pending { waiter.resume() }
+    }
+}
+
 @Test @MainActor func releaseBeforeSpeechReadyNeverOpensMicrophone() async {
     let harness = Harness(); harness.delaySpeech = true
     let controller = DictationController(dependencies: harness.dependencies) { _ in }
@@ -169,19 +195,27 @@ private func eventually(_ condition: () -> Bool) async -> Bool {
 
 @Test @MainActor func releaseDuringHungStartupUsesFinalizationTimeout() async {
     let harness = Harness()
+    let sleeper = DictationSleeper()
+    defer { sleeper.drain() }
     harness.delaySpeech = true
-    let controller = DictationController(finalizationTimeout: 0.05,
+    let controller = DictationController(sleep: sleeper.sleep,
                                          dependencies: harness.dependencies) { _ in }
     #expect(controller.begin())
-    #expect(await eventually { harness.speechWaiter != nil })
+    #expect(await eventually { harness.speechWaiter != nil && sleeper.durations.count == 1 })
     controller.end()
+    #expect(await eventually { sleeper.durations == [.seconds(120), .seconds(30)] })
+    sleeper.advance() // the cancelled startup sleep must not fail finalization
+    #expect(await eventually { sleeper.completed == 1 })
+    #expect(controller.status.phase == .finalizing)
+    sleeper.advance()
     #expect(await eventually { controller.status.phase == .failed })
     #expect(controller.status.message?.contains("finalization timed out") == true)
     #expect(harness.capture.starts == 0)
     harness.releaseSpeech()
-    try? await Task.sleep(for: .milliseconds(20))
+    #expect(await eventually { controller.begin() })
+    controller.cancel()
     #expect(await harness.speech.cancelled)
-    #expect(controller.status.phase == .failed)
+    #expect(controller.status.phase == .idle)
 }
 
 @Test @MainActor func cancelBeforeSpeechReadySuppressesLateResult() async {
@@ -283,16 +317,83 @@ private func eventually(_ condition: () -> Bool) async -> Bool {
     #expect(speechHarness.capture.starts == 0)
 }
 
-@Test @MainActor func maximumDurationStopsLostKeyUp() async {
+@Test @MainActor func dictationContinuesPastTheOldCutoffAndFinishesOnRelease() async throws {
     let harness = Harness()
-    await harness.speech.setSegments([.init(start: 0, end: 1, text: " timed result ")])
-    let controller = DictationController(maximumDuration: 0.25,
+    harness.delaySpeech = true
+    let sleeper = DictationSleeper()
+    defer { sleeper.drain() }
+    let segments: [TranscriptSegment] = [.init(start: 0, end: 1, text: "First sentence."),
+                                          .init(start: 600, end: 601, text: "Still dictating.")]
+    await harness.speech.setSegments(segments)
+    let controller = DictationController(sleep: sleeper.sleep,
                                          dependencies: harness.dependencies) { _ in }
     #expect(controller.begin())
+    #expect(await eventually { harness.speechWaiter != nil && sleeper.durations == [.seconds(120)] })
+    harness.releaseSpeech()
+    #expect(await eventually { controller.status.phase == .listening })
+    let id = controller.status.utteranceID
+    // Simulate the old two-minute watchdog returning after startup, without waiting on wall time.
+    sleeper.advance()
+    #expect(await eventually { sleeper.completed == 1 })
+    #expect(controller.status.phase == .listening)
+    #expect(controller.status.utteranceID == id)
+    #expect(harness.capture.stops == 0)
+    #expect(await harness.speech.finished == 0)
+    for segment in segments { harness.emit(.init(segment: segment, isFinal: true)) }
+    harness.capture.emit(try PCMFrame(samples: [0.1], sampleRate: 16_000, channels: 1, startTime: 600))
+    #expect(await eventually { controller.status.committedText == "First sentence. Still dictating." })
+    controller.end()
     #expect(await eventually { controller.status.phase == .result })
-    #expect(controller.status.text == "timed result")
-    #expect(controller.status.message?.contains("maximum dictation duration") == true)
+    #expect(controller.status.text == "First sentence. Still dictating.")
+    #expect(controller.status.message == nil)
     #expect(harness.capture.stops == 1)
+    #expect(await harness.speech.appended == 1)
+    #expect(await harness.speech.finished == 1)
+}
+
+@Test @MainActor func longDictationCanStillBeCancelled() async {
+    let harness = Harness()
+    harness.delaySpeech = true
+    let sleeper = DictationSleeper()
+    defer { sleeper.drain() }
+    let controller = DictationController(sleep: sleeper.sleep, dependencies: harness.dependencies) { _ in }
+    #expect(controller.begin())
+    #expect(await eventually { harness.speechWaiter != nil && sleeper.durations.count == 1 })
+    harness.releaseSpeech()
+    #expect(await eventually { controller.status.phase == .listening })
+    sleeper.advance()
+    #expect(await eventually { sleeper.completed == 1 })
+    #expect(controller.status.phase == .listening)
+    harness.emit(.init(segment: .init(start: 600, end: 601, text: "Late words."), isFinal: true))
+    #expect(await eventually { controller.status.committedText == "Late words." })
+    controller.cancel()
+    #expect(controller.status.phase == .idle)
+    #expect(await eventually { harness.capture.stops == 1 })
+    #expect(await harness.speech.cancelled)
+    #expect(await harness.speech.finished == 0)
+}
+
+@Test(arguments: [false, true]) @MainActor
+func hungSpeechOrMicrophoneStartupStillTimesOut(microphone: Bool) async {
+    let harness = Harness()
+    let sleeper = DictationSleeper()
+    defer { sleeper.drain() }
+    harness.delaySpeech = !microphone
+    harness.capture.holdStart = microphone
+    let controller = DictationController(sleep: sleeper.sleep, dependencies: harness.dependencies) { _ in }
+    #expect(controller.begin())
+    #expect(await eventually {
+        sleeper.durations == [.seconds(120)] &&
+        (microphone ? harness.capture.startWaiter != nil : harness.speechWaiter != nil)
+    })
+    sleeper.advance()
+    #expect(await eventually { controller.status.phase == .failed })
+    #expect(controller.status.message == "Dictation startup timed out. Try again.")
+    if microphone { harness.capture.releaseStart() } else { harness.releaseSpeech() }
+    #expect(await eventually { controller.begin() }) // cleanup must finish before another utterance
+    controller.cancel()
+    #expect(harness.capture.stops == (microphone ? 1 : 0))
+    #expect(await harness.speech.cancelled)
 }
 
 @Test @MainActor func captureStreamFailureStopsMicrophone() async {

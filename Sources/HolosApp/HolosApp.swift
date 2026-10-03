@@ -97,7 +97,7 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
     }
     /// Set when the current result was not written cleanly, so it is shown even with the preview off.
     private var resultNeedsAttention = false
-    /// A forced stop (for example the maximum duration) reported while finalizing; kept for the result message.
+    /// A finalization status message kept for the result message (for example release during startup).
     private var forcedStopMessage: String?
 
     var removeFillers: Bool {
