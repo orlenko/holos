@@ -4540,8 +4540,11 @@ first appeared. A change that never settles (shown under two seconds, or still m
 at stop) is dropped. The first frame, and the first after a gap, is kept at once. This
 can miss sparse edits, colour-only changes, or a slide in a window under a tenth of the
 display; it is a heuristic, not a semantic slide detector. Similar samples and idle
-samples extend an observed frame; suspended/blank samples break its interval. Stop does
-not extend evidence into an unobserved gap.
+samples extend an observed frame; suspended/blank samples break its interval. A change
+that does not settle also ends the retained frame's interval at its last matching
+sample: if the screen then returns to the retained picture, that is a new keyframe with
+its own snapshot, so no interval claims a picture was visible while something else
+was. Stop does not extend evidence into an unobserved gap.
 
 JPEG quality is 0.65; a frame above 1 MiB is encoded again at 0.5 and 0.35, then at
 half the size, before the per-frame cap can end the capture (`ScreenFrameEncoding`).

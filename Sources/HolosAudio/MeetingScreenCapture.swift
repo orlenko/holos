@@ -308,6 +308,11 @@ final class ScreenFrameReceiver: NSObject, SCStreamOutput, SCStreamDelegate, Sen
                         // A slide that just changed, a scroll, or a moving video: wait for the next sample.
                         value.previous = Sample(fingerprint: fingerprint, time: time, image: image)
                         return
+                    } else if previous?.image != nil {
+                        // Back to the retained picture after a change that never settled: the retained frame's
+                        // interval ended at its last matching sample, so this is a new interval, with its own
+                        // snapshot, rather than one that claims the change was never on screen.
+                        kept = (image, fingerprint, time)
                     } else {
                         value.previous = Sample(fingerprint: fingerprint, time: time, image: nil)
                         guard !record.frames.isEmpty else { return }

@@ -149,6 +149,27 @@ func screenCaptureEncodedImageAndTotalByteCapsStopRatherThanSilentlyDrop(totalCa
     try await archive.finish(status: ArchiveStatus.audioOnly)
 }
 
+@Test func aTransientChangeThatRevertsLeavesAGapInTheRetainedFrame() async throws {
+    let (root, archive) = try await screenCaptureFixture()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let receiver = ScreenFrameReceiver(session: archive.directory, origin: 0)
+    let slide = try screenCaptureImage(gray: 1), popup = try screenCaptureImage(gray: 0)
+    await deliver(receiver, image: slide, time: 1)
+    await deliver(receiver, image: slide, time: 3)
+    await deliver(receiver, image: popup, time: 5)   // on screen for one sample only: never settles
+    await deliver(receiver, image: slide, time: 7)   // back: a new interval, not 1…7 across the change
+    await deliver(receiver, image: slide, time: 9)
+    await deliver(receiver, time: 11, status: .idle)
+    await receiver.close()
+    let record = try #require(try ScreenContextStore.read(session: archive.directory, sessionID: archive.id))
+    #expect(record.frames.map(\.start) == [1, 7])
+    #expect(record.frames.map(\.end) == [3, 11], "Nothing claims the slide was visible at 5.")
+    let images = try FileManager.default.contentsOfDirectory(atPath: ScreenContextStore.directory(archive.directory).path)
+        .filter { $0.hasSuffix(".jpg") }
+    #expect(images.count == 2, "The returning interval has its own snapshot.")
+    try await archive.finish(status: ArchiveStatus.audioOnly)
+}
+
 @Test func fiveKFramesAreStoredWithinTheDimensionAndByteBounds() async throws {
     let (root, archive) = try await screenCaptureFixture()
     defer { try? FileManager.default.removeItem(at: root) }
