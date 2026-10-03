@@ -4760,9 +4760,10 @@ written, but the pass was skipped or failed, or speaker labelling was), 1 failed
 in the current transcript's language (as the pass chooses it) with the same rendering, prompt (recorded in run.json as `prompt`, the candidates as
 `vocabulary`, `engine` set) and guards, so `eval compare --local latest` scores it against a
 cloud run. Its run.json records the transcript the guards compared with
-(`referenceTranscriptID`), which a resumed run reads again, and is schema 2 with `backend`
-"whisper", which an older Voice is Local cannot read, so it never resumes the run with Apple's
-recognizer.
+(`referenceTranscriptID`, empty for a run begun without a transcript, which stays unguarded),
+which a resumed run reads again, and is schema 2 with `backend` "whisper" (the meeting's own in
+`meetingBackend`), which an older Voice is Local cannot read, so it never resumes the run with
+Apple's recognizer. An explicit `--language` Whisper has no token for is refused.
 
 **Tests.** `DeepTranscriptionTests` (prompt order and cap; quietest cut; time mapping through
 a shortened gap; word offsets and punctuation; the silence guard needing both conditions,

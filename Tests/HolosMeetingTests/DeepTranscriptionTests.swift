@@ -637,6 +637,62 @@ func aResumedWhisperEvalKeepsItsGuardReference() async throws {
 }
 
 @Test(.timeLimit(.minutes(1)))
+func aWhisperEvalBegunWithoutATranscriptStaysUnguarded() async throws {
+    let temp = try TemporaryDirectory("deep")
+    defer { temp.remove() }
+    let session = try await SessionFixtures.makeSession(in: temp.url, source: .microphoneAndSystem,
+                                                        audioSeconds: ["mic": 10, "system": 10], mode: .call,
+                                                        transcript: nil)
+    let calls = SharedValue(0)
+    let failing = ScriptedTranscriber { _ in
+        calls.update { $0 += 1 }
+        if calls.value > 1 { throw HolosError.io("Interrupted.") }
+        return [heard("Hello there.", at: 1)]
+    }
+    let options = EvalLocal.Options(wordFixes: false, backend: .whisper)
+    let first = try SessionArchive.acquireProcessingLease(at: session)
+    await #expect(throws: HolosError.self) {
+        _ = try await EvalLocal.run(session: session, options: options, vocabulary: [], dependencies: noSpeech,
+                                    deepTranscription: deepDependencies(failing))
+    }
+    first.release()
+    // A transcript appears before the run is resumed: the run keeps having no reference.
+    try await SessionFixtures.saveTranscript(SessionFixtures.transcript(recordedPassages()), in: session)
+    let lease = try SessionArchive.acquireProcessingLease(at: session)
+    defer { lease.release() }
+    let record = try await EvalLocal.run(session: session, options: options, vocabulary: [], dependencies: noSpeech,
+                                         deepTranscription: deepDependencies(ScriptedTranscriber(script: scriptedHearing)))
+    #expect(record.referenceTranscriptID == LocalRunRecord.noReference)
+}
+
+@Test(.timeLimit(.minutes(1)))
+func aLanguageWhisperDoesNotKnowIsRefusedForAWhisperEval() async throws {
+    let temp = try TemporaryDirectory("deep")
+    defer { temp.remove() }
+    let (session, _) = try await deepSession(in: temp.url)
+    let transcriber = ScriptedTranscriber(script: scriptedHearing)
+    let lease = try SessionArchive.acquireProcessingLease(at: session)
+    defer { lease.release() }
+    let error = await #expect(throws: HolosError.self) {
+        _ = try await EvalLocal.run(session: session,
+                                    options: EvalLocal.Options(language: "ga-IE", wordFixes: false, backend: .whisper),
+                                    vocabulary: [], dependencies: noSpeech, deepTranscription: deepDependencies(transcriber))
+    }
+    #expect(error?.localizedDescription.contains("ga-IE") == true)
+    #expect(transcriber.calls.value == 0)
+}
+
+@Test func aWhisperRunKeepsTheMeetingsBackend() throws {
+    let run = LocalRunRecord(id: "local-20260101T000000Z", sessionID: "S", createdAt: SessionFixtures.date,
+                             languages: ["en-CA"], backend: .dictation, vocabulary: [], vocabularySource: "none",
+                             textSteps: [], tracks: [], engine: "whisper:test")
+    let data = try HolosJSON.encoder().encode(run)
+    let raw = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+    #expect(raw?["backend"] as? String == "whisper" && raw?["meetingBackend"] as? String == "dictation")
+    #expect(try HolosJSON.decoder().decode(LocalRunRecord.self, from: data).backend == .dictation)
+}
+
+@Test(.timeLimit(.minutes(1)))
 func aRunWithNothingToDoNeedsNoModel() async throws {
     let temp = try TemporaryDirectory("deep")
     defer { temp.remove() }

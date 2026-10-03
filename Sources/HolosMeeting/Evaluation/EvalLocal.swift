@@ -42,8 +42,12 @@ public struct LocalRunRecord: Codable, Sendable, Equatable {
     /// The prompt the deep transcription model was given on every chunk (`DeepTranscriptionPrompt`).
     public var prompt: String? = nil
     /// The recorded transcript the deep transcription guards compared every track with (a revision kept in the
-    /// session): a resumed run uses it again, so all of its tracks are guarded alike.
+    /// session): a resumed run uses it again, so all of its tracks are guarded alike. `noReference` for a run begun
+    /// without a transcript, which stays unguarded by recorded words when resumed.
     public var referenceTranscriptID: String? = nil
+
+    /// `referenceTranscriptID` of a Whisper run begun with no transcript to guard against.
+    public static let noReference = ""
 
     public var seconds: Double { tracks.reduce(0) { $0 + $1.seconds } }
     public var partCount: Int { languages.count * tracks.count }
@@ -55,7 +59,7 @@ public struct LocalRunRecord: Codable, Sendable, Equatable {
 
     private enum CodingKeys: String, CodingKey {
         case schemaVersion, id, sessionID, createdAt, languages, backend, vocabulary, vocabularySource, accurate,
-             textSteps, tracks, completedAt, transcriptID, engine, prompt, referenceTranscriptID
+             textSteps, tracks, completedAt, transcriptID, engine, prompt, referenceTranscriptID, meetingBackend
     }
 
     init(id: String, sessionID: String, createdAt: Date, languages: [String], backend: SpeechBackend,
@@ -84,7 +88,8 @@ public struct LocalRunRecord: Codable, Sendable, Equatable {
                 throw DecodingError.dataCorruptedError(forKey: .engine, in: container,
                                                        debugDescription: "A Whisper run names no engine.")
             }
-            backend = .speech
+            // The meeting's own backend, kept beside it so a resumed run matches the session's.
+            backend = try container.decodeIfPresent(SpeechBackend.self, forKey: .meetingBackend) ?? .speech
         } else {
             guard let known = SpeechBackend(rawValue: backendName) else {
                 throw DecodingError.dataCorruptedError(forKey: .backend, in: container,
@@ -111,6 +116,7 @@ public struct LocalRunRecord: Codable, Sendable, Equatable {
         try container.encode(createdAt, forKey: .createdAt)
         try container.encode(languages, forKey: .languages)
         try container.encode(engine == nil ? backend.rawValue : Self.whisperBackend, forKey: .backend)
+        if engine != nil { try container.encode(backend, forKey: .meetingBackend) }
         try container.encode(vocabulary, forKey: .vocabulary)
         try container.encode(vocabularySource, forKey: .vocabularySource)
         try container.encode(accurate, forKey: .accurate)
@@ -332,6 +338,12 @@ public enum EvalLocal {
             throw HolosError.invalidInput("Deep transcription handles one language; pass --language with one of "
                 + languages.joined(separator: ", ") + ".")
         }
+        // A language asked for by name is kept to: one Whisper has no token for is refused, never detected under its
+        // name.
+        if engine != nil, let asked = options.language, DeepTranscriptionModel.whisperLanguage(asked) == nil {
+            throw HolosError.invalidInput("Whisper does not transcribe \(asked); choose another language, or leave out "
+                + "--language to use the meeting's.")
+        }
         let strings = vocabulary ?? []
         let source = vocabulary == nil ? "none" : "current"
         let textSteps = options.wordFixes ? [PostProcessingStage.wordFixes.rawValue] : []
@@ -423,7 +435,9 @@ public enum EvalLocal {
             }
             // The guards' reference: the one this run began with when it is resumed, so every track is guarded alike.
             let reference: Transcript?
-            if let id = record.referenceTranscriptID {
+            if record.referenceTranscriptID == LocalRunRecord.noReference {
+                reference = nil
+            } else if let id = record.referenceTranscriptID {
                 do {
                     reference = try SessionFiles.transcript(id: id, session: session)
                 } catch {
@@ -436,8 +450,8 @@ public enum EvalLocal {
                         DeepTranscriptionStage.recordedBase(of: current, events: $0, session: session).reference
                     } ?? current
                 }
-                if let reference, record.referenceTranscriptID == nil {
-                    record.referenceTranscriptID = reference.id
+                if record.referenceTranscriptID == nil {
+                    record.referenceTranscriptID = reference?.id ?? LocalRunRecord.noReference
                     if !isNew { try EvalStore.write(record, to: EvalPaths.localRecord(record.id, in: session)) }
                 }
             }
