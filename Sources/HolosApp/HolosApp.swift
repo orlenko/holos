@@ -1489,6 +1489,7 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
         guard mainWindow.current == .settings,
               let settings = mainWindow.existingController(for: .settings) as? SettingsPane else { return }
         let speakerLabels = speakerLabelsSetupState()
+        let deep = deepTranscriptionSetupState()
         settings.update(SetupState(
             microphone: AudioCapture.microphonePermission, accessibility: AXIsProcessTrusted(),
             inputMonitoring: CGPreflightListenEventAccess(), inputMonitoringNeeded: inputMonitoringNeeded,
@@ -1504,6 +1505,8 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
             dictationPausedForMeeting: meeting.dictationPaused,
             speakerModels: speakerLabels.status, speakerModelsDetail: speakerLabels.detail,
             speakerModelsBusy: speakerLabels.busy,
+            deepTranscriptionModel: deep.model, deepTranscriptionDetail: deep.detail,
+            deepTranscriptionEnabled: deep.enabled,
             aiFix: AIFixSetting.isOn, aiFixUnavailable: AIFixSetting.unavailableReason(language: locale),
             spokenCode: SpokenCodeSetting.isOn, spokenCodeBackticks: SpokenCodeSetting.backticks,
             locale: locale, localeGroups: localeGroups, localeChangeable: canChangeLanguage,
@@ -1583,6 +1586,10 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
             updateSettings()
         case .speakerModels:
             installSpeakerModels()
+        case .deepTranscriptionModel:
+            installDeepTranscriptionModel()
+        case .toggleDeepTranscription:
+            toggleDeepTranscription()
         case .systemAudio:
             // Asking adds Holos to the Screen & System Audio Recording list; macOS shows its own prompt only once,
             // and the permission takes effect after Holos is reopened.

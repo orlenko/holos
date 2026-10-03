@@ -84,6 +84,8 @@ final class MeetingAppState {
     weak var detailItem: NSMenuItem?
     /// Windows that give Holos a Dock icon while open.
     var windowsInDock: Set<String> = []
+    /// Deep transcription after meetings (docs/meeting-design.md §4.16, "App").
+    let deep = DeepTranscriptionAppState()
 }
 
 extension HolosAppDelegate: NSMenuDelegate {
@@ -113,6 +115,8 @@ extension HolosAppDelegate: NSMenuDelegate {
         controller.onSessionsInUseChanged = { [weak self, weak controller] in
             guard let controller else { return }
             self?.meeting.meetingsPane?.update(running: controller.sessionsInUse)
+            // A meeting another command let go of may be the next deep transcription's.
+            self?.scheduleDeepTranscription()
         }
         // Reviews open, opening, or still saving after they closed: the automatic relabel leaves those meetings alone.
         controller.sessionsUnderReview = { [weak self] in
@@ -127,6 +131,7 @@ extension HolosAppDelegate: NSMenuDelegate {
         Self.sweepCommandOutputs()
         controller.attachOnLaunch()
         refreshSpeakerModels()
+        setUpDeepTranscription()
         Task { [weak self] in await self?.promptAboutInterruptedRecordings() }
     }
 
@@ -151,6 +156,8 @@ extension HolosAppDelegate: NSMenuDelegate {
             rebuildMenu()
         }
         meeting.meetingsPane?.update(meetingState: state)
+        // A meeting needs the Mac: a final transcript in progress is stopped and runs again afterwards.
+        deepTranscriptionMeetingStateChanged()
     }
 
     private func handleMeetingEffect(_ effect: MeetingEffect) {
@@ -163,6 +170,8 @@ extension HolosAppDelegate: NSMenuDelegate {
             meeting.lastSummary = (sessionID, summary)
             meeting.notice = nil
             meeting.meetingsPane?.refresh()
+            // The meeting's own post-processing ran in the recorder: the final transcript can follow (§4.16).
+            queueDeepTranscriptionAfterMeeting(sessionID: sessionID)
         case .offerNaming, .clearNamingOffer:
             // `MeetingController.namingOffer` changed; the menu and the status item show it.
             break
@@ -662,8 +671,12 @@ extension HolosAppDelegate: NSMenuDelegate {
                 self?.learnMeetingCorrection(state: state, heard: heard, meant: meant) ?? .init()
             })
         pane.update(running: controller.sessionsInUse)
+        pane.onDeepTranscription = { [weak self] runNow, summary in
+            if runNow { self?.runDeepTranscriptionNow(summary) } else { self?.cancelDeepTranscription(summary.id) }
+        }
         pane.update(meetingState: controller.state)
         meeting.meetingsPane = pane
+        updateDeepStates()
         return pane
     }
 
@@ -852,6 +865,8 @@ extension HolosAppDelegate: NSMenuDelegate {
     /// a "Name Speakers" offer for it. The labels load off the main actor first. When the meeting cannot be reviewed,
     /// an alert says why, and with `fallBackToMeetings` Meetings opens with the meeting selected.
     func openReview(sessionID: String, directory: URL, name: String, fallBackToMeetings: Bool = false) {
+        // A deep transcription pass on the meeting goes first; Review opens when this app's pass ends.
+        if reviewWaitsForDeepTranscription(sessionID: sessionID, directory: directory, name: name) { return }
         if let window = meeting.reviewWindows[sessionID], !window.isClosing {
             window.show()
             meeting.controller?.reviewOpened(sessionID: sessionID)
@@ -1128,6 +1143,7 @@ extension HolosAppDelegate: NSMenuDelegate {
                 let object = data.flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }
                 // The tool ran but reported nothing usable: unknown, not missing.
                 self.meeting.speakerModels = object?["speakerModels"] as? String ?? "unknown"
+                self.deepModelChecked(object?["deepTranscriptionModel"] as? String ?? "unknown")
                 self.updateSettings()
                 self.meeting.startPanel?.refresh()
                 if self.meeting.speakerModels == "verified" { self.meeting.controller?.runAutoRelabel() }
@@ -1135,6 +1151,7 @@ extension HolosAppDelegate: NSMenuDelegate {
         } catch {
             meeting.checkingSpeakerModels = false
             meeting.speakerModels = "unavailable"
+            deepModelChecked("unavailable")
             Self.removeFile(output)
             Self.meetingLog.error("Cannot check the speaker models (\(ProcessSpawner.logCategory(error), privacy: .public)): \(error.localizedDescription, privacy: .private)")
         }
@@ -1336,7 +1353,7 @@ extension HolosAppDelegate: NSMenuDelegate {
     // MARK: - Helpers
 
     /// A private temporary file name for a command's output.
-    private static func temporaryFile(_ kind: String) -> URL {
+    static func temporaryFile(_ kind: String) -> URL {
         FileManager.default.temporaryDirectory
             .appendingPathComponent("holos-command-\(UUID().uuidString).\(kind)", isDirectory: false)
     }
@@ -1347,8 +1364,8 @@ extension HolosAppDelegate: NSMenuDelegate {
                                         olderThan: Date().addingTimeInterval(-3_600))
     }
 
-    private static func removeFile(_ url: URL) { ProcessSpawner.removeRegularFile(url) }
+    static func removeFile(_ url: URL) { ProcessSpawner.removeRegularFile(url) }
 
     /// The last non-empty line of a command's output, without ArgumentParser's "Error: ".
-    private static func lastLine(_ url: URL) -> String? { ProcessSpawner.lastLine(of: url) }
+    static func lastLine(_ url: URL) -> String? { ProcessSpawner.lastLine(of: url) }
 }

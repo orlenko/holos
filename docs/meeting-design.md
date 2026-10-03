@@ -4766,6 +4766,119 @@ about 65 s of speech per track (217 and 269 words), against about 500 s per trac
 timestamp rules and the plain-chunk check. Speakers were labelled again on it with names
 carried over.
 
+**App.** The app does not link WhisperKit; it runs `voiceislocal setup --whisper` and
+`voiceislocal session deep-transcribe <session> --json` as maintenance commands
+(`HolosApp+DeepTranscription.swift`).
+
+- *Settings › Meetings.* A "Final transcript" row with the model's state from `voiceislocal
+  doctor --json` (`deepTranscriptionModel`) and Download (1.6 GB), showing `setup --whisper`'s
+  progress; and the checkbox "Deep transcription after meetings", off by default and disabled
+  until the model is installed (UserDefaults `deepTranscriptionAfterMeetings`; turning it on
+  records when, `deepTranscriptionEnabledSince`). While it is off, automatic items are dropped
+  from the queue (`dropAutomatic`), except the one the app's own pass is running on, which goes
+  when it ends: at launch, on every 30 s tick, and after every pass however it ended (a busy
+  exit, a preemption), so none is left behind to come back when it is turned on again. Run Now
+  items stay. While another process downloads the model, the doctor check runs again every 30 s;
+  while the model is not installed and the setting is on or Settings shows, every 60 s, so an
+  install started in Terminal is noticed (and its meetings found, as on any change to
+  installed). When doctor cannot run at all the row says the tool is missing.
+- *Queue* (`DeepTranscriptionQueue`, `DeepTranscriptionSchedule`, pure, in HolosMeeting). When
+  the recorder reports a meeting finished (its own post-processing ran in the recorder), the
+  meeting is queued if the setting is on, the model installed, and neither meeting.json nor the
+  current transcript names more than one language (read off the main actor; when the read ends,
+  the meeting is queued only if the setting did not change meanwhile and the user did not act
+  on it: not in the queue, not considered, so a Run Now asked for and cancelled meanwhile stays
+  cancelled). The queue is saved in UserDefaults
+  (`deepTranscriptionQueue`) on every change. Whenever the model becomes installed (doctor's
+  first report at launch, or after it was missing or downloading) and whenever the setting is
+  turned on, the meetings that finished while the app was closed (read off the main actor, and queued only if
+  the setting is still on, with the same activation time, when the read ends) (a recorder saves and post-processes on its
+  own after the app quits), started since the setting was turned on, finished (not recording,
+  processing, or interrupted), in one language, with no `deepTranscribed` event and never queued
+  before (`deepTranscriptionConsidered`, never capped: forgetting one could queue a meeting the
+  user cancelled), are queued too; so are meetings that finished while the model was missing.
+  The next pass runs when none is running, no meeting is starting, recording, or saving, the
+  model is installed, and no other command or Review uses the meeting (`MeetingController.
+  sessionsInUse`, `sessionsUnderReview`: open, opening, or still saving): a meeting asked for from its menu first, whatever the power source; else the
+  oldest queued meeting when the setting is on and the Mac is on AC power (or has no battery),
+  otherwise it waits ("Final transcript waits for power"). The power source (IOKit's providing
+  power source) is read every 30 s, which also retries the queue; a command letting go of a
+  meeting retries it too. A meeting picked whose folder is gone (deleted while queued) is taken
+  off the queue and the next ready one is picked in the same call (`nextPresent`).
+- *Running.* The pass holds the meeting (`beginUsing`, "Final transcript in progress…" in the
+  State column, other actions on it refused) and is taken off the queue however it ends (done,
+  partial, refused, or cancelled). A Make Final Transcript Now pass that does not finish (exit 1
+  or 3, or killed) says why in an alert: the messages of the stages its `--json` record says
+  failed (and of the deep transcription stage when skipped), else its last error line
+  (`DeepTranscriptionSchedule.failureText`); one the user cancelled says nothing.
+- *One pass at a time* (`DeepTranscriptionLock`). `session deep-transcribe` takes an exclusive
+  `flock` on `<supportRoot>/deep-transcription.lock` for its whole life and writes `{pid,
+  sessionID, force}` into it once it holds it; a second pass finds it held (it retries for 2 s,
+  since a probe holds it for an instant) and exits 1 with "Another final transcript is being
+  made…". The kernel lets go of the lock when the process ends, however it ends.
+- *The app manages only its own pass.* A lock held by any other process (a pass started in
+  Terminal, or one the app started before it was quit, since maintenance commands are
+  detached) only means "busy": the app starts nothing while it is held, checks again every
+  30 s, and its queued meetings show "Waiting for another final transcript to finish". It never
+  adopts such a pass, never holds its meeting, and never cancels, preempts, or signals it (it is
+  the user's own run, or one that finishes on its own). The app's own child is signalled (Cancel,
+  a meeting starting) by its spawn pid, which no other process can have until the app reaps it.
+  The queue saves no process identity (keys an earlier version saved, `pid`, `pidStart`,
+  `started`, `verifyOnly`, are ignored). A pass cut short by a quit or a crash, or still running
+  from before a relaunch, stays queued and runs again once the lock is free, with the flags it
+  was queued with: an automatic one without `--force`, so the command keeps a transcript the
+  model already made (a no-op); a Run Now one with `--force`, so a Run Now whose pass did finish
+  before the quit is transcribed a second time (a known cost, accepted for simplicity). Turning
+  the setting off keeps the running pass's item until it ends. A command refused by the
+  processing lease (another command on the meeting) stays queued and only its meeting waits a
+  minute (`delayed`): the next ready meeting runs meanwhile. One refused by the lock (another
+  pass started a moment before), or one that cannot be started at all, stays queued and
+  everything waits a minute (`passEnded`).
+- *Review waits.* Opening Review (from Meetings, or the menu bar's Name Speakers, all through
+  `openReview`) for a meeting the app's pass works on (its `sessionsInUse` entry) says "Final
+  transcript in progress" and that Review opens when it finishes, which it then does, and offers
+  Cancel Final Transcript. For a meeting another process's pass works on (the lock's holder)
+  it says so and opens nothing. The scheduler already leaves meetings open in Review alone.
+- *Stale scans.* Every turn of the setting on or off counts an activation; the after-meeting
+  language read and the launch check snapshot it and drop their result when it changed, so a
+  scan begun before the setting was turned off never queues afterwards, even if it was turned on
+  again. Launch-time results are also checked against the queue and the meetings considered
+  right before each is queued.
+- *Meetings first.* When a meeting starts (or one that failed may still be capturing or
+  post-processing, by its recorder's liveness, or a recorder the app launched has not exited,
+  even without a session folder: `MeetingController.recorderMayStillRun`, which a start checks
+  too) while the app's pass runs, the pass is stopped (SIGTERM; it publishes nothing) and stays
+  queued, so it runs again from the start once the meeting is saved, but only when the signal
+  ended it (exit 143, 128 + SIGTERM, as the command's cancellation and a killed process both
+  report it): a pass the signal reached after it had already ended (done, failed, or partial)
+  ends as it did, with its alert for a Run Now. Another process's pass is left
+  running. A pass cancelled after it already published its transcript says so in an alert (the
+  labels and files may be behind: Label Speakers finishes them). Maintenance commands, like this one, keep running after the
+  app quits.
+- *Meetings list.* The State column shows "Final transcript queued", "… waits for power",
+  "Waiting for another final transcript to finish", or "… in progress…". Right-clicking a finished meeting offers Make Final Transcript Now
+  (relabels speakers): it runs next, also on battery, with `--force`, so a transcript the model
+  made before is made again and edited speaker labels are replaced (names carry over, edits of
+  single turns do not), as asking for it by name means; refused with an alert without the model,
+  for a meeting that is not finished, or for one in several languages. A meeting queued
+  automatically offers it too (it upgrades the item, so it runs next whatever the power source).
+  The request is reserved at once, before its languages are read off the main actor, and saved
+  with the queue (`pending`; a quit meanwhile does not lose it: the languages are read again at
+  the next launch): the meeting is not started meanwhile (a queued automatic item would run
+  without `--force`), shows as queued, and is considered; a Cancel meanwhile ends the
+  reservation, and a refusal (several languages) leaves the meeting as it was.
+  While a meeting is queued or the app's own pass runs on it, Cancel Final Transcript (SIGTERM: the command cancels and says whether the new
+  transcript was already published).
+- *Tests.* `DeepTranscriptionQueueTests` (order and run-now upgrade, saving and damaged data,
+  one at a time, AC/battery/no battery, busy meetings, meetings in use or in Review, run-now on
+  battery, the setting off, queuing only one-language meetings, the State column's texts,
+  commands refused for another process, an earlier version's queue read without its process
+  fields, a pass cut short running again with its flags, waiting for another process's pass,
+  the failure text of Run Now, finished states, the launch check), `DeepTranscriptionLockTests`
+  (held only while taken, the holder read while held, a second pass refused, a holder not
+  written yet). The Settings row, the menu, the alerts, Review waiting, and the power switch
+  are not exercised by tests and need a manual check.
+
 **Contract additions.** `Transcript.engine: String?` (left out of the JSON when nil),
 `PostProcessingStage.deepTranscription`, `MeetingEventKind.deepTranscribed`.
 
@@ -4804,7 +4917,8 @@ download and load check, resume after a failed load, removal, the prompt rows an
 speech (rendered by the system synthesizer to a file, never played) in a session end to end;
 `HOLOS_DEEP_MEASURE_SESSION=<copy of a session>` prints the level measurements above, `HOLOS_DEEP_COMPARE_SESSION=<copy that deep-transcribe ran on>` the word-time agreement and uncovered stretches, and `HOLOS_DEEP_PROBE_SESSION=<copy>` (with `HOLOS_DEEP_PROBE_PROMPT`) the coverage of ten minutes of one track.
 
-**Follow-ups.** Meetings in several languages. Measuring the vocabulary terms the pass gets
+**Follow-ups.** Meetings in several languages. A notification when a final transcript
+is ready. Measuring the vocabulary terms the pass gets
 right against a cloud reference on more meetings (`eval local --backend whisper`, then `eval
 compare`), now that the prompt is checked chunk by chunk. Upstream reports for the three
 WhisperKit prompt problems worked around here.

@@ -42,6 +42,13 @@ struct SetupState {
     var speakerModelsDetail: String?
     /// The status is being checked.
     var speakerModelsBusy = false
+    /// `voiceislocal doctor --json` deepTranscriptionModel ("installed", "downloading", "notInstalled"),
+    /// "installing" while `voiceislocal setup --whisper` runs, "unknown" when not reported; nil before the first check.
+    var deepTranscriptionModel: String?
+    /// Install progress, or the last install's error.
+    var deepTranscriptionDetail: String?
+    /// "Deep transcription after meetings" is on.
+    var deepTranscriptionEnabled = false
     /// Fix misheard words with Apple's on-device model before they are written.
     var aiFix = false
     /// Why the on-device model cannot be used; nil when it can.
@@ -86,6 +93,8 @@ enum SetupAction: Int, CaseIterable {
     /// Settings › General › Open the Voice is Local window when it starts.
     case toggleOpenWindowAtLaunch
     case toggleMeetingScreenCapture
+    /// Settings › Meetings › Final transcript: download the model, and turn the pass after meetings on or off.
+    case deepTranscriptionModel, toggleDeepTranscription
 }
 
 /// The main window's Settings section (it replaces the Setup window): cards for General, Permissions, Dictation,
@@ -136,6 +145,9 @@ final class SettingsPane: NSViewController, MainSectionContent {
         checkboxWithTitle: "Record the computer's audio (system sound) in meetings", target: nil, action: nil)
     private let screenCaptureToggle = NSButton(
         checkboxWithTitle: "Offer meeting-window snapshots by default (choose a window each time)", target: nil, action: nil)
+    private let deepTranscriptionToggle = NSButton(
+        checkboxWithTitle: "Deep transcription after meetings: transcribe them again with Whisper on this Mac",
+        target: nil, action: nil)
     private let readingVoicePopup = NSPopUpButton(frame: .zero, pullsDown: false)
     private let readingSpeedSlider = NSSlider(value: ReadingSpeed.standard, minValue: ReadingSpeed.range.lowerBound,
                                               maxValue: ReadingSpeed.range.upperBound, target: nil, action: nil)
@@ -302,15 +314,26 @@ final class SettingsPane: NSViewController, MainSectionContent {
             On: meetings record your microphone and everything the Mac plays, and speakers are labelled on both. \
             Off: meetings record the microphone only.
             """)
+        deepTranscriptionToggle.target = self
+        deepTranscriptionToggle.action = #selector(buttonPressed(_:))
+        deepTranscriptionToggle.tag = SetupAction.toggleDeepTranscription.rawValue
+        let deepDetail = Self.note("""
+            After a meeting is saved, its audio is transcribed again with a larger model, prompted with your word \
+            list and people's names, and the result replaces the transcript (the one before is kept). It runs on AC \
+            power, one meeting at a time; on battery it waits for the power adapter. Right-click a meeting for Make \
+            Final Transcript Now or Cancel. Meetings in several languages keep their transcript.
+            """)
         let grid = makeGrid()
         addRow(.speakerModels, "Speaker labels", to: grid)
+        addRow(.deepTranscriptionModel, "Final transcript", to: grid)
         addRow(.people, "Remember voices", to: grid)
         set(.people, .pending, "Whether Voice is Local remembers the voices of people you name is set in People, "
             + "with each person's samples.", button: "Open People")
         rows[.people]?.icon.image = NSImage(systemSymbolName: "person.2", accessibilityDescription: nil)
         rows[.people]?.icon.contentTintColor = .secondaryLabelColor
-        return card("Meetings", [recordSystemAudioToggle, detail, screenCaptureToggle, screenDetail, grid],
-                    widths: [detail, screenDetail, grid])
+        return card("Meetings", [recordSystemAudioToggle, detail, screenCaptureToggle, screenDetail,
+                                 deepTranscriptionToggle, deepDetail, grid],
+                    widths: [detail, screenDetail, deepDetail, grid])
     }
 
     /// Settings › Reading: what new readings in the Reading section start with, and where their files go.
@@ -573,6 +596,10 @@ final class SettingsPane: NSViewController, MainSectionContent {
             button: "Open Settings")
         recordSystemAudioToggle.state = state.recordSystemAudio ? .on : .off
         screenCaptureToggle.state = state.screenCaptureDefault ? .on : .off
+        deepTranscriptionToggle.state = state.deepTranscriptionEnabled ? .on : .off
+        // Off until the model is installed; turning it on is offered through the model's Download button.
+        deepTranscriptionToggle.isEnabled = state.deepTranscriptionModel == "installed"
+            || state.deepTranscriptionEnabled
         // Never marked as a problem: without it meetings record the microphone alone.
         if state.systemAudio {
             set(.systemAudio, .done, state.recordSystemAudio
@@ -638,6 +665,34 @@ final class SettingsPane: NSViewController, MainSectionContent {
             set(.speakerModels, .problem, "Status unknown (\(other))", button: install)
         case nil:
             set(.speakerModels, .pending, "Checking…", button: install, enabled: false)
+        }
+
+        let download = "Download (1.6 GB)"
+        switch state.deepTranscriptionModel {
+        case "installing":
+            set(.deepTranscriptionModel, .pending, state.deepTranscriptionDetail ?? "Downloading…", button: download,
+                enabled: false)
+        case "installed":
+            set(.deepTranscriptionModel, .done, state.deepTranscriptionEnabled
+                ? "On — meetings get a final transcript from Whisper after they are saved"
+                : "Model installed — turn on Deep transcription above", button: nil)
+        case "downloading":
+            set(.deepTranscriptionModel, .pending, "Downloading in another process…", button: download, enabled: false)
+        case "notInstalled":
+            set(.deepTranscriptionModel, state.deepTranscriptionDetail == nil ? .pending : .problem,
+                state.deepTranscriptionDetail.map { "Download failed: \($0)" }
+                    ?? "Model not installed — Whisper large-v3 turbo, about 1.6 GB, runs on this Mac", button: download)
+        case "unknown":
+            set(.deepTranscriptionModel, .problem, "Could not check the model; `voiceislocal doctor` shows why",
+                button: download)
+        case "unavailable":
+            set(.deepTranscriptionModel, .problem,
+                "The voiceislocal tool is missing from VoiceIsLocal.app; rebuild Voice is Local with scripts/build-app.sh",
+                button: nil)
+        case let other?:
+            set(.deepTranscriptionModel, .problem, "Status unknown (\(other))", button: download)
+        case nil:
+            set(.deepTranscriptionModel, .pending, "Checking…", button: download, enabled: false)
         }
 
         let count = state.historyCount

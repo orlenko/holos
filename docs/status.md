@@ -373,7 +373,7 @@ timeline and larger local-model benchmark are follow-ups, not completed features
   and revert menu have not been seen on screen. `eval apply --add-vocabulary` proposes and adds
   often-heard-as words where reviewed passages replaced real words by a term. `eval local`
   applies the stage to its candidate by default (`--no-word-fixes` opts out).
-- Deep transcription after meetings (docs/meeting-design.md §4.16, CLI only so far): `voiceislocal
+- Deep transcription after meetings (docs/meeting-design.md §4.16): `voiceislocal
   setup --whisper` downloads Whisper large-v3 turbo for WhisperKit (about 1.6 GB, resumable,
   loaded once before it counts as installed; `doctor` reports it), and `voiceislocal session
   deep-transcribe <session> [--force]` transcribes a finished meeting's saved audio again on
@@ -384,7 +384,12 @@ timeline and larger local-model benchmark are follow-ups, not completed features
   problems with prompts are worked around (word times read from the wrong decoder rows, timestamp
   rules switched off, speech left out of a chunk; each chunk is also decoded without the prompt
   and keeps the plain result when the prompted one lost words). `eval local --backend whisper`
-  makes the same transcription as a candidate. Unit-tested with a scripted transcriber; an opt-in
+  makes the same transcription as a candidate. In the app, Settings › Meetings downloads the model
+  and turns on "Deep transcription after meetings", which queues each saved one-language meeting
+  and runs the pass on AC power, one at a time, resuming the queue after a quit; the Meetings list
+  shows the pass's state and a meeting's right-click menu runs it now or cancels it (the queue
+  policy is unit-tested; the Settings row, the menu and the power switch have not been seen on
+  screen yet). Unit-tested with a scripted transcriber; an opt-in
   test runs the real model on invented speech.
   Manual validation on a copy of a real 53-minute call (both tracks, release build, M4 Pro,
   numbers only): 1,163 s for the pass (6,348 s of audio over two tracks), 772 MB peak, 1,208
@@ -654,8 +659,8 @@ Still requiring real-machine or user-data validation:
   not). `eval local` applies the same fixes to its candidate by default; `--no-word-fixes`
   keeps the recognizer's words for comparison. The model is asked one place at a time (at
   most 500 per run).
-- Deep transcription: meetings in several languages are not transcribed again yet; the app does
-  not queue or run the pass on its own yet (a follow-up PR); accuracy was measured on one meeting.
+- Deep transcription: meetings in several languages are not transcribed again yet; accuracy was
+  measured on one meeting; the app's queue, Settings row and menu have not been seen on screen.
 - Live transcript: selecting a finalized phrase while recording can correct its text or name
   its speaker. The app saves a timed hint, carries text into the final/replayed transcript,
   learns safe correction pairs, keeps a shared pair until the last confirming live edit is

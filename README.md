@@ -318,6 +318,13 @@ speaker labels without `--force`, a failure) or speaker labelling was skipped, a
 nothing could be done (no model, deleted audio, or a meeting in several languages, which is
 not supported yet).
 
+In the app, Settings › Meetings downloads the model and turns on "Deep transcription after
+meetings": each saved meeting is then transcribed again on AC power, one at a time (on
+battery it waits for the power adapter). The Meetings list shows "Final transcript queued" or
+"… in progress…"; right-click a meeting for Make Final Transcript Now (which also labels
+speakers again; names carry over) or Cancel Final Transcript. Meetings saved while the app is
+closed are queued the next time it opens.
+
 ## Quick start
 
 ```sh

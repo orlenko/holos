@@ -26,7 +26,8 @@ extension Session {
                 again unless --force (names carry over). Exits 0 when done (also when the speaker models are not \
                 installed), 3 when the transcript files were written but the meeting could not be transcribed again \
                 or speaker labelling was skipped or failed (it is printed), and 1 when nothing could be done (the \
-                model is not installed, the audio was deleted, or the meeting is in several languages).
+                model is not installed, the audio was deleted, the meeting is in several languages, or another \
+                pass is running: one runs at a time on this Mac).
                 """)
 
         @Argument(help: "Path to a .holos folder, or a session ID.") var path: String
@@ -37,6 +38,15 @@ extension Session {
 
         mutating func run() async throws {
             let session = try SessionLocator.resolve(path)
+            // One pass at a time on this Mac, held for the command's whole life: the app reads from the lock that a
+            // pass is running, on which meeting, and which process to signal (docs/meeting-design.md §4.16, "App").
+            let sessionID = (try? SessionArchive.readManifest(at: session).id)
+                ?? session.deletingPathExtension().lastPathComponent
+            guard let held = try DeepTranscriptionLock.take(
+                DeepTranscriptionLock.Holder(pid: getpid(), sessionID: sessionID, force: force)) else {
+                throw HolosError.unavailable(DeepTranscriptionLock.busyMessage)
+            }
+            defer { held.release() }
             let request = SessionDeepTranscribeCommand.Request(session: session, force: force)
             let before = try? SessionArchive.currentTranscriptID(at: session)
             // Ctrl-C or SIGTERM (the app's Cancel) cancels the pass. Before the new transcript is published nothing

@@ -1011,6 +1011,18 @@ Face) uses the network.
 - *Languages.* Meetings in several languages are not transcribed again yet: Whisper's
   language detection cannot be limited to the meeting's languages, so the pass says so and
   keeps the merged transcript.
+- *In the app.* Settings › Meetings offers the model's download (1.6 GB) and "Deep
+  transcription after meetings", off until the model is installed. When on, each meeting in
+  one language is queued once it is saved and transcribed again on AC power, one at a time
+  (on battery it waits for the power adapter); the queue survives a quit or crash, and an
+  interrupted pass starts over. The Meetings list shows "Final transcript queued", "… waits
+  for power" or "… in progress…"; a meeting's right-click menu offers Make Final Transcript
+  Now (also on battery; it labels speakers again, names carried over) and Cancel Final
+  Transcript. Meetings saved while the app was closed are queued when it next opens. One pass
+  runs at a time on the Mac: the command holds a lock file for its whole life, and the app
+  knows another pass is running (one started before a relaunch or in Terminal) only from that
+  lock; it manages only the passes it starts, and waits for any other. A Make Final Transcript
+  Now that fails or is incomplete says why in an alert.
 - *Evaluation.* `voiceislocal eval local <session> --backend whisper` makes the same
   transcription as a candidate, so `eval compare --local latest` measures it against a
   cloud run without changing the meeting.
