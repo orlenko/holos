@@ -50,7 +50,10 @@ public struct TranscriptFixer: Sendable {
     public var heardAs: [Correction]
     /// Token budget for the learned corrections listed in the instructions.
     public var referenceBudget: Int
+    /// Bound on the base fix (spell-checker lookups, the model's reply, the guard).
     public var timeout: Duration
+    /// Bound on each "often heard as" question; nil uses `timeout`.
+    public var questionTimeout: Duration?
     /// The dictation language (a locale identifier), for its function words (`SpokenWords.isContent`); nil counts
     /// both English and French ones.
     public var language: String?
@@ -111,8 +114,8 @@ public struct TranscriptFixer: Sendable {
         } else {
             do {
                 swapped = try await Self.choosingTerms(in: verdict == .accept ? fixed : core, pairs: heardAs,
-                                                       protecting: corrections.entries, timeout: timeout,
-                                                       model: model)
+                                                       protecting: corrections.entries,
+                                                       timeout: questionTimeout ?? timeout, model: model)
             } catch {
                 if Task.isCancelled { return Result(text: chunk, outcome: .failed) }
                 swapped = nil
