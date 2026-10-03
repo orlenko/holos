@@ -4667,7 +4667,9 @@ skips it.
 5. *Guards* (`DeepTranscriptGuards`, pure). Per track: a segment whose audio is below
    −50 dBFS RMS and where the recorded transcript has no word within 0.5 s is dropped
    (`droppedSilent`); then each repeat past the first of 3 or more consecutive segments with
-   the same text (lowercased, letters and digits) is dropped (`droppedRepeats`). The
+   the same text (lowercased, letters and digits), each starting within 5 s of the end of the
+   one before, is dropped (`droppedRepeats`): the same short answer said again minutes later is
+   not a loop. The
    threshold, measured on a 53-minute call (both tracks, the recorded transcript's word
    spans against one-second windows with no word near them): words' p1 −47 dBFS (mic) and
    −43 dBFS (system), p50 −22 and −21; wordless seconds' p50 −64 and −72. Below −50 dBFS
@@ -4687,8 +4689,12 @@ skips it.
    speakers (relabelled because the transcript changed; names carry over), recognition and
    exports run as after a recording. Microphone echo of a call is found by `EchoFilter` on
    the new words exactly as on Apple's. Recovery treats a deep transcript as standing for the
-   recorded one (`TranscriptRebuilder.recordedTranscriptID`) and as holding all of the saved
-   audio (`mergeHoldsAllAudio`), as it does a merge.
+   recorded one (`TranscriptRebuilder.recordedTranscriptID`, followed back through a language
+   merge it was made from: rebuild R, `session languages` revision M, deep D stands for R) and
+   as holding all of the saved audio (`mergeHoldsAllAudio`), as it does a merge. A cancellation
+   after the publication leaves the new transcript current with the later stages maybe
+   unfinished; the command says so (and to run `session diarize`) instead of claiming the
+   transcript was kept.
 9. *No transcript yet.* A session recorded with `--record-only` or imported with
    `--no-transcribe` has saved audio and no transcript; the pass makes its first one (stage 1
    is `skipped`, the languages stage does not run, and the meeting's language is meeting.json's
@@ -4717,7 +4723,7 @@ audio, several languages, model not installed or still downloading) exits 1 with
 changed; then the post-processor with `deepTranscribe`: exit 0 done, 3 partial (exports
 written, but the pass was skipped or failed, or speaker labelling was), 1 failed.
 `voiceislocal eval local <session> --backend whisper [--language …]` makes a local candidate
-with the same rendering, prompt (recorded in run.json as `prompt`, the candidates as
+in the current transcript's language (as the pass chooses it) with the same rendering, prompt (recorded in run.json as `prompt`, the candidates as
 `vocabulary`, `engine` set) and guards, so `eval compare --local latest` scores it against a
 cloud run.
 

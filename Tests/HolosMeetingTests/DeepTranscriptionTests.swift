@@ -246,6 +246,12 @@ private func deepStage(_ record: PostProcessingRecord) -> StageOutcome? {
         segment("Loop.", 7, track: "system"), segment("Loop.", 8, track: "mic"), segment("Loop.", 9, track: "system"),
         segment("Loop.", 10, track: "system"),
     ]
+    // The same short answer said three times minutes apart, with the other track speaking between: not a loop.
+    let apart = [segment("Yes.", 60), segment("Yes.", 200), segment("Yes.", 400)]
+    #expect(DeepTranscriptGuards.apply(apart, reference: nil).droppedRepeats == 0)
+    // A loop must run back to back: a gap of more than `repeatGapSeconds` ends it.
+    let broken = [segment("Again.", 0), segment("Again.", 1), segment("Again.", 9), segment("Again.", 10)]
+    #expect(DeepTranscriptGuards.apply(broken, reference: nil).droppedRepeats == 0)
     let result = DeepTranscriptGuards.apply(segments, reference: nil)
     #expect(result.droppedRepeats == 5)
     #expect(result.kept.map { "\($0.track):\($0.text)" } == [
@@ -566,6 +572,38 @@ func aTranscriptMadeInOneNamedLanguageUsesThatLanguage() async throws {
 }
 
 @Test(.timeLimit(.minutes(1)))
+func evalLocalWithWhisperUsesTheCurrentTranscriptsLanguage() async throws {
+    let temp = try TemporaryDirectory("deep")
+    defer { temp.remove() }
+    let (session, recorded) = try await deepSession(in: temp.url)
+    var french = recorded
+    french.id = UUID().uuidString
+    french.locale = "fr-CA"
+    french.languages = ["fr-CA"]
+    try await SessionFixtures.saveTranscript(french, in: session)
+    let transcriber = ScriptedTranscriber(script: scriptedHearing)
+    let lease = try SessionArchive.acquireProcessingLease(at: session)
+    defer { lease.release() }
+    let record = try await EvalLocal.run(session: session, options: EvalLocal.Options(wordFixes: false,
+                                                                                      backend: .whisper),
+                                         vocabulary: [], dependencies: noSpeech,
+                                         deepTranscription: deepDependencies(transcriber))
+    #expect(record.languages == ["fr-CA"], "As the deep transcription pass would transcribe it.")
+    #expect(transcriber.requests.value.first?.language == "fr")
+}
+
+@Test func aCancellationSaysWhetherTheTranscriptChanged() {
+    #expect(SessionDeepTranscribeCommand.cancellationMessage(before: "A", after: "A")
+        == "Cancelled. The transcript was kept as it was.")
+    #expect(SessionDeepTranscribeCommand.cancellationMessage(before: nil, after: nil)
+        == "Cancelled. No transcript was made.")
+    let changed = SessionDeepTranscribeCommand.cancellationMessage(before: "A", after: "B")
+    #expect(changed.hasPrefix("Cancelled after the new transcript was saved") && changed.contains("session diarize"))
+    #expect(SessionDeepTranscribeCommand.cancellationMessage(before: nil, after: "B")
+        .hasPrefix("Cancelled after the new transcript was saved"))
+}
+
+@Test(.timeLimit(.minutes(1)))
 func ordinaryPostProcessingNeverRunsThePass() async throws {
     let temp = try TemporaryDirectory("deep")
     defer { temp.remove() }
@@ -607,6 +645,14 @@ private func archiveEvent(_ sequence: Int, _ kind: String, _ details: [String: S
     ]
     #expect(TranscriptRebuilder.recordedTranscriptID("F", events: events) == "R")
     #expect(TranscriptRebuilder.recordedTranscriptID("D", events: events) == "R")
+    // A rebuild R, a one-language `session languages` revision M of it, then a deep transcript D of M.
+    let throughMerge = [
+        try archiveEvent(1, MeetingEventKind.transcriptRebuilt, ["transcriptID": "R"]),
+        try archiveEvent(2, MeetingEventKind.languagesDetected, ["transcriptID": "M", "base": "R",
+                                                                  "languages": "fr-CA", "requested": "fr-CA"]),
+        try archiveEvent(3, MeetingEventKind.deepTranscribed, ["transcriptID": "D", "base": "M"]),
+    ]
+    #expect(TranscriptRebuilder.recordedTranscriptID("D", events: throughMerge) == "R")
     #expect(TranscriptRebuilder.mergeHoldsAllAudio("F", events: events))
     #expect(!TranscriptRebuilder.mergeHoldsAllAudio("R", events: events))
 }

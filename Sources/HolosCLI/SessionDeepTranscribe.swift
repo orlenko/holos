@@ -38,7 +38,9 @@ extension Session {
         mutating func run() async throws {
             let session = try SessionLocator.resolve(path)
             let request = SessionDeepTranscribeCommand.Request(session: session, force: force)
-            // Ctrl-C or SIGTERM (the app's Cancel) cancels the pass: nothing is published, and the record says so.
+            let before = try? SessionArchive.currentTranscriptID(at: session)
+            // Ctrl-C or SIGTERM (the app's Cancel) cancels the pass. Before the new transcript is published nothing
+            // changes; after it, the later stages may be unfinished, and the message says which.
             let outcome: SessionDeepTranscribeCommand.Outcome
             do {
                 outcome = try await EvalInterrupt.run { () async throws in
@@ -48,7 +50,9 @@ extension Session {
                         progress: Self.progressPrinter())
                 }
             } catch is CancellationError {
-                Console.error("Cancelled. The transcript was kept as it was.")
+                let after = try? SessionArchive.currentTranscriptID(at: session)
+                Console.error(SessionDeepTranscribeCommand.cancellationMessage(before: before ?? nil,
+                                                                               after: after ?? nil))
                 throw ExitCode(EvalInterrupt.lastExitCode)
             }
             // Stdout carries the result; a warning or failure is explained on stderr (docs/meeting-design.md §1.4).

@@ -298,10 +298,17 @@ public enum TranscriptRebuilder {
     /// event's `base`); else
     /// `transcriptID` itself, or for a transcript whose words were fixed (`WordFixStage`) the one it was fixed from.
     static func recordedTranscriptID(_ transcriptID: String, events: [ArchiveEvent]) -> String {
+        recordedTranscriptID(transcriptID, events: events, seen: [])
+    }
+
+    private static func recordedTranscriptID(_ transcriptID: String, events: [ArchiveEvent],
+                                             seen: Set<String>) -> String {
         let unfixed = WordFixStage.unfixedID(transcriptID, events: events)
-        // A deep transcript (§4.16) stands for the recorded transcript it replaced, as a merge does.
-        if let base = DeepTranscriptionStage.deepEvent(of: unfixed, events: events)?.details["base"], !base.isEmpty {
-            return WordFixStage.unfixedID(base, events: events)
+        // A deep transcript (§4.16) stands for the transcript it replaced, which may itself be a merge (a `session
+        // languages` revision of a rebuild): followed back the same way, never around a loop.
+        if let base = DeepTranscriptionStage.deepEvent(of: unfixed, events: events)?.details["base"], !base.isEmpty,
+           !seen.contains(base) {
+            return recordedTranscriptID(base, events: events, seen: seen.union([unfixed, transcriptID]))
         }
         guard let base = LanguageStage.mergeEvent(of: transcriptID, events: events)?.details["base"], !base.isEmpty
         else { return unfixed }

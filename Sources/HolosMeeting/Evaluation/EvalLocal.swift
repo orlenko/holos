@@ -110,6 +110,19 @@ public enum EvalLocal {
         case whisper
     }
 
+    /// The language a `--backend whisper` run without `--language` transcribes in: the current transcript's (the one
+    /// a deep transcript or word fixes were made from), as `DeepTranscriptionStage` chooses it; nil without a current
+    /// transcript. Throws for a transcript merged from several languages, which the pass does not transcribe.
+    static func whisperLanguages(session: URL) throws -> [String]? {
+        guard let current = try SessionFiles.currentTranscript(session: session) else { return nil }
+        let events = try SessionArchive.readEvents(at: session).events
+        let base = DeepTranscriptionStage.recordedBase(of: current, events: events, session: session).unfixed
+        if DictationLanguage.meetingLanguages(base.languages ?? []).count > 1 {
+            throw HolosError.invalidInput(DeepTranscriptionStage.severalLanguages)
+        }
+        return [DictationLanguage.identifier(base.locale)]
+    }
+
     /// The prompt candidates of a `--backend whisper` run, as the deep transcription pass orders them: the meeting's
     /// vocabulary.json first, then the rest of `wordList`, then `names`.
     public static func whisperVocabulary(session: URL, wordList: [String], names: [String]) throws -> [String] {
@@ -233,7 +246,9 @@ public enum EvalLocal {
                                  contentSHA256: try contentDigest(session: session, manifest: manifest, track: track),
                                  seconds: manifest.audioSeconds(track: track))
         }
-        let languages = try Self.languages(session: session, language: options.language)
+        // Whisper transcribes in the current transcript's language, as the deep transcription pass does.
+        let languages = try (options.backend == .whisper && options.language == nil
+            ? whisperLanguages(session: session) : nil) ?? Self.languages(session: session, language: options.language)
         let engine = options.backend == .whisper ? deepTranscription.engine : nil
         if engine != nil, languages.count > 1 {
             throw HolosError.invalidInput("Deep transcription handles one language; pass --language with one of "

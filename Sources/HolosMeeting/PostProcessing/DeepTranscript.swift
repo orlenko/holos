@@ -237,6 +237,9 @@ public enum DeepTranscriptGuards {
     public static let referencePaddingSeconds = 0.5
     /// This many consecutive identical segments on one track are a repetition loop; the first one is kept.
     public static let repeatRunLength = 3
+    /// Segments of a loop follow each other: one that starts more than this after the one before it ended (the same
+    /// short answer said again minutes later, other speech between) starts a new run.
+    public static let repeatGapSeconds = 5.0
 
     public struct Result: Sendable, Equatable {
         public var kept: [DeepHeardSegment]
@@ -249,7 +252,8 @@ public enum DeepTranscriptGuards {
     /// Drops, per track, each segment that is both over near-silent audio (`silenceThresholdDB`) and where the
     /// recorded transcript (`reference`, nil when there is none) has no word within `referencePaddingSeconds`; then
     /// each repeat past the first in a run of at least `repeatRunLength` consecutive segments with the same text
-    /// (compared lowercased, letters and digits only). The rest keep their order.
+    /// (compared lowercased, letters and digits only), each starting within
+    /// `repeatGapSeconds` of the one before. The rest keep their order.
     public static func apply(_ segments: [DeepHeardSegment], reference: [TranscriptSegment]?,
                              silenceThresholdDB: Double = silenceThresholdDB) -> Result {
         let heard = ReferenceWords(reference ?? [])
@@ -270,7 +274,8 @@ public enum DeepTranscriptGuards {
             while runStart < ordered.count {
                 let key = normalized(audible[ordered[runStart]].text)
                 var runEnd = runStart + 1
-                while runEnd < ordered.count, !key.isEmpty, normalized(audible[ordered[runEnd]].text) == key {
+                while runEnd < ordered.count, !key.isEmpty, normalized(audible[ordered[runEnd]].text) == key,
+                      audible[ordered[runEnd]].start - audible[ordered[runEnd - 1]].end <= repeatGapSeconds {
                     runEnd += 1
                 }
                 if !key.isEmpty, runEnd - runStart >= repeatRunLength {

@@ -81,6 +81,17 @@ public enum SessionDeepTranscribeCommand {
                        summary: summary(record, session: request.session))
     }
 
+    /// What a cancelled run says, from the current transcript's ID before the run and after it: a cancellation can
+    /// come after the new transcript was published, while live corrections, word fixes, speakers, or the exports were
+    /// still being made, and then nothing was rolled back.
+    public static func cancellationMessage(before: String?, after: String?) -> String {
+        if before == after {
+            return before == nil ? "Cancelled. No transcript was made." : "Cancelled. The transcript was kept as it was."
+        }
+        return "Cancelled after the new transcript was saved; its speaker labels and transcript files may not be up "
+            + "to date. Run voiceislocal session diarize on the meeting to finish them."
+    }
+
     /// The pass's message, then `SessionDiarizeCommand.summary` without the record's note of the pass, which the
     /// pass's message already says.
     static func summary(_ record: PostProcessingRecord, session: URL) -> String {
