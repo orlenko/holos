@@ -212,7 +212,9 @@ still drives Quick Look through the main window, `PreviewingWindow`; its 2 s ref
 People's reread run while the section is on screen). Settings is the former Setup window
 in cards: General (Open the Voice is Local window when it starts, Appearance),
 Permissions (Microphone, Accessibility, System audio, Input Monitoring only
-after macOS refused the hotkey tap), Dictation (on/off, hold-to-talk shortcut, language,
+after macOS refused the hotkey tap; each Open Settings click does one thing: the first one
+for a permission asks macOS, whose own prompt leads to System Settings and adds Voice is
+Local to the list, and later clicks open the System Settings page directly, never both), Dictation (on/off, hold-to-talk shortcut, language,
 speech model, fillers, Apple Intelligence fix, preview and its opacity), Meetings (record
 system audio, speaker labels, a link to People for remembered voices), Reading (default
 voice, speed, output folder), History and privacy (Keep dictations, the count, Clear

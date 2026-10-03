@@ -1546,15 +1546,14 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
             if AudioCapture.microphonePermission == "notDetermined" { requestMicrophone() }
             else { openPrivacySettings("Privacy_Microphone") }
         case .accessibility:
-            if !AXIsProcessTrusted() {
+            requestPermission(.accessibility, granted: AXIsProcessTrusted(), anchor: "Privacy_Accessibility") {
                 // Asking adds Holos to the Accessibility list; macOS shows its own prompt only once.
                 let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
                 _ = AXIsProcessTrustedWithOptions(options)
             }
-            openPrivacySettings("Privacy_Accessibility")
         case .inputMonitoring:
-            if !CGPreflightListenEventAccess() { _ = CGRequestListenEventAccess() }
-            openPrivacySettings("Privacy_ListenEvent")
+            requestPermission(.inputMonitoring, granted: CGPreflightListenEventAccess(),
+                              anchor: "Privacy_ListenEvent") { _ = CGRequestListenEventAccess() }
         case .assets: installAssets()
         case .dictation: toggleEnabled()
         case .toggleFillers:
@@ -1593,8 +1592,8 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
         case .systemAudio:
             // Asking adds Holos to the Screen & System Audio Recording list; macOS shows its own prompt only once,
             // and the permission takes effect after Holos is reopened.
-            if !CGPreflightScreenCaptureAccess() { _ = CGRequestScreenCaptureAccess() }
-            openPrivacySettings("Privacy_ScreenCapture")
+            requestPermission(.screenAndSystemAudio, granted: CGPreflightScreenCaptureAccess(),
+                              anchor: "Privacy_ScreenCapture") { _ = CGRequestScreenCaptureAccess() }
         case .people:
             showMainWindow(.people)
         case .clearHistory:
@@ -1603,6 +1602,19 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
             changeKeepsHistoryAudio(!history.keepsAudio)
         case .setupAssistant:
             showSetupAssistant(verify: false)
+        }
+    }
+
+    /// One step per click (`PermissionRequest`): the first click for a permission asks macOS, whose own prompt
+    /// leads to System Settings; later clicks, or a granted permission, open System Settings directly.
+    private func requestPermission(_ permission: PrivacyPermission, granted: Bool, anchor: String,
+                                   ask: () -> Void) {
+        let defaults = UserDefaults.standard
+        if !granted, PermissionRequest.next(for: permission, asked: PermissionRequest.asked(in: defaults)) == .askSystem {
+            PermissionRequest.recordAsked(permission, in: defaults)
+            ask()
+        } else {
+            openPrivacySettings(anchor)
         }
     }
 
