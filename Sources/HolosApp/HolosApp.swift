@@ -1507,6 +1507,8 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
             speakerModelsBusy: speakerLabels.busy,
             deepTranscriptionModel: deep.model, deepTranscriptionDetail: deep.detail,
             deepTranscriptionEnabled: deep.enabled,
+            meetingSummaries: MeetingSummaryAppState.enabled,
+            meetingSummariesUnavailable: meetingSummaryUnavailableReason,
             aiFix: AIFixSetting.isOn, aiFixUnavailable: AIFixSetting.unavailableReason(language: locale),
             spokenCode: SpokenCodeSetting.isOn, spokenCodeBackticks: SpokenCodeSetting.backticks,
             locale: locale, localeGroups: localeGroups, localeChangeable: canChangeLanguage,
@@ -1591,6 +1593,8 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
             installDeepTranscriptionModel()
         case .toggleDeepTranscription:
             toggleDeepTranscription()
+        case .toggleMeetingSummaries:
+            toggleMeetingSummaries()
         case .systemAudio:
             // Screen & System Audio Recording takes effect after Voice is Local is reopened.
             _ = CGRequestScreenCaptureAccess()

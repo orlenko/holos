@@ -86,6 +86,8 @@ final class MeetingAppState {
     var windowsInDock: Set<String> = []
     /// Deep transcription after meetings (docs/meeting-design.md §4.16, "App").
     let deep = DeepTranscriptionAppState()
+    /// Meeting titles and summaries (docs/meeting-design.md §4.17).
+    let summaries = MeetingSummaryAppState()
 }
 
 extension HolosAppDelegate: NSMenuDelegate {
@@ -115,7 +117,10 @@ extension HolosAppDelegate: NSMenuDelegate {
         controller.onSessionsInUseChanged = { [weak self, weak controller] in
             guard let controller else { return }
             self?.meeting.meetingsPane?.update(running: controller.sessionsInUse)
-            // A meeting another command let go of may be the next deep transcription's.
+            // A meeting another command let go of may be the next deep transcription's, or the next summary's.
+            // Summaries are looked for first, so a Summarize Again waiting goes before the next automatic pass (which
+            // waits for that scan).
+            self?.scheduleMeetingSummaries()
             self?.scheduleDeepTranscription()
         }
         // Reviews open, opening, or still saving after they closed: the automatic relabel leaves those meetings alone.
@@ -132,6 +137,7 @@ extension HolosAppDelegate: NSMenuDelegate {
         controller.attachOnLaunch()
         refreshSpeakerModels()
         setUpDeepTranscription()
+        setUpMeetingSummaries()
         Task { [weak self] in await self?.promptAboutInterruptedRecordings() }
     }
 
@@ -156,8 +162,9 @@ extension HolosAppDelegate: NSMenuDelegate {
             rebuildMenu()
         }
         meeting.meetingsPane?.update(meetingState: state)
-        // A meeting needs the Mac: a final transcript in progress is stopped and runs again afterwards.
+        // A meeting needs the Mac: a final transcript or a summary in progress is stopped and runs again afterwards.
         deepTranscriptionMeetingStateChanged()
+        meetingSummaryMeetingStateChanged()
     }
 
     private func handleMeetingEffect(_ effect: MeetingEffect) {
@@ -170,7 +177,8 @@ extension HolosAppDelegate: NSMenuDelegate {
             meeting.lastSummary = (sessionID, summary)
             meeting.notice = nil
             meeting.meetingsPane?.refresh()
-            // The meeting's own post-processing ran in the recorder: the final transcript can follow (§4.16).
+            // The meeting's own post-processing ran in the recorder: the final transcript can follow (§4.16), and its
+            // title and summary once that is decided (§4.17).
             queueDeepTranscriptionAfterMeeting(sessionID: sessionID)
         case .offerNaming, .clearNamingOffer:
             // `MeetingController.namingOffer` changed; the menu and the status item show it.
@@ -674,6 +682,11 @@ extension HolosAppDelegate: NSMenuDelegate {
         pane.onDeepTranscription = { [weak self] runNow, summary in
             if runNow { self?.runDeepTranscriptionNow(summary) } else { self?.cancelDeepTranscription(summary.id) }
         }
+        pane.onSummarize = { [weak self] summary in self?.summarizeMeetingAgain(summary) }
+        pane.onCancelSummary = { [weak self] id in self?.cancelMeetingSummary(id) }
+        pane.summaryRequested = { [weak self] id in self?.meeting.summaries.requested.contains(id) ?? false }
+        pane.summaryUnavailableReason = { [weak self] in self?.meetingSummaryUnavailableReason }
+        pane.update(summarizing: meeting.summaries.running?.sessionID)
         pane.update(meetingState: controller.state)
         meeting.meetingsPane = pane
         updateDeepStates()
@@ -867,6 +880,8 @@ extension HolosAppDelegate: NSMenuDelegate {
     func openReview(sessionID: String, directory: URL, name: String, fallBackToMeetings: Bool = false) {
         // A deep transcription pass on the meeting goes first; Review opens when this app's pass ends.
         if reviewWaitsForDeepTranscription(sessionID: sessionID, directory: directory, name: name) { return }
+        // So does a summary being made of it (§4.17).
+        if reviewWaitsForSummary(sessionID: sessionID, directory: directory, name: name) { return }
         if let window = meeting.reviewWindows[sessionID], !window.isClosing {
             window.show()
             meeting.controller?.reviewOpened(sessionID: sessionID)

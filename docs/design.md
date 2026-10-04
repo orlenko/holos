@@ -220,7 +220,8 @@ or remembered, since macOS cannot tell whether its prompt will appear; granted, 
 Settings** opens the page; Microphone keeps Request… while not determined, then Open Settings; the
 Setup Assistant's permission rows use the same two buttons), Dictation (on/off, hold-to-talk shortcut, language,
 speech model, fillers, Apple Intelligence fix, preview and its opacity), Meetings (record
-system audio, speaker labels, a link to People for remembered voices), Reading (default
+system audio, deep transcription, titles and summaries with Apple Intelligence, speaker
+labels, a link to People for remembered voices), Reading (default
 voice, speed, output folder), History and privacy (Keep dictations, the count, Clear
 History…, Keep the audio of dictations and its disk use), and Run Setup Assistant…; it polls
 the permissions every second while on screen. The meeting's live transcript is part of
@@ -249,7 +250,8 @@ main window (with the live transcript), the dictation preview, Review, the Setup
 Assistant, the meeting start panel, and alerts. Views draw with semantic colours only (layer colours
 are set in `updateLayer`, custom drawing in `draw(_:)`), so they redraw for either.
 
-Keyboard: ⌘1–⌘5 and ⌘, switch sections; ⌘F focuses the section's search field; ↑↓ move
+Keyboard: ⌘1–⌘5 and ⌘, switch sections; ⌘F focuses the section's search field (History,
+Meetings); ↑↓ move
 in lists, Return opens (History: the text; Meetings: the live transcript, Review, or the
 transcript), ⌫ deletes
 after a confirmation (History: the dictation; Meetings: Delete Meeting…; People:
@@ -1034,6 +1036,39 @@ Face) uses the network.
   cloud run without changing the meeting.
 
 docs/meeting-design.md §4.16 has the stage, files, thresholds and measurements.
+
+### Meetings list
+
+The Meetings section lists the meetings as rich rows in a source-list style, grouped under
+Today, Yesterday, This Week, then by month, newest first (the meeting being recorded or saved
+first). Each row has the meeting's title in bold, with small badges at its right; below it when
+it started (the time alone today and yesterday, the weekday this week, else the date), how long
+it is, and the people its speaker labels name ("Alex, Sam and 2 others"); then a one- or
+two-line summary. Badges replace the former State and Speakers columns and appear only when
+there is something to say: ● Recording (red), ● Paused, Starting…, Saving…, what a command is
+doing ("Labelling speakers…", "Final transcript queued", "Writing summary…"), Interrupted,
+Failed, Damaged, Transcript incomplete, Audio only, No audio, Speakers not labelled, Speaker
+labels failed, Language missing. The size and the state are in the row's tooltip; the footer
+keeps the total and free space. A search field above the list (⌘F) filters by title, name,
+summary, key points, action items and people, ignoring case and accents.
+
+The title is the name the user gave the meeting (in the start panel, or `--name`), else the
+title Apple Intelligence wrote, else the default name ("Meeting 2026-10-03 14:00"); a generated
+title never replaces a name the user gave. Titles and summaries are written on this Mac by
+Apple's on-device model once a meeting's transcript is final, and again when a final transcript
+replaces it, in the background, one meeting at a time, never while a meeting records or saves
+(Settings › Meetings › "Title and summarize meetings with Apple Intelligence", on by default).
+Without Apple Intelligence the rows show the date, length and people, with no error. The
+transcript files get the summary, key points and action items (Markdown and JSON);
+`voiceislocal session summarize` makes them from Terminal. docs/meeting-design.md §4.17 has the
+method, files and measurements.
+
+Every action stays: double-click or Return opens (the live transcript, Review, or the
+transcript preview), ⌫ is Delete Meeting…, the buttons below the list, and the row's menu, which
+now has Open, Live Transcript, Review…, Open Transcript, Show in Finder, Save Transcript As…,
+Summarize (Again), Make Final Transcript Now / Cancel Final Transcript, Recover…, Label
+Speakers, Delete Audio… and Delete Meeting…, each enabled as its button is. Right-clicking a
+row selects it.
 
 ### Meetings
 

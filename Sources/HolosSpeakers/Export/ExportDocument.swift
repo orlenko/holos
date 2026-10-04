@@ -39,11 +39,36 @@ public struct ExportDocument: Sendable, Equatable {
     public var projection: SpeakerProjection?
     public var gaps: [TimelineGap]
     public var markers: [TimelineMarker]
+    /// The generated summary (summary.json, docs/meeting-design.md §4.17); used only when it was made from
+    /// `transcript`.
+    public var summary: ExportSummary?
 
     public init(metadata: ExportMetadata, transcript: Transcript, run: DiarizationRun? = nil,
-                projection: SpeakerProjection? = nil, gaps: [TimelineGap] = [], markers: [TimelineMarker] = []) {
+                projection: SpeakerProjection? = nil, gaps: [TimelineGap] = [], markers: [TimelineMarker] = [],
+                summary: ExportSummary? = nil) {
         self.metadata = metadata; self.transcript = transcript; self.run = run; self.projection = projection
-        self.gaps = gaps; self.markers = markers
+        self.gaps = gaps; self.markers = markers; self.summary = summary
+    }
+}
+
+/// A meeting's generated title, summary, key points and action items, as the Markdown and JSON exports show them.
+/// The text export keeps Otter's layout and leaves it out.
+public struct ExportSummary: Sendable, Equatable {
+    /// The transcript revision it was made from.
+    public var transcriptID: String
+    public var title: String
+    public var summary: String
+    public var points: [String]
+    public var actions: [String]
+    /// What made it ("apple-on-device").
+    public var model: String
+    /// The title stands for the meeting's name in the Markdown heading: the user did not name the meeting.
+    public var titleIsHeading: Bool
+
+    public init(transcriptID: String, title: String, summary: String, points: [String] = [], actions: [String] = [],
+                model: String, titleIsHeading: Bool = false) {
+        self.transcriptID = transcriptID; self.title = title; self.summary = summary; self.points = points
+        self.actions = actions; self.model = model; self.titleIsHeading = titleIsHeading
     }
 }
 
@@ -186,9 +211,12 @@ struct ExportContent {
     /// Finite, by time.
     let markers: [TimelineMarker]
     let blocks: [ExportBlock]
+    /// The document's summary when it was made from its transcript.
+    let summary: ExportSummary?
 
     init(_ document: ExportDocument) {
         self.document = document
+        summary = document.summary.flatMap { $0.transcriptID == document.transcript.id ? $0 : nil }
         let projection = document.projection.flatMap { $0.transcriptID == document.transcript.id ? $0 : nil }
         self.projection = projection
         // A run from another run than the projection's would pair its engine and alignment with other turns.

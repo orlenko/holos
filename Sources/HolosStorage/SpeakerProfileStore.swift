@@ -175,6 +175,12 @@ public struct SpeakerProfileStore: Sendable {
         try withLock { try body(try load()) }
     }
 
+    /// `withLockedDatabase` for a caller that tells a busy lock from a store it cannot use (one a newer build wrote, a
+    /// damaged one): the read's failure is given to `body`, so what this throws itself is the lock not taken.
+    public func withLockedRead<T>(_ body: (Result<SpeakerProfileDatabase, any Error>) throws -> T) throws -> T {
+        try withLock { try body(Result { try load() }) }
+    }
+
     /// The rules every saved database meets: schema version 1; calibrated thresholds pass
     /// `RecognitionThresholds.problem` (finite, in range, `likely ≤ possible`, a margin of 0 … 2, a non-negative
     /// minimum sample length), and a calibrated model comes only with thresholds and names its model; profile and

@@ -20,6 +20,7 @@ struct Session: AsyncParsableCommand {
             Languages.self,
             FixWords.self,
             DeepTranscribe.self,
+            Summarize.self,
         ])
 
     struct Inspect: ParsableCommand {

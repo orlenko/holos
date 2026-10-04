@@ -15,6 +15,8 @@ public enum SessionPaths {
     public static func controlDirectory(_ session: URL) -> URL { folder("control", in: session) }
     public static func postprocess(_ session: URL) -> URL { file("postprocess.json", in: session) }
     public static func audioDeleted(_ session: URL) -> URL { file("audio-deleted.json", in: session) }
+    /// The generated title, summary, key points and action items of the current transcript (`MeetingSummaryRecord`).
+    public static func summary(_ session: URL) -> URL { file("summary.json", in: session) }
 
     public static func transcripts(_ session: URL) -> URL { folder("transcripts", in: session) }
     public static func transcript(_ id: String, in session: URL) -> URL {
@@ -50,7 +52,7 @@ public enum SessionPaths {
     /// speakers/
     static func speakers(_ session: URL) -> URL { folder("speakers", in: session) }
     /// speakers/recognition/
-    static func recognitionDirectory(_ session: URL) -> URL { folder("recognition", in: speakers(session)) }
+    public static func recognitionDirectory(_ session: URL) -> URL { folder("recognition", in: speakers(session)) }
     /// speakers/edits.torn-<UUID>.jsonl: backup of a torn journal tail before it is repaired.
     static func tornEditsBackup(_ session: URL) -> URL {
         file("edits.torn-\(UUID().uuidString).jsonl", in: speakers(session))

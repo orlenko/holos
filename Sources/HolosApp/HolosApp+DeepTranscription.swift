@@ -35,6 +35,9 @@ final class DeepTranscriptionAppState {
     var queue = DeepTranscriptionQueue.decode(UserDefaults.standard.data(forKey: queueKey)) {
         didSet { UserDefaults.standard.set(queue.encoded(), forKey: Self.queueKey) }
     }
+    /// Meetings just saved whose languages are being read to decide whether a final transcript is queued: a summary
+    /// waits for that decision (§4.17), so none is made of a transcript a final one is about to replace.
+    var deciding: Set<String> = []
     var considered: [String] = UserDefaults.standard.stringArray(forKey: consideredKey) ?? [] {
         didSet { UserDefaults.standard.set(considered, forKey: Self.consideredKey) }
     }
@@ -53,6 +56,9 @@ final class DeepTranscriptionAppState {
     var retryAfter: Date?
     /// Counts every turn of the setting on or off: a scan begun before one is dropped when it ends.
     var activation = 0
+    /// An automatic pass held back for the summary scan going on, which may start a summary the user asked for
+    /// (asked-for work goes first, §4.17): looked at again when the scan ends.
+    var waitsForSummaryScan = false
     /// Meetings whose command was refused because another command held them: skipped until then, so the others
     /// are not held up (another pass holding the lock delays everything, `retryAfter`).
     var delayed: [String: Date] = [:]
@@ -132,6 +138,10 @@ extension HolosAppDelegate {
         // Meetings that finished while the model was missing or downloading were not queued: found again now.
         if DeepTranscriptionSchedule.reconcilesOnModelChange(from: previous, to: model) {
             reconcileDeepTranscription()
+        } else if model != "downloading" {
+            // Nothing to reconcile: summaries need not wait for it (§4.17). While the model downloads they wait: once
+            // it is installed the reconciliation runs (and then lets them start); a failed download lets them start.
+            meetingSummaryLaunchReconciled()
         }
         scheduleDeepTranscription()
     }
@@ -151,7 +161,7 @@ extension HolosAppDelegate {
     /// Whether the meeting state leaves no room for a pass: a meeting starting, recording, or saving, one that
     /// failed while its recorder may still be capturing or post-processing, or a recorder the app launched that has
     /// not exited, even without a session folder (`MeetingController.recorderMayStillRun`, as a start checks it).
-    private func meetingIsBusy(_ state: MeetingState) -> Bool {
+    func meetingIsBusy(_ state: MeetingState) -> Bool {
         if meeting.controller?.recorderMayStillRun() == true { return true }
         switch state {
         case .idle: return false
@@ -166,14 +176,23 @@ extension HolosAppDelegate {
     // MARK: - Queue
 
     /// After a meeting is saved and its own post-processing ended: queued when the setting is on, the model
-    /// installed, and the meeting in one language.
+    /// installed, and the meeting in one language. Its summary is looked for once that is decided (§4.17), so a
+    /// meeting about to get a final transcript is summarized after it, not before.
     func queueDeepTranscriptionAfterMeeting(sessionID: String) {
         guard DeepTranscriptionAppState.enabled, meeting.deep.model == "installed", let root = meeting.controller?.root,
-              let directory = try? SessionLocator.resolve(sessionID, root: root) else { return }
+              let directory = try? SessionLocator.resolve(sessionID, root: root) else {
+            scheduleMeetingSummaries()
+            return
+        }
         let activation = meeting.deep.activation
+        meeting.deep.deciding.insert(sessionID)
         // Reading the languages can mean decoding a long meeting's transcript: off the main actor.
         Task { [weak self] in
             let languages = await Task.detached { Self.languageCount(directory) }.value
+            defer {
+                self?.meeting.deep.deciding.remove(sessionID)
+                self?.scheduleMeetingSummaries()
+            }
             // The setting was turned off (and maybe on again) while it was read: that turning off took it off.
             // Checked against the live queue and the meetings considered: the user may have asked for it (and maybe
             // cancelled it) while it was read.
@@ -193,11 +212,18 @@ extension HolosAppDelegate {
     /// started since the setting was turned on, in one language, with no deep transcript, and not queued before.
     func reconcileDeepTranscription() {
         guard DeepTranscriptionAppState.enabled, meeting.deep.model == "installed",
-              let root = meeting.controller?.root, let since = DeepTranscriptionAppState.enabledSince else { return }
+              let root = meeting.controller?.root, let since = DeepTranscriptionAppState.enabledSince else {
+            meetingSummaryLaunchReconciled()
+            return
+        }
         let considered = Set(meeting.deep.considered)
         let queue = meeting.deep.queue
         let activation = meeting.deep.activation
+        // Summaries wait while it runs (§4.17): it may queue a final transcript of a meeting they would summarize.
+        meetingSummaryReconcileStarted()
         Task { [weak self] in
+            // Once the meetings saved while the app was closed are queued (or none were), summaries may start.
+            defer { self?.meetingSummaryReconcileEnded() }
             let found = await Task.detached { () -> [DeepTranscriptionSchedule.Candidate] in
                 let candidates = SessionCatalog.list(root: root)
                     .filter { $0.createdAt >= since && !considered.contains($0.id) && !queue.contains($0.id) }
@@ -294,13 +320,16 @@ extension HolosAppDelegate {
         }
         guard let controller = meeting.controller, let maintenance = meeting.maintenance else { return }
         // Another process's pass holds the lock: wait for it (checked again every 30 s). One at a time on this Mac.
+        // A meeting summary shares the lock (§4.17), this app's own while it starts too: wait for it, without saying
+        // another final transcript runs.
         if meeting.deep.running == nil {
-            let other = DeepTranscriptionLock.state() != .free
+            let lock = DeepTranscriptionLock.state()
+            let other = lock.isDeepPass
             if other != meeting.deep.otherPassRunning {
                 meeting.deep.otherPassRunning = other
                 updateDeepStates()
             }
-            if other { return }
+            if lock != .free || meeting.summaries.running != nil { return }
         }
         if let retryAfter = meeting.deep.retryAfter, retryAfter > Date() { return }
         meeting.deep.retryAfter = nil
@@ -322,6 +351,12 @@ extension HolosAppDelegate {
         guard case .run(let sessionID) = decision,
               let item = meeting.deep.queue.items.first(where: { $0.sessionID == sessionID }) else {
             updateDeepStates()
+            return
+        }
+        // A Summarize Again the user asked for goes before an automatic pass: while the summary scan that may start
+        // it goes on, the pass waits for its end (`meetingSummaryScanEnded`).
+        if !item.runNow, meeting.summaries.scanning, !meeting.summaries.requests.isEmpty {
+            meeting.deep.waitsForSummaryScan = true
             return
         }
         // Marked running before the meeting is taken: taking it schedules again (`onSessionsInUseChanged`), which must
@@ -399,6 +434,9 @@ extension HolosAppDelegate {
         meeting.maintenanceEnded[sessionID, default: 0] += 1
         meeting.meetingsPane?.refresh()
         updateDeepStates()
+        // The final transcript is a new transcript: its summary follows (§4.17). Looked for first, so a summary the
+        // user asked for goes before the next automatic pass (which waits for the scan).
+        scheduleMeetingSummaries()
         scheduleDeepTranscription()
         // Review asked for while the pass worked on the meeting.
         if let review = meeting.deep.reviewAfterPass.removeValue(forKey: sessionID) {
@@ -493,6 +531,9 @@ extension HolosAppDelegate {
         } else {
             // The pass running now keeps its item until it ends (then it is taken off).
             meeting.deep.queue.removeAutomatic(keeping: meeting.deep.running?.sessionID)
+            // No final transcripts to wait for: summaries held back at launch (the model still being checked or
+            // downloaded) may start.
+            meetingSummaryLaunchReconciled()
         }
         updateSettings()
         updateDeepStates()
@@ -531,7 +572,9 @@ extension HolosAppDelegate {
         let own = meeting.controller?.sessionsInUse[sessionID] == Self.deepRunningText
             && meeting.deep.running?.sessionID == sessionID
         var other = false
-        if !own, case .held(let holder?) = DeepTranscriptionLock.state() { other = holder.sessionID == sessionID }
+        if !own, case .held(let holder?) = DeepTranscriptionLock.state(), !holder.isSummary {
+            other = holder.sessionID == sessionID
+        }
         guard own || other else { return false }
         let alert = NSAlert()
         alert.messageText = "Final transcript in progress"

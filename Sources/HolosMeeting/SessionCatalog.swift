@@ -91,6 +91,30 @@ public struct SessionSummary: Codable, Sendable, Equatable, Identifiable {
     public var audioDeleted: Bool
     /// A meeting in several languages whose current transcript misses one of them (`LanguageWork`); nil otherwise.
     public var languageWork: LanguageWork?
+    /// Where `name` came from (`MeetingNaming.source`: meeting.json's, else inferred from the name).
+    public var nameSource: MeetingNameSource
+    /// summary.json, when it can be read: possibly of an earlier transcript (`summaryIsCurrent` says), which is
+    /// still shown until the new one is made.
+    public var generatedSummary: MeetingSummaryRecord? = nil
+
+    /// Every field but `generatedSummary`, which holds what the meeting was about: `session list --json` and anything
+    /// else that encodes the catalog stay metadata only (summary.json and `session summarize --json` carry it).
+    private enum CodingKeys: String, CodingKey {
+        case id, directory, name, createdAt, source, origin, state, manifestStatus, savedSeconds, chunkCount
+        case transcriptID, transcriptProblem, transcriptRefused, speakerState, labelMessage, runID, labelsReadyAt
+        case hasSpeakerEdits, phase, pid, liveness, bytes, derivedBytes, audioDeleted, languageWork, nameSource
+    }
+
+    /// The title the Meetings list shows (`MeetingNaming.displayTitle`): the user's name, else the generated title,
+    /// else the name.
+    public var displayTitle: String {
+        MeetingNaming.displayTitle(name: name, source: nameSource, generatedTitle: generatedSummary?.title)
+    }
+
+    /// The summary was made from the current transcript.
+    public var summaryIsCurrent: Bool {
+        MeetingSummaryStore.current(generatedSummary, transcriptID: transcriptID) != nil
+    }
 
     public init(id: String, directory: URL, name: String, createdAt: Date, source: AudioSource,
                 origin: MeetingOrigin = .recorded, state: SessionState, manifestStatus: String,
@@ -100,7 +124,8 @@ public struct SessionSummary: Codable, Sendable, Equatable, Identifiable {
                 labelsReadyAt: Date? = nil,
                 hasSpeakerEdits: Bool = false, phase: RecorderPhase? = nil, pid: Int32? = nil,
                 liveness: RecorderLiveness, bytes: Int64 = 0, derivedBytes: Int64 = 0, audioDeleted: Bool = false,
-                languageWork: LanguageWork? = nil) {
+                languageWork: LanguageWork? = nil, nameSource: MeetingNameSource? = nil,
+                generatedSummary: MeetingSummaryRecord? = nil) {
         self.id = id; self.directory = directory; self.name = name; self.createdAt = createdAt
         self.source = source; self.origin = origin; self.state = state; self.manifestStatus = manifestStatus
         self.savedSeconds = savedSeconds; self.chunkCount = chunkCount; self.transcriptID = transcriptID
@@ -110,6 +135,8 @@ public struct SessionSummary: Codable, Sendable, Equatable, Identifiable {
         self.hasSpeakerEdits = hasSpeakerEdits; self.phase = phase; self.pid = pid; self.liveness = liveness
         self.bytes = bytes; self.derivedBytes = derivedBytes; self.audioDeleted = audioDeleted
         self.languageWork = languageWork
+        self.nameSource = MeetingNaming.source(stored: nameSource, name: name)
+        self.generatedSummary = generatedSummary
     }
 }
 
@@ -154,7 +181,9 @@ public enum SessionCatalog {
                 manifestStatus: "", phase: phase, pid: pid, liveness: liveness, bytes: sizes.bytes,
                 derivedBytes: sizes.derived, audioDeleted: audioDeleted(session, sessionID: nil))
         }
-        let origin = (try? SessionFiles.meetingInfo(session: session, manifest: manifest))?.origin ?? .recorded
+        let meetingRead = Result { try SessionFiles.meetingInfo(session: session, manifest: manifest) }
+        let meeting = try? meetingRead.get()
+        let origin = meeting?.origin ?? .recorded
         let speakers = speakerLabels(session, liveness: liveness)
         // The revision is read, not only found, so a damaged, truncated, mislabelled, or newer one is never listed
         // as the session's transcript.
@@ -183,7 +212,15 @@ public enum SessionCatalog {
             runID: speakers.runID, labelsReadyAt: speakers.readyAt,
             hasSpeakerEdits: hasSpeakerEdits(session), phase: phase, pid: pid, liveness: liveness,
             bytes: sizes.bytes, derivedBytes: sizes.derived,
-            audioDeleted: audioDeleted(session, sessionID: manifest.id), languageWork: languageWork)
+            audioDeleted: audioDeleted(session, sessionID: manifest.id), languageWork: languageWork,
+            // A meeting.json that is there but cannot be read (damaged, unreadable now, newer) leaves where the name
+            // came from unknown: the user's, so a generated title never replaces it. Only a missing one (a meeting
+            // saved before it existed) is inferred from the name.
+            nameSource: meeting.map {
+                MeetingNaming.source(stored: $0.nameSource, name: manifest.name,
+                                     importedFileName: $0.origin == .imported ? $0.importedFileName : nil)
+            } ?? .user,
+            generatedSummary: MeetingSummaryStore.readIfUsable(session: session, sessionID: manifest.id))
     }
 
     /// `summaries` with `LanguageWork.ready` set where a run would detect a language now
@@ -249,6 +286,42 @@ public enum SessionCatalog {
     }
 
     // MARK: - Reading
+
+    /// The most of a manifest `hasSession` reads for its `id`.
+    static let maximumProbedManifestBytes: off_t = 1 << 20
+
+    /// Whether a folder under `root` holds the session `id`, whatever the folder is named (`<id>.holos`, or any
+    /// `<something>.holos` whose manifest names it, read for its `id` alone): false only when `root` could be listed
+    /// and every folder with a manifest had it read and naming another session; nil when that cannot be told (`root`
+    /// or a manifest unreadable for now).
+    public static func hasSession(_ id: String, in root: URL) -> Bool? {
+        guard (try? FileManager.default.contentsOfDirectory(atPath: root.path)) != nil else { return nil }
+        struct ManifestID: Decodable { var id: String }
+        var unsure = false
+        for folder in sessionFolders(in: root) {
+            if folder.deletingPathExtension().lastPathComponent.caseInsensitiveCompare(id) == .orderedSame {
+                return true
+            }
+            // Only a regular file is read (never followed, never a FIFO that would block), and at most 1 MiB: a missing
+            // manifest, or a link or other entry in its place, is no session; a larger one is not told apart.
+            let manifest = SessionPaths.manifest(folder)
+            var info = stat()
+            guard lstat(manifest.path, &info) == 0 else {
+                let code = errno
+                if code != ENOENT, code != ENOTDIR { unsure = true }
+                continue
+            }
+            guard (info.st_mode & S_IFMT) == S_IFREG else { continue }
+            guard info.st_size <= Self.maximumProbedManifestBytes,
+                  let data = try? AtomicFile.readIfPresent(manifest, maxBytes: Int(Self.maximumProbedManifestBytes)),
+                  let found = try? HolosJSON.decoder().decode(ManifestID.self, from: data) else {
+                unsure = true
+                continue
+            }
+            if found.id.caseInsensitiveCompare(id) == .orderedSame { return true }
+        }
+        return unsure ? nil : false
+    }
 
     /// The `.holos` folders directly inside `root`.
     static func sessionFolders(in root: URL) -> [URL] {

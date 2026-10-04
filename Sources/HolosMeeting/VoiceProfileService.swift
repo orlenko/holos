@@ -568,6 +568,13 @@ public enum VoiceProfileService {
         }
     }
 
+    /// What a meeting summary calls the unnamed channel speaker ("Me"): the person who is you in People, else the
+    /// account's full name, else "Me".
+    public static func ownName(store: SpeakerProfileStore = SpeakerProfileStore()) -> String {
+        if let profile = (try? store.load())?.profiles.first(where: \.isSelf) { return profile.displayName }
+        return selfName
+    }
+
     /// `profileNames(store:)` of a database already read, so several views of the people agree.
     public static func profileNames(in database: SpeakerProfileDatabase) -> [String: String] {
         Dictionary(database.profiles.map { ($0.id, $0.displayName) }, uniquingKeysWith: { first, _ in first })
@@ -583,7 +590,19 @@ public enum VoiceProfileService {
     /// people unreadable, a name recognition chose earlier is not shown either.
     public static func recognitionAllowed(store: SpeakerProfileStore = SpeakerProfileStore()) -> Bool {
         do {
-            guard try store.load().rememberVoices else { return false }
+            return recognitionAllowed(in: try store.load(), store: store)
+        } catch {
+            log.error("Cannot read whether voices are remembered: \(ProcessSpawner.logCategory(error), privacy: .public)")
+            return false
+        }
+    }
+
+    /// `recognitionAllowed(store:)` for a database already read (only the forget journal is read here), so one read of
+    /// the store answers it with the names (`SessionSummarizeCommand.VoiceInputs`). It takes no lock, so it may run
+    /// under `withLockedDatabase`.
+    public static func recognitionAllowed(in database: SpeakerProfileDatabase, store: SpeakerProfileStore) -> Bool {
+        do {
+            guard database.rememberVoices else { return false }
             // One read of the journal for all three questions: this runs on every reload of a meeting's labels and
             // every export, and asking them separately read and decoded the same file up to four times.
             //

@@ -7,6 +7,11 @@ import HolosCore
 /// writes who it is into the file once it holds it. The kernel lets go of the lock when the process ends, however it
 /// ends, so while the lock is held a pass is running: the app starts none of its own until the lock is free, and
 /// never signals or adopts a pass it did not start (what the holder wrote is for display and Review only).
+///
+/// It is the lock of every expensive background job on a meeting: `voiceislocal session summarize` (§4.17) holds it
+/// too (`Holder.kind` `summary`), so a summary and a final transcript never run at the same time, and a job that
+/// outlived the app that started it is seen as busy after a relaunch. The file keeps its name, so a build from before
+/// summaries and this one exclude each other.
 public enum DeepTranscriptionLock {
     /// Who holds the lock, as it wrote it.
     public struct Holder: Codable, Sendable, Equatable {
@@ -14,10 +19,17 @@ public enum DeepTranscriptionLock {
         public var sessionID: String
         /// Run with `--force` (Make Final Transcript Now).
         public var force: Bool
+        /// What holds it: nil (a deep transcription pass, as before summaries) or `summaryKind`.
+        public var kind: String?
 
-        public init(pid: Int32, sessionID: String, force: Bool) {
-            self.pid = pid; self.sessionID = sessionID; self.force = force
+        public static let summaryKind = "summary"
+
+        public init(pid: Int32, sessionID: String, force: Bool, kind: String? = nil) {
+            self.pid = pid; self.sessionID = sessionID; self.force = force; self.kind = kind
         }
+
+        /// A meeting summary holds the lock, not a deep transcription pass.
+        public var isSummary: Bool { kind == Self.summaryKind }
     }
 
     public enum State: Sendable, Equatable {
@@ -25,12 +37,19 @@ public enum DeepTranscriptionLock {
         case free
         /// A pass is running: its holder, or nil for the moment between taking the lock and writing it.
         case held(Holder?)
+
+        /// A deep transcription pass holds it (or a holder that has not written itself yet); not a summary.
+        public var isDeepPass: Bool {
+            guard case .held(let holder) = self else { return false }
+            return holder?.isSummary != true
+        }
     }
 
     public static var url: URL { HolosPaths.supportRoot.appendingPathComponent("deep-transcription.lock") }
 
     /// Why a pass did not start: another holds the lock.
-    public static let busyMessage = "Another final transcript is being made on this Mac; try again when it ends."
+    public static let busyMessage =
+        "Another final transcript or meeting summary is being made on this Mac; try again when it ends."
 
     /// The lock, held until `release` or the process ends.
     public final class Taken: @unchecked Sendable {

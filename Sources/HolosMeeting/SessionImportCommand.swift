@@ -21,13 +21,15 @@ public enum SessionImportCommand {
         /// meeting.json, and post-processing merges the transcript from one transcription in each. Empty: `locale`
         /// only.
         public var languages: [String]
+        /// Where `name` came from (`--name`: `user`; the file's name: `default`); nil is `user`.
+        public var nameSource: MeetingNameSource?
 
         public init(file: URL, name: String, root: URL, locale: String, backend: SpeechBackend,
                     vocabulary: [String] = [], transcribe: Bool = true, postprocess: Bool = true,
-                    languages: [String] = []) {
+                    languages: [String] = [], nameSource: MeetingNameSource? = nil) {
             self.file = file; self.name = name; self.root = root; self.locale = locale; self.backend = backend
             self.vocabulary = vocabulary; self.transcribe = transcribe; self.postprocess = postprocess
-            self.languages = languages
+            self.languages = languages; self.nameSource = nameSource
         }
     }
 
@@ -68,7 +70,8 @@ public enum SessionImportCommand {
             imported = try await SessionImporter.importSession(
                 from: request.file, name: request.name, root: request.root, locale: request.locale,
                 backend: request.backend, vocabulary: request.vocabulary, transcribe: request.transcribe,
-                makeSpeech: makeSpeech, timeouts: timeouts, languages: request.languages, progress: importProgress)
+                makeSpeech: makeSpeech, timeouts: timeouts, languages: request.languages,
+                nameSource: request.nameSource, progress: importProgress)
         } catch is CancellationError {
             throw HolosError.incomplete("The import was cancelled; nothing was imported.")
         }

@@ -60,12 +60,16 @@ public enum SessionExports {
     /// `SessionArchive.saveTranscript` writes for the current transcript count as generated; any other existing file
     /// is moved aside. A `.generated.json` from a newer Holos is refused (`unavailable`); a damaged one records
     /// nothing, so every existing file that differs is moved aside.
+    ///
+    /// `selfName` names the unnamed channel speaker in the summary's key (nil: `VoiceProfileService.ownName()`): the
+    /// summary command passes the one it checked, so the files it marks written carry its summary.
     @discardableResult
     public static func regenerateLocked(session: URL, profileNames: [String: String] = [:],
-                                        applyRecognition: Bool = true) throws -> ExportWriteResult {
+                                        applyRecognition: Bool = true, selfName: String? = nil) throws
+        -> ExportWriteResult {
         let snapshot = try SpeakerSessionSnapshot.load(session: session, profileNames: profileNames,
                                                        applyRecognition: applyRecognition)
-        let rendered = try renderAll(exportDocument(snapshot))
+        let rendered = try renderAll(exportDocument(snapshot, selfName: selfName))
         let result = try write(rendered, session: session, snapshot: snapshot)
         log.info("Session \(snapshot.manifest.id, privacy: .public): wrote \(result.written.count, privacy: .public) exports; moved \(result.movedAside.count, privacy: .public) edited exports aside")
         return result
@@ -91,14 +95,36 @@ public enum SessionExports {
     /// were labelled (`transcriptChanged`). The head run's labels then name words of the earlier transcript, so the
     /// exports show the current transcript without speakers until speakers are labelled again; a newer transcript
     /// never disappears from them.
-    static func exportDocument(_ snapshot: SpeakerSessionSnapshot) throws -> ExportDocument {
+    static func exportDocument(_ snapshot: SpeakerSessionSnapshot, withSummary: Bool = true,
+                               selfName: String? = nil) throws -> ExportDocument {
         var document = snapshot.exportDocument()
-        guard snapshot.transcriptChanged,
-              let current = try SessionFiles.currentTranscript(session: snapshot.session) else { return document }
-        document.transcript = current
-        document.run = nil
-        document.projection = nil
+        if snapshot.transcriptChanged, let current = try SessionFiles.currentTranscript(session: snapshot.session) {
+            document.transcript = current
+            document.run = nil
+            document.projection = nil
+        }
+        if withSummary {
+            let selfName = selfName ?? VoiceProfileService.ownName()
+            document.summary = exportSummary(snapshot, key: MeetingSummaryKey(document, selfName: selfName))
+        }
         return document
+    }
+
+    /// summary.json for the exports (docs/meeting-design.md §4.17), when one can be read and is current (`key`: made
+    /// from this transcript with these speakers' names); otherwise the exports leave it out, so corrected speaker
+    /// labels never sit beside a summary made with the old ones. Its title heads the Markdown export unless the user
+    /// named the meeting.
+    static func exportSummary(_ snapshot: SpeakerSessionSnapshot, key: MeetingSummaryKey) -> ExportSummary? {
+        guard let record = MeetingSummaryStore.readIfUsable(session: snapshot.session,
+                                                            sessionID: snapshot.manifest.id),
+              key.isCurrent(record) else { return nil }
+        // A damaged meeting.json leaves where the name came from unknown: the user's, so the title never replaces it.
+        let source = snapshot.meetingInfoDamaged ? .user : MeetingNaming.source(
+            stored: snapshot.meeting.nameSource, name: snapshot.manifest.name,
+            importedFileName: snapshot.meeting.origin == .imported ? snapshot.meeting.importedFileName : nil)
+        return ExportSummary(transcriptID: record.transcriptID, title: record.title, summary: record.summary,
+                             points: record.points, actions: record.actions,
+                             model: MeetingSummaryModel.displayName(record.model), titleIsHeading: !source.isUser)
     }
 
     /// Every format, in the order they are written.
@@ -191,6 +217,18 @@ public enum SessionExports {
     }
 
     private static func fileName(_ format: ExportFormat) -> String { "transcript.\(format.rawValue)" }
+
+    /// Whether `exports/.generated.json` was written by a newer Voice is Local: the transcript files cannot be
+    /// rewritten until it is updated, so nothing tries again meanwhile.
+    public static func recordIsFromNewerVersion(session: URL) -> Bool {
+        do {
+            _ = try readRecord(session: session)
+            return false
+        } catch {
+            if case .unavailable? = error as? HolosError { return true }
+            return false
+        }
+    }
 
     /// nil when no export was ever generated here; an empty record when the file is damaged.
     private static func readRecord(session: URL) throws -> GeneratedRecord? {

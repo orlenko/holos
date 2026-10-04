@@ -329,6 +329,27 @@ battery it waits for the power adapter). The Meetings list shows "Final transcri
 speakers again; names carry over) or Cancel Final Transcript. Meetings saved while the app is
 closed are queued the next time it opens.
 
+### Meeting titles and summaries
+
+Apple Intelligence's on-device model writes a short title, a one- or two-sentence summary,
+key points and action items for each meeting from its transcript (with speaker names), part
+by part, on this Mac. The Meetings list shows the title unless you named the meeting
+yourself, with the date, length, people and summary; the Markdown and JSON transcript files
+get the summary, key points and action items.
+
+```sh
+voiceislocal session summarize <session>           # title and summary of the current transcript
+voiceislocal session summarize <session> --force   # again, even when it is up to date
+voiceislocal session summarize <session> --json    # with the status and how many model calls it took
+```
+
+It exits 0 when the summary was written or is up to date, 3 when it was written but the
+transcript files could not be rewritten, and 1 otherwise (Apple Intelligence off or not
+supported, no transcript, another command working on the meeting). In the app, Settings ›
+Meetings › "Title and summarize meetings with Apple Intelligence" (on by default) summarizes
+each meeting in the background once its transcript is final, and again after a final
+transcript; right-click a meeting for Summarize Again.
+
 ## Quick start
 
 ```sh
@@ -356,6 +377,7 @@ voiceislocal="$BIN_DIR/voiceislocal"
 "$voiceislocal" session languages <session> --languages fr-CA,en-CA   # mixed French and English
 "$voiceislocal" session fix-words <session>    # fix misheard words with today's corrections and terms
 "$voiceislocal" session deep-transcribe <session>   # transcribe again with the local Whisper model
+"$voiceislocal" session summarize <session>    # title, summary, key points and action items, on this Mac
 "$voiceislocal" session list                   # sessions, newest first, with state and size
 "$voiceislocal" speakers list <session>        # a session's speakers; also rename, merge, assign, ...
 "$voiceislocal" speakers rename <session> S2 "Maria"
@@ -456,7 +478,8 @@ command refuses and exits 1 (list again and retry). Changes are saved in the
 session's edit journal, never in the labels themselves, and rewrite `exports/`.
 `voiceislocal session export <session> --format md|json|txt` writes the labelled
 transcript to stdout or, with `--output`, to a new file; `--all` rewrites
-`exports/`. No export contains voice data.
+`exports/`. Markdown and JSON include the meeting's summary, key points and action items
+once `session summarize` made them. No export contains voice data.
 
 People and voices: `voiceislocal speakers link <session> <speaker> <person|new:NAME>` links a
 speaker to a person (`voiceislocal speakers me` to you), which also names the speaker, so the
