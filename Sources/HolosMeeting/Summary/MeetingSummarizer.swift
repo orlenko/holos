@@ -246,13 +246,15 @@ public struct MeetingSummarizer: Sendable {
         let prompt = Self.notesPrompt(part: part, index: index, of: count)
         let model = model
         do {
-            guard let answer = try await call(&run, { try await model.notes(instructions, prompt) }),
-                  !answer.refused else {
+            guard let answer = try await call(&run, { try await model.notes(instructions, prompt) }) else {
                 return skippedPiece(&run)
             }
             let cleaned = MeetingSummaryDraft.cleanList(answer.notes, limit: 6)
-            // A refusal written as a note ("I'm sorry, I cannot…") is a refused part too: it is left out and counted.
-            guard !cleaned.isEmpty, !cleaned.contains(where: MeetingSummaryDraft.isRefusal) else {
+            // A refusal written as a note ("I'm sorry, I cannot…") is a refused part: it is left out and counted. So is
+            // one the model marked refused, unless it wrote real notes anyway (Apple's model set the field on parts of
+            // ordinary meetings it summarized well without it).
+            guard !cleaned.isEmpty, !cleaned.contains(where: MeetingSummaryDraft.isRefusal),
+                  !answer.refused || MeetingSummaryDraft.isSubstantive(cleaned) else {
                 return skippedPiece(&run)
             }
             run.pieces += 1
@@ -339,9 +341,13 @@ public struct MeetingSummarizer: Sendable {
             throw Failure.unusableAnswer("The meeting's notes did not fit the model.")
         }
         guard let answer else { throw Failure.unusableAnswer("The model did not summarize the meeting.") }
-        if answer.refused { throw Failure.unusableAnswer("The model declined to summarize the meeting.") }
         switch answer.cleaned() {
-        case .success(let draft): return draft
+        case .success(let draft):
+            // Marked refused and saying little: a refusal, in whatever language. A real summary marked refused is kept.
+            if answer.refused, !MeetingSummaryDraft.isSubstantive([draft.summary] + draft.points + draft.actions) {
+                throw Failure.unusableAnswer("The model declined to summarize the meeting.")
+            }
+            return draft
         case .failure(let problem): throw Failure.unusableAnswer(problem.message)
         }
     }
@@ -494,7 +500,7 @@ public struct MeetingSummarizer: Sendable {
         """
         You take notes on one part of a meeting. Write 2 to 5 short notes in \(languageName(language)), one sentence \
         each: the topics discussed, what was decided, and tasks someone agreed to do, with the person's name when the \
-        transcript gives it. Set refused to true, with no notes, only if you cannot summarize this text.
+        transcript gives it.
         \(dataRule)
         """
     }
@@ -527,7 +533,7 @@ public struct MeetingSummarizer: Sendable {
             - keyPoints: up to 5 main facts, topics or decisions (not tasks), one short sentence each.
             - actionItems: up to 5 tasks someone agreed to do, starting with the person when known; none when there \
             are none.
-            - refused: true only if you cannot summarize this text.
+            - refused: true only if you could not summarize this text at all.
             \(dataRule)
             """
     }
@@ -537,7 +543,10 @@ public struct MeetingSummarizer: Sendable {
         if durationSeconds.isFinite, durationSeconds >= 60 {
             header.append("Length: \(Int((durationSeconds / 60).rounded())) minutes.")
         }
-        if !people.isEmpty { header.append("People named: \(people.prefix(8).joined(separator: ", ")).") }
+        // Names are the user's text: they go inside a fence, as data, never into the instructions around it.
+        if !people.isEmpty {
+            header.append("People named, one per line:\n" + fenced(people.prefix(8).joined(separator: "\n")))
+        }
         let label = fromNotes ? "Notes on the meeting's parts, in order:" : "Transcript (speaker: words):"
         return (header + [label]).joined(separator: "\n") + "\n" + body
     }
@@ -609,6 +618,14 @@ extension MeetingSummaryDraft {
         let b = words(right)
         guard let smaller = [a, b].min(by: { $0.count < $1.count }), smaller.count >= 2 else { return false }
         return Double(a.intersection(b).count) >= 0.8 * Double(smaller.count)
+    }
+
+    /// Text that says something: at least two items, or one of at least twelve words. A refusal is one short
+    /// sentence, so a `refused` mark on substantive text is not taken for one.
+    static func isSubstantive(_ items: [String]) -> Bool {
+        let filled = items.filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+        if filled.count >= 2 { return true }
+        return (filled.first?.split(whereSeparator: \.isWhitespace).count ?? 0) >= 12
     }
 
     /// A refusal or an assistant's aside rather than a summary.

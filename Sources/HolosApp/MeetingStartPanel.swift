@@ -10,7 +10,7 @@ import ScreenCaptureKit
 /// is disabled when the disk policy refuses, nothing could be recorded (no microphone, and no computer's audio), or
 /// the meeting language is not known yet. An ordinary window, like Setup.
 @MainActor
-final class MeetingStartPanel: NSObject, NSWindowDelegate {
+final class MeetingStartPanel: NSObject, NSWindowDelegate, NSTextFieldDelegate {
     /// What the panel shows besides the user's choices; read every 2 s while it is open.
     struct Environment {
         var devices: InputDevices
@@ -51,8 +51,9 @@ final class MeetingStartPanel: NSObject, NSWindowDelegate {
     private let onClose: () -> Void
 
     private let nameField = NSTextField()
-    /// The default name the panel last filled in (`MeetingStartSettings.defaultName`).
-    private var suggestedName = ""
+    /// The user typed in the name field since the panel filled in its suggestion: the name is theirs, whatever it
+    /// says (even the suggestion typed back).
+    private var nameEdited = false
     private let screenChoice = MeetingScreenChoiceView()
     private var screenWindowTask: Task<Void, Never>?
     private let sourcesLabel = NSTextField(wrappingLabelWithString: "")
@@ -107,6 +108,7 @@ final class MeetingStartPanel: NSObject, NSWindowDelegate {
         window.delegate = self
 
         nameField.placeholderString = "Meeting name"
+        nameField.delegate = self
         nameField.widthAnchor.constraint(equalToConstant: 320).isActive = true
         for label in [sourcesLabel, microphoneLabel, diskLabel, speakersLabel, speechLabel] {
             label.font = .systemFont(ofSize: 12)
@@ -199,7 +201,7 @@ final class MeetingStartPanel: NSObject, NSWindowDelegate {
     func show(name: String, saved: MeetingStartSettings?, locales: [String], consentDismissed: Bool) {
         if !window.isVisible {
             nameField.stringValue = name
-            suggestedName = name
+            nameEdited = false
             chosenLocales = DictationLanguage.meetingLanguages(locales)
             languagePicked = false
             for locale in chosenLocales { onCheckSpeechModel(locale) }
@@ -498,8 +500,9 @@ final class MeetingStartPanel: NSObject, NSWindowDelegate {
     @objc private func start() {
         // The permission as it is now, never a prompt: without it the meeting records the microphone alone.
         var settings = Self.settings(name: nameField.stringValue, environment(), locales: chosenLocales)
-        // The name the panel suggested, left as it was, is Voice is Local's; any other the user typed is theirs.
-        settings.nameIsDefault = nameField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines) == suggestedName
+        // The name the panel suggested, never edited, is Voice is Local's; once the user typed in the field it is
+        // theirs (an emptied field gets the default name again, `normalized`).
+        settings.nameIsDefault = !nameEdited
         if screenChoice.enabled {
             guard let window = screenChoice.selection else { return }
             settings.screenWindow = ScreenWindowSelection(windowID: window.id, ownerPID: window.owner)
@@ -547,5 +550,10 @@ final class MeetingStartPanel: NSObject, NSWindowDelegate {
                 self.screenChoice.setWindows([], error: "Could not list windows; refresh or turn snapshots off")
             }
         }
+    }
+
+    /// Any edit of the name makes it the user's (`nameEdited`).
+    func controlTextDidChange(_ notification: Notification) {
+        if (notification.object as? NSTextField) === nameField { nameEdited = true }
     }
 }

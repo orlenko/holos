@@ -23,11 +23,15 @@ public enum SessionSummarizeCommand {
         public var selfName: String
         public var profileNames: [String: String]
         public var applyRecognition: Bool
+        /// People's names and "Remember voices" (with any forget still going through the meetings) as they are now:
+        /// read again at the save, so a summary made while they changed is not saved. Nil keeps the request's.
+        public var voiceInputsNow: (@Sendable () -> (names: [String: String], recognition: Bool))?
 
         public init(session: URL, force: Bool = false, selfName: String = "Me", profileNames: [String: String] = [:],
-                    applyRecognition: Bool = true) {
+                    applyRecognition: Bool = true,
+                    voiceInputsNow: (@Sendable () -> (names: [String: String], recognition: Bool))? = nil) {
             self.session = session; self.force = force; self.selfName = selfName; self.profileNames = profileNames
-            self.applyRecognition = applyRecognition
+            self.applyRecognition = applyRecognition; self.voiceInputsNow = voiceInputsNow
         }
     }
 
@@ -222,10 +226,17 @@ public enum SessionSummarizeCommand {
                     return outcome(.changed, "The transcript changed while it was summarized; try again.",
                                    transcriptID, 1)
                 }
-                // Speaker labels changed meanwhile: the summary names people as they were, so it is made again.
+                // Speaker labels changed meanwhile: the summary names people as they were, so it is made again. So do
+                // people's names and "Remember voices" (turned off, or a forget going through the meetings), which
+                // decide the names it was given.
                 if let speakers, speakerRevision(session) != speakers {
                     return outcome(.changed, "The speaker labels changed while the meeting was summarized; try again.",
                                    transcriptID, 1)
+                }
+                if speakers != nil, let now = request.voiceInputsNow?(),
+                   now.names != request.profileNames || now.recognition != request.applyRecognition {
+                    return outcome(.changed, "People's names or Remember voices changed while the meeting was "
+                        + "summarized; try again.", transcriptID, 1)
                 }
                 // The last point where a cancellation stops it: from here summary.json (atomic writes) and the
                 // transcript files are written together.

@@ -215,6 +215,8 @@ extension HolosAppDelegate {
         } else {
             // Done for good: written, up to date, failed, or Apple Intelligence cannot be used for it.
             meeting.summaries.removeRequest(sessionID)
+            // A summary saved clears an earlier failure of the same transcript.
+            if status == .written { meeting.summaries.attempted[sessionID] = nil }
             if status == .written, code != 0 {
                 // Saved, but its transcript files were not rewritten (`exportsPending`): rewritten later, without the
                 // model, after a delay.

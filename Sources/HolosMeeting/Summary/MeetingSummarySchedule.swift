@@ -116,7 +116,8 @@ public enum MeetingSummarySchedule {
                 ready(candidate) && candidate.needsSummary
                     && ((situation.enabled && situation.modelAvailable) || candidate.onlyExportsPending)
                     && !situation.finalTranscriptQueued.contains(candidate.sessionID)
-                    && situation.attempted[candidate.sessionID] != candidate.transcriptID
+                    && (candidate.onlyExportsPending
+                        || situation.attempted[candidate.sessionID] != candidate.transcriptID)
                     && (!situation.onBattery
                         || situation.now.timeIntervalSince(candidate.createdAt) <= recentOnBattery)
             }

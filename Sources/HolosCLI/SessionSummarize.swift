@@ -32,7 +32,8 @@ extension Session {
             let request = SessionSummarizeCommand.Request(
                 session: session, force: force, selfName: VoiceProfileService.ownName(),
                 profileNames: VoiceProfileService.profileNames(),
-                applyRecognition: VoiceProfileService.recognitionAllowed())
+                applyRecognition: VoiceProfileService.recognitionAllowed(),
+                voiceInputsNow: { (VoiceProfileService.profileNames(), VoiceProfileService.recognitionAllowed()) })
             // One expensive background job at a time on this Mac, held for the command's whole life: a final transcript
             // waits for it and it waits for one, also across an app relaunch (docs/meeting-design.md §4.17).
             let sessionID = (try? SessionArchive.readManifest(at: session).id)
@@ -85,16 +86,15 @@ extension Session {
 enum OnDeviceSummary {
     @Generable(description: "Notes on one part of a meeting")
     struct PartNotes {
-        @Guide(description: "True if you cannot summarize this text; false otherwise")
-        var refused: Bool
+        // No `refused` field here: measured on three real meetings, Apple's model set it on parts it summarized
+        // well without it (placed first), or failed to produce parseable output (placed last). A refusal of a part
+        // comes as the framework's own refusal error, in any language, and the phrase list catches the rest.
         @Guide(description: "Two to five short notes, one sentence each", .maximumCount(6))
         var notes: [String]
     }
 
     @Generable(description: "A meeting's title and summary")
     struct Summary {
-        @Guide(description: "True if you cannot summarize this text; false otherwise")
-        var refused: Bool
         @Guide(description: "At most 8 words naming what was discussed; no date, does not begin with Meeting")
         var title: String
         @Guide(description: "One or two sentences on what the meeting was about and what came out of it")
@@ -103,6 +103,8 @@ enum OnDeviceSummary {
         var keyPoints: [String]
         @Guide(description: "Up to 5 tasks someone agreed to do, with the person; empty when none", .maximumCount(5))
         var actionItems: [String]
+        @Guide(description: "True only if you could not summarize this text at all; false otherwise")
+        var refused: Bool
     }
 
     /// The model for a meeting mostly in `language`, or why it cannot be used.
@@ -119,8 +121,8 @@ enum OnDeviceSummary {
                 do {
                     let answer = try await session.respond(
                         to: prompt, generating: PartNotes.self,
-                        options: GenerationOptions(samplingMode: .greedy, maximumResponseTokens: 400)).content
-                    return MeetingSummaryNotes(notes: answer.notes, refused: answer.refused)
+                        options: GenerationOptions(samplingMode: .greedy, maximumResponseTokens: 600)).content
+                    return MeetingSummaryNotes(notes: answer.notes)
                 } catch {
                     throw mapped(error)
                 }
@@ -130,7 +132,7 @@ enum OnDeviceSummary {
                 do {
                     let answer = try await session.respond(
                         to: prompt, generating: Summary.self,
-                        options: GenerationOptions(samplingMode: .greedy, maximumResponseTokens: 600)).content
+                        options: GenerationOptions(samplingMode: .greedy, maximumResponseTokens: 800)).content
                     return MeetingSummaryDraft(title: answer.title, summary: answer.summary, points: answer.keyPoints,
                                                actions: answer.actionItems, refused: answer.refused)
                 } catch {
