@@ -5122,7 +5122,8 @@ finishes while the field is open (the 2 s refresh reads the new title) never tur
 into the user's name. Nothing about a rename is remembered: whether a meeting's transcript files
 are out of date is derived from the files on each refresh of the list (`SessionExports.filesState`,
 cached by `TranscriptFilesCache` until a file, its record or the title changes; a file is known by
-its device, inode, size and modification time, so an atomic replacement is seen), whoever wrote them
+its device, inode, size, modification time and change time, so an atomic replacement or an
+overwrite in place with its time set back is seen), whoever wrote them
 (a rename here or in Terminal, Review, a summary). They are out of date when there is none although
 the meeting has a transcript (a rewrite that failed before its first file), when the record of what was
 generated is missing, damaged, from a newer build or left mid-write (`pending`), when any of the

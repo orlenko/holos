@@ -59,12 +59,14 @@ public final class MeetingPeopleCache: Sendable {
             .joined(separator: ",")
     }
 
-    /// Device, inode, size and modification time of `url`, or "-" when it cannot be read: an atomic replacement (a new
-    /// inode) changes it even with the same size and time.
+    /// Device, inode, size, modification time and change time of `url`, or "-" when it cannot be read: an atomic
+    /// replacement (a new inode) changes it, and so does an overwrite in place whose modification time was set back (the
+    /// change time cannot be set).
     static func fileStamp(_ url: URL) -> String {
         var info = stat()
         guard lstat(url.path, &info) == 0 else { return "-" }
         return "\(info.st_dev):\(info.st_ino):\(info.st_size):\(info.st_mtimespec.tv_sec).\(info.st_mtimespec.tv_nsec)"
+            + ":\(info.st_ctimespec.tv_sec).\(info.st_ctimespec.tv_nsec)"
     }
 }
 

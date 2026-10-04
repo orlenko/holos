@@ -1634,3 +1634,29 @@ private func listed(name: String, source: MeetingNameSource, generated: String?)
     #expect(utimensat(AT_FDCWD, json.path, &times, 0) == 0)
     #expect(cache.state(of: summary) == .stale)
 }
+
+@Test func aFileOverwrittenInPlaceWithItsTimeSetBackIsReadAgain() async throws {
+    let temp = try TemporaryDirectory("rename")
+    defer { temp.remove() }
+    let session = try await renameSession(in: temp.url)
+    try writeSummary(session)
+    let json = SessionPaths.export("json", in: session)
+    #expect(chmod(json.path, 0o600) == 0)
+    let cache = TranscriptFilesCache()
+    let summary = SessionCatalog.summary(session: session, jobState: .free)
+    #expect(cache.state(of: summary) == .current)
+    // Overwritten in place (same inode), same length, its modification time set back.
+    var before = stat()
+    #expect(lstat(json.path, &before) == 0)
+    var bytes = try Data(contentsOf: json)
+    bytes[bytes.count - 2] = bytes[bytes.count - 2] == 0x20 ? 0x09 : 0x20
+    let handle = try FileHandle(forWritingTo: json)
+    try handle.write(contentsOf: bytes)
+    try handle.close()
+    var times = [before.st_atimespec, before.st_mtimespec]
+    #expect(utimensat(AT_FDCWD, json.path, &times, 0) == 0)
+    var after = stat()
+    #expect(lstat(json.path, &after) == 0)
+    #expect(after.st_ino == before.st_ino && after.st_size == before.st_size)
+    #expect(cache.state(of: summary) == .stale)
+}
