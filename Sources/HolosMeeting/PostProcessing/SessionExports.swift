@@ -164,8 +164,14 @@ public enum SessionExports {
 
         /// Every entry names a transcript file this build writes and holds a SHA-256 as `write` records it (64
         /// lowercase hex digits). A record that decodes but breaks this is damaged.
+        ///
+        /// It covers every format too: `write` records them all, in `files` once written, in `pending` while it writes.
+        /// An empty or partial record would leave existing files unknown, so it counts as damaged.
         var isValid: Bool {
             let names = Set(SessionExports.formats.map(SessionExports.fileName))
+            guard names.isSubset(of: Set(files.keys)) || names.isSubset(of: Set((pending ?? [:]).keys)) else {
+                return false
+            }
             return [files, pending ?? [:]].allSatisfy { entries in
                 entries.allSatisfy { name, digest in
                     names.contains(name) && digest.utf8.count == 64
@@ -253,6 +259,11 @@ public enum SessionExports {
             if case .unavailable? = error as? HolosError { return true }
             return false
         }
+    }
+
+    /// Whether any transcript file this build writes (Markdown, JSON, text) is in the session's exports.
+    public static func hasTranscriptFiles(session: URL) -> Bool {
+        formats.contains { FileManager.default.fileExists(atPath: SessionPaths.export($0.rawValue, in: session).path) }
     }
 
     /// Whether exports/.generated.json is there and can be read as a record of what was generated: false when it is

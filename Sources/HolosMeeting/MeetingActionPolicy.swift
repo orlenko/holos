@@ -11,12 +11,15 @@ public enum MeetingActionPolicy {
     }
 
     /// The enabled actions for `summary` (nil: nothing selected). `inUse`: the app is working on the meeting
-    /// (`MeetingController.sessionsInUse`); `hasExport`: exports/transcript.md is a regular file.
+    /// (`MeetingController.sessionsInUse`); `hasExport`: exports/transcript.md is a regular file; `transcriptFiles`: any
+    /// transcript file (Markdown, JSON, text) is there, as Rename checks it (`SessionExports.hasTranscriptFiles`;
+    /// nil: `hasExport`).
     ///
     /// Show in Finder and Open Transcript take no lock. Every other action is off while the app works on the meeting.
     /// The ones that take the processing lease (Recover, Label Speakers, Delete Audio, Delete Meeting, Clean Up,
     /// Rename) are also off while another process holds the meeting (`isLive`), which would refuse them.
-    public static func enabled(_ summary: SessionSummary?, inUse: Bool, hasExport: Bool) -> Set<Action> {
+    public static func enabled(_ summary: SessionSummary?, inUse: Bool, hasExport: Bool,
+                               transcriptFiles: Bool? = nil) -> Set<Action> {
         guard let summary else { return [] }
         var actions: Set<Action> = [.showInFinder]
         if hasExport { actions.insert(.openTranscript) }
@@ -28,7 +31,7 @@ public enum MeetingActionPolicy {
         if deletesAudio(summary) { actions.insert(.deleteAudio) }
         actions.insert(.deleteMeeting)
         if summary.derivedBytes > 0 { actions.insert(.cleanUp) }
-        if renameRefusal(summary, hasExport: hasExport) == nil { actions.insert(.rename) }
+        if renameRefusal(summary, hasExport: transcriptFiles ?? hasExport) == nil { actions.insert(.rename) }
         return actions
     }
 

@@ -594,7 +594,8 @@ final class MeetingsPane: NSViewController, NSTableViewDataSource, NSTableViewDe
     /// buttons show it, and every way to an action (button, menu, ⌫, Return, double-click) checks it again when used.
     private func enabledActions(_ summary: SessionSummary?) -> Set<MeetingActionPolicy.Action> {
         MeetingActionPolicy.enabled(summary, inUse: summary.map { running[$0.id] != nil } ?? false,
-                                    hasExport: summary.map(hasExport) ?? false)
+                                    hasExport: summary.map(hasExport) ?? false,
+                                    transcriptFiles: summary.map { SessionExports.hasTranscriptFiles(session: $0.directory) })
     }
 
     /// exports/transcript.md is a regular file.
@@ -1038,7 +1039,8 @@ extension MeetingsPane: NSMenuDelegate {
         rename.keyEquivalentModifierMask = .command
         rename.target = self
         rename.isEnabled = enabled.contains(.rename)
-        rename.toolTip = MeetingActionPolicy.renameRefusal(summary, hasExport: hasExport(summary))
+        rename.toolTip = MeetingActionPolicy.renameRefusal(
+            summary, hasExport: SessionExports.hasTranscriptFiles(session: summary.directory))
             ?? ("Gives the meeting a name of your own, which no title Apple Intelligence writes replaces. "
                 + "You can also double-click its title.")
         menu.addItem(rename)

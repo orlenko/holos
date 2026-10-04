@@ -828,3 +828,84 @@ private func listed(name: String, source: MeetingNameSource, generated: String?)
     #expect(outcome.message.contains("transcript is missing"))
     #expect(try SessionArchive.readManifest(at: session).name == "Meeting 2026-10-03 14:00")
 }
+
+// MARK: - Complete records, the locked folder, partial writes
+
+@Test func anIncompleteRecordCountsAsDamaged() async throws {
+    let digest = String(repeating: "a", count: 64)
+    for record in [#"{"schemaVersion":1,"files":{}}"#,
+                   #"{"schemaVersion":1,"files":{"transcript.md":"\#(digest)","transcript.txt":"\#(digest)"}}"#] {
+        let temp = try TemporaryDirectory("rename")
+        defer { temp.remove() }
+        let session = try await renameSession(in: temp.url, legacyExports: true)
+        try AtomicFile.write(Data(record.utf8), to: SessionPaths.generatedExports(session))
+        #expect(try !SessionExports.hasUsableRecord(session: session), "\(record)")
+    }
+    // Complete in files, or in pending (a regeneration interrupted): usable.
+    let temp = try TemporaryDirectory("rename")
+    defer { temp.remove() }
+    let session = try await renameSession(in: temp.url)
+    let all = #""transcript.md":"\#(digest)","transcript.json":"\#(digest)","transcript.txt":"\#(digest)""#
+    for record in [#"{"schemaVersion":1,"files":{\#(all)}}"#,
+                   #"{"schemaVersion":1,"files":{},"pending":{\#(all)}}"#] {
+        try AtomicFile.write(Data(record.utf8), to: SessionPaths.generatedExports(session))
+        #expect(try SessionExports.hasUsableRecord(session: session), "\(record)")
+    }
+}
+
+@Test func aFolderReplacedOnceTheLeaseIsTakenIsLeftAlone() async throws {
+    let temp = try TemporaryDirectory("rename")
+    defer { temp.remove() }
+    let session = try await renameSession(in: temp.url, name: "Weekly sync")
+    _ = await rename(session, "Weekly sync")
+    let moved = temp.url.appendingPathComponent("moved", isDirectory: true)
+    var request = SessionRenameCommand.Request(session: session, name: "Weekly sync", voiceInputs: { voice },
+                                               jobLock: temp.url.appendingPathComponent("jobs.lock"),
+                                               timeZone: utc)
+    // A sync tool puts a copy in the folder's place after the lease was taken on the original.
+    request.afterLease = {
+        try? FileManager.default.moveItem(at: session, to: moved)
+        try? FileManager.default.copyItem(at: moved, to: session)
+    }
+    let outcome = await SessionRenameCommand.run(request)
+    #expect(outcome.status == .busy)
+    #expect(outcome.exitCode == 1)
+    #expect(outcome.message.contains("moved or replaced"))
+}
+
+@Test func theListChecksEveryTranscriptFile() async throws {
+    let temp = try TemporaryDirectory("rename")
+    defer { temp.remove() }
+    let session = try await renameSession(in: temp.url)
+    try writeSummary(session)
+    #expect(SessionExports.hasTranscriptFiles(session: session))
+    for format in ["md", "txt"] { try FileManager.default.removeItem(at: SessionPaths.export(format, in: session)) }
+    #expect(SessionExports.hasTranscriptFiles(session: session), "transcript.json alone")
+    var listed = SessionCatalog.summary(session: session)
+    listed.transcriptID = nil
+    #expect(!MeetingActionPolicy.enabled(listed, inUse: false, hasExport: false, transcriptFiles: true)
+        .contains(.rename))
+    #expect(MeetingActionPolicy.enabled(listed, inUse: false, hasExport: false, transcriptFiles: false)
+        .contains(.rename))
+}
+
+@Test func aNameThatCannotBePutBackKeepsTheFilesMarked() async throws {
+    let temp = try TemporaryDirectory("rename")
+    defer { temp.remove() }
+    let session = try await renameSession(in: temp.url)
+    try writeSummary(session)
+    struct WriteFailed: Error {}
+    var request = SessionRenameCommand.Request(session: session, name: "Weekly sync", voiceInputs: { voice },
+                                               jobLock: temp.url.appendingPathComponent("jobs.lock"),
+                                               timeZone: utc)
+    // The source cannot be written, and then neither can the manifest (the folder turned read-only).
+    request.nameSourceWriter = { _, folder, _ in
+        _ = chmod(folder.path, 0o500)
+        throw WriteFailed()
+    }
+    let outcome = await SessionRenameCommand.run(request)
+    #expect(chmod(session.path, 0o700) == 0)
+    #expect(outcome.exitCode == 3, "Partly written: the files may show the old title")
+    #expect(outcome.message.contains("could not be put back"))
+    #expect(MeetingRenameRun.staysMarked(outcome: outcome, wasMarked: false))
+}

@@ -107,6 +107,8 @@ public enum SessionRenameCommand {
         public var timeZone: TimeZone
         /// Tests: runs just before the lease is taken (another command changing the meeting meanwhile).
         var beforeLease: (@Sendable () async -> Void)?
+        /// Tests: runs just after the lease is taken (the folder moved or replaced then).
+        var afterLease: (@Sendable () async -> Void)?
         /// Tests: writes meeting.json's `nameSource` in place of `writeNameSource` (a write that fails).
         var nameSourceWriter: (@Sendable (MeetingNameSource, URL, MeetingInfo) throws -> Void)?
 
@@ -153,8 +155,8 @@ public enum SessionRenameCommand {
         /// The transcript files were rewritten with the new title.
         public var exportsUpdated: Bool
         public var message: String
-        /// 0 renamed or unchanged; 3 renamed (or unchanged) but the transcript files could not be rewritten; 1
-        /// otherwise.
+        /// 0 renamed or unchanged; 3 renamed (or unchanged) but the transcript files could not be rewritten, or partly
+        /// renamed (the previous name could not be put back after a failed write); 1 otherwise, with nothing changed.
         public var exitCode: Int32
 
         public init(sessionID: String?, status: Status, name: String? = nil, nameSource: MeetingNameSource? = nil,
@@ -194,11 +196,35 @@ public enum SessionRenameCommand {
                 + "finishes.")
         }
         defer { lease.release() }
+        await request.afterLease?()
+        // All of it runs under the lease's use, which checks that the folder at the path is the one the lease locks
+        // (device and inode, as every processing command does): a folder moved or replaced meanwhile is left alone.
+        do {
+            return try await lease.withUse(for: session) {
+                await renameHeld(request, id: id, lease: lease)
+            }
+        } catch {
+            return refused(.busy, "This meeting's folder was moved or replaced while it was being renamed; nothing "
+                + "was changed. Try again.")
+        }
+    }
+
+    /// The rename once the lease is held and in use for the session's folder.
+    private static func renameHeld(_ request: Request, id: String, lease: ProcessingLease) async -> Outcome {
+        let session = request.session
+        func refused(_ status: Status, _ message: String) -> Outcome {
+            Outcome(sessionID: id, status: status, message: message, exitCode: 1)
+        }
         let manifest: SessionManifest
         do {
             manifest = try SessionArchive.readManifest(at: session)
         } catch {
             return refused(.failed, "Cannot read this meeting: \(error.localizedDescription)")
+        }
+        // The meeting the rename was asked for, not another one put in its place before the lease was taken.
+        guard manifest.id == id else {
+            return refused(.busy, "This meeting's folder was moved or replaced while it was being renamed; nothing "
+                + "was changed. Try again.")
         }
         if let unfinished = unfinishedReason(manifest: manifest, liveness: .dead) { return unfinished }
         let meeting: MeetingInfo
@@ -292,6 +318,10 @@ public enum SessionRenameCommand {
                                 nameSourceWriter: request.nameSourceWriter ?? {
                                     try writeNameSource($0, session: $1, meeting: $2)
                                 })
+        } catch let partial as PartialRename {
+            // The new name may be in the manifest without its source, and the files were not rewritten: exit 3, so
+            // the app keeps the meeting marked (Update Transcript Files).
+            return Outcome(sessionID: id, status: .failed, message: partial.message, exitCode: 3)
         } catch {
             return refused(.failed, "Cannot rename the meeting: \(error.localizedDescription)")
         }
@@ -307,6 +337,12 @@ public enum SessionRenameCommand {
             return done(.renamed, message + " The transcript files were not rewritten: \(error.localizedDescription)",
                         code: 3)
         }
+    }
+
+    /// The name's source could not be written and the previous name could not be put back: the meeting may be partly
+    /// renamed.
+    struct PartialRename: Error {
+        let message: String
     }
 
     /// Writes the name, then its source, under the writer lock (the caller holds the lease). The manifest's name goes
@@ -326,8 +362,10 @@ public enum SessionRenameCommand {
                     try await archive.setName(manifest.name)
                 } catch let restore {
                     log.error("Session \(manifest.id, privacy: .public): the previous name could not be put back: \(restore.localizedDescription, privacy: .private)")
-                    throw HolosError.io("\(error.localizedDescription) The meeting's previous name could not be put "
-                        + "back either (\(restore.localizedDescription)); rename it again.")
+                    throw PartialRename(message: "Cannot rename the meeting: \(error.localizedDescription) Its "
+                        + "previous name could not be put back either (\(restore.localizedDescription)), so the new name "
+                        + "may be saved without the rest, and its transcript files may still show the old title; "
+                        + "rename it again.")
                 }
                 throw error
             }
@@ -414,9 +452,7 @@ public enum SessionRenameCommand {
 
     /// Any of the transcript files `SessionExports` writes (Markdown, JSON, text) is there.
     static func hasExportFiles(_ session: URL) -> Bool {
-        SessionExports.formats.contains {
-            FileManager.default.fileExists(atPath: SessionPaths.export($0.rawValue, in: session).path)
-        }
+        SessionExports.hasTranscriptFiles(session: session)
     }
 
     /// Why the meeting cannot be renamed now, or nil: it records or saves, or a final transcript or a summary of it is
