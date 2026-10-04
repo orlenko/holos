@@ -170,13 +170,13 @@ public struct MeetingSummarizer: Sendable {
         if parts.count == 1 {
             do {
                 direct = try await final(source: .transcript(parts[0]), input: input, run: &run)
-            } catch MeetingSummaryModelError.contextExceeded where parts[0].count > 1 {
-                // The estimate let the transcript through but the model's count did not: it is made from notes on its
-                // two halves instead.
-                let half = parts[0].count / 2
-                parts = [Array(parts[0][..<half]), Array(parts[0][half...])]
             } catch MeetingSummaryModelError.contextExceeded {
-                throw Failure.unusableAnswer("The meeting's transcript did not fit the model.")
+                // The estimate let the transcript through but the model's count did not: it is made from notes on its
+                // two halves instead (its lines, or a single line's text, cut).
+                guard let halves = Self.halves(parts[0]) else {
+                    throw Failure.unusableAnswer("The meeting's transcript did not fit the model.")
+                }
+                parts = halves
             }
         }
         if let direct {
@@ -273,12 +273,11 @@ public struct MeetingSummarizer: Sendable {
             run.pieces += 1
             return cleaned
         } catch MeetingSummaryModelError.contextExceeded {
-            // Still too long after two splits, or one line: left out, and counted.
-            guard depth < 2, part.count > 1 else { return skippedPiece(&run) }
-            let half = part.count / 2
-            let first = try await partNotes(Array(part[..<half]), index: index, of: count, input: input, run: &run,
+            // Still too long after two splits, or a piece that cannot be cut: left out, and counted.
+            guard depth < 2, let halves = Self.halves(part) else { return skippedPiece(&run) }
+            let first = try await partNotes(halves[0], index: index, of: count, input: input, run: &run,
                                             depth: depth + 1)
-            let second = try await partNotes(Array(part[half...]), index: index, of: count, input: input, run: &run,
+            let second = try await partNotes(halves[1], index: index, of: count, input: input, run: &run,
                                              depth: depth + 1)
             return first + second
         }
@@ -392,6 +391,22 @@ public struct MeetingSummarizer: Sendable {
         }
         if !current.isEmpty { parts.append(current) }
         return parts
+    }
+
+    /// `part` in two halves: its lines, or a single line's text cut at sentences, then words, then characters (each
+    /// piece keeping the speaker); nil when it cannot be cut.
+    static func halves(_ part: [String]) -> [[String]]? {
+        if part.count > 1 {
+            let half = part.count / 2
+            return [Array(part[..<half]), Array(part[half...])]
+        }
+        guard let line = part.first, let colon = line.range(of: ": ") else { return nil }
+        let split = pieces(MeetingSummaryLine(speaker: String(line[..<colon.lowerBound]),
+                                              text: String(line[colon.upperBound...])),
+                           budget: max(1, estimatedTokens(line) / 2 + 1))
+        guard split.count > 1 else { return nil }
+        let half = split.count / 2
+        return [Array(split[..<half]), Array(split[half...])]
     }
 
     /// `line` rendered, cut into pieces that each fit `budget`.

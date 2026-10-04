@@ -4946,7 +4946,8 @@ from, never from what it looks like: `user` for a name the user gave (typed in t
 recorder's hidden `--default-name`), `record start` without `--name`, and an import named after
 its file. Any other value counts as the user's. Meetings saved before it have no
 `nameSource`: a name matching the default pattern counts as `default`, any other as `user`
-(`MeetingNaming.source`), so nothing is rewritten to migrate them. The list shows the user's
+(`MeetingNaming.source`), and so does an older import named after its file (the file name without
+its extension), so nothing is rewritten to migrate them. The list shows the user's
 name, else the generated title, else the name (`MeetingNaming.displayTitle`); a generated
 title never replaces the manifest's name.
 
@@ -4959,7 +4960,9 @@ it, estimated high at one token per three UTF-8 bytes; a turn longer than a part
 sentence ends (NaturalLanguage's sentence tokenizer, so "Dr. Smith" is one sentence and "。！？"
 end one without a space), then at words, then between characters (grapheme
 clusters, for text without spaces), each piece keeping its speaker. A meeting that fits one part is
-summarized in one call (if the model finds it too long after all, from notes on its two halves); otherwise each part gets two to five notes (one call each), notes too
+summarized in one call (if the model finds it too long after all, from notes on its two halves:
+its lines, or a single line's text cut at sentences, words or characters; it fails only when it
+cannot be cut); otherwise each part gets two to five notes (one call each), notes too
 long for the final prompt are condensed in batches (at most three rounds, then cut; a batch the
 model will not condense keeps notes of every part in it, the first of each first), and one
 call writes the title, summary, key points and action items from the notes in order. Structured
@@ -5001,9 +5004,10 @@ or an empty title or summary fails the run, and nothing is written.
 
 **When.** `voiceislocal session summarize <session> [--force] [--json]` makes one when
 summary.json is not current, or with `--force`. Currency is one key (`MeetingSummaryKey`): the
-transcript ID and `namesDigest`, a digest of the names exactly as the prompt gives them, built by
-the one function the prompt uses (`MeetingSummarySource.promptSpeakers`): the speaker of every line
-in order, so a turn moved between two named people changes it too (the user's own name for the unnamed channel speaker, "Others"/"Someone" for
+transcript ID and `namesDigest`, a digest of the prompt's source exactly, built by the one function
+the prompt uses (`MeetingSummarySource.promptSpeakers`): every speaker-labelled line as rendered
+("Alex: …", speaker and words, in order) and the people named, so anything that changes the prompt
+changes it (the user's own name for the unnamed channel speaker, "Others"/"Someone" for
 tracks without labels) and the people named. Renames, links, merges, assignments, people renamed,
 the person who is you renamed, and Remember voices' automatic names all change it. summary.json stores it; a summary
 is current only while its key is the meeting's, computed the same way by the command, the exports
@@ -5016,9 +5020,9 @@ which are remembered by the full key). A Summarize Again request whose summary i
 files pending only gets them rewritten; any other runs forced. Exit 0 when written or up
 to date, 3 when written but the transcript files could not be rewritten, 1 otherwise, with
 `status` in the JSON (`written`, `current`, `noTranscript`, `unavailable`, `busy`, `changed`,
-`failed`, `cancelled`). A session that was not finished properly (manifest recording, processing
-or interrupted, no live writer) is refused before the model, as `session deep-transcribe` refuses
-it: Recover first. The speaker labels it read (the head and the edit journal, by size and
+`failed`, `cancelled`). A session that is not finished by the predicate the app's schedule uses
+(`MeetingSummarySchedule.isFinished`: interrupted, still processing, incomplete, failed, damaged)
+is refused before the model: Recover first. The speaker labels it read (the head and the edit journal, by size and
 modification time) are checked again at the save; changed meanwhile (a rename in Terminal), the
 summary is not saved (`changed`, made again later), so it never names people as they were; so
 are people's names and "Remember voices" (with a forget still going through the meetings), read

@@ -1261,6 +1261,59 @@ private func trackDocument(source: AudioSource) -> ExportDocument {
     #expect(MeetingSummaryDraft.cleanTitle("Plan del mar", language: "es-ES") == "Plan del mar")
 }
 
+@Test func aSingleLineTooLongForOneCallIsCutAndSummarizedFromNotes() async throws {
+    let scripted = ScriptedSummaryModel(summary: { prompt in
+        if prompt.contains("Transcript (speaker: words):") { throw MeetingSummaryModelError.contextExceeded }
+        return MeetingSummaryDraft(title: "Parser plan", summary: "They planned the parser.")
+    })
+    let monologue = (0..<12).map { "Sentence \($0) is about the parser plan." }.joined(separator: " ")
+    let one = MeetingSummaryInput(lines: [MeetingSummaryLine(speaker: "Alex", text: monologue)], language: "en-CA",
+                                  durationSeconds: 600)
+    let result = try await MeetingSummarizer(model: scripted.model()).summarize(one)
+    #expect(result.draft.title == "Parser plan")
+    #expect(scripted.noteCalls.value.count == 2)
+    #expect(scripted.noteCalls.value.allSatisfy { $0.prompt.contains("Alex: Sentence") })
+    // A line that cannot be cut any further fails with the reason.
+    let word = MeetingSummaryInput(lines: [MeetingSummaryLine(speaker: "Alex", text: "Hi")], language: "en-CA",
+                                   durationSeconds: 60)
+    await #expect(throws: MeetingSummarizer.Failure.self) {
+        _ = try await MeetingSummarizer(model: scripted.model()).summarize(word)
+    }
+}
+
+@Test func theKeyHashesThePromptsTextToo() {
+    func document(_ words: [String]) -> ExportDocument {
+        let transcript = SessionFixtures.transcript([SessionFixtures.segment(words, track: "mic", start: 0)], id: "T")
+        let metadata = ExportMetadata(sessionID: "S", name: "Meeting", createdAt: SessionFixtures.date,
+                                      durationSeconds: 10, source: .microphone, locale: "en-CA", backend: .speech,
+                                      timeZone: TimeZone(identifier: "UTC")!)
+        return ExportDocument(metadata: metadata, transcript: transcript)
+    }
+    let one = MeetingSummaryKey(document(["Ship", "it", "now"]), selfName: "Me")
+    #expect(one == MeetingSummaryKey(document(["Ship", "it", "now"]), selfName: "Me"))
+    #expect(one != MeetingSummaryKey(document(["Ship", "it", "later"]), selfName: "Me"))
+}
+
+@Test func anOlderImportNamedAfterItsFileHasADefaultName() {
+    #expect(MeetingNaming.source(stored: nil, name: "Weekly sync", importedFileName: "Weekly sync.m4a") == .default)
+    #expect(MeetingNaming.source(stored: nil, name: "Board review", importedFileName: "Weekly sync.m4a") == .user)
+    #expect(MeetingNaming.source(stored: nil, name: "Imported meeting", importedFileName: "x.m4a") == .default)
+    #expect(MeetingNaming.source(stored: .user, name: "Weekly sync", importedFileName: "Weekly sync.m4a") == .user)
+}
+
+@Test func anIncompleteArchiveIsRefused() async throws {
+    let temp = try TemporaryDirectory("summary")
+    defer { temp.remove() }
+    let session = try await summarizeSession(in: temp.url)
+    var manifest = try SessionArchive.readManifest(at: session)
+    manifest.status = ArchiveStatus.incomplete
+    try AtomicFile.writeJSON(manifest, to: SessionPaths.manifest(session))
+    let scripted = ScriptedSummaryModel()
+    let outcome = await run(session, scripted)
+    #expect(outcome.status == .failed)
+    #expect(scripted.summaryCalls.value.isEmpty)
+}
+
 @Test func aNameTheUserGaveIsTheirsWhateverItLooksLike() throws {
     let root = URL(fileURLWithPath: "/tmp/sessions")
     var typed = MeetingStartSettings(name: "Meeting 2026-10-03 14:00", source: .microphone)

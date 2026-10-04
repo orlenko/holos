@@ -108,9 +108,12 @@ public enum SessionSummarizeCommand {
         } catch {
             return outcome(.failed, error.localizedDescription)
         }
-        // As `session deep-transcribe` refuses it: a recorder that died left a transcript of part of the meeting,
-        // which recovery finishes first.
-        if [ArchiveStatus.recording, ArchiveStatus.interrupted, ArchiveStatus.processing].contains(manifest.status) {
+        // Only a finished meeting, by the predicate the app's schedule uses (`MeetingSummarySchedule.isFinished`): a
+        // recorder that died left a transcript of part of the meeting (interrupted, still processing), which recovery
+        // finishes first; an incomplete, failed or damaged archive is not summarized either.
+        let state = SessionCatalog.state(manifestStatus: manifest.status,
+                                         liveness: RecorderChannel.liveness(session: session))
+        guard MeetingSummarySchedule.isFinished(state) else {
             return outcome(.failed, "This session was not finished properly; run voiceislocal session recover "
                 + "\(id) first, so all of its saved audio is transcribed.")
         }

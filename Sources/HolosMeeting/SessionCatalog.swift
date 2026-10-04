@@ -212,7 +212,9 @@ public enum SessionCatalog {
             hasSpeakerEdits: hasSpeakerEdits(session), phase: phase, pid: pid, liveness: liveness,
             bytes: sizes.bytes, derivedBytes: sizes.derived,
             audioDeleted: audioDeleted(session, sessionID: manifest.id), languageWork: languageWork,
-            nameSource: meeting?.nameSource,
+            nameSource: MeetingNaming.source(
+                stored: meeting?.nameSource, name: manifest.name,
+                importedFileName: meeting?.origin == .imported ? meeting?.importedFileName : nil),
             generatedSummary: MeetingSummaryStore.readIfUsable(session: session, sessionID: manifest.id))
     }
 

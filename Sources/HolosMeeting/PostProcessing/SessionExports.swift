@@ -113,7 +113,9 @@ public enum SessionExports {
         guard let record = MeetingSummaryStore.readIfUsable(session: snapshot.session,
                                                             sessionID: snapshot.manifest.id),
               key.isCurrent(record) else { return nil }
-        let source = MeetingNaming.source(stored: snapshot.meeting.nameSource, name: snapshot.manifest.name)
+        let source = MeetingNaming.source(
+            stored: snapshot.meeting.nameSource, name: snapshot.manifest.name,
+            importedFileName: snapshot.meeting.origin == .imported ? snapshot.meeting.importedFileName : nil)
         return ExportSummary(transcriptID: record.transcriptID, title: record.title, summary: record.summary,
                              points: record.points, actions: record.actions,
                              model: MeetingSummaryModel.displayName(record.model), titleIsHeading: !source.isUser)

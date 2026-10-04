@@ -74,9 +74,9 @@ extension MeetingSummaryRecord: CustomStringConvertible, CustomDebugStringConver
 /// made again. Computed the same way everywhere (the command, the exports, the app's scan), without the model.
 public struct MeetingSummaryKey: Sendable, Equatable {
     public var transcriptID: String
-    /// A digest of the names exactly as the prompt gives them (`MeetingSummarySource.promptSpeakers`): the speaker
-    /// of every line in order, the user's own name for the unnamed channel speaker, and the people named. Renames,
-    /// links, merges, assignments, people renamed (the user too), and Remember voices' automatic names all change it.
+    /// A digest of the prompt's source exactly (`MeetingSummarySource.promptSpeakers`): every speaker-labelled line as
+    /// rendered, in order (the user's own name for the unnamed channel speaker), and the people named. Renames, links,
+    /// merges, assignments, people renamed (the user too), and Remember voices' automatic names all change it.
     public var namesDigest: String
 
     public init(transcriptID: String, namesDigest: String) {
@@ -87,9 +87,9 @@ public struct MeetingSummaryKey: Sendable, Equatable {
     public init(_ document: ExportDocument, selfName: String) {
         transcriptID = document.transcript.id
         let speakers = MeetingSummarySource.promptSpeakers(document: document, selfName: selfName)
-        // Every line's speaker, in order: what the prompt says, so a turn reassigned between two named people
-        // changes it too.
-        let text = speakers.lines.map(\.speaker).joined(separator: "\u{1F}") + "\u{1E}"
+        // The prompt's source exactly: every line as it is rendered ("Alex: …", speaker and words, in order) and the
+        // people named. Anything that changes the prompt changes the key.
+        let text = speakers.lines.map(\.rendered).joined(separator: "\n") + "\u{1E}"
             + speakers.people.joined(separator: "\u{1F}")
         namesDigest = SHA256.hash(data: Data(text.utf8)).map { String(format: "%02x", $0) }.joined()
     }
@@ -164,9 +164,17 @@ public enum MeetingNaming {
     }
 
     /// The recorded source, else, for meetings saved before it was recorded, `default` for a default name
-    /// (`isDefaultName`) and `user` for any other.
-    public static func source(stored: MeetingNameSource?, name: String) -> MeetingNameSource {
-        stored ?? (isDefaultName(name) ? .default : .user)
+    /// (`isDefaultName`) or, for an import (`importedFileName`), the file's name without its extension, and `user`
+    /// for any other.
+    public static func source(stored: MeetingNameSource?, name: String,
+                              importedFileName: String? = nil) -> MeetingNameSource {
+        if let stored { return stored }
+        if isDefaultName(name) { return .default }
+        if let file = importedFileName,
+           name.trimmingCharacters(in: .whitespacesAndNewlines) == (file as NSString).deletingPathExtension {
+            return .default
+        }
+        return .user
     }
 
     /// What the Meetings list shows: the user's name, else the generated title, else the name.
