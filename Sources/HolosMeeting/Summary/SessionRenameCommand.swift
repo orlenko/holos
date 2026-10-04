@@ -4,7 +4,7 @@ import HolosStorage
 import os
 
 /// What the Meetings list's rename editor (and its Use Generated Title) asks `SessionRenameCommand` for. Pure.
-public enum MeetingRenameRequest: Sendable, Equatable {
+public enum MeetingRenameRequest: Sendable, Equatable, Codable {
     /// The user's name, as typed.
     case user(String)
     /// The generated title again (`nameSource` `default`).
@@ -58,9 +58,60 @@ public struct MeetingRenameEdit: Sendable, Equatable {
     }
 }
 
+/// Meetings renamed whose transcript files may still show an old title (docs/meeting-design.md §4.17), each with the
+/// rename asked for, so Update Transcript Files finishes exactly that (a partial `--generated` as `--generated`). Kept in
+/// UserDefaults by session ID; Meetings says so and offers Update Transcript Files, and clears it once the files show the
+/// title the meeting shows (`SessionExports.filesShowTitle`), whoever rewrote them.
+public struct PendingRenames {
+    public static let key = "meeting.renamePending"
+    private let defaults: UserDefaults
+
+    public init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
+    }
+
+    private var all: [String: MeetingRenameRequest] {
+        guard let data = defaults.data(forKey: Self.key),
+              let decoded = try? JSONDecoder().decode([String: MeetingRenameRequest].self, from: data) else { return [:] }
+        return decoded
+    }
+
+    private func store(_ all: [String: MeetingRenameRequest]) {
+        guard !all.isEmpty, let data = try? JSONEncoder().encode(all) else {
+            defaults.removeObject(forKey: Self.key)
+            return
+        }
+        defaults.set(data, forKey: Self.key)
+    }
+
+    public var sessionIDs: Set<String> { Set(all.keys) }
+
+    public func contains(_ sessionID: String) -> Bool { all[sessionID] != nil }
+
+    /// The rename asked for, while the meeting is marked.
+    public func request(_ sessionID: String) -> MeetingRenameRequest? { all[sessionID] }
+
+    public func mark(_ sessionID: String, _ request: MeetingRenameRequest) {
+        var all = all
+        all[sessionID] = request
+        store(all)
+    }
+
+    public func clear(_ sessionID: String) {
+        var all = all
+        guard all.removeValue(forKey: sessionID) != nil else { return }
+        store(all)
+    }
+
+    /// Puts back what was there before a run (`previous`; nil: no mark).
+    public func restore(_ sessionID: String, to previous: MeetingRenameRequest?) {
+        if let previous { mark(sessionID, previous) } else { clear(sessionID) }
+    }
+}
+
 /// How the app runs a rename: as `voiceislocal session rename`, a child in its own session like the other
 /// maintenance commands, so quitting the app never cuts it between its writes. The meeting is marked as having
-/// transcript files that may show an old title (`PendingExports.afterRename`) before the command starts; the mark stays
+/// transcript files that may show an old title (`PendingRenames`, with the rename) before the command starts; the mark stays
 /// unless the command's result says otherwise (`staysMarked`), so a quit before it ends leaves Update Transcript Files
 /// offered after the next launch. Pure.
 public enum MeetingRenameRun {
@@ -73,6 +124,13 @@ public enum MeetingRenameRun {
     /// Whether the meeting stays marked once the command ended: not after exit 0 (the files show the title), yes after
     /// exit 3 (they do not); after exit 1 nothing was changed, so as before the run (`wasMarked`); without a result
     /// (stopped, or it could not start) what it changed is not known, so yes.
+    /// What Update Transcript Files runs for `summary`: the rename asked for when the meeting was marked, else the
+    /// rename it has now (`MeetingRenameRequest.retry`).
+    public static func retry(_ summary: SessionSummary, pending: PendingRenames = PendingRenames())
+        -> MeetingRenameRequest {
+        pending.request(summary.id) ?? .retry(summary)
+    }
+
     public static func staysMarked(outcome: SessionRenameCommand.Outcome?, wasMarked: Bool) -> Bool {
         guard let outcome else { return true }
         switch outcome.exitCode {

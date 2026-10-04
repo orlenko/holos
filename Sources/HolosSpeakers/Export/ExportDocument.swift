@@ -134,6 +134,11 @@ public struct ExportBlock: Sendable, Equatable {
 /// "System audio" by track (a segment without a track takes it from a single-track `metadata.source`).
 /// Suggestions (`ProjectedSpeaker.suggestion`) never appear, and no format contains vectors of any kind.
 public enum TranscriptExporter {
+    /// The first line of the Markdown export of a meeting titled `title` ("# Weekly sync", escaped as it is written).
+    public static func markdownHeading(_ title: String) -> String {
+        "# " + MarkdownExport.title(title)
+    }
+
     public static func render(_ document: ExportDocument, format: ExportFormat) throws -> Data {
         let content = ExportContent(document)
         switch format {

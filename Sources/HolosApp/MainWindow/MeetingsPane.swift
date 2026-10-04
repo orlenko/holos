@@ -394,7 +394,11 @@ final class MeetingsPane: NSViewController, NSTableViewDataSource, NSTableViewDe
             // A meeting that misses a language is checked for its speech model, so Label Speakers is offered once
             // the language can be detected (§4.14). The people its labels name come from a cache that reads a
             // meeting's labels again only when they changed.
-            let listed = await Task.detached { () -> ([SessionSummary], [String: [String]], Int64?) in
+            // Meetings marked for Update Transcript Files whose files show their title now (rewritten by Review, a
+            // summary, or a command in Terminal) lose the mark; not while the app works on them (a rename running
+            // marked it before it started).
+            let marked = PendingRenames().sessionIDs.subtracting(self?.running.keys.map { $0 } ?? [])
+            let listed = await Task.detached { () -> ([SessionSummary], [String: [String]], Int64?, Set<String>) in
                 let summaries = await SessionCatalog.checkingLanguageModels(SessionCatalog.list(root: root))
                 let store = SpeakerProfileStore()
                 let names = VoiceProfileService.profileNames(store: store)
@@ -404,10 +408,15 @@ final class MeetingsPane: NSViewController, NSTableViewDataSource, NSTableViewDe
                     people[summary.id] = cache.people(of: summary, profileNames: names, applyRecognition: recognition)
                 }
                 cache.keep(only: Set(summaries.map(\.id)))
-                return (summaries, people, try? VolumeFreeSpace().availableBytes(at: root))
+                let current = Set(summaries.filter {
+                    marked.contains($0.id) && SessionExports.filesShowTitle(session: $0.directory, title: $0.displayTitle)
+                }.map(\.id))
+                return (summaries, people, try? VolumeFreeSpace().availableBytes(at: root), current)
             }.value
             guard let self else { return }
             self.loading = false
+            let pending = PendingRenames()
+            for id in listed.3 where self.running[id] == nil { pending.clear(id) }
             self.show(listed.0, people: listed.1, freeBytes: listed.2)
         }
     }
@@ -645,7 +654,7 @@ final class MeetingsPane: NSViewController, NSTableViewDataSource, NSTableViewDe
                 parts.append("The transcript files are older than the speaker labels; open Review to update them.")
             }
             // Marked while a rename runs too (in case the app quits before it ends): said only once it has.
-            if PendingExports.afterRename().contains(summary.id), running[summary.id] == nil {
+            if PendingRenames().contains(summary.id), running[summary.id] == nil {
                 parts.append("The transcript files still show the meeting's old title; right-click it and choose "
                     + "Update Transcript Files.")
             }
@@ -874,7 +883,7 @@ final class MeetingsPane: NSViewController, NSTableViewDataSource, NSTableViewDe
     @objc private func updateTranscriptFiles(_ sender: NSMenuItem) {
         guard let id = sender.representedObject as? String, let summary = sessions.first(where: { $0.id == id }),
               enabledActions(summary).contains(.rename) else { return }
-        rename(summary, to: .retry(summary))
+        rename(summary, to: MeetingRenameRun.retry(summary))
     }
 
     /// The menu's Use Generated Title.
@@ -1055,7 +1064,7 @@ extension MeetingsPane: NSMenuDelegate {
             menu.addItem(item)
         }
         // A rename whose transcript files could not be rewritten: they are, by the same rename again.
-        if PendingExports.afterRename().contains(summary.id) {
+        if PendingRenames().contains(summary.id) {
             let item = NSMenuItem(title: "Update Transcript Files", action: #selector(updateTranscriptFiles(_:)),
                                   keyEquivalent: "")
             item.target = self

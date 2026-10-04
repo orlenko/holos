@@ -126,7 +126,7 @@ enum MarkdownExport {
 
     // MARK: Header
 
-    private static func title(_ name: String) -> String {
+    static func title(_ name: String) -> String {
         var title = escapeInline(ExportText.singleLine(name))
         if title.isEmpty { title = "Meeting" }
         // A trailing "#" would close the ATX heading.

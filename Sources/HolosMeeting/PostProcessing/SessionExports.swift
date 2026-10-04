@@ -261,6 +261,17 @@ public enum SessionExports {
         }
     }
 
+    /// Whether the transcript files show `title`: transcript.md begins with its heading
+    /// (`TranscriptExporter.markdownHeading`) and the record of what was generated is usable (`hasUsableRecord`).
+    /// Whoever rewrote them (a rename, Review, a summary, a command in Terminal). False when it cannot be told.
+    public static func filesShowTitle(session: URL, title: String) -> Bool {
+        guard (try? hasUsableRecord(session: session)) == true,
+              let data = try? AtomicFile.readIfPresent(SessionPaths.export("md", in: session), maxBytes: maxExportBytes)
+        else { return false }
+        let firstLine = String(decoding: data.prefix { $0 != 0x0A }, as: UTF8.self)
+        return firstLine == TranscriptExporter.markdownHeading(title)
+    }
+
     /// Whether any transcript file this build writes (Markdown, JSON, text) is in the session's exports.
     public static func hasTranscriptFiles(session: URL) -> Bool {
         formats.contains { FileManager.default.fileExists(atPath: SessionPaths.export($0.rawValue, in: session).path) }

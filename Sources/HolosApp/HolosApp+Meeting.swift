@@ -928,19 +928,19 @@ extension HolosAppDelegate: NSMenuDelegate {
             showSessionInUse(summary, doing: controller.sessionsInUse[summary.id])
             return
         }
-        let stale = PendingExports.afterRename()
-        let wasMarked = stale.contains(summary.id)
-        stale.mark(summary.id)
+        let pending = PendingRenames()
+        let previous = pending.request(summary.id)
+        pending.mark(summary.id, request)
         let output = Self.temporaryFile("out")
         let errors = Self.temporaryFile("err")
         do {
             try maintenance.run(MeetingRenameRun.arguments(session: summary.directory, request: request),
                                 standardOutput: output, standardError: errors) { [weak self] code in
-                self?.renameEnded(summary, code: code, wasMarked: wasMarked, output: output, errors: errors)
+                self?.renameEnded(summary, request, code: code, previous: previous, output: output, errors: errors)
             }
         } catch {
             // It never started: nothing changed.
-            if !wasMarked { stale.clear(summary.id) }
+            pending.restore(summary.id, to: previous)
             controller.endUsing(summary.id)
             Self.removeFile(output)
             Self.removeFile(errors)
@@ -948,7 +948,8 @@ extension HolosAppDelegate: NSMenuDelegate {
         }
     }
 
-    private func renameEnded(_ summary: SessionSummary, code: Int32, wasMarked: Bool, output: URL, errors: URL) {
+    private func renameEnded(_ summary: SessionSummary, _ request: MeetingRenameRequest, code: Int32,
+                             previous: MeetingRenameRequest?, output: URL, errors: URL) {
         let outcome = (try? AtomicFile.readIfPresent(output, maxBytes: 1 << 20)).flatMap {
             $0.flatMap { try? HolosJSON.decoder().decode(SessionRenameCommand.Outcome.self, from: $0) }
         }
@@ -956,11 +957,13 @@ extension HolosAppDelegate: NSMenuDelegate {
             ?? "The rename command ended with code \(code)."
         Self.removeFile(output)
         Self.removeFile(errors)
-        let stale = PendingExports.afterRename()
-        if MeetingRenameRun.staysMarked(outcome: outcome, wasMarked: wasMarked) {
-            stale.mark(summary.id)
-        } else {
-            stale.clear(summary.id)
+        let pending = PendingRenames()
+        switch outcome?.exitCode {
+        case 0?: pending.clear(summary.id)
+        // Nothing changed: as before the run.
+        case 1?: pending.restore(summary.id, to: previous)
+        // Partly done, or no result: the rename asked for stays, for Update Transcript Files.
+        default: pending.mark(summary.id, request)
         }
         meeting.controller?.endUsing(summary.id)
         refreshReviewTitle(summary.id)
