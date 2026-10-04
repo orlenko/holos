@@ -246,9 +246,10 @@ width, as the text's start, a word's start, inside a word (three letters or more
 letters in order within one word of a title or keyword ("dctn"); a title counts three times,
 a keyword twice, a caption once, and ties keep page order. Only the matching settings show,
 in page order, under their cards' headings; a row its state hides (Input Monitoring) is never
-shown; "No settings match" when none does. When a searched caption changes under an open
-search (a status row's detail, a permission granted meanwhile; the reading folder chosen
-again), the search runs again; the page stays where it is
+shown; "No settings match" when none does. Titles and captions are searched as shown now
+("Speech model: French (Canada)"). When one changes under an open search (a status row's
+detail, a permission granted meanwhile; the reading folder chosen again; another dictation
+language), the search runs again; the page stays where it is
 unless the best match changed. The best match is outlined: Return clears the
 search, scrolls to it, outlines it for a moment, and moves the focus to its control when the
 control can take it (Full Keyboard Access); the sidebar marks its chapter, or, for Run Setup

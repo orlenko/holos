@@ -119,6 +119,31 @@ public enum SettingsSearch {
     }
 }
 
+/// Settings' scrolls to a chapter, which keep scroll tracking from moving the sidebar while they run. Each begins a
+/// new generation; only the completion of the latest ends the suppression, so an older animation finishing while a
+/// newer one runs (two chapters chosen quickly) changes nothing.
+public struct SettingsScrollGeneration: Sendable {
+    private var latest = 0
+    private var running = false
+
+    public init() {}
+
+    /// A programmatic scroll is running.
+    public var isScrolling: Bool { running }
+
+    /// Starts a scroll; its token ends it.
+    public mutating func begin() -> Int {
+        latest += 1
+        running = true
+        return latest
+    }
+
+    /// A scroll completed: ends the suppression only when it is the latest one.
+    public mutating func end(_ token: Int) {
+        if token == latest { running = false }
+    }
+}
+
 /// Which chapter of Settings the sidebar marks for a scroll position (docs/design.md "Main window"), free of AppKit
 /// so it can be tested. Positions are in the page's coordinates, from its top.
 public enum SettingsChapterTracking {

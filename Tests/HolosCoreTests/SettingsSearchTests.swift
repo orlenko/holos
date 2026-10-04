@@ -95,6 +95,34 @@ private func titles(_ query: String) -> [String] {
     #expect(!SettingsSearch.bestMatchChanged(from: [], to: []))
 }
 
+@Test func aTitleAsShownNowIsSearched() {
+    // The speech model's row shows its language in the title; the caption only says Installed.
+    let shown = Entry(title: "Speech model: French (Canada)", caption: "Installed")
+    #expect(SettingsSearch.rank("French speech", [shown]) == [0])
+    #expect(SettingsSearch.rank("speech model french", [shown]) == [0])
+    #expect(SettingsSearch.rank("French speech", [Entry(title: "Speech model", caption: "Installed")]).isEmpty)
+}
+
+@Test func onlyTheLatestScrollEndsTheSuppression() {
+    var generation = SettingsScrollGeneration()
+    #expect(!generation.isScrolling)
+    let meetings = generation.begin()
+    #expect(generation.isScrolling)
+    // Reading chosen before the Meetings scroll finished.
+    let reading = generation.begin()
+    // The Meetings animation completes: Reading's is still running.
+    generation.end(meetings)
+    #expect(generation.isScrolling)
+    generation.end(reading)
+    #expect(!generation.isScrolling)
+    // A late completion of an old scroll changes nothing.
+    let next = generation.begin()
+    generation.end(reading)
+    #expect(generation.isScrolling)
+    generation.end(next)
+    #expect(!generation.isScrolling)
+}
+
 @Test func anEmptyQueryMatchesNothing() {
     #expect(SettingsSearch.rank("", page).isEmpty)
     #expect(SettingsSearch.rank("  – ", page).isEmpty)

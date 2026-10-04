@@ -133,8 +133,11 @@ final class SettingsPane: NSViewController, MainSectionContent, NSSearchFieldDel
         let chapter: SettingsChapter?
         let entry: SettingsSearch.Entry
         /// A status row's detail line, or the reading folder: what it says now is searched as its caption. Only
-        /// `setCaption` changes it.
+        /// `setSearched` changes it.
         var liveCaption: NSTextField?
+        /// Its title as shown now, when it changes at run time (a status row's title, a checkbox that names its
+        /// examples or why it is unavailable); `setSearched` changes it.
+        var liveTitle: (@MainActor () -> String)?
         /// The card's views it is made of, hidden when it does not match.
         var views: [NSView] = []
         /// Its grid, and a view in its row: the row is hidden when it does not match.
@@ -220,8 +223,9 @@ final class SettingsPane: NSViewController, MainSectionContent, NSSearchFieldDel
     private var items: [SearchItem] = []
     /// The items that match the query, best first; nil while there is no query.
     private var matches: [Int]?
-    /// `show(chapter:)` is scrolling: the scroll does not move the sidebar.
-    private var scrollingToChapter = false
+    /// The page is scrolling on its own (`show(chapter:)`, a search, Return): the scroll does not move the sidebar
+    /// until the latest such scroll ends.
+    private var scrollGeneration = SettingsScrollGeneration()
     /// The setting Return went to, outlined for a moment.
     private var highlight: NSView?
     /// The best match, outlined while the search lasts.
@@ -422,7 +426,7 @@ final class SettingsPane: NSViewController, MainSectionContent, NSSearchFieldDel
         opacityRow.edgeInsets = NSEdgeInsets(top: 0, left: 20, bottom: 0, right: 0)
 
         addItem(.dictation, "Remove filler words", caption: "", keywords: ["um", "uh", "euh", "fillers", "clean up"],
-                views: [fillerToggle], focus: fillerToggle)
+                views: [fillerToggle], focus: fillerToggle, titledBy: fillerToggle)
         addItem(.dictation, spokenCodeToggle.title, caption: spokenCodeToggle.toolTip ?? "",
                 keywords: ["code", "path", "file", "command", "terminal", "programming"],
                 views: [spokenCodeToggle], focus: spokenCodeToggle)
@@ -430,7 +434,8 @@ final class SettingsPane: NSViewController, MainSectionContent, NSSearchFieldDel
                 keywords: ["backtick", "markdown", "code"], views: [backticksRow], focus: spokenCodeBackticksToggle,
                 context: [spokenCodeToggle])
         addItem(.dictation, Self.aiFixTitle, caption: aiFixToggle.toolTip ?? "",
-                keywords: ["ai", "correct", "mistakes", "on-device", "model"], views: [aiFixToggle], focus: aiFixToggle)
+                keywords: ["ai", "correct", "mistakes", "on-device", "model"], views: [aiFixToggle], focus: aiFixToggle,
+                titledBy: aiFixToggle)
         addItem(.dictation, previewToggle.title, caption: previewToggle.toolTip ?? "",
                 keywords: ["overlay", "panel", "hud", "show text"], views: [previewToggle], focus: previewToggle)
         addItem(.dictation, "Preview opacity", caption: "", keywords: ["transparency", "transparent", "see through"],
@@ -488,7 +493,8 @@ final class SettingsPane: NSViewController, MainSectionContent, NSSearchFieldDel
                 views: [deepTranscriptionToggle, deepDetail], focus: deepTranscriptionToggle)
         addItem(.meetings, Self.meetingSummariesTitle, caption: summariesDetail.stringValue,
                 keywords: ["summary", "summaries", "titles", "action items", "key points", "ai"],
-                views: [meetingSummariesToggle, summariesDetail], focus: meetingSummariesToggle)
+                views: [meetingSummariesToggle, summariesDetail], focus: meetingSummariesToggle,
+                titledBy: meetingSummariesToggle)
         addRowItem(.meetings, .speakerModels, keywords: ["diarization", "speakers", "who spoke", "install"])
         addRowItem(.meetings, .deepTranscriptionModel, keywords: ["whisper", "model", "download"])
         addRowItem(.meetings, .people, keywords: ["people", "voices", "names", "voice profiles"])
@@ -549,25 +555,37 @@ final class SettingsPane: NSViewController, MainSectionContent, NSSearchFieldDel
         ReadingVoicePopup.fill(readingVoicePopup, selecting: ReadingPreferences.voice)
         readingSpeedSlider.doubleValue = ReadingPreferences.speed
         readingSpeedLabel.stringValue = ReadingSpeed.label(readingSpeedSlider.doubleValue)
-        if let readingFolderDetail { setCaption(readingFolderDetail, ReadingPreferences.folderText) }
+        if let readingFolderDetail { setSearched(readingFolderDetail, ReadingPreferences.folderText) }
     }
 
-    /// Sets a searched caption (an item's `liveCaption`: a status row's detail line, the reading folder): the one way
-    /// they change, so an open search runs again when one does (`refreshSearch`); during `update`, once at its end.
-    private func setCaption(_ field: NSTextField, _ text: String) {
+    /// Sets a searched text that changes at run time: a caption (an item's `liveCaption`: a status row's detail
+    /// line, the reading folder) or a title (its `liveTitle`: "Speech model: French (Canada)"). The one way they
+    /// change, so an open search runs again when one does (`refreshSearch`); during `update`, once at its end.
+    private func setSearched(_ field: NSTextField, _ text: String) {
         guard field.stringValue != text else { return }
         field.stringValue = text
+        searchedTextChanged()
+    }
+
+    /// A checkbox's searched title ("Remove filler words (um, uh)").
+    private func setSearched(_ button: NSButton, title: String) {
+        guard button.title != title else { return }
+        button.title = title
+        searchedTextChanged()
+    }
+
+    private func searchedTextChanged() {
         guard matches != nil else { return }
         if updating {
-            captionChanged = true
+            searchedTextChangedInUpdate = true
         } else {
             refreshSearch()
         }
     }
 
-    /// `update` is running: a caption change runs the search again once, at its end.
+    /// `update` is running: a searched text's change runs the search again once, at its end.
     private var updating = false
-    private var captionChanged = false
+    private var searchedTextChangedInUpdate = false
 
     func sectionDidShow() {
         refreshReadingCard()
@@ -694,21 +712,26 @@ final class SettingsPane: NSViewController, MainSectionContent, NSSearchFieldDel
         return grid
     }
 
-    /// A setting made of a card's views (a checkbox and its note); `context`: views shown along with it.
+    /// A setting made of a card's views (a checkbox and its note); `context`: views shown along with it;
+    /// `titledBy`: a checkbox whose title changes at run time, searched as shown.
     private func addItem(_ chapter: SettingsChapter?, _ title: String, caption: String, keywords: [String],
-                         views: [NSView], focus: NSView?, context: [NSView] = []) {
+                         views: [NSView], focus: NSView?, context: [NSView] = [], titledBy checkbox: NSButton? = nil) {
+        var liveTitle: (@MainActor () -> String)?
+        if let checkbox { liveTitle = { checkbox.title } }
         items.append(SearchItem(chapter: chapter, entry: SettingsSearch.Entry(title: title, caption: caption,
                                                                               keywords: keywords),
-                                views: views, context: context, focus: focus))
+                                liveTitle: liveTitle, views: views, context: context, focus: focus))
     }
 
-    /// A status row (`addRow`): its title, and what its detail line says when searched.
+    /// A status row (`addRow`): its title and detail line as shown when searched.
     private func addRowItem(_ chapter: SettingsChapter, _ action: SetupAction, title: String? = nil,
                             keywords: [String]) {
         guard let row = rows[action] else { return }
+        let titleLabel = row.title
         items.append(SearchItem(chapter: chapter, entry: SettingsSearch.Entry(
             title: title ?? row.title.stringValue, keywords: keywords), liveCaption: row.detail,
-            grid: row.grid, gridAnchor: row.icon, action: action, focus: row.button))
+            liveTitle: { titleLabel.stringValue }, grid: row.grid, gridAnchor: row.icon, action: action,
+            focus: row.button))
     }
 
     private func finishRow(in grid: NSGridView) {
@@ -786,8 +809,8 @@ final class SettingsPane: NSViewController, MainSectionContent, NSSearchFieldDel
         updating = true
         defer {
             updating = false
-            if captionChanged {
-                captionChanged = false
+            if searchedTextChangedInUpdate {
+                searchedTextChangedInUpdate = false
                 refreshSearch()
             } else if matches != nil {
                 placeBestMatchOutline()  // a title or line of another height can move the best match
@@ -802,12 +825,13 @@ final class SettingsPane: NSViewController, MainSectionContent, NSSearchFieldDel
         appearanceControl.selectedSegment = AppearanceChoice.allCases.firstIndex(of: state.appearance) ?? 0
         fillerToggle.isEnabled = state.fillerExamples != nil
         fillerToggle.state = state.removeFillers && state.fillerExamples != nil ? .on : .off
-        fillerToggle.title = state.fillerExamples.map { "Remove filler words (\($0))" }
-            ?? "Remove filler words — none known for \(language)"
+        setSearched(fillerToggle, title: state.fillerExamples.map { "Remove filler words (\($0))" }
+            ?? "Remove filler words — none known for \(language)")
         previewToggle.state = state.showPreview ? .on : .off
         aiFixToggle.isEnabled = state.aiFixUnavailable == nil
         aiFixToggle.state = state.aiFix && state.aiFixUnavailable == nil ? .on : .off
-        aiFixToggle.title = state.aiFixUnavailable.map { "\(Self.aiFixTitle) — unavailable: \($0)" } ?? Self.aiFixTitle
+        setSearched(aiFixToggle, title: state.aiFixUnavailable.map { "\(Self.aiFixTitle) — unavailable: \($0)" }
+            ?? Self.aiFixTitle)
         spokenCodeToggle.state = state.spokenCode ? .on : .off
         spokenCodeBackticksToggle.state = state.spokenCodeBackticks ? .on : .off
         spokenCodeBackticksToggle.isEnabled = state.spokenCode
@@ -844,9 +868,9 @@ final class SettingsPane: NSViewController, MainSectionContent, NSSearchFieldDel
             || state.deepTranscriptionEnabled
         meetingSummariesToggle.isEnabled = state.meetingSummariesUnavailable == nil
         meetingSummariesToggle.state = state.meetingSummaries && state.meetingSummariesUnavailable == nil ? .on : .off
-        meetingSummariesToggle.title = state.meetingSummariesUnavailable.map {
+        setSearched(meetingSummariesToggle, title: state.meetingSummariesUnavailable.map {
             "\(Self.meetingSummariesTitle) — unavailable: \($0)"
-        } ?? Self.meetingSummariesTitle
+        } ?? Self.meetingSummariesTitle)
         // Never marked as a problem: without it meetings record the microphone alone.
         if state.systemAudio {
             set(.systemAudio, .done, state.recordSystemAudio
@@ -865,7 +889,7 @@ final class SettingsPane: NSViewController, MainSectionContent, NSSearchFieldDel
                           "Not needed — recording the computer's audio is off under Meetings")
         }
 
-        rows[.assets]?.title.stringValue = "Speech model: \(language)"
+        if let title = rows[.assets]?.title { setSearched(title, "Speech model: \(language)") }
         let canInstall = !state.installingAssets && !state.busy && !state.dictationEnabled && !state.enabling
         if state.installingAssets || state.assets == "downloading" {
             set(.assets, .pending, "Downloading and installing…", button: "Install", enabled: false)
@@ -960,8 +984,8 @@ final class SettingsPane: NSViewController, MainSectionContent, NSSearchFieldDel
                                                                    && state.historyRetention.records)
     }
 
-    /// A searched caption changed under an open search (a permission granted in System Settings, another reading
-    /// folder; `setCaption`): runs the search again. The page stays where the user has it unless the best match
+    /// A searched caption or title changed under an open search (a permission granted in System Settings, another
+    /// reading folder, another dictation language; `setSearched`): runs the search again. The page stays where the user has it unless the best match
     /// changed.
     private func refreshSearch() {
         guard let previous = matches else { return }
@@ -1056,7 +1080,7 @@ final class SettingsPane: NSViewController, MainSectionContent, NSSearchFieldDel
         }
         row.icon.image = NSImage(systemSymbolName: symbol, accessibilityDescription: description)
         row.icon.contentTintColor = color
-        setCaption(row.detail, detail)
+        setSearched(row.detail, detail)
         rows[action]?.wantsButton = title != nil
         rows[action]?.wantsLink = link != nil
         applyRowButtons(action)
@@ -1105,11 +1129,20 @@ final class SettingsPane: NSViewController, MainSectionContent, NSSearchFieldDel
     private func scrollTo(_ y: CGFloat, animated: Bool) {
         let clip = scroll.contentView
         let point = NSPoint(x: clip.bounds.minX, y: y)
-        scrollingToChapter = true
+        let animating = scrollGeneration.isScrolling
+        let token = scrollGeneration.begin()
         guard animated, abs(clip.bounds.minY - y) > 1 else {
-            clip.scroll(to: point)
+            if animating {
+                // Replaces the scroll still animating, which would otherwise carry on to its own target.
+                NSAnimationContext.runAnimationGroup { context in
+                    context.duration = 0
+                    clip.animator().setBoundsOrigin(point)
+                }
+            } else {
+                clip.scroll(to: point)
+            }
             scroll.reflectScrolledClipView(clip)
-            scrollingToChapter = false
+            scrollGeneration.end(token)
             return
         }
         NSAnimationContext.runAnimationGroup({ context in
@@ -1120,7 +1153,8 @@ final class SettingsPane: NSViewController, MainSectionContent, NSSearchFieldDel
             MainActor.assumeIsolated {
                 guard let self else { return }
                 self.scroll.reflectScrolledClipView(self.scroll.contentView)
-                self.scrollingToChapter = false
+                // An older scroll finishing while a newer one runs leaves tracking off (`SettingsScrollGeneration`).
+                self.scrollGeneration.end(token)
             }
         })
     }
@@ -1131,7 +1165,7 @@ final class SettingsPane: NSViewController, MainSectionContent, NSSearchFieldDel
     }
 
     @objc private func scrolled() {
-        guard !scrollingToChapter else { return }
+        guard !scrollGeneration.isScrolling else { return }
         trackChapter()
     }
 
@@ -1215,7 +1249,8 @@ final class SettingsPane: NSViewController, MainSectionContent, NSSearchFieldDel
     }
 
     private func title(of item: SearchItem) -> String {
-        item.entry.title.isEmpty ? item.chapter?.title ?? "Settings" : item.entry.title
+        let title = item.liveTitle?() ?? item.entry.title
+        return title.isEmpty ? item.chapter?.title ?? "Settings" : title
     }
 
     /// The items matching the query, best first (`SettingsSearch`), without rows their state hides; nil without a
@@ -1227,6 +1262,7 @@ final class SettingsPane: NSViewController, MainSectionContent, NSSearchFieldDel
         let entries = candidates.map { index in
             var entry = items[index].entry
             if let live = items[index].liveCaption { entry.caption = live.stringValue }
+            if let live = items[index].liveTitle { entry.title = live() }
             return entry
         }
         return SettingsSearch.rank(query, entries).map { candidates[$0] }
