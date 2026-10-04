@@ -282,6 +282,9 @@ public enum SessionCatalog {
 
     // MARK: - Reading
 
+    /// The most of a manifest `hasSession` reads for its `id`.
+    static let maximumProbedManifestBytes: off_t = 1 << 20
+
     /// Whether a folder under `root` holds the session `id`, whatever the folder is named (`<id>.holos`, or any
     /// `<something>.holos` whose manifest names it, read for its `id` alone): false only when `root` could be listed
     /// and every folder with a manifest had it read and naming another session; nil when that cannot be told (`root`
@@ -294,10 +297,18 @@ public enum SessionCatalog {
             if folder.deletingPathExtension().lastPathComponent.caseInsensitiveCompare(id) == .orderedSame {
                 return true
             }
+            // Only a regular file is read (never followed, never a FIFO that would block), and at most 1 MiB: a missing
+            // manifest, or a link or other entry in its place, is no session; a larger one is not told apart.
             let manifest = SessionPaths.manifest(folder)
             var info = stat()
-            if lstat(manifest.path, &info) != 0, errno == ENOENT { continue }
-            guard let data = try? Data(contentsOf: manifest),
+            guard lstat(manifest.path, &info) == 0 else {
+                let code = errno
+                if code != ENOENT, code != ENOTDIR { unsure = true }
+                continue
+            }
+            guard (info.st_mode & S_IFMT) == S_IFREG else { continue }
+            guard info.st_size <= Self.maximumProbedManifestBytes,
+                  let data = try? AtomicFile.readIfPresent(manifest, maxBytes: Int(Self.maximumProbedManifestBytes)),
                   let found = try? HolosJSON.decoder().decode(ManifestID.self, from: data) else {
                 unsure = true
                 continue

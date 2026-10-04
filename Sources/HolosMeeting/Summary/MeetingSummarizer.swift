@@ -585,9 +585,10 @@ public struct MeetingSummarizer: Sendable {
         return (header + [label]).joined(separator: "\n") + "\n" + body
     }
 
-    /// `text` between the fences, with any fence inside it broken so the data cannot close it early.
+    /// `text` between the fences, with a space after every "<" or ">" followed by another, so no two stay side by side
+    /// and the data cannot hold a fence (of any length) that would close it early.
     static func fenced(_ text: String) -> String {
-        let safe = text.replacingOccurrences(of: "<<<", with: "<< <").replacingOccurrences(of: ">>>", with: "> >>")
+        let safe = text.replacing(/([<>])(?=[<>])/) { "\($0.output.1) " }
         return "<<<\n\(safe)\n>>>"
     }
 
@@ -782,23 +783,22 @@ extension MeetingSummaryDraft {
             "\\b(?:\(weekdays))\\b,?",
             #"\b(?:today|tonight|aujourd'hui|aujourd’hui|heute|hoy)\b"#,
             // Chinese and Japanese dates and weekdays, written without spaces, so without word boundaries:
-            // "2026年10月3日", "10月3日", "2026年10月", "10月", "3日"; "月曜日", "星期一", "周一", "週一"; "今日", "今天".
-            #"\d{2,4}年\d{1,2}月(?:\d{1,2}[日号])?"#,
-            #"\d{1,2}月\d{1,2}[日号]"#,
+            // "2026年10月3日", "10月3日", "2026年10月", "10月"; "月曜日", "星期一", "周一", "週一"; "今日", "今天".
+            // A year only before a month and a day only after one, so "10年計画" (a ten-year plan) and "3日間" (three
+            // days) stay.
+            #"\d{4}年\s*\d{1,2}月(?:\s*\d{1,2}[日号])?"#,
+            #"\d{1,2}月\s*\d{1,2}[日号]"#,
             #"\d{1,2}月"#,
-            #"\d{1,2}日"#,
-            #"\d{2,4}年"#,
             #"[月火水木金土日]曜日?"#,
             #"(?:星期|礼拜|禮拜)[一二三四五六日天]"#,
             #"[周週][一二三四五六日]"#,
             #"今日|今天"#,
             // Korean, with or without spaces and with a possessive 의 after it: "2026년 10월 3일", "10월 3일",
-            // "2026년 10월", "10월"; "월요일"; "오늘". A year only with four digits and a day only after a month, so
+            // "2026년 10월", "10월"; "월요일"; "오늘". A year only before a month and a day only after one, so
             // "10년 계획" (a ten-year plan) and "3일 워크숍" (a three-day workshop) stay.
             #"\d{4}년\s*\d{1,2}월(?:\s*\d{1,2}일)?의?"#,
             #"\d{1,2}월\s*\d{1,2}일의?"#,
             #"\d{1,2}월의?"#,
-            #"\d{4}년의?"#,
             #"[월화수목금토일]요일의?"#,
             #"오늘의?"#,
         ]

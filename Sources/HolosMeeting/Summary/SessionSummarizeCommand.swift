@@ -166,7 +166,7 @@ public enum SessionSummarizeCommand {
                 existing = nil
             }
         } catch {
-            return outcome(.unreadable, "Cannot read the transcript: \(error.localizedDescription)")
+            return readFailure(error, outcome: { outcome($0, $1) })
         }
         guard let transcriptID else {
             return outcome(.noTranscript, "This meeting has no transcript to summarize.")
@@ -186,8 +186,7 @@ public enum SessionSummarizeCommand {
             input = MeetingSummarySource.input(document: document, selfName: request.selfName)
             key = MeetingSummaryKey(document, selfName: request.selfName)
         } catch {
-            return outcome(.unreadable, "Cannot read the transcript: \(error.localizedDescription)",
-                           transcriptID: transcriptID)
+            return readFailure(error, outcome: { outcome($0, $1, transcriptID: transcriptID) })
         }
         // Current (the transcript and the speakers' names it was made with): kept, unless its transcript files were
         // not rewritten with it, which is done now, checked again at the save like any summary.
@@ -246,6 +245,14 @@ public enum SessionSummarizeCommand {
         result.stats = made.stats
         log.notice("Session \(id, privacy: .public): summary \(result.status.rawValue, privacy: .public) in \(made.stats.calls, privacy: .public) calls")
         return result
+    }
+
+    /// A file that could not be read before the model: refused (`unavailable`: summary.json, the transcript or the
+    /// speaker labels written by a newer Voice is Local, as every versioned session file reports it), a failure with
+    /// that reason, not tried again; anything else (an I/O error, a file being replaced), tried again later.
+    private static func readFailure(_ error: any Error, outcome: (Status, String) -> Outcome) -> Outcome {
+        if case .unavailable(let message)? = error as? HolosError { return outcome(.failed, message) }
+        return outcome(.unreadable, "Cannot read the transcript: \(error.localizedDescription)")
     }
 
     /// Saves `record` under the processing lease, only while `transcriptID` is still current, then rewrites the

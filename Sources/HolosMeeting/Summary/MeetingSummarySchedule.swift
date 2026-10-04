@@ -32,26 +32,31 @@ public enum MeetingSummarySchedule {
         public var summaryCurrent: Bool
         /// The meeting's key (`MeetingSummaryKey.text`): what a run that failed is remembered by.
         public var key: String?
+        /// summary.json was written by a newer Voice is Local: the meeting is left alone (only a Summarize Again the
+        /// user asks for runs, and reports why it cannot).
+        public var summaryFromNewerVersion: Bool
 
         /// `summaryCurrent` nil: the summary is current when it is of the current transcript; `key` nil: the
         /// transcript ID.
         public init(sessionID: String, path: String, createdAt: Date, transcriptID: String?,
                     summaryTranscriptID: String?, idle: Bool, finished: Bool = true, exportsPending: Bool = false,
-                    summaryCreatedAt: Int64? = nil, summaryCurrent: Bool? = nil, key: String? = nil) {
+                    summaryCreatedAt: Int64? = nil, summaryCurrent: Bool? = nil, key: String? = nil,
+                    summaryFromNewerVersion: Bool = false) {
             self.sessionID = sessionID; self.path = path; self.createdAt = createdAt
             self.transcriptID = transcriptID; self.summaryTranscriptID = summaryTranscriptID; self.idle = idle
             self.finished = finished; self.exportsPending = exportsPending; self.summaryCreatedAt = summaryCreatedAt
             self.summaryCurrent = summaryCurrent ?? (transcriptID != nil && summaryTranscriptID == transcriptID)
             self.key = key ?? transcriptID
+            self.summaryFromNewerVersion = summaryFromNewerVersion
         }
 
         /// Only the transcript files are left to rewrite, with a current summary: no model call is needed.
         public var onlyExportsPending: Bool { summaryCurrent && exportsPending }
 
         /// The summary is not current (missing, of another transcript, or made with other speakers' names), or the
-        /// transcript files still miss it.
+        /// transcript files still miss it; never one a newer Voice is Local wrote.
         public var needsSummary: Bool {
-            transcriptID != nil && (!summaryCurrent || exportsPending)
+            transcriptID != nil && !summaryFromNewerVersion && (!summaryCurrent || exportsPending)
         }
     }
 
@@ -205,7 +210,7 @@ public enum MeetingSummarySchedule {
             let active = (try? SessionArchive.isActive(at: session)) ?? true
             let processing = (try? SessionArchive.isProcessing(at: session)) ?? true
             let transcriptID = (try? SessionArchive.currentTranscriptID(at: session)) ?? nil
-            let summary = MeetingSummaryStore.readIfUsable(session: session, sessionID: manifest.id)
+            let (summary, newer) = MeetingSummaryStore.readForSchedule(session: session, sessionID: manifest.id)
             let state = SessionCatalog.state(manifestStatus: manifest.status,
                                              liveness: RecorderChannel.liveness(session: session))
             let key = transcriptID.flatMap {
@@ -217,7 +222,8 @@ public enum MeetingSummarySchedule {
                              idle: !active && !processing, finished: isFinished(state),
                              exportsPending: summary?.exportsPending == true,
                              summaryCreatedAt: summary?.createdAtMilliseconds,
-                             summaryCurrent: key?.isCurrent(summary) ?? false, key: key?.text ?? transcriptID)
+                             summaryCurrent: key?.isCurrent(summary) ?? false, key: key?.text ?? transcriptID,
+                             summaryFromNewerVersion: newer)
         }
     }
 }

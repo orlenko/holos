@@ -141,6 +141,18 @@ public enum MeetingSummaryStore {
         }
     }
 
+    /// summary.json for the app's schedule: the record when it can be used, and whether it was written by a newer
+    /// Voice is Local (then the meeting is left alone rather than summarized again).
+    public static func readForSchedule(session: URL, sessionID: String) -> (record: MeetingSummaryRecord?, newer: Bool) {
+        do {
+            return (try read(session: session, sessionID: sessionID), false)
+        } catch {
+            log.error("Session \(sessionID, privacy: .public): \(name, privacy: .public) unusable: \(error.localizedDescription, privacy: .private)")
+            if case .unavailable? = error as? HolosError { return (nil, true) }
+            return (nil, false)
+        }
+    }
+
     /// Replaces summary.json (0600). Callers hold the session's processing lease.
     static func write(_ record: MeetingSummaryRecord, session: URL) throws {
         try AtomicFile.writeJSON(record, to: SessionPaths.summary(session))
