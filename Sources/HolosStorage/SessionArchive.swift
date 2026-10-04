@@ -501,6 +501,19 @@ public actor SessionArchive {
         manifest = updated
     }
 
+    /// Replaces the meeting's name in the manifest, keeping its status (a rename, docs/meeting-design.md §4.17;
+    /// maintenance only: a finished archive opened with `openForMaintenance`). The name must not be blank.
+    public func setName(_ name: String) throws {
+        try ensureOpen()
+        guard !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw HolosError.invalidInput("A meeting name cannot be empty.")
+        }
+        var updated = manifest
+        updated.name = name
+        try Self.writeManifest(updated, in: directory)
+        manifest = updated
+    }
+
     private func ensureOpen() throws {
         if closed { throw HolosError.invalidInput("Archive writer is closed.") }
     }

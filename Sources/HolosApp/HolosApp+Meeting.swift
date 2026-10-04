@@ -592,8 +592,12 @@ extension HolosAppDelegate: NSMenuDelegate {
         let state = meeting.controller?.state ?? .idle
         let follows = state.sessionID == sessionID
         let status = follows ? meeting.controller?.status : nil
-        let name = status?.name ?? (follows ? meeting.controller?.reducer.meetingName : nil) ?? summary?.name ?? "Meeting"
         let phase = LiveMeetingPhase.of(sessionID: sessionID, state: state, summary: summary)
+        // Once saved, the title the Meetings list shows (a rename, or the generated title); while it records, the
+        // name it was started with.
+        let finished = phase == .saved || phase == .interrupted || phase == .failed
+        let name = (finished ? summary?.displayTitle : nil) ?? status?.name
+            ?? (follows ? meeting.controller?.reducer.meetingName : nil) ?? summary?.displayTitle ?? "Meeting"
         let detail: String
         switch phase {
         case .starting:
@@ -667,13 +671,13 @@ extension HolosAppDelegate: NSMenuDelegate {
             root: controller.root,
             perform: { [weak self] action, summary in self?.performMeetingAction(action, summary) },
             openReview: { [weak self] summary in
-                self?.openReview(sessionID: summary.id, directory: summary.directory, name: summary.name)
+                self?.openReview(sessionID: summary.id, directory: summary.directory, name: summary.displayTitle)
             },
             beginUsing: { [weak controller] id, doing in controller?.beginUsing(id, for: doing) ?? false },
             endUsing: { [weak controller] id in controller?.endUsing(id) },
             liveHeader: { [weak self] id, summary in
                 self?.liveMeetingHeader(sessionID: id, summary: summary)
-                    ?? LiveMeetingHeader(name: summary?.name ?? "Meeting", phase: .saved, detail: "")
+                    ?? LiveMeetingHeader(name: summary?.displayTitle ?? "Meeting", phase: .saved, detail: "")
             },
             learnLiveText: { [weak self] state, heard, meant in
                 self?.learnMeetingCorrection(state: state, heard: heard, meant: meant) ?? .init()
@@ -686,6 +690,8 @@ extension HolosAppDelegate: NSMenuDelegate {
         pane.onCancelSummary = { [weak self] id in self?.cancelMeetingSummary(id) }
         pane.summaryRequested = { [weak self] id in self?.meeting.summaries.requested.contains(id) ?? false }
         pane.summaryUnavailableReason = { [weak self] in self?.meetingSummaryUnavailableReason }
+        // A rename shows at once in the meeting's Review window (the live transcript's header follows the list).
+        pane.onRenamed = { [weak self] id, title in self?.meeting.reviewWindows[id]?.meetingTitle = title }
         pane.update(summarizing: meeting.summaries.running?.sessionID)
         pane.update(meetingState: controller.state)
         meeting.meetingsPane = pane
@@ -705,7 +711,7 @@ extension HolosAppDelegate: NSMenuDelegate {
             showSessionInUse(summary, doing: doing)
             return
         }
-        let name = Self.short(summary.name)
+        let name = Self.short(summary.displayTitle)
         let path = summary.directory.path
         let arguments: [String]
         let doing: String
@@ -746,7 +752,7 @@ extension HolosAppDelegate: NSMenuDelegate {
             showSessionInUse(summary, doing: controller.sessionsInUse[summary.id])
             return
         }
-        let name = Self.short(summary.name)
+        let name = Self.short(summary.displayTitle)
         let hold = ReviewMaintenance.Hold(Self.maintenanceCommand(action))
         meeting.maintenanceOn[summary.id] = hold
         Task { [weak self] in
@@ -814,14 +820,14 @@ extension HolosAppDelegate: NSMenuDelegate {
             maintenanceFinished(summary.id)
             Self.removeFile(output)
             Self.removeFile(errors)
-            let title = action == .recover ? "Voice is Local could not recover “\(Self.short(summary.name))”."
+            let title = action == .recover ? "Voice is Local could not recover “\(Self.short(summary.displayTitle))”."
                 : "Voice is Local could not run the command."
             showMeetingAlert(title, error.localizedDescription)
         }
     }
 
     private func showSessionInUse(_ summary: SessionSummary, doing: String?) {
-        showMeetingAlert("Voice is Local is working on “\(Self.short(summary.name))”.",
+        showMeetingAlert("Voice is Local is working on “\(Self.short(summary.displayTitle))”.",
                          (doing.map { $0 + " " } ?? "") + "Try again when it finishes; the Meetings list shows when it is done.")
     }
 
@@ -836,7 +842,7 @@ extension HolosAppDelegate: NSMenuDelegate {
         // open review shows the meeting as the command left it (new transcript, labels, or no audio).
         maintenanceFinished(summary.id)
         meeting.meetingsPane?.refresh()
-        let name = Self.short(summary.name)
+        let name = Self.short(summary.displayTitle)
         if code == 0, action == .deleteMeeting || action == .deleteAudio {
             // No voice can be learned from the meeting any more.
             PendingVoiceSamples().clear(summary.id)
@@ -945,7 +951,7 @@ extension HolosAppDelegate: NSMenuDelegate {
             guard let self else { return }
             if let window {
                 if self.meeting.reviewWindows[sessionID] === window { self.meeting.reviewWindows[sessionID] = nil }
-                self.reviewClosed(sessionID, review: window.review)
+                self.reviewClosed(sessionID, review: window.review, title: window.meetingTitle)
             }
             self.setDockPresence(false, for: dockKey)
         }
@@ -959,7 +965,7 @@ extension HolosAppDelegate: NSMenuDelegate {
     /// A review window closed and saved: when its transcript files could not be rewritten, the meeting is marked
     /// (Meetings says so, and the next review rewrites them) and an alert says what happened, unless Holos is
     /// quitting or the meeting is being deleted.
-    private func reviewClosed(_ sessionID: String, review: ReviewSession) {
+    private func reviewClosed(_ sessionID: String, review: ReviewSession, title: String) {
         guard review.exportsPending else {
             PendingExports().clear(sessionID)
             return
@@ -968,7 +974,7 @@ extension HolosAppDelegate: NSMenuDelegate {
         if let controller = meeting.controller { meeting.meetingsPane?.update(running: controller.sessionsInUse) }
         Self.meetingLog.error("Session \(sessionID, privacy: .public): transcript files not rewritten when the review closed; marked pending")
         guard !meeting.quitting, meeting.maintenanceOn[sessionID]?.command != .deleteMeeting else { return }
-        let name = Self.short(review.sessionName)
+        let name = Self.short(title)
         let problem = review.exportProblem.map { "\n\n" + $0 } ?? ""
         Task { [weak self] in
             self?.showMeetingAlert(
@@ -1127,7 +1133,7 @@ extension HolosAppDelegate: NSMenuDelegate {
             prompted.insert(summary.id)
             UserDefaults.standard.set(Array(prompted), forKey: MeetingAppState.promptedKey)
             let alert = NSAlert()
-            alert.messageText = "Voice is Local found an interrupted recording: \(Self.short(summary.name)) (\(MeetingFormat.clock(summary.savedSeconds)) saved)."
+            alert.messageText = "Voice is Local found an interrupted recording: \(Self.short(summary.displayTitle)) (\(MeetingFormat.clock(summary.savedSeconds)) saved)."
             alert.informativeText = "Recover indexes its saved audio, rebuilds the transcript, and labels speakers. You can also recover it later from Meetings."
             alert.addButton(withTitle: "Recover")
             alert.addButton(withTitle: "Later")

@@ -358,7 +358,7 @@ Locks are `flock` on files in the session folder, one open file description per 
 | Lock file | Holders | Held for | How it is taken |
 |---|---|---|---|
 | `.writer.lock` | recorder's `SessionArchive` actor; `SessionArchive.recover`; `openForMaintenance` | capture start → `finish`; maintenance: one save | `LOCK_EX\|LOCK_NB`, retried every 20 ms for up to 1 s |
-| `.processing.lock` (the processing lease) | recorder from just before `finish` until exit (§4.6); `holos session diarize`, `recover`, `delete`; the app's automatic relabel runs the CLI | one post-processing, rebuild, or deletion | `LOCK_EX\|LOCK_NB`, retried every 20 ms for up to 1 s |
+| `.processing.lock` (the processing lease) | recorder from just before `finish` until exit (§4.6); `holos session diarize`, `recover`, `delete`, `rename` (§4.17, with the writer lock through `openForMaintenance`); the app's automatic relabel runs the CLI | one post-processing, rebuild, deletion, or rename | `LOCK_EX\|LOCK_NB`, retried every 20 ms for up to 1 s |
 | `.speakers.lock` | `SpeakerEditor`; `SessionExports.regenerate`; post-processor while publishing run, head, voice data, recognition, and a merged transcript (§4.14, inside the writer lock) | one write (milliseconds) | polled every 20 ms up to 2 s |
 | `<support>/Speakers/profiles.lock` | `SpeakerProfileStore.update`; `withLockedDatabase` (recognition's saved comparison, a forget's per-meeting clean-up, a meeting summary's save, §4.17), always inside the speaker lock when both are held | one read-modify-write, or one read and the session write made from it | polled every 20 ms up to 2 s (PR10) |
 
@@ -4999,7 +4999,7 @@ for milliseconds), only when the transcript it was made from is still current. A
 another session, damaged, or from a newer build is not shown. meeting.json gains
 `nameSource` (`MeetingNameSource`, an open string code), recorded from where the name came
 from, never from what it looks like: `user` for a name the user gave (typed in the start panel,
-`--name`), whatever it is; `default` for the start panel's suggestion never edited (any edit, even one typing the suggestion back, makes it the user's) (the
+`--name`, a rename), whatever it is; `default` for the start panel's suggestion never edited (any edit, even one typing the suggestion back, makes it the user's) (the
 recorder's hidden `--default-name`), `record start` without `--name`, and an import named after
 its file. Any other value counts as the user's. Meetings saved before it have no
 `nameSource`: a name matching the default pattern counts as `default`, any other as `user`
@@ -5009,6 +5009,43 @@ its extension), so nothing is rewritten to migrate them. A meeting.json that is 
 title replaces the name in the list or the Markdown heading. The list shows the user's
 name, else the generated title, else the name (`MeetingNaming.displayTitle`); a generated
 title never replaces the manifest's name.
+
+**Renaming** (`SessionRenameCommand`, `voiceislocal session rename <session> <name> |
+--generated [--json]`, and the Meetings list's Rename…; the user asked 2026-10-03 for generated
+titles "unless the user overrode it by explicitly renaming it"). A name typed is cleaned
+(`MeetingNaming.cleanUserName`): one line, control characters dropped, at most 60 characters
+(`maximumTitleCharacters`, cut as titles are, `MeetingSummaryDraft.cut`: at a space past half the
+limit, else between characters) and 240 UTF-8 bytes. It becomes the manifest's `name`
+(`SessionArchive.setName`, status kept) with meeting.json's `nameSource` `user`. An empty name, or
+`--generated` (the list's Use Generated Title, shown while a user's name hides a generated
+title), sets `nameSource` `default` and gives the manifest back a name Voice is Local made up
+(`MeetingNaming.defaultName`: the current one when it is such a name, else an import's file name
+without its extension, else "Meeting yyyy-MM-dd HH:mm" from when it started, in local time).
+meeting.json is patched as a JSON object, so fields a newer build added within schema 1 are kept;
+a meeting without one gets one with its inferred settings; one that cannot be read (damaged,
+newer) refuses the rename. Both writes are atomic, under the processing lease and the writer lock
+(`openForMaintenance`), in the order that a crash between them leaves either the rename not made
+or the generated title shown, never the default name as the user's; a `renamed` event
+(`nameSource`) is journaled. Then the transcript files are rewritten under the speaker lock with
+the people store's names, Remember voices and the user's own name read once (the key a current
+summary is checked with), so the Markdown heading follows and the summary stays, without the
+model; transcript files written before any was generated here are first rewritten under the old
+name, so they are not taken for edited files and moved aside. Refused (`busy`, exit 1) while the
+meeting records or saves (liveness `capturing` or `processing`), while the deep transcription lock
+names it (a final transcript or a summary of it; another meeting's job does not count), and while
+another process holds the lease; an interrupted recording (manifest `recording`) is refused until
+Recover. Exit 0 `renamed` or `unchanged`, 3 when renamed but the transcript files could not be
+rewritten, 1 otherwise, with `name`, `nameSource`, `title` and `exportsUpdated` in the JSON. In the
+app (`MeetingRowView`), Rename… in the row's menu, ⌘R in the list, or a double-click on the
+title's text (elsewhere on the row a double-click still opens) puts an editor in place of the
+title and badges, with the title shown selected; Return or leaving the field saves, Escape
+cancels, and the rows are not rebuilt meanwhile (the 2 s refresh waits). Saving the title shown
+unchanged, or the user's own name again, does nothing (`MeetingRenameRequest`). The command runs
+in the app process while the meeting is registered as in use (`beginUsing`, "Renaming…"), so no
+command or background job starts on it meanwhile, and a meeting in use is refused with an alert.
+The new title shows at once in the list and the search, Review's window title
+(`ReviewWindow.meetingTitle`, also the name Save As… suggests) and the live transcript's header
+once the meeting is saved; the app's alerts name meetings by the title shown.
 
 **Making it** (`MeetingSummarizer`, `SessionSummarizeCommand`). The current transcript as the
 exports show it (`SessionExports.exportDocument`), as speaker lines ("Alex: …"): an automatic
@@ -5201,10 +5238,14 @@ writing nothing when the model is unavailable or fails or another command holds 
 meeting without transcript, speaker names reaching the prompt, records of another session or a
 newer build; the schedule's order, waits, attempts, requests and battery rule; the scan),
 `MeetingListFormatTests` (groups, the detail line, durations, people, badges, the displayed
-title, search).
+title, search), `SessionRenameTests` (names cleaned and cut, special characters, the default name
+given back, what the editor asks for, when Rename is offered; the command: the name and
+`nameSource` saved with other meeting.json fields kept, the heading and summary in the files,
+the generated title back, older transcript files not moved aside, a meeting without transcript,
+refusals while held by a command, a summary or final transcript of it, or a recorder, an
+interrupted recording, an unreadable meeting.json).
 
-**Follow-ups.** Renaming a meeting from the list (it would record `nameSource` `user`). The
-summary in Review. If Apple's model proves too weak on long or noisy meetings, a local
+**Follow-ups.** The summary in Review. If Apple's model proves too weak on long or noisy meetings, a local
 Qwen3.5 4B/9B through MLX (evaluated for span judging; its weights are not in the app).
 
 ## 5. PRs

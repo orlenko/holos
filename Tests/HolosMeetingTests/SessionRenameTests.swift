@@ -1,0 +1,328 @@
+import Foundation
+import HolosCore
+@testable import HolosMeeting
+import HolosStorage
+import Testing
+
+// Renaming a finished meeting (docs/meeting-design.md §4.17): the name the user types as it is saved, the default name
+// a meeting gets back with its generated title, what the list's editor asks for, and `voiceislocal session rename` on
+// fixture sessions (the manifest, meeting.json's nameSource, the transcript files, refusals). Every name is invented.
+
+// MARK: - Helpers
+
+private let voice = SessionSummarizeCommand.VoiceInputs(names: [:], recognition: true, selfName: "Robin")
+private let utc = TimeZone(identifier: "UTC")!
+
+/// A finished meeting with a transcript and meeting.json (default name, `nameSource` `default`).
+private func renameSession(in root: URL, name: String = "Meeting 2026-10-03 14:00",
+                           legacyExports: Bool = false) async throws -> URL {
+    let transcript = SessionFixtures.transcript(
+        SessionFixtures.alternatingSegments(track: "mic", turnSeconds: 5, duration: 20))
+    let session = try await SessionFixtures.makeSession(in: root, name: name, mode: .inPerson, transcript: transcript,
+                                                        legacyExports: legacyExports)
+    let manifest = try SessionArchive.readManifest(at: session)
+    try AtomicFile.writeJSON(MeetingInfo(sessionID: manifest.id, mode: .inPerson, othersInRoom: false,
+                                         createdAt: manifest.createdAt, nameSource: .default),
+                             to: SessionPaths.meetingInfo(session))
+    return session
+}
+
+/// A current summary of the meeting (made with `voice`'s names), and the transcript files written with it.
+private func writeSummary(_ session: URL, title: String = "Parser rewrite and release plan") throws {
+    let manifest = try SessionArchive.readManifest(at: session)
+    let key = try #require(MeetingSummaryKey.load(session: session, profileNames: voice.names,
+                                                  applyRecognition: voice.recognition, selfName: voice.selfName))
+    try MeetingSummaryStore.write(MeetingSummaryRecord(
+        sessionID: manifest.id, transcriptID: key.transcriptID, title: title,
+        summary: "The team agreed to rewrite the parser before the release.", model: "fake",
+        namesDigest: key.namesDigest), session: session)
+    try SessionArchive.withSpeakerLock(at: session) {
+        _ = try SessionExports.regenerateLocked(session: session, profileNames: voice.names,
+                                                applyRecognition: voice.recognition, selfName: voice.selfName)
+    }
+}
+
+private func rename(_ session: URL, _ name: String?, lock: URL? = nil) async -> SessionRenameCommand.Outcome {
+    let lockURL = lock ?? session.deletingLastPathComponent().appendingPathComponent("jobs.lock")
+    return await SessionRenameCommand.run(SessionRenameCommand.Request(
+        session: session, name: name, voiceInputs: { voice }, jobLock: lockURL, timeZone: utc))
+}
+
+private func meetingJSON(_ session: URL) throws -> [String: Any] {
+    let data = try Data(contentsOf: SessionPaths.meetingInfo(session))
+    return try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+}
+
+private func editedExports(_ session: URL) throws -> [String] {
+    try FileManager.default.contentsOfDirectory(atPath: SessionPaths.exports(session).path)
+        .filter { $0.hasPrefix("edited-") }
+}
+
+// MARK: - The name as it is saved
+
+@Test func aTypedNameIsOneLineWithoutControlCharacters() {
+    #expect(MeetingNaming.cleanUserName("  Weekly\tsync\n with  Alex ") == "Weekly sync with Alex")
+    #expect(MeetingNaming.cleanUserName("Budget\u{0007} review") == "Budget review")
+    #expect(MeetingNaming.cleanUserName("Q3 / Café — “Plan” #1 <b>&amp; 50% 🎉") == "Q3 / Café — “Plan” #1 <b>&amp; 50% 🎉")
+    // Empty means "use the generated title".
+    #expect(MeetingNaming.cleanUserName("") == nil)
+    #expect(MeetingNaming.cleanUserName(" \n\t ") == nil)
+}
+
+@Test func aLongNameIsCutAsTitlesAre() throws {
+    let words = Array(repeating: "planning", count: 12).joined(separator: " ")
+    let cut = try #require(MeetingNaming.cleanUserName(words))
+    #expect(cut.count <= MeetingNaming.maximumUserNameCharacters)
+    #expect(cut.hasSuffix("planning"), "Cut at a space")
+    let spaceless = String(repeating: "会", count: 100)
+    #expect(MeetingNaming.cleanUserName(spaceless) == String(repeating: "会", count: 60))
+    // A character carrying many combining marks counts once, but its bytes are bounded.
+    let marked = String(repeating: "e" + String(repeating: "\u{0301}", count: 20), count: 20)
+    let bounded = try #require(MeetingNaming.cleanUserName(marked))
+    #expect(bounded.utf8.count <= MeetingNaming.maximumUserNameBytes)
+    #expect(!bounded.isEmpty)
+}
+
+@Test func theDefaultNameComesBackWithTheGeneratedTitle() {
+    let start = Date(timeIntervalSince1970: 1_790_000_000) // 2026-09-21 14:13 UTC
+    #expect(MeetingNaming.defaultName(current: "Weekly sync", createdAt: start, origin: .recorded,
+                                      importedFileName: nil, timeZone: utc) == "Meeting 2026-09-21 14:13")
+    // A name Voice is Local made up is kept.
+    #expect(MeetingNaming.defaultName(current: "Meeting 2026-09-21 09:00", createdAt: start, origin: .recorded,
+                                      importedFileName: nil, timeZone: utc) == "Meeting 2026-09-21 09:00")
+    #expect(MeetingNaming.defaultName(current: "Weekly sync", createdAt: start, origin: .imported,
+                                      importedFileName: "board call.m4a", timeZone: utc) == "board call")
+    #expect(MeetingNaming.defaultName(current: "board call", createdAt: start, origin: .imported,
+                                      importedFileName: "board call.m4a", timeZone: utc) == "board call")
+    #expect(MeetingNaming.defaultName(current: "Weekly sync", createdAt: start, origin: .imported,
+                                      importedFileName: nil, timeZone: utc) == "Imported meeting")
+}
+
+// MARK: - The list's editor
+
+private func listed(name: String, source: MeetingNameSource, generated: String?) -> SessionSummary {
+    SessionSummary(id: "S", directory: URL(fileURLWithPath: "/tmp/S.holos"), name: name, createdAt: Date(),
+                   source: .microphone, state: .complete, manifestStatus: "complete", liveness: .exited,
+                   nameSource: source,
+                   generatedSummary: generated.map {
+                       MeetingSummaryRecord(sessionID: "S", transcriptID: "T", title: $0, summary: "s", model: "fake")
+                   })
+}
+
+@Test func theEditorAsksForARenameOnlyWhenWhatIsShownChanges() {
+    let generated = listed(name: "Meeting 2026-10-03 14:00", source: .default, generated: "Parser plan")
+    #expect(MeetingRenameRequest.name(typed: "Parser plan", summary: generated) == nil, "Left as shown")
+    #expect(MeetingRenameRequest.name(typed: "", summary: generated) == nil, "Already the generated title")
+    #expect(MeetingRenameRequest.name(typed: " Parser  plan v2 ", summary: generated) == .user("Parser plan v2"))
+    let named = listed(name: "Weekly sync", source: .user, generated: "Parser plan")
+    #expect(MeetingRenameRequest.name(typed: "Weekly sync", summary: named) == nil)
+    #expect(MeetingRenameRequest.name(typed: "  ", summary: named) == .generated)
+    #expect(MeetingRenameRequest.name(typed: "Parser plan", summary: named) == .user("Parser plan"))
+    #expect(MeetingRenameRequest.generated.typedName == nil)
+    #expect(MeetingRenameRequest.user("A").typedName == "A")
+}
+
+@Test func renameIsOfferedForFinishedMeetingsNotHeldElsewhere() {
+    func summary(state: SessionState, status: String, liveness: RecorderLiveness = .exited) -> SessionSummary {
+        SessionSummary(id: "S", directory: URL(fileURLWithPath: "/tmp/S.holos"), name: "M", createdAt: Date(),
+                       source: .microphone, state: state, manifestStatus: status, liveness: liveness)
+    }
+    #expect(MeetingActionPolicy.enabled(summary(state: .complete, status: "complete"), inUse: false, hasExport: false)
+        .contains(.rename))
+    #expect(!MeetingActionPolicy.enabled(summary(state: .complete, status: "complete"), inUse: true, hasExport: false)
+        .contains(.rename))
+    #expect(!MeetingActionPolicy.enabled(summary(state: .recording, status: "recording", liveness: .capturing),
+                                         inUse: false, hasExport: false).contains(.rename))
+    // An interrupted recording is recovered first; a damaged one cannot be.
+    #expect(!MeetingActionPolicy.renames(summary(state: .interrupted, status: "recording", liveness: .dead)))
+    #expect(!MeetingActionPolicy.renames(summary(state: .damaged, status: "")))
+    #expect(MeetingActionPolicy.renames(summary(state: .audioOnly, status: "audioOnly")))
+}
+
+// MARK: - The command
+
+@Test func aRenameIsTheUsersAndHeadsTheTranscriptFiles() async throws {
+    let temp = try TemporaryDirectory("rename")
+    defer { temp.remove() }
+    let session = try await renameSession(in: temp.url)
+    try writeSummary(session)
+    #expect(SessionFixtures.text(SessionPaths.export("md", in: session)).hasPrefix("# Parser rewrite and release plan\n"))
+    // A field a newer build added to meeting.json is kept.
+    var object = try meetingJSON(session)
+    object["futureField"] = "kept"
+    try AtomicFile.write(try JSONSerialization.data(withJSONObject: object), to: SessionPaths.meetingInfo(session))
+
+    let outcome = await rename(session, "  Weekly engineering sync ")
+    #expect(outcome.status == .renamed)
+    #expect(outcome.exitCode == 0)
+    #expect(outcome.exportsUpdated)
+    #expect(outcome.name == "Weekly engineering sync")
+    #expect(outcome.nameSource == .user)
+    #expect(outcome.title == "Weekly engineering sync")
+    #expect(try SessionArchive.readManifest(at: session).name == "Weekly engineering sync")
+    #expect(try SessionArchive.readManifest(at: session).status == ArchiveStatus.complete)
+    let json = try meetingJSON(session)
+    #expect(json["nameSource"] as? String == "user")
+    #expect(json["futureField"] as? String == "kept")
+    #expect(json["mode"] as? String == "inPerson")
+    #expect(SessionFixtures.mode(SessionPaths.meetingInfo(session)) == 0o600)
+    let catalog = SessionCatalog.summary(session: session)
+    #expect(catalog.nameSource == .user)
+    #expect(catalog.displayTitle == "Weekly engineering sync")
+    #expect(MeetingNaming.currentTitle(session: session) == "Weekly engineering sync")
+    let markdown = SessionFixtures.text(SessionPaths.export("md", in: session))
+    #expect(markdown.hasPrefix("# Weekly engineering sync\n"))
+    // The summary stays in the files, without the model.
+    #expect(markdown.contains("## Summary"))
+    #expect(MeetingListFormat.matches(catalog, people: [], query: "engineering"))
+    let events = try SessionArchive.readEvents(at: session).events
+    #expect(events.last?.kind == MeetingEventKind.renamed)
+    #expect(events.last?.details["nameSource"] == "user")
+
+    let again = await rename(session, "Weekly engineering sync")
+    #expect(again.status == .unchanged)
+    #expect(again.exitCode == 0)
+}
+
+@Test func theGeneratedTitleComesBack() async throws {
+    let temp = try TemporaryDirectory("rename")
+    defer { temp.remove() }
+    let session = try await renameSession(in: temp.url, name: "Weekly sync")
+    try writeSummary(session)
+    _ = await rename(session, "Weekly sync, renamed")
+    let outcome = await rename(session, nil)
+    #expect(outcome.status == .renamed)
+    #expect(outcome.exitCode == 0)
+    #expect(outcome.nameSource == .default)
+    #expect(outcome.title == "Parser rewrite and release plan")
+    let manifest = try SessionArchive.readManifest(at: session)
+    #expect(manifest.name == MeetingStartSettings.defaultName(now: manifest.createdAt, timeZone: utc))
+    #expect(try meetingJSON(session)["nameSource"] as? String == "default")
+    let catalog = SessionCatalog.summary(session: session)
+    #expect(catalog.displayTitle == "Parser rewrite and release plan")
+    #expect(SessionFixtures.text(SessionPaths.export("md", in: session)).hasPrefix("# Parser rewrite and release plan\n"))
+    // An empty name asks for the same.
+    #expect(await rename(session, "  ").status == .unchanged)
+}
+
+@Test func aSpecialOrLongNameIsSavedAsItIsShown() async throws {
+    let temp = try TemporaryDirectory("rename")
+    defer { temp.remove() }
+    let session = try await renameSession(in: temp.url)
+    let special = "Q3 / Café — “Plan” #1 *draft* <b> 🎉"
+    let outcome = await rename(session, special)
+    #expect(outcome.status == .renamed)
+    #expect(try SessionArchive.readManifest(at: session).name == special)
+    let markdown = SessionFixtures.text(SessionPaths.export("md", in: session))
+    #expect(markdown.hasPrefix("# Q3 / Café — “Plan” #1 "))
+    #expect(markdown.contains("🎉"))
+
+    let long = String(repeating: "Quarterly roadmap review ", count: 10)
+    let cut = await rename(session, long)
+    let name = try #require(cut.name)
+    #expect(name.count <= MeetingNaming.maximumUserNameCharacters)
+    #expect(name.hasPrefix("Quarterly roadmap review"))
+    #expect(try SessionArchive.readManifest(at: session).name == name)
+}
+
+@Test func filesWrittenBeforeAnyWereGeneratedAreNotMovedAside() async throws {
+    let temp = try TemporaryDirectory("rename")
+    defer { temp.remove() }
+    let session = try await renameSession(in: temp.url, legacyExports: true)
+    #expect(!SessionFixtures.exists(SessionPaths.generatedExports(session)))
+    let outcome = await rename(session, "Design review")
+    #expect(outcome.exitCode == 0)
+    #expect(try editedExports(session).isEmpty)
+    #expect(SessionFixtures.text(SessionPaths.export("md", in: session)).hasPrefix("# Design review\n"))
+}
+
+@Test func aMeetingWithoutTranscriptIsRenamedWithoutFiles() async throws {
+    let temp = try TemporaryDirectory("rename")
+    defer { temp.remove() }
+    let session = try await SessionFixtures.makeSession(in: temp.url, transcript: nil)
+    let outcome = await rename(session, "Hallway chat")
+    #expect(outcome.status == .renamed)
+    #expect(!outcome.exportsUpdated)
+    #expect(outcome.exitCode == 0)
+    // No meeting.json before: one is written with the inferred settings.
+    #expect(try meetingJSON(session)["nameSource"] as? String == "user")
+    #expect(SessionCatalog.summary(session: session).displayTitle == "Hallway chat")
+}
+
+@Test func aRenameIsRefusedWhileTheMeetingIsHeld() async throws {
+    let temp = try TemporaryDirectory("rename")
+    defer { temp.remove() }
+    let session = try await renameSession(in: temp.url)
+    let id = try SessionArchive.readManifest(at: session).id
+    func unchanged() throws {
+        #expect(try SessionArchive.readManifest(at: session).name == "Meeting 2026-10-03 14:00")
+        #expect(try meetingJSON(session)["nameSource"] as? String == "default")
+    }
+
+    // Another command holds it.
+    do {
+        let lease = try SessionArchive.acquireProcessingLease(at: session)
+        defer { lease.release() }
+        let outcome = await rename(session, "Weekly sync")
+        #expect(outcome.status == .busy)
+        #expect(outcome.exitCode == 1)
+        #expect(outcome.message.contains("Another Voice is Local command"))
+        try unchanged()
+    }
+
+    // A summary or final transcript of it is being made.
+    let lock = temp.url.appendingPathComponent("jobs.lock")
+    do {
+        let held = try #require(try DeepTranscriptionLock.take(
+            DeepTranscriptionLock.Holder(pid: getpid(), sessionID: id, force: false,
+                                         kind: DeepTranscriptionLock.Holder.summaryKind), at: lock))
+        defer { held.release() }
+        let outcome = await rename(session, "Weekly sync", lock: lock)
+        #expect(outcome.status == .busy)
+        #expect(outcome.message.contains("summary of this meeting"))
+        try unchanged()
+    }
+    do {
+        let held = try #require(try DeepTranscriptionLock.take(
+            DeepTranscriptionLock.Holder(pid: getpid(), sessionID: id, force: false), at: lock))
+        defer { held.release() }
+        #expect(await rename(session, "Weekly sync", lock: lock).message.contains("final transcript of this meeting"))
+        try unchanged()
+    }
+    // A job on another meeting does not hold this one.
+    do {
+        let held = try #require(try DeepTranscriptionLock.take(
+            DeepTranscriptionLock.Holder(pid: getpid(), sessionID: UUID().uuidString, force: false), at: lock))
+        defer { held.release() }
+        #expect(await rename(session, "Weekly sync", lock: lock).status == .renamed)
+    }
+}
+
+@Test func aRecordingIsRenamedOnlyOnceSaved() async throws {
+    let temp = try TemporaryDirectory("rename")
+    defer { temp.remove() }
+    let archive = try SessionArchive.create(root: temp.url, name: "Meeting 2026-10-03 14:00", source: .microphone,
+                                            locale: "en-CA", backend: .speech)
+    let recording = await rename(archive.directory, "Weekly sync")
+    #expect(recording.status == .busy)
+    #expect(recording.message.contains("being recorded"))
+    // The recorder died without saving it: Recover first.
+    await archive.releaseLock()
+    let interrupted = await rename(archive.directory, "Weekly sync")
+    #expect(interrupted.status == .failed)
+    #expect(interrupted.message.contains("recover"))
+    #expect(try SessionArchive.readManifest(at: archive.directory).name == "Meeting 2026-10-03 14:00")
+}
+
+@Test func aMeetingJSONThatCannotBeReadIsNotRewritten() async throws {
+    let temp = try TemporaryDirectory("rename")
+    defer { temp.remove() }
+    let session = try await renameSession(in: temp.url)
+    var object = try meetingJSON(session)
+    object["schemaVersion"] = 2
+    try AtomicFile.write(try JSONSerialization.data(withJSONObject: object), to: SessionPaths.meetingInfo(session))
+    let outcome = await rename(session, "Weekly sync")
+    #expect(outcome.status == .failed)
+    #expect(outcome.exitCode == 1)
+    #expect(try SessionArchive.readManifest(at: session).name == "Meeting 2026-10-03 14:00")
+}

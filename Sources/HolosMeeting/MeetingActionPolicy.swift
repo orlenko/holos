@@ -7,14 +7,15 @@ import HolosCore
 public enum MeetingActionPolicy {
     public enum Action: String, CaseIterable, Sendable {
         case recover, labelSpeakers, showInFinder, openTranscript, saveTranscript, deleteAudio, deleteMeeting, cleanUp
+        case rename
     }
 
     /// The enabled actions for `summary` (nil: nothing selected). `inUse`: the app is working on the meeting
     /// (`MeetingController.sessionsInUse`); `hasExport`: exports/transcript.md is a regular file.
     ///
     /// Show in Finder and Open Transcript take no lock. Every other action is off while the app works on the meeting.
-    /// The ones that take the processing lease (Recover, Label Speakers, Delete Audio, Delete Meeting, Clean Up) are
-    /// also off while another process holds the meeting (`isLive`), which would refuse them.
+    /// The ones that take the processing lease (Recover, Label Speakers, Delete Audio, Delete Meeting, Clean Up,
+    /// Rename) are also off while another process holds the meeting (`isLive`), which would refuse them.
     public static func enabled(_ summary: SessionSummary?, inUse: Bool, hasExport: Bool) -> Set<Action> {
         guard let summary else { return [] }
         var actions: Set<Action> = [.showInFinder]
@@ -27,7 +28,14 @@ public enum MeetingActionPolicy {
         if deletesAudio(summary) { actions.insert(.deleteAudio) }
         actions.insert(.deleteMeeting)
         if summary.derivedBytes > 0 { actions.insert(.cleanUp) }
+        if renames(summary) { actions.insert(.rename) }
         return actions
+    }
+
+    /// `voiceislocal session rename` can rename the meeting (`SessionRenameCommand`): its manifest reads, and it is
+    /// not an interrupted recording, whose manifest still says recording (Recover first).
+    public static func renames(_ summary: SessionSummary) -> Bool {
+        summary.state != .damaged && summary.manifestStatus != ArchiveStatus.recording
     }
 
     /// A recorder or another Holos command holds the meeting (its writer lock or processing lease): recording,

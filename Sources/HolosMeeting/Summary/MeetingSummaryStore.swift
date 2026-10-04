@@ -236,6 +236,60 @@ public enum MeetingNaming {
         if let generatedTitle, !generatedTitle.isEmpty { return generatedTitle }
         return name
     }
+
+    /// Most characters of a name the user gives a meeting by renaming it: as many as a generated title.
+    public static let maximumUserNameCharacters = MeetingSummaryDraft.maximumTitleCharacters
+    /// And at most this many UTF-8 bytes: a character can carry any number of combining marks.
+    public static let maximumUserNameBytes = 240
+
+    /// A name the user typed to rename a meeting, as it is saved: one line (runs of spaces, tabs and line breaks
+    /// become one space), without control characters, trimmed, and cut as titles are (`MeetingSummaryDraft.cut`) to
+    /// `maximumUserNameCharacters` and `maximumUserNameBytes`. Nil when nothing is left: an empty name means "use the
+    /// generated title".
+    public static func cleanUserName(_ text: String) -> String? {
+        let visible = String(String.UnicodeScalarView(text.unicodeScalars.map {
+            $0.properties.generalCategory == .control ? " " : $0
+        }))
+        var name = visible.split(whereSeparator: { $0.isWhitespace || $0.isNewline }).joined(separator: " ")
+        name = MeetingSummaryDraft.cut(name, toCharacters: maximumUserNameCharacters)
+        while name.utf8.count > maximumUserNameBytes { name.removeLast() }
+        name = name.trimmingCharacters(in: .whitespaces)
+        return name.isEmpty ? nil : name
+    }
+
+    /// The name a meeting gets back when the user chooses its generated title again (`MeetingNameSource.default`):
+    /// its name when Voice is Local made it up (`source(stored: nil, …)` is `default`), else the default name of an
+    /// import (its file's name without the extension, else "Imported meeting") or of a recording ("Meeting
+    /// 2026-10-03 14:00", from when it started, in `timeZone`).
+    public static func defaultName(current: String, createdAt: Date, origin: MeetingOrigin, importedFileName: String?,
+                                   timeZone: TimeZone = .current) -> String {
+        let file = origin == .imported ? importedFileName : nil
+        if source(stored: nil, name: current, importedFileName: file) == .default,
+           !current.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return current
+        }
+        if origin == .imported {
+            let stem = ((importedFileName ?? "") as NSString).deletingPathExtension
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            return stem.isEmpty ? "Imported meeting" : stem
+        }
+        return MeetingStartSettings.defaultName(now: createdAt, timeZone: timeZone)
+    }
+
+    /// The title a meeting shows now (`displayTitle`), read from its folder: the manifest's name, meeting.json's
+    /// `nameSource` (unknown when meeting.json cannot be read: the user's), and summary.json's title. Nil without a
+    /// readable manifest. For windows that show a meeting outside the list (Review).
+    public static func currentTitle(session: URL) -> String? {
+        guard let manifest = try? SessionArchive.readManifest(at: session) else { return nil }
+        let meeting = try? SessionFiles.meetingInfo(session: session, manifest: manifest)
+        let source = meeting.map {
+            MeetingNaming.source(stored: $0.nameSource, name: manifest.name,
+                                 importedFileName: $0.origin == .imported ? $0.importedFileName : nil)
+        } ?? .user
+        return displayTitle(name: manifest.name, source: source,
+                            generatedTitle: MeetingSummaryStore.readIfUsable(session: session,
+                                                                             sessionID: manifest.id)?.title)
+    }
 }
 
 /// What the summarizer reads from a meeting's speaker-labelled transcript.

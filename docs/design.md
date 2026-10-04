@@ -1052,9 +1052,22 @@ labels failed, Language missing. The size and the state are in the row's tooltip
 keeps the total and free space. A search field above the list (⌘F) filters by title, name,
 summary, key points, action items and people, ignoring case and accents.
 
-The title is the name the user gave the meeting (in the start panel, or `--name`), else the
-title Apple Intelligence wrote, else the default name ("Meeting 2026-10-03 14:00"); a generated
-title never replaces a name the user gave. Titles and summaries are written on this Mac by
+The title is the name the user gave the meeting (in the start panel, `--name`, or by renaming
+it), else the title Apple Intelligence wrote, else the default name ("Meeting 2026-10-03
+14:00"); a generated title never replaces a name the user gave.
+
+A finished meeting is renamed in its row: the menu's Rename… (⌘R in the list) or a
+double-click on the title's text (a double-click elsewhere on the row still opens it) turns the
+title into a text field spanning the line, with the title selected. Return saves it, Escape
+cancels, and clicking elsewhere saves it, as in the Finder. The name is one line of at most 60
+characters (a longer one is cut as titles are, at a space when it can be); leaving the field
+empty gives the meeting back its generated title, and so does the menu's Use Generated Title,
+shown while a name the user gave hides one. The name shows at once in the list, the search,
+Review's window title and the live transcript's header, and the transcript files are rewritten
+so the Markdown heading follows (nothing is summarized again). Rename is off while the meeting
+records or saves, while a command, a final transcript or a summary works on it, and for an
+interrupted recording (Recover first); a refusal says why in an alert.
+`voiceislocal session rename` does the same from Terminal. Titles and summaries are written on this Mac by
 Apple's on-device model once a meeting's transcript is final, and again when a final transcript
 replaces it, in the background, one meeting at a time, never while a meeting records or saves
 (Settings › Meetings › "Title and summarize meetings with Apple Intelligence", on by default).
@@ -1066,7 +1079,7 @@ method, files and measurements.
 Every action stays: double-click or Return opens (the live transcript, Review, or the
 transcript preview), ⌫ is Delete Meeting…, the buttons below the list, and the row's menu, which
 now has Open, Live Transcript, Review…, Open Transcript, Show in Finder, Save Transcript As…,
-Summarize (Again), Make Final Transcript Now / Cancel Final Transcript, Recover…, Label
+Rename… and Use Generated Title, Summarize (Again), Make Final Transcript Now / Cancel Final Transcript, Recover…, Label
 Speakers, Delete Audio… and Delete Meeting…, each enabled as its button is. Right-clicking a
 row selects it.
 
