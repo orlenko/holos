@@ -1020,6 +1020,47 @@ private func trackDocument(source: AudioSource) -> ExportDocument {
     #expect(await SessionSummarizeCommand.run(same) { _ in .available(scripted.model()) }.status == .written)
 }
 
+@Test func titlesWithoutSpacesAreCappedByCharacters() throws {
+    let long = String(repeating: "会议讨论了解析器重写和发布计划以及测试安排", count: 6)
+    let title = try #require(MeetingSummaryDraft.cleanTitle(long))
+    #expect(title.count <= MeetingSummaryDraft.maximumTitleCharacters)
+    #expect(long.hasPrefix(title))
+    let spaced = try #require(MeetingSummaryDraft.cleanTitle(
+        "Supercalifragilisticexpialidocious-planning extraordinarily-long-hyphenated-token-review"))
+    #expect(spaced.count <= MeetingSummaryDraft.maximumTitleCharacters)
+}
+
+@Test func aSummaryIsMadeAgainWhenTheNamesItUsesChange() async throws {
+    let temp = try TemporaryDirectory("summary")
+    defer { temp.remove() }
+    let (session, _, run) = try await SessionFixtures.labelledSession(in: temp.url, track: "mic")
+    let first = try #require(run.speakers.first)
+    let scripted = ScriptedSummaryModel()
+    let request = SessionSummarizeCommand.Request(session: session)
+    func summarize() async -> SessionSummarizeCommand.Outcome {
+        await SessionSummarizeCommand.run(request) { _ in .available(scripted.model()) }
+    }
+    #expect(await summarize().status == .written)
+    let voice = MeetingSummarySchedule.voiceStamp(names: [:], recognition: true)
+    #expect(MeetingSummarySchedule.scan(root: temp.url, voiceStamp: voice).first?.needsSummary == false)
+    #expect(await summarize().status == .current)
+    #expect(scripted.summaryCalls.value.count == 1)
+
+    // An edit that changes no name: noted, not made again.
+    try SessionFixtures.appendEdits([.excludeFromEnrollment(turnIDs: ["T1"])], session: session)
+    #expect(MeetingSummarySchedule.scan(root: temp.url, voiceStamp: voice).first?.needsSummary == true)
+    _ = await summarize()
+    #expect(scripted.summaryCalls.value.count == 1)
+    #expect(MeetingSummarySchedule.scan(root: temp.url, voiceStamp: voice).first?.needsSummary == false)
+
+    // A rename: made again with the new name.
+    try SessionFixtures.appendEdits([.rename(speakerID: first.id, name: "Kim")], session: session)
+    #expect(MeetingSummarySchedule.scan(root: temp.url, voiceStamp: voice).first?.needsSummary == true)
+    #expect(await summarize().status == .written)
+    #expect(scripted.summaryCalls.value.count == 2)
+    #expect(scripted.summaryCalls.value.last?.prompt.contains("Kim: ") == true)
+}
+
 @Test func aNameTheUserGaveIsTheirsWhateverItLooksLike() throws {
     let root = URL(fileURLWithPath: "/tmp/sessions")
     var typed = MeetingStartSettings(name: "Meeting 2026-10-03 14:00", source: .microphone)

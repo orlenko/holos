@@ -134,7 +134,14 @@ extension HolosAppDelegate {
         meeting.summaries.scanning = true
         let root = controller.root
         Task { [weak self] in
-            let candidates = await Task.detached { MeetingSummarySchedule.scan(root: root) }.value
+            let candidates = await Task.detached { () -> [MeetingSummarySchedule.Candidate] in
+                // People's names and Remember voices, once per scan: a summary whose names changed is made again.
+                let store = SpeakerProfileStore()
+                let voice = MeetingSummarySchedule.voiceStamp(
+                    names: VoiceProfileService.profileNames(store: store),
+                    recognition: VoiceProfileService.recognitionAllowed(store: store))
+                return MeetingSummarySchedule.scan(root: root, voiceStamp: voice)
+            }.value
             guard let self else { return }
             self.meeting.summaries.scanning = false
             self.startNextMeetingSummary(candidates)
@@ -159,7 +166,8 @@ extension HolosAppDelegate {
             inUse: Set(controller.sessionsInUse.keys).union(controller.sessionsUnderReview()),
             attempted: meeting.summaries.attempted, delayedUntil: meeting.summaries.delayedUntil,
             requested: meeting.summaries.requested, onBattery: PowerSource.current() == .battery,
-            finalTranscriptQueued: Set((meeting.deep.queue.items + meeting.deep.queue.pending).map(\.sessionID)),
+            finalTranscriptQueued: Set((meeting.deep.queue.items + meeting.deep.queue.pending).map(\.sessionID))
+                .union(meeting.deep.deciding),
             now: now)
         guard case .run(let sessionID, let path, let force) = MeetingSummarySchedule.next(candidates, situation)
         else { return }

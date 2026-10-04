@@ -4989,7 +4989,8 @@ never saved as a whole one, and an older summary stays.
 
 **Checking the answer** (`MeetingSummaryDraft.cleaned`). The title: one line, quotes, "Title:"
 and a final period removed, a leading "Meeting about/on/…", "Meeting:", "Réunion sur …" removed,
-dates, times, weekdays and "today" removed, at most 8 words without a dangling "and", "of",
+dates, times, weekdays and "today" removed, at most 8 words and 60 characters (at a space when one
+is past half of that, else between characters, for text without spaces) without a dangling "and", "of",
 "the", "de", "pour" …; "Meeting" alone is no title. The summary: one line, at most two
 sentences and 320 characters. Key points and action items: bullets and numbering removed, "None"
 and repeats dropped, at most five each, a key point that repeats an action item dropped. A
@@ -4997,7 +4998,12 @@ and repeats dropped, at most five each, a key point that repeats an action item 
 or an empty title or summary fails the run, and nothing is written.
 
 **When.** `voiceislocal session summarize <session> [--force] [--json]` makes one when
-summary.json is missing or of another transcript, or with `--force`; exit 0 when written or up
+summary.json is missing or of another transcript, or with `--force`. A summary also records the
+speaker labels and people's names it was made with (`speakerStamp`: head and edit journal,
+people's names and Remember voices) and a digest of the names it used (`speakersDigest`): when
+the stamp changed (Review, `speakers rename/link/assign/merge`, a person renamed), the command
+reads the names again and makes the summary again if they changed, else only notes the new
+stamp, without the model. The app's scan compares the stamp too; exit 0 when written or up
 to date, 3 when written but the transcript files could not be rewritten, 1 otherwise, with
 `status` in the JSON (`written`, `current`, `noTranscript`, `unavailable`, `busy`, `changed`,
 `failed`, `cancelled`). A session that was not finished properly (manifest recording, processing
@@ -5034,8 +5040,9 @@ a child process, one at a time, holding the meeting as a final transcript does
 (`MeetingController.beginUsing`, "Writing summary…"): its commands wait, and Review asked for
 meanwhile says "Summary in progress" and opens when it ends (or offers Cancel Summary). At launch
 no summary starts until the final-transcript reconciliation has queued the meetings saved while
-the app was closed (or had nothing to do). After a meeting is saved, the scan waits until the final
-transcript queue has decided about it, and a meeting queued for a final transcript is summarized
+the app was closed (or had nothing to do; while the model downloads it waits for the download to end). After a meeting is saved, the scan waits until the final
+transcript queue has decided about it (the meeting is in a deciding set while its languages are
+read, and the schedule skips it), and a meeting queued for a final transcript is summarized
 after it. Nothing starts while a meeting starts, records or saves, while the lock is held (a
 final transcript, or a summary another app process started), or for a meeting in use or under
 review; a final transcript likewise waits for a summary. A run going on when a meeting starts

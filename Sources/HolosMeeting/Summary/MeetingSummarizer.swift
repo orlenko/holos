@@ -583,6 +583,8 @@ extension MeetingSummaryDraft {
 
     /// Most words of a title.
     public static let maximumTitleWords = 8
+    /// Most characters (grapheme clusters) of a title, for text without spaces (Chinese, Japanese) and one long token.
+    public static let maximumTitleCharacters = 60
     /// Most characters of the summary shown in the list.
     public static let maximumSummaryCharacters = 320
     public static let maximumItems = 5
@@ -713,6 +715,17 @@ extension MeetingSummaryDraft {
         }
         title = words.joined(separator: " ").trimmingCharacters(in: CharacterSet(charactersIn: ".,;:–—-")
             .union(.whitespaces))
+        if title.count > maximumTitleCharacters {
+            // At the last space within the limit when there is one, else between characters.
+            let cut = String(title.prefix(maximumTitleCharacters))
+            if let space = cut.lastIndex(of: " "),
+               cut.distance(from: cut.startIndex, to: space) >= maximumTitleCharacters / 2 {
+                title = String(cut[..<space])
+            } else {
+                title = cut
+            }
+            title = title.trimmingCharacters(in: CharacterSet(charactersIn: ".,;:–—-、，。").union(.whitespaces))
+        }
         guard let first = title.first else { return nil }
         // A title of only "Meeting" (or "Réunion") says nothing.
         guard !["meeting", "réunion", "untitled"].contains(title.lowercased()) else { return nil }

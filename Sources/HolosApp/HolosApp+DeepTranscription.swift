@@ -35,6 +35,9 @@ final class DeepTranscriptionAppState {
     var queue = DeepTranscriptionQueue.decode(UserDefaults.standard.data(forKey: queueKey)) {
         didSet { UserDefaults.standard.set(queue.encoded(), forKey: Self.queueKey) }
     }
+    /// Meetings just saved whose languages are being read to decide whether a final transcript is queued: a summary
+    /// waits for that decision (§4.17), so none is made of a transcript a final one is about to replace.
+    var deciding: Set<String> = []
     var considered: [String] = UserDefaults.standard.stringArray(forKey: consideredKey) ?? [] {
         didSet { UserDefaults.standard.set(considered, forKey: Self.consideredKey) }
     }
@@ -132,8 +135,9 @@ extension HolosAppDelegate {
         // Meetings that finished while the model was missing or downloading were not queued: found again now.
         if DeepTranscriptionSchedule.reconcilesOnModelChange(from: previous, to: model) {
             reconcileDeepTranscription()
-        } else {
-            // Nothing to reconcile: summaries need not wait for it (§4.17).
+        } else if model != "downloading" {
+            // Nothing to reconcile: summaries need not wait for it (§4.17). While the model downloads they wait: once
+            // it is installed the reconciliation runs (and then lets them start); a failed download lets them start.
             meetingSummaryLaunchReconciled()
         }
         scheduleDeepTranscription()
@@ -178,10 +182,14 @@ extension HolosAppDelegate {
             return
         }
         let activation = meeting.deep.activation
+        meeting.deep.deciding.insert(sessionID)
         // Reading the languages can mean decoding a long meeting's transcript: off the main actor.
         Task { [weak self] in
             let languages = await Task.detached { Self.languageCount(directory) }.value
-            defer { self?.scheduleMeetingSummaries() }
+            defer {
+                self?.meeting.deep.deciding.remove(sessionID)
+                self?.scheduleMeetingSummaries()
+            }
             // The setting was turned off (and maybe on again) while it was read: that turning off took it off.
             // Checked against the live queue and the meetings considered: the user may have asked for it (and maybe
             // cancelled it) while it was read.

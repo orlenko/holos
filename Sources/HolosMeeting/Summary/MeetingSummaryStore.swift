@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import HolosCore
 import HolosSpeakers
@@ -35,10 +36,17 @@ public struct MeetingSummaryRecord: Codable, Sendable, Equatable {
     /// `createdAt` in milliseconds since 1970: JSON dates keep whole seconds, too coarse to tell a summary from a
     /// request made in the same second (`MeetingSummarySchedule.satisfied`).
     public var createdAtMilliseconds: Int64?
+    /// The speaker labels and people's names it was made with (`MeetingSummarySchedule.speakerStamp`), and a digest
+    /// of the names it used (`MeetingSummarySource.speakersDigest`): when the stamp changes, the summary is made again
+    /// if the names it would use changed, else only the stamp is updated.
+    public var speakerStamp: String?
+    public var speakersDigest: String?
 
     public init(schemaVersion: Int = currentVersion, sessionID: String, transcriptID: String, title: String,
                 summary: String, points: [String] = [], actions: [String] = [], model: String,
-                language: String? = nil, createdAt: Date = Date(), parts: Int? = nil, skippedParts: Int? = nil) {
+                language: String? = nil, createdAt: Date = Date(), parts: Int? = nil, skippedParts: Int? = nil,
+                speakerStamp: String? = nil, speakersDigest: String? = nil) {
+        self.speakerStamp = speakerStamp; self.speakersDigest = speakersDigest
         createdAtMilliseconds = MeetingSummarySchedule.milliseconds(createdAt)
         self.schemaVersion = schemaVersion; self.sessionID = sessionID; self.transcriptID = transcriptID
         self.title = title; self.summary = summary; self.points = points; self.actions = actions
@@ -162,6 +170,15 @@ public enum MeetingSummarySource {
 
     /// What a turn of nobody known is called in the prompt.
     static let unnamedSpeaker = "Someone"
+
+    /// A digest of the names the summary is made with: the speakers of its lines in the order they first speak, and
+    /// the people named.
+    public static func speakersDigest(_ input: MeetingSummaryInput) -> String {
+        var seen: Set<String> = []
+        let speakers = input.lines.map(\.speaker).filter { seen.insert($0).inserted }
+        let text = speakers.joined(separator: "\u{1F}") + "\u{1E}" + input.people.joined(separator: "\u{1F}")
+        return SHA256.hash(data: Data(text.utf8)).map { String(format: "%02x", $0) }.joined()
+    }
 
     /// The people a projection names (an explicit name, a linked or automatically matched person), most talk first;
     /// "Speaker 2" and the unnamed channel speaker ("Me") are not people.

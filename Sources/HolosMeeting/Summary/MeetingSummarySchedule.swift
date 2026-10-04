@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import HolosCore
 import HolosStorage
@@ -26,6 +27,9 @@ public enum MeetingSummarySchedule {
         public var exportsPending: Bool
         /// When summary.json was made, in milliseconds since 1970 (`MeetingSummaryRecord.createdAtMilliseconds`).
         public var summaryCreatedAt: Int64?
+        /// The speaker labels or people's names changed since the summary of the current transcript was made
+        /// (`speakerStamp`): it is checked again, and made again when the names it uses changed.
+        public var speakersChanged = false
 
         public init(sessionID: String, path: String, createdAt: Date, transcriptID: String?,
                     summaryTranscriptID: String?, idle: Bool, finished: Bool = true, exportsPending: Bool = false,
@@ -40,9 +44,10 @@ public enum MeetingSummarySchedule {
             exportsPending && transcriptID != nil && transcriptID == summaryTranscriptID
         }
 
-        /// The summary is missing or of an earlier transcript, or the transcript files still miss it.
+        /// The summary is missing or of an earlier transcript, the transcript files still miss it, or its speakers
+        /// changed.
         public var needsSummary: Bool {
-            transcriptID != nil && (transcriptID != summaryTranscriptID || exportsPending)
+            transcriptID != nil && (transcriptID != summaryTranscriptID || exportsPending || speakersChanged)
         }
     }
 
@@ -137,12 +142,25 @@ public enum MeetingSummarySchedule {
         }
     }
 
+    /// People's names and "Remember voices" as one string, for `speakerStamp`.
+    public static func voiceStamp(names: [String: String], recognition: Bool) -> String {
+        let text = names.sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value)" }.joined(separator: "\u{1F}")
+        return SHA256.hash(data: Data((text + (recognition ? "|r" : "|-")).utf8))
+            .map { String(format: "%02x", $0) }.joined()
+    }
+
+    /// What a summary's names depend on besides its transcript: the meeting's speaker labels (head and edit journal,
+    /// `SessionSummarizeCommand.speakerRevision`) and `voice` (`voiceStamp`).
+    public static func speakerStamp(session: URL, voice: String) -> String {
+        SessionSummarizeCommand.speakerRevision(session) + "|" + voice
+    }
+
     /// Milliseconds since 1970.
     public static func milliseconds(_ date: Date) -> Int64 { Int64((date.timeIntervalSince1970 * 1000).rounded(.down)) }
 
     /// The requests a summary already answers: summary.json is of the current transcript, its files are written,
-    /// and it was made at or after the request, to the millisecond (a summary without that time answers none). A request saved before a
-    /// quit whose command finished without the app is then not made again.
+    /// and it was made at or after the request, to the millisecond (a summary without that time answers none). A
+    /// request saved before a quit whose command finished without the app is then not made again.
     public static func satisfied(_ requests: [Request], by candidates: [Candidate]) -> Set<String> {
         var done: Set<String> = []
         for request in requests {
@@ -163,7 +181,7 @@ public enum MeetingSummarySchedule {
 
     /// The meetings under `root`, as `next` needs them: lock probes, the transcript pointer and summary.json only (no
     /// transcript is decoded), so a scan of many meetings stays cheap. Folders that cannot be read are left out.
-    public static func scan(root: URL) -> [Candidate] {
+    public static func scan(root: URL, voiceStamp: String? = nil) -> [Candidate] {
         SessionCatalog.sessionFolders(in: root).compactMap { session in
             guard let manifest = try? SessionArchive.readManifest(at: session) else { return nil }
             let active = (try? SessionArchive.isActive(at: session)) ?? true
@@ -172,11 +190,15 @@ public enum MeetingSummarySchedule {
             let summary = MeetingSummaryStore.readIfUsable(session: session, sessionID: manifest.id)
             let state = SessionCatalog.state(manifestStatus: manifest.status,
                                              liveness: RecorderChannel.liveness(session: session))
-            return Candidate(sessionID: manifest.id, path: session.path, createdAt: manifest.createdAt,
-                             transcriptID: transcriptID, summaryTranscriptID: summary?.transcriptID,
-                             idle: !active && !processing, finished: isFinished(state),
-                             exportsPending: summary?.exportsPending == true,
-                             summaryCreatedAt: summary?.createdAtMilliseconds)
+            var candidate = Candidate(sessionID: manifest.id, path: session.path, createdAt: manifest.createdAt,
+                                      transcriptID: transcriptID, summaryTranscriptID: summary?.transcriptID,
+                                      idle: !active && !processing, finished: isFinished(state),
+                                      exportsPending: summary?.exportsPending == true,
+                                      summaryCreatedAt: summary?.createdAtMilliseconds)
+            if let voiceStamp, let summary, summary.transcriptID == transcriptID {
+                candidate.speakersChanged = summary.speakerStamp != speakerStamp(session: session, voice: voiceStamp)
+            }
+            return candidate
         }
     }
 }
