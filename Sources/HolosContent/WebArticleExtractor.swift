@@ -38,11 +38,20 @@ import WebKit
     /// Runs a script in a web view with a time limit and returns its string result (see `run`).
     typealias Evaluator = @MainActor (_ body: String, _ webView: WKWebView, _ timeout: Duration) async throws -> String
 
+    /// The clock each document's load deadline is read from, and the timer that ends its wait for the load (see
+    /// `awaitDocument`). The real one is the continuous clock and `Task.sleep`; tests end the wait themselves.
+    struct LoadClock: Sendable {
+        var now: @Sendable () -> ContinuousClock.Instant = { .now }
+        /// Returns when the wait for the load has used `duration`; throws when cancelled.
+        var sleep: @Sendable (_ duration: Duration) async throws -> Void = { try await Task.sleep(for: $0) }
+    }
+
     private let options: Options
     private let configureWebView: @MainActor (WKWebViewConfiguration) -> Void
     /// The schemes a main-frame document may have: https, plus schemes tests serve themselves.
     private let documentSchemes: Set<String>
     private let evaluate: Evaluator
+    private let loadClock: LoadClock
 
     public convenience init(options: Options = Options()) {
         self.init(options: options, configure: { _ in })
@@ -50,14 +59,17 @@ import WebKit
 
     /// `configure` adjusts each web view's configuration before the view is made (tests register URL schemes);
     /// `documentSchemes` lists the schemes a main-frame document may have (tests add the ones they serve);
-    /// `evaluate` runs every script (tests stand in for WebKit's answers).
+    /// `evaluate` runs every script (tests stand in for WebKit's answers); `loadClock` times each document's load
+    /// phase in `extract` (tests decide when a load wait runs out).
     init(options: Options, documentSchemes: Set<String> = ["https"],
          configure: @escaping @MainActor (WKWebViewConfiguration) -> Void,
-         evaluate: @escaping Evaluator = { try await WebArticleExtractor.run($0, in: $1, timeout: $2) }) {
+         evaluate: @escaping Evaluator = { try await WebArticleExtractor.run($0, in: $1, timeout: $2) },
+         loadClock: LoadClock = LoadClock()) {
         self.options = options
         self.documentSchemes = documentSchemes
         self.configureWebView = configure
         self.evaluate = evaluate
+        self.loadClock = loadClock
     }
 
     /// Loads an `https` page and extracts its article.
@@ -157,7 +169,7 @@ import WebKit
                     payload = Payload(found: false, error: error.localizedDescription)
                 }
                 // The document read may already be on its way out: a navigation decided or started while the
-                // script ran (the script yields once before answering, so one the page had scheduled is decided
+                // script ran (the script yields before answering, so one the page had scheduled is decided
                 // before the answer arrives). Read the next document instead.
                 try loader.check()
                 if loader.moved(since: mark) { continue documentLoop }
@@ -204,9 +216,10 @@ import WebKit
     /// page that does not say in the time left whether it was parsed) is a timeout. Until the first navigation
     /// commits, the web view shows its empty initial document, which is never read.
     private func awaitDocument(in webView: WKWebView, loader: PageLoader, requested: URL) async throws {
+        let clock = loadClock
         let outcome = try await Self.waitForLoad(
-            timeout: options.loadTimeout, start: .now, now: { .now },
-            settle: { try await loader.waitUntilSettled(timeout: $0) },
+            timeout: options.loadTimeout, start: clock.now(), now: clock.now,
+            settle: { try await loader.waitUntilSettled(timeout: $0, sleep: clock.sleep) },
             probe: { timeLeft in
                 loader.dropUnstartedNavigation()
                 if loader.phase == .loading,
@@ -763,9 +776,12 @@ import WebKit
     """#
 
     /// Reads the document's address, refresh delay, and article in one synchronous pass (so they all describe
-    /// the same document), then yields to the page's event loop once before answering: a navigation the page had
+    /// the same document), then yields to the page's event loop twice before answering: a navigation the page had
     /// already scheduled (a script redirect, a meta refresh whose timer is due) is then decided before the answer
-    /// arrives, and the extractor sees it.
+    /// arrives, and the extractor sees it. Twice, because WebKit can throttle the timers of an offscreen page: a
+    /// redirect timer the page set (`setTimeout(() => location.href = …, 0)` after loading) can fire in the same
+    /// batch as the first pause, and the navigation it schedules starts only after that batch; the second pause
+    /// waits for the next batch.
     private static let extractionScript = readabilitySource + "\n" + spokenPredicate + "\n" + backMatterRemover
         + "\n" + headingRestorer
         + "\n" + blockWalker + "\n" + refreshReader + #"""
@@ -809,6 +825,7 @@ import WebKit
     } catch (error) {
       holosResult = { found: false, error: String(error) };
     }
+    await new Promise((resolve) => setTimeout(resolve, 0));
     await new Promise((resolve) => setTimeout(resolve, 0));
     return JSON.stringify(Object.assign(holosResult, holosDocument));
     """#
@@ -907,15 +924,18 @@ import WebKit
 
     /// Waits until the main frame shows a finished document with no navigation on its way (`finished`), a
     /// navigation fails or is refused (thrown), or `timeout` passes (`timedOut`). Cancelling the calling task ends
-    /// the wait at once with `CancellationError` (the caller then stops the web view).
-    func waitUntilSettled(timeout: Duration) async throws -> Outcome {
+    /// the wait at once with `CancellationError` (the caller then stops the web view). `sleep` is the timer (see
+    /// `OneShot.wait(timeout:orElse:sleep:)`).
+    func waitUntilSettled(timeout: Duration,
+                          sleep: @escaping @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) })
+        async throws -> Outcome {
         try Task.checkCancellation()
         try check()
         if phase == .finished { return .finished }
         let wait = OneShot<Outcome>()
         pending = wait
         defer { pending = nil }
-        return try await wait.wait(timeout: timeout, orElse: .success(.timedOut))
+        return try await wait.wait(timeout: timeout, orElse: .success(.timedOut), sleep: sleep)
     }
 
     /// Forgets a navigation that was allowed but never started (it stayed within the document).
@@ -1128,10 +1148,13 @@ final class OneShot<Value: Sendable>: Sendable {
         }
     }
 
-    /// Waits for the result, which becomes `timedOut` when nothing else arrives within `timeout`.
-    func wait(timeout: Duration, orElse timedOut: Result<Value, any Error>) async throws -> Value {
+    /// Waits for the result, which becomes `timedOut` when nothing else arrives within `timeout`: when `sleep`
+    /// (the timer, `Task.sleep` unless a test passes its own) returns.
+    func wait(timeout: Duration, orElse timedOut: Result<Value, any Error>,
+              sleep: @escaping @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) })
+        async throws -> Value {
         let timer = Task { [weak self] in
-            try? await Task.sleep(for: timeout)
+            try? await sleep(timeout)
             guard !Task.isCancelled else { return }
             self?.resume(with: timedOut)
         }

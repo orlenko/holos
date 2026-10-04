@@ -2,6 +2,7 @@ import CryptoKit
 import Foundation
 import HolosCore
 import HolosSynthesis
+import Synchronization
 import Testing
 import WebKit
 @testable import HolosContent
@@ -90,6 +91,16 @@ private enum Fixture {
     /// https page may not run scripts from that scheme, but it may show its images.)
     static let stalledImage = #"<img src="stall://slow.png" alt="">"#
 
+    /// Asks the `stall` scheme for `stall://parsed.png` once the document has been parsed, which says the page has
+    /// committed and its `readyState` is past "loading".
+    static let parsedSignal = #"""
+        <script>document.addEventListener("DOMContentLoaded", function () {
+          new Image().src = "stall://parsed.png";
+        });</script>
+        """#
+
+    static let parsed = URL(string: "stall://parsed.png")!
+
     static let neverFinishesLoading = """
         <!doctype html><html><head><title>Stalled</title></head><body><p>Short page.</p>\(stalledImage)</body></html>
         """
@@ -151,6 +162,8 @@ private enum Fixture {
     let requests: AsyncStream<URL>
     private let received: AsyncStream<URL>.Continuation
     private var held: [ObjectIdentifier: any WKURLSchemeTask] = [:]
+    /// Called with each request's address and the web view that made it, as it arrives.
+    var onRequest: (URL, WKWebView) -> Void = { _, _ in }
 
     override init() {
         (requests, received) = AsyncStream.makeStream(of: URL.self)
@@ -158,6 +171,7 @@ private enum Fixture {
 
     func webView(_ webView: WKWebView, start urlSchemeTask: any WKURLSchemeTask) {
         held[ObjectIdentifier(urlSchemeTask)] = urlSchemeTask
+        onRequest(urlSchemeTask.request.url!, webView)
         received.yield(urlSchemeTask.request.url!)
     }
 
@@ -183,6 +197,8 @@ private enum Fixture {
 
     private let answers: [String: Answer]
     private var held: [ObjectIdentifier: any WKURLSchemeTask] = [:]
+    /// Called with each request's address and the web view that made it, as it arrives.
+    var onRequest: (URL, WKWebView) -> Void = { _, _ in }
 
     init(_ answers: [String: Answer]) {
         self.answers = answers
@@ -190,6 +206,7 @@ private enum Fixture {
 
     func webView(_ webView: WKWebView, start urlSchemeTask: any WKURLSchemeTask) {
         let url = urlSchemeTask.request.url!
+        onRequest(url, webView)
         let id = ObjectIdentifier(urlSchemeTask)
         held[id] = urlSchemeTask
         switch answers[url.path] ?? .failure {
@@ -213,6 +230,50 @@ private enum Fixture {
 
     func webView(_ webView: WKWebView, stop urlSchemeTask: any WKURLSchemeTask) {
         held[ObjectIdentifier(urlSchemeTask)] = nil
+    }
+}
+
+/// A load timer the test runs out: every wait for a page load that is in progress, or starts later, times out once
+/// the test opens the gate, and not before, however slow the machine is. With `advancing`, the load clock stands
+/// still until then and moves on by each wait's whole share when it runs out, as if a real timer had run; without
+/// it, the load clock is the real one.
+private final class LoadGate: Sendable {
+    private struct State {
+        var open = false
+        var elapsed = Duration.zero
+    }
+
+    private let state = Mutex(State())
+    private let start = ContinuousClock.now
+    private let advancing: Bool
+
+    init(advancing: Bool = false) {
+        self.advancing = advancing
+    }
+
+    func open() {
+        state.withLock { $0.open = true }
+    }
+
+    /// Opens the gate once the extractor loading in `webView` shows `phase`. (A scheme handler can hear of a
+    /// navigation's request before the navigation delegate hears that it started.)
+    @MainActor func open(when webView: WKWebView, shows phase: PageLoader.Phase) {
+        Task { @MainActor in
+            while let loader = webView.navigationDelegate as? PageLoader {
+                if loader.phase == phase { return open() }
+                try? await Task.sleep(for: .milliseconds(10))
+            }
+        }
+    }
+
+    var clock: WebArticleExtractor.LoadClock {
+        WebArticleExtractor.LoadClock(
+            now: { [self] in advancing ? start + state.withLock(\.elapsed) : .now },
+            sleep: { [self] duration in
+                // Waiting for an event, not a deadline: the test's time limit bounds it.
+                while !state.withLock(\.open) { try await Task.sleep(for: .milliseconds(10)) }
+                if advancing { state.withLock { $0.elapsed += duration } }
+            })
     }
 }
 
@@ -244,16 +305,17 @@ private func isPrintable(_ text: String) -> Bool {
     private static let start = URL(string: "site://news.test/start")!
 
     /// Extracts the page the `site` handler serves at `/start`.
-    private func extractSite(_ handler: SiteSchemeHandler, options: WebArticleExtractor.Options) async throws
-        -> WebArticle {
-        let extractor = WebArticleExtractor(options: options, documentSchemes: ["site"]) {
-            $0.setURLSchemeHandler(handler, forURLScheme: "site")
-        }
+    private func extractSite(_ handler: SiteSchemeHandler, options: WebArticleExtractor.Options,
+                             loadClock: WebArticleExtractor.LoadClock = .init()) async throws -> WebArticle {
+        let extractor = WebArticleExtractor(
+            options: options, documentSchemes: ["site"],
+            configure: { $0.setURLSchemeHandler(handler, forURLScheme: "site") }, loadClock: loadClock)
         return try await extractor.extract(requested: Self.start) { $0.load(URLRequest(url: Self.start)) }
     }
 
+    /// Generous waits: a page that loads ends the wait at once, so only a page that does not makes them last.
     private let fast = WebArticleExtractor.Options(
-        loadTimeout: .seconds(20), settle: .milliseconds(100), retryWindow: .seconds(10), minimumWords: 50)
+        loadTimeout: .seconds(60), settle: .milliseconds(100), retryWindow: .seconds(30), minimumWords: 50)
 
     @Test func assemblyNormalizesWhitespaceAndDropsNoise() {
         let url = URL(string: "https://blog.example.test/post")!
@@ -529,7 +591,7 @@ private func isPrintable(_ text: String) -> Bool {
     }
 
     @Test func aPageWithoutAnArticleFailsWithAHint() async throws {
-        let options = WebArticleExtractor.Options(loadTimeout: .seconds(20), settle: .milliseconds(50),
+        let options = WebArticleExtractor.Options(loadTimeout: .seconds(60), settle: .milliseconds(50),
                                                   retryWindow: .milliseconds(200), minimumWords: 50)
         do {
             _ = try await WebArticleExtractor(options: options).extract(html: Fixture.notAnArticle,
@@ -542,7 +604,7 @@ private func isPrintable(_ text: String) -> Bool {
     }
 
     @Test func tooFewWordsIsNoArticle() async throws {
-        let options = WebArticleExtractor.Options(loadTimeout: .seconds(20), settle: .milliseconds(50),
+        let options = WebArticleExtractor.Options(loadTimeout: .seconds(60), settle: .milliseconds(50),
                                                   retryWindow: .milliseconds(200), minimumWords: 5_000)
         await #expect(throws: HolosError.self) {
             _ = try await WebArticleExtractor(options: options).extract(html: Fixture.article, baseURL: Fixture.base)
@@ -557,7 +619,7 @@ private func isPrintable(_ text: String) -> Bool {
         }
     }
 
-    @Test(arguments: [
+    @Test(.timeLimit(.minutes(1)), arguments: [
         // Script redirect while the page parses.
         Fixture.leavingHTTPS("", #"<script>location.replace("http://127.0.0.1:9/next");</script>"#),
         // Meta refresh.
@@ -566,8 +628,10 @@ private func isPrintable(_ text: String) -> Bool {
         Fixture.leavingHTTPS("", #"<script>setTimeout(function () { location.href = "http://127.0.0.1:9/next"; }, 250);</script>"#),
     ])
     func aMainFrameNavigationOffHTTPSIsRefused(page: String) async throws {
-        let options = WebArticleExtractor.Options(loadTimeout: .seconds(20), settle: .milliseconds(100),
-                                                  retryWindow: .seconds(5), minimumWords: 50)
+        // The page has no article, so the reads go on until the refusal: a window far longer than the page's
+        // timer, however late that fires.
+        let options = WebArticleExtractor.Options(loadTimeout: .seconds(60), settle: .milliseconds(100),
+                                                  retryWindow: .seconds(45), minimumWords: 50)
         do {
             _ = try await WebArticleExtractor(options: options).extract(html: page, baseURL: Fixture.base)
             Issue.record("Expected the http navigation to be refused.")
@@ -586,12 +650,27 @@ private func isPrintable(_ text: String) -> Bool {
             "/start": .page(Fixture.stale(redirect)),
             "/slow": .page(Fixture.article, after: .milliseconds(400)),
         ])
-        let options = WebArticleExtractor.Options(loadTimeout: .seconds(20), settle: .milliseconds(50),
+        let options = WebArticleExtractor.Options(loadTimeout: .seconds(45), settle: .milliseconds(50),
                                                   retryWindow: .seconds(3), minimumWords: 50)
         let article = try await extractSite(handler, options: options)
         #expect(article.title == "The Last Keeper of the Northern Cape")
         #expect(article.url == URL(string: "site://news.test/slow"))
         #expect(!article.spokenText.contains("ferry"))
+    }
+
+    @Test(.timeLimit(.minutes(1))) func aSlowPageThatMovesOnAfterLoadingIsReadWhereItLands() async throws {
+        // A first page that answers late, as a busy server or machine does: by then WebKit throttles the
+        // offscreen page's timers, and its redirect timer can fire in the same batch as the read's own pause. The
+        // read must still not return the first page. (With a single pause in the read, this test failed.)
+        let handler = SiteSchemeHandler([
+            "/start": .page(Fixture.stale(Fixture.redirects(to: "slow")[0]), after: .seconds(3)),
+            "/slow": .page(Fixture.article),
+        ])
+        let options = WebArticleExtractor.Options(loadTimeout: .seconds(45), settle: .milliseconds(50),
+                                                  retryWindow: .seconds(3), minimumWords: 50)
+        let article = try await extractSite(handler, options: options)
+        #expect(article.title == "The Last Keeper of the Northern Cape")
+        #expect(article.url == URL(string: "site://news.test/slow"))
     }
 
     @Test(.timeLimit(.minutes(1)), arguments: Fixture.redirects(to: "never").indices)
@@ -601,10 +680,16 @@ private func isPrintable(_ text: String) -> Bool {
             "/start": .page(Fixture.stale(redirect)),
             "/never": .never,
         ])
-        let options = WebArticleExtractor.Options(loadTimeout: .seconds(2), settle: .milliseconds(50),
+        // The first page loads however long it takes; the load wait runs out only once the page has moved on and
+        // the navigation to the destination has started.
+        let gate = LoadGate()
+        handler.onRequest = { url, webView in
+            if url.path == "/never" { gate.open(when: webView, shows: .provisional) }
+        }
+        let options = WebArticleExtractor.Options(loadTimeout: .seconds(600), settle: .milliseconds(50),
                                                   retryWindow: .seconds(3), minimumWords: 50)
         do {
-            let article = try await extractSite(handler, options: options)
+            let article = try await extractSite(handler, options: options, loadClock: gate.clock)
             Issue.record("Expected a timeout, read \(article.title) at \(article.address).")
         } catch let HolosError.unavailable(message) {
             #expect(message.contains("Timed out loading site://news.test/never"), "\(message)")
@@ -616,7 +701,7 @@ private func isPrintable(_ text: String) -> Bool {
             "/start": .page(Fixture.stale(Fixture.redirects(to: "gone")[0])),
             "/gone": .failure,
         ])
-        let options = WebArticleExtractor.Options(loadTimeout: .seconds(20), settle: .milliseconds(50),
+        let options = WebArticleExtractor.Options(loadTimeout: .seconds(45), settle: .milliseconds(50),
                                                   retryWindow: .seconds(3), minimumWords: 50)
         do {
             let article = try await extractSite(handler, options: options)
@@ -645,7 +730,7 @@ private func isPrintable(_ text: String) -> Bool {
     @Test(.timeLimit(.minutes(1))) func aPageThatKeepsReloadingIsAnError() async throws {
         let reload = #"<script>addEventListener("load", () => setTimeout(() => location.reload(), 0));</script>"#
         let handler = SiteSchemeHandler(["/start": .page(Fixture.stale(reload))])
-        let options = WebArticleExtractor.Options(loadTimeout: .seconds(20), settle: .milliseconds(50),
+        let options = WebArticleExtractor.Options(loadTimeout: .seconds(45), settle: .milliseconds(50),
                                                   retryWindow: .seconds(3), minimumWords: 50)
         do {
             let article = try await extractSite(handler, options: options)
@@ -668,15 +753,22 @@ private func isPrintable(_ text: String) -> Bool {
         }
     }
 
-    @Test func aCommittedParsedPageIsReadWhenItsLoadTimesOut() async throws {
+    @Test(.timeLimit(.minutes(1))) func aCommittedParsedPageIsReadWhenItsLoadTimesOut() async throws {
         // The page commits and parses, but an image never arrives, so loading never finishes.
         let handler = StallingSchemeHandler()
-        // The load wait gets 1 s of the 2 s deadline; the ready-state probe gets what is left.
-        let options = WebArticleExtractor.Options(loadTimeout: .seconds(2), settle: .milliseconds(50),
+        // The load wait runs out once the page says it has been parsed; the ready-state probe then gets the rest
+        // of a long deadline.
+        let gate = LoadGate()
+        handler.onRequest = { url, webView in
+            if url == Fixture.parsed { gate.open(when: webView, shows: .loading) }
+        }
+        let options = WebArticleExtractor.Options(loadTimeout: .seconds(600), settle: .milliseconds(50),
                                                   retryWindow: .seconds(10), minimumWords: 50)
-        let extractor = WebArticleExtractor(options: options) { $0.setURLSchemeHandler(handler, forURLScheme: "stall") }
+        let extractor = WebArticleExtractor(
+            options: options, configure: { $0.setURLSchemeHandler(handler, forURLScheme: "stall") },
+            loadClock: gate.clock)
         let article = try await extractor.extract(
-            html: Fixture.article(backMatter: Fixture.stalledImage), baseURL: Fixture.base)
+            html: Fixture.article(backMatter: Fixture.stalledImage + Fixture.parsedSignal), baseURL: Fixture.base)
         #expect(article.blocks.map(\.text).contains(Fixture.paragraphs[1]))
         #expect(await handler.firstRequest() == URL(string: "stall://slow.png"))
     }
@@ -776,19 +868,26 @@ private func isPrintable(_ text: String) -> Bool {
         #expect(waits.isEmpty)
     }
 
-    @Test func aProbeThatNeverAnswersGetsOnlyWhatIsLeftOfTheLoadDeadline() async throws {
+    @Test(.timeLimit(.minutes(1))) func aProbeThatNeverAnswersGetsOnlyWhatIsLeftOfTheLoadDeadline() async throws {
         // The page commits but never finishes loading, and never answers a script: the ready-state probe must
         // not start a fresh `loadTimeout` after the load wait used its share.
         let handler = StallingSchemeHandler()
         let log = ScriptLog()
+        // The load wait runs out once the page has committed and been parsed, and the load clock then moves on by
+        // the wait's whole share, as a real timer would have.
+        let gate = LoadGate(advancing: true)
+        handler.onRequest = { url, webView in
+            if url == Fixture.parsed { gate.open(when: webView, shows: .loading) }
+        }
         let loadTimeout = Duration.seconds(4)
         let options = WebArticleExtractor.Options(loadTimeout: loadTimeout, settle: .milliseconds(50),
                                                   retryWindow: .milliseconds(100), minimumWords: 50)
         let extractor = WebArticleExtractor(
             options: options, configure: { $0.setURLSchemeHandler(handler, forURLScheme: "stall") },
-            evaluate: log.neverAnswering)
+            evaluate: log.neverAnswering, loadClock: gate.clock)
         do {
-            _ = try await extractor.extract(html: Fixture.article(backMatter: Fixture.stalledImage),
+            _ = try await extractor.extract(html: Fixture.article(backMatter: Fixture.stalledImage
+                                                + Fixture.parsedSignal),
                                             baseURL: Fixture.base)
             Issue.record("Expected the load to time out.")
         } catch let HolosError.unavailable(message) {
@@ -796,12 +895,13 @@ private func isPrintable(_ text: String) -> Bool {
         }
         #expect(log.calls.map(\.script) == [WebArticleExtractor.readyStateScript])
         let reserve = WebArticleExtractor.scriptReserve(for: loadTimeout)
-        #expect(log.calls.allSatisfy { $0.timeout <= reserve }, "\(log.calls.map(\.timeout))")
+        #expect(log.calls.map(\.timeout) == [reserve])
     }
 
     @Test func everyReadGetsOnlyWhatIsLeftOfTheReadingDeadline() async throws {
         let log = ScriptLog()
-        let options = WebArticleExtractor.Options(loadTimeout: .seconds(5), settle: .milliseconds(50),
+        // A long load timeout, so the page loads however slowly: what is checked holds for any `loadTimeout`.
+        let options = WebArticleExtractor.Options(loadTimeout: .seconds(60), settle: .milliseconds(50),
                                                   retryWindow: .milliseconds(200), minimumWords: 50)
         let extractor = WebArticleExtractor(options: options, configure: { _ in }, evaluate: log.noArticle)
         await #expect(throws: HolosError.self) {
@@ -1321,7 +1421,7 @@ private func isPrintable(_ text: String) -> Bool {
         let webView = WKWebView(frame: .zero)
         let answer = try await WebArticleExtractor.run(
             WebArticleExtractor.spokenPredicate + "\nreturn JSON.stringify(\(json).map(holosSpoken));",
-            in: webView, timeout: .seconds(20))
+            in: webView, timeout: .seconds(60))
         let page = try JSONDecoder().decode([Bool].self, from: Data(answer.utf8))
         let swift = samples.map(WebArticle.isSpoken)
         for (index, sample) in samples.enumerated() {
