@@ -466,3 +466,55 @@ private func listed(name: String, source: MeetingNameSource, generated: String?)
     #expect(markdown.hasPrefix("# Weekly engineering sync\n"))
     #expect(markdown.contains("## Summary"))
 }
+
+// MARK: - Editing in the list, and retrying
+
+@Test func anEditIsComparedWithTheTitleShownWhenItBegan() {
+    // The editor opened on the generated title; a new summary finished meanwhile and the list read it.
+    let atStart = listed(name: "Meeting 2026-10-03 14:00", source: .default, generated: "Parser plan")
+    let edit = MeetingRenameEdit(atStart)
+    #expect(edit.text == "Parser plan")
+    let refreshed = listed(name: "Meeting 2026-10-03 14:00", source: .default, generated: "Release schedule")
+    // Left as it was: nothing, though the meeting now shows another title.
+    #expect(edit.request(typed: "Parser plan") == nil)
+    #expect(MeetingRenameRequest.name(typed: "Parser plan", summary: refreshed) == .user("Parser plan"),
+            "What comparing with the refreshed meeting would have saved")
+    #expect(edit.request(typed: "Parser plan v2") == .user("Parser plan v2"))
+    #expect(edit.sessionID == "S")
+}
+
+@Test func updatingTranscriptFilesAsksForTheSameNameAgain() {
+    let named = listed(name: String(repeating: "Quarterly roadmap review ", count: 4), source: .user,
+                       generated: "Parser plan")
+    #expect(MeetingRenameRequest.retry(named) == .user(named.name))
+    let generated = listed(name: "Meeting 2026-10-03 14:00", source: .default, generated: "Parser plan")
+    #expect(MeetingRenameRequest.retry(generated) == .generated)
+}
+
+@Test func filesLeftWithTheOldTitleAreRememberedPerMeeting() throws {
+    let suite = "holos-tests-\(UUID().uuidString)"
+    let defaults = try #require(UserDefaults(suiteName: suite))
+    defer { defaults.removePersistentDomain(forName: suite) }
+    let stale = PendingExports.afterRename(defaults: defaults)
+    stale.mark("A")
+    #expect(PendingExports.afterRename(defaults: defaults).contains("A"), "Kept for the next launch.")
+    // Apart from the files a review could not rewrite.
+    #expect(!PendingExports(defaults: defaults).contains("A"))
+    stale.clear("A")
+    #expect(defaults.object(forKey: PendingExports.renameKey) == nil)
+}
+
+@Test func theSameLongNameAskedForAgainIsNotCut() async throws {
+    let temp = try TemporaryDirectory("rename")
+    defer { temp.remove() }
+    // A name given before names were cut, longer than 60 characters.
+    let long = String(repeating: "Quarterly roadmap review ", count: 4).trimmingCharacters(in: .whitespaces)
+    let session = try await renameSession(in: temp.url, name: long)
+    var object = try meetingJSON(session)
+    object["nameSource"] = "user"
+    try AtomicFile.write(try JSONSerialization.data(withJSONObject: object), to: SessionPaths.meetingInfo(session))
+    let outcome = await rename(session, long)
+    #expect(outcome.status == .unchanged)
+    #expect(outcome.exportsUpdated)
+    #expect(try SessionArchive.readManifest(at: session).name == long)
+}

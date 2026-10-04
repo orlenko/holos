@@ -76,10 +76,11 @@ final class MeetingsPane: NSViewController, NSTableViewDataSource, NSTableViewDe
     var summaryRequested: (String) -> Bool = { _ in false }
     /// Why Apple Intelligence cannot summarize here (Summarize is off with it as the tooltip); nil when it can.
     var summaryUnavailableReason: () -> String? = { nil }
-    /// A meeting was renamed (its ID and the title it shows now): Review and the live transcript follow.
-    var onRenamed: ((String, String) -> Void)?
-    /// The meeting whose name is being edited in the list; the rows are not rebuilt meanwhile.
-    private var renamingID: String?
+    /// A meeting was renamed (its ID): Review follows (the live transcript's header follows the list).
+    var onRenamed: ((String) -> Void)?
+    /// The name being edited in the list, with the meeting as it was when the editor opened (what is saved is compared
+    /// with that); the rows are not rebuilt meanwhile.
+    private var renaming: MeetingRenameEdit?
     /// The rows were asked to be rebuilt while a name was edited: they are once it ends.
     private var reloadDeferred = false
     private var pendingSelection: String?
@@ -432,7 +433,7 @@ final class MeetingsPane: NSViewController, NSTableViewDataSource, NSTableViewDe
     /// Rebuilds the rows from `sessions` and the search, keeping the meeting `id` selected. Not while a name is edited
     /// (the editor is in a row): then once the editing ends.
     private func reloadRows(selecting id: String?, scroll: Bool = false) {
-        if renamingID != nil {
+        if renaming != nil {
             reloadDeferred = true
             return
         }
@@ -637,6 +638,10 @@ final class MeetingsPane: NSViewController, NSTableViewDataSource, NSTableViewDe
             if PendingExports().contains(summary.id) {
                 parts.append("The transcript files are older than the speaker labels; open Review to update them.")
             }
+            if PendingExports.afterRename().contains(summary.id) {
+                parts.append("The transcript files still show the meeting's old title; right-click it and choose "
+                    + "Update Transcript Files.")
+            }
             statusLabel.stringValue = parts.joined(separator: " ")
         } else {
             statusLabel.stringValue = ""
@@ -827,33 +832,42 @@ final class MeetingsPane: NSViewController, NSTableViewDataSource, NSTableViewDe
     /// The editor in the meeting's row, with the title it shows selected. Return saves (an empty name: the generated
     /// title), Escape cancels.
     private func beginRename(_ summary: SessionSummary) {
-        guard renamingID == nil, let index = rowIndex(of: summary.id) else { return }
+        guard renaming == nil, let index = rowIndex(of: summary.id) else { return }
         if table.selectedRow != index {
             table.selectRowIndexes(IndexSet(integer: index), byExtendingSelection: false)
         }
         table.scrollRowToVisible(index)
         guard let cell = table.view(atColumn: 0, row: index, makeIfNecessary: true) as? MeetingRowView else { return }
-        renamingID = summary.id
+        let edit = MeetingRenameEdit(summary)
+        renaming = edit
         let id = summary.id
         let placeholder = summary.generatedSummary.map { "Leave empty to use “\($0.title)”" }
             ?? "Leave empty to use the default name"
-        cell.beginRenaming(summary.displayTitle, placeholder: placeholder,
+        cell.beginRenaming(edit.text, placeholder: placeholder,
                            commit: { [weak self] text in self?.endRename(id, saving: text) },
                            cancel: { [weak self] in self?.endRename(id, saving: nil) })
     }
 
     /// The editor closed: the rows are rebuilt if they were asked to be meanwhile, and the name is saved when it
-    /// changes what the meeting shows (`saving` nil: cancelled).
+    /// changes the title the editor opened with (`saving` nil: cancelled). A refresh while it was open (a summary
+    /// finished) does not count as an edit.
     private func endRename(_ id: String, saving text: String?) {
-        guard renamingID == id else { return }
-        renamingID = nil
+        guard let edit = renaming, edit.sessionID == id else { return }
+        renaming = nil
         if reloadDeferred {
             reloadDeferred = false
             reloadKeepingSelection()
         }
-        guard let text, let summary = sessions.first(where: { $0.id == id }) else { return }
-        guard let name = MeetingRenameRequest.name(typed: text, summary: summary) else { return }
-        rename(summary, to: name)
+        guard let text, let request = edit.request(typed: text) else { return }
+        rename(sessions.first(where: { $0.id == id }) ?? edit.original, to: request)
+    }
+
+    /// The menu's Update Transcript Files, after a rename whose transcript files could not be rewritten: the same
+    /// rename again, which writes no name and rewrites them.
+    @objc private func updateTranscriptFiles(_ sender: NSMenuItem) {
+        guard let id = sender.representedObject as? String, let summary = sessions.first(where: { $0.id == id }),
+              enabledActions(summary).contains(.rename) else { return }
+        rename(summary, to: .retry(summary))
     }
 
     /// The menu's Use Generated Title.
@@ -887,13 +901,21 @@ final class MeetingsPane: NSViewController, NSTableViewDataSource, NSTableViewDe
                 self.sessions[index].nameSource = source
                 self.reloadKeepingSelection()
                 self.updateLiveHeader()
-                self.onRenamed?(id, self.sessions[index].displayTitle)
+                self.onRenamed?(id)
+            }
+            // Files left with the old title are remembered, so the meeting says so and offers Update Transcript Files.
+            let stale = PendingExports.afterRename()
+            switch outcome.exitCode {
+            case 0: stale.clear(id)
+            case 3: stale.mark(id)
+            default: break
             }
             self.refresh()
             switch outcome.exitCode {
             case 0: break
             case 3: self.showSheet("“\(shown)” was renamed, but its transcript files still show the old title.",
-                                   outcome.message)
+                                   outcome.message + "\n\nRight-click the meeting and choose Update Transcript Files "
+                                       + "to try again.")
             default: self.showSheet("Voice is Local could not rename “\(shown)”.", outcome.message)
             }
         }
@@ -992,7 +1014,8 @@ final class PreviewingWindow: NSWindow {
 
 extension MeetingsPane: NSMenuDelegate {
     /// The row clicked, which becomes the selection: Open, Live Transcript, Review…, Open Transcript, Show in Finder,
-    /// Save Transcript As…; Rename… (⌘R) and, while the user's name hides a generated title, Use Generated Title;
+    /// Save Transcript As…; Rename… (⌘R), while the user's name hides a generated title Use Generated Title, and after
+    /// a rename whose transcript files could not be rewritten Update Transcript Files;
     /// Summarize Again; Make Final Transcript Now (also for a meeting queued automatically, which
     /// it upgrades), and Cancel Final Transcript while it is queued or running; Recover…, Label Speakers, Delete
     /// Audio…, Delete Meeting…. Each is enabled as its button is.
@@ -1033,6 +1056,16 @@ extension MeetingsPane: NSMenuDelegate {
             item.representedObject = summary.id
             item.isEnabled = enabled.contains(.rename)
             item.toolTip = "Shows “\(generated)”, the title Apple Intelligence wrote, instead of “\(summary.name)”."
+            menu.addItem(item)
+        }
+        // A rename whose transcript files could not be rewritten: they are, by the same rename again.
+        if PendingExports.afterRename().contains(summary.id) {
+            let item = NSMenuItem(title: "Update Transcript Files", action: #selector(updateTranscriptFiles(_:)),
+                                  keyEquivalent: "")
+            item.target = self
+            item.representedObject = summary.id
+            item.isEnabled = enabled.contains(.rename)
+            item.toolTip = "Writes the meeting's transcript files again with its title; nothing is summarized again."
             menu.addItem(item)
         }
 

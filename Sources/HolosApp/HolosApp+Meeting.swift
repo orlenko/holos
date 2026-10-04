@@ -691,7 +691,7 @@ extension HolosAppDelegate: NSMenuDelegate {
         pane.summaryRequested = { [weak self] id in self?.meeting.summaries.requested.contains(id) ?? false }
         pane.summaryUnavailableReason = { [weak self] in self?.meetingSummaryUnavailableReason }
         // A rename shows at once in the meeting's Review window (the live transcript's header follows the list).
-        pane.onRenamed = { [weak self] id, title in self?.meeting.reviewWindows[id]?.meetingTitle = title }
+        pane.onRenamed = { [weak self] id in self?.refreshReviewTitle(id) }
         pane.update(summarizing: meeting.summaries.running?.sessionID)
         pane.update(meetingState: controller.state)
         meeting.meetingsPane = pane
@@ -879,6 +879,18 @@ extension HolosAppDelegate: NSMenuDelegate {
     }
 
     // MARK: - Review window (PR9)
+
+    /// The meeting's Review window, when open, takes the title the Meetings list shows now (`MeetingNaming.currentTitle`,
+    /// read off the main actor): after a rename, and after a summary, whose generated title may be the one shown.
+    func refreshReviewTitle(_ sessionID: String) {
+        guard let window = meeting.reviewWindows[sessionID], let controller = meeting.controller else { return }
+        let session = controller.sessionURL(sessionID)
+        Task { [weak self, weak window] in
+            let title = await Task.detached { MeetingNaming.currentTitle(session: session) }.value
+            guard let self, let window, let title, self.meeting.reviewWindows[sessionID] === window else { return }
+            window.meetingTitle = title
+        }
+    }
 
     /// Opens the review window of a labelled meeting (or brings it forward) and reports `reviewOpened`, which clears
     /// a "Name Speakers" offer for it. The labels load off the main actor first. When the meeting cannot be reviewed,

@@ -118,31 +118,46 @@ public struct PendingVoiceSamples {
 /// Meetings whose transcript files (`exports/`) are older than their saved speaker labels because rewriting them
 /// failed when a review window closed (docs/meeting-design.md §5.10). Kept in UserDefaults, which a full disk does not
 /// stop, so Meetings can say so and the meeting's next review rewrites them. Holds session IDs only.
+///
+/// `afterRename` keeps, apart, the meetings renamed whose transcript files still show the old title (§4.17): Meetings
+/// says so and offers Update Transcript Files.
 public struct PendingExports {
     public static let key = "meeting.exportsPending"
+    public static let renameKey = "meeting.renameExportsPending"
     private let defaults: UserDefaults
+    private let key: String
 
     public init(defaults: UserDefaults = .standard) {
-        self.defaults = defaults
+        self.init(defaults: defaults, key: Self.key)
     }
 
-    public var sessionIDs: Set<String> { Set(defaults.stringArray(forKey: Self.key) ?? []) }
+    private init(defaults: UserDefaults, key: String) {
+        self.defaults = defaults
+        self.key = key
+    }
+
+    /// The meetings renamed whose transcript files could not be rewritten.
+    public static func afterRename(defaults: UserDefaults = .standard) -> PendingExports {
+        PendingExports(defaults: defaults, key: renameKey)
+    }
+
+    public var sessionIDs: Set<String> { Set(defaults.stringArray(forKey: key) ?? []) }
 
     public func contains(_ sessionID: String) -> Bool { sessionIDs.contains(sessionID) }
 
     public func mark(_ sessionID: String) {
         var ids = sessionIDs
         guard ids.insert(sessionID).inserted else { return }
-        defaults.set(ids.sorted(), forKey: Self.key)
+        defaults.set(ids.sorted(), forKey: key)
     }
 
     public func clear(_ sessionID: String) {
         var ids = sessionIDs
         guard ids.remove(sessionID) != nil else { return }
         if ids.isEmpty {
-            defaults.removeObject(forKey: Self.key)
+            defaults.removeObject(forKey: key)
         } else {
-            defaults.set(ids.sorted(), forKey: Self.key)
+            defaults.set(ids.sorted(), forKey: key)
         }
     }
 }

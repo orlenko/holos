@@ -337,6 +337,8 @@ extension HolosAppDelegate {
         Self.summaryLog.notice("Summary of \(sessionID, privacy: .public) ended with \(code, privacy: .public) (\(outcome?.status ?? "no result", privacy: .public))")
         meeting.controller?.endUsing(sessionID)
         meeting.maintenanceEnded[sessionID, default: 0] += 1
+        // A new generated title may be the one the meeting shows: an open Review window takes it.
+        refreshReviewTitle(sessionID)
         meeting.meetingsPane?.update(summarizing: nil)
         meeting.meetingsPane?.refresh()
         // Review asked for while the summary was made.

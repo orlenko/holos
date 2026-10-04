@@ -5054,12 +5054,22 @@ title and badges, with the title shown selected; Return or leaving the field sav
 cancels, and the rows are not rebuilt meanwhile (the 2 s refresh waits). Saving the title shown
 unchanged (compared as typed, before any cleaning, so a longer name saved before names were cut is
 never rewritten by opening the editor, and a generated or default title left as it was never
-becomes the user's), or the user's own name again, does nothing (`MeetingRenameRequest`). The command runs
+becomes the user's), or the user's own name again, does nothing (`MeetingRenameRequest`); it is
+compared with the meeting as it was when the editor opened (`MeetingRenameEdit`), so a summary that
+finishes while the field is open (the 2 s refresh reads the new title) never turns the old title
+into the user's name. A rename whose transcript files could not be rewritten (exit 3) is
+remembered (`PendingExports.afterRename`, session IDs in UserDefaults): the meeting's status line
+says the files still show the old title, and its menu offers Update Transcript Files, which runs
+the same rename again (`MeetingRenameRequest.retry`: the user's name exactly, which the command does
+not clean when it equals the current one, or the generated title) and clears the mark on exit 0.
+An unedited save in the editor never runs it. The command runs
 in the app process while the meeting is registered as in use (`beginUsing`, "Renaming…"), so no
 command or background job starts on it meanwhile, and a meeting in use is refused with an alert.
 The new title shows at once in the list and the search, Review's window title
 (`ReviewWindow.meetingTitle`, also the name Save As… suggests) and the live transcript's header
-once the meeting is saved; the app's alerts name meetings by the title shown.
+once the meeting is saved; the app's alerts name meetings by the title shown. An open Review window
+takes the title the list shows (`MeetingNaming.currentTitle`) after a rename and after a summary
+ends, whose generated title may be the one shown.
 
 **Making it** (`MeetingSummarizer`, `SessionSummarizeCommand`). The current transcript as the
 exports show it (`SessionExports.exportDocument`), as speaker lines ("Alex: …"): an automatic

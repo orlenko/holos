@@ -31,6 +31,33 @@ public enum MeetingRenameRequest: Sendable, Equatable {
     }
 }
 
+extension MeetingRenameRequest {
+    /// The rename the meeting has now, asked for again (Update Transcript Files, after a rename whose files could not
+    /// be rewritten): its name as it is (the command does not clean a name equal to the current one), or the generated
+    /// title.
+    public static func retry(_ summary: SessionSummary) -> MeetingRenameRequest {
+        summary.nameSource.isUser ? .user(summary.name) : .generated
+    }
+}
+
+/// One edit of a meeting's name in the Meetings list: the meeting as it was when the editor opened, so what is saved
+/// is compared with the title the editor started from, not with one a refresh read meanwhile (a summary finished
+/// while the field was open). Pure.
+public struct MeetingRenameEdit: Sendable, Equatable {
+    public let original: SessionSummary
+
+    public init(_ summary: SessionSummary) { original = summary }
+
+    public var sessionID: String { original.id }
+    /// What the editor starts with: the title shown.
+    public var text: String { original.displayTitle }
+
+    /// What saving `typed` asks for (`MeetingRenameRequest.name`, against the meeting as it was when the edit began).
+    public func request(typed: String) -> MeetingRenameRequest? {
+        MeetingRenameRequest.name(typed: typed, summary: original)
+    }
+}
+
 /// `voiceislocal session rename` and the Meetings list's Rename… (docs/meeting-design.md §4.17): gives a finished
 /// meeting the user's name (`MeetingNameSource.user`, which no generated title replaces), or gives it back its
 /// generated title (`default`, the name Voice is Local made up). The name is the manifest's; where it came from is
@@ -240,10 +267,13 @@ public enum SessionRenameCommand {
     /// is Local made up (`MeetingNaming.defaultName`).
     static func target(_ typed: String?, manifest: SessionManifest, meeting: MeetingInfo, timeZone: TimeZone)
         -> (name: String, source: MeetingNameSource) {
-        if let typed, let name = MeetingNaming.cleanUserName(typed) { return (name, .user) }
         let current = MeetingNaming.source(
             stored: meeting.nameSource, name: manifest.name,
             importedFileName: meeting.origin == .imported ? meeting.importedFileName : nil)
+        // The user's name asked for again exactly (Update Transcript Files): kept as it is, even one given before
+        // names were cut.
+        if let typed, current.isUser, typed == manifest.name { return (manifest.name, .user) }
+        if let typed, let name = MeetingNaming.cleanUserName(typed) { return (name, .user) }
         return (MeetingNaming.defaultName(current: manifest.name, currentSource: current,
                                           createdAt: manifest.createdAt, origin: meeting.origin,
                                           importedFileName: meeting.importedFileName, timeZone: timeZone), .default)

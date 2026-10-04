@@ -1068,7 +1068,9 @@ so the Markdown heading follows (nothing is summarized again). Rename is off whi
 records or saves, while a command, a final transcript or a summary works on it, and for a
 meeting that is not finished (interrupted, incomplete, failed or damaged: Recover first); a
 refusal, also for a transcript that cannot be read, says why in an alert and changes nothing.
-`voiceislocal session rename` does the same from Terminal.
+When a rename's transcript files cannot be rewritten, the meeting says so below the list and
+its menu offers Update Transcript Files, which tries again. An open Review window's title follows
+renames and new generated titles. `voiceislocal session rename` does the same from Terminal.
 
 Titles and summaries are written on this Mac by
 Apple's on-device model once a meeting's transcript is final, and again when a final transcript
