@@ -4996,19 +4996,14 @@ stops it as `busy`; any other model error fails the run, so a summary of part of
 never saved as a whole one, and an older summary stays.
 
 **Checking the answer** (`MeetingSummaryDraft.cleaned`). The title: one line, quotes, "Title:"
-and a final period removed, a leading "Meeting about/on/…", "Meeting:", "Réunion sur …" removed,
-dates written with a month name and weekdays removed (numbers alone are kept, as they can be
-versions, "Release 1.2.3", "Python 3.11.8", and so are relative days such as "today", since no list of them covers
-every language; the prompt asks for no dates; month and weekday names of the summary's language from
-the system's calendar, and English and French; short weekday names are not, as Spanish "mar" is
-also "sea"; Chinese and Japanese dates and weekdays by pattern, "2026年10月3日", "10月", "月曜日",
-"星期一", with a particle left at either end, "の", "的", removed; Korean the same way, "2026년 10월 3일", "10월 3일의",
-"월요일"; in all three a year only before a month and a day only after one, so "10年計画", "3日間", "10년 계획"
-and "3일 워크숍" stay), at most 8 words and 60 characters (at a space when one
+and a final period removed, a leading "Meeting about/on/…", "Meeting:", "Réunion sur …" removed
+(dates are not removed: the prompt asks for none, no list of date words covers every language, and such lists took
+"Monday.com" and version numbers for dates), at most 8 words and 60 characters (at a space when one
 is past half of that, else between characters, for text without spaces) without a dangling "and", "of",
 "the", "de", "pour" …; "Meeting" alone is no title. The summary: one line, at most two
-sentences and 320 characters. Key points and action items: bullets and numbering removed, "None"
-and repeats dropped, at most five each, a key point that repeats an action item dropped. A
+sentences and 320 characters. Key points and action items: bullets and numbering removed, items
+of fewer than two words (or, in a script without spaces, fewer than four characters) dropped, so "None",
+"Ninguno", "Keine" or "なし" in any language is no item (the prompt asks for an empty list), repeats dropped, at most five each, a key point that repeats an action item dropped. A
 "Speaker 3" the model wrote anyway becomes "someone". A refusal ("I'm sorry", "Je ne peux pas")
 or an empty title or summary fails the run, and nothing is written.
 
@@ -5088,7 +5083,7 @@ reconciliation (the model installed, the setting turned on) holds summaries back
 one running (it is made again afterwards). Work the user asked for goes before automatic work, across both
 queues: when a final transcript or a summary ends, summaries are looked for first, and an automatic final
 transcript waits for that scan while a Summarize Again is pending; an automatic summary waits while a Make Final
-Transcript Now pass is ready to run (`Situation.askedForPassWaiting`); automatic work keeps its order. A Summarize
+Transcript Now pass is ready to run or has its languages read (`Situation.askedForPassWaiting`); automatic work keeps its order. A Summarize
 Again request is dropped for a missing
 meeting only when no folder holds it, whatever the folder is named (`SessionCatalog.hasSession`: the sessions
 folder listed and every folder's manifest, a regular file of at most 1 MiB never followed, read for its `id`), not when the scan could not read it. After a meeting is saved, the scan waits until the final

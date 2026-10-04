@@ -180,10 +180,13 @@ extension HolosAppDelegate {
         }
     }
 
-    /// A Make Final Transcript Now pass is queued and could start (the setting and power do not hold it back; its
+    /// A Make Final Transcript Now pass is queued (or its languages are being read) and could start (the setting and power do not hold it back; its
     /// meeting is not in use or delayed, and the model is installed): asked-for work goes before automatic summaries.
     private func askedForPassWaiting(inUse: Set<String>, now: Date) -> Bool {
         guard meeting.deep.model == "installed", meeting.deep.retryAfter.map({ $0 <= now }) ?? true else { return false }
+        // One whose languages are still being read (`pending`, saved so the request survives a quit) counts too: it
+        // is about to join the queue.
+        if meeting.deep.queue.pending.contains(where: \.runNow) { return true }
         return meeting.deep.queue.items.contains { item in
             item.runNow && !inUse.contains(item.sessionID)
                 && (meeting.deep.delayed[item.sessionID].map { $0 <= now } ?? true)

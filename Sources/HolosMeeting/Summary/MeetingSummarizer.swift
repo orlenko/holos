@@ -117,8 +117,9 @@ public struct MeetingSummaryStats: Sendable, Equatable, Codable {
 /// 2. A meeting that fits one part is summarized from its transcript in one call. Otherwise each part gets a few
 ///    short notes (one call each), and the summary is made from the notes in order; notes too long for one prompt are
 ///    condensed in batches first.
-/// 3. The answer is checked (`MeetingSummaryDraft.cleaned`): a title of at most 8 words without dates or "Meeting
-///    about", one or two sentences of summary, at most five key points and five action items, and no refusal.
+/// 3. The answer is checked (`MeetingSummaryDraft.cleaned`): a title of at most 8 words without "Meeting about" (the
+///    prompt asks for no date), one or two sentences of summary, at most five key points and five action items (none
+///    of a single word: "None" in any language), and no refusal.
 ///
 /// The transcript is data: every prompt says so, and fences it. A part the model refuses, or does not answer within
 /// `callTimeout`, is left out; more than half of them left out, two calls in a row that time out, or any other model
@@ -400,7 +401,7 @@ public struct MeetingSummarizer: Sendable {
             answer = try await call(&run, { try await model.summary(instructions, prompt) })
         } while answer == nil && run.timeoutsInARow > 0
         guard let answer else { throw Failure.unusableAnswer("The model did not summarize the meeting.") }
-        switch answer.cleaned(language: input.language) {
+        switch answer.cleaned() {
         case .success(let draft):
             // Marked refused: a refusal, in whatever language it is written.
             if answer.refused {
@@ -603,8 +604,8 @@ public struct MeetingSummarizer: Sendable {
             - summary: one or two short sentences, at most 40 words in all, naming the main topics and what was \
             decided. Be concrete; never use vague phrases such as "various topics" or "key outcomes".
             - keyPoints: up to 5 main facts, topics or decisions (not tasks), one short sentence each.
-            - actionItems: up to 5 tasks someone agreed to do, starting with the person when known; none when there \
-            are none.
+            - actionItems: up to 5 tasks someone agreed to do, starting with the person when known; an empty list \
+            when there are none.
             - refused: true only if you could not summarize this text at all.
             \(dataRule)
             """
@@ -671,19 +672,23 @@ extension MeetingSummaryDraft {
     /// The draft as it is shown, or why it cannot be: the title cleaned (`cleanTitle`), the summary cut to two
     /// sentences, the lists cleaned (`cleanList`). An empty title or summary, or a refusal ("I'm sorry, …"), cannot be
     /// used.
-    public func cleaned(language: String? = nil) -> Result<MeetingSummaryDraft, Problem> {
+    public func cleaned() -> Result<MeetingSummaryDraft, Problem> {
         let summaryText = Self.cleanSummary(summary)
         if Self.isRefusal(title) || Self.isRefusal(summaryText) {
             return .failure(Problem(message: "The model declined to summarize the meeting."))
         }
-        guard let titleText = Self.cleanTitle(title, language: language) else {
+        guard let titleText = Self.cleanTitle(title) else {
             return .failure(Problem(message: "The model gave no usable title."))
         }
         guard !summaryText.isEmpty else { return .failure(Problem(message: "The model gave no summary.")) }
-        let actionItems = Self.cleanList(actions, limit: Self.maximumItems).filter { !Self.isRefusal($0) }
+        // An item too short to say anything ("None", "Ninguno", "Keine", "なし": the prompt asks for an empty list)
+        // is left out, in any language (`saysSomething`).
+        let actionItems = Array(Self.cleanList(actions, limit: .max)
+            .filter { Self.saysSomething($0) && !Self.isRefusal($0) }.prefix(Self.maximumItems))
         // A key point that only repeats an action item is left out.
-        let keyPoints = Self.cleanList(points, limit: Self.maximumItems + actionItems.count)
-            .filter { point in !Self.isRefusal(point) && !actionItems.contains { Self.sameItem(point, $0) } }
+        let keyPoints = Self.cleanList(points, limit: .max).filter { point in
+            Self.saysSomething(point) && !Self.isRefusal(point) && !actionItems.contains { Self.sameItem(point, $0) }
+        }
         return .success(MeetingSummaryDraft(title: titleText, summary: summaryText,
                                             points: Array(keyPoints.prefix(Self.maximumItems)),
                                             actions: actionItems))
@@ -735,20 +740,18 @@ extension MeetingSummaryDraft {
         return (words.isEmpty ? cut : words.joined(separator: " ")) + "…"
     }
 
-    /// Items one line each, bullets and numbering removed, "none" and empty ones dropped, each once (any case), each
-    /// at most 200 characters, at most `limit` of them.
+    /// Items one line each, bullets and numbering removed, empty ones dropped, each once (any case), each at most 200
+    /// characters, at most `limit` of them.
     static func cleanList(_ items: [String], limit: Int) -> [String] {
         var seen: Set<String> = []
         var result: [String] = []
-        let empty: Set<String> = ["none", "none.", "n/a", "na", "nothing", "no action items", "aucun", "aucune",
-                                  "rien", "-"]
         for item in items {
             var line = oneLine(item)
             while let first = line.first, "-•*·–—".contains(first) {
                 line = String(line.dropFirst()).trimmingCharacters(in: .whitespaces)
             }
             if let match = line.firstMatch(of: /^\d{1,2}[.)]\s+/) { line = String(line[match.range.upperBound...]) }
-            guard !line.isEmpty, !empty.contains(line.lowercased()) else { continue }
+            guard !line.isEmpty else { continue }
             if line.count > maximumItemCharacters {
                 let cut = String(line.prefix(maximumItemCharacters))
                 let words = cut.split(separator: " ").dropLast()
@@ -761,10 +764,25 @@ extension MeetingSummaryDraft {
         return result
     }
 
+    /// An item long enough to be a point or a task: at least two words, or, in a script written without spaces
+    /// (Chinese, Japanese, Thai), at least four characters. A placeholder for "none" is one short word in any
+    /// language.
+    static func saysSomething(_ item: String) -> Bool {
+        let words = item.split(whereSeparator: \.isWhitespace)
+        if words.count >= 2 { return true }
+        guard let word = words.first else { return false }
+        let letters = word.filter { $0.isLetter || $0.isNumber }
+        // A word of a spaced script ("Keine", "Ninguno") is one word; one of a script without spaces is a phrase.
+        let spaceless = letters.unicodeScalars.contains { scalar in
+            [0x3040...0x30FF, 0x3400...0x4DBF, 0x4E00...0x9FFF, 0xF900...0xFAFF, 0x0E00...0x0E7F, 0x0E80...0x0EFF,
+             0x1000...0x109F, 0x1780...0x17FF].contains { $0.contains(Int(scalar.value)) }
+        }
+        return spaceless && letters.count >= 4
+    }
+
     /// The title as the list shows it, or nil when nothing usable is left: one line, quotes and a final period
-    /// removed, a leading "Meeting about …" / "Meeting:" / "Réunion sur …" removed, dates with month names and weekdays removed,
-    /// at most `maximumTitleWords` words (without a dangling "and", "of", "the" … at the end), first letter capital.
-    public static func cleanTitle(_ text: String, language: String? = nil) -> String? {
+    /// removed, a leading "Meeting about …" / "Meeting:" / "Réunion sur …" removed, at most `maximumTitleWords` words (without a dangling "and", "of", "the" … at the end), first letter capital.
+    public static func cleanTitle(_ text: String) -> String? {
         var title = oneLine(text)
         if let colon = title.firstMatch(of: /^(?i:title)\s*:\s*/) { title = String(title[colon.range.upperBound...]) }
         title = title.trimmingCharacters(in: CharacterSet(charactersIn: "\"'“”‘’«»*`#").union(.whitespaces))
@@ -777,7 +795,6 @@ extension MeetingSummaryDraft {
         for prefix in prefixes {
             if let match = title.firstMatch(of: prefix) { title = String(title[match.range.upperBound...]) }
         }
-        title = removingDates(title, language: language)
         title = title.trimmingCharacters(in: CharacterSet(charactersIn: ".,;:–—-").union(.whitespaces))
         var words = title.split(separator: " ").map(String.init)
         if words.count > maximumTitleWords { words = Array(words.prefix(maximumTitleWords)) }
@@ -808,81 +825,4 @@ extension MeetingSummaryDraft {
         "and", "or", "of", "the", "a", "an", "to", "for", "with", "on", "in", "at", "about", "from", "by", "&",
         "et", "ou", "de", "du", "des", "la", "le", "les", "un", "une", "pour", "avec", "sur", "à", "au", "aux", "en",
     ]
-
-    /// `text` without dates written with a month name ("October 3, 2026", "3 octobre", "3. Oktober", "3 de octubre",
-    /// "2026年10月3日"), weekdays, and the words that led into them ("on", "le", "am", "del"). Month
-    /// and weekday names are those of `language` (the summary's) as the system knows them, and English and French.
-    static func removingDates(_ text: String, language: String? = nil) -> String {
-        let names = dateWords(language: language)
-        let months = names.months
-        let weekdays = names.weekdays
-        // Only dates written with a month or weekday name: numbers alone ("10/3", "3.10.2026", "14:00") are kept, since
-        // they can be versions ("Release 1.2.3", "Python 3.11.8"); the prompt asks for a title without dates.
-        let patterns = [
-            // "October 3, 2026", "octubre 3"; "3 octobre", "3. Oktober 2026", "3 de octubre de 2026"; "octobre 2026".
-            "\\b(?:\(months))\\.?\\s+\\d{1,2}(?:st|nd|rd|th)?(?:,?\\s+\\d{4})?\\b",
-            "\\b\\d{1,2}(?:er|\\.)?\\s+(?:de\\s+|of\\s+)?(?:\(months))\\.?(?:\\s+(?:de\\s+)?\\d{4})?\\b",
-            "\\b(?:\(months))\\.?\\s+(?:de\\s+)?\\d{4}\\b",
-            "\\b(?:\(weekdays))\\b,?",
-            // Chinese and Japanese dates and weekdays, written without spaces, so without word boundaries:
-            // "2026年10月3日", "10月3日", "2026年10月", "10月"; "月曜日", "星期一", "周一", "週一".
-            // A year only before a month and a day only after one, so "10年計画" (a ten-year plan) and "3日間" (three
-            // days) stay.
-            #"\d{4}年\s*\d{1,2}月(?:\s*\d{1,2}[日号])?"#,
-            #"\d{1,2}月\s*\d{1,2}[日号]"#,
-            #"\d{1,2}月"#,
-            #"[月火水木金土日]曜日?"#,
-            #"(?:星期|礼拜|禮拜)[一二三四五六日天]"#,
-            #"[周週][一二三四五六日]"#,
-            // Korean, with or without spaces and with a possessive 의 after it: "2026년 10월 3일", "10월 3일",
-            // "2026년 10월", "10월"; "월요일". A year only before a month and a day only after one, so
-            // "10년 계획" (a ten-year plan) and "3일 워크숍" (a three-day workshop) stay.
-            #"\d{4}년\s*\d{1,2}월(?:\s*\d{1,2}일)?의?"#,
-            #"\d{1,2}월\s*\d{1,2}일의?"#,
-            #"\d{1,2}월의?"#,
-            #"[월화수목금토일]요일의?"#,
-        ]
-        var result = text
-        for pattern in patterns {
-            guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else { continue }
-            let range = NSRange(result.startIndex..., in: result)
-            result = regex.stringByReplacingMatches(in: result, range: range, withTemplate: " ")
-        }
-        // A particle left at either end ("の会議", "的周会", "振り返り（）").
-        result = oneLine(result).trimmingCharacters(in: CharacterSet(charactersIn: "の的、，（）()").union(.whitespaces))
-        // "Budget review on" → "Budget review"; "Plan for" stays for `danglingWords`.
-        let leftovers: Set<String> = ["on", "le", "du", "of", "am", "vom", "den", "el", "del", "de", "-", "–", "—", ","]
-        var words = result.split(separator: " ").map(String.init)
-        while let last = words.last, leftovers.contains(last.lowercased()) { words.removeLast() }
-        return words.joined(separator: " ").replacingOccurrences(of: " ,", with: ",")
-    }
-
-    /// Month names (full and short, as in dates and standalone) and full weekday names of `language`, English and
-    /// French, as regex alternations (escaped, longest first). Short weekday names are left out: in Spanish "mar"
-    /// (Tuesday) is also "sea".
-    static func dateWords(language: String?) -> (months: String, weekdays: String) {
-        var months: Set<String> = []
-        var weekdays: Set<String> = []
-        for identifier in Set([language, "en_US", "fr_FR"].compactMap { $0 }) {
-            let formatter = DateFormatter()
-            formatter.locale = Locale(identifier: identifier)
-            for list in [formatter.monthSymbols, formatter.shortMonthSymbols, formatter.standaloneMonthSymbols,
-                         formatter.shortStandaloneMonthSymbols] {
-                for name in list ?? [] {
-                    let clean = name.lowercased()
-                        .trimmingCharacters(in: CharacterSet(charactersIn: ".").union(.whitespaces))
-                    if clean.count >= 3 { months.insert(clean) }
-                }
-            }
-            for list in [formatter.weekdaySymbols, formatter.standaloneWeekdaySymbols] {
-                for name in list ?? [] { weekdays.insert(name.lowercased()) }
-            }
-        }
-        months.insert("sept")
-        func alternation(_ words: Set<String>) -> String {
-            words.sorted { $0.count != $1.count ? $0.count > $1.count : $0 < $1 }
-                .map { NSRegularExpression.escapedPattern(for: $0) }.joined(separator: "|")
-        }
-        return (alternation(months), alternation(weekdays))
-    }
 }

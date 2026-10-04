@@ -162,21 +162,17 @@ private func input(_ lines: [MeetingSummaryLine]) -> MeetingSummaryInput {
     #expect(MeetingSummaryDraft.cleanTitle("Meeting about the Q4 budget") == "The Q4 budget")
     #expect(MeetingSummaryDraft.cleanTitle("\"Roadmap planning.\"") == "Roadmap planning")
     #expect(MeetingSummaryDraft.cleanTitle("Title: Hiring plan for the data team") == "Hiring plan for the data team")
-    #expect(MeetingSummaryDraft.cleanTitle("Budget review on October 3, 2026") == "Budget review")
-    #expect(MeetingSummaryDraft.cleanTitle("Sprint retro on Friday, October 3") == "Sprint retro")
-    #expect(MeetingSummaryDraft.cleanTitle("Monday standup") == "Standup")
-    // Relative days are left to the prompt's "no dates": no list of them covers every language.
-    #expect(MeetingSummaryDraft.cleanTitle("Budget review today") == "Budget review today")
-    #expect(MeetingSummaryDraft.cleanTitle("今日の予算会議", language: "ja-JP") == "今日の予算会議")
+    // Dates are left to the prompt's "no date": no list of their words covers every language, and a product named
+    // after one stays whole.
+    #expect(MeetingSummaryDraft.cleanTitle("Monday.com rollout planning") == "Monday.com rollout planning")
+    #expect(MeetingSummaryDraft.cleanTitle("Release 1.2.3 planning") == "Release 1.2.3 planning")
     #expect(MeetingSummaryDraft.cleanTitle("Réunion sur le budget 2027") == "Le budget 2027")
-    #expect(MeetingSummaryDraft.cleanTitle("Revue du 3 octobre") == "Revue")
     #expect(MeetingSummaryDraft.cleanTitle("Parser rewrite, release dates and the plan for testing everything")
         == "Parser rewrite, release dates and the plan")
     #expect(MeetingSummaryDraft.cleanTitle("Speaker 3 hiring update") == "Someone hiring update")
     #expect(MeetingSummaryDraft.cleanTitle("one two three four five six seven and eight") == "One two three four five six seven")
     #expect(MeetingSummaryDraft.cleanTitle("Meeting") == nil)
     #expect(MeetingSummaryDraft.cleanTitle("  ") == nil)
-    #expect(MeetingSummaryDraft.cleanTitle("October 3") == nil)
 }
 
 @Test func theSummaryIsCutToTwoSentences() {
@@ -190,8 +186,8 @@ private func input(_ lines: [MeetingSummaryLine]) -> MeetingSummaryInput {
 
 @Test func listsAreCleaned() {
     let cleaned = MeetingSummaryDraft.cleanList(
-        ["- Alex drafts the plan.", "• alex drafts the plan.", "None", "", "2. Sam reviews it", "n/a", "A", "B", "C",
-         "D"], limit: 5)
+        ["- Alex drafts the plan.", "• alex drafts the plan.", "", "-", "2. Sam reviews it", "A", "B", "C", "D"],
+        limit: 5)
     #expect(cleaned == ["Alex drafts the plan.", "Sam reviews it", "A", "B", "C"])
 }
 
@@ -203,6 +199,19 @@ private func input(_ lines: [MeetingSummaryLine]) -> MeetingSummaryInput {
     let good = try? MeetingSummaryDraft(title: "Plan", summary: "We planned.", points: ["None"],
                                         actions: ["Sorry, nothing"]).cleaned().get()
     #expect(good == MeetingSummaryDraft(title: "Plan", summary: "We planned.", points: [], actions: []))
+}
+
+@Test func aNoneInAnyLanguageIsNoItem() throws {
+    // One short word is never a point or a task: "None" as the model writes it in the summary's language.
+    let draft = try MeetingSummaryDraft(
+        title: "Plan", summary: "We planned.", points: ["Keine", "N/A", "Das Budget steigt."],
+        actions: ["Ninguno", "なし", "-", "Alex prepara el plan"]).cleaned().get()
+    #expect(draft.points == ["Das Budget steigt."])
+    #expect(draft.actions == ["Alex prepara el plan"])
+    // A phrase of a script written without spaces is one "word" with several characters: kept.
+    #expect(MeetingSummaryDraft.saysSomething("予算を見直す"))
+    #expect(!MeetingSummaryDraft.saysSomething("なし"))
+    #expect(MeetingSummaryDraft.saysSomething("Review budget"))
 }
 
 @Test func aKeyPointThatRepeatsAnActionItemIsLeftOut() throws {
@@ -981,7 +990,7 @@ private func trackDocument(source: AudioSource) -> ExportDocument {
         if let match = prompt.firstMatch(of: /Part (\d+) of/) {
             return (1...3).map { "Part note \(match.1) \($0) about the release." }
         }
-        return prompt.contains("Condensed") ? ["Short."] : ["Condensed batch about the release."]
+        return prompt.contains("Condensed") ? ["Short note."] : ["Condensed batch about the release."]
     }
     let scripted = ScriptedSummaryModel(notes: condensing, summary: { _ in
         finals.update { $0 += 1 }
@@ -1378,16 +1387,6 @@ private func trackDocument(source: AudioSource) -> ExportDocument {
     #expect(result.stats.skippedParts == 0)
 }
 
-@Test func datesAreRemovedInTheSummarysLanguage() {
-    #expect(MeetingSummaryDraft.cleanTitle("Budgetplanung am Montag, 3. Oktober 2026", language: "de-DE")
-        == "Budgetplanung")
-    #expect(MeetingSummaryDraft.cleanTitle("Revisión del presupuesto del 3 de octubre", language: "es-ES")
-        == "Revisión del presupuesto")
-    #expect(MeetingSummaryDraft.cleanTitle("Planificación del miércoles", language: "es-ES") == "Planificación")
-    // A word that is also a short weekday ("mar", Tuesday) stays.
-    #expect(MeetingSummaryDraft.cleanTitle("Plan del mar", language: "es-ES") == "Plan del mar")
-}
-
 @Test func aSingleLineTooLongForOneCallIsCutAndSummarizedFromNotes() async throws {
     let scripted = ScriptedSummaryModel(summary: { prompt in
         if prompt.contains("Transcript (speaker: words):") { throw MeetingSummaryModelError.contextExceeded }
@@ -1439,29 +1438,6 @@ private func trackDocument(source: AudioSource) -> ExportDocument {
     let outcome = await run(session, scripted)
     #expect(outcome.status == .failed)
     #expect(scripted.summaryCalls.value.isEmpty)
-}
-
-@Test func chineseAndJapaneseDatesAreRemoved() {
-    #expect(MeetingSummaryDraft.cleanTitle("2026年10月3日の予算会議", language: "ja-JP") == "予算会議")
-    #expect(MeetingSummaryDraft.cleanTitle("10月の振り返り", language: "ja-JP") == "振り返り")
-    #expect(MeetingSummaryDraft.cleanTitle("月曜日の定例会", language: "ja-JP") == "定例会")
-    #expect(MeetingSummaryDraft.cleanTitle("10月3日预算评审", language: "zh-CN") == "预算评审")
-    #expect(MeetingSummaryDraft.cleanTitle("星期一的周会", language: "zh-CN") == "周会")
-    #expect(MeetingSummaryDraft.cleanTitle("3号楼装修计划", language: "zh-CN") == "3号楼装修计划")
-    // A number of years or days is not a date.
-    #expect(MeetingSummaryDraft.cleanTitle("10年計画の見直し", language: "ja-JP") == "10年計画の見直し")
-    #expect(MeetingSummaryDraft.cleanTitle("3日間ワークショップ", language: "ja-JP") == "3日間ワークショップ")
-    #expect(MeetingSummaryDraft.cleanTitle("10年计划回顾", language: "zh-CN") == "10年计划回顾")
-}
-
-@Test func koreanDatesAreRemoved() {
-    #expect(MeetingSummaryDraft.cleanTitle("2026년 10월 3일 예산 검토", language: "ko-KR") == "예산 검토")
-    #expect(MeetingSummaryDraft.cleanTitle("10월 3일의 예산 검토", language: "ko-KR") == "예산 검토")
-    #expect(MeetingSummaryDraft.cleanTitle("예산 검토 10월3일", language: "ko-KR") == "예산 검토")
-    #expect(MeetingSummaryDraft.cleanTitle("월요일 주간 회의", language: "ko-KR") == "주간 회의")
-    #expect(MeetingSummaryDraft.cleanTitle("10월 회고", language: "ko-KR") == "회고")
-    #expect(MeetingSummaryDraft.cleanTitle("10년 계획 회의", language: "ko-KR") == "10년 계획 회의")
-    #expect(MeetingSummaryDraft.cleanTitle("3일 워크숍 준비", language: "ko-KR") == "3일 워크숍 준비")
 }
 
 @Test func aMeetingIsFoundByItsSessionIDWhateverItsFolderIsNamed() async throws {
@@ -1645,14 +1621,6 @@ private func trackDocument(source: AudioSource) -> ExportDocument {
         summary: { _, _ in MeetingSummaryDraft(title: "发布计划", summary: "团队计划了发布。") })
     let result = try await MeetingSummarizer(model: model).summarize(input(lines(30)))
     #expect(result.stats.skippedParts == 1)
-}
-
-@Test func versionNumbersAreNotTakenForDates() {
-    #expect(MeetingSummaryDraft.cleanTitle("Python 3.11 migration") == "Python 3.11 migration")
-    #expect(MeetingSummaryDraft.cleanTitle("macOS 15.2 rollout") == "MacOS 15.2 rollout")
-    #expect(MeetingSummaryDraft.cleanTitle("Release 1.2.3 planning") == "Release 1.2.3 planning")
-    #expect(MeetingSummaryDraft.cleanTitle("Python 3.11.8 migration") == "Python 3.11.8 migration")
-    #expect(MeetingSummaryDraft.cleanTitle("Release 10/3 review") == "Release 10/3 review")
 }
 
 @Test func theSaveHoldsThePeopleStoreWhileItChecks() async throws {
