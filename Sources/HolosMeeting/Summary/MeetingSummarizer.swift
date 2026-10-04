@@ -161,13 +161,26 @@ public struct MeetingSummarizer: Sendable {
         let clock = ContinuousClock()
         let started = clock.now
         var stats = MeetingSummaryStats()
-        let parts = Self.parts(input.lines, budget: partBudget)
+        var parts = Self.parts(input.lines, budget: partBudget)
         guard !parts.isEmpty else { throw Failure.emptyTranscript }
         stats.parts = parts.count
         var run = RunState()
         let draft: MeetingSummaryDraft
+        var direct: MeetingSummaryDraft?
         if parts.count == 1 {
-            draft = try await final(source: .transcript(parts[0]), input: input, run: &run)
+            do {
+                direct = try await final(source: .transcript(parts[0]), input: input, run: &run)
+            } catch MeetingSummaryModelError.contextExceeded where parts[0].count > 1 {
+                // The estimate let the transcript through but the model's count did not: it is made from notes on its
+                // two halves instead.
+                let half = parts[0].count / 2
+                parts = [Array(parts[0][..<half]), Array(parts[0][half...])]
+            } catch MeetingSummaryModelError.contextExceeded {
+                throw Failure.unusableAnswer("The meeting's transcript did not fit the model.")
+            }
+        }
+        if let direct {
+            draft = direct
         } else {
             var notes: [[String]] = []
             for (index, part) in parts.enumerated() {
@@ -338,10 +351,12 @@ public struct MeetingSummarizer: Sendable {
         do {
             answer = try await call(&run, { try await model.summary(instructions, prompt) })
         } catch MeetingSummaryModelError.contextExceeded {
+            // A transcript too long for one call is summarized from notes instead (`summarize`).
+            if !fromNotes { throw MeetingSummaryModelError.contextExceeded }
             throw Failure.unusableAnswer("The meeting's notes did not fit the model.")
         }
         guard let answer else { throw Failure.unusableAnswer("The model did not summarize the meeting.") }
-        switch answer.cleaned() {
+        switch answer.cleaned(language: input.language) {
         case .success(let draft):
             // Marked refused and saying little: a refusal, in whatever language. A real summary marked refused is kept.
             if answer.refused, !MeetingSummaryDraft.isSubstantive([draft.summary] + draft.points + draft.actions) {
@@ -593,12 +608,12 @@ extension MeetingSummaryDraft {
     /// The draft as it is shown, or why it cannot be: the title cleaned (`cleanTitle`), the summary cut to two
     /// sentences, the lists cleaned (`cleanList`). An empty title or summary, or a refusal ("I'm sorry, …"), cannot be
     /// used.
-    public func cleaned() -> Result<MeetingSummaryDraft, Problem> {
+    public func cleaned(language: String? = nil) -> Result<MeetingSummaryDraft, Problem> {
         let summaryText = Self.cleanSummary(summary)
         if Self.isRefusal(title) || Self.isRefusal(summaryText) {
             return .failure(Problem(message: "The model declined to summarize the meeting."))
         }
-        guard let titleText = Self.cleanTitle(title) else {
+        guard let titleText = Self.cleanTitle(title, language: language) else {
             return .failure(Problem(message: "The model gave no usable title."))
         }
         guard !summaryText.isEmpty else { return .failure(Problem(message: "The model gave no summary.")) }
@@ -693,7 +708,7 @@ extension MeetingSummaryDraft {
     /// The title as the list shows it, or nil when nothing usable is left: one line, quotes and a final period
     /// removed, a leading "Meeting about …" / "Meeting:" / "Réunion sur …" removed, dates, times and weekdays removed,
     /// at most `maximumTitleWords` words (without a dangling "and", "of", "the" … at the end), first letter capital.
-    public static func cleanTitle(_ text: String) -> String? {
+    public static func cleanTitle(_ text: String, language: String? = nil) -> String? {
         var title = oneLine(text)
         if let colon = title.firstMatch(of: /^(?i:title)\s*:\s*/) { title = String(title[colon.range.upperBound...]) }
         title = title.trimmingCharacters(in: CharacterSet(charactersIn: "\"'“”‘’«»*`#").union(.whitespaces))
@@ -706,7 +721,7 @@ extension MeetingSummaryDraft {
         for prefix in prefixes {
             if let match = title.firstMatch(of: prefix) { title = String(title[match.range.upperBound...]) }
         }
-        title = removingDates(title)
+        title = removingDates(title, language: language)
         title = title.trimmingCharacters(in: CharacterSet(charactersIn: ".,;:–—-").union(.whitespaces))
         var words = title.split(separator: " ").map(String.init)
         if words.count > maximumTitleWords { words = Array(words.prefix(maximumTitleWords)) }
@@ -738,24 +753,24 @@ extension MeetingSummaryDraft {
         "et", "ou", "de", "du", "des", "la", "le", "les", "un", "une", "pour", "avec", "sur", "à", "au", "aux", "en",
     ]
 
-    /// `text` without dates ("2026-10-03", "10/3", "October 3, 2026", "3 octobre"), times ("14:00", "2 pm"),
-    /// weekdays, "today", and the words that led into them ("on", "le").
-    static func removingDates(_ text: String) -> String {
-        let months = "january|february|march|april|may|june|july|august|september|october|november|december|"
-            + "jan|feb|mar|apr|jun|jul|aug|sep|sept|oct|nov|dec|"
-            + "janvier|février|fevrier|mars|avril|mai|juin|juillet|août|aout|septembre|octobre|novembre|décembre|decembre"
-        let weekdays = "monday|tuesday|wednesday|thursday|friday|saturday|sunday|"
-            + "lundi|mardi|mercredi|jeudi|vendredi|samedi|dimanche"
+    /// `text` without dates ("2026-10-03", "10/3", "October 3, 2026", "3 octobre", "3. Oktober", "3 de octubre"),
+    /// times ("14:00", "2 pm"), weekdays, "today", and the words that led into them ("on", "le", "am", "del"). Month
+    /// and weekday names are those of `language` (the summary's) as the system knows them, and English and French.
+    static func removingDates(_ text: String, language: String? = nil) -> String {
+        let names = dateWords(language: language)
+        let months = names.months
+        let weekdays = names.weekdays
         let patterns = [
             #"\b\d{4}-\d{1,2}-\d{1,2}\b"#,
             #"\b\d{1,2}[/.]\d{1,2}(?:[/.]\d{2,4})?\b"#,
             #"\b\d{1,2}[:h]\d{2}\s*(?:am|pm)?\b"#,
             #"\b\d{1,2}\s*(?:am|pm)\b"#,
+            // "October 3, 2026", "octubre 3"; "3 octobre", "3. Oktober 2026", "3 de octubre de 2026"; "octobre 2026".
             "\\b(?:\(months))\\.?\\s+\\d{1,2}(?:st|nd|rd|th)?(?:,?\\s+\\d{4})?\\b",
-            "\\b\\d{1,2}(?:er)?\\s+(?:\(months))(?:\\s+\\d{4})?\\b",
-            "\\b(?:\(months))\\s+\\d{4}\\b",
-            "\\b(?:\(weekdays))\\b",
-            #"\b(?:today|tonight|aujourd'hui|aujourd’hui)\b"#,
+            "\\b\\d{1,2}(?:er|\\.)?\\s+(?:de\\s+|of\\s+)?(?:\(months))\\.?(?:\\s+(?:de\\s+)?\\d{4})?\\b",
+            "\\b(?:\(months))\\.?\\s+(?:de\\s+)?\\d{4}\\b",
+            "\\b(?:\(weekdays))\\b,?",
+            #"\b(?:today|tonight|aujourd'hui|aujourd’hui|heute|hoy)\b"#,
         ]
         var result = text
         for pattern in patterns {
@@ -765,9 +780,38 @@ extension MeetingSummaryDraft {
         }
         result = oneLine(result)
         // "Budget review on" → "Budget review"; "Plan for" stays for `danglingWords`.
-        let leftovers: Set<String> = ["on", "le", "du", "of", "-", "–", "—", ","]
+        let leftovers: Set<String> = ["on", "le", "du", "of", "am", "vom", "den", "el", "del", "de", "-", "–", "—", ","]
         var words = result.split(separator: " ").map(String.init)
         while let last = words.last, leftovers.contains(last.lowercased()) { words.removeLast() }
         return words.joined(separator: " ").replacingOccurrences(of: " ,", with: ",")
+    }
+
+    /// Month names (full and short, as in dates and standalone) and full weekday names of `language`, English and
+    /// French, as regex alternations (escaped, longest first). Short weekday names are left out: in Spanish "mar"
+    /// (Tuesday) is also "sea".
+    static func dateWords(language: String?) -> (months: String, weekdays: String) {
+        var months: Set<String> = []
+        var weekdays: Set<String> = []
+        for identifier in Set([language, "en_US", "fr_FR"].compactMap { $0 }) {
+            let formatter = DateFormatter()
+            formatter.locale = Locale(identifier: identifier)
+            for list in [formatter.monthSymbols, formatter.shortMonthSymbols, formatter.standaloneMonthSymbols,
+                         formatter.shortStandaloneMonthSymbols] {
+                for name in list ?? [] {
+                    let clean = name.lowercased()
+                        .trimmingCharacters(in: CharacterSet(charactersIn: ".").union(.whitespaces))
+                    if clean.count >= 3 { months.insert(clean) }
+                }
+            }
+            for list in [formatter.weekdaySymbols, formatter.standaloneWeekdaySymbols] {
+                for name in list ?? [] { weekdays.insert(name.lowercased()) }
+            }
+        }
+        months.insert("sept")
+        func alternation(_ words: Set<String>) -> String {
+            words.sorted { $0.count != $1.count ? $0.count > $1.count : $0 < $1 }
+                .map { NSRegularExpression.escapedPattern(for: $0) }.joined(separator: "|")
+        }
+        return (alternation(months), alternation(weekdays))
     }
 }

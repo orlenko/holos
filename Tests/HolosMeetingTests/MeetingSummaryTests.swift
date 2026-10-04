@@ -1219,6 +1219,48 @@ private func trackDocument(source: AudioSource) -> ExportDocument {
     #expect(scripted.summaryCalls.value.last?.prompt.contains("Robin Lee: Thanks everyone") == true)
 }
 
+@Test func aTurnMovedBetweenNamedPeopleMakesTheSummaryStale() async throws {
+    let temp = try TemporaryDirectory("summary")
+    defer { temp.remove() }
+    let (session, _, run) = try await SessionFixtures.labelledSession(in: temp.url, track: "mic")
+    let alex = try #require(run.speakers.first)
+    let sam = try #require(run.speakers.dropFirst().first)
+    try SessionFixtures.appendEdits([.rename(speakerID: alex.id, name: "Alex"),
+                                     .rename(speakerID: sam.id, name: "Sam")], session: session)
+    _ = await SessionSummarizeCommand.run(SessionSummarizeCommand.Request(session: session, selfName: "Me")) { _ in
+        .available(ScriptedSummaryModel().model())
+    }
+    #expect(MeetingSummarySchedule.scan(root: temp.url, selfName: "Me").first?.needsSummary == false)
+    // The same names, but Sam now says what Alex said: the prompt changed, so the summary is stale.
+    try SessionFixtures.appendEdits([.reassignTurns(turnIDs: ["T1"], to: sam.id)], session: session)
+    #expect(MeetingSummarySchedule.scan(root: temp.url, selfName: "Me").first?.needsSummary == true)
+}
+
+@Test func aTranscriptTooLongForOneCallIsSummarizedFromNotes() async throws {
+    let calls = SharedValue(0)
+    let scripted = ScriptedSummaryModel(summary: { prompt in
+        calls.update { $0 += 1 }
+        // The estimate let the transcript through as one part; the model's count does not.
+        if prompt.contains("Transcript (speaker: words):") { throw MeetingSummaryModelError.contextExceeded }
+        return MeetingSummaryDraft(title: "Parser plan", summary: "They planned the parser.")
+    })
+    let result = try await MeetingSummarizer(model: scripted.model()).summarize(input(lines(6)))
+    #expect(result.draft.title == "Parser plan")
+    #expect(scripted.noteCalls.value.count == 2)
+    #expect(calls.value == 2)
+    #expect(result.stats.skippedParts == 0)
+}
+
+@Test func datesAreRemovedInTheSummarysLanguage() {
+    #expect(MeetingSummaryDraft.cleanTitle("Budgetplanung am Montag, 3. Oktober 2026", language: "de-DE")
+        == "Budgetplanung")
+    #expect(MeetingSummaryDraft.cleanTitle("Revisión del presupuesto del 3 de octubre", language: "es-ES")
+        == "Revisión del presupuesto")
+    #expect(MeetingSummaryDraft.cleanTitle("Planificación del miércoles", language: "es-ES") == "Planificación")
+    // A word that is also a short weekday ("mar", Tuesday) stays.
+    #expect(MeetingSummaryDraft.cleanTitle("Plan del mar", language: "es-ES") == "Plan del mar")
+}
+
 @Test func aNameTheUserGaveIsTheirsWhateverItLooksLike() throws {
     let root = URL(fileURLWithPath: "/tmp/sessions")
     var typed = MeetingStartSettings(name: "Meeting 2026-10-03 14:00", source: .microphone)

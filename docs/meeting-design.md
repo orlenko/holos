@@ -4959,7 +4959,7 @@ it, estimated high at one token per three UTF-8 bytes; a turn longer than a part
 sentence ends (NaturalLanguage's sentence tokenizer, so "Dr. Smith" is one sentence and "。！？"
 end one without a space), then at words, then between characters (grapheme
 clusters, for text without spaces), each piece keeping its speaker. A meeting that fits one part is
-summarized in one call; otherwise each part gets two to five notes (one call each), notes too
+summarized in one call (if the model finds it too long after all, from notes on its two halves); otherwise each part gets two to five notes (one call each), notes too
 long for the final prompt are condensed in batches (at most three rounds, then cut; a batch the
 model will not condense keeps notes of every part in it, the first of each first), and one
 call writes the title, summary, key points and action items from the notes in order. Structured
@@ -4989,7 +4989,9 @@ never saved as a whole one, and an older summary stays.
 
 **Checking the answer** (`MeetingSummaryDraft.cleaned`). The title: one line, quotes, "Title:"
 and a final period removed, a leading "Meeting about/on/…", "Meeting:", "Réunion sur …" removed,
-dates, times, weekdays and "today" removed, at most 8 words and 60 characters (at a space when one
+dates, times, weekdays and "today" removed (month and weekday names of the summary's language from
+the system's calendar, and English and French; short weekday names are not, as Spanish "mar" is
+also "sea"), at most 8 words and 60 characters (at a space when one
 is past half of that, else between characters, for text without spaces) without a dangling "and", "of",
 "the", "de", "pour" …; "Meeting" alone is no title. The summary: one line, at most two
 sentences and 320 characters. Key points and action items: bullets and numbering removed, "None"
@@ -5000,8 +5002,8 @@ or an empty title or summary fails the run, and nothing is written.
 **When.** `voiceislocal session summarize <session> [--force] [--json]` makes one when
 summary.json is not current, or with `--force`. Currency is one key (`MeetingSummaryKey`): the
 transcript ID and `namesDigest`, a digest of the names exactly as the prompt gives them, built by
-the one function the prompt uses (`MeetingSummarySource.promptSpeakers`): its speakers in the order
-they first speak (the user's own name for the unnamed channel speaker, "Others"/"Someone" for
+the one function the prompt uses (`MeetingSummarySource.promptSpeakers`): the speaker of every line
+in order, so a turn moved between two named people changes it too (the user's own name for the unnamed channel speaker, "Others"/"Someone" for
 tracks without labels) and the people named. Renames, links, merges, assignments, people renamed,
 the person who is you renamed, and Remember voices' automatic names all change it. summary.json stores it; a summary
 is current only while its key is the meeting's, computed the same way by the command, the exports

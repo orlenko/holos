@@ -74,10 +74,9 @@ extension MeetingSummaryRecord: CustomStringConvertible, CustomDebugStringConver
 /// made again. Computed the same way everywhere (the command, the exports, the app's scan), without the model.
 public struct MeetingSummaryKey: Sendable, Equatable {
     public var transcriptID: String
-    /// A digest of the names exactly as the prompt gives them (`MeetingSummarySource.promptSpeakers`): the speakers
-    /// of its lines in the order they first speak, the user's own name for the unnamed channel speaker, and the
-    /// people named. Renames, links, merges, assignments, people renamed (the user too), and Remember voices'
-    /// automatic names all change it.
+    /// A digest of the names exactly as the prompt gives them (`MeetingSummarySource.promptSpeakers`): the speaker
+    /// of every line in order, the user's own name for the unnamed channel speaker, and the people named. Renames,
+    /// links, merges, assignments, people renamed (the user too), and Remember voices' automatic names all change it.
     public var namesDigest: String
 
     public init(transcriptID: String, namesDigest: String) {
@@ -88,9 +87,10 @@ public struct MeetingSummaryKey: Sendable, Equatable {
     public init(_ document: ExportDocument, selfName: String) {
         transcriptID = document.transcript.id
         let speakers = MeetingSummarySource.promptSpeakers(document: document, selfName: selfName)
-        var seen: Set<String> = []
-        let names = speakers.lines.map(\.speaker).filter { seen.insert($0).inserted }
-        let text = names.joined(separator: "\u{1F}") + "\u{1E}" + speakers.people.joined(separator: "\u{1F}")
+        // Every line's speaker, in order: what the prompt says, so a turn reassigned between two named people
+        // changes it too.
+        let text = speakers.lines.map(\.speaker).joined(separator: "\u{1F}") + "\u{1E}"
+            + speakers.people.joined(separator: "\u{1F}")
         namesDigest = SHA256.hash(data: Data(text.utf8)).map { String(format: "%02x", $0) }.joined()
     }
 
