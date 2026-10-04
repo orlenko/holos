@@ -29,33 +29,18 @@ extension Session {
 
         mutating func run() async throws {
             let session = try SessionLocator.resolve(path)
-            // The people store read once for the prompt, and again at the save to check nothing changed meanwhile.
-            let voice = SessionSummarizeCommand.VoiceInputs.read()
-            let request = SessionSummarizeCommand.Request(
-                session: session, force: force, selfName: voice.selfName, profileNames: voice.names,
-                applyRecognition: voice.recognition, profileStore: SpeakerProfileStore())
-            // One expensive background job at a time on this Mac, held for the command's whole life: a final transcript
-            // waits for it and it waits for one, also across an app relaunch (docs/meeting-design.md §4.17).
             let sessionID = (try? SessionArchive.readManifest(at: session).id)
                 ?? session.deletingPathExtension().lastPathComponent
+            // The people store read once for the prompt, and again at the save to check nothing changed meanwhile. One
+            // that cannot be read (a newer build wrote it, it is damaged) fails at once, before the model.
             let outcome: SessionSummarizeCommand.Outcome
-            if let held = try DeepTranscriptionLock.take(
-                DeepTranscriptionLock.Holder(pid: getpid(), sessionID: sessionID, force: force,
-                                             kind: DeepTranscriptionLock.Holder.summaryKind)) {
-                defer { held.release() }
-                // Ctrl-C or SIGTERM (the app, when a meeting starts) cancels it; nothing is written once cancelled
-                // before the save, and the save itself is never cut short.
-                let work = CancellableStart<SessionSummarizeCommand.Outcome>()
-                let interrupt = InterruptCancellation(notice: {
-                    Console.error("Stopping… (press Ctrl-C again to quit at once)")
-                }) { work.cancel() }
-                defer { interrupt.restore() }
-                outcome = try await work.start {
-                    await SessionSummarizeCommand.run(request) { OnDeviceSummary.model(language: $0) }
-                }.value
-            } else {
-                outcome = SessionSummarizeCommand.Outcome(sessionID: sessionID, status: .busy,
-                                                          message: DeepTranscriptionLock.busyMessage, exitCode: 1)
+            switch Result(catching: { try SessionSummarizeCommand.VoiceInputs.read() }) {
+            case .failure(let error):
+                outcome = SessionSummarizeCommand.Outcome(
+                    sessionID: sessionID, status: .failed,
+                    message: "Cannot read the people store: \(error.localizedDescription)", exitCode: 1)
+            case .success(let voice):
+                outcome = try await summarize(session, sessionID: sessionID, voice: voice)
             }
             if json {
                 try Console.json(outcome)
@@ -77,6 +62,33 @@ extension Session {
                 Console.error(outcome.message)
             }
             if outcome.exitCode != 0 { throw ExitCode(outcome.exitCode) }
+        }
+
+        /// The summary under the background-job lock, cancelled by Ctrl-C or SIGTERM. One expensive background job at
+        /// a time on this Mac, held for the command's whole life: a final transcript waits for it and it waits for
+        /// one, also across an app relaunch (docs/meeting-design.md §4.17).
+        private func summarize(_ session: URL, sessionID: String, voice: SessionSummarizeCommand.VoiceInputs)
+            async throws -> SessionSummarizeCommand.Outcome {
+            let request = SessionSummarizeCommand.Request(
+                session: session, force: force, selfName: voice.selfName, profileNames: voice.names,
+                applyRecognition: voice.recognition, profileStore: SpeakerProfileStore())
+            guard let held = try DeepTranscriptionLock.take(
+                DeepTranscriptionLock.Holder(pid: getpid(), sessionID: sessionID, force: force,
+                                             kind: DeepTranscriptionLock.Holder.summaryKind)) else {
+                return SessionSummarizeCommand.Outcome(sessionID: sessionID, status: .busy,
+                                                       message: DeepTranscriptionLock.busyMessage, exitCode: 1)
+            }
+            defer { held.release() }
+            // Ctrl-C or SIGTERM (the app, when a meeting starts) cancels it; nothing is written once cancelled
+            // before the save, and the save itself is never cut short.
+            let work = CancellableStart<SessionSummarizeCommand.Outcome>()
+            let interrupt = InterruptCancellation(notice: {
+                Console.error("Stopping… (press Ctrl-C again to quit at once)")
+            }) { work.cancel() }
+            defer { interrupt.restore() }
+            return try await work.start {
+                await SessionSummarizeCommand.run(request) { OnDeviceSummary.model(language: $0) }
+            }.value
         }
     }
 }

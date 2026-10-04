@@ -6,7 +6,7 @@ import Synchronization
 
 /// The people a meeting's speaker labels name (`MeetingSummarySource.people`), for the Meetings list, which reads the
 /// catalog every 2 s: a meeting's labels are loaded again only when something they depend on changed (the current
-/// transcript, the head run, the edit journal, people's names, "Remember voices").
+/// transcript, the head run, the edit journal, the recognition results, people's names, "Remember voices").
 public final class MeetingPeopleCache: Sendable {
     private struct Entry {
         var key: String
@@ -45,8 +45,18 @@ public final class MeetingPeopleCache: Sendable {
     static func key(_ summary: SessionSummary, profileNames: [String: String], applyRecognition: Bool) -> String {
         let names = profileNames.sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value)" }.joined(separator: "\u{1F}")
         return [summary.transcriptID ?? "-", summary.runID ?? "-", fileStamp(SessionPaths.head(summary.directory)),
-                fileStamp(SessionPaths.edits(summary.directory)), applyRecognition ? "r" : "-", names]
+                fileStamp(SessionPaths.edits(summary.directory)), recognitionStamp(summary.directory),
+                applyRecognition ? "r" : "-", names]
             .joined(separator: "|")
+    }
+
+    /// The recognition results (`speakers/recognition/<run>.json`, written after the head run): each file's name, size
+    /// and modification time, so a result written or replaced changes it.
+    static func recognitionStamp(_ session: URL) -> String {
+        let folder = SessionPaths.recognitionDirectory(session)
+        guard let names = try? FileManager.default.contentsOfDirectory(atPath: folder.path) else { return "-" }
+        return names.sorted().map { $0 + "=" + fileStamp(folder.appendingPathComponent($0)) }
+            .joined(separator: ",")
     }
 
     /// Size and modification time of `url`, or "-" when it cannot be read.

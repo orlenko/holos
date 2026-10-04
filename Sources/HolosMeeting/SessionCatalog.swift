@@ -282,6 +282,31 @@ public enum SessionCatalog {
 
     // MARK: - Reading
 
+    /// Whether a folder under `root` holds the session `id`, whatever the folder is named (`<id>.holos`, or any
+    /// `<something>.holos` whose manifest names it, read for its `id` alone): false only when `root` could be listed
+    /// and every folder with a manifest had it read and naming another session; nil when that cannot be told (`root`
+    /// or a manifest unreadable for now).
+    public static func hasSession(_ id: String, in root: URL) -> Bool? {
+        guard (try? FileManager.default.contentsOfDirectory(atPath: root.path)) != nil else { return nil }
+        struct ManifestID: Decodable { var id: String }
+        var unsure = false
+        for folder in sessionFolders(in: root) {
+            if folder.deletingPathExtension().lastPathComponent.caseInsensitiveCompare(id) == .orderedSame {
+                return true
+            }
+            let manifest = SessionPaths.manifest(folder)
+            var info = stat()
+            if lstat(manifest.path, &info) != 0, errno == ENOENT { continue }
+            guard let data = try? Data(contentsOf: manifest),
+                  let found = try? HolosJSON.decoder().decode(ManifestID.self, from: data) else {
+                unsure = true
+                continue
+            }
+            if found.id.caseInsensitiveCompare(id) == .orderedSame { return true }
+        }
+        return unsure ? nil : false
+    }
+
     /// The `.holos` folders directly inside `root`.
     static func sessionFolders(in root: URL) -> [URL] {
         guard let names = try? FileManager.default.contentsOfDirectory(atPath: root.path) else { return [] }

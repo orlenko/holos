@@ -53,17 +53,18 @@ public enum SessionSummarizeCommand {
         }
 
         /// The people store as it is now: the names and the user's own name from one read of it, and "Remember
-        /// voices" with the forgets it waits for. A store that cannot be read gives no names and the account's name.
-        public static func read(store: SpeakerProfileStore = SpeakerProfileStore()) -> VoiceInputs {
-            from(try? store.load(), store: store)
+        /// voices" with the forgets it waits for. A store that cannot be read (one a newer build wrote, a damaged one)
+        /// throws: a summary is not made with names it could not read.
+        public static func read(store: SpeakerProfileStore = SpeakerProfileStore()) throws -> VoiceInputs {
+            from(try store.load(), store: store)
         }
 
-        /// The inputs from a database already read (nil: it could not be read), with no second read of it.
-        static func from(_ database: SpeakerProfileDatabase?, store: SpeakerProfileStore) -> VoiceInputs {
+        /// The inputs from a database already read, with no second read of it.
+        static func from(_ database: SpeakerProfileDatabase, store: SpeakerProfileStore) -> VoiceInputs {
             VoiceInputs(
-                names: database.map { VoiceProfileService.profileNames(in: $0) } ?? [:],
-                recognition: database.map { VoiceProfileService.recognitionAllowed(in: $0, store: store) } ?? false,
-                selfName: database?.profiles.first(where: \.isSelf)?.displayName ?? VoiceProfileService.selfName)
+                names: VoiceProfileService.profileNames(in: database),
+                recognition: VoiceProfileService.recognitionAllowed(in: database, store: store),
+                selfName: database.profiles.first(where: \.isSelf)?.displayName ?? VoiceProfileService.selfName)
         }
     }
 
@@ -88,7 +89,8 @@ public enum SessionSummarizeCommand {
         public static let busy = Status("busy")
         /// The current transcript changed while the summary was made: try again.
         public static let changed = Status("changed")
-        /// The session's files could not be read (a volume or file briefly unavailable): try again later.
+        /// The session's manifest or transcript could not be read (a volume or file briefly unavailable): try again
+        /// later.
         public static let unreadable = Status("unreadable")
         public static let failed = Status("failed")
         /// Stopped (Ctrl-C, or SIGTERM from the app when a meeting starts) before anything was written.
@@ -130,7 +132,8 @@ public enum SessionSummarizeCommand {
         do {
             manifest = try SessionArchive.readManifest(at: session)
         } catch {
-            return Outcome(sessionID: nil, status: .failed, message: error.localizedDescription, exitCode: 1)
+            // Unreadable for now (a volume going away, a file being replaced): tried again later, as a transcript.
+            return Outcome(sessionID: nil, status: .unreadable, message: error.localizedDescription, exitCode: 1)
         }
         let id = manifest.id
         func outcome(_ status: Status, _ message: String, transcriptID: String? = nil, code: Int32 = 1) -> Outcome {
@@ -141,7 +144,7 @@ public enum SessionSummarizeCommand {
                 return outcome(.busy, "This meeting is still recording; it is summarized once it is saved.")
             }
         } catch {
-            return outcome(.failed, error.localizedDescription)
+            return outcome(.unreadable, error.localizedDescription)
         }
         // Only a finished meeting, by the predicate the app's schedule uses (`MeetingSummarySchedule.isFinished`): a
         // recorder that died left a transcript of part of the meeting (interrupted, still processing), which recovery
@@ -269,11 +272,16 @@ public enum SessionSummarizeCommand {
                 // The speaker lock is held from the check of the labels to the last export written, so no speaker
                 // edit (which takes only that lock) lands between them: the summary and the files name the same
                 // people.
+                // Only a lock not taken (the speaker lock, then the people store's) is `busy`: everything thrown
+                // with the locks held comes wrapped (`UnderLocks`), and fails the run with its own message (a people
+                // store a newer build wrote is not tried again every minute).
                 do {
                     return try SessionArchive.withSpeakerLock(at: session) { () throws -> Outcome in
                         try publishLocked(record, request: request, transcriptID: transcriptID, key: key,
                                           message: message, outcome: outcome)
                     }
+                } catch let error as UnderLocks {
+                    throw error.error
                 } catch let error as HolosError {
                     guard case .unavailable = error else { throw error }
                     return outcome(.busy, error.localizedDescription, transcriptID, 1)
@@ -293,16 +301,30 @@ public enum SessionSummarizeCommand {
         // names people as they were and is made again. With the store, its lock is held from that read until the
         // files are written (taken after the speaker lock, which the caller holds: speakers → profiles).
         if let key, let store = request.profileStore {
-            return try store.withLockedDatabase { database in
-                try publishChecked(record, request: request, transcriptID: transcriptID, key: key,
-                                   fresh: VoiceInputs.from(database, store: store), message: message, outcome: outcome)
+            return try store.withLockedRead { read in
+                try UnderLocks.wrapping {
+                    try publishChecked(record, request: request, transcriptID: transcriptID, key: key,
+                                       fresh: VoiceInputs.from(try read.get(), store: store), message: message,
+                                       outcome: outcome)
+                }
             }
         }
-        let fresh = request.voiceInputsNow?() ?? VoiceInputs(names: request.profileNames,
-                                                            recognition: request.applyRecognition,
-                                                            selfName: request.selfName)
-        return try publishChecked(record, request: request, transcriptID: transcriptID, key: key, fresh: fresh,
-                                  message: message, outcome: outcome)
+        return try UnderLocks.wrapping {
+            let fresh = request.voiceInputsNow?() ?? VoiceInputs(names: request.profileNames,
+                                                                recognition: request.applyRecognition,
+                                                                selfName: request.selfName)
+            return try publishChecked(record, request: request, transcriptID: transcriptID, key: key, fresh: fresh,
+                                      message: message, outcome: outcome)
+        }
+    }
+
+    /// An error thrown while the save's locks were held, so not one of a lock not taken.
+    private struct UnderLocks: Error {
+        let error: any Error
+
+        static func wrapping<T>(_ body: () throws -> T) throws -> T {
+            do { return try body() } catch let error as UnderLocks { throw error } catch { throw UnderLocks(error: error) }
+        }
     }
 
     /// The check of the key against `fresh` and the writes, under the speaker lock (and the profile lock when the
@@ -346,10 +368,12 @@ public enum SessionSummarizeCommand {
         return written
     }
 
-    /// The speaker labels as files: the head and the edit journal, each by size and modification time. Any change to
-    /// either (a relabel, a rename, a merge) changes it.
+    /// The speaker labels as files: the head, the edit journal and the recognition results (automatic names, written
+    /// after the head), each by size and modification time. Any change to them (a relabel, a rename, a merge, a
+    /// recognition run) changes it.
     static func speakerRevision(_ session: URL) -> String {
         MeetingPeopleCache.fileStamp(SessionPaths.head(session)) + "|"
-            + MeetingPeopleCache.fileStamp(SessionPaths.edits(session))
+            + MeetingPeopleCache.fileStamp(SessionPaths.edits(session)) + "|"
+            + MeetingPeopleCache.recognitionStamp(session)
     }
 }

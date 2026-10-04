@@ -154,37 +154,40 @@ extension HolosAppDelegate {
               !meetingIsBusy(controller.state) else { return }
         meeting.summaries.scanning = true
         let root = controller.root
+        let requested = meeting.summaries.requested
         Task { [weak self] in
-            let candidates = await Task.detached { () -> [MeetingSummarySchedule.Candidate] in
-                // People's names and Remember voices, once per scan: a summary whose names changed is made again.
-                let voice = SessionSummarizeCommand.VoiceInputs.read()
-                return MeetingSummarySchedule.scan(root: root, profileNames: voice.names,
-                                                   recognition: voice.recognition, selfName: voice.selfName)
+            let (candidates, gone) = await Task.detached { () -> ([MeetingSummarySchedule.Candidate], Set<String>) in
+                // People's names and Remember voices, once per scan: a summary whose names changed is made again. A
+                // people store that cannot be read lists meetings without names; the command then fails at once,
+                // before the model, with the reason.
+                let voice = (try? SessionSummarizeCommand.VoiceInputs.read())
+                    ?? SessionSummarizeCommand.VoiceInputs(names: [:], recognition: false,
+                                                           selfName: VoiceProfileService.ownName())
+                let candidates = MeetingSummarySchedule.scan(root: root, profileNames: voice.names,
+                                                             recognition: voice.recognition, selfName: voice.selfName)
+                // A requested meeting the scan did not list is gone only when no folder holds it, whatever the
+                // folder's name: one whose manifest cannot be read now (or a sessions folder not there) keeps it.
+                let listed = Set(candidates.map(\.sessionID))
+                let gone = Set(requested.filter {
+                    !listed.contains($0) && SessionCatalog.hasSession($0, in: root) == false
+                })
+                return (candidates, gone)
             }.value
             guard let self else { return }
             self.meeting.summaries.scanning = false
-            self.startNextMeetingSummary(candidates)
+            self.startNextMeetingSummary(candidates, gone: gone)
         }
     }
 
-    private func startNextMeetingSummary(_ candidates: [MeetingSummarySchedule.Candidate]) {
+    private func startNextMeetingSummary(_ candidates: [MeetingSummarySchedule.Candidate], gone: Set<String>) {
         // A reconciliation that began while the folder was scanned holds summaries back; the next look starts one.
         guard let controller = meeting.controller, let maintenance = meeting.maintenance,
               meeting.summaries.running == nil, meeting.summaries.launchReady,
               meeting.summaries.reconciling == 0 else { return }
         let now = Date()
         meeting.summaries.delayedUntil = meeting.summaries.delayedUntil.filter { $0.value > now }
-        // A request for a meeting that is gone is dropped, and so is one a summary made since already answers (a
-        // command that finished while the app was closed).
-        // Only a meeting whose folder is confirmed gone (the sessions folder is there, the meeting's is not) loses its
-        // request: one the scan could not read (a volume not mounted, a folder unreadable for now) keeps it.
-        let listed = Set(candidates.map(\.sessionID))
-        let root = controller.root
-        let rootThere = (try? root.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true
-        let gone = Set(meeting.summaries.requested.filter { id in
-            !listed.contains(id) && rootThere
-                && !FileManager.default.fileExists(atPath: root.appendingPathComponent("\(id).holos").path)
-        })
+        // A request for a meeting that is gone (`gone`, by the scan) is dropped, and so is one a summary made since
+        // already answers (a command that finished while the app was closed).
         let satisfied = MeetingSummarySchedule.satisfied(meeting.summaries.requests, by: candidates)
         meeting.summaries.requests.removeAll { gone.contains($0.sessionID) || satisfied.contains($0.sessionID) }
         let situation = MeetingSummarySchedule.Situation(

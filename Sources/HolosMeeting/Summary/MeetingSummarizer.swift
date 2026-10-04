@@ -792,6 +792,15 @@ extension MeetingSummaryDraft {
             #"(?:星期|礼拜|禮拜)[一二三四五六日天]"#,
             #"[周週][一二三四五六日]"#,
             #"今日|今天"#,
+            // Korean, with or without spaces and with a possessive 의 after it: "2026년 10월 3일", "10월 3일",
+            // "2026년 10월", "10월"; "월요일"; "오늘". A year only with four digits and a day only after a month, so
+            // "10년 계획" (a ten-year plan) and "3일 워크숍" (a three-day workshop) stay.
+            #"\d{4}년\s*\d{1,2}월(?:\s*\d{1,2}일)?의?"#,
+            #"\d{1,2}월\s*\d{1,2}일의?"#,
+            #"\d{1,2}월의?"#,
+            #"\d{4}년의?"#,
+            #"[월화수목금토일]요일의?"#,
+            #"오늘의?"#,
         ]
         var result = text
         for pattern in patterns {

@@ -1380,6 +1380,51 @@ private func trackDocument(source: AudioSource) -> ExportDocument {
     #expect(MeetingSummaryDraft.cleanTitle("3号楼装修计划", language: "zh-CN") == "3号楼装修计划")
 }
 
+@Test func koreanDatesAreRemoved() {
+    #expect(MeetingSummaryDraft.cleanTitle("2026년 10월 3일 예산 검토", language: "ko-KR") == "예산 검토")
+    #expect(MeetingSummaryDraft.cleanTitle("10월 3일의 예산 검토", language: "ko-KR") == "예산 검토")
+    #expect(MeetingSummaryDraft.cleanTitle("예산 검토 10월3일", language: "ko-KR") == "예산 검토")
+    #expect(MeetingSummaryDraft.cleanTitle("월요일 주간 회의", language: "ko-KR") == "주간 회의")
+    #expect(MeetingSummaryDraft.cleanTitle("10월 회고", language: "ko-KR") == "회고")
+    #expect(MeetingSummaryDraft.cleanTitle("10년 계획 회의", language: "ko-KR") == "10년 계획 회의")
+    #expect(MeetingSummaryDraft.cleanTitle("3일 워크숍 준비", language: "ko-KR") == "3일 워크숍 준비")
+}
+
+@Test func aMeetingIsFoundByItsSessionIDWhateverItsFolderIsNamed() async throws {
+    let temp = try TemporaryDirectory("summary")
+    defer { temp.remove() }
+    let root = temp.url.appendingPathComponent("Sessions", isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    let session = try await summarizeSession(in: root)
+    let id = try SessionArchive.readManifest(at: session).id
+    let renamed = root.appendingPathComponent("Budget review.holos", isDirectory: true)
+    try FileManager.default.moveItem(at: session, to: renamed)
+    #expect(SessionCatalog.hasSession(id, in: root) == true)
+    #expect(SessionCatalog.hasSession(UUID().uuidString, in: root) == false)
+    // A manifest that cannot be read now: nobody can tell the meeting is gone.
+    let manifest = SessionPaths.manifest(renamed)
+    try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: manifest.path)
+    #expect(SessionCatalog.hasSession(UUID().uuidString, in: root) == nil)
+    try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: manifest.path)
+    #expect(SessionCatalog.hasSession(id, in: temp.url.appendingPathComponent("Missing")) == nil)
+}
+
+@Test func aRecognitionResultChangesTheSpeakerRevision() async throws {
+    let temp = try TemporaryDirectory("summary")
+    defer { temp.remove() }
+    let (session, _, run) = try await SessionFixtures.labelledSession(in: temp.url)
+    let before = SessionSummarizeCommand.speakerRevision(session)
+    #expect(SessionSummarizeCommand.speakerRevision(session) == before)
+    // Recognition writes its result after the head run: the scan's key and the list's people are worked out again.
+    let result = SessionPaths.recognition(run.id, in: session)
+    try FileManager.default.createDirectory(at: result.deletingLastPathComponent(), withIntermediateDirectories: true)
+    try Data("{}".utf8).write(to: result)
+    let written = SessionSummarizeCommand.speakerRevision(session)
+    #expect(written != before)
+    try Data("{ }".utf8).write(to: result)
+    #expect(SessionSummarizeCommand.speakerRevision(session) != written)
+}
+
 @Test func aKeyThatCouldNotBeReadIsReadAgain() async throws {
     let temp = try TemporaryDirectory("summary")
     defer { temp.remove() }
@@ -1495,12 +1540,47 @@ private func trackDocument(source: AudioSource) -> ExportDocument {
     defer { temp.remove() }
     let session = try await summarizeSession(in: temp.url)
     let store = SpeakerProfileStore(directory: temp.url.appendingPathComponent("Speakers", isDirectory: true))
-    let inputs = SessionSummarizeCommand.VoiceInputs.read(store: store)
+    let inputs = try SessionSummarizeCommand.VoiceInputs.read(store: store)
     let request = SessionSummarizeCommand.Request(session: session, selfName: inputs.selfName,
                                                   profileNames: inputs.names, applyRecognition: inputs.recognition,
                                                   profileStore: store)
     let outcome = await SessionSummarizeCommand.run(request) { _ in .available(ScriptedSummaryModel().model()) }
     #expect(outcome.status == .written)
+}
+
+@Test func aPeopleStoreANewerBuildWroteFailsTheSaveForGood() async throws {
+    let temp = try TemporaryDirectory("summary")
+    defer { temp.remove() }
+    let session = try await summarizeSession(in: temp.url)
+    let store = SpeakerProfileStore(directory: temp.url.appendingPathComponent("Speakers", isDirectory: true))
+    let inputs = try SessionSummarizeCommand.VoiceInputs.read(store: store)
+    let request = SessionSummarizeCommand.Request(session: session, selfName: inputs.selfName,
+                                                  profileNames: inputs.names, applyRecognition: inputs.recognition,
+                                                  profileStore: store)
+    // Written by a newer build after the command read it: refused up front from now on, and at the save a failure,
+    // not a busy lock tried again every minute.
+    try FileManager.default.createDirectory(at: store.directory, withIntermediateDirectories: true)
+    try Data(#"{"schemaVersion": 99, "profiles": []}"#.utf8).write(to: store.databaseURL)
+    #expect(throws: (any Error).self) { _ = try SessionSummarizeCommand.VoiceInputs.read(store: store) }
+    let outcome = await SessionSummarizeCommand.run(request) { _ in .available(ScriptedSummaryModel().model()) }
+    #expect(outcome.status == .failed)
+    #expect(!outcome.status.retriesLater)
+    #expect(outcome.message.contains("newer"))
+    #expect(!SessionFixtures.exists(SessionPaths.summary(session)))
+}
+
+@Test func aManifestTheCommandCannotReadIsTriedAgainLater() async throws {
+    let temp = try TemporaryDirectory("summary")
+    defer { temp.remove() }
+    let session = try await summarizeSession(in: temp.url)
+    let manifest = SessionPaths.manifest(session)
+    try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: manifest.path)
+    let scripted = ScriptedSummaryModel()
+    let outcome = await run(session, scripted)
+    try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: manifest.path)
+    #expect(outcome.status == .unreadable)
+    #expect(outcome.status.retriesLater)
+    #expect(scripted.summaryCalls.value.isEmpty)
 }
 
 @Test func aNameTheUserGaveIsTheirsWhateverItLooksLike() throws {

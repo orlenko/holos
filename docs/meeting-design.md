@@ -4997,7 +4997,8 @@ dates written with a month name, weekdays and "today" removed (numbers alone are
 versions, "Release 1.2.3", "Python 3.11.8"; the prompt asks for no dates; month and weekday names of the summary's language from
 the system's calendar, and English and French; short weekday names are not, as Spanish "mar" is
 also "sea"; Chinese and Japanese dates and weekdays by pattern, "2026年10月3日", "10月", "月曜日",
-"星期一", with a particle left at either end, "の", "的", removed), at most 8 words and 60 characters (at a space when one
+"星期一", with a particle left at either end, "の", "的", removed; Korean the same way, "2026년 10월 3일", "10월 3일의",
+"월요일", "오늘", a year only with four digits and a day only after a month, so "10년 계획" and "3일 워크숍" stay), at most 8 words and 60 characters (at a space when one
 is past half of that, else between characters, for text without spaces) without a dangling "and", "of",
 "the", "de", "pour" …; "Meeting" alone is no title. The summary: one line, at most two
 sentences and 320 characters. Key points and action items: bullets and numbering removed, "None"
@@ -5024,16 +5025,18 @@ which are remembered by the full key). A Summarize Again request whose summary i
 files pending only gets them rewritten; any other runs forced. Exit 0 when written or up
 to date, 3 when written but the transcript files could not be rewritten, 1 otherwise, with
 `status` in the JSON (`written`, `current`, `noTranscript`, `unavailable`, `busy`, `changed`,
-`unreadable` (the transcript could not be read), `failed`, `cancelled`). A session that is not finished by the predicate the app's schedule uses
+`unreadable` (the manifest or the transcript could not be read), `failed`, `cancelled`). A people store that
+cannot be read (written by a newer build, damaged) fails it at once, before the model. A session that is not finished by the predicate the app's schedule uses
 (`MeetingSummarySchedule.isFinished`: interrupted, still processing, incomplete, failed, damaged)
-is refused before the model: Recover first. The speaker labels it read (the head and the edit journal, by size and
-modification time) are checked again at the save: the whole key is computed again from the labels as
+is refused before the model: Recover first. The speaker labels it read (the head, the edit journal and the recognition
+results, by size and modification time) are checked again at the save: the whole key is computed again from the labels as
 they are and the people store read again in one read (names, Remember voices with a forget still
 going through the meetings, the user's own name; `SessionSummarizeCommand.VoiceInputs.read`), and
 must equal the key the summary was made with. The command holds the speaker lock and then the
-profile lock (`withLockedDatabase`, the §1.7 order speakers → profiles) from that read until
+profile lock (`withLockedRead`, the §1.7 order speakers → profiles) from that read until
 summary.json and the transcript files are written, so no edit or rename lands between the check
-and the files; changed meanwhile (a rename in Terminal, a person
+and the files; only a lock not taken is `busy`, and anything that fails with the locks held (a people store a
+newer build wrote meanwhile) fails the run with its reason; changed meanwhile (a rename in Terminal, a person
 renamed), the summary is not saved (`changed`, made again later), so it never names people as
 they were. Lines stay (speaker, text) through every cut and are rendered only in a prompt, so a
 name containing ": " cannot be misread. The speaker lock is held from that check through summary.json and the export
@@ -5072,7 +5075,8 @@ no summary starts until the final-transcript reconciliation has queued the meeti
 the app was closed (or had nothing to do; while the model downloads it waits for the download to end); every later
 reconciliation (the model installed, the setting turned on) holds summaries back too, and stops
 one running (it is made again afterwards). A Summarize Again request is dropped for a missing
-meeting only when its folder is confirmed gone, not when the scan could not read it. After a meeting is saved, the scan waits until the final
+meeting only when no folder holds it, whatever the folder is named (`SessionCatalog.hasSession`: the sessions
+folder listed and every folder's manifest read for its `id`), not when the scan could not read it. After a meeting is saved, the scan waits until the final
 transcript queue has decided about it (the meeting is in a deciding set while its languages are
 read, and the schedule skips it), and a meeting queued for a final transcript is summarized
 after it. Nothing starts while a meeting starts, records or saves, while the lock is held (a

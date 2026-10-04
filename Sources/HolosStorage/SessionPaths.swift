@@ -52,7 +52,7 @@ public enum SessionPaths {
     /// speakers/
     static func speakers(_ session: URL) -> URL { folder("speakers", in: session) }
     /// speakers/recognition/
-    static func recognitionDirectory(_ session: URL) -> URL { folder("recognition", in: speakers(session)) }
+    public static func recognitionDirectory(_ session: URL) -> URL { folder("recognition", in: speakers(session)) }
     /// speakers/edits.torn-<UUID>.jsonl: backup of a torn journal tail before it is repaired.
     static func tornEditsBackup(_ session: URL) -> URL {
         file("edits.torn-\(UUID().uuidString).jsonl", in: speakers(session))

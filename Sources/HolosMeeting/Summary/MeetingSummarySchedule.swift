@@ -154,7 +154,7 @@ public enum MeetingSummarySchedule {
     }
 
     /// Keys worked out by earlier scans, by meeting, with what they were worked out from (the transcript, the speaker
-    /// head and edit journal, people's names and Remember voices): a meeting's labels are read again only when one of
+    /// head, edit journal and recognition results, people's names and Remember voices): a meeting's labels are read again only when one of
     /// those changed.
     private static let keyCache = Mutex<[String: (inputs: String, key: MeetingSummaryKey?)]>([:])
 
