@@ -346,9 +346,13 @@ public struct MeetingSummarizer: Sendable {
         let prompt = Self.summaryPrompt(body: body, fromNotes: fromNotes, durationSeconds: input.durationSeconds,
                                         people: input.people)
         let model = model
-        let answer: MeetingSummaryDraft?
+        var answer: MeetingSummaryDraft?
         do {
-            answer = try await call(&run, { try await model.summary(instructions, prompt) })
+            // A call that timed out is made again, as a part's would be, until `maximumTimeoutsInARow` in a row
+            // (then `call` stops the run).
+            repeat {
+                answer = try await call(&run, { try await model.summary(instructions, prompt) })
+            } while answer == nil && run.timeoutsInARow > 0
         } catch MeetingSummaryModelError.contextExceeded {
             // A transcript too long for one call is summarized from notes instead (`summarize`).
             if !fromNotes { throw MeetingSummaryModelError.contextExceeded }
@@ -568,10 +572,15 @@ public struct MeetingSummarizer: Sendable {
             """
     }
 
+    /// The longest length a prompt states (seven days).
+    static let maximumMeetingSeconds: Double = 7 * 24 * 3600
+
     static func summaryPrompt(body: String, fromNotes: Bool, durationSeconds: Double, people: [String]) -> String {
         var header: [String] = []
+        // Clamped to a week before it becomes a number of minutes: a damaged archive's length cannot trap.
         if durationSeconds.isFinite, durationSeconds >= 60 {
-            header.append("Length: \(Int((durationSeconds / 60).rounded())) minutes.")
+            let minutes = Int((min(durationSeconds, maximumMeetingSeconds) / 60).rounded())
+            header.append("Length: \(minutes) minutes.")
         }
         // Names are the user's text: they go inside a fence, as data, never into the instructions around it.
         if !people.isEmpty {

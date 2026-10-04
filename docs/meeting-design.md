@@ -4986,7 +4986,8 @@ refuses (a refusal or guardrail, the field, or notes that read as one as a backu
 "I cannot", "As an AI…", one list of openings, any case) or does not answer in time is left out
 and counted (more than half left out fails the run); a part too long for the context is split in two
 and asked again (twice at most; each half counts as a piece, and one left out, or still too long,
-counts as left out, so the more-than-half rule weighs pieces); two calls in a row that time out stop the run; a rate limit
+counts as left out, so the more-than-half rule weighs pieces); two calls in a row that time out stop the run (a final call that timed out once is made again, as
+a part's is); a rate limit
 stops it as `busy`; any other model error fails the run, so a summary of part of the meeting is
 never saved as a whole one, and an older summary stays.
 

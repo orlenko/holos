@@ -23,10 +23,15 @@ public final class MeetingPeopleCache: Sendable {
         guard summary.labelsReadyAt != nil else { return [] }
         let key = Self.key(summary, profileNames: profileNames, applyRecognition: applyRecognition)
         if let entry = entries.withLock({ $0[summary.id] }), entry.key == key { return entry.people }
-        let people = (try? SpeakerSessionSnapshot.load(session: summary.directory, profileNames: profileNames,
-                                                        applyRecognition: applyRecognition))
-            .flatMap { snapshot in snapshot.transcriptChanged ? nil : snapshot.projection }
-            .map(MeetingSummarySource.people) ?? []
+        let snapshot: SpeakerSessionSnapshot
+        do {
+            snapshot = try SpeakerSessionSnapshot.load(session: summary.directory, profileNames: profileNames,
+                                                       applyRecognition: applyRecognition)
+        } catch {
+            // Not read now (a file busy or unreadable): nobody shown, and nothing kept, so it is read again next time.
+            return []
+        }
+        let people = (snapshot.transcriptChanged ? nil : snapshot.projection).map(MeetingSummarySource.people) ?? []
         entries.withLock { $0[summary.id] = Entry(key: key, people: people) }
         return people
     }

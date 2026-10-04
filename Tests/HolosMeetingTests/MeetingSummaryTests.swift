@@ -1342,6 +1342,57 @@ private func trackDocument(source: AudioSource) -> ExportDocument {
     #expect(key()?.transcriptID == transcriptID)
 }
 
+@Test func aFinalCallThatTimedOutOnceIsMadeAgain() async throws {
+    let calls = SharedValue(0)
+    let scripted = ScriptedSummaryModel(summary: { _ in
+        let number = calls.update { value -> Int in
+            value += 1
+            return value
+        }
+        if number == 1 { try await Task.sleep(for: .seconds(3_600)) }
+        return MeetingSummaryDraft(title: "Parser plan", summary: "They planned the parser.")
+    })
+    let summarizer = MeetingSummarizer(model: scripted.model(), callTimeout: .seconds(2))
+    let result = try await summarizer.summarize(input(lines(3)))
+    #expect(result.draft.title == "Parser plan")
+    #expect(calls.value == 2)
+    // Every attempt timing out still stops the run.
+    let stuck = ScriptedSummaryModel(summary: { _ in
+        try await Task.sleep(for: .seconds(3_600))
+        return MeetingSummaryDraft(title: "Never", summary: "Never.")
+    })
+    await #expect(throws: MeetingSummarizer.Failure.timedOut) {
+        _ = try await MeetingSummarizer(model: stuck.model(), callTimeout: .milliseconds(20)).summarize(input(lines(3)))
+    }
+    #expect(stuck.summaryCalls.value.count == 2)
+}
+
+@Test func anImpossibleLengthNeverTraps() {
+    let huge = MeetingSummarizer.summaryPrompt(body: "<<<\nx\n>>>", fromNotes: false, durationSeconds: 1e300,
+                                               people: [])
+    #expect(huge.contains("Length: 10080 minutes."))
+    for value in [Double.nan, .infinity, -.infinity] {
+        let prompt = MeetingSummarizer.summaryPrompt(body: "<<<\nx\n>>>", fromNotes: false, durationSeconds: value,
+                                                     people: [])
+        #expect(!prompt.contains("Length"))
+    }
+}
+
+@Test func peopleThatCouldNotBeReadAreReadAgain() async throws {
+    let temp = try TemporaryDirectory("summary")
+    defer { temp.remove() }
+    let (session, transcript, run) = try await SessionFixtures.labelledSession(in: temp.url, track: "mic")
+    let first = try #require(run.speakers.first)
+    try SessionFixtures.appendEdits([.rename(speakerID: first.id, name: "Alex")], session: session)
+    let summary = SessionCatalog.summary(session: session)
+    let cache = MeetingPeopleCache()
+    let revision = SessionPaths.transcript(transcript.id, in: session)
+    try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: revision.path)
+    #expect(cache.people(of: summary, profileNames: [:], applyRecognition: true).isEmpty)
+    try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: revision.path)
+    #expect(cache.people(of: summary, profileNames: [:], applyRecognition: true) == ["Alex"])
+}
+
 @Test func aNameTheUserGaveIsTheirsWhateverItLooksLike() throws {
     let root = URL(fileURLWithPath: "/tmp/sessions")
     var typed = MeetingStartSettings(name: "Meeting 2026-10-03 14:00", source: .microphone)
