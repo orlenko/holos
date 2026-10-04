@@ -8,14 +8,17 @@ import Testing
 /// the search field had no height of its own and, in some windows, took all the height and left the page none.
 @MainActor
 struct SettingsEmbeddingTests {
-    /// Window content sizes: the default, the minimum, and tall ones like the user's (800 × 950 points and larger).
+    /// Window content sizes: the default, the minimum, and tall ones like the user's (900 × 950 points and larger).
     nonisolated static let sizes = [NSSize(width: 1280, height: 800), NSSize(width: 900, height: 560),
-                        NSSize(width: 800, height: 950), NSSize(width: 1000, height: 1300),
+                        NSSize(width: 900, height: 950), NSSize(width: 1000, height: 1300),
                         NSSize(width: 1600, height: 1900)]
 
     @Test(arguments: sizes)
     func thePageFillsTheSectionAndShowsItsCards(size: NSSize) throws {
         let (window, pane) = try Self.settings(size: size)
+        // Settings never pulls the window's content in from the window's edges.
+        let content = try #require(window.contentView)
+        #expect(content.frame.size == window.contentRect(forFrameRect: window.frame).size)
         let scroll = try #require(Self.pageScrollView(in: pane.view))
         let field = try #require(pane.searchField)
         // The page takes everything below the search field (and its hairline).
@@ -29,7 +32,9 @@ struct SettingsEmbeddingTests {
         #expect(cards.count == SettingsChapter.allCases.count)
         for card in cards {
             #expect(!card.isHiddenOrHasHiddenAncestor)
-            #expect(card.frame.width > 0 && card.frame.height > 0)
+            // As wide as the page allows, up to 760 points, with 28-point margins.
+            #expect(card.frame.width == min(760, document.frame.width - 56))
+            #expect(card.frame.height > 0)
         }
         #expect(cards.contains { scroll.contentView.documentVisibleRect.intersects($0.convert($0.bounds, to: document)) })
         // The hairline stays a horizontal line.
@@ -42,7 +47,7 @@ struct SettingsEmbeddingTests {
 
     @Test(arguments: [SettingsChapter.meetings, .history])
     func aChosenChapterIsOnScreen(chapter: SettingsChapter) throws {
-        let (window, pane) = try Self.settings(size: NSSize(width: 800, height: 950))
+        let (window, pane) = try Self.settings(size: NSSize(width: 900, height: 950))
         pane.show(chapter: chapter, animated: false)
         window.contentView?.layoutSubtreeIfNeeded()
         let scroll = try #require(Self.pageScrollView(in: pane.view))
@@ -54,7 +59,7 @@ struct SettingsEmbeddingTests {
     }
 
     @Test func clearingASearchShowsEveryCardAgain() throws {
-        let (window, pane) = try Self.settings(size: NSSize(width: 800, height: 950))
+        let (window, pane) = try Self.settings(size: NSSize(width: 900, height: 950))
         let field = try #require(pane.searchField)
         field.stringValue = "audio"
         _ = field.sendAction(field.action, to: field.target)

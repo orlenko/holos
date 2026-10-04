@@ -452,8 +452,9 @@ thumbnail timeline, and a larger local-model benchmark are follow-ups.
   Escape clears. Rendered offscreen (sidebar and page) in light and dark: the page, a query,
   no match, a chosen chapter, and Return. In the running app the first build showed a blank
   page in tall windows (the hairline under the search field had no height of its own and took
-  the page's); fixed, and `HolosAppTests` (the first tests of the app target) lay out Settings
-  in the real main window at five sizes and check that the page and its cards show. Smooth
+  the page's); fixed, as is the page pulling the window's content narrower than a wide window.
+  `HolosAppTests` (the first tests of the app target) lay out Settings in the real main window
+  at five sizes and check that the content fills the window and the page and its cards show. Smooth
   scrolling, focus moves, and VoiceOver announcements are still unverified.
 - Live transcript in the main window (docs/design.md "Live transcript"): the meeting being
   recorded is the first row of Meetings ("● Recording"), and opening it (double-click,
