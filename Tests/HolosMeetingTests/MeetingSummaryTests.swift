@@ -175,6 +175,19 @@ private func input(_ lines: [MeetingSummaryLine]) -> MeetingSummaryInput {
     #expect(MeetingSummaryDraft.cleanTitle("  ") == nil)
 }
 
+@Test func aCapitalLongerThanItsLetterStaysWithinTheCap() throws {
+    // "ß" capitalizes to "SS": the cap applies after it, so the record's rules accept the title.
+    let raw = "ß" + String(repeating: "a", count: MeetingSummaryDraft.maximumTitleCharacters - 1)
+    let title = try #require(MeetingSummaryDraft.cleanTitle(raw))
+    #expect(title.hasPrefix("SS"))
+    #expect(title.count <= MeetingSummaryDraft.maximumTitleCharacters)
+    let spaced = try #require(MeetingSummaryDraft.cleanTitle("ßtraßenplanung " + String(repeating: "x", count: 45)))
+    #expect(spaced.count <= MeetingSummaryDraft.maximumTitleCharacters)
+    let record = MeetingSummaryRecord(sessionID: "S", transcriptID: "T", title: title, summary: "We planned.",
+                                      model: "fake")
+    #expect(record.problem() == nil)
+}
+
 @Test func theSummaryIsCutToTwoSentences() {
     let cleaned = MeetingSummaryDraft.cleanSummary("First point.  Second\npoint! Third point? Fourth.")
     #expect(cleaned == "First point. Second point!")

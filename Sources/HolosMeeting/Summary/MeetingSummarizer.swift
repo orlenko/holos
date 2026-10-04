@@ -782,7 +782,9 @@ extension MeetingSummaryDraft {
     }
 
     /// The title as the list shows it, or nil when nothing usable is left: one line, quotes and a final period
-    /// removed, a leading "Meeting about …" / "Meeting:" / "Réunion sur …" removed, at most `maximumTitleWords` words (without a dangling "and", "of", "the" … at the end), first letter capital.
+    /// removed, a leading "Meeting about …" / "Meeting:" / "Réunion sur …" removed, at most
+    /// `maximumTitleWords` words (without a dangling "and", "of", "the" … at the end), first letter capital, and then at
+    /// most `maximumTitleCharacters` (a capital can be longer than its letter: "ß" is "SS").
     public static func cleanTitle(_ text: String) -> String? {
         var title = oneLine(text)
         if let colon = title.firstMatch(of: /^(?i:title)\s*:\s*/) { title = String(title[colon.range.upperBound...]) }
@@ -804,6 +806,12 @@ extension MeetingSummaryDraft {
         }
         title = words.joined(separator: " ").trimmingCharacters(in: CharacterSet(charactersIn: ".,;:–—-")
             .union(.whitespaces))
+        // A title of only "Meeting" (or "Réunion") says nothing.
+        guard let first = title.first, !(["meeting", "réunion", "untitled"].contains(title.lowercased())) else {
+            return nil
+        }
+        // Capitalized before the length is cut: a capital can be longer than its letter ("ß" is "SS").
+        title = first.uppercased() + title.dropFirst()
         if title.count > maximumTitleCharacters {
             // At the last space within the limit when there is one, else between characters.
             let cut = String(title.prefix(maximumTitleCharacters))
@@ -815,10 +823,7 @@ extension MeetingSummaryDraft {
             }
             title = title.trimmingCharacters(in: CharacterSet(charactersIn: ".,;:–—-、，。").union(.whitespaces))
         }
-        guard let first = title.first else { return nil }
-        // A title of only "Meeting" (or "Réunion") says nothing.
-        guard !["meeting", "réunion", "untitled"].contains(title.lowercased()) else { return nil }
-        return first.uppercased() + title.dropFirst()
+        return title.isEmpty ? nil : title
     }
 
     /// Words a cut title must not end with.
