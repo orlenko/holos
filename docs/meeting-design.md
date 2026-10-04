@@ -2281,7 +2281,7 @@ to the user; every command is an allowlisted enum value with an exact session ID
 ```
 Holos.app/Contents/MacOS/holos record start
     --session-id <UUID> --name <name> --source mic|mic+system [--app <bundle-id>]
-    [--others-in-room] [--expected-speakers N] [--vocabulary-file <path>]
+    [--others-in-room] [--expected-speakers N] [--vocabulary-file <path>] [--screen display]
     --no-live-text --directory <HolosPaths.sessions>
 ```
 
@@ -4494,24 +4494,67 @@ several languages; a Markdown option to mark language switches; detecting a miss
 language on its own once its model is installed, and an app action that detects languages
 over edited labels (today only `session languages --force` does).
 
-### 4.15 Optional meeting-window context
+### 4.15 Optional screen context
 
-Snapshots are off by default. Each meeting requires an explicit window ID plus owner
-PID; neither is remembered. Settings can default the offer on, not authorize a
-previous window. Capture uses a desktop-independent ScreenCaptureKit window filter,
-never a display filter or fallback target. Other windows (including desktop
-notifications) are excluded; sensitive content drawn inside the selected window is
-still captured. Permission must already be granted; listing/capture failures are
-optional-evidence failures and never invalidate saved audio.
+*History.* PR #71 captured one window the user picked from a list in each meeting's start
+panel. After trying it, the user (2026-10-03): the window-only design "does not work well
+in practice. Full screen is the practical way - we are doing it to help with the
+dictation, not to steal data", and the per-meeting window list "is impractical. Full
+screen recording is the real deal". Nothing leaves the Mac: there is no online model.
+The capture is now of the whole main display; the window picker is gone.
 
-One serial utility queue samples at most 0.5 fps, with no cursor, shadow, or audio.
-Images have a maximum dimension of 1600 and JPEG quality 0.65. A 160×90 grayscale
-fingerprint has 16×9 tiles. At least 6 pixels changing by 20/255 within a tile makes
-it changed; at least 18% changed tiles keeps a frame, compared with the last retained
-frame. This ignores small cursor/video changes, but can miss sparse edits or
-colour-only changes and can keep a large video tile. It is a heuristic, not a semantic
-slide detector. Idle samples extend an observed frame; suspended/blank samples break
-its interval. Stop does not extend evidence into an unobserved gap.
+*Setting and start panel.* Settings › Meetings has one checkbox, "Capture the screen
+during meetings (slides, shared screens) to improve transcripts" (UserDefaults
+`meetingScreenCapture`), with a caption: everything stays on this Mac, OCR runs on this
+Mac after the recording, images and text are deleted with the meeting audio, Voice is
+Local's own windows are left out (notifications are not). It is off for new installs,
+since it needs Screen & System Audio Recording permission; a user who had the old
+window offer on (`meetingScreenCaptureDefault`) gets it on, and the old key is removed
+once the setting is saved (`MeetingScreenPreference`). The start panel's Screen row is
+one checkbox, "Capture screen", checked as Settings says, for this meeting only; the
+last meeting's choice is not remembered. Without the permission the box is unchecked
+and dimmed and says what is missing; Start is never blocked by it. The app passes
+`--screen display` to the recorder; `voiceislocal record start --screen display|off`
+(default off) is the CLI form. A saved `screenWindow` from PR #71 decodes as no capture.
+
+*What is captured.* One ScreenCaptureKit display filter on the main display
+(`CGMainDisplayID`, the one with the menu bar; the first listed display if the main one
+is missing), `excludingApplications` Voice is Local itself: `ca.orlenko.holos.app`,
+`ca.orlenko.holos.cli`, the current process, and the current bundle identifier
+(`ScreenCapturePlan.excluded`), so the live transcript, Review, and the menu are never
+read back into the meeting's context. App exclusion covers windows opened later. Other
+displays are not captured: a filter covers one display, and several would need one
+stream and one retained-frame state per display writing one timeline, which is not
+cheap; "All displays" is a follow-up. If the app is not running (a CLI-only
+recording), there is nothing of it to exclude. Desktop notifications and everything
+else on the main display are captured. Permission must already be granted;
+capture failures are optional-evidence failures and never invalidate saved audio.
+
+One serial utility queue samples at most 0.5 fps, with no cursor or audio. The stream
+delivers the display's pixels scaled so neither side exceeds 2560
+(`ScreenContextStore.maximumImageDimension`; 5K → 2560×1440, about point resolution, so
+slide text stays legible to OCR). Each sample is copied through one software CIContext
+per capture. A 160×90 grayscale fingerprint (drawn with high interpolation quality)
+has 16×9 tiles. At least 6 pixels changing by 20/255 within a tile makes it changed.
+A sample becomes a keyframe when at least 10% of the tiles (15) both differ from the
+last retained frame and are unchanged since the previous sample (`settledChange`): a
+new slide or a finished scroll settles one sample later (or at the next idle sample,
+which means nothing changed), while a video tile that keeps moving never counts, even
+when it covers half the display. The keyframe starts at the previous sample only when
+that sample showed the same picture (no tile differs); a picture that settled in part
+but still differs elsewhere (a slide build's next bullet, or a video beside the slide)
+starts at its own sample. A change that never settles (shown under two seconds, or still moving
+at stop) is dropped. The first frame, and the first after a gap, is kept at once. This
+can miss sparse edits, colour-only changes, or a slide in a window under a tenth of the
+display; it is a heuristic, not a semantic slide detector. Similar samples and idle
+samples extend an observed frame; suspended/blank samples break its interval. A change
+that does not settle also ends the retained frame's interval at its last matching
+sample: if the screen then returns to the retained picture, that is a new keyframe with
+its own snapshot, so no interval claims a picture was visible while something else
+was. Stop does not extend evidence into an unobserved gap.
+
+JPEG quality is 0.65; a frame above 1 MiB is encoded again at 0.5 and 0.35, then at
+half the size, before the per-frame cap can end the capture (`ScreenFrameEncoding`).
 
 Private `screen/context.json` records UUID keyframes, observed session-time intervals,
 JPEG byte totals, and optional OCR lines with normalized bottom-left boxes and
@@ -4553,13 +4596,26 @@ first-use overhead recognized five frames in 39.27 s, with 4.79 process CPU seco
 1000 unchanged-frame comparisons took 1.89 s. Process CPU excludes any framework
 service work; this is not an end-to-end capture, thermal, or OCR-accuracy benchmark.
 It supports deferring OCR until stop rather than paying for it at every live sample.
-`scripts/preview-screen-choice.swift` renders injected choice
-controls offscreen in light and dark appearances without launching Holos. Manual
-checks still required: granted/denied permission, selected-window closure and PID
-identity, desktop notifications, cursor/video changes versus slides/scrolling,
-pause/restart, audio-only survival of capture failure, deletion, and the full start,
-Settings, recording indicator, and Review UI in both appearances. These checks must
-not be run by agents against the user's running app or real meeting content.
+The same switch runs `screenFiveKFrameCPUBenchmark` on synthetic 5120×2880 text slides.
+On an M4 Pro (48 GB), debug build, three runs while other builds shared the machine:
+fingerprint 5–21 ms process CPU per sample (the stream itself delivers 2560×1440, so
+less in practice), copying a 2560×1440 buffer through the software CIContext 4–6 ms
+per sample, and downscale plus JPEG 58–64 ms per kept frame, at about 234 KiB per
+JPEG. At one sample every two seconds that is under 2% of one core between keyframes.
+A 2560×1440 frame of random noise (JPEG's worst case) still fits 1 MiB after
+re-encoding (`denseFramesAreReencodedSmallerInsteadOfEndingTheCapture`), and a 5K frame
+is stored at 2560×1440 within the caps (`fiveKFramesAreStoredWithinTheDimensionAndByteBounds`).
+At ~250 KiB per frame the 256 MiB total allows about a thousand keyframes, the frame
+cap; a meeting that reaches either stops screen capture and says so, and audio goes on.
+`scripts/preview-screen-choice.swift` renders the Settings row and the start panel's
+Screen row (checked, unchecked, no permission) offscreen in light and dark appearances
+without launching Holos. Manual checks still required: granted/denied permission, that
+Voice is Local's own windows (live transcript, Review, menu) are absent from saved
+snapshots, desktop notifications, a video call next to a shared slide, scrolling,
+pause/restart, audio-only survival of capture failure, deletion, a second display
+(not captured), and the full start, Settings, recording indicator, and Review UI in
+both appearances. These checks must not be run by agents against the user's running
+app or real meeting content.
 
 ### 4.16 Deep transcription after meetings
 
@@ -5877,7 +5933,7 @@ public struct StopTimeouts: Sendable, Equatable {
 holos record start [--name N] [--source mic|system|mic+system] [--app BUNDLE] [--duration S]
                    [--record-only] [--no-postprocess] [--directory D] [--locale L] [--backend B]
                    [--session-id UUID] [--no-live-text] [--others-in-room] [--expected-speakers N]
-                   [--vocabulary-file FILE]
+                   [--vocabulary-file FILE] [--screen display|off]
 holos record status [--directory D] [--json]
 holos record stop <session-id> [--directory D] [--no-wait]
 holos record pause <session-id> [--directory D] [--no-wait]

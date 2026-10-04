@@ -15,10 +15,10 @@ final class MeetingAppState {
     static let promptedKey = "meeting.promptedInterrupted"
     /// Settings › Meetings: meetings record the computer's audio too (on when never set).
     static let recordSystemAudioKey = "meetingRecordSystemAudio"
-    static let screenCaptureKey = "meetingScreenCaptureDefault"
+    /// Settings › Meetings: capture the screen during meetings (`MeetingScreenPreference`, off for new installs).
     static var screenCaptureDefault: Bool {
-        get { UserDefaults.standard.bool(forKey: screenCaptureKey) }
-        set { UserDefaults.standard.set(newValue, forKey: screenCaptureKey) }
+        get { MeetingScreenPreference.enabled(in: .standard) }
+        set { MeetingScreenPreference.set(newValue, in: .standard) }
     }
     /// The meeting languages chosen in the start panel (`HolosAppDelegate.meetingLocales`).
     static let localesKey = "meetingLocales"
@@ -532,7 +532,7 @@ extension HolosAppDelegate: NSMenuDelegate {
         var remembered = settings
         remembered.name = ""
         remembered.locales = []  // kept in `meetingLocales` instead
-        remembered.screenWindow = nil  // no implicit capture of a previously selected or reused window ID
+        remembered.screen = nil  // the next meeting's "Capture screen" starts from Settings, not the last meeting
         if let data = try? HolosJSON.encoder().encode(remembered) {
             UserDefaults.standard.set(data, forKey: MeetingAppState.lastSettingsKey)
         }

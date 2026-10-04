@@ -120,13 +120,17 @@ when its labelling was interrupted (at most twice per meeting, within 7 days). *
 (⌘4) lists the people you have named and their remembered voices (below). When the Mac's speakers play a call,
 labelling drops the microphone's echo of it (below); nothing warns about it.
 
-Meeting-window snapshots are optional and off by default. Enable **Save changed
-meeting-window snapshots** in the start panel and choose one window each time;
-Settings › Meetings can offer that choice by default, but never remembers a window.
-Only that window is captured, not the display or other windows. Content inside the
-chosen window can still be sensitive. Screen Recording permission must already be
-granted; an unavailable window does not stop audio or switch capture to another window.
-Changed snapshots are saved locally at up to one sample every two seconds. OCR runs
+Screen capture during meetings is optional and off by default. Turn on **Capture the
+screen during meetings (slides, shared screens) to improve transcripts** in Settings ›
+Meetings; the start panel's **Capture screen** box begins checked then and can be
+unchecked for one meeting. The whole main display is captured, without Voice is
+Local's own windows; other displays are not. Notifications and anything else on the
+main display are included. Everything stays on this Mac. Screen & System Audio
+Recording permission must already be granted; without it the box is dimmed, and a
+capture failure never stops the audio. `voiceislocal record start --screen display`
+does the same from the command line. Changed snapshots (a change counts once it holds
+still, so a moving video is skipped) are saved locally at up to one sample every two
+seconds, at most 2560 pixels wide. OCR runs
 on this Mac after recording stops; no language-model correction runs during recording.
 Recorder/recovery OCR batches are limited to eight frames and five seconds of waiting;
 unfinished frames stay saved. **Screen Text…** in Review shows timestamped OCR and

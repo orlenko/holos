@@ -58,13 +58,15 @@ remove Voice is Local from Microphone and Accessibility in System Settings; or u
    the button reads Open Settings). Clicking Next starts the speech model download, and
    the speaker model download when "Also set up meetings" is checked; their progress
    shows at the bottom of the following pages.
-3. **Accessibility**: the row turns green on its own within a second of switching Voice
-   is Local on, with no reopen. Continue Without is offered while it is off.
-4. **Permissions that need a reopen**: Open Settings for Screen & System Audio
-   Recording; when macOS offers Quit & Reopen, choose Later. The main button reads Skip
-   until Open Settings was clicked, then Next. The page is passed over when system audio
+3. **Accessibility**: **Allow…** only shows macOS's prompt (or nothing, once macOS has
+   shown it); **System Settings…** under it only opens the page. Neither click does both.
+   The row turns green on its own within a second of switching Voice is Local on, with no
+   reopen. Continue Without is offered while it is off.
+4. **Permissions that need a reopen**: Allow… (or System Settings…) for Screen & System
+   Audio Recording; when macOS offers Quit & Reopen, choose Later. The main button reads
+   Skip until either was clicked, then Next. The page is passed over when system audio
    is already allowed (and Input Monitoring is not needed).
-5. **Finish**: lists each item's real state. After Open Settings on the previous page,
+5. **Finish**: lists each item's real state. After Allow… or System Settings… on the previous page,
    the button is **Reopen Voice is Local**: the app quits and opens again by itself, then
    shows **Setup check** once with system audio now allowed. Start a meeting recording
    first and click Reopen: the usual "A meeting is recording" question appears, and

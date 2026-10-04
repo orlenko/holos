@@ -146,12 +146,21 @@ extension HolosAppDelegate {
             performSetup(.microphone)
         case .accessibility:
             performSetup(.accessibility)
+        case .accessibilitySettings:
+            performSetup(.accessibilitySettings)
+        // Either button counts as requested: the permission then takes effect when the assistant reopens the app.
         case .systemAudio:
             assistantFlow.requestedSystemAudioSettings()
             performSetup(.systemAudio)
+        case .systemAudioSettings:
+            assistantFlow.requestedSystemAudioSettings()
+            performSetup(.systemAudioSettings)
         case .inputMonitoring:
             assistantFlow.requestedInputMonitoringSettings()
             performSetup(.inputMonitoring)
+        case .inputMonitoringSettings:
+            assistantFlow.requestedInputMonitoringSettings()
+            performSetup(.inputMonitoringSettings)
         case .toggleMeetings:
             assistantFlow.setUpMeetings.toggle()
         case .finish:
@@ -187,7 +196,7 @@ extension HolosAppDelegate {
             }
         case .afterReopen:
             // Input Monitoring applies only after a reopen, so enabling now would be refused: the reopened app (or
-            // the next launch, when Open Settings finished without reopening) turns dictation on at launch, and the
+            // the next launch, when the assistant finished without reopening) turns dictation on at launch, and the
             // check page reports whether it did.
             UserDefaults.standard.set(true, forKey: "dictationEnabled")
         case .afterSpeechModelInstall:

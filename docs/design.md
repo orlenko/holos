@@ -212,7 +212,13 @@ still drives Quick Look through the main window, `PreviewingWindow`; its 2 s ref
 People's reread run while the section is on screen). Settings is the former Setup window
 in cards: General (Open the Voice is Local window when it starts, Appearance),
 Permissions (Microphone, Accessibility, System audio, Input Monitoring only
-after macOS refused the hotkey tap), Dictation (on/off, hold-to-talk shortcut, language,
+after macOS refused the hotkey tap; Accessibility, System audio, and Input Monitoring not granted
+show two buttons that each do one thing: **Allow…** only asks macOS, which adds Voice is Local to
+the list (again after its entry was removed) and shows macOS's own prompt if it still will, and the
+**System Settings…** link only opens the page, so one click never shows both; nothing is inferred
+or remembered, since macOS cannot tell whether its prompt will appear; granted, one **Open
+Settings** opens the page; Microphone keeps Request… while not determined, then Open Settings; the
+Setup Assistant's permission rows use the same two buttons), Dictation (on/off, hold-to-talk shortcut, language,
 speech model, fillers, Apple Intelligence fix, preview and its opacity), Meetings (record
 system audio, deep transcription, titles and summaries with Apple Intelligence, speaker
 labels, a link to People for remembered voices), Reading (default
@@ -1103,6 +1109,16 @@ speakers; do not force every word into one speaker. Preserve word timing when
 splitting a sentence across a speaker turn. Manual rename/split/merge/reassignment
 are edits over machine results. Reprocessing creates a new revision and flags
 ambiguous transfers of existing human edits instead of silently discarding them.
+
+Optionally capture the screen during a meeting (Settings › Meetings, off by default;
+the start panel's "Capture screen" for one meeting), so text on slides and shared
+screens can help the transcript (meeting-design §4.15). It is the whole main display,
+not a chosen window: picking a window in every meeting proved impractical, and since
+no online model is involved the images never leave the Mac. Voice is Local's own
+windows are excluded, so the live transcript is not read back into the context. Only
+changes that hold still are kept, Vision OCR runs on this Mac after the recording, and
+images and text are deleted with the meeting audio. OCR is untrusted evidence for the
+user's word-list questions, never an automatic transcript edit.
 
 With strict Apple-only dependencies, ship timestamped text, manual speaker tagging,
 and distinguishable source tracks first. Fully automatic multi-speaker labels remain
