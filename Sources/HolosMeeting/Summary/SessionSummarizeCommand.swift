@@ -89,7 +89,7 @@ public enum SessionSummarizeCommand {
         public static let busy = Status("busy")
         /// The current transcript changed while the summary was made: try again.
         public static let changed = Status("changed")
-        /// The session's manifest or transcript could not be read (a volume or file briefly unavailable): try again
+        /// The session's manifest or transcript, or the people store, could not be read (a volume or file briefly unavailable): try again
         /// later.
         public static let unreadable = Status("unreadable")
         public static let failed = Status("failed")
@@ -309,9 +309,16 @@ public enum SessionSummarizeCommand {
         // files are written (taken after the speaker lock, which the caller holds: speakers → profiles).
         if let key, let store = request.profileStore {
             return try store.withLockedRead { read in
-                try UnderLocks.wrapping {
+                let database: SpeakerProfileDatabase
+                switch read {
+                case .success(let found): database = found
+                case .failure(let error):
+                    return outcome(peopleStoreStatus(error), "Cannot read the people store: \(error.localizedDescription)",
+                                   transcriptID, 1)
+                }
+                return try UnderLocks.wrapping {
                     try publishChecked(record, request: request, transcriptID: transcriptID, key: key,
-                                       fresh: VoiceInputs.from(try read.get(), store: store), message: message,
+                                       fresh: VoiceInputs.from(database, store: store), message: message,
                                        outcome: outcome)
                 }
             }
@@ -323,6 +330,14 @@ public enum SessionSummarizeCommand {
             return try publishChecked(record, request: request, transcriptID: transcriptID, key: key, fresh: fresh,
                                       message: message, outcome: outcome)
         }
+    }
+
+    /// What a people store that could not be read makes of a run: one a newer Voice is Local wrote (`unavailable`)
+    /// fails it for good; anything else (an I/O error, a file being replaced, a damaged one being repaired) is tried
+    /// again later.
+    public static func peopleStoreStatus(_ error: any Error) -> Status {
+        if case .unavailable? = error as? HolosError { return .failed }
+        return .unreadable
     }
 
     /// An error thrown while the save's locks were held, so not one of a lock not taken.

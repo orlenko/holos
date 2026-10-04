@@ -56,6 +56,9 @@ final class DeepTranscriptionAppState {
     var retryAfter: Date?
     /// Counts every turn of the setting on or off: a scan begun before one is dropped when it ends.
     var activation = 0
+    /// An automatic pass held back for the summary scan going on, which may start a summary the user asked for
+    /// (asked-for work goes first, §4.17): looked at again when the scan ends.
+    var waitsForSummaryScan = false
     /// Meetings whose command was refused because another command held them: skipped until then, so the others
     /// are not held up (another pass holding the lock delays everything, `retryAfter`).
     var delayed: [String: Date] = [:]
@@ -350,6 +353,12 @@ extension HolosAppDelegate {
             updateDeepStates()
             return
         }
+        // A Summarize Again the user asked for goes before an automatic pass: while the summary scan that may start
+        // it goes on, the pass waits for its end (`meetingSummaryScanEnded`).
+        if !item.runNow, meeting.summaries.scanning, !meeting.summaries.requests.isEmpty {
+            meeting.deep.waitsForSummaryScan = true
+            return
+        }
         // Marked running before the meeting is taken: taking it schedules again (`onSessionsInUseChanged`), which must
         // then see one pass running and start no other.
         meeting.deep.running = (sessionID, 0)
@@ -425,9 +434,10 @@ extension HolosAppDelegate {
         meeting.maintenanceEnded[sessionID, default: 0] += 1
         meeting.meetingsPane?.refresh()
         updateDeepStates()
-        scheduleDeepTranscription()
-        // The final transcript is a new transcript: its summary follows (§4.17).
+        // The final transcript is a new transcript: its summary follows (§4.17). Looked for first, so a summary the
+        // user asked for goes before the next automatic pass (which waits for the scan).
         scheduleMeetingSummaries()
+        scheduleDeepTranscription()
         // Review asked for while the pass worked on the meeting.
         if let review = meeting.deep.reviewAfterPass.removeValue(forKey: sessionID) {
             openReview(sessionID: sessionID, directory: review.directory, name: review.name)
@@ -521,6 +531,9 @@ extension HolosAppDelegate {
         } else {
             // The pass running now keeps its item until it ends (then it is taken off).
             meeting.deep.queue.removeAutomatic(keeping: meeting.deep.running?.sessionID)
+            // No final transcripts to wait for: summaries held back at launch (the model still being checked or
+            // downloaded) may start.
+            meetingSummaryLaunchReconciled()
         }
         updateSettings()
         updateDeepStates()

@@ -85,12 +85,16 @@ public enum MeetingSummarySchedule {
         /// Meetings a final transcript is queued for: their transcript is about to change, so they are summarized
         /// after it (automatically; a request still runs).
         public var finalTranscriptQueued: Set<String>
+        /// A final transcript the user asked for (Make Final Transcript Now) is ready to run: asked-for work goes
+        /// before automatic work, so only a summary the user asked for starts.
+        public var askedForPassWaiting: Bool
         public var now: Date
 
         public init(enabled: Bool, modelAvailable: Bool, meetingBusy: Bool, deepPassRunning: Bool, running: String?,
                     inUse: Set<String> = [], attempted: [String: String] = [:], delayedUntil: [String: Date] = [:],
                     requested: [String] = [], onBattery: Bool = false, finalTranscriptQueued: Set<String> = [],
-                    now: Date = Date()) {
+                    askedForPassWaiting: Bool = false, now: Date = Date()) {
+            self.askedForPassWaiting = askedForPassWaiting
             self.enabled = enabled; self.modelAvailable = modelAvailable; self.meetingBusy = meetingBusy
             self.deepPassRunning = deepPassRunning; self.running = running; self.inUse = inUse
             self.attempted = attempted; self.delayedUntil = delayedUntil; self.requested = requested
@@ -124,6 +128,8 @@ public enum MeetingSummarySchedule {
             if candidate.onlyExportsPending { return .run(sessionID: id, path: candidate.path, force: false) }
             if situation.modelAvailable { return .run(sessionID: id, path: candidate.path, force: true) }
         }
+        // A final transcript the user asked for goes before automatic summaries.
+        guard !situation.askedForPassWaiting else { return .wait }
         // With the setting off, or without the model, only transcript files left without their summary are
         // rewritten (no model call).
         let due = candidates

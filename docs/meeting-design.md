@@ -5031,8 +5031,9 @@ which are remembered by the full key). A Summarize Again request whose summary i
 files pending only gets them rewritten; any other runs forced. Exit 0 when written or up
 to date, 3 when written but the transcript files could not be rewritten, 1 otherwise, with
 `status` in the JSON (`written`, `current`, `noTranscript`, `unavailable`, `busy`, `changed`,
-`unreadable` (the manifest or the transcript could not be read), `failed`, `cancelled`). A people store that
-cannot be read (written by a newer build, damaged) fails it at once, before the model; so does a summary.json,
+`unreadable` (the manifest, the transcript or the people store could not be read), `failed`, `cancelled`). A
+people store that cannot be read ends it at once, before the model (and so does one unreadable at the save): for
+good (`failed`) when a newer build wrote it, otherwise `unreadable`, tried again later. So does a summary.json,
 transcript or speaker labels a newer build wrote (`failed`, with that reason, not tried again: the scan marks such
 a summary `summaryFromNewerVersion` and leaves the meeting alone, and only Summarize Again runs it, to say why). A session that is not finished by the predicate the app's schedule uses
 (`MeetingSummarySchedule.isFinished`: interrupted, still processing, incomplete, failed, damaged)
@@ -5081,9 +5082,14 @@ a child process, one at a time, holding the meeting as a final transcript does
 (`MeetingController.beginUsing`, "Writing summary…"): its commands wait, and Review asked for
 meanwhile says "Summary in progress" and opens when it ends (or offers Cancel Summary). At launch
 no summary starts until the final-transcript reconciliation has queued the meetings saved while
-the app was closed (or had nothing to do; while the model downloads it waits for the download to end); every later
+the app was closed (or had nothing to do; while the model downloads it waits for the download to end, unless
+final transcripts are turned off, which lets summaries start); every later
 reconciliation (the model installed, the setting turned on) holds summaries back too, and stops
-one running (it is made again afterwards). A Summarize Again request is dropped for a missing
+one running (it is made again afterwards). Work the user asked for goes before automatic work, across both
+queues: when a final transcript or a summary ends, summaries are looked for first, and an automatic final
+transcript waits for that scan while a Summarize Again is pending; an automatic summary waits while a Make Final
+Transcript Now pass is ready to run (`Situation.askedForPassWaiting`); automatic work keeps its order. A Summarize
+Again request is dropped for a missing
 meeting only when no folder holds it, whatever the folder is named (`SessionCatalog.hasSession`: the sessions
 folder listed and every folder's manifest, a regular file of at most 1 MiB never followed, read for its `id`), not when the scan could not read it. After a meeting is saved, the scan waits until the final
 transcript queue has decided about it (the meeting is in a deciding set while its languages are

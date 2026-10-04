@@ -176,7 +176,26 @@ extension HolosAppDelegate {
             guard let self else { return }
             self.meeting.summaries.scanning = false
             self.startNextMeetingSummary(candidates, gone: gone)
+            self.meetingSummaryScanEnded()
         }
+    }
+
+    /// A Make Final Transcript Now pass is queued and could start (the setting and power do not hold it back; its
+    /// meeting is not in use or delayed, and the model is installed): asked-for work goes before automatic summaries.
+    private func askedForPassWaiting(inUse: Set<String>, now: Date) -> Bool {
+        guard meeting.deep.model == "installed", meeting.deep.retryAfter.map({ $0 <= now }) ?? true else { return false }
+        return meeting.deep.queue.items.contains { item in
+            item.runNow && !inUse.contains(item.sessionID)
+                && (meeting.deep.delayed[item.sessionID].map { $0 <= now } ?? true)
+        }
+    }
+
+    /// An automatic final transcript held back for this scan (`waitsForSummaryScan`) is looked at again: it starts
+    /// unless the scan started a summary (then it waits for the lock).
+    private func meetingSummaryScanEnded() {
+        guard meeting.deep.waitsForSummaryScan else { return }
+        meeting.deep.waitsForSummaryScan = false
+        scheduleDeepTranscription()
     }
 
     private func startNextMeetingSummary(_ candidates: [MeetingSummarySchedule.Candidate], gone: Set<String>) {
@@ -190,16 +209,17 @@ extension HolosAppDelegate {
         // already answers (a command that finished while the app was closed).
         let satisfied = MeetingSummarySchedule.satisfied(meeting.summaries.requests, by: candidates)
         meeting.summaries.requests.removeAll { gone.contains($0.sessionID) || satisfied.contains($0.sessionID) }
+        let inUse = Set(controller.sessionsInUse.keys).union(controller.sessionsUnderReview())
         let situation = MeetingSummarySchedule.Situation(
             enabled: MeetingSummaryAppState.enabled, modelAvailable: OnDeviceFix.unavailableReason == nil,
             meetingBusy: meetingIsBusy(controller.state),
             deepPassRunning: meeting.deep.running != nil || DeepTranscriptionLock.state() != .free,
             running: nil,
-            inUse: Set(controller.sessionsInUse.keys).union(controller.sessionsUnderReview()),
-            attempted: meeting.summaries.attempted, delayedUntil: meeting.summaries.delayedUntil,
+            inUse: inUse, attempted: meeting.summaries.attempted, delayedUntil: meeting.summaries.delayedUntil,
             requested: meeting.summaries.requested, onBattery: PowerSource.current() == .battery,
             finalTranscriptQueued: Set((meeting.deep.queue.items + meeting.deep.queue.pending).map(\.sessionID))
                 .union(meeting.deep.deciding),
+            askedForPassWaiting: askedForPassWaiting(inUse: inUse, now: now),
             now: now)
         guard case .run(let sessionID, let path, let force) = MeetingSummarySchedule.next(candidates, situation)
         else { return }
@@ -281,9 +301,10 @@ extension HolosAppDelegate {
         if let review = meeting.summaries.reviewAfterRun.removeValue(forKey: sessionID) {
             openReview(sessionID: sessionID, directory: review.directory, name: review.name)
         }
-        // A final transcript waits while a summary runs (they share the background job lock).
-        scheduleDeepTranscription()
+        // A final transcript waits while a summary runs (they share the background job lock). Summaries are looked for
+        // first, so one the user asked for goes before the next automatic pass (which waits for the scan).
         scheduleMeetingSummaries()
+        scheduleDeepTranscription()
     }
 
     /// What the Meetings list shows while a summary is made (`MeetingController.beginUsing`).

@@ -32,12 +32,13 @@ extension Session {
             let sessionID = (try? SessionArchive.readManifest(at: session).id)
                 ?? session.deletingPathExtension().lastPathComponent
             // The people store read once for the prompt, and again at the save to check nothing changed meanwhile. One
-            // that cannot be read (a newer build wrote it, it is damaged) fails at once, before the model.
+            // that cannot be read ends the run at once, before the model: for good when a newer build wrote it, else
+            // tried again later (`peopleStoreStatus`).
             let outcome: SessionSummarizeCommand.Outcome
             switch Result(catching: { try SessionSummarizeCommand.VoiceInputs.read() }) {
             case .failure(let error):
                 outcome = SessionSummarizeCommand.Outcome(
-                    sessionID: sessionID, status: .failed,
+                    sessionID: sessionID, status: SessionSummarizeCommand.peopleStoreStatus(error),
                     message: "Cannot read the people store: \(error.localizedDescription)", exitCode: 1)
             case .success(let voice):
                 outcome = try await summarize(session, sessionID: sessionID, voice: voice)

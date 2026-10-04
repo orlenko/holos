@@ -1689,6 +1689,41 @@ private func trackDocument(source: AudioSource) -> ExportDocument {
     #expect(!SessionFixtures.exists(SessionPaths.summary(session)))
 }
 
+@Test func aPeopleStoreThatCannotBeReadNowIsTriedAgainLater() async throws {
+    #expect(SessionSummarizeCommand.peopleStoreStatus(HolosError.io("Cannot read profiles.json")) == .unreadable)
+    #expect(SessionSummarizeCommand.peopleStoreStatus(HolosError.invalidInput("damaged")) == .unreadable)
+    #expect(SessionSummarizeCommand.peopleStoreStatus(HolosError.unavailable("newer")) == .failed)
+    let temp = try TemporaryDirectory("summary")
+    defer { temp.remove() }
+    let session = try await summarizeSession(in: temp.url)
+    let store = SpeakerProfileStore(directory: temp.url.appendingPathComponent("Speakers", isDirectory: true))
+    let inputs = try SessionSummarizeCommand.VoiceInputs.read(store: store)
+    let request = SessionSummarizeCommand.Request(session: session, selfName: inputs.selfName,
+                                                  profileNames: inputs.names, applyRecognition: inputs.recognition,
+                                                  profileStore: store)
+    // Unreadable at the save (here, mid-write garbage): nothing saved, and tried again later.
+    try FileManager.default.createDirectory(at: store.directory, withIntermediateDirectories: true)
+    try Data("{".utf8).write(to: store.databaseURL)
+    let outcome = await SessionSummarizeCommand.run(request) { _ in .available(ScriptedSummaryModel().model()) }
+    #expect(outcome.status == .unreadable)
+    #expect(outcome.status.retriesLater)
+    #expect(!SessionFixtures.exists(SessionPaths.summary(session)))
+}
+
+@Test func aFinalTranscriptAskedForGoesBeforeAutomaticSummaries() {
+    let waiting = situation(requested: ["B"])
+    var held = waiting
+    held.askedForPassWaiting = true
+    let candidates = [candidate("A"), candidate("B", summary: "T")]
+    // A summary asked for still runs; an automatic one waits for the final transcript asked for.
+    #expect(MeetingSummarySchedule.next(candidates, held) == .run(sessionID: "B", path: "/B.holos", force: true))
+    var automatic = situation()
+    automatic.askedForPassWaiting = true
+    #expect(MeetingSummarySchedule.next(candidates, automatic) == .wait)
+    #expect(MeetingSummarySchedule.next(candidates, situation()) == .run(sessionID: "A", path: "/A.holos", force: false))
+    #expect(MeetingSummarySchedule.next(candidates, waiting) == .run(sessionID: "B", path: "/B.holos", force: true))
+}
+
 @Test func aManifestTheCommandCannotReadIsTriedAgainLater() async throws {
     let temp = try TemporaryDirectory("summary")
     defer { temp.remove() }
