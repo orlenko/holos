@@ -1367,3 +1367,63 @@ private func listed(name: String, source: MeetingNameSource, generated: String?)
     pending.clear("A", ifGeneration: pending.generation("A"))
     #expect(!pending.contains("A"))
 }
+
+// MARK: - A preparation stopped partway, monotonic marks, unreadable summaries
+
+@Test func aPreparationStoppedAfterItsFirstWriteIsReported() async throws {
+    for (failingCheck, expectedCode) in [(1, Int32(1)), (2, Int32(3))] {
+        let temp = try TemporaryDirectory("rename")
+        defer { temp.remove() }
+        let session = try await renameSession(in: temp.url, legacyExports: true)
+        struct Full: Error {}
+        var request = SessionRenameCommand.Request(session: session, name: "Design review", voiceInputs: { voice },
+                                                   jobLock: temp.url.appendingPathComponent("jobs.lock"),
+                                                   timeZone: utc)
+        // The preparation's writes: a check before each; the n-th fails (the disk filled up, the folder moved).
+        request.exportCheck = { call in if call == failingCheck { throw Full() } }
+        let outcome = await SessionRenameCommand.run(request)
+        #expect(outcome.exitCode == expectedCode, "check \(failingCheck)")
+        #expect(outcome.message.contains("partly rewritten") == (expectedCode == 3), "check \(failingCheck)")
+        #expect(try SessionArchive.readManifest(at: session).name == "Meeting 2026-10-03 14:00")
+    }
+}
+
+@Test func aClearedMarkIsNeverMarkedWithAnOldGeneration() throws {
+    let suite = "holos-tests-\(UUID().uuidString)"
+    let defaults = try #require(UserDefaults(suiteName: suite))
+    defer { defaults.removePersistentDomain(forName: suite) }
+    let pending = PendingExports(defaults: defaults)
+    pending.mark("A")
+    let seen = pending.generation("A")
+    // Another writer clears it, then a review fails again: a new generation, which a check from before cannot clear.
+    pending.clear("A")
+    pending.mark("A")
+    #expect(pending.generation("A") > seen)
+    pending.clear("A", ifGeneration: seen)
+    #expect(pending.contains("A"))
+}
+
+@Test func aSummaryThatCannotBeReadRefusesTheRename() async throws {
+    let temp = try TemporaryDirectory("rename")
+    defer { temp.remove() }
+    let session = try await renameSession(in: temp.url)
+    try writeSummary(session)
+    #expect(SessionCatalog.summary(session: session, jobState: .free).summaryProblem == nil)
+    #expect(chmod(SessionPaths.summary(session).path, 0) == 0)
+    let listed = SessionCatalog.summary(session: session, jobState: .free)
+    let outcome = await rename(session, "Weekly sync")
+    #expect(chmod(SessionPaths.summary(session).path, 0o600) == 0)
+    #expect(listed.summaryProblem?.contains("cannot be read") == true)
+    #expect(!MeetingActionPolicy.renames(listed))
+    #expect(MeetingActionPolicy.renameRefusal(listed)?.contains("summary") == true)
+    #expect(outcome.status == .unreadable)
+    #expect(try SessionArchive.readManifest(at: session).name == "Meeting 2026-10-03 14:00")
+    // One a newer build wrote: refused for good, and Rename is off.
+    var object = try #require(try JSONSerialization.jsonObject(
+        with: Data(contentsOf: SessionPaths.summary(session))) as? [String: Any])
+    object["schemaVersion"] = 2
+    try AtomicFile.write(try JSONSerialization.data(withJSONObject: object), to: SessionPaths.summary(session))
+    let newer = SessionCatalog.summary(session: session, jobState: .free)
+    #expect(newer.summaryProblem?.contains("newer version") == true)
+    #expect(MeetingActionPolicy.renameRefusal(newer)?.contains("newer version") == true)
+}

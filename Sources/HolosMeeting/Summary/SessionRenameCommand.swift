@@ -125,6 +125,9 @@ public enum SessionRenameCommand {
         var beforeStep: (@Sendable (String) async -> Void)?
         /// Tests: the manifest's name is written, then an error as if its folder could not be synced.
         var failAfterNameWrite = false
+        /// Tests: runs before each write of a rewrite of the files (its 1-based count within that rewrite); throwing
+        /// stops the rewrite there.
+        var exportCheck: (@Sendable (Int) throws -> Void)?
         /// Tests: writes meeting.json's `nameSource` in place of `writeNameSource` (a write that fails).
         var nameSourceWriter: (@Sendable (MeetingNameSource, URL, MeetingInfo) throws -> Void)?
 
@@ -296,12 +299,16 @@ public enum SessionRenameCommand {
         let summaryRecord: MeetingSummaryRecord?
         do {
             summaryRecord = try MeetingSummaryStore.read(session: session, sessionID: id)
+        } catch let error where SessionFiles.isDamage(error) {
+            summaryRecord = nil
         } catch {
             if case .unavailable? = error as? HolosError {
                 return refused(.failed, "This meeting's summary was written by a newer version of Voice is Local, so "
                     + "its transcript files cannot follow a new name; update Voice is Local to rename it.")
             }
-            summaryRecord = nil
+            // Not readable now (permissions, not a regular file, an I/O error): the files would lose it.
+            return refused(.unreadable, "Cannot read this meeting's summary now, so its name was not changed; try "
+                + "again later: \(error.localizedDescription)")
         }
         generated = MeetingSummaryStore.current(summaryRecord, transcriptID: transcriptID)?.title
         // Before each step that writes, the folder at the path is checked again to be the one the lease locks (the
@@ -352,9 +359,17 @@ public enum SessionRenameCommand {
                 } catch {
                     return refused(.busy, moved + "; nothing was changed. Try again.")
                 }
+                let writes = WriteCount()
                 do {
-                    try regenerate(session: session, request: request, lease: lease)
+                    try regenerate(session: session, request: request, lease: lease, writes: writes)
                 } catch {
+                    // Stopped after its first write: the files changed (and may be left mid-write).
+                    guard writes.made == 0 else {
+                        return Outcome(sessionID: id, status: .failed, message: "Cannot prepare this meeting's "
+                            + "transcript files for the new name: \(error.localizedDescription) Its name was not "
+                            + "changed, but its transcript files were partly rewritten under the old name; choose "
+                            + "Update Transcript Files, or rename it again.", exitCode: 3)
+                    }
                     return refused(.failed, "Cannot prepare this meeting's transcript files for the new name, so its "
                         + "name was not changed: \(error.localizedDescription)")
                 }
@@ -412,6 +427,11 @@ public enum SessionRenameCommand {
             return done(.renamed, message + " The transcript files were not rewritten: \(error.localizedDescription)",
                         code: 3)
         }
+    }
+
+    /// How many writes a rewrite made before it stopped (each file moved aside, the pending record, each file).
+    final class WriteCount {
+        var made = 0
     }
 
     /// The meeting may be partly renamed: the second write failed and the first could not be undone, a write could not
@@ -627,11 +647,28 @@ public enum SessionRenameCommand {
     /// them (its key is computed with the same names).
     ///
     /// Each write it makes is preceded by `lease.verify`: the folder must still be the one the lease locks.
-    private static func regenerate(session: URL, request: Request, lease: ProcessingLease) throws {
+    ///
+    /// `writes`, when given, counts the writes the rewrite made before it stopped.
+    private static func regenerate(session: URL, request: Request, lease: ProcessingLease,
+                                   writes: WriteCount? = nil) throws {
+        var checks = 0
+        func check() throws {
+            checks += 1
+            do {
+                try request.exportCheck?(checks)
+                try lease.verify(for: session)
+            } catch {
+                // This check stopped it: the writes before it were made.
+                writes?.made = checks - 1
+                throw error
+            }
+            // Each check is before a write; a write that fails leaves nothing (atomic), so the ones before it count.
+            writes?.made = checks - 1
+        }
         func write(_ voice: SessionSummarizeCommand.VoiceInputs) throws {
             _ = try SessionExports.regenerateLocked(session: session, profileNames: voice.names,
                                                     applyRecognition: voice.recognition, selfName: voice.selfName,
-                                                    check: { try lease.verify(for: session) })
+                                                    check: check)
         }
         try SessionArchive.withSpeakerLock(at: session) {
             if let read = request.voiceInputs {

@@ -172,6 +172,21 @@ public enum MeetingSummaryStore {
         return record
     }
 
+    /// summary.json when it can be used, and why it cannot when that is not damage (written by a newer build, or not
+    /// readable now): what the catalog keeps. A missing or damaged one is no problem (made again).
+    public static func readChecked(session: URL, sessionID: String) -> (record: MeetingSummaryRecord?, problem: String?) {
+        do {
+            return (try read(session: session, sessionID: sessionID), nil)
+        } catch let error where SessionFiles.isDamage(error) {
+            return (nil, nil)
+        } catch {
+            if case .unavailable? = error as? HolosError {
+                return (nil, "summary.json was written by a newer version of Voice is Local.")
+            }
+            return (nil, "summary.json cannot be read: \(error.localizedDescription)")
+        }
+    }
+
     /// summary.json when it can be used, else nil (the reason is logged): what the Meetings list shows.
     public static func readIfUsable(session: URL, sessionID: String) -> MeetingSummaryRecord? {
         do {

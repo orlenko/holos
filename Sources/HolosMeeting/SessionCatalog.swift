@@ -105,6 +105,9 @@ public struct SessionSummary: Codable, Sendable, Equatable, Identifiable {
     /// A summary or final transcript of this meeting running in any process (`SessionCatalog.jobInProgress`), or nil.
     /// Rename refuses such a meeting.
     public var jobInProgress: String?
+    /// Why summary.json cannot be used now: written by a newer build, or not readable (permissions, not a regular
+    /// file, an I/O error). Nil when it can, is missing or damaged. Rename refuses such a meeting.
+    public var summaryProblem: String?
     /// summary.json, when it can be read: possibly of an earlier transcript (`summaryIsCurrent` says), whose summary
     /// text is still shown until the new one is made, but not its title (`displayTitle`).
     public var generatedSummary: MeetingSummaryRecord? = nil
@@ -116,7 +119,7 @@ public struct SessionSummary: Codable, Sendable, Equatable, Identifiable {
         case transcriptID, transcriptProblem, transcriptRefused, speakerState, labelMessage, runID, labelsReadyAt
         case hasSpeakerEdits, phase, pid, liveness, bytes, derivedBytes, audioDeleted, languageWork, nameSource
         case shownName
-        case metadataProblem, exportsProblem, jobInProgress
+        case metadataProblem, exportsProblem, jobInProgress, summaryProblem
     }
 
     /// The title the Meetings list shows (`MeetingNaming.title`, the rule the transcript files' heading follows too):
@@ -147,7 +150,8 @@ public struct SessionSummary: Codable, Sendable, Equatable, Identifiable {
                 liveness: RecorderLiveness, bytes: Int64 = 0, derivedBytes: Int64 = 0, audioDeleted: Bool = false,
                 languageWork: LanguageWork? = nil, nameSource: MeetingNameSource? = nil,
                 generatedSummary: MeetingSummaryRecord? = nil, metadataProblem: String? = nil,
-                exportsProblem: String? = nil, jobInProgress: String? = nil, shownName: String? = nil) {
+                exportsProblem: String? = nil, jobInProgress: String? = nil, summaryProblem: String? = nil,
+                shownName: String? = nil) {
         self.id = id; self.directory = directory; self.name = name; self.createdAt = createdAt
         self.source = source; self.origin = origin; self.state = state; self.manifestStatus = manifestStatus
         self.savedSeconds = savedSeconds; self.chunkCount = chunkCount; self.transcriptID = transcriptID
@@ -162,6 +166,7 @@ public struct SessionSummary: Codable, Sendable, Equatable, Identifiable {
         self.metadataProblem = metadataProblem
         self.exportsProblem = exportsProblem
         self.jobInProgress = jobInProgress
+        self.summaryProblem = summaryProblem
         self.shownName = shownName ?? name
     }
 }
@@ -213,6 +218,7 @@ public enum SessionCatalog {
                 derivedBytes: sizes.derived, audioDeleted: audioDeleted(session, sessionID: nil))
         }
         let meetingRead = Result { try SessionFiles.meetingInfo(session: session, manifest: manifest) }
+        let summaryRead = MeetingSummaryStore.readChecked(session: session, sessionID: manifest.id)
         let meeting = try? meetingRead.get()
         let origin = meeting?.origin ?? .recorded
         let speakers = speakerLabels(session, liveness: liveness)
@@ -251,10 +257,11 @@ public enum SessionCatalog {
                 MeetingNaming.source(stored: $0.nameSource, name: manifest.name,
                                      importedFileName: $0.origin == .imported ? $0.importedFileName : nil)
             } ?? .user,
-            generatedSummary: MeetingSummaryStore.readIfUsable(session: session, sessionID: manifest.id),
+            generatedSummary: summaryRead.record,
             metadataProblem: { if case .failure(let error) = meetingRead { error.localizedDescription } else { nil } }(),
             exportsProblem: SessionExports.recordProblem(session: session),
             jobInProgress: jobInProgress(jobState ?? DeepTranscriptionLock.state(), sessionID: manifest.id),
+            summaryProblem: summaryRead.problem,
             shownName: meeting.map {
                 MeetingNaming.fallbackName(
                     name: manifest.name,

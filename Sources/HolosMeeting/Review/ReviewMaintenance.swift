@@ -138,7 +138,7 @@ public struct PendingExports {
         (defaults.dictionary(forKey: Self.generationsKey) as? [String: Int]) ?? [:]
     }
 
-    /// The meeting's mark count now (0 if never marked since it was last cleared).
+    /// The meeting's mark count now: it only grows (0 if never marked).
     public func generation(_ sessionID: String) -> Int { generations[sessionID] ?? 0 }
 
     public func mark(_ sessionID: String) {
@@ -150,15 +150,8 @@ public struct PendingExports {
         defaults.set(ids.sorted(), forKey: key)
     }
 
+    /// Removes the mark; its count stays, so a later mark gets a higher one than any read before.
     public func clear(_ sessionID: String) {
-        var counts = generations
-        if counts.removeValue(forKey: sessionID) != nil {
-            if counts.isEmpty {
-                defaults.removeObject(forKey: Self.generationsKey)
-            } else {
-                defaults.set(counts, forKey: Self.generationsKey)
-            }
-        }
         var ids = sessionIDs
         guard ids.remove(sessionID) != nil else { return }
         if ids.isEmpty {

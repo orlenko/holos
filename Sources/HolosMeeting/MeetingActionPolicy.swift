@@ -56,6 +56,14 @@ public enum MeetingActionPolicy {
         if let job = summary.jobInProgress {
             return job + " Rename it when that is done."
         }
+        if let problem = summary.summaryProblem {
+            if problem.contains("newer version") {
+                return "Its summary was written by a newer version of Voice is Local, so its transcript files cannot "
+                    + "follow a new name; update Voice is Local to rename it."
+            }
+            return "Its summary cannot be read now, so its transcript files cannot follow a new name; try again "
+                + "later. \(problem)"
+        }
         if let problem = summary.exportsProblem {
             if problem.contains("newer version") {
                 return "Its transcript files were written by a newer version of Voice is Local, so they cannot follow "

@@ -5051,7 +5051,12 @@ exits 3 too and says so (they changed, and files edited by hand were moved aside
 says whether the name changed (`renamed`): the app's alert for exit 3 says the meeting was renamed
 but its files still show the old title (Update Transcript Files) only then, and otherwise that it
 was not renamed (`MeetingRenameRun.alert`). A summary.json a newer build wrote refuses the rename,
-as other newer files do (the rewritten files would lose it and the generated title). A write that
+as other newer files do (the rewritten files would lose it and the generated title), and so does one
+that cannot be read now (`unreadable`, tried again later); only a missing or damaged one counts as
+none. The catalog keeps the reason (`summaryProblem`, `MeetingSummaryStore.readChecked`) and Rename
+is off for it, with the reason as the tooltip. A preparation that stops after its first write
+(the pending record, a file moved aside or replaced) exits 3, saying the files were partly
+rewritten under the old name; only one that stops before any write exits 1. A write that
 fails after its new file is in place (its folder not synced; the name or source read back is the
 new one) counts as written: the rest is still written, the files are not rewritten, exit 3, and they
 read as out of date. A crash between them leaves a name and source that differ from the ones asked
@@ -5121,7 +5126,7 @@ for the title shown and the saved labels. A Review's failed rewrite (`PendingExp
 forgotten once the files are what the saved labels would write now (`SessionExports.filesMatchLabels`,
 checked on the refresh only for such meetings; the mark's count, `PendingExports.generation`, read
 before the check must be unchanged when it is cleared, so a review that failed again meanwhile keeps
-it), or when a rename reports the files rewritten.
+it; the count only grows, also across a clear, so no later mark reuses one read before), or when a rename reports the files rewritten.
 An unedited save in the editor never runs it. The app runs the rename as `voiceislocal session
 rename … --json` (`MeetingRenameRun.arguments`: the name after `--`, so one starting with "-" is a
 name), a child in its own session like the other maintenance commands, so quitting the app never
@@ -5369,7 +5374,8 @@ must be complete, a transcript without files out of date, a check before moving 
 a job not yet named holding every meeting, an unreadable export record turning Rename off, the
 name in transcript.json checked, files of an earlier transcript out of date, the
 alert telling renamed from not renamed, a newer summary.json refusing, a mark set again during a check
-kept, a preparation reported when the rename then fails, a
+kept, a preparation stopped after its first write exiting 3, a cleared mark never reusing a count, an
+unreadable summary.json refusing and turning Rename off, a preparation reported when the rename then fails, a
 transcript from a newer build, damaged, or unreadable now, an unreadable meeting.json).
 
 **Follow-ups.** The summary in Review. If Apple's model proves too weak on long or noisy meetings, a local
