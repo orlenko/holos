@@ -258,14 +258,14 @@ public enum MeetingNaming {
     }
 
     /// The name a meeting gets back when the user chooses its generated title again (`MeetingNameSource.default`):
-    /// its name when Voice is Local made it up (`source(stored: nil, …)` is `default`), else the default name of an
-    /// import (its file's name without the extension, else "Imported meeting") or of a recording ("Meeting
-    /// 2026-10-03 14:00", from when it started, in `timeZone`).
-    public static func defaultName(current: String, createdAt: Date, origin: MeetingOrigin, importedFileName: String?,
+    /// its name when its source (`currentSource`, as `source` reads it) is already `default`, else, whatever the name
+    /// looks like (a user may have typed one that matches the default pattern), the default name made from the
+    /// meeting's own data: an import's file name without the extension (else "Imported meeting"), or a recording's
+    /// start ("Meeting 2026-10-03 14:00", in `timeZone`).
+    public static func defaultName(current: String, currentSource: MeetingNameSource, createdAt: Date,
+                                   origin: MeetingOrigin, importedFileName: String?,
                                    timeZone: TimeZone = .current) -> String {
-        let file = origin == .imported ? importedFileName : nil
-        if source(stored: nil, name: current, importedFileName: file) == .default,
-           !current.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        if currentSource == .default, !current.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             return current
         }
         if origin == .imported {

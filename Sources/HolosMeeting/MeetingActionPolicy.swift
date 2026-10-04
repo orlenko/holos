@@ -32,10 +32,11 @@ public enum MeetingActionPolicy {
         return actions
     }
 
-    /// `voiceislocal session rename` can rename the meeting (`SessionRenameCommand`): its manifest reads, and it is
-    /// not an interrupted recording, whose manifest still says recording (Recover first).
+    /// `voiceislocal session rename` can rename the meeting (`SessionRenameCommand`): it is finished by the predicate
+    /// summaries and final transcripts use (`MeetingSummarySchedule.isFinished`), so not still saving, interrupted
+    /// (Recover first), incomplete, failed or damaged.
     public static func renames(_ summary: SessionSummary) -> Bool {
-        summary.state != .damaged && summary.manifestStatus != ArchiveStatus.recording
+        MeetingSummarySchedule.isFinished(summary.state)
     }
 
     /// A recorder or another Holos command holds the meeting (its writer lock or processing lease): recording,

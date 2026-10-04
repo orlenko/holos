@@ -1065,9 +1065,12 @@ empty gives the meeting back its generated title, and so does the menu's Use Gen
 shown while a name the user gave hides one. The name shows at once in the list, the search,
 Review's window title and the live transcript's header, and the transcript files are rewritten
 so the Markdown heading follows (nothing is summarized again). Rename is off while the meeting
-records or saves, while a command, a final transcript or a summary works on it, and for an
-interrupted recording (Recover first); a refusal says why in an alert.
-`voiceislocal session rename` does the same from Terminal. Titles and summaries are written on this Mac by
+records or saves, while a command, a final transcript or a summary works on it, and for a
+meeting that is not finished (interrupted, incomplete, failed or damaged: Recover first); a
+refusal, also for a transcript that cannot be read, says why in an alert and changes nothing.
+`voiceislocal session rename` does the same from Terminal.
+
+Titles and summaries are written on this Mac by
 Apple's on-device model once a meeting's transcript is final, and again when a final transcript
 replaces it, in the background, one meeting at a time, never while a meeting records or saves
 (Settings › Meetings › "Title and summarize meetings with Apple Intelligence", on by default).

@@ -5019,8 +5019,10 @@ limit, else between characters) and 240 UTF-8 bytes. It becomes the manifest's `
 (`SessionArchive.setName`, status kept) with meeting.json's `nameSource` `user`. An empty name, or
 `--generated` (the list's Use Generated Title, shown while a user's name hides a generated
 title), sets `nameSource` `default` and gives the manifest back a name Voice is Local made up
-(`MeetingNaming.defaultName`: the current one when it is such a name, else an import's file name
-without its extension, else "Meeting yyyy-MM-dd HH:mm" from when it started, in local time).
+(`MeetingNaming.defaultName`: the current one when its source, stored or inferred, is already
+`default`; otherwise, whatever the name looks like, made from the meeting's own data: an import's
+file name without its extension, else "Meeting yyyy-MM-dd HH:mm" from when it started, in local
+time).
 meeting.json is patched as a JSON object, so fields a newer build added within schema 1 are kept;
 a meeting without one gets one with its inferred settings; one that cannot be read (damaged,
 newer) refuses the rename. Both writes are atomic, under the processing lease and the writer lock
@@ -5029,18 +5031,28 @@ or the generated title shown, never the default name as the user's; a `renamed` 
 (`nameSource`) is journaled. Then the transcript files are rewritten under the speaker lock with
 the people store's names, Remember voices and the user's own name read once (the key a current
 summary is checked with), so the Markdown heading follows and the summary stays, without the
-model; transcript files written before any was generated here are first rewritten under the old
-name, so they are not taken for edited files and moved aside. Refused (`busy`, exit 1) while the
-meeting records or saves (liveness `capturing` or `processing`), while the deep transcription lock
-names it (a final transcript or a summary of it; another meeting's job does not count), and while
-another process holds the lease; an interrupted recording (manifest `recording`) is refused until
-Recover. Exit 0 `renamed` or `unchanged`, 3 when renamed but the transcript files could not be
-rewritten, 1 otherwise, with `name`, `nameSource`, `title` and `exportsUpdated` in the JSON. In the
+model; transcript files written before any was generated here (no `exports/.generated.json`) are
+first rewritten under the old name, so they are not taken for edited files and moved aside, and when
+that fails (or the record cannot be read) nothing is changed (`failed`, or `unreadable`). A current
+transcript that is there but cannot be read refuses the rename before anything is written, rather
+than leaving the files with the old title: one a newer build wrote, or a damaged one, `failed`
+(update, or Recover); anything else `unreadable`, tried again later. Refused (`busy`, exit 1) while
+the meeting records or saves (liveness `capturing` or `processing`), while the deep transcription
+lock names it (a final transcript or a summary of it; another meeting's job does not count), and
+while another process holds the lease. Only a meeting finished by the predicate summaries and final
+transcripts use (`MeetingSummarySchedule.isFinished` of the catalog's state: saved, recovered,
+audio only, transcript incomplete) is renamed: one still saving is `busy`; an interrupted one
+(a `recording` manifest, or a `processing` one whose recorder is gone) is refused until Recover, and
+so are incomplete, failed and damaged ones (`failed`). Exit 0 `renamed` or `unchanged`, 3 when
+renamed but the transcript files could not be rewritten, 1 otherwise, with `name`, `nameSource`,
+`title` and `exportsUpdated` in the JSON. In the
 app (`MeetingRowView`), Rename… in the row's menu, ⌘R in the list, or a double-click on the
 title's text (elsewhere on the row a double-click still opens) puts an editor in place of the
 title and badges, with the title shown selected; Return or leaving the field saves, Escape
 cancels, and the rows are not rebuilt meanwhile (the 2 s refresh waits). Saving the title shown
-unchanged, or the user's own name again, does nothing (`MeetingRenameRequest`). The command runs
+unchanged (compared as typed, before any cleaning, so a longer name saved before names were cut is
+never rewritten by opening the editor, and a generated or default title left as it was never
+becomes the user's), or the user's own name again, does nothing (`MeetingRenameRequest`). The command runs
 in the app process while the meeting is registered as in use (`beginUsing`, "Renaming…"), so no
 command or background job starts on it meanwhile, and a meeting in use is refused with an alert.
 The new title shows at once in the list and the search, Review's window title
@@ -5239,11 +5251,13 @@ meeting without transcript, speaker names reaching the prompt, records of anothe
 newer build; the schedule's order, waits, attempts, requests and battery rule; the scan),
 `MeetingListFormatTests` (groups, the detail line, durations, people, badges, the displayed
 title, search), `SessionRenameTests` (names cleaned and cut, special characters, the default name
-given back, what the editor asks for, when Rename is offered; the command: the name and
+given back (also for a user's name that looks like a default one), what the editor asks for (a
+long older name left as it was is not rewritten), when Rename is offered; the command: the name and
 `nameSource` saved with other meeting.json fields kept, the heading and summary in the files,
-the generated title back, older transcript files not moved aside, a meeting without transcript,
-refusals while held by a command, a summary or final transcript of it, or a recorder, an
-interrupted recording, an unreadable meeting.json).
+the generated title back, older transcript files not moved aside, and nothing changed when they
+cannot be prepared, a meeting without transcript, refusals while held by a command, a summary or
+final transcript of it, or a recorder, an interrupted recording (also after capture stopped), a
+transcript from a newer build, damaged, or unreadable now, an unreadable meeting.json).
 
 **Follow-ups.** The summary in Review. If Apple's model proves too weak on long or noisy meetings, a local
 Qwen3.5 4B/9B through MLX (evaluated for span judging; its weights are not in the app).

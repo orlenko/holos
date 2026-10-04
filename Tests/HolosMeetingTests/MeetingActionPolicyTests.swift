@@ -91,8 +91,8 @@ private func actionSummary(state: SessionState = .complete, manifestStatus: Stri
 @Test func meetingActionsAreOffWhileTheMeetingIsInUseOrLive() {
     let summary = actionSummary(state: .interrupted, speakers: .none, derivedBytes: 10)
     let all = MeetingActionPolicy.enabled(summary, inUse: false, hasExport: true)
-    #expect(all == [.recover, .showInFinder, .openTranscript, .saveTranscript, .deleteAudio, .deleteMeeting, .cleanUp,
-                    .rename])
+    // Interrupted: Recover first, so no Rename.
+    #expect(all == [.recover, .showInFinder, .openTranscript, .saveTranscript, .deleteAudio, .deleteMeeting, .cleanUp])
     // The app works on it (a command, Clean Up, Save Transcript As…, the automatic relabel).
     #expect(MeetingActionPolicy.enabled(summary, inUse: true, hasExport: true) == [.showInFinder, .openTranscript])
     // Another process holds it: nothing that takes the lease.

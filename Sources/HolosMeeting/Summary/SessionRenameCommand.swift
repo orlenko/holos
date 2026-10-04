@@ -17,10 +17,12 @@ public enum MeetingRenameRequest: Sendable, Equatable {
     }
 
     /// What saving `typed` in the editor of `summary` asks for, or nil when it changes nothing the meeting shows: the
-    /// user's own name typed again, the title shown left as it was (a generated title or default name not edited,
-    /// which stays the generated one rather than becoming the user's), or an empty name for a meeting that already
-    /// shows its generated title. An empty name (`MeetingNaming.cleanUserName` nil) means the generated title.
+    /// title shown left exactly as it was (compared before any cleaning, so a name saved before names were cut, too
+    /// long or with runs of spaces, is never rewritten by opening the editor, and a generated title or default name
+    /// not edited never becomes the user's), the user's own name typed again, or an empty name for a meeting that
+    /// already shows its generated title. An empty name (`MeetingNaming.cleanUserName` nil) means the generated title.
     public static func name(typed: String, summary: SessionSummary) -> MeetingRenameRequest? {
+        if typed == summary.displayTitle { return nil }
         guard let name = MeetingNaming.cleanUserName(typed) else {
             return summary.nameSource.isUser ? .generated : nil
         }
@@ -72,7 +74,12 @@ public enum SessionRenameCommand {
         public static let unchanged = Status("unchanged")
         /// Recording, saving, or held by another command or a final transcript or summary of it: try again later.
         public static let busy = Status("busy")
-        /// Not a meeting that can be renamed (interrupted, damaged, meeting.json unreadable), or a write failed.
+        /// The transcript (or the record of the transcript files) cannot be read now: nothing was written; try again
+        /// later.
+        public static let unreadable = Status("unreadable")
+        /// Not a meeting that can be renamed (not finished, damaged, meeting.json or the transcript damaged or from a
+        /// newer build), the transcript files could not be prepared, or a write failed. Nothing was written, except
+        /// when the write itself failed.
         public static let failed = Status("failed")
     }
 
@@ -113,10 +120,7 @@ public enum SessionRenameCommand {
             Outcome(sessionID: id, status: status, message: message, exitCode: 1)
         }
         if let busy = busyReason(session: session, id: id, jobLock: request.jobLock) { return refused(.busy, busy) }
-        guard manifest.status != ArchiveStatus.recording else {
-            return refused(.failed, "This meeting was interrupted before it was saved; recover it first "
-                + "(voiceislocal session recover \(id)).")
-        }
+        if let unfinished = unfinishedReason(manifest: manifest, session: session) { return unfinished }
         let meeting: MeetingInfo
         do {
             meeting = try SessionFiles.meetingInfo(session: session, manifest: manifest)
@@ -148,16 +152,34 @@ public enum SessionRenameCommand {
                 + "finishes.")
         }
         defer { lease.release() }
-        let hasTranscript = (try? SessionFiles.readableCurrentTranscriptID(session: session)) != nil
+        // The transcript files must follow the name, so a transcript that is there but cannot be read refuses the
+        // rename rather than leaving them with the old title.
+        let hasTranscript: Bool
+        do {
+            hasTranscript = try SessionFiles.currentTranscript(session: session) != nil
+        } catch {
+            return transcriptRefusal(error, id: id)
+        }
         let inputs = Result { try request.voiceInputs() }
         // Transcript files written before any was generated here (the recorder's, without speakers) are known by the
         // name they were written with: rewritten under the old name first, so the rename does not take them for files
-        // the user edited and move them aside.
-        if hasTranscript, case .success(let voice) = inputs,
-           case .success(nil) = Result(catching: {
-               try AtomicFile.readIfPresent(SessionPaths.generatedExports(session), maxBytes: 1 << 20)
-           }) {
-            _ = try? regenerate(session: session, voice: voice)
+        // the user edited and move them aside. When that cannot be done, nothing is changed.
+        if hasTranscript {
+            let record: Data?
+            do {
+                record = try AtomicFile.readIfPresent(SessionPaths.generatedExports(session), maxBytes: 1 << 20)
+            } catch {
+                return refused(.unreadable, "Cannot read the record of this meeting's transcript files, so its name "
+                    + "was not changed; try again later: \(error.localizedDescription)")
+            }
+            if record == nil, hasExportFiles(session) {
+                do {
+                    try regenerate(session: session, voice: inputs.get())
+                } catch {
+                    return refused(.failed, "Cannot prepare this meeting's transcript files for the new name, so its "
+                        + "name was not changed: \(error.localizedDescription)")
+                }
+            }
         }
         do {
             let archive = try SessionArchive.openForMaintenance(at: session, lease: lease)
@@ -204,8 +226,62 @@ public enum SessionRenameCommand {
     static func target(_ typed: String?, manifest: SessionManifest, meeting: MeetingInfo, timeZone: TimeZone)
         -> (name: String, source: MeetingNameSource) {
         if let typed, let name = MeetingNaming.cleanUserName(typed) { return (name, .user) }
-        return (MeetingNaming.defaultName(current: manifest.name, createdAt: manifest.createdAt, origin: meeting.origin,
+        let current = MeetingNaming.source(
+            stored: meeting.nameSource, name: manifest.name,
+            importedFileName: meeting.origin == .imported ? meeting.importedFileName : nil)
+        return (MeetingNaming.defaultName(current: manifest.name, currentSource: current,
+                                          createdAt: manifest.createdAt, origin: meeting.origin,
                                           importedFileName: meeting.importedFileName, timeZone: timeZone), .default)
+    }
+
+    /// A meeting that is not finished by the predicate summaries and final transcripts use
+    /// (`MeetingSummarySchedule.isFinished`, with the state the catalog gives it): still being saved, interrupted
+    /// (also after capture stopped, a `processing` manifest whose recorder is gone), incomplete, failed or damaged.
+    /// Nil for a finished one.
+    static func unfinishedReason(manifest: SessionManifest, session: URL) -> Outcome? {
+        let state = SessionCatalog.state(manifestStatus: manifest.status,
+                                         liveness: RecorderChannel.liveness(session: session))
+        guard !MeetingSummarySchedule.isFinished(state) else { return nil }
+        let id = manifest.id
+        switch state {
+        case .recording, .processing:
+            return Outcome(sessionID: id, status: .busy,
+                           message: "This meeting is still being saved; rename it once it is saved.", exitCode: 1)
+        case .interrupted:
+            return Outcome(sessionID: id, status: .failed,
+                           message: "This meeting was interrupted before it was saved; recover it first "
+                               + "(voiceislocal session recover \(id)).", exitCode: 1)
+        default:
+            return Outcome(sessionID: id, status: .failed,
+                           message: "This meeting was not finished properly; run voiceislocal session recover \(id) "
+                               + "first.", exitCode: 1)
+        }
+    }
+
+    /// The current transcript is there but cannot be read: one a newer Voice is Local wrote, or a damaged one, refuses
+    /// the rename for good (until it is updated or recovered); anything else (an I/O error, a file being replaced) is
+    /// tried again later. Nothing is written either way.
+    static func transcriptRefusal(_ error: any Error, id: String) -> Outcome {
+        if case .unavailable? = error as? HolosError {
+            return Outcome(sessionID: id, status: .failed,
+                           message: "This meeting's transcript was written by a newer version of Voice is Local, so its "
+                               + "transcript files cannot follow a new name; update Voice is Local to rename it. "
+                               + error.localizedDescription, exitCode: 1)
+        }
+        if SessionFiles.isDamage(error) {
+            return Outcome(sessionID: id, status: .failed,
+                           message: "This meeting's transcript is damaged, so its transcript files cannot follow a new "
+                               + "name; run voiceislocal session recover \(id) first. " + error.localizedDescription,
+                           exitCode: 1)
+        }
+        return Outcome(sessionID: id, status: .unreadable,
+                       message: "Cannot read this meeting's transcript now, so its name was not changed; try again "
+                           + "later: " + error.localizedDescription, exitCode: 1)
+    }
+
+    /// exports/transcript.md or transcript.txt is there.
+    static func hasExportFiles(_ session: URL) -> Bool {
+        ["md", "txt"].contains { FileManager.default.fileExists(atPath: SessionPaths.export($0, in: session).path) }
     }
 
     /// Why the meeting cannot be renamed now, or nil: it records or saves, or a final transcript or a summary of it is

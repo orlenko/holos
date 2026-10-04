@@ -85,17 +85,25 @@ private func editedExports(_ session: URL) throws -> [String] {
 
 @Test func theDefaultNameComesBackWithTheGeneratedTitle() {
     let start = Date(timeIntervalSince1970: 1_790_000_000) // 2026-09-21 14:13 UTC
-    #expect(MeetingNaming.defaultName(current: "Weekly sync", createdAt: start, origin: .recorded,
-                                      importedFileName: nil, timeZone: utc) == "Meeting 2026-09-21 14:13")
+    #expect(MeetingNaming.defaultName(current: "Weekly sync", currentSource: .user, createdAt: start,
+                                      origin: .recorded, importedFileName: nil, timeZone: utc)
+        == "Meeting 2026-09-21 14:13")
     // A name Voice is Local made up is kept.
-    #expect(MeetingNaming.defaultName(current: "Meeting 2026-09-21 09:00", createdAt: start, origin: .recorded,
-                                      importedFileName: nil, timeZone: utc) == "Meeting 2026-09-21 09:00")
-    #expect(MeetingNaming.defaultName(current: "Weekly sync", createdAt: start, origin: .imported,
-                                      importedFileName: "board call.m4a", timeZone: utc) == "board call")
-    #expect(MeetingNaming.defaultName(current: "board call", createdAt: start, origin: .imported,
-                                      importedFileName: "board call.m4a", timeZone: utc) == "board call")
-    #expect(MeetingNaming.defaultName(current: "Weekly sync", createdAt: start, origin: .imported,
-                                      importedFileName: nil, timeZone: utc) == "Imported meeting")
+    #expect(MeetingNaming.defaultName(current: "Meeting 2026-09-21 09:00", currentSource: .default, createdAt: start,
+                                      origin: .recorded, importedFileName: nil, timeZone: utc)
+        == "Meeting 2026-09-21 09:00")
+    // A name the user typed that looks like a default one is the user's: the default is made from the start.
+    #expect(MeetingNaming.defaultName(current: "Meeting 2026-01-01 09:00", currentSource: .user, createdAt: start,
+                                      origin: .recorded, importedFileName: nil, timeZone: utc)
+        == "Meeting 2026-09-21 14:13")
+    #expect(MeetingNaming.defaultName(current: "Weekly sync", currentSource: .user, createdAt: start,
+                                      origin: .imported, importedFileName: "board call.m4a", timeZone: utc)
+        == "board call")
+    #expect(MeetingNaming.defaultName(current: "board call", currentSource: .default, createdAt: start,
+                                      origin: .imported, importedFileName: "board call.m4a", timeZone: utc)
+        == "board call")
+    #expect(MeetingNaming.defaultName(current: "Weekly sync", currentSource: .user, createdAt: start,
+                                      origin: .imported, importedFileName: nil, timeZone: utc) == "Imported meeting")
 }
 
 // MARK: - The list's editor
@@ -122,6 +130,20 @@ private func listed(name: String, source: MeetingNameSource, generated: String?)
     #expect(MeetingRenameRequest.user("A").typedName == "A")
 }
 
+@Test func aNameLeftAsItWasIsNeverRewritten() {
+    // Saved before names were cut: longer than 60 characters, with runs of spaces.
+    let legacy = String(repeating: "Quarterly roadmap review  ", count: 4)
+    let named = listed(name: legacy, source: .user, generated: "Parser plan")
+    #expect(MeetingRenameRequest.name(typed: legacy, summary: named) == nil)
+    // A long default import name shown as it is does not become the user's either.
+    let imported = listed(name: String(repeating: "board call recording ", count: 5), source: .default,
+                          generated: nil)
+    #expect(MeetingRenameRequest.name(typed: imported.name, summary: imported) == nil)
+    // An edit is cleaned as any name is.
+    #expect(MeetingRenameRequest.name(typed: legacy + "x", summary: named)
+        == MeetingNaming.cleanUserName(legacy + "x").map(MeetingRenameRequest.user))
+}
+
 @Test func renameIsOfferedForFinishedMeetingsNotHeldElsewhere() {
     func summary(state: SessionState, status: String, liveness: RecorderLiveness = .exited) -> SessionSummary {
         SessionSummary(id: "S", directory: URL(fileURLWithPath: "/tmp/S.holos"), name: "M", createdAt: Date(),
@@ -133,9 +155,13 @@ private func listed(name: String, source: MeetingNameSource, generated: String?)
         .contains(.rename))
     #expect(!MeetingActionPolicy.enabled(summary(state: .recording, status: "recording", liveness: .capturing),
                                          inUse: false, hasExport: false).contains(.rename))
-    // An interrupted recording is recovered first; a damaged one cannot be.
+    // An interrupted recording is recovered first (also one interrupted after capture stopped); a damaged one
+    // cannot be.
     #expect(!MeetingActionPolicy.renames(summary(state: .interrupted, status: "recording", liveness: .dead)))
+    #expect(!MeetingActionPolicy.renames(summary(state: .interrupted, status: "processing", liveness: .dead)))
     #expect(!MeetingActionPolicy.renames(summary(state: .damaged, status: "")))
+    #expect(!MeetingActionPolicy.renames(summary(state: .failed, status: "failed")))
+    #expect(MeetingActionPolicy.renames(summary(state: .recovered, status: "recovered")))
     #expect(MeetingActionPolicy.renames(summary(state: .audioOnly, status: "audioOnly")))
 }
 
@@ -325,4 +351,88 @@ private func listed(name: String, source: MeetingNameSource, generated: String?)
     #expect(outcome.status == .failed)
     #expect(outcome.exitCode == 1)
     #expect(try SessionArchive.readManifest(at: session).name == "Meeting 2026-10-03 14:00")
+}
+
+@Test func theGeneratedTitleGivesBackTheDefaultNameOfAUserNameThatLooksLikeOne() async throws {
+    let temp = try TemporaryDirectory("rename")
+    defer { temp.remove() }
+    let session = try await renameSession(in: temp.url, name: "Meeting 2026-01-01 09:00")
+    var object = try meetingJSON(session)
+    object["nameSource"] = "user"
+    try AtomicFile.write(try JSONSerialization.data(withJSONObject: object), to: SessionPaths.meetingInfo(session))
+    let outcome = await rename(session, nil)
+    #expect(outcome.status == .renamed)
+    let manifest = try SessionArchive.readManifest(at: session)
+    #expect(manifest.name == MeetingStartSettings.defaultName(now: manifest.createdAt, timeZone: utc))
+    #expect(manifest.name != "Meeting 2026-01-01 09:00")
+}
+
+@Test func aMeetingInterruptedAfterCaptureStoppedIsRecoveredFirst() async throws {
+    let temp = try TemporaryDirectory("rename")
+    defer { temp.remove() }
+    let archive = try SessionArchive.create(root: temp.url, name: "Meeting 2026-10-03 14:00", source: .microphone,
+                                            locale: "en-CA", backend: .speech)
+    try await archive.setStatus(ArchiveStatus.processing)
+    await archive.releaseLock()
+    let outcome = await rename(archive.directory, "Weekly sync")
+    #expect(outcome.status == .failed)
+    #expect(outcome.message.contains("recover"))
+    #expect(try SessionArchive.readManifest(at: archive.directory).name == "Meeting 2026-10-03 14:00")
+}
+
+@Test func aTranscriptThatCannotBeReadRefusesTheRename() async throws {
+    let temp = try TemporaryDirectory("rename")
+    defer { temp.remove() }
+    let session = try await renameSession(in: temp.url)
+    let id = try #require(try SessionArchive.currentTranscriptID(at: session))
+    let revision = SessionPaths.transcript(id, in: session)
+    let original = try Data(contentsOf: revision)
+    func unchanged() throws {
+        #expect(try SessionArchive.readManifest(at: session).name == "Meeting 2026-10-03 14:00")
+        #expect(try meetingJSON(session)["nameSource"] as? String == "default")
+    }
+
+    // Written by a newer build: refused until Voice is Local is updated.
+    var newer = try #require(try JSONSerialization.jsonObject(with: original) as? [String: Any])
+    newer["schemaVersion"] = 99
+    try AtomicFile.write(try JSONSerialization.data(withJSONObject: newer), to: revision)
+    let fromNewer = await rename(session, "Weekly sync")
+    #expect(fromNewer.status == .failed)
+    #expect(fromNewer.message.contains("newer version"))
+    try unchanged()
+
+    // Damaged: Recover first.
+    try AtomicFile.write(Data("{".utf8), to: revision)
+    let damaged = await rename(session, "Weekly sync")
+    #expect(damaged.status == .failed)
+    #expect(damaged.message.contains("recover"))
+    try unchanged()
+
+    // Cannot be read now: tried again later.
+    try AtomicFile.write(original, to: revision)
+    #expect(chmod(revision.path, 0) == 0)
+    let locked = await rename(session, "Weekly sync")
+    #expect(chmod(revision.path, 0o600) == 0)
+    #expect(locked.status == .unreadable)
+    #expect(locked.exitCode == 1)
+    try unchanged()
+
+    #expect(await rename(session, "Weekly sync").status == .renamed)
+}
+
+@Test func filesThatCannotBePreparedLeaveTheNameAlone() async throws {
+    let temp = try TemporaryDirectory("rename")
+    defer { temp.remove() }
+    let session = try await renameSession(in: temp.url, legacyExports: true)
+    struct Unreadable: Error {}
+    let outcome = await SessionRenameCommand.run(SessionRenameCommand.Request(
+        session: session, name: "Design review", voiceInputs: { throw Unreadable() },
+        jobLock: temp.url.appendingPathComponent("jobs.lock"), timeZone: utc))
+    #expect(outcome.status == .failed)
+    #expect(outcome.exitCode == 1)
+    #expect(outcome.message.contains("name was not changed"))
+    #expect(try SessionArchive.readManifest(at: session).name == "Meeting 2026-10-03 14:00")
+    #expect(try meetingJSON(session)["nameSource"] as? String == "default")
+    #expect(!SessionFixtures.exists(SessionPaths.generatedExports(session)))
+    #expect(try editedExports(session).isEmpty)
 }
