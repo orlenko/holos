@@ -658,12 +658,18 @@ extension MeetingSummaryDraft {
         return Double(a.intersection(b).count) >= 0.8 * Double(smaller.count)
     }
 
-    /// Text that says something: at least two items, or one of at least twelve words. A refusal is one short
-    /// sentence, so a `refused` mark on substantive text is not taken for one.
+    /// Text that says something: at least two items, or one of at least twelve words, or, in a script written without
+    /// spaces (Chinese, Japanese, Thai), of at least 24 characters. A refusal is one short sentence, so a `refused`
+    /// mark on substantive text is not taken for one.
     static func isSubstantive(_ items: [String]) -> Bool {
         let filled = items.filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
         if filled.count >= 2 { return true }
-        return (filled.first?.split(whereSeparator: \.isWhitespace).count ?? 0) >= 12
+        guard let item = filled.first else { return false }
+        let words = item.split(whereSeparator: \.isWhitespace).count
+        if words >= 12 { return true }
+        // Few spaces for its length: a script without them, counted by characters.
+        let characters = item.filter { !$0.isWhitespace }.count
+        return words <= 3 && characters >= 24
     }
 
     /// A refusal or an assistant's aside rather than a summary.
@@ -783,7 +789,10 @@ extension MeetingSummaryDraft {
         let weekdays = names.weekdays
         let patterns = [
             #"\b\d{4}-\d{1,2}-\d{1,2}\b"#,
-            #"\b\d{1,2}[/.]\d{1,2}(?:[/.]\d{2,4})?\b"#,
+            // Three-part dates ("3.10.2026", "10/3/2026", "3-10-26"), and two-part ones only with a slash and a valid
+            // day and month ("10/3"): a two-part dotted number is a version ("Python 3.11", "macOS 15.2"), kept.
+            #"\b\d{1,2}[/.\-]\d{1,2}[/.\-]\d{2,4}\b"#,
+            #"\b(?:(?:0?[1-9]|1[0-2])/(?:0?[1-9]|[12]\d|3[01])|(?:0?[1-9]|[12]\d|3[01])/(?:0?[1-9]|1[0-2]))\b"#,
             #"\b\d{1,2}[:h]\d{2}\s*(?:am|pm)?\b"#,
             #"\b\d{1,2}\s*(?:am|pm)\b"#,
             // "October 3, 2026", "octubre 3"; "3 octobre", "3. Oktober 2026", "3 de octubre de 2026"; "octobre 2026".

@@ -26,11 +26,16 @@ public enum SessionSummarizeCommand {
         /// People's names and "Remember voices" (with any forget still going through the meetings) as they are now:
         /// read again at the save, so a summary made while they changed is not saved. Nil keeps the request's.
         public var voiceInputsNow: (@Sendable () -> VoiceInputs)?
+        /// The people store the save reads again, holding its lock (after the speaker lock: speakers → profiles,
+        /// docs/meeting-design.md §1.7) until the summary and the transcript files are written, so no rename of a
+        /// person lands between the check and the files. Nil: `voiceInputsNow`, else the request's own inputs.
+        public var profileStore: SpeakerProfileStore?
 
         public init(session: URL, force: Bool = false, selfName: String = VoiceProfileService.ownName(),
                     profileNames: [String: String] = [:],
                     applyRecognition: Bool = true,
-                    voiceInputsNow: (@Sendable () -> VoiceInputs)? = nil) {
+                    voiceInputsNow: (@Sendable () -> VoiceInputs)? = nil, profileStore: SpeakerProfileStore? = nil) {
+            self.profileStore = profileStore
             self.session = session; self.force = force; self.selfName = selfName; self.profileNames = profileNames
             self.applyRecognition = applyRecognition; self.voiceInputsNow = voiceInputsNow
         }
@@ -50,10 +55,14 @@ public enum SessionSummarizeCommand {
         /// The people store as it is now: the names and the user's own name from one read of it, and "Remember
         /// voices" with the forgets it waits for. A store that cannot be read gives no names and the account's name.
         public static func read(store: SpeakerProfileStore = SpeakerProfileStore()) -> VoiceInputs {
-            let database = try? store.load()
-            return VoiceInputs(
+            from(try? store.load(), store: store)
+        }
+
+        /// The inputs from a database already read (nil: it could not be read), with no second read of it.
+        static func from(_ database: SpeakerProfileDatabase?, store: SpeakerProfileStore) -> VoiceInputs {
+            VoiceInputs(
                 names: database.map { VoiceProfileService.profileNames(in: $0) } ?? [:],
-                recognition: VoiceProfileService.recognitionAllowed(store: store),
+                recognition: database.map { VoiceProfileService.recognitionAllowed(in: $0, store: store) } ?? false,
                 selfName: database?.profiles.first(where: \.isSelf)?.displayName ?? VoiceProfileService.selfName)
         }
     }
@@ -275,14 +284,30 @@ public enum SessionSummarizeCommand {
     private static func publishLocked(_ record: MeetingSummaryRecord, request: Request, transcriptID: String,
                                       key: MeetingSummaryKey?, message: String,
                                       outcome: (Status, String, String?, Int32) -> Outcome) throws -> Outcome {
-        let session = request.session
         // The key again, from the labels as they are now and the people store read now (names, Remember voices, the
         // user's own name, in one read): anything that would change the prompt changed meanwhile, so the summary
-        // names people as they were and is made again.
+        // names people as they were and is made again. With the store, its lock is held from that read until the
+        // files are written (taken after the speaker lock, which the caller holds: speakers → profiles).
+        if let key, let store = request.profileStore {
+            return try store.withLockedDatabase { database in
+                try publishChecked(record, request: request, transcriptID: transcriptID, key: key,
+                                   fresh: VoiceInputs.from(database, store: store), message: message, outcome: outcome)
+            }
+        }
+        let fresh = request.voiceInputsNow?() ?? VoiceInputs(names: request.profileNames,
+                                                            recognition: request.applyRecognition,
+                                                            selfName: request.selfName)
+        return try publishChecked(record, request: request, transcriptID: transcriptID, key: key, fresh: fresh,
+                                  message: message, outcome: outcome)
+    }
+
+    /// The check of the key against `fresh` and the writes, under the speaker lock (and the profile lock when the
+    /// request names the store).
+    private static func publishChecked(_ record: MeetingSummaryRecord, request: Request, transcriptID: String,
+                                       key: MeetingSummaryKey?, fresh: VoiceInputs, message: String,
+                                       outcome: (Status, String, String?, Int32) -> Outcome) throws -> Outcome {
+        let session = request.session
         if let key {
-            let fresh = request.voiceInputsNow?() ?? VoiceInputs(names: request.profileNames,
-                                                                recognition: request.applyRecognition,
-                                                                selfName: request.selfName)
             let now = MeetingSummaryKey.load(session: session, profileNames: fresh.names,
                                              applyRecognition: fresh.recognition, selfName: fresh.selfName)
             guard now == key else {

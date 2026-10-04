@@ -33,7 +33,7 @@ extension Session {
             let voice = SessionSummarizeCommand.VoiceInputs.read()
             let request = SessionSummarizeCommand.Request(
                 session: session, force: force, selfName: voice.selfName, profileNames: voice.names,
-                applyRecognition: voice.recognition, voiceInputsNow: { SessionSummarizeCommand.VoiceInputs.read() })
+                applyRecognition: voice.recognition, profileStore: SpeakerProfileStore())
             // One expensive background job at a time on this Mac, held for the command's whole life: a final transcript
             // waits for it and it waits for one, also across an app relaunch (docs/meeting-design.md §4.17).
             let sessionID = (try? SessionArchive.readManifest(at: session).id)

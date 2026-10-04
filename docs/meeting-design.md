@@ -360,7 +360,7 @@ Locks are `flock` on files in the session folder, one open file description per 
 | `.writer.lock` | recorder's `SessionArchive` actor; `SessionArchive.recover`; `openForMaintenance` | capture start → `finish`; maintenance: one save | `LOCK_EX\|LOCK_NB`, retried every 20 ms for up to 1 s |
 | `.processing.lock` (the processing lease) | recorder from just before `finish` until exit (§4.6); `holos session diarize`, `recover`, `delete`; the app's automatic relabel runs the CLI | one post-processing, rebuild, or deletion | `LOCK_EX\|LOCK_NB`, retried every 20 ms for up to 1 s |
 | `.speakers.lock` | `SpeakerEditor`; `SessionExports.regenerate`; post-processor while publishing run, head, voice data, recognition, and a merged transcript (§4.14, inside the writer lock) | one write (milliseconds) | polled every 20 ms up to 2 s |
-| `<support>/Speakers/profiles.lock` | `SpeakerProfileStore.update`; `withLockedDatabase` (recognition's saved comparison, a forget's per-meeting clean-up), always inside the speaker lock when both are held | one read-modify-write, or one read and the session write made from it | polled every 20 ms up to 2 s (PR10) |
+| `<support>/Speakers/profiles.lock` | `SpeakerProfileStore.update`; `withLockedDatabase` (recognition's saved comparison, a forget's per-meeting clean-up, a meeting summary's save, §4.17), always inside the speaker lock when both are held | one read-modify-write, or one read and the session write made from it | polled every 20 ms up to 2 s (PR10) |
 
 Rules:
 
@@ -4977,7 +4977,8 @@ Without speaker labels the turns are named by track: the microphone of a call be
 the system audio "Others", and a microphone in the room "Someone", never "Microphone"; a turn
 nobody was assigned to is "Someone" with speaker labels too. The final answer's schema has a `refused` field, last ("true only if you could not summarize
 this text at all"), which the model sets in any language: a final answer marked refused that says
-little (fewer than two items, or one under twelve words) fails the run; a substantive one is kept.
+little (fewer than two items, or one under twelve words, or, in a script without spaces, under 24
+characters) fails the run; a substantive one is kept.
 The notes schema has none: measured on the three real meetings, Apple's model set it on 2, 2 and
 1 parts of ordinary meetings when it came first (and wrote no notes for them), and failed to
 produce parseable output on two meetings when it came last; without it every part gave notes. A
@@ -4993,7 +4994,8 @@ never saved as a whole one, and an older summary stays.
 
 **Checking the answer** (`MeetingSummaryDraft.cleaned`). The title: one line, quotes, "Title:"
 and a final period removed, a leading "Meeting about/on/…", "Meeting:", "Réunion sur …" removed,
-dates, times, weekdays and "today" removed (month and weekday names of the summary's language from
+dates, times, weekdays and "today" removed (numeric dates only with three parts, or a slash with a
+valid day and month: a two-part dotted number such as "Python 3.11" is a version and stays; month and weekday names of the summary's language from
 the system's calendar, and English and French; short weekday names are not, as Spanish "mar" is
 also "sea"; Chinese and Japanese dates and weekdays by pattern, "2026年10月3日", "10月", "月曜日",
 "星期一", with a particle left at either end, "の", "的", removed), at most 8 words and 60 characters (at a space when one
@@ -5029,7 +5031,10 @@ is refused before the model: Recover first. The speaker labels it read (the head
 modification time) are checked again at the save: the whole key is computed again from the labels as
 they are and the people store read again in one read (names, Remember voices with a forget still
 going through the meetings, the user's own name; `SessionSummarizeCommand.VoiceInputs.read`), and
-must equal the key the summary was made with; changed meanwhile (a rename in Terminal, a person
+must equal the key the summary was made with. The command holds the speaker lock and then the
+profile lock (`withLockedDatabase`, the §1.7 order speakers → profiles) from that read until
+summary.json and the transcript files are written, so no edit or rename lands between the check
+and the files; changed meanwhile (a rename in Terminal, a person
 renamed), the summary is not saved (`changed`, made again later), so it never names people as
 they were. Lines stay (speaker, text) through every cut and are rendered only in a prompt, so a
 name containing ": " cannot be misread. The speaker lock is held from that check through summary.json and the export

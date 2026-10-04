@@ -1421,6 +1421,44 @@ private func trackDocument(source: AudioSource) -> ExportDocument {
     #expect(cache.people(of: summary, profileNames: [:], applyRecognition: true) == ["Alex"])
 }
 
+@Test func aChineseSummaryMarkedRefusedIsKeptWhenItSaysSomething() async throws {
+    let real = "团队决定先重写解析器，再在下周发布测试版本，并通知所有相关同事。"
+    #expect(MeetingSummaryDraft.isSubstantive([real]))
+    #expect(!MeetingSummaryDraft.isSubstantive(["抱歉，我无法总结。"]))
+    let model = MeetingSummaryModel(
+        name: "fake", contextTokens: 4096, notes: { _, _ in MeetingSummaryNotes(notes: []) },
+        summary: { _, _ in MeetingSummaryDraft(title: "解析器重写计划", summary: real, refused: true) })
+    let result = try await MeetingSummarizer(model: model).summarize(input(lines(3)))
+    #expect(result.draft.summary == real)
+    let refusing = MeetingSummaryModel(
+        name: "fake", contextTokens: 4096, notes: { _, _ in MeetingSummaryNotes(notes: []) },
+        summary: { _, _ in MeetingSummaryDraft(title: "无", summary: "抱歉，我无法总结。", refused: true) })
+    await #expect(throws: MeetingSummarizer.Failure.self) {
+        _ = try await MeetingSummarizer(model: refusing).summarize(input(lines(3)))
+    }
+}
+
+@Test func versionNumbersAreNotTakenForDates() {
+    #expect(MeetingSummaryDraft.cleanTitle("Python 3.11 migration") == "Python 3.11 migration")
+    #expect(MeetingSummaryDraft.cleanTitle("macOS 15.2 rollout") == "MacOS 15.2 rollout")
+    #expect(MeetingSummaryDraft.cleanTitle("10/3/2026 review") == "Review")
+    #expect(MeetingSummaryDraft.cleanTitle("Review of 10/3") == "Review")
+    #expect(MeetingSummaryDraft.cleanTitle("Sprint 3.10.2026 retro") == "Sprint retro")
+}
+
+@Test func theSaveHoldsThePeopleStoreWhileItChecks() async throws {
+    let temp = try TemporaryDirectory("summary")
+    defer { temp.remove() }
+    let session = try await summarizeSession(in: temp.url)
+    let store = SpeakerProfileStore(directory: temp.url.appendingPathComponent("Speakers", isDirectory: true))
+    let inputs = SessionSummarizeCommand.VoiceInputs.read(store: store)
+    let request = SessionSummarizeCommand.Request(session: session, selfName: inputs.selfName,
+                                                  profileNames: inputs.names, applyRecognition: inputs.recognition,
+                                                  profileStore: store)
+    let outcome = await SessionSummarizeCommand.run(request) { _ in .available(ScriptedSummaryModel().model()) }
+    #expect(outcome.status == .written)
+}
+
 @Test func aNameTheUserGaveIsTheirsWhateverItLooksLike() throws {
     let root = URL(fileURLWithPath: "/tmp/sessions")
     var typed = MeetingStartSettings(name: "Meeting 2026-10-03 14:00", source: .microphone)
