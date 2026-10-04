@@ -436,3 +436,33 @@ private func listed(name: String, source: MeetingNameSource, generated: String?)
     #expect(!SessionFixtures.exists(SessionPaths.generatedExports(session)))
     #expect(try editedExports(session).isEmpty)
 }
+
+@Test func aRenameWhoseFilesWereNotRewrittenIsFinishedByAskingAgain() async throws {
+    let temp = try TemporaryDirectory("rename")
+    defer { temp.remove() }
+    let session = try await renameSession(in: temp.url)
+    try writeSummary(session)
+    struct Unreadable: Error {}
+    let calls = SharedValue(0)
+    let request = SessionRenameCommand.Request(
+        session: session, name: "Weekly engineering sync",
+        voiceInputs: {
+            calls.update { $0 += 1 }
+            if calls.value == 1 { throw Unreadable() }
+            return voice
+        },
+        jobLock: temp.url.appendingPathComponent("jobs.lock"), timeZone: utc)
+    let first = await SessionRenameCommand.run(request)
+    #expect(first.status == .renamed)
+    #expect(first.exitCode == 3)
+    #expect(!first.exportsUpdated)
+    #expect(SessionFixtures.text(SessionPaths.export("md", in: session)).hasPrefix("# Parser rewrite and release plan\n"))
+
+    let again = await SessionRenameCommand.run(request)
+    #expect(again.status == .unchanged)
+    #expect(again.exitCode == 0)
+    #expect(again.exportsUpdated)
+    let markdown = SessionFixtures.text(SessionPaths.export("md", in: session))
+    #expect(markdown.hasPrefix("# Weekly engineering sync\n"))
+    #expect(markdown.contains("## Summary"))
+}

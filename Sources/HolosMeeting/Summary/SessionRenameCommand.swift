@@ -70,7 +70,8 @@ public enum SessionRenameCommand {
 
         /// The name (or the generated title) was saved.
         public static let renamed = Status("renamed")
-        /// It already had that name from that source; nothing was written.
+        /// It already had that name from that source: only the transcript files were rewritten (so a rename whose
+        /// files could not be rewritten is finished by asking for it again).
         public static let unchanged = Status("unchanged")
         /// Recording, saving, or held by another command or a final transcript or summary of it: try again later.
         public static let busy = Status("busy")
@@ -95,7 +96,8 @@ public enum SessionRenameCommand {
         /// The transcript files were rewritten with the new title.
         public var exportsUpdated: Bool
         public var message: String
-        /// 0 renamed or unchanged; 3 renamed but the transcript files could not be rewritten; 1 otherwise.
+        /// 0 renamed or unchanged; 3 renamed (or unchanged) but the transcript files could not be rewritten; 1
+        /// otherwise.
         public var exitCode: Int32
 
         public init(sessionID: String?, status: Status, name: String? = nil, nameSource: MeetingNameSource? = nil,
@@ -139,10 +141,10 @@ public enum SessionRenameCommand {
                                                       generatedTitle: generated),
                     exportsUpdated: exports, message: message, exitCode: code)
         }
-        if target.name == manifest.name, target.source == currentSource, meeting.nameSource == target.source {
-            return done(.unchanged, target.source.isUser ? "The meeting already has this name."
-                : "The meeting already shows its generated title.")
-        }
+        // Already so: nothing to write, but the transcript files are still rewritten below, so a rename whose files
+        // could not be rewritten (exit 3) is finished by asking for it again.
+        let unchanged = target.name == manifest.name && target.source == currentSource
+            && meeting.nameSource == target.source
 
         let lease: ProcessingLease
         do {
@@ -161,6 +163,19 @@ public enum SessionRenameCommand {
             return transcriptRefusal(error, id: id)
         }
         let inputs = Result { try request.voiceInputs() }
+        if unchanged {
+            let message = target.source.isUser ? "The meeting already has this name."
+                : "The meeting already shows its generated title."
+            guard hasTranscript else { return done(.unchanged, message) }
+            // Rewriting files that already show the title writes the same bytes.
+            do {
+                try regenerate(session: session, voice: inputs.get())
+                return done(.unchanged, message, exports: true)
+            } catch {
+                return done(.unchanged, message + " The transcript files were not rewritten: "
+                    + error.localizedDescription, code: 3)
+            }
+        }
         // Transcript files written before any was generated here (the recorder's, without speakers) are known by the
         // name they were written with: rewritten under the old name first, so the rename does not take them for files
         // the user edited and move them aside. When that cannot be done, nothing is changed.

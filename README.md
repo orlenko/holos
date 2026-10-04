@@ -363,7 +363,8 @@ voiceislocal session rename <session> "Weekly sync" --json
 A name is one line of at most 60 characters (a longer one is cut, at a space when it can be).
 The transcript files are rewritten so the Markdown heading follows; nothing is summarized again.
 It exits 0 when renamed (or the meeting already had that name), 3 when renamed but the
-transcript files could not be rewritten, and 1 otherwise, with nothing changed: the meeting is
+transcript files could not be rewritten (run the same rename again to rewrite them), and 1
+otherwise, with nothing changed: the meeting is
 recording or being saved, another command or a final transcript or summary of it is working on
 it, it was interrupted or not finished properly (recover it first), or its transcript cannot be
 read (damaged, from a newer version, or unreadable for now).

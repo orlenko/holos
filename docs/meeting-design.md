@@ -5043,9 +5043,11 @@ while another process holds the lease. Only a meeting finished by the predicate 
 transcripts use (`MeetingSummarySchedule.isFinished` of the catalog's state: saved, recovered,
 audio only, transcript incomplete) is renamed: one still saving is `busy`; an interrupted one
 (a `recording` manifest, or a `processing` one whose recorder is gone) is refused until Recover, and
-so are incomplete, failed and damaged ones (`failed`). Exit 0 `renamed` or `unchanged`, 3 when
-renamed but the transcript files could not be rewritten, 1 otherwise, with `name`, `nameSource`,
-`title` and `exportsUpdated` in the JSON. In the
+so are incomplete, failed and damaged ones (`failed`). A rename to the name (and source) the
+meeting already has writes no name but still rewrites the transcript files (`unchanged`), so one
+whose files could not be rewritten is finished by asking for it again (files that already show the
+title get the same bytes). Exit 0 `renamed` or `unchanged`, 3 when the transcript files could not
+be rewritten, 1 otherwise, with `name`, `nameSource`, `title` and `exportsUpdated` in the JSON. In the
 app (`MeetingRowView`), Rename… in the row's menu, ⌘R in the list, or a double-click on the
 title's text (elsewhere on the row a double-click still opens) puts an editor in place of the
 title and badges, with the title shown selected; Return or leaving the field saves, Escape
@@ -5255,7 +5257,7 @@ given back (also for a user's name that looks like a default one), what the edit
 long older name left as it was is not rewritten), when Rename is offered; the command: the name and
 `nameSource` saved with other meeting.json fields kept, the heading and summary in the files,
 the generated title back, older transcript files not moved aside, and nothing changed when they
-cannot be prepared, a meeting without transcript, refusals while held by a command, a summary or
+cannot be prepared, a rename whose files failed finished by asking again, a meeting without transcript, refusals while held by a command, a summary or
 final transcript of it, or a recorder, an interrupted recording (also after capture stopped), a
 transcript from a newer build, damaged, or unreadable now, an unreadable meeting.json).
 

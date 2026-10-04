@@ -18,8 +18,8 @@ extension Session {
                 Local command is working on it, while a final transcript or summary of it is being made, for a \
                 session that was interrupted or not finished properly (recover it first), and when its transcript \
                 cannot be read. Exits 0 when renamed (or it already had that name), 3 when renamed but the \
-                transcript files could not be rewritten, and 1 otherwise, with nothing changed (the reason is \
-                printed).
+                transcript files could not be rewritten (run the same rename again to rewrite them), and 1 \
+                otherwise, with nothing changed (the reason is printed).
                 """)
 
         @Argument(help: "Path to a .holos folder, or a session ID.") var path: String
