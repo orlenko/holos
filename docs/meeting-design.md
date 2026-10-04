@@ -5002,8 +5002,9 @@ and a final period removed, a leading "Meeting about/on/…", "Meeting:", "Réun
 is past half of that, else between characters, for text without spaces) without a dangling "and", "of",
 "the", "de", "pour" …; "Meeting" alone is no title. The summary: one line, at most two
 sentences and 320 characters. Key points and action items: bullets and numbering removed, items
-of fewer than two words (or, in a script without spaces, fewer than four characters) dropped, so "None",
-"Ninguno", "Keine" or "なし" in any language is no item (the prompt asks for an empty list), repeats dropped, at most five each, a key point that repeats an action item dropped. A
+of fewer than two words (or, in a script without spaces, of a single character) dropped, so "None",
+"Ninguno" or "Keine" in any language is no item (the prompt asks for an empty list; "延期" stays, and a
+two-character placeholder such as "なし" passes, the lesser harm, since lists of such words never held), repeats dropped, at most five each, a key point that repeats an action item dropped. A
 "Speaker 3" the model wrote anyway becomes "someone". A refusal ("I'm sorry", "Je ne peux pas")
 or an empty title or summary fails the run, and nothing is written.
 

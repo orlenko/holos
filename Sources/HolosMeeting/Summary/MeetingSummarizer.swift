@@ -681,8 +681,8 @@ extension MeetingSummaryDraft {
             return .failure(Problem(message: "The model gave no usable title."))
         }
         guard !summaryText.isEmpty else { return .failure(Problem(message: "The model gave no summary.")) }
-        // An item too short to say anything ("None", "Ninguno", "Keine", "なし": the prompt asks for an empty list)
-        // is left out, in any language (`saysSomething`).
+        // An item too short to say anything ("None", "Ninguno", "Keine": the prompt asks for an empty list) is left
+        // out, in any language (`saysSomething`).
         let actionItems = Array(Self.cleanList(actions, limit: .max)
             .filter { Self.saysSomething($0) && !Self.isRefusal($0) }.prefix(Self.maximumItems))
         // A key point that only repeats an action item is left out.
@@ -765,8 +765,9 @@ extension MeetingSummaryDraft {
     }
 
     /// An item long enough to be a point or a task: at least two words, or, in a script written without spaces
-    /// (Chinese, Japanese, Thai), at least four characters. A placeholder for "none" is one short word in any
-    /// language.
+    /// (Chinese, Japanese, Thai), at least two characters, so "延期" and "修正" stay. A placeholder for "none" is one
+    /// word in a spaced script; a two-character one ("なし") passes, the lesser harm next to dropping real items (the
+    /// prompt asks for an empty list, and lists of such words in every language never held).
     static func saysSomething(_ item: String) -> Bool {
         let words = item.split(whereSeparator: \.isWhitespace)
         if words.count >= 2 { return true }
@@ -777,7 +778,7 @@ extension MeetingSummaryDraft {
             [0x3040...0x30FF, 0x3400...0x4DBF, 0x4E00...0x9FFF, 0xF900...0xFAFF, 0x0E00...0x0E7F, 0x0E80...0x0EFF,
              0x1000...0x109F, 0x1780...0x17FF].contains { $0.contains(Int(scalar.value)) }
         }
-        return spaceless && letters.count >= 4
+        return spaceless && letters.count >= 2
     }
 
     /// The title as the list shows it, or nil when nothing usable is left: one line, quotes and a final period

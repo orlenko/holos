@@ -205,12 +205,14 @@ private func input(_ lines: [MeetingSummaryLine]) -> MeetingSummaryInput {
     // One short word is never a point or a task: "None" as the model writes it in the summary's language.
     let draft = try MeetingSummaryDraft(
         title: "Plan", summary: "We planned.", points: ["Keine", "N/A", "Das Budget steigt."],
-        actions: ["Ninguno", "なし", "-", "Alex prepara el plan"]).cleaned().get()
+        actions: ["Ninguno", "无", "-", "Alex prepara el plan", "延期", "修正"]).cleaned().get()
     #expect(draft.points == ["Das Budget steigt."])
-    #expect(draft.actions == ["Alex prepara el plan"])
-    // A phrase of a script written without spaces is one "word" with several characters: kept.
+    #expect(draft.actions == ["Alex prepara el plan", "延期", "修正"])
+    // A phrase of a script written without spaces is one "word" of several characters: kept from two characters,
+    // so a two-character placeholder ("なし") passes too; one character never says anything.
     #expect(MeetingSummaryDraft.saysSomething("予算を見直す"))
-    #expect(!MeetingSummaryDraft.saysSomething("なし"))
+    #expect(MeetingSummaryDraft.saysSomething("なし"))
+    #expect(!MeetingSummaryDraft.saysSomething("无"))
     #expect(MeetingSummaryDraft.saysSomething("Review budget"))
 }
 
