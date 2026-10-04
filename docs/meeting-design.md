@@ -5043,7 +5043,11 @@ use), so a `--generated` stopped after its first write already shows the generat
 read as out of date, and Update Transcript Files (the meeting's rename now, `--generated`) writes
 the made-up name and the files. A user rename stopped after its first write still shows what it
 showed before. When the second write fails, the first is undone, so a failure leaves the meeting
-as it was (when that cannot be undone either, the rename may be partial: exit 3). A write that
+as it was (when that cannot be undone either, the rename may be partial: exit 3, with what may be
+left, such as a user's name saved without being marked as the user's, so the meeting may still show
+its generated title; nothing records what was asked when both writes fail, so the message says to
+rename it again). A rename that fails after the preparation rewrote the files under the old name
+exits 3 too and says so (they changed, and files edited by hand were moved aside). A write that
 fails after its new file is in place (its folder not synced; the name or source read back is the
 new one) counts as written: the rest is still written, the files are not rewritten, exit 3, and they
 read as out of date. A crash between them leaves a name and source that differ from the ones asked
@@ -5102,7 +5106,8 @@ cached by `TranscriptFilesCache` until a file, its record or the title changes),
 the meeting has a transcript (a rewrite that failed before its first file), when the record of what was
 generated is missing, damaged, from a newer build or left mid-write (`pending`), when any of the
 three files is missing or not the one the record says was written, or when transcript.md is not
-headed by the title the meeting shows (`MeetingNaming.title`, escaped as the export writes it,
+headed by the title the meeting shows, or transcript.json does not record the manifest's name (a
+rename that changed the name but not the title shown) (`MeetingNaming.title`, escaped as the export writes it,
 `TranscriptExporter.markdownHeading`). Then the meeting's status line says so (not while a command
 works on it) and its menu offers Update Transcript Files, which runs the rename the meeting has now
 (`MeetingRenameRequest.retry`: the user's name exactly, which the command does not clean when it
@@ -5121,8 +5126,8 @@ with the reason as its tooltip (`MeetingActionPolicy.renameRefusal`), wherever t
 without trying: a meeting not finished, one a summary or final transcript of which runs in any
 process (`jobInProgress`, from the background-job lock, also a job that has not written who it is
 yet, which holds every meeting as the command counts it: one started in Terminal holds it without
-holding the meeting until it saves), one whose exports/.generated.json a newer build wrote
-(`exportsProblem`), one without a current transcript whose transcript files exist (any of the
+holding the meeting until it saves), one whose exports/.generated.json a newer build wrote or that cannot be read now
+(`exportsProblem`, `SessionExports.recordProblem`; a missing or damaged one is not a problem), one without a current transcript whose transcript files exist (any of the
 three, `SessionExports.hasTranscriptFiles`, as the command checks them; they could not
 follow the name: the command refuses it too, "transcript missing; recover it first"), one whose
 meeting.json the catalog could not read
@@ -5354,7 +5359,8 @@ each file write checking the folder, both partial orders (a `--generated` stoppe
 already showing the generated title and finished by Update Transcript Files; a user rename stopped
 after its name showing what it showed), a published source treated as partial, a pending map that
 must be complete, a transcript without files out of date, a check before moving an edited file aside,
-a job not yet named holding every meeting, a
+a job not yet named holding every meeting, an unreadable export record turning Rename off, the
+name in transcript.json checked, a preparation reported when the rename then fails, a
 transcript from a newer build, damaged, or unreadable now, an unreadable meeting.json).
 
 **Follow-ups.** The summary in Review. If Apple's model proves too weak on long or noisy meetings, a local

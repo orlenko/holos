@@ -882,7 +882,7 @@ private func listed(name: String, source: MeetingNameSource, generated: String?)
     let outcome = await SessionRenameCommand.run(request)
     #expect(chmod(session.path, 0o700) == 0)
     #expect(outcome.exitCode == 3, "Partly written: the files may show the old title")
-    #expect(outcome.message.contains("could not be undone"))
+    #expect(outcome.message.contains("without being marked as yours"))
     // The user's name was written first: stopped there, the source is still default, so the meeting shows its
     // generated title, as it did before.
     #expect(try meetingJSON(session)["nameSource"] as? String == "default")
@@ -976,8 +976,8 @@ private func listed(name: String, source: MeetingNameSource, generated: String?)
     let session = try await renameSession(in: temp.url)
     try writeSummary(session)
     func state() -> SessionExports.FilesState {
-        SessionExports.filesState(session: session,
-                                  title: SessionCatalog.summary(session: session, jobState: .free).displayTitle)
+        let summary = SessionCatalog.summary(session: session, jobState: .free)
+        return SessionExports.filesState(session: session, title: summary.displayTitle, name: summary.name)
     }
     func rewrite() throws {
         try SessionArchive.withSpeakerLock(at: session) {
@@ -1237,4 +1237,54 @@ private func listed(name: String, source: MeetingNameSource, generated: String?)
     let summary = SessionCatalog.summary(session: session, jobState: .held(nil))
     #expect(summary.jobInProgress?.contains("background job") == true)
     #expect(!MeetingActionPolicy.renames(summary))
+}
+
+// MARK: - The double failure, unreadable records, the name in the files, the preparation reported
+
+@Test func anExportRecordThatCannotBeReadTurnsRenameOff() async throws {
+    let temp = try TemporaryDirectory("rename")
+    defer { temp.remove() }
+    let session = try await renameSession(in: temp.url)
+    try writeSummary(session)
+    #expect(chmod(SessionPaths.generatedExports(session).path, 0) == 0)
+    let listed = SessionCatalog.summary(session: session, jobState: .free)
+    let outcome = await rename(session, "Weekly sync")
+    #expect(chmod(SessionPaths.generatedExports(session).path, 0o600) == 0)
+    #expect(listed.exportsProblem?.contains("cannot be read") == true)
+    #expect(!MeetingActionPolicy.renames(listed))
+    #expect(MeetingActionPolicy.renameRefusal(listed)?.contains("cannot be read") == true)
+    #expect(outcome.status == .unreadable, "As the command refuses it")
+}
+
+@Test func theNameInTheFilesIsCheckedToo() async throws {
+    let temp = try TemporaryDirectory("rename")
+    defer { temp.remove() }
+    let session = try await renameSession(in: temp.url)
+    try writeSummary(session)
+    // The user's name is the generated title, word for word; then the generated title is asked for, and the files
+    // cannot be rewritten: the heading is the same, but transcript.json still holds the user's name.
+    _ = await rename(session, "Parser rewrite and release plan")
+    struct Unreadable: Error {}
+    let back = await SessionRenameCommand.run(SessionRenameCommand.Request(
+        session: session, name: nil, voiceInputs: { throw Unreadable() },
+        jobLock: temp.url.appendingPathComponent("jobs.lock"), timeZone: utc))
+    #expect(back.exitCode == 3)
+    let summary = SessionCatalog.summary(session: session, jobState: .free)
+    #expect(summary.displayTitle == "Parser rewrite and release plan")
+    #expect(SessionExports.filesState(session: session, title: summary.displayTitle, name: summary.name) == .stale)
+    #expect(TranscriptFilesCache().state(of: summary) == .stale)
+}
+
+@Test func filesRewrittenBeforeAFailedRenameAreReported() async throws {
+    let temp = try TemporaryDirectory("rename")
+    defer { temp.remove() }
+    let session = try await renameSession(in: temp.url, legacyExports: true)
+    struct WriteFailed: Error {}
+    var request = SessionRenameCommand.Request(session: session, name: "Design review", voiceInputs: { voice },
+                                               jobLock: temp.url.appendingPathComponent("jobs.lock"), timeZone: utc)
+    request.nameSourceWriter = { _, _, _ in throw WriteFailed() }
+    let outcome = await SessionRenameCommand.run(request)
+    #expect(outcome.exitCode == 3)
+    #expect(outcome.message.contains("rewritten under the old name"))
+    #expect(try SessionArchive.readManifest(at: session).name == "Meeting 2026-10-03 14:00", "The name was put back")
 }

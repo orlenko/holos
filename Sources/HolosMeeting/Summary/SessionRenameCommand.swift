@@ -295,6 +295,7 @@ public enum SessionRenameCommand {
                     + error.localizedDescription, code: 3)
             }
         }
+        var prepared = false
         // Transcript files without a usable record of what was generated (none: the recorder's, written without
         // speakers; or a damaged one) are known only by the name they were written with: rewritten under the old name
         // first, so the rename does not take them for files the user edited and move them aside. When that cannot be
@@ -323,12 +324,20 @@ public enum SessionRenameCommand {
                     return refused(.failed, "Cannot prepare this meeting's transcript files for the new name, so its "
                         + "name was not changed: \(error.localizedDescription)")
                 }
+                prepared = true
             }
+        }
+        // A rename that fails once the files were rewritten under the old name changed them: exit 3, saying so.
+        func failed(_ status: Status, _ message: String) -> Outcome {
+            guard prepared else { return refused(status, message) }
+            return Outcome(sessionID: id, status: status, message: message + " Its transcript files were rewritten "
+                + "under the old name first (any edited by hand were moved aside as edited copies in exports).",
+                exitCode: 3)
         }
         do {
             try await checkpoint("write")
         } catch {
-            return refused(.busy, moved + "; nothing was changed. Try again.")
+            return failed(.busy, moved + "; its name was not changed. Try again.")
         }
         do {
             try await writeName(target, manifest: manifest, meeting: meeting, session: session, lease: lease,
@@ -350,7 +359,7 @@ public enum SessionRenameCommand {
             // the app keeps the meeting marked (Update Transcript Files).
             return Outcome(sessionID: id, status: .failed, message: partial.message, exitCode: 3)
         } catch {
-            return refused(.failed, "Cannot rename the meeting: \(error.localizedDescription)")
+            return failed(.failed, "Cannot rename the meeting: \(error.localizedDescription)")
         }
         log.notice("Session \(id, privacy: .public): renamed (\(target.source.rawValue, privacy: .public))")
         let message = target.source.isUser ? "Renamed the meeting."
@@ -410,11 +419,16 @@ public enum SessionRenameCommand {
                 unconfirmed = unconfirmed ?? error
             }
         }
+        // Both writes failed (the second, and undoing the first): nothing records what was asked, so the message says
+        // what may be left and to rename the meeting again.
         func partial(_ error: any Error, _ restore: any Error) -> PartialRename {
             log.error("Session \(manifest.id, privacy: .public): the first write could not be undone: \(restore.localizedDescription, privacy: .private)")
+            let left = target.source.isUser
+                ? "the new name may be saved without being marked as yours, so the meeting may still show its "
+                    + "generated title"
+                : "the meeting may be marked to show its generated title while it keeps the previous name"
             return PartialRename(message: "Cannot rename the meeting: \(error.localizedDescription) What was written "
-                + "first could not be undone either (\(restore.localizedDescription)), so the meeting may be partly "
-                + "renamed, and its transcript files may still show the old title; rename it again.")
+                + "first could not be undone either (\(restore.localizedDescription)): \(left). Rename it again.")
         }
         do {
             if target.source.isUser {

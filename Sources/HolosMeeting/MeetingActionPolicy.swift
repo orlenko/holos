@@ -56,9 +56,13 @@ public enum MeetingActionPolicy {
         if let job = summary.jobInProgress {
             return job + " Rename it when that is done."
         }
-        if summary.exportsProblem != nil {
-            return "Its transcript files were written by a newer version of Voice is Local, so they cannot follow a "
-                + "new name; update Voice is Local to rename it."
+        if let problem = summary.exportsProblem {
+            if problem.contains("newer version") {
+                return "Its transcript files were written by a newer version of Voice is Local, so they cannot follow "
+                    + "a new name; update Voice is Local to rename it."
+            }
+            return "The record of its transcript files cannot be read now, so they cannot follow a new name; try "
+                + "again later. \(problem)"
         }
         if summary.transcriptID == nil, summary.transcriptProblem == nil, hasExport {
             return "Its transcript is missing but its transcript files exist, so they cannot follow a new name; "

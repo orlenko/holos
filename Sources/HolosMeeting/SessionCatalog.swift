@@ -99,8 +99,8 @@ public struct SessionSummary: Codable, Sendable, Equatable, Identifiable {
     /// Why meeting.json cannot be read (damaged, of another session, written by a newer build, unreadable now); nil
     /// when it can, or when there is none (a meeting saved before it existed). Rename refuses such a meeting.
     public var metadataProblem: String?
-    /// Why the transcript files cannot be rewritten: exports/.generated.json was written by a newer build. Nil
-    /// otherwise. Rename refuses such a meeting (its files could not follow the name).
+    /// Why the transcript files cannot be rewritten now (`SessionExports.recordProblem`): exports/.generated.json was
+    /// written by a newer build, or cannot be read. Nil otherwise. Rename refuses such a meeting.
     public var exportsProblem: String?
     /// A summary or final transcript of this meeting running in any process (`SessionCatalog.jobInProgress`), or nil.
     /// Rename refuses such a meeting.
@@ -253,8 +253,7 @@ public enum SessionCatalog {
             } ?? .user,
             generatedSummary: MeetingSummaryStore.readIfUsable(session: session, sessionID: manifest.id),
             metadataProblem: { if case .failure(let error) = meetingRead { error.localizedDescription } else { nil } }(),
-            exportsProblem: SessionExports.recordIsFromNewerVersion(session: session)
-                ? "exports/.generated.json was written by a newer version of Voice is Local." : nil,
+            exportsProblem: SessionExports.recordProblem(session: session),
             jobInProgress: jobInProgress(jobState ?? DeepTranscriptionLock.state(), sessionID: manifest.id),
             shownName: meeting.map {
                 MeetingNaming.fallbackName(

@@ -85,11 +85,12 @@ public final class TranscriptFilesCache: Sendable {
         let stamp = (SessionExports.formats.map { SessionPaths.export($0.rawValue, in: session) }
             + [SessionPaths.generatedExports(session), SessionPaths.transcriptPointer(session)])
             .map(MeetingPeopleCache.fileStamp).joined(separator: "|")
-        let title = summary.displayTitle
+        // The title shown and the name transcript.json records.
+        let title = summary.displayTitle + "\u{1F}" + summary.name
         if let entry = entries.withLock({ $0[summary.id] }), entry.stamp == stamp, entry.title == title {
             return entry.state
         }
-        let state = SessionExports.filesState(session: session, title: title)
+        let state = SessionExports.filesState(session: session, title: summary.displayTitle, name: summary.name)
         entries.withLock { $0[summary.id] = Entry(stamp: stamp, title: title, state: state) }
         return state
     }

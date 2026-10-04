@@ -267,6 +267,21 @@ public enum SessionExports {
 
     static func fileName(_ format: ExportFormat) -> String { "transcript.\(format.rawValue)" }
 
+    /// Why the record of the transcript files (exports/.generated.json) cannot be used for a rewrite, or nil: written
+    /// by a newer Voice is Local, or not readable now (permissions, not a regular file, an I/O error). A missing or
+    /// damaged one is nil: a rewrite recovers from those.
+    public static func recordProblem(session: URL) -> String? {
+        do {
+            _ = try readRecordChecked(session: session)
+            return nil
+        } catch {
+            if case .unavailable? = error as? HolosError {
+                return "exports/.generated.json was written by a newer version of Voice is Local."
+            }
+            return "exports/.generated.json cannot be read: \(error.localizedDescription)"
+        }
+    }
+
     /// Whether `exports/.generated.json` was written by a newer Voice is Local: the transcript files cannot be
     /// rewritten until it is updated, so nothing tries again meanwhile.
     public static func recordIsFromNewerVersion(session: URL) -> Bool {
@@ -294,7 +309,10 @@ public enum SessionExports {
     /// The state of the transcript files, derived from the files themselves each time (whoever wrote them: a rename,
     /// Review, a summary, a command in Terminal), for a meeting titled `title` (`MeetingNaming.title`). Nothing is
     /// remembered between calls; `TranscriptFilesCache` saves reading unchanged files again.
-    public static func filesState(session: URL, title: String) -> FilesState {
+    ///
+    /// `name`, when given, is the manifest's name, which transcript.json records (`session.name`): a rename that
+    /// changed only the name, not the title shown, is out of date until the files are rewritten too.
+    public static func filesState(session: URL, title: String, name: String? = nil) -> FilesState {
         // No file: nothing to bring up to date only without a transcript; a meeting with one has its files written
         // (one missing them, a rewrite that failed before its first file, is out of date).
         guard hasTranscriptFiles(session: session) else {
@@ -308,6 +326,10 @@ public enum SessionExports {
                                                            maxBytes: maxExportBytes),
                   record.files[fileName(format)] == sha256(data) else { return .stale }
             if format == .md { markdown = data }
+            if format == .json, let name {
+                let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+                guard (object?["session"] as? [String: Any])?["name"] as? String == name else { return .stale }
+            }
         }
         guard let markdown else { return .stale }
         let firstLine = String(decoding: markdown.prefix { $0 != 0x0A }, as: UTF8.self)
