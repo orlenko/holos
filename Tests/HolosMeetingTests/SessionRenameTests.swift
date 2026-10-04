@@ -1586,3 +1586,51 @@ private func listed(name: String, source: MeetingNameSource, generated: String?)
     for folder in [moved, session] { #expect(try meetingJSON(folder)["name"] == nil) }
     #expect(try SessionArchive.readManifest(at: session).name == "Meeting 2026-10-03 14:00")
 }
+
+@Test func theRepairChecksTheFolderOnceTheArchiveIsOpen() async throws {
+    let temp = try TemporaryDirectory("rename")
+    defer { temp.remove() }
+    let session = try await renameSession(in: temp.url)
+    var request = SessionRenameCommand.Request(session: session, name: "Weekly sync", voiceInputs: { voice },
+                                               jobLock: temp.url.appendingPathComponent("jobs.lock"), timeZone: utc)
+    request.namingWriter = { name, source, folder, meeting in
+        try SessionRenameCommand.writeNaming(name: name, source: source, session: folder, meeting: meeting)
+        _ = chmod(folder.path, 0o500)
+    }
+    _ = await SessionRenameCommand.run(request)
+    #expect(chmod(session.path, 0o700) == 0)
+    #expect(SessionCatalog.summary(session: session, jobState: .free).nameCopyIsStale)
+    // Update Transcript Files, the folder replaced while the archive was opened for the copy.
+    let moved = temp.url.appendingPathComponent("moved", isDirectory: true)
+    var repair = SessionRenameCommand.Request(session: session, name: "Weekly sync", voiceInputs: { voice },
+                                              jobLock: temp.url.appendingPathComponent("jobs.lock"), timeZone: utc)
+    repair.beforeStep = { step in
+        guard step == "manifest" else { return }
+        try? FileManager.default.moveItem(at: session, to: moved)
+        try? FileManager.default.copyItem(at: moved, to: session)
+    }
+    let outcome = await SessionRenameCommand.run(repair)
+    #expect(outcome.status == .busy)
+    #expect(outcome.exitCode == 1)
+    #expect(try SessionArchive.readManifest(at: session).name == "Meeting 2026-10-03 14:00", "The copy not written")
+}
+
+@Test func aFileReplacedWithTheSameSizeAndTimeIsReadAgain() async throws {
+    let temp = try TemporaryDirectory("rename")
+    defer { temp.remove() }
+    let session = try await renameSession(in: temp.url)
+    try writeSummary(session)
+    let cache = TranscriptFilesCache()
+    let summary = SessionCatalog.summary(session: session, jobState: .free)
+    #expect(cache.state(of: summary) == .current)
+    // transcript.json replaced atomically with other bytes of the same length, its time set back to the old one.
+    let json = SessionPaths.export("json", in: session)
+    var before = stat()
+    #expect(lstat(json.path, &before) == 0)
+    var bytes = try Data(contentsOf: json)
+    bytes[bytes.count - 2] = bytes[bytes.count - 2] == 0x20 ? 0x09 : 0x20
+    try AtomicFile.write(bytes, to: json)
+    var times = [before.st_atimespec, before.st_mtimespec]
+    #expect(utimensat(AT_FDCWD, json.path, &times, 0) == 0)
+    #expect(cache.state(of: summary) == .stale)
+}

@@ -135,8 +135,8 @@ public enum SessionRenameCommand {
         var beforeLease: (@Sendable () async -> Void)?
         /// Tests: runs just after the lease is taken (the folder moved or replaced then).
         var afterLease: (@Sendable () async -> Void)?
-        /// Tests: runs before each step that writes ("prepare", "write", "commit", "manifest", "event", "regenerate"),
-        /// just before the folder is checked again.
+        /// Tests: runs before each step that writes ("prepare", "write", "commit", "repair", "manifest", "event",
+        /// "regenerate"), just before the folder is checked again.
         var beforeStep: (@Sendable (String) async -> Void)?
         /// Tests: the manifest's copy of the name is written, then an error as if its folder could not be synced.
         var failAfterNameWrite = false
@@ -349,12 +349,19 @@ public enum SessionRenameCommand {
             // The manifest's copy of the name, when a rename committed it to meeting.json without updating the copy.
             if manifest.name != target.name {
                 do {
-                    try await checkpoint("manifest")
+                    try await checkpoint("repair")
                 } catch {
                     return refused(.busy, moved + "; nothing was changed. Try again.")
                 }
                 do {
                     let archive = try SessionArchive.openForMaintenance(at: session, lease: lease)
+                    // Checked again once the archive is open, right before the copy is written.
+                    do {
+                        try await checkpoint("manifest")
+                    } catch {
+                        await archive.releaseLock()
+                        return refused(.busy, moved + "; nothing was changed. Try again.")
+                    }
                     do {
                         try await archive.setName(target.name)
                     } catch {

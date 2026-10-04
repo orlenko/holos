@@ -5090,8 +5090,8 @@ is seen; all of it runs in the lease's use (`ProcessingLease.withUse`, the devic
 every processing command makes) and checks the manifest's ID is the one asked for, and the folder is
 checked again before each step that writes (the preparation, the name, its source, each rewrite of
 the files, and within a rewrite before the exports folder is made sure of, each file moved aside as
-edited, the pending record, each file and the final record; and again right before the commit, once
-the archive is open:
+edited, the pending record, each file and the final record; and again right before the commit, and
+before Update Transcript Files writes the manifest's copy, once the archive is open:
 `SessionExports.regenerateLocked`'s `check`, `ProcessingLease.verify`), so a folder moved or replaced meanwhile gets nothing more written (`busy` before the
 name; exit 3 once the name is written); the recorder's liveness is read before it (the rename's own lease would read as one). A current
 transcript that is there but cannot be read refuses the rename before anything is written, rather
@@ -5121,7 +5121,8 @@ compared with the meeting as it was when the editor opened (`MeetingRenameEdit`)
 finishes while the field is open (the 2 s refresh reads the new title) never turns the old title
 into the user's name. Nothing about a rename is remembered: whether a meeting's transcript files
 are out of date is derived from the files on each refresh of the list (`SessionExports.filesState`,
-cached by `TranscriptFilesCache` until a file, its record or the title changes), whoever wrote them
+cached by `TranscriptFilesCache` until a file, its record or the title changes; a file is known by
+its device, inode, size and modification time, so an atomic replacement is seen), whoever wrote them
 (a rename here or in Terminal, Review, a summary). They are out of date when there is none although
 the meeting has a transcript (a rewrite that failed before its first file), when the record of what was
 generated is missing, damaged, from a newer build or left mid-write (`pending`), when any of the
