@@ -137,7 +137,15 @@ final class MainWindowController: NSObject, NSWindowDelegate {
         window.hidesOnDeactivate = false
         window.autorecalculatesKeyViewLoop = true
 
-        sidebar.onSelect = { [weak self] section in self?.show(section, focus: false) }
+        sidebar.onSelect = { [weak self] section in
+            // The Settings row shows Settings from the top; ⌘, and the menus show it where it was left.
+            if section == .settings {
+                self?.showSettings(chapter: nil)
+            } else {
+                self?.show(section, focus: false)
+            }
+        }
+        sidebar.onSelectChapter = { [weak self] chapter in self?.showSettings(chapter: chapter) }
         let sidebarItem = NSSplitViewItem(sidebarWithViewController: sidebar)
         sidebarItem.minimumThickness = 200
         sidebarItem.maximumThickness = 320
@@ -177,13 +185,30 @@ final class MainWindowController: NSObject, NSWindowDelegate {
         }
     }
 
+    /// Shows Settings scrolled to `chapter`'s card (nil: its top), smoothly when Settings was already on screen; the
+    /// sidebar marks the chapter (the Settings row for nil).
+    func showSettings(chapter: SettingsChapter?) {
+        let onScreen = current == .settings && window.isVisible
+        show(.settings, focus: false)
+        sidebar.select(.settings, chapter: chapter)
+        settingsPane?.show(chapter: chapter, animated: onScreen)
+    }
+
     /// The section's view controller, created on first use.
     func controller(for section: MainSection) -> NSViewController {
         if let existing = sections[section] { return existing }
         let made = makeSection(section)
         sections[section] = made
+        if let settings = made as? SettingsPane {
+            settings.onChapterChange = { [weak self] chapter in
+                guard let self, self.current == .settings else { return }
+                self.sidebar.select(.settings, chapter: chapter)
+            }
+        }
         return made
     }
+
+    private var settingsPane: SettingsPane? { sections[.settings] as? SettingsPane }
 
     /// The section's view controller if it was created.
     func existingController(for section: MainSection) -> NSViewController? { sections[section] }
@@ -206,7 +231,12 @@ final class MainWindowController: NSObject, NSWindowDelegate {
     }
 
     private func select(_ section: MainSection) {
-        sidebar.select(section)
+        // Settings as it was left: the sidebar marks the chapter it shows, or Settings itself at the top and while a
+        // search is open (`sidebarMarkOnShow`). Already on Settings, the sidebar keeps what it marks.
+        if section != .settings || current != .settings {
+            let chapter = section == .settings ? settingsPane?.sidebarMarkOnShow : nil
+            sidebar.select(section, chapter: chapter)
+        }
         guard section != current else { return }
         let previous = current
         let controller = controller(for: section)
@@ -285,13 +315,14 @@ final class SectionContainerViewController: NSViewController {
 // MARK: - Sidebar
 
 /// The source list: "Dictation" (History, Corrections), "Meetings" (Meetings, People), "Listen" (Reading), then
-/// Settings, and the dictation status card at the bottom.
+/// Settings with its chapters under it, and the dictation status card at the bottom.
 @MainActor
 final class SidebarViewController: NSViewController, NSTableViewDataSource, NSTableViewDelegate {
     private enum Row {
         case group(String)
         case spacer
         case section(MainSection)
+        case chapter(SettingsChapter)
     }
 
     private let rows: [Row] = [
@@ -299,10 +330,11 @@ final class SidebarViewController: NSViewController, NSTableViewDataSource, NSTa
         .group("Meetings"), .section(.meetings), .section(.people),
         .group("Listen"), .section(.reading),
         .spacer, .section(.settings),
-    ]
+    ] + SettingsChapter.allCases.map(Row.chapter)
     private let table = NSTableView()
     private let statusCard = StatusCardView()
     var onSelect: ((MainSection) -> Void)?
+    var onSelectChapter: ((SettingsChapter) -> Void)?
     private var selecting = false
 
     override func loadView() {
@@ -314,6 +346,8 @@ final class SidebarViewController: NSViewController, NSTableViewDataSource, NSTa
         table.dataSource = self
         table.delegate = self
         table.allowsEmptySelection = false
+        table.target = self
+        table.action = #selector(rowClicked)
         table.setAccessibilityLabel("Sections")
         let scroll = NSScrollView()
         scroll.documentView = table
@@ -338,14 +372,21 @@ final class SidebarViewController: NSViewController, NSTableViewDataSource, NSTa
         view = root
     }
 
-    func select(_ section: MainSection) {
-        guard let index = rows.firstIndex(where: { if case .section(section) = $0 { true } else { false } }) else {
-            return
+    /// Marks `section`, or one of Settings' chapters under it.
+    func select(_ section: MainSection, chapter: SettingsChapter? = nil) {
+        let index = rows.firstIndex { row in
+            switch row {
+            case .section(let candidate): chapter == nil && candidate == section
+            case .chapter(let candidate): section == .settings && candidate == chapter
+            case .group, .spacer: false
+            }
         }
+        guard let index else { return }
         _ = view
         guard table.selectedRow != index else { return }
         selecting = true
         table.selectRowIndexes(IndexSet(integer: index), byExtendingSelection: false)
+        table.scrollRowToVisible(index)
         selecting = false
     }
 
@@ -362,8 +403,10 @@ final class SidebarViewController: NSViewController, NSTableViewDataSource, NSTa
     }
 
     func tableView(_ tableView: NSTableView, shouldSelectRow row: Int) -> Bool {
-        if case .section = rows[row] { return true }
-        return false
+        switch rows[row] {
+        case .section, .chapter: true
+        case .group, .spacer: false
+        }
     }
 
     func tableView(_ tableView: NSTableView, heightOfRow row: Int) -> CGFloat {
@@ -371,6 +414,7 @@ final class SidebarViewController: NSViewController, NSTableViewDataSource, NSTa
         case .spacer: 12
         case .group: 26
         case .section: 28
+        case .chapter: 24
         }
     }
 
@@ -420,12 +464,55 @@ final class SidebarViewController: NSViewController, NSTableViewDataSource, NSTa
             ])
             cell.setAccessibilityLabel(section.title)
             return cell
+        case .chapter(let chapter):
+            // Under Settings, lined up with its title.
+            let cell = NSTableCellView()
+            let label = NSTextField(labelWithString: chapter.title)
+            label.font = .systemFont(ofSize: 12)
+            label.lineBreakMode = .byTruncatingTail
+            label.translatesAutoresizingMaskIntoConstraints = false
+            cell.textField = label
+            cell.addSubview(label)
+            NSLayoutConstraint.activate([
+                label.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 30),
+                label.trailingAnchor.constraint(lessThanOrEqualTo: cell.trailingAnchor, constant: -6),
+                label.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
+            ])
+            cell.setAccessibilityLabel("\(chapter.title) settings")
+            return cell
         }
     }
 
     func tableViewSelectionDidChange(_ notification: Notification) {
-        guard !selecting, table.selectedRow >= 0, case .section(let section) = rows[table.selectedRow] else { return }
-        onSelect?(section)
+        guard !selecting, table.selectedRow >= 0 else { return }
+        // A click changes the selection on mouse down; its action, on mouse up, must not go there a second time.
+        if let type = NSApp.currentEvent?.type, type == .leftMouseDown || type == .leftMouseDragged {
+            selectionChangedByClick = true
+        }
+        choose(table.selectedRow)
+    }
+
+    /// The selection changed during the click whose action comes next.
+    private var selectionChangedByClick = false
+
+    /// The table's action, on every click: a click on the row already selected goes there again, so Settings and
+    /// a chapter scroll back to their top (the selection does not change, so `tableViewSelectionDidChange` is not
+    /// called).
+    @objc private func rowClicked() {
+        defer { selectionChangedByClick = false }
+        guard !selectionChangedByClick, table.clickedRow >= 0, table.clickedRow == table.selectedRow else { return }
+        switch rows[table.clickedRow] {
+        case .section(.settings), .chapter: choose(table.clickedRow)
+        case .section, .group, .spacer: break
+        }
+    }
+
+    private func choose(_ row: Int) {
+        switch rows[row] {
+        case .section(let section): onSelect?(section)
+        case .chapter(let chapter): onSelectChapter?(chapter)
+        case .group, .spacer: break
+        }
     }
 }
 
