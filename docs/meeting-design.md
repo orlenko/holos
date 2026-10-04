@@ -5063,7 +5063,16 @@ switch to the generated title left unfinished (source `default`, the manifest st
 Voice is Local did not make up, `SessionSummary.nameIsUnfinished`) reads as out of date whatever the
 files hold, so Update Transcript Files finishes it even when the title shown did not change. A
 meeting without a transcript and transcript files is renamed whatever its export record says, in
-the policy and the command alike (the files are not touched). A write that
+the policy and the command alike (the files are not touched); an unfinished switch is offered for
+such a meeting too, as Finish Rename (`MeetingRenameRun.repairTitle`). "Made up" means this
+meeting's own default name (`MeetingNaming.isMadeUp`): its import's file name, "Meeting", or
+"Meeting yyyy-MM-dd HH:mm" within 15 hours of when it started (the start panel suggests it minutes
+before recording, and the time zone may have changed), never merely a name of that shape; and only a
+source written as `default` (by a rename) is held to it, not one inferred from the name. The summary
+the rename read and checked at its start is the one the rewrites write (`regenerateLocked`'s
+`summaryRecord`), not read again. The app passes the meeting it means (`--expect-id`); a folder
+whose manifest names another is refused before anything is written, and a result about another
+meeting is not applied. A write that
 fails after its new file is in place (its folder not synced; the name or source read back is the
 new one) counts as written: the rest is still written, the files are not rewritten, exit 3, and they
 read as out of date. A crash between them leaves a name and source that differ from the ones asked
@@ -5384,7 +5393,9 @@ alert telling renamed from not renamed, a newer summary.json refusing, a mark se
 kept, a preparation stopped after its first write exiting 3, a cleared mark never reusing a count, an
 unreadable summary.json refusing and turning Rename off, a failed first write that may have landed
 reported, the event only on the locked folder, an unfinished switch out of date, a transcript-free
-meeting renamed whatever its export record, a preparation reported when the rename then fails, a
+meeting renamed whatever its export record, an unfinished switch without a transcript offered as
+Finish Rename, a default-shaped name of another day not taken for the made-up one, the checked summary
+written, the expected meeting refused when another, a preparation reported when the rename then fails, a
 transcript from a newer build, damaged, or unreadable now, an unreadable meeting.json).
 
 **Follow-ups.** The summary in Review. If Apple's model proves too weak on long or noisy meetings, a local

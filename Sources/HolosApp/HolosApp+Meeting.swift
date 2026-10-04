@@ -931,7 +931,8 @@ extension HolosAppDelegate: NSMenuDelegate {
         let output = Self.temporaryFile("out")
         let errors = Self.temporaryFile("err")
         do {
-            try maintenance.run(MeetingRenameRun.arguments(session: summary.directory, request: request),
+            try maintenance.run(MeetingRenameRun.arguments(session: summary.directory, request: request,
+                                                           expectedID: summary.id),
                                 standardOutput: output, standardError: errors) { [weak self] code in
                 self?.renameEnded(summary, code: code, output: output, errors: errors)
             }
@@ -944,9 +945,10 @@ extension HolosAppDelegate: NSMenuDelegate {
     }
 
     private func renameEnded(_ summary: SessionSummary, code: Int32, output: URL, errors: URL) {
+        // A result about another meeting (it cannot be, with --expect-id) is not applied to this one.
         let outcome = (try? AtomicFile.readIfPresent(output, maxBytes: 1 << 20)).flatMap {
             $0.flatMap { try? HolosJSON.decoder().decode(SessionRenameCommand.Outcome.self, from: $0) }
-        }
+        }.flatMap { $0.sessionID.map { $0.caseInsensitiveCompare(summary.id) == .orderedSame } ?? true ? $0 : nil }
         let failure = Self.commandResult(output: output, errors: errors)
             ?? "The rename command ended with code \(code)."
         Self.removeFile(output)

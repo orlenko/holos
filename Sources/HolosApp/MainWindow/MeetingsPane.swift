@@ -420,7 +420,7 @@ final class MeetingsPane: NSViewController, NSTableViewDataSource, NSTableViewDe
                 cache.keep(only: Set(summaries.map(\.id)))
                 var stale: Set<String> = []
                 for summary in summaries where MeetingSummarySchedule.isFinished(summary.state)
-                    && summary.transcriptID != nil {
+                    && (summary.transcriptID != nil || summary.nameIsUnfinished) {
                     if filesCache?.state(of: summary) == .stale { stale.insert(summary.id) }
                 }
                 filesCache?.keep(only: Set(summaries.map(\.id)))
@@ -675,8 +675,10 @@ final class MeetingsPane: NSViewController, NSTableViewDataSource, NSTableViewDe
             }
             // Not while a command works on it (a rename rewriting them).
             if staleFiles.contains(summary.id), running[summary.id] == nil {
-                parts.append("The transcript files are out of date (another title, or a rewrite that did not "
-                    + "finish); right-click the meeting and choose Update Transcript Files.")
+                parts.append(summary.transcriptID == nil
+                    ? "The meeting's rename did not finish; right-click it and choose Finish Rename."
+                    : "The transcript files are out of date (another title, or a rewrite that did not finish); "
+                        + "right-click the meeting and choose Update Transcript Files.")
             }
             statusLabel.stringValue = parts.joined(separator: " ")
         } else {
@@ -1084,7 +1086,8 @@ extension MeetingsPane: NSMenuDelegate {
         }
         // Transcript files out of date, read from the files: rewritten for the title shown.
         if staleFiles.contains(summary.id), running[summary.id] == nil {
-            let item = NSMenuItem(title: "Update Transcript Files", action: #selector(updateTranscriptFiles(_:)),
+            let item = NSMenuItem(title: MeetingRenameRun.repairTitle(summary),
+                                  action: #selector(updateTranscriptFiles(_:)),
                                   keyEquivalent: "")
             item.target = self
             item.representedObject = summary.id

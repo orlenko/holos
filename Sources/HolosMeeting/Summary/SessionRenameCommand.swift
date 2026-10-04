@@ -66,9 +66,18 @@ public struct MeetingRenameEdit: Sendable, Equatable {
 /// the transcript files are out of date afterwards is read from the files (`SessionExports.filesState`). Pure.
 public enum MeetingRenameRun {
     /// The command's arguments: the session's path and the name after `--`, so a name starting with "-" is a name.
-    public static func arguments(session: URL, request: MeetingRenameRequest) -> [String] {
-        if let name = request.typedName { return ["session", "rename", "--json", "--", session.path, name] }
-        return ["session", "rename", "--generated", "--json", "--", session.path]
+    /// `expectedID`: the meeting the app means (`--expect-id`): the command refuses a folder that holds another.
+    public static func arguments(session: URL, request: MeetingRenameRequest, expectedID: String) -> [String] {
+        if let name = request.typedName {
+            return ["session", "rename", "--json", "--expect-id", expectedID, "--", session.path, name]
+        }
+        return ["session", "rename", "--generated", "--json", "--expect-id", expectedID, "--", session.path]
+    }
+
+    /// The menu item that repairs a meeting whose files are out of date or whose switch to the generated title is
+    /// unfinished: Update Transcript Files, or Finish Rename for a meeting without a transcript (no files to update).
+    public static func repairTitle(_ summary: SessionSummary) -> String {
+        summary.transcriptID == nil ? "Finish Rename" : "Update Transcript Files"
     }
 
     /// What the app says when a rename of the meeting titled `shown` ended (nil: nothing, it worked): exit 3 with the
@@ -116,6 +125,9 @@ public enum SessionRenameCommand {
         public var jobLock: URL
         /// For the default name a recording gets back ("Meeting 2026-10-03 14:00").
         public var timeZone: TimeZone
+        /// The meeting the caller means (`--expect-id`): a folder whose manifest names another is refused before
+        /// anything is written.
+        public var expectedID: String?
         /// Tests: runs just before the lease is taken (another command changing the meeting meanwhile).
         var beforeLease: (@Sendable () async -> Void)?
         /// Tests: runs just after the lease is taken (the folder moved or replaced then).
@@ -200,6 +212,10 @@ public enum SessionRenameCommand {
         }
         func refused(_ status: Status, _ message: String) -> Outcome {
             Outcome(sessionID: id, status: status, message: message, exitCode: 1)
+        }
+        if let expected = request.expectedID, expected.caseInsensitiveCompare(id) != .orderedSame {
+            return refused(.failed, "This folder now holds another meeting (\(id)), not \(expected); nothing was "
+                + "changed.")
         }
         if let busy = busyReason(session: session, id: id, jobLock: request.jobLock) { return refused(.busy, busy) }
         if let manifest = try? SessionArchive.readManifest(at: session),
@@ -330,7 +346,7 @@ public enum SessionRenameCommand {
                 return refused(.busy, moved + "; nothing was changed. Try again.")
             }
             do {
-                try regenerate(session: session, request: request, lease: lease)
+                try regenerate(session: session, request: request, lease: lease, summary: summaryRecord)
                 return done(.unchanged, message, exports: true)
             } catch {
                 return done(.unchanged, message + " The transcript files were not rewritten: "
@@ -362,7 +378,7 @@ public enum SessionRenameCommand {
                 }
                 let writes = WriteCount()
                 do {
-                    try regenerate(session: session, request: request, lease: lease, writes: writes)
+                    try regenerate(session: session, request: request, lease: lease, summary: summaryRecord, writes: writes)
                 } catch {
                     // Stopped after its first write: the files changed (and may be left mid-write).
                     guard writes.made == 0 else {
@@ -422,7 +438,7 @@ public enum SessionRenameCommand {
             return done(.renamed, message + " " + moved + ", so its transcript files were not rewritten.", code: 3)
         }
         do {
-            try regenerate(session: session, request: request, lease: lease)
+            try regenerate(session: session, request: request, lease: lease, summary: summaryRecord)
             return done(.renamed, message, exports: true)
         } catch {
             return done(.renamed, message + " The transcript files were not rewritten: \(error.localizedDescription)",
@@ -652,8 +668,11 @@ public enum SessionRenameCommand {
     /// Each write it makes is preceded by `lease.verify`: the folder must still be the one the lease locks.
     ///
     /// `writes`, when given, counts the writes the rewrite made before it stopped.
+    ///
+    /// `summary` is the summary.json read and checked at the start of the rename, written as it is (not read again,
+    /// so one that turns unreadable meanwhile is not left out).
     private static func regenerate(session: URL, request: Request, lease: ProcessingLease,
-                                   writes: WriteCount? = nil) throws {
+                                   summary: MeetingSummaryRecord?, writes: WriteCount? = nil) throws {
         var checks = 0
         func check() throws {
             checks += 1
@@ -672,7 +691,7 @@ public enum SessionRenameCommand {
         func write(_ voice: SessionSummarizeCommand.VoiceInputs) throws {
             _ = try SessionExports.regenerateLocked(session: session, profileNames: voice.names,
                                                     applyRecognition: voice.recognition, selfName: voice.selfName,
-                                                    check: check)
+                                                    summaryRecord: .some(summary), check: check)
         }
         try SessionArchive.withSpeakerLock(at: session) {
             if let read = request.voiceInputs {

@@ -20,6 +20,12 @@ private func renameSession(in root: URL, name: String = "Meeting 2026-10-03 14:0
         SessionFixtures.alternatingSegments(track: "mic", turnSeconds: 5, duration: 20))
     let session = try await SessionFixtures.makeSession(in: root, name: name, mode: .inPerson, transcript: transcript,
                                                         legacyExports: legacyExports)
+    // The meeting started when its default name says (UTC), as a recording named by the start panel does.
+    var stored = try #require(try JSONSerialization.jsonObject(
+        with: Data(contentsOf: SessionPaths.manifest(session))) as? [String: Any])
+    stored["createdAt"] = "2026-10-03T14:00:00Z"
+    try AtomicFile.write(try JSONSerialization.data(withJSONObject: stored, options: [.sortedKeys, .prettyPrinted]),
+                         to: SessionPaths.manifest(session))
     let manifest = try SessionArchive.readManifest(at: session)
     try AtomicFile.writeJSON(MeetingInfo(sessionID: manifest.id, mode: .inPerson, othersInRoom: false,
                                          createdAt: manifest.createdAt, nameSource: .default),
@@ -604,10 +610,10 @@ private func listed(name: String, source: MeetingNameSource, generated: String?)
 
 @Test func theAppRunsTheRenameAsTheCommand() {
     let session = URL(fileURLWithPath: "/tmp/S.holos")
-    #expect(MeetingRenameRun.arguments(session: session, request: .user("-v Weekly sync"))
-        == ["session", "rename", "--json", "--", "/tmp/S.holos", "-v Weekly sync"])
-    #expect(MeetingRenameRun.arguments(session: session, request: .generated)
-        == ["session", "rename", "--generated", "--json", "--", "/tmp/S.holos"])
+    #expect(MeetingRenameRun.arguments(session: session, request: .user("-v Weekly sync"), expectedID: "S")
+        == ["session", "rename", "--json", "--expect-id", "S", "--", "/tmp/S.holos", "-v Weekly sync"])
+    #expect(MeetingRenameRun.arguments(session: session, request: .generated, expectedID: "S")
+        == ["session", "rename", "--generated", "--json", "--expect-id", "S", "--", "/tmp/S.holos"])
 }
 
 @Test func theCommandsResultIsReadBack() throws {
@@ -1508,4 +1514,82 @@ private func listed(name: String, source: MeetingNameSource, generated: String?)
         .contains(.rename))
     let outcome = await rename(session, "Hallway chat")
     #expect(outcome.status == .renamed)
+}
+
+// MARK: - Unfinished without a transcript, default-shaped names, the summary kept, the expected meeting
+
+@Test func anUnfinishedSwitchWithoutATranscriptIsOfferedToo() async throws {
+    let temp = try TemporaryDirectory("rename")
+    defer { temp.remove() }
+    let session = try await SessionFixtures.makeSession(in: temp.url, transcript: nil)
+    _ = await rename(session, "Hallway chat")
+    var request = SessionRenameCommand.Request(session: session, name: nil, voiceInputs: { voice },
+                                               jobLock: temp.url.appendingPathComponent("jobs.lock"), timeZone: utc)
+    request.nameSourceWriter = { source, folder, meeting in
+        try SessionRenameCommand.writeNameSource(source, session: folder, meeting: meeting)
+        _ = chmod(folder.path, 0o500)
+    }
+    #expect(await SessionRenameCommand.run(request).exitCode == 3)
+    #expect(chmod(session.path, 0o700) == 0)
+    let summary = SessionCatalog.summary(session: session, jobState: .free)
+    #expect(summary.nameIsUnfinished)
+    #expect(summary.transcriptID == nil)
+    #expect(TranscriptFilesCache().state(of: summary) == .stale)
+    #expect(MeetingRenameRun.repairTitle(summary) == "Finish Rename")
+    #expect(await rename(session, MeetingRenameRequest.retry(summary).typedName).exitCode == 0)
+    #expect(!SessionCatalog.summary(session: session, jobState: .free).nameIsUnfinished)
+}
+
+@Test func aNameShapedLikeADefaultIsNotTakenForTheMadeUpOne() {
+    let start = Date(timeIntervalSince1970: 1_790_000_000) // 2026-09-21 14:13 UTC
+    // The made-up name of this meeting, also a few minutes off (the start panel suggested it before recording began),
+    // or in another time zone.
+    #expect(MeetingNaming.isMadeUp("Meeting 2026-09-21 14:13", createdAt: start, origin: .recorded,
+                                   importedFileName: nil))
+    #expect(MeetingNaming.isMadeUp("Meeting 2026-09-21 14:09", createdAt: start, origin: .recorded,
+                                   importedFileName: nil))
+    #expect(MeetingNaming.isMadeUp("Meeting 2026-09-21 07:13", createdAt: start, origin: .recorded,
+                                   importedFileName: nil))
+    // A user's name of the same shape for another day is not.
+    #expect(!MeetingNaming.isMadeUp("Meeting 2025-01-01 10:00", createdAt: start, origin: .recorded,
+                                    importedFileName: nil))
+    var summary = listed(name: "Meeting 2025-01-01 10:00", source: .default, generated: nil)
+    summary.shownName = MeetingNaming.fallbackName(name: summary.name, source: .default, createdAt: start,
+                                                   origin: .recorded, importedFileName: nil, timeZone: utc)
+    #expect(summary.nameIsUnfinished)
+}
+
+@Test func theSummaryCheckedAtTheStartIsTheOneWritten() async throws {
+    let temp = try TemporaryDirectory("rename")
+    defer { temp.remove() }
+    let session = try await renameSession(in: temp.url)
+    try writeSummary(session)
+    let summaryFile = SessionPaths.summary(session)
+    var request = SessionRenameCommand.Request(session: session, name: "Weekly sync", voiceInputs: { voice },
+                                               jobLock: temp.url.appendingPathComponent("jobs.lock"), timeZone: utc)
+    // summary.json turns unreadable after it was checked, before the files are rewritten.
+    request.beforeStep = { step in if step == "regenerate" { _ = chmod(summaryFile.path, 0) } }
+    let outcome = await SessionRenameCommand.run(request)
+    #expect(chmod(summaryFile.path, 0o600) == 0)
+    #expect(outcome.exitCode == 0)
+    #expect(SessionFixtures.text(SessionPaths.export("md", in: session)).contains("## Summary"))
+}
+
+@Test func theAppNamesTheMeetingItMeans() async throws {
+    let temp = try TemporaryDirectory("rename")
+    defer { temp.remove() }
+    let session = try await renameSession(in: temp.url)
+    let id = try SessionArchive.readManifest(at: session).id
+    #expect(MeetingRenameRun.arguments(session: session, request: .user("A"), expectedID: id)
+        == ["session", "rename", "--json", "--expect-id", id, "--", session.path, "A"])
+    var request = SessionRenameCommand.Request(session: session, name: "Weekly sync", voiceInputs: { voice },
+                                               jobLock: temp.url.appendingPathComponent("jobs.lock"), timeZone: utc)
+    request.expectedID = UUID().uuidString
+    let outcome = await SessionRenameCommand.run(request)
+    #expect(outcome.status == .failed)
+    #expect(outcome.exitCode == 1)
+    #expect(outcome.message.contains("another meeting"))
+    #expect(try SessionArchive.readManifest(at: session).name == "Meeting 2026-10-03 14:00")
+    request.expectedID = id.lowercased()
+    #expect(await SessionRenameCommand.run(request).status == .renamed)
 }

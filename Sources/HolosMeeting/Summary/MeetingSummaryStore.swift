@@ -257,11 +257,28 @@ public enum MeetingNaming {
                      generatedTitle: MeetingSummaryStore.current(summary, transcriptID: transcriptID)?.title)
     }
 
-    /// Whether `name` is one Voice is Local makes up for such a meeting (`source(stored: nil, …)` is `default`): a
-    /// default recording name, or an import's file name without its extension.
-    public static func isMadeUp(_ name: String, origin: MeetingOrigin, importedFileName: String?) -> Bool {
-        !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            && source(stored: nil, name: name, importedFileName: origin == .imported ? importedFileName : nil) == .default
+    /// Whether `name` is the one Voice is Local made up for this meeting, from its own data (not merely shaped like
+    /// one): an import's file name without its extension ("Imported meeting" without one), "Meeting" (the
+    /// command-line default), or "Meeting yyyy-MM-dd HH:mm" for when it started, in any time zone (within 15 hours of
+    /// `createdAt`: the start panel suggests it a few minutes before recording begins, and the zone may have changed
+    /// since). A user's name of that shape for another day is not.
+    public static func isMadeUp(_ name: String, createdAt: Date, origin: MeetingOrigin,
+                                importedFileName: String?) -> Bool {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return false }
+        if trimmed == madeUpName(createdAt: createdAt, origin: origin, importedFileName: importedFileName) {
+            return true
+        }
+        if origin == .imported { return false }
+        if trimmed == "Meeting" { return true }
+        guard let match = trimmed.wholeMatch(of: /Meeting (\d{4}-\d{2}-\d{2} \d{2}:\d{2})/) else { return false }
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.calendar = Calendar(identifier: .gregorian)
+        formatter.timeZone = TimeZone(identifier: "UTC")
+        formatter.dateFormat = "yyyy-MM-dd HH:mm"
+        guard let stamped = formatter.date(from: String(match.1)) else { return false }
+        return abs(stamped.timeIntervalSince(createdAt)) <= 15 * 3600
     }
 
     /// The name Voice is Local makes up for a meeting, from its own data: an import's file name without its extension
@@ -277,12 +294,14 @@ public enum MeetingNaming {
     }
 
     /// The name a meeting shows when it has no name of the user's and no generated title (`title`'s `fallback`): its
-    /// manifest name, except when the source is `default` but the name is not one Voice is Local made up (a
+    /// manifest name, except when the source written in meeting.json (`source`: callers pass the stored one, not one
+    /// inferred from the name) is `default` but the name is not the one Voice is Local made up (a
     /// `--generated` rename stopped after writing the source, before the made-up name): then the made-up name, so
     /// a leftover name of the user's never shows as if it were the generated one.
     public static func fallbackName(name: String, source: MeetingNameSource, createdAt: Date, origin: MeetingOrigin,
                                     importedFileName: String?, timeZone: TimeZone = .current) -> String {
-        guard source == .default, !isMadeUp(name, origin: origin, importedFileName: importedFileName) else {
+        guard source == .default,
+              !isMadeUp(name, createdAt: createdAt, origin: origin, importedFileName: importedFileName) else {
             return name
         }
         return madeUpName(createdAt: createdAt, origin: origin, importedFileName: importedFileName,
@@ -325,7 +344,8 @@ public enum MeetingNaming {
                                    origin: MeetingOrigin, importedFileName: String?,
                                    timeZone: TimeZone = .current) -> String {
         // Kept only when it is a made-up name too (a leftover name of the user's under a `default` source is not).
-        if currentSource == .default, isMadeUp(current, origin: origin, importedFileName: importedFileName) {
+        if currentSource == .default,
+           isMadeUp(current, createdAt: createdAt, origin: origin, importedFileName: importedFileName) {
             return current
         }
         if origin == .imported {
@@ -352,7 +372,8 @@ public enum MeetingNaming {
                      summary: MeetingSummaryStore.readIfUsable(session: session, sessionID: manifest.id),
                      transcriptID: try? SessionFiles.currentTranscript(session: session)?.id,
                      fallback: meeting.map {
-                         fallbackName(name: manifest.name, source: source, createdAt: manifest.createdAt,
+                         fallbackName(name: manifest.name, source: $0.nameSource ?? .user,
+                                      createdAt: manifest.createdAt,
                                       origin: $0.origin, importedFileName: $0.importedFileName)
                      })
     }

@@ -26,6 +26,8 @@ extension Session {
         @Argument(help: "The new name. Leave it out with --generated.") var name: String?
         @Flag(help: "Show the title Apple Intelligence wrote again instead of a name you gave.") var generated = false
         @Flag(help: "Print the result as JSON.") var json = false
+        /// The meeting the caller means (the app): refused when the folder holds another.
+        @Option(help: .hidden) var expectId: String?
 
         func validate() throws {
             if generated, name != nil {
@@ -38,8 +40,9 @@ extension Session {
 
         mutating func run() async throws {
             let session = try SessionLocator.resolve(path)
-            let outcome = await SessionRenameCommand.run(SessionRenameCommand.Request(
-                session: session, name: generated ? nil : name))
+            var request = SessionRenameCommand.Request(session: session, name: generated ? nil : name)
+            request.expectedID = expectId
+            let outcome = await SessionRenameCommand.run(request)
             if json {
                 try Console.json(outcome)
                 if outcome.exitCode != 0 { Console.error(outcome.message) }

@@ -268,10 +268,9 @@ public enum SessionCatalog {
             jobInProgress: jobInProgress(jobState ?? DeepTranscriptionLock.state(), sessionID: manifest.id),
             summaryProblem: summaryRead.problem,
             shownName: meeting.map {
+                // Only a source written as `default` (a rename): one inferred from the name is that name.
                 MeetingNaming.fallbackName(
-                    name: manifest.name,
-                    source: MeetingNaming.source(stored: $0.nameSource, name: manifest.name,
-                                                 importedFileName: $0.origin == .imported ? $0.importedFileName : nil),
+                    name: manifest.name, source: $0.nameSource ?? .user,
                     createdAt: manifest.createdAt, origin: $0.origin, importedFileName: $0.importedFileName)
             })
     }

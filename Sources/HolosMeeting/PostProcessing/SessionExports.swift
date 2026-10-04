@@ -67,12 +67,16 @@ public enum SessionExports {
     /// `check` runs before each write (the pending record, each file, the final record), so a caller holding the
     /// processing lease can check the folder is still the one it locks (`ProcessingLease.verify`) and stop when not.
     @discardableResult
+    ///
+    /// `summaryRecord`: summary.json as the caller read and checked it (nil inside: none), used instead of reading it
+    /// again; nil: read here (`readIfUsable`).
     public static func regenerateLocked(session: URL, profileNames: [String: String] = [:],
                                         applyRecognition: Bool = true, selfName: String? = nil,
+                                        summaryRecord: MeetingSummaryRecord?? = nil,
                                         check: () throws -> Void = {}) throws -> ExportWriteResult {
         let snapshot = try SpeakerSessionSnapshot.load(session: session, profileNames: profileNames,
                                                        applyRecognition: applyRecognition)
-        let rendered = try renderAll(exportDocument(snapshot, selfName: selfName))
+        let rendered = try renderAll(exportDocument(snapshot, selfName: selfName, summaryRecord: summaryRecord))
         let result = try write(rendered, session: session, snapshot: snapshot, check: check)
         log.info("Session \(snapshot.manifest.id, privacy: .public): wrote \(result.written.count, privacy: .public) exports; moved \(result.movedAside.count, privacy: .public) edited exports aside")
         return result
@@ -99,7 +103,8 @@ public enum SessionExports {
     /// exports show the current transcript without speakers until speakers are labelled again; a newer transcript
     /// never disappears from them.
     static func exportDocument(_ snapshot: SpeakerSessionSnapshot, withSummary: Bool = true,
-                               selfName: String? = nil) throws -> ExportDocument {
+                               selfName: String? = nil, summaryRecord: MeetingSummaryRecord?? = nil) throws
+        -> ExportDocument {
         var document = snapshot.exportDocument()
         if snapshot.transcriptChanged, let current = try SessionFiles.currentTranscript(session: snapshot.session) {
             document.transcript = current
@@ -108,16 +113,21 @@ public enum SessionExports {
         }
         if withSummary {
             let selfName = selfName ?? VoiceProfileService.ownName()
-            document.summary = exportSummary(snapshot, key: MeetingSummaryKey(document, selfName: selfName))
+            let record = summaryRecord ?? MeetingSummaryStore.readIfUsable(session: snapshot.session,
+                                                                          sessionID: snapshot.manifest.id)
+            document.summary = exportSummary(snapshot, key: MeetingSummaryKey(document, selfName: selfName),
+                                             record: record)
             // The heading follows the rule the Meetings list does (`MeetingNaming.title`): the title of a summary of
             // this transcript heads the files also while its text is left out (made with other speaker names).
             let source = nameSource(snapshot)
             document.heading = MeetingNaming.title(
                 name: snapshot.manifest.name, source: source,
-                summary: MeetingSummaryStore.readIfUsable(session: snapshot.session, sessionID: snapshot.manifest.id),
+                summary: record,
                 transcriptID: document.transcript.id,
                 fallback: MeetingNaming.fallbackName(
-                    name: snapshot.manifest.name, source: source, createdAt: snapshot.manifest.createdAt,
+                    name: snapshot.manifest.name,
+                    source: snapshot.meetingInfoDamaged ? .user : (snapshot.meeting.nameSource ?? .user),
+                    createdAt: snapshot.manifest.createdAt,
                     origin: snapshot.meeting.origin, importedFileName: snapshot.meeting.importedFileName))
         }
         return document
@@ -135,10 +145,9 @@ public enum SessionExports {
     /// from this transcript with these speakers' names); otherwise the exports leave it out, so corrected speaker
     /// labels never sit beside a summary made with the old ones. Its title heads the Markdown export unless the user
     /// named the meeting.
-    static func exportSummary(_ snapshot: SpeakerSessionSnapshot, key: MeetingSummaryKey) -> ExportSummary? {
-        guard let record = MeetingSummaryStore.readIfUsable(session: snapshot.session,
-                                                            sessionID: snapshot.manifest.id),
-              key.isCurrent(record) else { return nil }
+    static func exportSummary(_ snapshot: SpeakerSessionSnapshot, key: MeetingSummaryKey,
+                              record: MeetingSummaryRecord?) -> ExportSummary? {
+        guard let record, key.isCurrent(record) else { return nil }
         let source = nameSource(snapshot)
         return ExportSummary(transcriptID: record.transcriptID, title: record.title, summary: record.summary,
                              points: record.points, actions: record.actions,
