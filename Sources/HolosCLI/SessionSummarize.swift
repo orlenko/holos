@@ -29,11 +29,11 @@ extension Session {
 
         mutating func run() async throws {
             let session = try SessionLocator.resolve(path)
+            // The people store read once for the prompt, and again at the save to check nothing changed meanwhile.
+            let voice = SessionSummarizeCommand.VoiceInputs.read()
             let request = SessionSummarizeCommand.Request(
-                session: session, force: force, selfName: VoiceProfileService.ownName(),
-                profileNames: VoiceProfileService.profileNames(),
-                applyRecognition: VoiceProfileService.recognitionAllowed(),
-                voiceInputsNow: { (VoiceProfileService.profileNames(), VoiceProfileService.recognitionAllowed()) })
+                session: session, force: force, selfName: voice.selfName, profileNames: voice.names,
+                applyRecognition: voice.recognition, voiceInputsNow: { SessionSummarizeCommand.VoiceInputs.read() })
             // One expensive background job at a time on this Mac, held for the command's whole life: a final transcript
             // waits for it and it waits for one, also across an app relaunch (docs/meeting-design.md §4.17).
             let sessionID = (try? SessionArchive.readManifest(at: session).id)

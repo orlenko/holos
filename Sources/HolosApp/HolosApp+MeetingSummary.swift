@@ -157,11 +157,9 @@ extension HolosAppDelegate {
         Task { [weak self] in
             let candidates = await Task.detached { () -> [MeetingSummarySchedule.Candidate] in
                 // People's names and Remember voices, once per scan: a summary whose names changed is made again.
-                let store = SpeakerProfileStore()
-                return MeetingSummarySchedule.scan(root: root,
-                                                   profileNames: VoiceProfileService.profileNames(store: store),
-                                                   recognition: VoiceProfileService.recognitionAllowed(store: store),
-                                                   selfName: VoiceProfileService.ownName(store: store))
+                let voice = SessionSummarizeCommand.VoiceInputs.read()
+                return MeetingSummarySchedule.scan(root: root, profileNames: voice.names,
+                                                   recognition: voice.recognition, selfName: voice.selfName)
             }.value
             guard let self else { return }
             self.meeting.summaries.scanning = false

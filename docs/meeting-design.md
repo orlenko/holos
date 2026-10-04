@@ -5026,10 +5026,13 @@ to date, 3 when written but the transcript files could not be rewritten, 1 other
 `failed`, `cancelled`). A session that is not finished by the predicate the app's schedule uses
 (`MeetingSummarySchedule.isFinished`: interrupted, still processing, incomplete, failed, damaged)
 is refused before the model: Recover first. The speaker labels it read (the head and the edit journal, by size and
-modification time) are checked again at the save; changed meanwhile (a rename in Terminal), the
-summary is not saved (`changed`, made again later), so it never names people as they were; so
-are people's names and "Remember voices" (with a forget still going through the meetings), read
-again at the save. The speaker lock is held from that check through summary.json and the export
+modification time) are checked again at the save: the whole key is computed again from the labels as
+they are and the people store read again in one read (names, Remember voices with a forget still
+going through the meetings, the user's own name; `SessionSummarizeCommand.VoiceInputs.read`), and
+must equal the key the summary was made with; changed meanwhile (a rename in Terminal, a person
+renamed), the summary is not saved (`changed`, made again later), so it never names people as
+they were. Lines stay (speaker, text) through every cut and are rendered only in a prompt, so a
+name containing ": " cannot be misread. The speaker lock is held from that check through summary.json and the export
 rewrite (`SessionExports.regenerateLocked`), so no speaker edit lands between them. Speaker and
 people's names go into prompts cut to 40 characters (with "…"), so a name of any length leaves
 every part room for the words. `session list --json` leaves summaries out (`SessionSummary`

@@ -253,7 +253,7 @@ public struct MeetingSummarizer: Sendable {
 
     /// Notes of one part; none when the model refused or did not answer. A part too long for the context is cut in
     /// two and each half asked (at most twice down); every piece is counted in `run`, and every one left out too.
-    private func partNotes(_ part: [String], index: Int, of count: Int, input: MeetingSummaryInput,
+    private func partNotes(_ part: [MeetingSummaryLine], index: Int, of count: Int, input: MeetingSummaryInput,
                            run: inout RunState, depth: Int = 0) async throws -> [String] {
         let instructions = Self.notesInstructions(language: input.language)
         let prompt = Self.notesPrompt(part: part, index: index, of: count)
@@ -326,7 +326,7 @@ public struct MeetingSummarizer: Sendable {
     }
 
     enum FinalSource {
-        case transcript([String])
+        case transcript([MeetingSummaryLine])
         case notes([[String]])
     }
 
@@ -337,7 +337,7 @@ public struct MeetingSummarizer: Sendable {
         switch source {
         case .transcript(let part):
             fromNotes = false
-            body = Self.fenced(part.joined(separator: "\n"))
+            body = Self.fenced(part.map(\.rendered).joined(separator: "\n"))
         case .notes(let notes):
             fromNotes = true
             body = Self.fenced(Self.notesText(notes))
@@ -372,18 +372,18 @@ public struct MeetingSummarizer: Sendable {
 
     // MARK: - Parts
 
-    /// The transcript's lines ("Alex: …") in parts of at most `budget` estimated tokens, in order. A line longer than
-    /// a part is cut at sentence ends (at words for a sentence that is itself too long), each piece keeping the
-    /// speaker's name. Empty lines are left out.
-    public static func parts(_ lines: [MeetingSummaryLine], budget: Int) -> [[String]] {
-        var parts: [[String]] = []
-        var current: [String] = []
+    /// The transcript's lines in parts of at most `budget` estimated tokens (as rendered, "Alex: …"), in order. A line
+    /// longer than a part is cut at sentence ends (at words for a sentence that is itself too long), each piece
+    /// keeping the speaker. Empty lines are left out. Lines stay (speaker, text) until a prompt renders them.
+    public static func parts(_ lines: [MeetingSummaryLine], budget: Int) -> [[MeetingSummaryLine]] {
+        var parts: [[MeetingSummaryLine]] = []
+        var current: [MeetingSummaryLine] = []
         var used = 0
         for line in lines {
             let text = line.text.split(whereSeparator: \.isWhitespace).joined(separator: " ")
             guard !text.isEmpty else { continue }
             for piece in pieces(MeetingSummaryLine(speaker: line.speaker, text: text), budget: budget) {
-                let cost = estimatedTokens(piece) + 1
+                let cost = estimatedTokens(piece.rendered) + 1
                 if used + cost > budget, !current.isEmpty {
                     parts.append(current)
                     current = []
@@ -399,30 +399,27 @@ public struct MeetingSummarizer: Sendable {
 
     /// `part` in two halves: its lines, or a single line's text cut at sentences, then words, then characters (each
     /// piece keeping the speaker); nil when it cannot be cut.
-    static func halves(_ part: [String]) -> [[String]]? {
+    static func halves(_ part: [MeetingSummaryLine]) -> [[MeetingSummaryLine]]? {
         if part.count > 1 {
             let half = part.count / 2
             return [Array(part[..<half]), Array(part[half...])]
         }
-        guard let line = part.first, let colon = line.range(of: ": ") else { return nil }
-        let split = pieces(MeetingSummaryLine(speaker: String(line[..<colon.lowerBound]),
-                                              text: String(line[colon.upperBound...])),
-                           budget: max(1, estimatedTokens(line) / 2 + 1))
+        guard let line = part.first else { return nil }
+        let split = pieces(line, budget: max(1, estimatedTokens(line.rendered) / 2 + 1))
         guard split.count > 1 else { return nil }
         let half = split.count / 2
         return [Array(split[..<half]), Array(split[half...])]
     }
 
-    /// `line` rendered, cut into pieces that each fit `budget`.
-    static func pieces(_ line: MeetingSummaryLine, budget: Int) -> [String] {
-        let whole = line.rendered
-        guard estimatedTokens(whole) > budget else { return [whole] }
+    /// `line` cut into pieces (same speaker) that each fit `budget` once rendered.
+    static func pieces(_ line: MeetingSummaryLine, budget: Int) -> [MeetingSummaryLine] {
+        guard estimatedTokens(line.rendered) > budget else { return [line] }
         let prefix = "\(line.speaker): "
         let room = max(1, budget - estimatedTokens(prefix))
-        var pieces: [String] = []
+        var pieces: [MeetingSummaryLine] = []
         var current = ""
         func flush() {
-            if !current.isEmpty { pieces.append(prefix + current) }
+            if !current.isEmpty { pieces.append(MeetingSummaryLine(speaker: line.speaker, text: current)) }
             current = ""
         }
         for sentence in sentences(line.text) {
@@ -539,9 +536,9 @@ public struct MeetingSummarizer: Sendable {
         """
     }
 
-    static func notesPrompt(part: [String], index: Int, of count: Int) -> String {
+    static func notesPrompt(part: [MeetingSummaryLine], index: Int, of count: Int) -> String {
         "Part \(index + 1) of \(count) of the meeting.\nTranscript (speaker: words):\n"
-            + fenced(part.joined(separator: "\n"))
+            + fenced(part.map(\.rendered).joined(separator: "\n"))
     }
 
     static func condenseInstructions(language: String) -> String {

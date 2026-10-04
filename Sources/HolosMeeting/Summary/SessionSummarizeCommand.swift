@@ -25,14 +25,36 @@ public enum SessionSummarizeCommand {
         public var applyRecognition: Bool
         /// People's names and "Remember voices" (with any forget still going through the meetings) as they are now:
         /// read again at the save, so a summary made while they changed is not saved. Nil keeps the request's.
-        public var voiceInputsNow: (@Sendable () -> (names: [String: String], recognition: Bool))?
+        public var voiceInputsNow: (@Sendable () -> VoiceInputs)?
 
         public init(session: URL, force: Bool = false, selfName: String = VoiceProfileService.ownName(),
                     profileNames: [String: String] = [:],
                     applyRecognition: Bool = true,
-                    voiceInputsNow: (@Sendable () -> (names: [String: String], recognition: Bool))? = nil) {
+                    voiceInputsNow: (@Sendable () -> VoiceInputs)? = nil) {
             self.session = session; self.force = force; self.selfName = selfName; self.profileNames = profileNames
             self.applyRecognition = applyRecognition; self.voiceInputsNow = voiceInputsNow
+        }
+    }
+
+    /// People's names, "Remember voices" (with any forget still going through the meetings) and the user's own name,
+    /// read together from the people store: what decides the names the prompt gives.
+    public struct VoiceInputs: Sendable, Equatable {
+        public var names: [String: String]
+        public var recognition: Bool
+        public var selfName: String
+
+        public init(names: [String: String], recognition: Bool, selfName: String) {
+            self.names = names; self.recognition = recognition; self.selfName = selfName
+        }
+
+        /// The people store as it is now: the names and the user's own name from one read of it, and "Remember
+        /// voices" with the forgets it waits for. A store that cannot be read gives no names and the account's name.
+        public static func read(store: SpeakerProfileStore = SpeakerProfileStore()) -> VoiceInputs {
+            let database = try? store.load()
+            return VoiceInputs(
+                names: database.map { VoiceProfileService.profileNames(in: $0) } ?? [:],
+                recognition: VoiceProfileService.recognitionAllowed(store: store),
+                selfName: database?.profiles.first(where: \.isSelf)?.displayName ?? VoiceProfileService.selfName)
         }
     }
 
@@ -133,9 +155,8 @@ public enum SessionSummarizeCommand {
         guard let transcriptID else {
             return outcome(.noTranscript, "This meeting has no transcript to summarize.")
         }
-        // What to summarize: the transcript the exports show, with speaker names. The speaker labels it was read with
-        // are noted, so a summary made while they changed (a rename in Terminal) is not saved with the old names.
-        let speakers = speakerRevision(session)
+        // What to summarize: the transcript the exports show, with speaker names. Its key is noted, so a summary made
+        // while anything in the prompt changed (a rename in Terminal, a person renamed) is not saved.
         let input: MeetingSummaryInput
         let key: MeetingSummaryKey
         do {
@@ -156,7 +177,7 @@ public enum SessionSummarizeCommand {
         // not rewritten with it, which is done now, checked again at the save like any summary.
         if !request.force, let existing, key.isCurrent(existing) {
             if existing.exportsPending == true {
-                return await save(existing, request: request, transcriptID: transcriptID, speakers: speakers,
+                return await save(existing, request: request, transcriptID: transcriptID, key: key,
                                   message: "Rewrote the transcript files with the summary.") {
                     outcome($0, $1, transcriptID: $2, code: $3)
                 }
@@ -204,7 +225,7 @@ public enum SessionSummarizeCommand {
             return outcome(.cancelled, "Summarizing was cancelled; nothing was written.",
                            transcriptID: transcriptID)
         }
-        var result = await save(record, request: request, transcriptID: transcriptID, speakers: speakers,
+        var result = await save(record, request: request, transcriptID: transcriptID, key: key,
                                 message: "Summarized the meeting.") { outcome($0, $1, transcriptID: $2, code: $3) }
         result.stats = made.stats
         log.notice("Session \(id, privacy: .public): summary \(result.status.rawValue, privacy: .public) in \(made.stats.calls, privacy: .public) calls")
@@ -215,7 +236,7 @@ public enum SessionSummarizeCommand {
     /// transcript files with it. The record is written with `exportsPending` first and again without it once the
     /// files are rewritten, so a failure there leaves it set and the next run rewrites them (without asking the model).
     private static func save(_ record: MeetingSummaryRecord, request: Request, transcriptID: String,
-                             speakers: String? = nil, message: String,
+                             key: MeetingSummaryKey? = nil, message: String,
                              outcome: (Status, String, String?, Int32) -> Outcome) async -> Outcome {
         let session = request.session
         let lease: ProcessingLease
@@ -237,7 +258,7 @@ public enum SessionSummarizeCommand {
                 // people.
                 do {
                     return try SessionArchive.withSpeakerLock(at: session) { () throws -> Outcome in
-                        try publishLocked(record, request: request, transcriptID: transcriptID, speakers: speakers,
+                        try publishLocked(record, request: request, transcriptID: transcriptID, key: key,
                                           message: message, outcome: outcome)
                     }
                 } catch let error as HolosError {
@@ -252,20 +273,22 @@ public enum SessionSummarizeCommand {
 
     /// The checks and writes of `save` under the speaker lock (the caller holds it and the processing lease).
     private static func publishLocked(_ record: MeetingSummaryRecord, request: Request, transcriptID: String,
-                                      speakers: String?, message: String,
+                                      key: MeetingSummaryKey?, message: String,
                                       outcome: (Status, String, String?, Int32) -> Outcome) throws -> Outcome {
         let session = request.session
-        // Speaker labels changed meanwhile: the summary names people as they were, so it is made again. So do people's
-        // names and "Remember voices" (turned off, or a forget going through the meetings), which decide the names it
-        // was given.
-        if let speakers, speakerRevision(session) != speakers {
-            return outcome(.changed, "The speaker labels changed while the meeting was summarized; try again.",
-                           transcriptID, 1)
-        }
-        if speakers != nil, let now = request.voiceInputsNow?(),
-           now.names != request.profileNames || now.recognition != request.applyRecognition {
-            return outcome(.changed, "People's names or Remember voices changed while the meeting was summarized; "
-                + "try again.", transcriptID, 1)
+        // The key again, from the labels as they are now and the people store read now (names, Remember voices, the
+        // user's own name, in one read): anything that would change the prompt changed meanwhile, so the summary
+        // names people as they were and is made again.
+        if let key {
+            let fresh = request.voiceInputsNow?() ?? VoiceInputs(names: request.profileNames,
+                                                                recognition: request.applyRecognition,
+                                                                selfName: request.selfName)
+            let now = MeetingSummaryKey.load(session: session, profileNames: fresh.names,
+                                             applyRecognition: fresh.recognition, selfName: fresh.selfName)
+            guard now == key else {
+                return outcome(.changed, "The speaker labels or people's names changed while the meeting was "
+                    + "summarized; try again.", transcriptID, 1)
+            }
         }
         // The last point where a cancellation stops it: from here summary.json (atomic writes) and the transcript
         // files are written together.
