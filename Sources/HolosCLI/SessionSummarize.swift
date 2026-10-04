@@ -26,8 +26,8 @@ extension Session {
         @Argument(help: "Path to a .holos folder, or a session ID.") var path: String
         @Flag(help: "Summarize again even when the summary is of the current transcript.") var force = false
         @Flag(help: "Print the result as JSON (with the summary).") var json = false
-        /// The app's number for the Summarize Again request this run is for (written into summary.json).
-        @Option(help: .hidden) var answersRequest: Int64?
+        /// The app's ID for the Summarize Again request this run is for (written into summary.json).
+        @Option(help: .hidden) var answersRequest: String?
 
         mutating func run() async throws {
             let session = try SessionLocator.resolve(path)

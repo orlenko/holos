@@ -27,21 +27,21 @@ public enum MeetingSummarySchedule {
         /// summary.json says the transcript files were not rewritten with it (`exportsPending`).
         public var exportsPending: Bool
         /// The Summarize Again request summary.json was made for (`MeetingSummaryRecord.answersRequest`), if any.
-        public var summaryAnswersRequest: Int64?
+        public var summaryAnswersRequest: String?
         /// summary.json's key is the meeting's (`MeetingSummaryKey.isCurrent`: this transcript, these speakers' names).
         public var summaryCurrent: Bool
         /// The meeting's key (`MeetingSummaryKey.text`): what a run that failed is remembered by.
         public var key: String?
-        /// summary.json was written by a newer Voice is Local, or its transcript files are left to rewrite and
-        /// exports/.generated.json was: the meeting is left alone (only a Summarize Again the user asks for runs, and
-        /// reports why it cannot).
+        /// summary.json, or a file the summary is made from (the transcript, the speaker labels, meeting.json), was
+        /// written by a newer Voice is Local, or the transcript files are left to rewrite and exports/.generated.json
+        /// was: the meeting is left alone (only a Summarize Again the user asks for runs, and reports why it cannot).
         public var summaryFromNewerVersion: Bool
 
         /// `summaryCurrent` nil: the summary is current when it is of the current transcript; `key` nil: the
         /// transcript ID.
         public init(sessionID: String, path: String, createdAt: Date, transcriptID: String?,
                     summaryTranscriptID: String?, idle: Bool, finished: Bool = true, exportsPending: Bool = false,
-                    summaryAnswersRequest: Int64? = nil, summaryCurrent: Bool? = nil, key: String? = nil,
+                    summaryAnswersRequest: String? = nil, summaryCurrent: Bool? = nil, key: String? = nil,
                     summaryFromNewerVersion: Bool = false) {
             self.sessionID = sessionID; self.path = path; self.createdAt = createdAt
             self.transcriptID = transcriptID; self.summaryTranscriptID = summaryTranscriptID; self.idle = idle
@@ -150,21 +150,22 @@ public enum MeetingSummarySchedule {
     /// A Summarize Again the user asked for, saved until it ends for good (the app's queue).
     public struct Request: Codable, Sendable, Equatable {
         public var sessionID: String
-        /// Its number, from a counter that only grows (never a clock time, which can go back): the run made for it
-        /// writes it into summary.json (`answersRequest`), and a summary that answers it or a later one is its answer.
-        /// 0 for a request saved before requests had numbers (the app numbers it when it loads the queue).
-        public var sequence: Int64
+        /// A random ID, new for each click (never a clock time, which can go back, nor a counter, which can be
+        /// reset): the run made for it writes it into summary.json (`answersRequest`). A meeting has one request at a
+        /// time (a new click replaces it), so the summary that answers it carries this ID.
+        public var id: String
 
-        public init(sessionID: String, sequence: Int64) {
-            self.sessionID = sessionID; self.sequence = sequence
+        public init(sessionID: String, id: String = UUID().uuidString) {
+            self.sessionID = sessionID; self.id = id
         }
 
-        private enum CodingKeys: String, CodingKey { case sessionID, sequence }
+        private enum CodingKeys: String, CodingKey { case sessionID, id }
 
+        /// A request saved before requests had IDs gets a new one: no summary answers it yet.
         public init(from decoder: any Decoder) throws {
             let container = try decoder.container(keyedBy: CodingKeys.self)
             sessionID = try container.decode(String.self, forKey: .sessionID)
-            sequence = try container.decodeIfPresent(Int64.self, forKey: .sequence) ?? 0
+            id = try container.decodeIfPresent(String.self, forKey: .id) ?? UUID().uuidString
         }
     }
 
@@ -183,30 +184,43 @@ public enum MeetingSummarySchedule {
     /// The meeting's key (`MeetingSummaryKey.load`), from the cache while its inputs are unchanged.
     static func key(session: URL, sessionID: String, transcriptID: String, profileNames: [String: String],
                     recognition: Bool, selfName: String) -> MeetingSummaryKey? {
+        keyChecked(session: session, sessionID: sessionID, transcriptID: transcriptID, profileNames: profileNames,
+                   recognition: recognition, selfName: selfName).key
+    }
+
+    /// `key`, and whether it could not be worked out because a file was written by a newer Voice is Local (then the
+    /// meeting is left alone, as its command would fail for good).
+    static func keyChecked(session: URL, sessionID: String, transcriptID: String, profileNames: [String: String],
+                           recognition: Bool, selfName: String) -> (key: MeetingSummaryKey?, newer: Bool) {
         let inputs = transcriptID + "|" + SessionSummarizeCommand.speakerRevision(session) + "|"
             + voiceStamp(names: profileNames, recognition: recognition) + "|" + selfName
-        if let cached = keyCache.withLock({ $0[sessionID] }), cached.inputs == inputs { return cached.key }
-        let key = MeetingSummaryKey.load(session: session, profileNames: profileNames, applyRecognition: recognition,
-                                         selfName: selfName)
-        // Only a key that could be read is kept: a read that failed (a file busy or unreadable for now) is tried again
-        // at the next scan.
-        if let key { keyCache.withLock { $0[sessionID] = (inputs, key) } }
-        return key
+        if let cached = keyCache.withLock({ $0[sessionID] }), cached.inputs == inputs { return (cached.key, false) }
+        do {
+            let key = try MeetingSummaryKey.loadChecked(session: session, profileNames: profileNames,
+                                                        applyRecognition: recognition, selfName: selfName)
+            // Only a key that could be read is kept: a read that failed (a file busy or unreadable for now) is tried
+            // again at the next scan.
+            keyCache.withLock { $0[sessionID] = (inputs, key) }
+            return (key, false)
+        } catch {
+            if case .unavailable? = error as? HolosError { return (nil, true) }
+            return (nil, false)
+        }
     }
 
     /// Milliseconds since 1970.
     public static func milliseconds(_ date: Date) -> Int64 { Int64((date.timeIntervalSince1970 * 1000).rounded(.down)) }
 
     /// The requests a summary already answers: summary.json is current, its files are written, and it was made for
-    /// this request or a later one (`answersRequest` at least its number; a summary made for none answers none). A
-    /// request saved before a quit whose command finished without the app is then not made again. No clock time is
-    /// compared, so a clock set back cannot make an older summary answer a newer request.
+    /// this request (`answersRequest` is its ID; a summary made for none answers none). A request saved before a quit
+    /// whose command finished without the app is then not made again. No clock time or counter is compared, so
+    /// neither a clock set back nor reset preferences can make an older summary answer a newer request.
     public static func satisfied(_ requests: [Request], by candidates: [Candidate]) -> Set<String> {
         var done: Set<String> = []
-        for request in requests where request.sequence > 0 {
+        for request in requests {
             guard let candidate = candidates.first(where: { $0.sessionID == request.sessionID }),
-                  let answered = candidate.summaryAnswersRequest, candidate.summaryCurrent, !candidate.exportsPending,
-                  answered >= request.sequence else { continue }
+                  candidate.summaryCurrent, !candidate.exportsPending,
+                  candidate.summaryAnswersRequest == request.id else { continue }
             done.insert(request.sessionID)
         }
         return done
@@ -231,18 +245,20 @@ public enum MeetingSummarySchedule {
             let (summary, newer) = MeetingSummaryStore.readForSchedule(session: session, sessionID: manifest.id)
             let state = SessionCatalog.state(manifestStatus: manifest.status,
                                              liveness: RecorderChannel.liveness(session: session))
-            let key = transcriptID.flatMap {
-                Self.key(session: session, sessionID: manifest.id, transcriptID: $0, profileNames: profileNames,
-                         recognition: recognition, selfName: selfName)
+            let checked = transcriptID.map {
+                Self.keyChecked(session: session, sessionID: manifest.id, transcriptID: $0, profileNames: profileNames,
+                                recognition: recognition, selfName: selfName)
             }
+            let key = checked?.key
             return Candidate(sessionID: manifest.id, path: session.path, createdAt: manifest.createdAt,
                              transcriptID: transcriptID, summaryTranscriptID: summary?.transcriptID,
                              idle: !active && !processing, finished: isFinished(state),
                              exportsPending: summary?.exportsPending == true,
                              summaryAnswersRequest: summary?.answersRequest,
                              summaryCurrent: key?.isCurrent(summary) ?? false, key: key?.text ?? transcriptID,
-                             summaryFromNewerVersion: newer || (summary?.exportsPending == true
-                                 && SessionExports.recordIsFromNewerVersion(session: session)))
+                             summaryFromNewerVersion: newer || checked?.newer == true
+                                 || (summary?.exportsPending == true
+                                     && SessionExports.recordIsFromNewerVersion(session: session)))
         }
     }
 }

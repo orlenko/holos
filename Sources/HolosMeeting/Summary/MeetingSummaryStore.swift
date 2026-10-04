@@ -35,9 +35,9 @@ public struct MeetingSummaryRecord: Codable, Sendable, Equatable {
     public var exportsPending: Bool?
     /// `createdAt` in milliseconds since 1970 (JSON dates keep whole seconds).
     public var createdAtMilliseconds: Int64?
-    /// The Summarize Again request it was made for (`MeetingSummarySchedule.Request.sequence`): it answers that
-    /// request and every earlier one (`MeetingSummarySchedule.satisfied`). Nil for one made without a request.
-    public var answersRequest: Int64?
+    /// The ID of the Summarize Again request it was made for (`MeetingSummarySchedule.Request.id`): it answers that
+    /// request (`MeetingSummarySchedule.satisfied`). Nil for one made without a request.
+    public var answersRequest: String?
     /// The speakers' names it was made with (`MeetingSummaryKey.namesDigest`): with `transcriptID`, its key. It is
     /// current only while that key is the meeting's (`MeetingSummaryKey.isCurrent`).
     public var namesDigest: String?
@@ -58,7 +58,7 @@ public struct MeetingSummaryRecord: Codable, Sendable, Equatable {
             return "the key points or action items"
         }
         if let parts, parts < 0 { return "the parts" }
-        if let answersRequest, answersRequest < 1 { return "the request it answers" }
+        if let answersRequest, answersRequest.isEmpty || answersRequest.count > 64 { return "the request it answers" }
         if let skippedParts, skippedParts < 0 || skippedParts > (parts ?? .max) { return "the parts left out" }
         let earliest = MeetingSummaryRecord.earliestMilliseconds
         let latest = MeetingSummarySchedule.milliseconds(now.addingTimeInterval(24 * 3600))
@@ -130,10 +130,17 @@ public struct MeetingSummaryKey: Sendable, Equatable {
     /// prompt apply them; nil without a readable transcript.
     public static func load(session: URL, profileNames: [String: String], applyRecognition: Bool,
                             selfName: String) -> MeetingSummaryKey? {
-        guard let snapshot = try? SpeakerSessionSnapshot.load(session: session, profileNames: profileNames,
-                                                              applyRecognition: applyRecognition),
-              let document = try? SessionExports.exportDocument(snapshot, withSummary: false) else { return nil }
-        return MeetingSummaryKey(document, selfName: selfName)
+        try? loadChecked(session: session, profileNames: profileNames, applyRecognition: applyRecognition,
+                         selfName: selfName)
+    }
+
+    /// `load`, with the reason it could not be worked out: `HolosError.unavailable` when a file it reads (the
+    /// transcript, the speaker labels, meeting.json …) was written by a newer Voice is Local.
+    public static func loadChecked(session: URL, profileNames: [String: String], applyRecognition: Bool,
+                                   selfName: String) throws -> MeetingSummaryKey {
+        let snapshot = try SpeakerSessionSnapshot.load(session: session, profileNames: profileNames,
+                                                       applyRecognition: applyRecognition)
+        return MeetingSummaryKey(try SessionExports.exportDocument(snapshot, withSummary: false), selfName: selfName)
     }
 
     /// `record` is of this transcript and these names.

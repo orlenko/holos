@@ -4993,7 +4993,7 @@ on-device model (`SystemLanguageModel`, FoundationModels) writes them; nothing l
 **Files.** `summary.json` (`MeetingSummaryRecord`, schema 1): `sessionID`, `transcriptID`
 (the revision it was made from), `title`, `summary`, `points`, `actions`, `model`
 ("apple-on-device"), `language`, `createdAt`, `parts` and `skippedParts` (parts the model refused
-or did not answer in time, left out of it), and `answersRequest` (the number of the Summarize Again it was made
+or did not answer in time, left out of it), and `answersRequest` (the ID of the Summarize Again it was made
 for, if any). Written 0600 under the processing lease (held
 for milliseconds), only when the transcript it was made from is still current. A record of
 another session, damaged, or from a newer build is not shown. meeting.json gains
@@ -5004,7 +5004,9 @@ recorder's hidden `--default-name`), `record start` without `--name`, and an imp
 its file. Any other value counts as the user's. Meetings saved before it have no
 `nameSource`: a name matching the default pattern counts as `default`, any other as `user`
 (`MeetingNaming.source`), and so does an older import named after its file (the file name without
-its extension), so nothing is rewritten to migrate them. The list shows the user's
+its extension), so nothing is rewritten to migrate them. A meeting.json that is there but cannot be read
+(damaged, unreadable now, from a newer build) leaves the source unknown, counted as the user's: no generated
+title replaces the name in the list or the Markdown heading. The list shows the user's
 name, else the generated title, else the name (`MeetingNaming.displayTitle`); a generated
 title never replaces the manifest's name.
 
@@ -5090,7 +5092,7 @@ good (`failed`) when a newer build wrote it, otherwise `unreadable`, tried again
 first and starts nothing without it (no key is made up from no names); one a newer build wrote stops summaries
 until it changes, and Settings and Summarize say why. So does a summary.json,
 transcript or speaker labels a newer build wrote (`failed`, with that reason, not tried again: the scan marks such
-a summary `summaryFromNewerVersion` and leaves the meeting alone, and only Summarize Again runs it, to say why). A session that is not finished by the predicate the app's schedule uses
+a meeting `summaryFromNewerVersion`, also when working out its key meets a newer file and leaves the meeting alone, and only Summarize Again runs it, to say why). A session that is not finished by the predicate the app's schedule uses
 (`MeetingSummarySchedule.isFinished`: interrupted, still processing, incomplete, failed, damaged)
 is refused before the model: Recover first. The speaker labels it read (the head, the edit journal and the recognition
 results, by size and modification time) are checked again at the save: the whole key is computed again from the labels as
@@ -5165,11 +5167,12 @@ their summary are rewritten whatever their age: no model call). A scan that ends
 reconciliation began starts nothing; the next one does. A
 meeting's menu offers Summarize (Again), which runs with `--force`, also with the setting off;
 the request is saved and stays until it ends for good (written, up to date, failed, unavailable)
-or Cancel Summarize drops it, so a request that had to wait runs later. Each has a number from a
-saved counter that only grows (no clock time, which can be set back); the run made for it passes it
-(`--answers-request`, hidden) and summary.json keeps it (`answersRequest`). One that summary.json already answers
-(current, its files written, made for that request or a later one; a summary made for none answers none) is
-dropped, so a command that finished while the app was closed is not run again. A summary saved without its transcript files is not counted as
+or Cancel Summarize drops it, so a request that had to wait runs later. A meeting has one request at a time (a
+new click replaces it), each with a random ID (no clock time, which can be set back, and no counter, which reset
+preferences would start again); the run made for it passes it (`--answers-request`, hidden) and summary.json keeps
+it (`answersRequest`). One that summary.json already answers (current, its files written, made for that ID; a
+summary made for none answers none) is dropped, so a command that finished while the app was closed is not run
+again. A summary saved without its transcript files is not counted as
 tried: its files are rewritten (without the model) five minutes later, also with the setting off
 or without Apple Intelligence. Summarize is off, with
 the reason as its tooltip, when Apple Intelligence cannot be used; a request that ends without a

@@ -118,7 +118,8 @@ public enum SessionExports {
         guard let record = MeetingSummaryStore.readIfUsable(session: snapshot.session,
                                                             sessionID: snapshot.manifest.id),
               key.isCurrent(record) else { return nil }
-        let source = MeetingNaming.source(
+        // A damaged meeting.json leaves where the name came from unknown: the user's, so the title never replaces it.
+        let source = snapshot.meetingInfoDamaged ? .user : MeetingNaming.source(
             stored: snapshot.meeting.nameSource, name: snapshot.manifest.name,
             importedFileName: snapshot.meeting.origin == .imported ? snapshot.meeting.importedFileName : nil)
         return ExportSummary(transcriptID: record.transcriptID, title: record.title, summary: record.summary,

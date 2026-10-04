@@ -181,7 +181,8 @@ public enum SessionCatalog {
                 manifestStatus: "", phase: phase, pid: pid, liveness: liveness, bytes: sizes.bytes,
                 derivedBytes: sizes.derived, audioDeleted: audioDeleted(session, sessionID: nil))
         }
-        let meeting = try? SessionFiles.meetingInfo(session: session, manifest: manifest)
+        let meetingRead = Result { try SessionFiles.meetingInfo(session: session, manifest: manifest) }
+        let meeting = try? meetingRead.get()
         let origin = meeting?.origin ?? .recorded
         let speakers = speakerLabels(session, liveness: liveness)
         // The revision is read, not only found, so a damaged, truncated, mislabelled, or newer one is never listed
@@ -212,9 +213,13 @@ public enum SessionCatalog {
             hasSpeakerEdits: hasSpeakerEdits(session), phase: phase, pid: pid, liveness: liveness,
             bytes: sizes.bytes, derivedBytes: sizes.derived,
             audioDeleted: audioDeleted(session, sessionID: manifest.id), languageWork: languageWork,
-            nameSource: MeetingNaming.source(
-                stored: meeting?.nameSource, name: manifest.name,
-                importedFileName: meeting?.origin == .imported ? meeting?.importedFileName : nil),
+            // A meeting.json that is there but cannot be read (damaged, unreadable now, newer) leaves where the name
+            // came from unknown: the user's, so a generated title never replaces it. Only a missing one (a meeting
+            // saved before it existed) is inferred from the name.
+            nameSource: meeting.map {
+                MeetingNaming.source(stored: $0.nameSource, name: manifest.name,
+                                     importedFileName: $0.origin == .imported ? $0.importedFileName : nil)
+            } ?? .user,
             generatedSummary: MeetingSummaryStore.readIfUsable(session: session, sessionID: manifest.id))
     }
 

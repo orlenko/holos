@@ -31,9 +31,8 @@ final class MeetingSummaryAppState {
     var delayedUntil: [String: Date] = [:]
     /// Summarize Again, newest last: saved on every change, and kept until the run ends for good (written, current,
     /// failed, unavailable), so a request that had to wait (a meeting started, another job ran, the app quit) runs
-    /// later, forced. Each has a number from a counter that only grows (`requestSequenceKey`), which its run writes
-    /// into summary.json, so one a command finished while the app was closed is recognized as done
-    /// (`MeetingSummarySchedule.satisfied`).
+    /// later, forced. Each has a random ID, which its run writes into summary.json, so one a command finished while
+    /// the app was closed is recognized as done (`MeetingSummarySchedule.satisfied`).
     static let requestsKey = "meetingSummaryRequestQueue"
     var requests: [MeetingSummarySchedule.Request] = MeetingSummaryAppState.loadRequests() {
         didSet {
@@ -50,20 +49,7 @@ final class MeetingSummaryAppState {
 
     private static func loadRequests() -> [MeetingSummarySchedule.Request] {
         guard let data = UserDefaults.standard.data(forKey: requestsKey) else { return [] }
-        var requests = (try? HolosJSON.decoder().decode([MeetingSummarySchedule.Request].self, from: data)) ?? []
-        // Saved before requests had numbers: numbered now, in order.
-        for index in requests.indices where requests[index].sequence <= 0 { requests[index].sequence = nextSequence() }
-        return requests
-    }
-
-    /// The counter of Summarize Again requests, saved: it only grows.
-    static let requestSequenceKey = "meetingSummaryRequestSequence"
-
-    /// The next request's number.
-    static func nextSequence() -> Int64 {
-        let next = Int64(UserDefaults.standard.integer(forKey: requestSequenceKey)) + 1
-        UserDefaults.standard.set(Int(next), forKey: requestSequenceKey)
-        return next
+        return (try? HolosJSON.decoder().decode([MeetingSummarySchedule.Request].self, from: data)) ?? []
     }
 
     /// The people store could not be used for good (a newer build wrote it): no summary starts until it changes, and
@@ -139,8 +125,7 @@ extension HolosAppDelegate {
     /// Meetings › Summarize Again: made next (forced), also with the setting off.
     func summarizeMeetingAgain(_ summary: SessionSummary) {
         meeting.summaries.removeRequest(summary.id)
-        meeting.summaries.requests.append(MeetingSummarySchedule.Request(
-            sessionID: summary.id, sequence: MeetingSummaryAppState.nextSequence()))
+        meeting.summaries.requests.append(MeetingSummarySchedule.Request(sessionID: summary.id))
         meeting.summaries.delayedUntil[summary.id] = nil
         scheduleMeetingSummaries()
     }
@@ -288,9 +273,9 @@ extension HolosAppDelegate {
         let output = Self.temporaryFile("summary")
         let errors = Self.temporaryFile("summary-err")
         do {
-            // Run for a Summarize Again: its number goes into summary.json, so the request is known answered.
+            // Run for a Summarize Again: its ID goes into summary.json, so the request is known answered.
             let answers = meeting.summaries.requests.last { $0.sessionID == sessionID }.map {
-                ["--answers-request", String($0.sequence)]
+                ["--answers-request", $0.id]
             } ?? []
             let pid = try maintenance.run(["session", "summarize", path, "--json"] + (force ? ["--force"] : [])
                                               + answers,
