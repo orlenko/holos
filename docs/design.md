@@ -233,7 +233,9 @@ shown and indented under it. Choosing a chapter scrolls its card to the top, smo
 Settings was already on screen (at once with Reduce Motion), and clears a search. While the
 user scrolls, the sidebar marks the chapter whose card has reached the top (within 60 points);
 at the end of the page, where the last cards cannot reach the top, it keeps the chapter the
-user chose while its card is in view, else marks the last one. The Settings row shows the page
+user chose in the sidebar (or went to with Return) while its card is in view, else marks the
+last one; scrolling that card out of view ends the choice, and a chapter scrolling marked never
+counts as chosen. The Settings row shows the page
 from the top; ⌘, and the menus' Settings… show it where it was left (the sidebar marks the
 chapter it shows, or Settings at the top). A search field above the page (⌘F while Settings
 shows) filters as the user types: each word of the query must match a setting's title,
@@ -242,7 +244,9 @@ width, as the text's start, a word's start, inside a word (three letters or more
 letters in order within one word of a title or keyword ("dctn"); a title counts three times,
 a keyword twice, a caption once, and ties keep page order. Only the matching settings show,
 in page order, under their cards' headings; a row its state hides (Input Monitoring) is never
-shown; "No settings match" when none does. The best match is outlined: Return clears the
+shown; "No settings match" when none does. When a status row's detail changes under an open
+search (a permission granted meanwhile), the search runs again; the page stays where it is
+unless the best match changed. The best match is outlined: Return clears the
 search, scrolls to it, outlines it for a moment, and moves the focus to its control when the
 control can take it (Full Keyboard Access); Escape clears the search and returns to where the
 page was. VoiceOver hears how many settings match and where Return goes. The meeting's live transcript is part of

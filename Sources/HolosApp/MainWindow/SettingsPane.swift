@@ -202,6 +202,9 @@ final class SettingsPane: NSViewController, MainSectionContent, NSSearchFieldDel
     var onChapterChange: ((SettingsChapter) -> Void)?
     /// The chapter the page shows: the one at the top, or the one chosen.
     private(set) var currentChapter = SettingsChapter.general
+    /// The chapter the user chose in the sidebar (or went to with Return) while its card stays in view: at the end of
+    /// the page, it stays marked (`SettingsChapterTracking`).
+    private var chosenChapter: SettingsChapter?
     private let search = NSSearchField()
     private let scroll = NSScrollView()
     private let document = FlippedView()
@@ -925,8 +928,27 @@ final class SettingsPane: NSViewController, MainSectionContent, NSSearchFieldDel
         historyAudioUsage.stringValue = HistoryAudio.usageText(bytes: state.historyAudioBytes,
                                                                keeps: state.historyKeepsAudio
                                                                    && state.historyRetention.records)
-        // A detail that changed can move the best match under its outline.
-        if matches != nil { placeBestMatchOutline() }
+        refreshSearch()
+    }
+
+    /// A status row's detail line, which the search reads as its caption, may have changed under an open search
+    /// (a permission granted in System Settings): runs the search again. The page stays where the user has it unless
+    /// the best match changed.
+    private func refreshSearch() {
+        guard let previous = matches else { return }
+        let current = rankedMatches() ?? []
+        guard current != previous else {
+            placeBestMatchOutline()  // a detail of another height can move the best match
+            return
+        }
+        let offset = scroll.contentView.bounds.minY
+        matches = current
+        applyVisibility()
+        view.layoutSubtreeIfNeeded()
+        let bottom = max(0, document.frame.height - scroll.contentView.bounds.height)
+        scrollTo(SettingsSearch.bestMatchChanged(from: previous, to: current) ? 0 : min(offset, bottom),
+                 animated: false)
+        trackChapter()
     }
 
     private func select(_ popup: NSPopUpButton, _ value: String) {
@@ -1042,6 +1064,7 @@ final class SettingsPane: NSViewController, MainSectionContent, NSSearchFieldDel
         }
         view.layoutSubtreeIfNeeded()
         currentChapter = chapter ?? .general
+        chosenChapter = chapter
         let clip = scroll.contentView
         let target = chapter.flatMap { sections[$0] }.map {
             SettingsChapterTracking.offset(toShow: Double(top(of: $0)), viewport: Double(clip.bounds.height),
@@ -1090,9 +1113,15 @@ final class SettingsPane: NSViewController, MainSectionContent, NSSearchFieldDel
             return Double(top(of: section))
         }
         let clip = scroll.contentView.bounds
+        // The user's choice ends once its card leaves the view; only a choice, never the chapter scrolling met last,
+        // holds at the end of the page.
+        if let chosen = chosenChapter, !SettingsChapterTracking.keepsChosen(
+            top: tops[chosen.rawValue], offset: Double(clip.minY), viewport: Double(clip.height)) {
+            chosenChapter = nil
+        }
         guard let index = SettingsChapterTracking.chapter(
             offset: Double(clip.minY), viewport: Double(clip.height), contentHeight: Double(document.frame.height),
-            tops: tops, selected: currentChapter.rawValue),
+            tops: tops, chosen: chosenChapter?.rawValue),
             let chapter = SettingsChapter(rawValue: index), chapter != currentChapter else { return }
         currentChapter = chapter
         onChapterChange?(chapter)
@@ -1218,6 +1247,7 @@ final class SettingsPane: NSViewController, MainSectionContent, NSSearchFieldDel
         // Below the top, so the card's heading and the rows above it give context.
         let target = max(0, min(frame.minY - 80, document.frame.height - clip.height))
         scrollTo(target, animated: false)
+        chosenChapter = item.chapter
         if let chapter = item.chapter, chapter != currentChapter {
             currentChapter = chapter
             onChapterChange?(chapter)

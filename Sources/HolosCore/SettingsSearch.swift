@@ -102,6 +102,12 @@ public enum SettingsSearch {
             .map(\.0)
     }
 
+    /// Whether the best match (what Return goes to) differs between two rankings: a search run again because a
+    /// setting's caption changed moves the page only then.
+    public static func bestMatchChanged(from previous: [Int], to current: [Int]) -> Bool {
+        previous.first != current.first
+    }
+
     /// Whether every character of `word` appears in `text` in order.
     static func isSubsequence(_ word: String, of text: String) -> Bool {
         var remaining = word[...]
@@ -121,28 +127,37 @@ public enum SettingsChapterTracking {
     public static let reachedMargin = 60.0
 
     /// The index of the chapter to mark: the last one whose top has reached the visible top. Scrolled to the end,
-    /// where the last chapters can never reach the top, it is `selected` when that chapter's top is in view (the user
-    /// chose it, and the page went as far as it can), else the last chapter shown. Nil when no chapter is shown.
+    /// where the last chapters can never reach the top, it is `chosen` when that chapter's top is in view (the user
+    /// chose it in the sidebar, and the page went as far as it can), else the last chapter shown. Nil when no chapter
+    /// is shown.
     ///
     /// - Parameters:
     ///   - offset: the visible top.
     ///   - viewport: the visible height.
     ///   - contentHeight: the page's height.
     ///   - tops: each chapter's top, nil while it is hidden (no setting in it matches the search).
-    ///   - selected: the chapter marked now.
+    ///   - chosen: the chapter the user chose in the sidebar (or went to with Return), while `keepsChosen` holds;
+    ///     never the chapter scrolling marked.
     public static func chapter(offset: Double, viewport: Double, contentHeight: Double, tops: [Double?],
-                               selected: Int?) -> Int? {
+                               chosen: Int?) -> Int? {
         let shown = tops.indices.compactMap { index in tops[index].map { (index, $0) } }
         guard let first = shown.first, let last = shown.last else { return nil }
         let atEnd = contentHeight > viewport && offset + viewport >= contentHeight - 1
         if atEnd {
-            if let selected, tops.indices.contains(selected), let top = tops[selected],
-               top >= offset - 1, top < offset + viewport {
-                return selected
+            if let chosen, tops.indices.contains(chosen), keepsChosen(top: tops[chosen], offset: offset,
+                                                                      viewport: viewport) {
+                return chosen
             }
             return last.0
         }
         return shown.last(where: { $0.1 <= offset + reachedMargin })?.0 ?? first.0
+    }
+
+    /// Whether a chapter the user chose still counts as chosen: its card's top (nil while hidden) is in view. Scrolling
+    /// it out of view, either way, ends the choice.
+    public static func keepsChosen(top: Double?, offset: Double, viewport: Double) -> Bool {
+        guard let top else { return false }
+        return top >= offset - 1 && top < offset + viewport
     }
 
     /// The scroll position that brings a chapter's top to the visible top, `margin` below it, as far as the page

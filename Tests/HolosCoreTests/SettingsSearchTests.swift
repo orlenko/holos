@@ -85,6 +85,16 @@ private func titles(_ query: String) -> [String] {
     #expect(SettingsSearch.rank("keep", entries) == [0, 1, 2])
 }
 
+@Test func aRefreshMovesThePageOnlyWhenTheBestMatchChanged() {
+    // A live caption changed under an open search: the same best match keeps the page where the user has it.
+    #expect(!SettingsSearch.bestMatchChanged(from: [3, 5], to: [3]))
+    #expect(!SettingsSearch.bestMatchChanged(from: [3], to: [3, 1, 2]))
+    #expect(SettingsSearch.bestMatchChanged(from: [3, 5], to: [5]))
+    #expect(SettingsSearch.bestMatchChanged(from: [3], to: []))
+    #expect(SettingsSearch.bestMatchChanged(from: [], to: [2]))
+    #expect(!SettingsSearch.bestMatchChanged(from: [], to: []))
+}
+
 @Test func anEmptyQueryMatchesNothing() {
     #expect(SettingsSearch.rank("", page).isEmpty)
     #expect(SettingsSearch.rank("  – ", page).isEmpty)
@@ -96,9 +106,9 @@ private func titles(_ query: String) -> [String] {
 /// Six chapters on a 2 000-point page seen through 700 points.
 private let tops: [Double?] = [20, 300, 700, 1_300, 1_650, 1_820]
 
-private func chapter(_ offset: Double, tops: [Double?] = tops, selected: Int? = nil) -> Int? {
+private func chapter(_ offset: Double, tops: [Double?] = tops, chosen: Int? = nil) -> Int? {
     SettingsChapterTracking.chapter(offset: offset, viewport: 700, contentHeight: 2_000, tops: tops,
-                                    selected: selected)
+                                    chosen: chosen)
 }
 
 @Test func theChapterWhoseTopReachedTheVisibleTopIsMarked() {
@@ -114,10 +124,54 @@ private func chapter(_ offset: Double, tops: [Double?] = tops, selected: Int? = 
 @Test func atTheEndTheChosenChapterInViewStaysMarked() {
     // The page ends at 1 300: the last two chapters can never reach the top.
     #expect(chapter(1_300) == 5)
-    #expect(chapter(1_300, selected: 4) == 4)
-    #expect(chapter(1_300, selected: 5) == 5)
+    #expect(chapter(1_300, chosen: 4) == 4)
+    #expect(chapter(1_300, chosen: 5) == 5)
     // Chosen, but scrolled past (its top is above the view).
-    #expect(chapter(1_300, selected: 2) == 5)
+    #expect(chapter(1_300, chosen: 2) == 5)
+}
+
+@Test func aChosenChapterHoldsWhileItsCardsTopIsInView() {
+    // Chosen Reading (top 1 650) at the end of the page (offset 1 300, 700 high): in view.
+    #expect(SettingsChapterTracking.keepsChosen(top: 1_650, offset: 1_300, viewport: 700))
+    // Scrolled back up until its top left the bottom of the view.
+    #expect(!SettingsChapterTracking.keepsChosen(top: 1_650, offset: 900, viewport: 700))
+    // Scrolled on past it: its top went above the view.
+    #expect(!SettingsChapterTracking.keepsChosen(top: 700, offset: 800, viewport: 700))
+    // Hidden by a search.
+    #expect(!SettingsChapterTracking.keepsChosen(top: nil, offset: 0, viewport: 700))
+}
+
+/// Scrolling by hand down to the end, as the pane tracks it: nothing was chosen, so the end marks the last chapter
+/// even though Meetings and Reading, met on the way down, are still in view.
+@Test func scrollingByHandToTheEndMarksTheLastChapter() {
+    var chosen: Int?
+    var marked: Int?
+    for offset in stride(from: 0.0, through: 1_300, by: 50) {
+        if let index = chosen, !SettingsChapterTracking.keepsChosen(top: tops[index], offset: offset, viewport: 700) {
+            chosen = nil
+        }
+        marked = chapter(offset, chosen: chosen)
+    }
+    #expect(marked == 5)
+    // Chose Reading from the sidebar (the page went to the end), then scrolled up a little and back down: Reading
+    // stays marked while its card is in view.
+    chosen = 4
+    for offset in [1_300.0, 1_200, 1_300] {
+        if let index = chosen, !SettingsChapterTracking.keepsChosen(top: tops[index], offset: offset, viewport: 700) {
+            chosen = nil
+        }
+        marked = chapter(offset, chosen: chosen)
+    }
+    #expect(marked == 4)
+    // Up until Reading's top leaves the view: the choice ends, and the end marks the last chapter again.
+    for offset in [900.0, 1_300] {
+        if let index = chosen, !SettingsChapterTracking.keepsChosen(top: tops[index], offset: offset, viewport: 700) {
+            chosen = nil
+        }
+        marked = chapter(offset, chosen: chosen)
+    }
+    #expect(chosen == nil)
+    #expect(marked == 5)
 }
 
 @Test func hiddenChaptersAreSkipped() {
@@ -127,7 +181,7 @@ private func chapter(_ offset: Double, tops: [Double?] = tops, selected: Int? = 
     #expect(chapter(0, tops: [nil, nil]) == nil)
     // A page shorter than the view is never "at the end": the first chapter shown stays marked.
     #expect(SettingsChapterTracking.chapter(offset: 0, viewport: 700, contentHeight: 500, tops: searched,
-                                            selected: 3) == 1)
+                                            chosen: 3) == 1)
 }
 
 @Test func choosingAChapterScrollsItToTheTopAsFarAsThePageGoes() {
