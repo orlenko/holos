@@ -267,10 +267,15 @@ public enum SessionCatalog {
 
     /// What the background-job lock says runs on meeting `sessionID`: a summary or a final transcript of it, in any
     /// process (one started in Terminal holds the lock without holding the meeting until it saves). Nil otherwise.
+    ///
+    /// A lock held by a job that has not written who it is yet (`held(nil)`) holds every meeting, as the rename command
+    /// counts it.
     static func jobInProgress(_ state: DeepTranscriptionLock.State, sessionID: String) -> String? {
-        guard case .held(let holder?) = state, holder.sessionID.caseInsensitiveCompare(sessionID) == .orderedSame else {
-            return nil
+        guard case .held(let named) = state else { return nil }
+        guard let holder = named else {
+            return "A background job (a summary or final transcript) is starting."
         }
+        guard holder.sessionID.caseInsensitiveCompare(sessionID) == .orderedSame else { return nil }
         return holder.isSummary ? "A summary of this meeting is being written."
             : "A final transcript of this meeting is being made."
     }

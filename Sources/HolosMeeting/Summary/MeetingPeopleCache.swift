@@ -83,7 +83,8 @@ public final class TranscriptFilesCache: Sendable {
     public func state(of summary: SessionSummary) -> SessionExports.FilesState {
         let session = summary.directory
         let stamp = (SessionExports.formats.map { SessionPaths.export($0.rawValue, in: session) }
-            + [SessionPaths.generatedExports(session)]).map(MeetingPeopleCache.fileStamp).joined(separator: "|")
+            + [SessionPaths.generatedExports(session), SessionPaths.transcriptPointer(session)])
+            .map(MeetingPeopleCache.fileStamp).joined(separator: "|")
         let title = summary.displayTitle
         if let entry = entries.withLock({ $0[summary.id] }), entry.stamp == stamp, entry.title == title {
             return entry.state

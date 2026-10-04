@@ -194,8 +194,8 @@ public enum SessionExports {
     private static func write(_ rendered: [(format: ExportFormat, data: Data)], session: URL,
                               snapshot: SpeakerSessionSnapshot, check: () throws -> Void = {}) throws
         -> ExportWriteResult {
-        try check()
-        var result = ExportWriteResult(movedAside: try beginWrite(rendered, session: session, snapshot: snapshot),
+        var result = ExportWriteResult(movedAside: try beginWrite(rendered, session: session, snapshot: snapshot,
+                                                                  check: check),
                                        diagnostics: snapshot.diagnostics)
         for entry in rendered {
             try check()
@@ -217,8 +217,10 @@ public enum SessionExports {
     /// The part of a write before the export files are replaced: moves hand-edited files aside and records the
     /// digests about to be written as `pending`. Returns the files moved aside. (Tests call it alone to stand for
     /// a regeneration interrupted before it replaced any file.)
+    ///
+    /// `check` runs before each write it makes (each file moved aside, the pending record).
     static func beginWrite(_ rendered: [(format: ExportFormat, data: Data)], session: URL,
-                           snapshot: SpeakerSessionSnapshot) throws -> [URL] {
+                           snapshot: SpeakerSessionSnapshot, check: () throws -> Void = {}) throws -> [URL] {
         try AtomicFile.ensurePrivateDirectory(SessionPaths.exports(session))
         let read = try readRecordChecked(session: session)
         let record = read.record
@@ -255,8 +257,10 @@ public enum SessionExports {
                     continue
                 }
             }
+            try check()
             movedAside.append(try moveAside(existing, format: entry.format, session: session))
         }
+        try check()
         try AtomicFile.writeJSON(GeneratedRecord(files: files, pending: digests), to: SessionPaths.generatedExports(session))
         return movedAside
     }
@@ -277,13 +281,13 @@ public enum SessionExports {
 
     /// Whether a meeting's transcript files are what a finished rewrite left for the title it shows (§4.17).
     public enum FilesState: Sendable, Equatable {
-        /// No transcript file: nothing to bring up to date.
+        /// No transcript file and no transcript: nothing to bring up to date.
         case none
         /// Every file is the one the record says was written last (no rewrite left halfway), and transcript.md is
         /// headed by the meeting's title.
         case current
-        /// Out of date: the record is missing, damaged, from a newer build or left mid-write (`pending`), a file is
-        /// missing or not the one it records, or the heading is another title.
+        /// Out of date: no file although there is a transcript, the record is missing, damaged, from a newer build or
+        /// left mid-write (`pending`), a file is missing or not the one it records, or the heading is another title.
         case stale
     }
 
@@ -291,7 +295,11 @@ public enum SessionExports {
     /// Review, a summary, a command in Terminal), for a meeting titled `title` (`MeetingNaming.title`). Nothing is
     /// remembered between calls; `TranscriptFilesCache` saves reading unchanged files again.
     public static func filesState(session: URL, title: String) -> FilesState {
-        guard hasTranscriptFiles(session: session) else { return .none }
+        // No file: nothing to bring up to date only without a transcript; a meeting with one has its files written
+        // (one missing them, a rewrite that failed before its first file, is out of date).
+        guard hasTranscriptFiles(session: session) else {
+            return (try? SessionArchive.currentTranscriptID(at: session)) != nil ? .stale : .none
+        }
         guard let read = try? readRecordChecked(session: session), let record = read.record, !read.damaged,
               record.pending == nil else { return .stale }
         var markdown: Data?

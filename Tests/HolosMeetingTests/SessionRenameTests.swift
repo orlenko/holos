@@ -1183,3 +1183,58 @@ private func listed(name: String, source: MeetingNameSource, generated: String?)
     try AtomicFile.write(Data(record.utf8), to: SessionPaths.generatedExports(session))
     #expect(try !SessionExports.hasUsableRecord(session: session))
 }
+
+// MARK: - Missing files, checks within the pending step, a job not yet named
+
+@Test func aTranscriptWithoutFilesNeedsThemWritten() async throws {
+    let temp = try TemporaryDirectory("rename")
+    defer { temp.remove() }
+    let session = try await renameSession(in: temp.url)
+    try writeSummary(session)
+    for format in ["md", "json", "txt"] { try FileManager.default.removeItem(at: SessionPaths.export(format, in: session)) }
+    try FileManager.default.removeItem(at: SessionPaths.generatedExports(session))
+    let summary = SessionCatalog.summary(session: session, jobState: .free)
+    #expect(SessionExports.filesState(session: session, title: summary.displayTitle) == .stale)
+    #expect(TranscriptFilesCache().state(of: summary) == .stale)
+    // Update Transcript Files writes them.
+    let update = await rename(session, MeetingRenameRequest.retry(summary).typedName)
+    #expect(update.exportsUpdated)
+    #expect(SessionExports.filesState(session: session, title: summary.displayTitle) == .current)
+}
+
+@Test func movingAnEditedFileAsideChecksTheFolderFirst() async throws {
+    let temp = try TemporaryDirectory("rename")
+    defer { temp.remove() }
+    let session = try await renameSession(in: temp.url)
+    try SessionArchive.withSpeakerLock(at: session) { _ = try SessionExports.regenerateLocked(session: session) }
+    try AtomicFile.write(Data("edited by hand".utf8), to: SessionPaths.export("txt", in: session))
+    let calls = SharedValue(0)
+    struct Moved: Error {}
+    // The folder moved before the edited file was moved aside: nothing is written.
+    #expect(throws: Moved.self) {
+        try SessionArchive.withSpeakerLock(at: session) {
+            _ = try SessionExports.regenerateLocked(session: session, selfName: "Robin", check: {
+                calls.update { $0 += 1 }
+                throw Moved()
+            })
+        }
+    }
+    #expect(calls.value == 1)
+    #expect(try editedExports(session).isEmpty)
+    // Otherwise one check more: before the move, the pending record, each file and the final record.
+    calls.set(0)
+    try SessionArchive.withSpeakerLock(at: session) {
+        _ = try SessionExports.regenerateLocked(session: session, selfName: "Robin", check: { calls.update { $0 += 1 } })
+    }
+    #expect(calls.value == 6)
+    #expect(try editedExports(session).count == 1)
+}
+
+@Test func aJobNotYetNamedHoldsEveryMeeting() async throws {
+    let temp = try TemporaryDirectory("rename")
+    defer { temp.remove() }
+    let session = try await renameSession(in: temp.url)
+    let summary = SessionCatalog.summary(session: session, jobState: .held(nil))
+    #expect(summary.jobInProgress?.contains("background job") == true)
+    #expect(!MeetingActionPolicy.renames(summary))
+}
