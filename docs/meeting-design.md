@@ -5023,8 +5023,9 @@ titles "unless the user overrode it by explicitly renaming it"). A name typed is
 (`maximumTitleCharacters`, cut as titles are, `MeetingSummaryDraft.cut`: at a space past half the
 limit, else between characters) and 240 UTF-8 bytes. It becomes the manifest's `name`
 (`SessionArchive.setName`, status kept) with meeting.json's `nameSource` `user`. An empty name, or
-`--generated` (the list's Use Generated Title, shown while a user's name hides a generated
-title), sets `nameSource` `default` and gives the manifest back a name Voice is Local made up
+`--generated` (the list's Use Generated Title, shown while a user's name hides the title of a
+summary of the current transcript, `SessionSummary.currentGeneratedTitle`, the one the meeting
+would show; the editor's placeholder names the same), sets `nameSource` `default` and gives the manifest back a name Voice is Local made up
 (`MeetingNaming.defaultName`: the current one when its source, stored or inferred, is already
 `default`; otherwise, whatever the name looks like, made from the meeting's own data: an import's
 file name without its extension, else "Meeting yyyy-MM-dd HH:mm" from when it started, in local
@@ -5056,7 +5057,9 @@ transcripts use (`MeetingSummarySchedule.isFinished` of the catalog's state: sav
 audio only, transcript incomplete) is renamed: one still saving is `busy`; an interrupted one
 (a `recording` manifest, or a `processing` one whose recorder is gone) is refused until Recover, and
 so are incomplete, failed and damaged ones (`failed`). A rename to the name (and source) the
-meeting already has writes no name but still rewrites the transcript files (`unchanged`), so one
+meeting already has (the source compared as read, stored or inferred; the user's name asked for
+again, exactly or as it cleans to, keeps its source, also one a newer build wrote or none) writes
+no name and no source but still rewrites the transcript files (`unchanged`), so one
 whose files could not be rewritten is finished by asking for it again (files that already show the
 title get the same bytes). Exit 0 `renamed` or `unchanged`, 3 when the transcript files could not
 be rewritten, 1 otherwise, with `name`, `nameSource`, `title` and `exportsUpdated` in the JSON. In the
@@ -5084,12 +5087,15 @@ an alert. The mark is set before the child starts and its JSON result decides it
 there is no result), so a quit before the rename ends leaves Update Transcript Files offered after
 the next launch (the status line says so only once no command runs on the meeting). Rename is off,
 with the reason as its tooltip (`MeetingActionPolicy.renameRefusal`), wherever the command refuses
-without trying: a meeting not finished, or one whose current transcript the catalog could not read
-(`transcriptProblem`).
+without trying: a meeting not finished, one whose meeting.json the catalog could not read
+(`metadataProblem`: damaged, of another session, from a newer build, unreadable now), or one whose
+current transcript it could not read (`transcriptProblem`).
 The new title shows at once in the list and the search, Review's window title
 (`ReviewWindow.meetingTitle`, also the name Save As… suggests) and the live transcript's header
 once the meeting is saved; the app's alerts name meetings by the title shown. An open Review window
-takes the title the list shows (`MeetingNaming.currentTitle`) after a rename, after a summary
+takes the title the list shows (`MeetingNaming.currentTitle`, which reads the current transcript
+revision as the catalog does, so a damaged or newer one gives no generated title in either) after a
+rename, after a summary
 ends, when a catalog read (the list's 2 s refresh) shows a meeting's title changed
 (`MeetingListFormat.titlesChanged`), and every 2 s while any review window is open, whatever the
 main window shows (`reviewTitleWatch`, which ends with the last window), so a rename in Terminal
@@ -5295,7 +5301,9 @@ cannot be prepared or their record is damaged, a rename whose files failed finis
 the state read under the lease after another rename, a JSON file alone prepared, one title rule for
 the list and the heading (a summary of an earlier transcript, or made with other names), a meeting.json write that fails putting the old
 name back, titles changed elsewhere noticed by the list, a meeting without transcript, refusals while held by a command, a summary or
-final transcript of it, or a recorder, an interrupted recording (also after capture stopped), a
+final transcript of it, or a recorder, an interrupted recording (also after capture stopped), a meeting.json the catalog could not read
+turning Rename off, the generated title offered only from a current summary, Review's title read as
+the list's when the transcript is damaged, the same name keeping a source a newer build wrote, a
 transcript from a newer build, damaged, or unreadable now, an unreadable meeting.json).
 
 **Follow-ups.** The summary in Review. If Apple's model proves too weak on long or noisy meetings, a local

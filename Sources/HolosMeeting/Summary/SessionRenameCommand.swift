@@ -223,8 +223,9 @@ public enum SessionRenameCommand {
         }
         // Already so: nothing to write, but the transcript files are still rewritten below, so a rename whose files
         // could not be rewritten (exit 3) is finished by asking for it again.
+        // The source compared as read (stored, else inferred from the name), so nothing is written when the name stays:
+        // a source a newer build wrote, or none (a meeting from before it was recorded), is kept as it is.
         let unchanged = target.name == manifest.name && target.source == currentSource
-            && meeting.nameSource == target.source
 
         // The transcript files must follow the name, so a transcript that is there but cannot be read refuses the
         // rename rather than leaving them with the old title.
@@ -342,7 +343,12 @@ public enum SessionRenameCommand {
             importedFileName: meeting.origin == .imported ? meeting.importedFileName : nil)
         // The user's name asked for again exactly (Update Transcript Files): kept as it is, even one given before
         // names were cut.
-        if let typed, current.isUser, typed == manifest.name { return (manifest.name, .user) }
+        // The user's name asked for again (exactly, or as it cleans to): the name and its source stay as they are,
+        // also a source a newer build wrote (the user's to this build).
+        if let typed, current.isUser,
+           typed == manifest.name || MeetingNaming.cleanUserName(typed) == manifest.name {
+            return (manifest.name, current)
+        }
         if let typed, let name = MeetingNaming.cleanUserName(typed) { return (name, .user) }
         return (MeetingNaming.defaultName(current: manifest.name, currentSource: current,
                                           createdAt: manifest.createdAt, origin: meeting.origin,

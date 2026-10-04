@@ -48,6 +48,9 @@ public enum MeetingActionPolicy {
                 ? "The meeting can be renamed once it is saved."
                 : "The meeting was not saved properly; Recover it first, then rename it."
         }
+        if let problem = summary.metadataProblem {
+            return "Its meeting.json, which records where the name came from, cannot be read: \(problem)"
+        }
         if let problem = summary.transcriptProblem {
             if summary.transcriptRefused, problem.localizedCaseInsensitiveContains("newer") {
                 return "Its transcript was written by a newer version of Voice is Local, so its transcript files "

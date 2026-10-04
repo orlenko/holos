@@ -847,7 +847,7 @@ final class MeetingsPane: NSViewController, NSTableViewDataSource, NSTableViewDe
         let edit = MeetingRenameEdit(summary)
         renaming = edit
         let id = summary.id
-        let placeholder = summary.generatedSummary.map { "Leave empty to use “\($0.title)”" }
+        let placeholder = summary.currentGeneratedTitle.map { "Leave empty to use “\($0)”" }
             ?? "Leave empty to use the default name"
         cell.beginRenaming(edit.text, placeholder: placeholder,
                            commit: { [weak self] text in self?.endRename(id, saving: text) },
@@ -1043,7 +1043,7 @@ extension MeetingsPane: NSMenuDelegate {
                 + "You can also double-click its title.")
         menu.addItem(rename)
         // Offered while the user's name hides a generated title.
-        if summary.nameSource.isUser, let generated = summary.generatedSummary?.title, !generated.isEmpty {
+        if summary.nameSource.isUser, let generated = summary.currentGeneratedTitle {
             let item = NSMenuItem(title: "Use Generated Title", action: #selector(useGeneratedTitle(_:)),
                                   keyEquivalent: "")
             item.target = self

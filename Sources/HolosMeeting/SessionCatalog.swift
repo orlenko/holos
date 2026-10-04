@@ -93,6 +93,9 @@ public struct SessionSummary: Codable, Sendable, Equatable, Identifiable {
     public var languageWork: LanguageWork?
     /// Where `name` came from (`MeetingNaming.source`: meeting.json's, else inferred from the name).
     public var nameSource: MeetingNameSource
+    /// Why meeting.json cannot be read (damaged, of another session, written by a newer build, unreadable now); nil
+    /// when it can, or when there is none (a meeting saved before it existed). Rename refuses such a meeting.
+    public var metadataProblem: String?
     /// summary.json, when it can be read: possibly of an earlier transcript (`summaryIsCurrent` says), whose summary
     /// text is still shown until the new one is made, but not its title (`displayTitle`).
     public var generatedSummary: MeetingSummaryRecord? = nil
@@ -103,12 +106,19 @@ public struct SessionSummary: Codable, Sendable, Equatable, Identifiable {
         case id, directory, name, createdAt, source, origin, state, manifestStatus, savedSeconds, chunkCount
         case transcriptID, transcriptProblem, transcriptRefused, speakerState, labelMessage, runID, labelsReadyAt
         case hasSpeakerEdits, phase, pid, liveness, bytes, derivedBytes, audioDeleted, languageWork, nameSource
+        case metadataProblem
     }
 
     /// The title the Meetings list shows (`MeetingNaming.title`, the rule the transcript files' heading follows too):
     /// the user's name, else the title of a summary of the current transcript, else the name.
     public var displayTitle: String {
         MeetingNaming.title(name: name, source: nameSource, summary: generatedSummary, transcriptID: transcriptID)
+    }
+
+    /// The generated title the meeting can show (`MeetingNaming.title`'s rule): a summary of the current transcript's;
+    /// nil otherwise. What Use Generated Title and the rename editor offer.
+    public var currentGeneratedTitle: String? {
+        MeetingSummaryStore.current(generatedSummary, transcriptID: transcriptID).flatMap { $0.title.isEmpty ? nil : $0.title }
     }
 
     /// The summary was made from the current transcript.
@@ -125,7 +135,7 @@ public struct SessionSummary: Codable, Sendable, Equatable, Identifiable {
                 hasSpeakerEdits: Bool = false, phase: RecorderPhase? = nil, pid: Int32? = nil,
                 liveness: RecorderLiveness, bytes: Int64 = 0, derivedBytes: Int64 = 0, audioDeleted: Bool = false,
                 languageWork: LanguageWork? = nil, nameSource: MeetingNameSource? = nil,
-                generatedSummary: MeetingSummaryRecord? = nil) {
+                generatedSummary: MeetingSummaryRecord? = nil, metadataProblem: String? = nil) {
         self.id = id; self.directory = directory; self.name = name; self.createdAt = createdAt
         self.source = source; self.origin = origin; self.state = state; self.manifestStatus = manifestStatus
         self.savedSeconds = savedSeconds; self.chunkCount = chunkCount; self.transcriptID = transcriptID
@@ -137,6 +147,7 @@ public struct SessionSummary: Codable, Sendable, Equatable, Identifiable {
         self.languageWork = languageWork
         self.nameSource = MeetingNaming.source(stored: nameSource, name: name)
         self.generatedSummary = generatedSummary
+        self.metadataProblem = metadataProblem
     }
 }
 
@@ -220,7 +231,8 @@ public enum SessionCatalog {
                 MeetingNaming.source(stored: $0.nameSource, name: manifest.name,
                                      importedFileName: $0.origin == .imported ? $0.importedFileName : nil)
             } ?? .user,
-            generatedSummary: MeetingSummaryStore.readIfUsable(session: session, sessionID: manifest.id))
+            generatedSummary: MeetingSummaryStore.readIfUsable(session: session, sessionID: manifest.id),
+            metadataProblem: { if case .failure(let error) = meetingRead { error.localizedDescription } else { nil } }())
     }
 
     /// `summaries` with `LanguageWork.ready` set where a run would detect a language now

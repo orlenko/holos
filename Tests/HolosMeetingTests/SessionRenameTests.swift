@@ -715,3 +715,62 @@ private func listed(name: String, source: MeetingNameSource, generated: String?)
     #expect(try editedExports(session).isEmpty)
     #expect(SessionFixtures.text(SessionPaths.export("json", in: session)).contains("Design review"))
 }
+
+// MARK: - Offered only as the command would act
+
+@Test func theGeneratedTitleOfferedIsTheOneTheMeetingCanShow() {
+    let named = listed(name: "Weekly sync", source: .user, generated: "Parser plan")
+    #expect(named.currentGeneratedTitle == "Parser plan")
+    var stale = named
+    stale.transcriptID = "T-newer"
+    #expect(stale.currentGeneratedTitle == nil, "Of an earlier transcript: not offered")
+    #expect(listed(name: "Weekly sync", source: .user, generated: nil).currentGeneratedTitle == nil)
+}
+
+@Test func aMeetingJSONThatCannotBeReadTurnsRenameOff() async throws {
+    let temp = try TemporaryDirectory("rename")
+    defer { temp.remove() }
+    let session = try await renameSession(in: temp.url)
+    #expect(SessionCatalog.summary(session: session).metadataProblem == nil)
+    #expect(MeetingActionPolicy.renames(SessionCatalog.summary(session: session)))
+    try AtomicFile.write(Data("{".utf8), to: SessionPaths.meetingInfo(session))
+    let damaged = SessionCatalog.summary(session: session)
+    #expect(damaged.metadataProblem != nil)
+    #expect(!MeetingActionPolicy.renames(damaged))
+    #expect(MeetingActionPolicy.renameRefusal(damaged)?.contains("meeting.json") == true)
+    #expect(await rename(session, "Weekly sync").status == .failed, "As the command refuses it")
+}
+
+@Test func reviewReadsTheTranscriptAsTheListDoes() async throws {
+    let temp = try TemporaryDirectory("rename")
+    defer { temp.remove() }
+    let session = try await renameSession(in: temp.url)
+    try writeSummary(session)
+    #expect(MeetingNaming.currentTitle(session: session) == "Parser rewrite and release plan")
+    // The revision the summary was made from is damaged: no transcript can be read, so no generated title.
+    let id = try #require(try SessionArchive.currentTranscriptID(at: session))
+    try AtomicFile.write(Data("{".utf8), to: SessionPaths.transcript(id, in: session))
+    let listedTitle = SessionCatalog.summary(session: session).displayTitle
+    #expect(listedTitle == "Meeting 2026-10-03 14:00")
+    #expect(MeetingNaming.currentTitle(session: session) == listedTitle)
+}
+
+@Test func theSameNameKeepsItsSourceAsItIs() async throws {
+    let temp = try TemporaryDirectory("rename")
+    defer { temp.remove() }
+    let session = try await renameSession(in: temp.url, name: "Weekly sync")
+    // A source a newer build wrote: the user's to this build, never rewritten.
+    var object = try meetingJSON(session)
+    object["nameSource"] = "teamDirectory"
+    try AtomicFile.write(try JSONSerialization.data(withJSONObject: object), to: SessionPaths.meetingInfo(session))
+    for typed in ["Weekly sync", "  Weekly   sync "] {
+        let outcome = await rename(session, typed)
+        #expect(outcome.status == .unchanged, "\(typed)")
+        #expect(try meetingJSON(session)["nameSource"] as? String == "teamDirectory")
+    }
+    // A meeting saved before nameSource existed keeps none.
+    object["nameSource"] = nil
+    try AtomicFile.write(try JSONSerialization.data(withJSONObject: object), to: SessionPaths.meetingInfo(session))
+    #expect(await rename(session, "Weekly sync").status == .unchanged)
+    #expect(try meetingJSON(session)["nameSource"] == nil)
+}

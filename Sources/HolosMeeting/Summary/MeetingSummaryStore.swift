@@ -296,10 +296,11 @@ public enum MeetingNaming {
             MeetingNaming.source(stored: $0.nameSource, name: manifest.name,
                                  importedFileName: $0.origin == .imported ? $0.importedFileName : nil)
         } ?? .user
-        // The pointer alone (no revision read): this runs every 2 s for each open review window.
+        // The revision read and checked as the catalog reads it (`SessionFiles.currentTranscript`), so the title is
+        // the one the Meetings list shows: none of a summary when the transcript cannot be read.
         return title(name: manifest.name, source: source,
                      summary: MeetingSummaryStore.readIfUsable(session: session, sessionID: manifest.id),
-                     transcriptID: try? SessionArchive.currentTranscriptID(at: session))
+                     transcriptID: try? SessionFiles.currentTranscript(session: session)?.id)
     }
 }
 
