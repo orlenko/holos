@@ -248,45 +248,64 @@ public enum SessionSummarizeCommand {
                     return outcome(.changed, "The transcript changed while it was summarized; try again.",
                                    transcriptID, 1)
                 }
-                // Speaker labels changed meanwhile: the summary names people as they were, so it is made again. So do
-                // people's names and "Remember voices" (turned off, or a forget going through the meetings), which
-                // decide the names it was given.
-                if let speakers, speakerRevision(session) != speakers {
-                    return outcome(.changed, "The speaker labels changed while the meeting was summarized; try again.",
-                                   transcriptID, 1)
-                }
-                if speakers != nil, let now = request.voiceInputsNow?(),
-                   now.names != request.profileNames || now.recognition != request.applyRecognition {
-                    return outcome(.changed, "People's names or Remember voices changed while the meeting was "
-                        + "summarized; try again.", transcriptID, 1)
-                }
-                // The last point where a cancellation stops it: from here summary.json (atomic writes) and the
-                // transcript files are written together.
-                if Task.isCancelled {
-                    return outcome(.cancelled, "Summarizing was cancelled; nothing was written.", transcriptID, 1)
-                }
-                var pending = record
-                pending.exportsPending = true
-                try MeetingSummaryStore.write(pending, session: session)
-                var written = outcome(.written, message, transcriptID, 0)
-                written.summary = pending
+                // The speaker lock is held from the check of the labels to the last export written, so no speaker
+                // edit (which takes only that lock) lands between them: the summary and the files name the same
+                // people.
                 do {
-                    try SessionExports.regenerate(session: session, profileNames: request.profileNames,
-                                                  applyRecognition: request.applyRecognition)
-                    var done = record
-                    done.exportsPending = nil
-                    try MeetingSummaryStore.write(done, session: session)
-                    written.summary = done
-                    written.exportsUpdated = true
-                } catch {
-                    written.message += " The transcript files were not rewritten: \(error.localizedDescription)"
-                    written.exitCode = 3
+                    return try SessionArchive.withSpeakerLock(at: session) { () throws -> Outcome in
+                        try publishLocked(record, request: request, transcriptID: transcriptID, speakers: speakers,
+                                          message: message, outcome: outcome)
+                    }
+                } catch let error as HolosError {
+                    guard case .unavailable = error else { throw error }
+                    return outcome(.busy, error.localizedDescription, transcriptID, 1)
                 }
-                return written
             }
         } catch {
             return outcome(.failed, "Cannot save the summary: \(error.localizedDescription)", transcriptID, 1)
         }
+    }
+
+    /// The checks and writes of `save` under the speaker lock (the caller holds it and the processing lease).
+    private static func publishLocked(_ record: MeetingSummaryRecord, request: Request, transcriptID: String,
+                                      speakers: String?, message: String,
+                                      outcome: (Status, String, String?, Int32) -> Outcome) throws -> Outcome {
+        let session = request.session
+        // Speaker labels changed meanwhile: the summary names people as they were, so it is made again. So do people's
+        // names and "Remember voices" (turned off, or a forget going through the meetings), which decide the names it
+        // was given.
+        if let speakers, speakerRevision(session) != speakers {
+            return outcome(.changed, "The speaker labels changed while the meeting was summarized; try again.",
+                           transcriptID, 1)
+        }
+        if speakers != nil, let now = request.voiceInputsNow?(),
+           now.names != request.profileNames || now.recognition != request.applyRecognition {
+            return outcome(.changed, "People's names or Remember voices changed while the meeting was summarized; "
+                + "try again.", transcriptID, 1)
+        }
+        // The last point where a cancellation stops it: from here summary.json (atomic writes) and the transcript
+        // files are written together.
+        if Task.isCancelled {
+            return outcome(.cancelled, "Summarizing was cancelled; nothing was written.", transcriptID, 1)
+        }
+        var pending = record
+        pending.exportsPending = true
+        try MeetingSummaryStore.write(pending, session: session)
+        var written = outcome(.written, message, transcriptID, 0)
+        written.summary = pending
+        do {
+            try SessionExports.regenerateLocked(session: session, profileNames: request.profileNames,
+                                                applyRecognition: request.applyRecognition)
+            var done = record
+            done.exportsPending = nil
+            try MeetingSummaryStore.write(done, session: session)
+            written.summary = done
+            written.exportsUpdated = true
+        } catch {
+            written.message += " The transcript files were not rewritten: \(error.localizedDescription)"
+            written.exitCode = 3
+        }
+        return written
     }
 
     /// The speaker labels as files: the head and the edit journal, each by size and modification time. Any change to

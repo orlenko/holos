@@ -161,11 +161,22 @@ public enum MeetingSummarySource {
             labels[speaker.label] = isUnnamedChannel(speaker) ? selfName : speaker.name
         }
         let lines = TranscriptExporter.blocks(document).map { block in
-            MeetingSummaryLine(speaker: labels[block.speakerLabel] ?? block.speakerLabel, text: block.text)
+            MeetingSummaryLine(speaker: shortName(labels[block.speakerLabel] ?? block.speakerLabel), text: block.text)
         }
         return MeetingSummaryInput(lines: lines, language: mainLanguage(document.transcript),
                                    durationSeconds: document.metadata.durationSeconds,
-                                   people: projection.map { people($0) } ?? [])
+                                   people: (projection.map { people($0) } ?? []).map(shortName))
+    }
+
+    /// Most characters of a speaker's or person's name in a prompt: a name is the user's text, of any length, and must
+    /// leave every part room for the words.
+    public static let maximumNameCharacters = 40
+
+    /// `name` on one line, at most `maximumNameCharacters` (cut, with "…").
+    public static func shortName(_ name: String) -> String {
+        let line = name.split(whereSeparator: { $0.isWhitespace || $0.isNewline }).joined(separator: " ")
+        guard line.count > maximumNameCharacters else { return line }
+        return String(line.prefix(maximumNameCharacters - 1)) + "…"
     }
 
     /// What a turn of nobody known is called in the prompt.

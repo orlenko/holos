@@ -216,9 +216,11 @@ extension HolosAppDelegate {
         let considered = Set(meeting.deep.considered)
         let queue = meeting.deep.queue
         let activation = meeting.deep.activation
+        // Summaries wait while it runs (§4.17): it may queue a final transcript of a meeting they would summarize.
+        meetingSummaryReconcileStarted()
         Task { [weak self] in
             // Once the meetings saved while the app was closed are queued (or none were), summaries may start.
-            defer { self?.meetingSummaryLaunchReconciled() }
+            defer { self?.meetingSummaryReconcileEnded() }
             let found = await Task.detached { () -> [DeepTranscriptionSchedule.Candidate] in
                 let candidates = SessionCatalog.list(root: root)
                     .filter { $0.createdAt >= since && !considered.contains($0.id) && !queue.contains($0.id) }

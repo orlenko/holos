@@ -57,6 +57,9 @@ final class MeetingSummaryAppState {
     /// The launch's final-transcript reconciliation has queued the meetings saved while the app was closed (or had
     /// none to do): until then no summary starts, so none is made of a transcript a final one is about to replace.
     var launchReady = false
+    /// Final-transcript reconciliations running (at launch, when the model is installed, when the setting is turned
+    /// on): no summary starts while one runs, since it may queue a final transcript of the meeting.
+    var reconciling = 0
     /// Meetings whose Review was asked for while this app summarizes them: opened when the summary ends.
     var reviewAfterRun: [String: (directory: URL, name: String)] = [:]
     var timer: Timer?
@@ -78,6 +81,23 @@ extension HolosAppDelegate {
     /// The launch's final-transcript reconciliation ended (or was not needed): summaries may start.
     func meetingSummaryLaunchReconciled() {
         guard !meeting.summaries.launchReady else { return }
+        meeting.summaries.launchReady = true
+        scheduleMeetingSummaries()
+    }
+
+    /// A final-transcript reconciliation starts: summaries wait for it, and one running now is stopped (it writes
+    /// nothing) and made again afterwards, if its meeting is not queued for a final transcript meanwhile.
+    func meetingSummaryReconcileStarted() {
+        meeting.summaries.reconciling += 1
+        if let running = meeting.summaries.running, running.pid > 0, meeting.summaries.preempted == nil,
+           kill(running.pid, SIGTERM) == 0 {
+            meeting.summaries.preempted = running.sessionID
+        }
+    }
+
+    /// The reconciliation ended (its meetings are queued): summaries may start again.
+    func meetingSummaryReconcileEnded() {
+        meeting.summaries.reconciling = max(0, meeting.summaries.reconciling - 1)
         meeting.summaries.launchReady = true
         scheduleMeetingSummaries()
     }
@@ -130,7 +150,8 @@ extension HolosAppDelegate {
               meeting.summaries.running == nil else { return }
         // The setting and the model are `MeetingSummarySchedule.next`'s to weigh: transcript files left without their
         // summary are rewritten without them (no model call).
-        guard meeting.summaries.launchReady, !meetingIsBusy(controller.state) else { return }
+        guard meeting.summaries.launchReady, meeting.summaries.reconciling == 0,
+              !meetingIsBusy(controller.state) else { return }
         meeting.summaries.scanning = true
         let root = controller.root
         Task { [weak self] in
@@ -155,9 +176,17 @@ extension HolosAppDelegate {
         meeting.summaries.delayedUntil = meeting.summaries.delayedUntil.filter { $0.value > now }
         // A request for a meeting that is gone is dropped, and so is one a summary made since already answers (a
         // command that finished while the app was closed).
+        // Only a meeting whose folder is confirmed gone (the sessions folder is there, the meeting's is not) loses its
+        // request: one the scan could not read (a volume not mounted, a folder unreadable for now) keeps it.
         let listed = Set(candidates.map(\.sessionID))
+        let root = controller.root
+        let rootThere = (try? root.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true
+        let gone = Set(meeting.summaries.requested.filter { id in
+            !listed.contains(id) && rootThere
+                && !FileManager.default.fileExists(atPath: root.appendingPathComponent("\(id).holos").path)
+        })
         let satisfied = MeetingSummarySchedule.satisfied(meeting.summaries.requests, by: candidates)
-        meeting.summaries.requests.removeAll { !listed.contains($0.sessionID) || satisfied.contains($0.sessionID) }
+        meeting.summaries.requests.removeAll { gone.contains($0.sessionID) || satisfied.contains($0.sessionID) }
         let situation = MeetingSummarySchedule.Situation(
             enabled: MeetingSummaryAppState.enabled, modelAvailable: OnDeviceFix.unavailableReason == nil,
             meetingBusy: meetingIsBusy(controller.state),

@@ -95,7 +95,15 @@ public struct SessionSummary: Codable, Sendable, Equatable, Identifiable {
     public var nameSource: MeetingNameSource
     /// summary.json, when it can be read: possibly of an earlier transcript (`summaryIsCurrent` says), which is
     /// still shown until the new one is made.
-    public var generatedSummary: MeetingSummaryRecord?
+    public var generatedSummary: MeetingSummaryRecord? = nil
+
+    /// Every field but `generatedSummary`, which holds what the meeting was about: `session list --json` and anything
+    /// else that encodes the catalog stay metadata only (summary.json and `session summarize --json` carry it).
+    private enum CodingKeys: String, CodingKey {
+        case id, directory, name, createdAt, source, origin, state, manifestStatus, savedSeconds, chunkCount
+        case transcriptID, transcriptProblem, transcriptRefused, speakerState, labelMessage, runID, labelsReadyAt
+        case hasSpeakerEdits, phase, pid, liveness, bytes, derivedBytes, audioDeleted, languageWork, nameSource
+    }
 
     /// The title the Meetings list shows (`MeetingNaming.displayTitle`): the user's name, else the generated title,
     /// else the name.

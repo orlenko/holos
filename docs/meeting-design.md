@@ -5012,7 +5012,11 @@ it: Recover first. The speaker labels it read (the head and the edit journal, by
 modification time) are checked again at the save; changed meanwhile (a rename in Terminal), the
 summary is not saved (`changed`, made again later), so it never names people as they were; so
 are people's names and "Remember voices" (with a forget still going through the meetings), read
-again at the save. For
+again at the save. The speaker lock is held from that check through summary.json and the export
+rewrite (`SessionExports.regenerateLocked`), so no speaker edit lands between them. Speaker and
+people's names go into prompts cut to 40 characters (with "…"), so a name of any length leaves
+every part room for the words. `session list --json` leaves summaries out (`SessionSummary`
+does not encode `generatedSummary`). For
 its whole life it holds the deep transcription lock (§4.16), with
 `kind` `summary` in what it writes there: one summary or final transcript runs at a time on this
 Mac, and one started before an app relaunch is seen as busy (the app never adopts or signals a
@@ -5040,7 +5044,10 @@ a child process, one at a time, holding the meeting as a final transcript does
 (`MeetingController.beginUsing`, "Writing summary…"): its commands wait, and Review asked for
 meanwhile says "Summary in progress" and opens when it ends (or offers Cancel Summary). At launch
 no summary starts until the final-transcript reconciliation has queued the meetings saved while
-the app was closed (or had nothing to do; while the model downloads it waits for the download to end). After a meeting is saved, the scan waits until the final
+the app was closed (or had nothing to do; while the model downloads it waits for the download to end); every later
+reconciliation (the model installed, the setting turned on) holds summaries back too, and stops
+one running (it is made again afterwards). A Summarize Again request is dropped for a missing
+meeting only when its folder is confirmed gone, not when the scan could not read it. After a meeting is saved, the scan waits until the final
 transcript queue has decided about it (the meeting is in a deciding set while its languages are
 read, and the schedule skips it), and a meeting queued for a final transcript is summarized
 after it. Nothing starts while a meeting starts, records or saves, while the lock is held (a
