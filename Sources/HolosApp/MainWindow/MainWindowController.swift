@@ -346,6 +346,8 @@ final class SidebarViewController: NSViewController, NSTableViewDataSource, NSTa
         table.dataSource = self
         table.delegate = self
         table.allowsEmptySelection = false
+        table.target = self
+        table.action = #selector(rowClicked)
         table.setAccessibilityLabel("Sections")
         let scroll = NSScrollView()
         scroll.documentView = table
@@ -483,7 +485,30 @@ final class SidebarViewController: NSViewController, NSTableViewDataSource, NSTa
 
     func tableViewSelectionDidChange(_ notification: Notification) {
         guard !selecting, table.selectedRow >= 0 else { return }
-        switch rows[table.selectedRow] {
+        // A click changes the selection on mouse down; its action, on mouse up, must not go there a second time.
+        if let type = NSApp.currentEvent?.type, type == .leftMouseDown || type == .leftMouseDragged {
+            selectionChangedByClick = true
+        }
+        choose(table.selectedRow)
+    }
+
+    /// The selection changed during the click whose action comes next.
+    private var selectionChangedByClick = false
+
+    /// The table's action, on every click: a click on the row already selected goes there again, so Settings and
+    /// a chapter scroll back to their top (the selection does not change, so `tableViewSelectionDidChange` is not
+    /// called).
+    @objc private func rowClicked() {
+        defer { selectionChangedByClick = false }
+        guard !selectionChangedByClick, table.clickedRow >= 0, table.clickedRow == table.selectedRow else { return }
+        switch rows[table.clickedRow] {
+        case .section(.settings), .chapter: choose(table.clickedRow)
+        case .section, .group, .spacer: break
+        }
+    }
+
+    private func choose(_ row: Int) {
+        switch rows[row] {
         case .section(let section): onSelect?(section)
         case .chapter(let chapter): onSelectChapter?(chapter)
         case .group, .spacer: break

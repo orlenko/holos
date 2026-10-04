@@ -130,6 +130,14 @@ private func chapter(_ offset: Double, tops: [Double?] = tops, chosen: Int? = ni
     #expect(chapter(1_300, chosen: 2) == 5)
 }
 
+@Test func goingToTheFooterMarksTheChapterAtItsPlace() {
+    // Return on Run Setup Assistant (no chapter of its own) scrolls to the end with nothing chosen: the last chapter.
+    #expect(chapter(1_300, chosen: nil) == 5)
+    // Short of the end (the page could not reach it), the chapter at the top.
+    #expect(SettingsChapterTracking.chapter(offset: 1_000, viewport: 700, contentHeight: 2_000, tops: tops,
+                                            chosen: nil) == 2)
+}
+
 @Test func aChosenChapterHoldsWhileItsCardsTopIsInView() {
     // Chosen Reading (top 1 650) at the end of the page (offset 1 300, 700 high): in view.
     #expect(SettingsChapterTracking.keepsChosen(top: 1_650, offset: 1_300, viewport: 700))

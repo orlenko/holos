@@ -235,7 +235,8 @@ user scrolls, the sidebar marks the chapter whose card has reached the top (with
 at the end of the page, where the last cards cannot reach the top, it keeps the chapter the
 user chose in the sidebar (or went to with Return) while its card is in view, else marks the
 last one; scrolling that card out of view ends the choice, and a chapter scrolling marked never
-counts as chosen. The Settings row shows the page
+counts as chosen. Scrolling from the top with the Settings row marked marks General at once.
+Clicking the marked chapter (or Settings) again goes back to its top. The Settings row shows the page
 from the top; ⌘, and the menus' Settings… show it where it was left (the sidebar marks the
 chapter it shows, or Settings at the top). A search field above the page (⌘F while Settings
 shows) filters as the user types: each word of the query must match a setting's title,
@@ -248,7 +249,9 @@ shown; "No settings match" when none does. When a status row's detail changes un
 search (a permission granted meanwhile), the search runs again; the page stays where it is
 unless the best match changed. The best match is outlined: Return clears the
 search, scrolls to it, outlines it for a moment, and moves the focus to its control when the
-control can take it (Full Keyboard Access); Escape clears the search and returns to where the
+control can take it (Full Keyboard Access); the sidebar marks its chapter, or, for Run Setup
+Assistant… (below the cards, in no chapter), the chapter at its place as scrolling there would
+mark it (History and privacy at the end of the page). Escape clears the search and returns to where the
 page was. VoiceOver hears how many settings match and where Return goes. The meeting's live transcript is part of
 Meetings (see "Live transcript"). The Setup Assistant, the meeting start panel, Review
 (Name Speakers), and the dictation preview stay separate windows.

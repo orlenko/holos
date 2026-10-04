@@ -198,7 +198,8 @@ final class SettingsPane: NSViewController, MainSectionContent, NSSearchFieldDel
     private static let textWidth: CGFloat = 360
 
     // Chapters and search.
-    /// A chapter came to the top while the user scrolled (not while `show(chapter:)` scrolls).
+    /// The chapter at the top, on each scroll by the user (not while `show(chapter:)` scrolls) and after a search or
+    /// Return moved the page; repeats included, so the sidebar can leave the Settings row for General.
     var onChapterChange: ((SettingsChapter) -> Void)?
     /// The chapter the page shows: the one at the top, or the one chosen.
     private(set) var currentChapter = SettingsChapter.general
@@ -1122,8 +1123,10 @@ final class SettingsPane: NSViewController, MainSectionContent, NSSearchFieldDel
         guard let index = SettingsChapterTracking.chapter(
             offset: Double(clip.minY), viewport: Double(clip.height), contentHeight: Double(document.frame.height),
             tops: tops, chosen: chosenChapter?.rawValue),
-            let chapter = SettingsChapter(rawValue: index), chapter != currentChapter else { return }
+            let chapter = SettingsChapter(rawValue: index) else { return }
         currentChapter = chapter
+        // Reported even when unchanged here: the sidebar may show the Settings row (the page opened at its top, or
+        // the row was clicked) while this is General, and it ignores a chapter it already marks.
         onChapterChange?(chapter)
     }
 
@@ -1248,9 +1251,13 @@ final class SettingsPane: NSViewController, MainSectionContent, NSSearchFieldDel
         let target = max(0, min(frame.minY - 80, document.frame.height - clip.height))
         scrollTo(target, animated: false)
         chosenChapter = item.chapter
-        if let chapter = item.chapter, chapter != currentChapter {
+        if let chapter = item.chapter {
             currentChapter = chapter
             onChapterChange?(chapter)
+        } else {
+            // Run Setup Assistant, below the cards: the sidebar marks the chapter at its place, as scrolling there
+            // would (the last one at the end of the page).
+            trackChapter()
         }
         highlight = SettingsHighlightView.flash(frame, in: document, replacing: highlight)
         if let focus = item.focus, focus.canBecomeKeyView { view.window?.makeFirstResponder(focus) }
