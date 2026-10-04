@@ -132,6 +132,9 @@ extension HolosAppDelegate {
         // Meetings that finished while the model was missing or downloading were not queued: found again now.
         if DeepTranscriptionSchedule.reconcilesOnModelChange(from: previous, to: model) {
             reconcileDeepTranscription()
+        } else {
+            // Nothing to reconcile: summaries need not wait for it (§4.17).
+            meetingSummaryLaunchReconciled()
         }
         scheduleDeepTranscription()
     }
@@ -198,11 +201,16 @@ extension HolosAppDelegate {
     /// started since the setting was turned on, in one language, with no deep transcript, and not queued before.
     func reconcileDeepTranscription() {
         guard DeepTranscriptionAppState.enabled, meeting.deep.model == "installed",
-              let root = meeting.controller?.root, let since = DeepTranscriptionAppState.enabledSince else { return }
+              let root = meeting.controller?.root, let since = DeepTranscriptionAppState.enabledSince else {
+            meetingSummaryLaunchReconciled()
+            return
+        }
         let considered = Set(meeting.deep.considered)
         let queue = meeting.deep.queue
         let activation = meeting.deep.activation
         Task { [weak self] in
+            // Once the meetings saved while the app was closed are queued (or none were), summaries may start.
+            defer { self?.meetingSummaryLaunchReconciled() }
             let found = await Task.detached { () -> [DeepTranscriptionSchedule.Candidate] in
                 let candidates = SessionCatalog.list(root: root)
                     .filter { $0.createdAt >= since && !considered.contains($0.id) && !queue.contains($0.id) }

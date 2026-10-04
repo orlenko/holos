@@ -96,23 +96,25 @@ public enum MeetingSummarySchedule {
     /// The next meeting to summarize: one the user asked for, else the newest that needs a summary, has not been
     /// tried with its transcript, and is idle, not in use and not delayed.
     public static func next(_ candidates: [Candidate], _ situation: Situation) -> Decision {
-        guard situation.modelAvailable, situation.running == nil, !situation.meetingBusy,
-              !situation.deepPassRunning else { return .wait }
+        guard situation.running == nil, !situation.meetingBusy, !situation.deepPassRunning else { return .wait }
         func ready(_ candidate: Candidate) -> Bool {
             candidate.idle && candidate.finished && candidate.transcriptID != nil
                 && !situation.inUse.contains(candidate.sessionID)
                 && (situation.delayedUntil[candidate.sessionID].map { $0 <= situation.now } ?? true)
         }
-        // Asked for by the user: also with the setting off, and also when the summary is current.
-        for id in situation.requested.reversed() {
+        // Asked for by the user: also with the setting off, and also when the summary is current; not without the
+        // model.
+        for id in situation.requested.reversed() where situation.modelAvailable {
             if let candidate = candidates.first(where: { $0.sessionID == id }), ready(candidate) {
                 return .run(sessionID: id, path: candidate.path, force: true)
             }
         }
-        // With the setting off, only transcript files left without their summary are rewritten (no model call).
+        // With the setting off, or without the model, only transcript files left without their summary are
+        // rewritten (no model call).
         let due = candidates
             .filter { candidate in
-                ready(candidate) && candidate.needsSummary && (situation.enabled || candidate.onlyExportsPending)
+                ready(candidate) && candidate.needsSummary
+                    && ((situation.enabled && situation.modelAvailable) || candidate.onlyExportsPending)
                     && !situation.finalTranscriptQueued.contains(candidate.sessionID)
                     && situation.attempted[candidate.sessionID] != candidate.transcriptID
                     && (!situation.onBattery

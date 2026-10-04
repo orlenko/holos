@@ -831,6 +831,69 @@ private func trackDocument(source: AudioSource) -> ExportDocument {
     #expect(MeetingSummarySchedule.next([candidate("b")], situation(enabled: false)) == .wait)
 }
 
+@Test func anUnfinishedSessionIsRefusedBeforeTheModel() async throws {
+    let temp = try TemporaryDirectory("summary")
+    defer { temp.remove() }
+    let session = try await summarizeSession(in: temp.url)
+    for status in [ArchiveStatus.interrupted, ArchiveStatus.processing, ArchiveStatus.recording] {
+        var manifest = try SessionArchive.readManifest(at: session)
+        manifest.status = status
+        try AtomicFile.writeJSON(manifest, to: SessionPaths.manifest(session))
+        let scripted = ScriptedSummaryModel()
+        let outcome = await run(session, scripted)
+        #expect(outcome.status == .failed)
+        #expect(outcome.message.contains("session recover"))
+        #expect(scripted.summaryCalls.value.isEmpty)
+        #expect(!SessionFixtures.exists(SessionPaths.summary(session)))
+    }
+}
+
+@Test func halvesLeftOutOfASplitPartAreCounted() async throws {
+    // Every part is too long for the context; the half holding the meeting's first line is refused.
+    let scripted = ScriptedSummaryModel(notes: { prompt in
+        let lines = prompt.components(separatedBy: "\n").filter { $0.hasPrefix("Alex:") || $0.hasPrefix("Sam:") }
+        if lines.count > 3 { throw MeetingSummaryModelError.contextExceeded }
+        if prompt.contains("word0x0 ") { throw MeetingSummaryModelError.refused }
+        return ["Half."]
+    })
+    let result = try await MeetingSummarizer(model: scripted.model(contextTokens: 400)).summarize(input(lines(30)))
+    #expect(result.stats.skippedParts == 1)
+    #expect(result.stats.parts > 2)
+    // All halves refused: the run fails although no whole part was refused.
+    let refusedHalves = ScriptedSummaryModel(notes: { prompt in
+        if prompt.components(separatedBy: "\n").count > 6 { throw MeetingSummaryModelError.contextExceeded }
+        throw MeetingSummaryModelError.refused
+    })
+    await #expect(throws: MeetingSummarizer.Failure.self) {
+        _ = try await MeetingSummarizer(model: refusedHalves.model(contextTokens: 400)).summarize(input(lines(30)))
+    }
+    // A part still too long after two splits is left out and counted, not taken for a success.
+    let neverFits = ScriptedSummaryModel(notes: { _ in throw MeetingSummaryModelError.contextExceeded })
+    await #expect(throws: MeetingSummarizer.Failure.self) {
+        _ = try await MeetingSummarizer(model: neverFits.model(contextTokens: 400)).summarize(input(lines(30)))
+    }
+}
+
+@Test func transcriptFilesAreRewrittenWithoutTheModel() {
+    let pending = MeetingSummarySchedule.Candidate(sessionID: "a", path: "/a.holos", createdAt: scheduleNow,
+                                                   transcriptID: "T", summaryTranscriptID: "T", idle: true,
+                                                   exportsPending: true)
+    #expect(MeetingSummarySchedule.next([pending], situation(available: false))
+        == .run(sessionID: "a", path: "/a.holos", force: false))
+    // Without the model, a request waits.
+    #expect(MeetingSummarySchedule.next([candidate("b")], situation(available: false, requested: ["b"])) == .wait)
+}
+
+@Test func searchFindsTheGeneratedTitleOfANamedMeeting() {
+    let record = MeetingSummaryRecord(sessionID: "S", transcriptID: "T", title: "Parser rewrite plan",
+                                      summary: "We planned.", model: "fake")
+    let named = SessionSummary(id: "S", directory: URL(fileURLWithPath: "/S.holos"), name: "Weekly sync",
+                               createdAt: scheduleNow, source: .microphone, state: .complete, manifestStatus: "complete",
+                               transcriptID: "T", liveness: .exited, generatedSummary: record)
+    #expect(named.displayTitle == "Weekly sync")
+    #expect(MeetingListFormat.matches(named, people: [], query: "parser rewrite"))
+}
+
 @Test func aNameTheUserGaveIsTheirsWhateverItLooksLike() throws {
     let root = URL(fileURLWithPath: "/tmp/sessions")
     var typed = MeetingStartSettings(name: "Meeting 2026-10-03 14:00", source: .microphone)

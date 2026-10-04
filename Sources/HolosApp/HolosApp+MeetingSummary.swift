@@ -54,6 +54,11 @@ final class MeetingSummaryAppState {
     /// The run going now was stopped because a meeting started.
     var preempted: String?
     var scanning = false
+    /// The launch's final-transcript reconciliation has queued the meetings saved while the app was closed (or had
+    /// none to do): until then no summary starts, so none is made of a transcript a final one is about to replace.
+    var launchReady = false
+    /// Meetings whose Review was asked for while this app summarizes them: opened when the summary ends.
+    var reviewAfterRun: [String: (directory: URL, name: String)] = [:]
     var timer: Timer?
 }
 
@@ -65,10 +70,16 @@ extension HolosAppDelegate {
         meeting.summaries.timer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.scheduleMeetingSummaries() }
         }
-        Task { [weak self] in
-            try? await Task.sleep(for: .seconds(10))
-            self?.scheduleMeetingSummaries()
-        }
+        // With final transcripts off nothing is reconciled at launch; otherwise the model check reconciles and then
+        // opens the way (`meetingSummaryLaunchReconciled`).
+        if !DeepTranscriptionAppState.enabled { meetingSummaryLaunchReconciled() }
+    }
+
+    /// The launch's final-transcript reconciliation ended (or was not needed): summaries may start.
+    func meetingSummaryLaunchReconciled() {
+        guard !meeting.summaries.launchReady else { return }
+        meeting.summaries.launchReady = true
+        scheduleMeetingSummaries()
     }
 
     /// Why Apple Intelligence cannot summarize meetings on this Mac, for Settings; nil when it can.
@@ -117,8 +128,9 @@ extension HolosAppDelegate {
     func scheduleMeetingSummaries() {
         guard let controller = meeting.controller, meeting.maintenance != nil, !meeting.summaries.scanning,
               meeting.summaries.running == nil else { return }
-        let wanted = MeetingSummaryAppState.enabled || !meeting.summaries.requested.isEmpty
-        guard wanted, OnDeviceFix.unavailableReason == nil, !meetingIsBusy(controller.state) else { return }
+        // The setting and the model are `MeetingSummarySchedule.next`'s to weigh: transcript files left without their
+        // summary are rewritten without them (no model call).
+        guard meeting.summaries.launchReady, !meetingIsBusy(controller.state) else { return }
         meeting.summaries.scanning = true
         let root = controller.root
         Task { [weak self] in
@@ -152,9 +164,17 @@ extension HolosAppDelegate {
         guard case .run(let sessionID, let path, let force) = MeetingSummarySchedule.next(candidates, situation)
         else { return }
         let transcriptID = candidates.first { $0.sessionID == sessionID }?.transcriptID
+        // Marked running before the meeting is taken: taking it schedules again (`onSessionsInUseChanged`), which must
+        // then see a summary running and start nothing else. The meeting is held for the whole run, as for a final
+        // transcript, so Review and the meeting's commands wait and its speaker labels cannot change under it.
+        meeting.summaries.running = (sessionID, 0)
+        guard controller.beginUsing(sessionID, for: Self.summaryRunningText) else {
+            meeting.summaries.running = nil
+            meeting.summaries.delayedUntil[sessionID] = Date().addingTimeInterval(60)
+            return
+        }
         let output = Self.temporaryFile("summary")
         let errors = Self.temporaryFile("summary-err")
-        meeting.summaries.running = (sessionID, 0)
         do {
             let pid = try maintenance.run(["session", "summarize", path, "--json"] + (force ? ["--force"] : []),
                                           standardOutput: output, standardError: errors) { [weak self] code in
@@ -166,6 +186,7 @@ extension HolosAppDelegate {
         } catch {
             meeting.summaries.running = nil
             meeting.summaries.delayedUntil[sessionID] = Date().addingTimeInterval(60)
+            controller.endUsing(sessionID)
             Self.removeFile(output)
             Self.removeFile(errors)
             Self.summaryLog.error("Cannot start the summary: \(error.localizedDescription, privacy: .private)")
@@ -210,11 +231,48 @@ extension HolosAppDelegate {
             }
         }
         Self.summaryLog.notice("Summary of \(sessionID, privacy: .public) ended with \(code, privacy: .public) (\(outcome?.status ?? "no result", privacy: .public))")
+        meeting.controller?.endUsing(sessionID)
+        meeting.maintenanceEnded[sessionID, default: 0] += 1
         meeting.meetingsPane?.update(summarizing: nil)
         meeting.meetingsPane?.refresh()
+        // Review asked for while the summary was made.
+        if let review = meeting.summaries.reviewAfterRun.removeValue(forKey: sessionID) {
+            openReview(sessionID: sessionID, directory: review.directory, name: review.name)
+        }
         // A final transcript waits while a summary runs (they share the background job lock).
         scheduleDeepTranscription()
         scheduleMeetingSummaries()
+    }
+
+    /// What the Meetings list shows while a summary is made (`MeetingController.beginUsing`).
+    static let summaryRunningText = "Writing summary…"
+
+    /// Review asked for while a summary is made of the meeting: by this app (its `sessionsInUse` entry), or by another
+    /// process (the lock's holder, a summary). Review would show labels the summary is being made from, so it waits:
+    /// the alert says so and offers to cancel this app's summary; Review opens when it ends. Returns whether it waits.
+    func reviewWaitsForSummary(sessionID: String, directory: URL, name: String) -> Bool {
+        let own = meeting.summaries.running?.sessionID == sessionID
+            && meeting.controller?.sessionsInUse[sessionID] == Self.summaryRunningText
+        var other = false
+        if !own, case .held(let holder?) = DeepTranscriptionLock.state(), holder.isSummary {
+            other = holder.sessionID == sessionID
+        }
+        guard own || other else { return false }
+        let alert = NSAlert()
+        alert.messageText = "Summary in progress"
+        if own {
+            alert.informativeText = "“\(Self.short(name))” is being summarized. Review opens when it finishes."
+            alert.addButton(withTitle: "OK")
+            alert.addButton(withTitle: "Cancel Summary")
+            meeting.summaries.reviewAfterRun[sessionID] = (directory, name)
+        } else {
+            alert.informativeText = "“\(Self.short(name))” is being summarized by another Voice is Local process. "
+                + "Open Review when it finishes."
+        }
+        NSApplication.shared.activate()
+        // Cancel Summary: the summary stops, and Review opens once it has let go of the meeting.
+        if alert.runModal() == .alertSecondButtonReturn { cancelMeetingSummary(sessionID) }
+        return true
     }
 
     /// The part of `voiceislocal session summarize --json` the app reads.

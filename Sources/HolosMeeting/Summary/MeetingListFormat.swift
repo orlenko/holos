@@ -161,14 +161,14 @@ public enum MeetingListFormat {
 
     // MARK: - Search
 
-    /// Whether `query`'s words all appear (any case, any accents) in the meeting's title, name, generated summary,
-    /// key points, action items, or people.
+    /// Whether `query`'s words all appear (any case, any accents) in the meeting's title, name, generated title and
+    /// summary, key points, action items, or people.
     public static func matches(_ summary: SessionSummary, people: [String], query: String) -> Bool {
         let words = query.split(whereSeparator: \.isWhitespace).map(String.init)
         guard !words.isEmpty else { return true }
         var fields = [summary.displayTitle, summary.name] + people
         if let generated = summary.generatedSummary {
-            fields += [generated.summary] + generated.points + generated.actions
+            fields += [generated.title, generated.summary] + generated.points + generated.actions
         }
         let haystack = fields.joined(separator: "\n")
         return words.allSatisfy {

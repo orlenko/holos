@@ -878,6 +878,8 @@ extension HolosAppDelegate: NSMenuDelegate {
     func openReview(sessionID: String, directory: URL, name: String, fallBackToMeetings: Bool = false) {
         // A deep transcription pass on the meeting goes first; Review opens when this app's pass ends.
         if reviewWaitsForDeepTranscription(sessionID: sessionID, directory: directory, name: name) { return }
+        // So does a summary being made of it (§4.17).
+        if reviewWaitsForSummary(sessionID: sessionID, directory: directory, name: name) { return }
         if let window = meeting.reviewWindows[sessionID], !window.isClosing {
             window.show()
             meeting.controller?.reviewOpened(sessionID: sessionID)

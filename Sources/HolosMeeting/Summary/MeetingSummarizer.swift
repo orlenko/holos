@@ -157,16 +157,18 @@ public struct MeetingSummarizer: Sendable {
             for (index, part) in parts.enumerated() {
                 try Task.checkCancellation()
                 let found = try await partNotes(part, index: index, of: parts.count, input: input, run: &run)
-                if let found { notes.append(found) } else { run.skipped += 1 }
+                if !found.isEmpty { notes.append(found) }
             }
-            if run.skipped * 2 > parts.count || notes.isEmpty {
-                throw Failure.tooManyFailures("\(run.skipped) of \(parts.count) parts of the meeting gave no notes.")
+            // Counted by the pieces asked about: a part split for the context counts each half.
+            if run.skipped * 2 > run.pieces || notes.isEmpty {
+                throw Failure.tooManyFailures("\(run.skipped) of \(run.pieces) parts of the meeting gave no notes.")
             }
             let condensed = try await condense(notes, input: input, run: &run)
             draft = try await final(source: .notes(condensed), input: input, run: &run)
         }
         stats.calls = run.calls
         stats.skippedParts = run.skipped
+        if parts.count > 1 { stats.parts = run.pieces }
         let elapsed = started.duration(to: clock.now)
         stats.seconds = Double(elapsed.components.seconds) + Double(elapsed.components.attoseconds) / 1e18
         return (draft, stats)
@@ -176,6 +178,8 @@ public struct MeetingSummarizer: Sendable {
     struct RunState {
         var calls = 0
         var skipped = 0
+        /// Parts, and halves of parts split for the context, the model was asked about.
+        var pieces = 0
         var timeoutsInARow = 0
     }
 
@@ -218,31 +222,41 @@ public struct MeetingSummarizer: Sendable {
         }
     }
 
-    /// Notes of one part; nil when the model refused or did not answer. A part too long for the context is cut in two
-    /// and each half asked (at most twice down).
+    /// Notes of one part; none when the model refused or did not answer. A part too long for the context is cut in
+    /// two and each half asked (at most twice down); every piece is counted in `run`, and every one left out too.
     private func partNotes(_ part: [String], index: Int, of count: Int, input: MeetingSummaryInput,
-                           run: inout RunState, depth: Int = 0) async throws -> [String]? {
+                           run: inout RunState, depth: Int = 0) async throws -> [String] {
         let instructions = Self.notesInstructions(language: input.language)
         let prompt = Self.notesPrompt(part: part, index: index, of: count)
         let model = model
         do {
             guard let notes = try await call(&run, { try await model.notes(instructions, prompt) }) else {
-                return nil
+                return skippedPiece(&run)
             }
             let cleaned = MeetingSummaryDraft.cleanList(notes, limit: 6)
             // A refusal written as a note ("I'm sorry, I cannot…") is a refused part: it is left out and counted.
-            guard !cleaned.isEmpty, !cleaned.contains(where: MeetingSummaryDraft.isRefusal) else { return nil }
+            guard !cleaned.isEmpty, !cleaned.contains(where: MeetingSummaryDraft.isRefusal) else {
+                return skippedPiece(&run)
+            }
+            run.pieces += 1
             return cleaned
         } catch MeetingSummaryModelError.contextExceeded {
-            guard depth < 2, part.count > 1 else { return nil }
+            // Still too long after two splits, or one line: left out, and counted.
+            guard depth < 2, part.count > 1 else { return skippedPiece(&run) }
             let half = part.count / 2
             let first = try await partNotes(Array(part[..<half]), index: index, of: count, input: input, run: &run,
                                             depth: depth + 1)
             let second = try await partNotes(Array(part[half...]), index: index, of: count, input: input, run: &run,
                                              depth: depth + 1)
-            let joined = (first ?? []) + (second ?? [])
-            return joined.isEmpty ? nil : joined
+            return first + second
         }
+    }
+
+    /// A piece the model gave nothing for: counted as asked about and as left out.
+    private func skippedPiece(_ run: inout RunState) -> [String] {
+        run.pieces += 1
+        run.skipped += 1
+        return []
     }
 
     /// The parts' notes, condensed in batches until they fit the final prompt. Each round makes fewer, shorter notes;

@@ -4973,7 +4973,8 @@ the system audio "Others", and a microphone in the room "Someone", never "Microp
 nobody was assigned to is "Someone" with speaker labels too. A part the model refuses (a refusal or guardrail, or notes that read as one: "I'm sorry",
 "I cannot", "As an AI…", one list of openings, any case) or does not answer in time is left out
 and counted (more than half left out fails the run); a part too long for the context is split in two
-and asked again (twice at most); two calls in a row that time out stop the run; a rate limit
+and asked again (twice at most; each half counts as a piece, and one left out, or still too long,
+counts as left out, so the more-than-half rule weighs pieces); two calls in a row that time out stop the run; a rate limit
 stops it as `busy`; any other model error fails the run, so a summary of part of the meeting is
 never saved as a whole one, and an older summary stays.
 
@@ -4990,7 +4991,9 @@ or an empty title or summary fails the run, and nothing is written.
 summary.json is missing or of another transcript, or with `--force`; exit 0 when written or up
 to date, 3 when written but the transcript files could not be rewritten, 1 otherwise, with
 `status` in the JSON (`written`, `current`, `noTranscript`, `unavailable`, `busy`, `changed`,
-`failed`, `cancelled`). For its whole life it holds the deep transcription lock (§4.16), with
+`failed`, `cancelled`). A session that was not finished properly (manifest recording, processing
+or interrupted, no live writer) is refused before the model, as `session deep-transcribe` refuses
+it: Recover first. For its whole life it holds the deep transcription lock (§4.16), with
 `kind` `summary` in what it writes there: one summary or final transcript runs at a time on this
 Mac, and one started before an app relaunch is seen as busy (the app never adopts or signals a
 job it did not start; Review waits only for a deep pass). Another holder makes it exit 1 as
@@ -5013,7 +5016,11 @@ scanned (lock probes, the transcript pointer, summary.json, and the state) and t
 that is finished as a final transcript requires it (saved, recovered, audio only, transcript
 incomplete; never interrupted or still processing), idle, whose summary is missing or of an
 earlier transcript, and that was not tried with that transcript, is summarized by the command as
-a child process, one at a time. After a meeting is saved, the scan waits until the final
+a child process, one at a time, holding the meeting as a final transcript does
+(`MeetingController.beginUsing`, "Writing summary…"): its commands wait, and Review asked for
+meanwhile says "Summary in progress" and opens when it ends (or offers Cancel Summary). At launch
+no summary starts until the final-transcript reconciliation has queued the meetings saved while
+the app was closed (or had nothing to do). After a meeting is saved, the scan waits until the final
 transcript queue has decided about it, and a meeting queued for a final transcript is summarized
 after it. Nothing starts while a meeting starts, records or saves, while the lock is held (a
 final transcript, or a summary another app process started), or for a meeting in use or under
@@ -5027,7 +5034,8 @@ or Cancel Summarize drops it, so a request that had to wait runs later. Each kee
 asked for; one that summary.json already answers (of the current transcript, its files written,
 made at or after the request, to the second) is dropped, so a command that finished while the
 app was closed is not run again. A summary saved without its transcript files is not counted as
-tried: its files are rewritten (without the model) five minutes later, also with the setting off. Summarize is off, with
+tried: its files are rewritten (without the model) five minutes later, also with the setting off
+or without Apple Intelligence. Summarize is off, with
 the reason as its tooltip, when Apple Intelligence cannot be used; a request that ends without a
 summary (a language it does not support, a failure) says why in an alert. A result the command
 reports decides how a run ended: a summary saved just as a meeting started counts.
