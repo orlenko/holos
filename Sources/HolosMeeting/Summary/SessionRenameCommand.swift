@@ -371,49 +371,75 @@ public enum SessionRenameCommand {
         }
     }
 
-    /// The name's source could not be written and the previous name could not be put back: the meeting may be partly
-    /// renamed.
+    /// The meeting may be partly renamed: the second write failed and the first could not be undone, a write could not
+    /// be confirmed, or the folder moved after the first write.
     struct PartialRename: Error {
         let message: String
     }
 
-    /// Writes the name, then its source, under the writer lock (the caller holds the lease). The manifest's name goes
-    /// first; when meeting.json's `nameSource` then cannot be written, the manifest gets its previous name back, so a
-    /// failure leaves the meeting as it was (and a crash between the two leaves a state a retry repairs: the name and
-    /// source differ from what is asked, so they are written again). A `renamed` event is journaled.
+    /// Writes the name and its source under the writer lock (the caller holds the lease), in the order that leaves a
+    /// meeting stopped between the two showing what was asked as far as it can: for the user's name, the manifest's
+    /// name first, then meeting.json's `nameSource`; for the generated title, `nameSource` `default` first (from then on
+    /// the meeting shows its generated title, or its made-up name, `MeetingNaming.fallbackName`, whatever name is left
+    /// in the manifest), then the manifest's made-up name. When the second write fails, the first is undone, so a
+    /// failure leaves the meeting as it was; when that cannot be undone either, the rename is partial (exit 3). A write
+    /// that fails after its new file is in place (read back as written: its folder not synced) counts as written: the
+    /// rest is still written and the rename ends as partial. A `renamed` event is journaled.
     static func writeName(_ target: (name: String, source: MeetingNameSource), manifest: SessionManifest,
                           meeting: MeetingInfo, session: URL, lease: ProcessingLease,
                           failAfterNameWrite: Bool = false,
                           check: () async throws -> Void = {},
                           nameSourceWriter: (MeetingNameSource, URL, MeetingInfo) throws -> Void) async throws {
         let archive = try SessionArchive.openForMaintenance(at: session, lease: lease)
-        do {
-            // A manifest write can fail after the new one is in place (its folder not synced): then the name is
-            // written, and the rest is still written; the rename ends as partial (exit 3), and the files, not
-            // rewritten, read as out of date (Update Transcript Files).
-            var unconfirmed: (any Error)?
+        var unconfirmed: (any Error)?
+        func writeManifestName() async throws {
             do {
                 try await archive.setName(target.name)
                 if failAfterNameWrite { throw HolosError.io("Cannot sync the session folder.") }
             } catch {
                 guard (try? SessionArchive.readManifest(at: session))?.name == target.name else { throw error }
-                unconfirmed = error
+                unconfirmed = unconfirmed ?? error
             }
-            // The folder is checked again before the second write (`check` throws `PartialRename` when it moved).
-            try await check()
+        }
+        func writeSource() throws {
             do {
                 try nameSourceWriter(target.source, session, meeting)
             } catch {
+                guard (try? SessionFiles.meetingInfo(session: session, manifest: manifest))?.nameSource == target.source
+                else { throw error }
+                unconfirmed = unconfirmed ?? error
+            }
+        }
+        func partial(_ error: any Error, _ restore: any Error) -> PartialRename {
+            log.error("Session \(manifest.id, privacy: .public): the first write could not be undone: \(restore.localizedDescription, privacy: .private)")
+            return PartialRename(message: "Cannot rename the meeting: \(error.localizedDescription) What was written "
+                + "first could not be undone either (\(restore.localizedDescription)), so the meeting may be partly "
+                + "renamed, and its transcript files may still show the old title; rename it again.")
+        }
+        do {
+            if target.source.isUser {
+                try await writeManifestName()
+                // The folder is checked again before the second write (`check` throws `PartialRename` when it moved).
+                try await check()
                 do {
-                    try await archive.setName(manifest.name)
-                } catch let restore {
-                    log.error("Session \(manifest.id, privacy: .public): the previous name could not be put back: \(restore.localizedDescription, privacy: .private)")
-                    throw PartialRename(message: "Cannot rename the meeting: \(error.localizedDescription) Its "
-                        + "previous name could not be put back either (\(restore.localizedDescription)), so the new name "
-                        + "may be saved without the rest, and its transcript files may still show the old title; "
-                        + "rename it again.")
+                    try writeSource()
+                } catch {
+                    do { try await archive.setName(manifest.name) } catch let restore { throw partial(error, restore) }
+                    throw error
                 }
-                throw error
+            } else {
+                try writeSource()
+                try await check()
+                do {
+                    try await writeManifestName()
+                } catch {
+                    do {
+                        try writeNameSource(meeting.nameSource, session: session, meeting: meeting)
+                    } catch let restore {
+                        throw partial(error, restore)
+                    }
+                    throw error
+                }
             }
             do {
                 try await archive.recordEvent(kind: MeetingEventKind.renamed,
@@ -527,7 +553,8 @@ public enum SessionRenameCommand {
 
     /// Sets `nameSource` in meeting.json (0600, atomic), keeping every other field as it is, also fields a newer
     /// build added; a meeting from before meeting.json existed gets one with its inferred settings.
-    static func writeNameSource(_ source: MeetingNameSource, session: URL, meeting: MeetingInfo) throws {
+    /// A nil `source` removes it (a meeting saved before it was recorded, put back as it was).
+    static func writeNameSource(_ source: MeetingNameSource?, session: URL, meeting: MeetingInfo) throws {
         let url = SessionPaths.meetingInfo(session)
         var object: [String: Any]
         if let data = try AtomicFile.readIfPresent(url, maxBytes: 1 << 20) {
@@ -539,7 +566,7 @@ public enum SessionRenameCommand {
             let data = try HolosJSON.encoder().encode(meeting)
             object = try JSONSerialization.jsonObject(with: data) as? [String: Any] ?? [:]
         }
-        object["nameSource"] = source.rawValue
+        object["nameSource"] = source?.rawValue
         let data = try JSONSerialization.data(withJSONObject: object,
                                               options: [.sortedKeys, .prettyPrinted, .withoutEscapingSlashes])
         try AtomicFile.write(data, to: url)

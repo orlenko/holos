@@ -5033,14 +5033,21 @@ time).
 meeting.json is patched as a JSON object, so fields a newer build added within schema 1 are kept;
 a meeting without one gets one with its inferred settings; one that cannot be read (damaged,
 newer) refuses the rename. Both writes are atomic, under the processing lease and the writer lock
-(`openForMaintenance`): the manifest's name first, then meeting.json's `nameSource`; when that second
-write fails, the manifest gets its previous name back, so a failure leaves the meeting as it was
-(when that cannot be put back either, the rename may be partial: exit 3), and a manifest write that
-fails after the new manifest is in place (its folder not synced; the name read back is the new one)
-is partial too: the source and event are still written, the files are not rewritten, exit 3, and
-the files read as out of date. And
-a crash between them leaves a name and source that differ from the ones asked for, which a retry
-writes again. A `renamed` event (`nameSource`) is journaled. Then the transcript files are rewritten under the speaker lock with
+(`openForMaintenance`), in the order that leaves a meeting stopped between them showing what was
+asked as far as it can, so nothing about the request needs remembering: for the user's name, the
+manifest's name first, then meeting.json's `nameSource` `user`; for the generated title,
+`nameSource` `default` first, then the made-up name. Under a `default` source a name that is not one
+Voice is Local makes up (a leftover of the user's) is never shown: the meeting shows its generated
+title, else its made-up name (`MeetingNaming.fallbackName`, which the list, Review and the heading
+use), so a `--generated` stopped after its first write already shows the generated title, its files
+read as out of date, and Update Transcript Files (the meeting's rename now, `--generated`) writes
+the made-up name and the files. A user rename stopped after its first write still shows what it
+showed before. When the second write fails, the first is undone, so a failure leaves the meeting
+as it was (when that cannot be undone either, the rename may be partial: exit 3). A write that
+fails after its new file is in place (its folder not synced; the name or source read back is the
+new one) counts as written: the rest is still written, the files are not rewritten, exit 3, and they
+read as out of date. A crash between them leaves a name and source that differ from the ones asked
+for, which a retry writes again. A `renamed` event (`nameSource`) is journaled. Then the transcript files are rewritten under the speaker lock with
 the people store's names, Remember voices and the user's own name read once (the key a current
 summary is checked with; read from the people store under its lock, inside the speaker lock, when
 each rewrite runs and held until the files are written, as `session summarize` does at its save,
@@ -5049,7 +5056,7 @@ heading follows and the summary stays, without the
 model; transcript files without a usable record of what was generated (no `exports/.generated.json`,
 or a damaged one, `SessionExports.hasUsableRecord`: one that does not decode, or whose entries are not
 the transcript file names with a 64-digit lowercase SHA-256, or that does not cover all three
-formats in `files` or in `pending` (as `write` records them), `GeneratedRecord.isValid`, which every
+formats in `pending` when it has one (a write in progress records them all there), else in `files`, `GeneratedRecord.isValid`, which every
 regeneration reads the same way; any of the Markdown, JSON and text files) are
 first rewritten under the old name, so they
 are not taken for edited files and moved aside, and when that fails (or the record cannot be read
@@ -5340,7 +5347,10 @@ Rename off, people read under their lock when the files are written, a name that
 exiting 3, a name saved but not confirmed exiting 3, the derived out-of-date check (a heading of
 another title, a JSON file not the one recorded, a damaged or mid-write record, current files, the
 cache), Update Transcript Files rewriting for the title shown, files behind the speaker labels known,
-each file write checking the folder, a
+each file write checking the folder, both partial orders (a `--generated` stopped after its source
+already showing the generated title and finished by Update Transcript Files; a user rename stopped
+after its name showing what it showed), a published source treated as partial, a pending map that
+must be complete, a
 transcript from a newer build, damaged, or unreadable now, an unreadable meeting.json).
 
 **Follow-ups.** The summary in Review. If Apple's model proves too weak on long or noisy meetings, a local

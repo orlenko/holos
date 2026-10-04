@@ -234,10 +234,44 @@ public enum MeetingNaming {
     /// the user's name, else the title of a summary made from the current transcript (`transcriptID`), else the name
     /// (the default one). A summary of an earlier transcript (a final transcript replaced it) gives no title until it
     /// is made again, since the transcript files cannot carry it.
+    ///
+    /// `fallback` is the name shown when neither applies (`fallbackName`; nil: `name`).
     public static func title(name: String, source: MeetingNameSource, summary: MeetingSummaryRecord?,
-                             transcriptID: String?) -> String {
-        displayTitle(name: name, source: source,
+                             transcriptID: String?, fallback: String? = nil) -> String {
+        displayTitle(name: fallback ?? name, source: source,
                      generatedTitle: MeetingSummaryStore.current(summary, transcriptID: transcriptID)?.title)
+    }
+
+    /// Whether `name` is one Voice is Local makes up for such a meeting (`source(stored: nil, …)` is `default`): a
+    /// default recording name, or an import's file name without its extension.
+    public static func isMadeUp(_ name: String, origin: MeetingOrigin, importedFileName: String?) -> Bool {
+        !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && source(stored: nil, name: name, importedFileName: origin == .imported ? importedFileName : nil) == .default
+    }
+
+    /// The name Voice is Local makes up for a meeting, from its own data: an import's file name without its extension
+    /// (else "Imported meeting"), or a recording's start ("Meeting 2026-10-03 14:00", in `timeZone`).
+    public static func madeUpName(createdAt: Date, origin: MeetingOrigin, importedFileName: String?,
+                                  timeZone: TimeZone = .current) -> String {
+        if origin == .imported {
+            let stem = ((importedFileName ?? "") as NSString).deletingPathExtension
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            return stem.isEmpty ? "Imported meeting" : stem
+        }
+        return MeetingStartSettings.defaultName(now: createdAt, timeZone: timeZone)
+    }
+
+    /// The name a meeting shows when it has no name of the user's and no generated title (`title`'s `fallback`): its
+    /// manifest name, except when the source is `default` but the name is not one Voice is Local made up (a
+    /// `--generated` rename stopped after writing the source, before the made-up name): then the made-up name, so
+    /// a leftover name of the user's never shows as if it were the generated one.
+    public static func fallbackName(name: String, source: MeetingNameSource, createdAt: Date, origin: MeetingOrigin,
+                                    importedFileName: String?, timeZone: TimeZone = .current) -> String {
+        guard source == .default, !isMadeUp(name, origin: origin, importedFileName: importedFileName) else {
+            return name
+        }
+        return madeUpName(createdAt: createdAt, origin: origin, importedFileName: importedFileName,
+                          timeZone: timeZone)
     }
 
     /// The user's name, else `generatedTitle`, else the name (`title` decides which generated title counts).
@@ -275,7 +309,8 @@ public enum MeetingNaming {
     public static func defaultName(current: String, currentSource: MeetingNameSource, createdAt: Date,
                                    origin: MeetingOrigin, importedFileName: String?,
                                    timeZone: TimeZone = .current) -> String {
-        if currentSource == .default, !current.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        // Kept only when it is a made-up name too (a leftover name of the user's under a `default` source is not).
+        if currentSource == .default, isMadeUp(current, origin: origin, importedFileName: importedFileName) {
             return current
         }
         if origin == .imported {
@@ -300,7 +335,11 @@ public enum MeetingNaming {
         // the one the Meetings list shows: none of a summary when the transcript cannot be read.
         return title(name: manifest.name, source: source,
                      summary: MeetingSummaryStore.readIfUsable(session: session, sessionID: manifest.id),
-                     transcriptID: try? SessionFiles.currentTranscript(session: session)?.id)
+                     transcriptID: try? SessionFiles.currentTranscript(session: session)?.id,
+                     fallback: meeting.map {
+                         fallbackName(name: manifest.name, source: source, createdAt: manifest.createdAt,
+                                      origin: $0.origin, importedFileName: $0.importedFileName)
+                     })
     }
 }
 

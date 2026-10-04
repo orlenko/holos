@@ -111,10 +111,14 @@ public enum SessionExports {
             document.summary = exportSummary(snapshot, key: MeetingSummaryKey(document, selfName: selfName))
             // The heading follows the rule the Meetings list does (`MeetingNaming.title`): the title of a summary of
             // this transcript heads the files also while its text is left out (made with other speaker names).
+            let source = nameSource(snapshot)
             document.heading = MeetingNaming.title(
-                name: snapshot.manifest.name, source: nameSource(snapshot),
+                name: snapshot.manifest.name, source: source,
                 summary: MeetingSummaryStore.readIfUsable(session: snapshot.session, sessionID: snapshot.manifest.id),
-                transcriptID: document.transcript.id)
+                transcriptID: document.transcript.id,
+                fallback: MeetingNaming.fallbackName(
+                    name: snapshot.manifest.name, source: source, createdAt: snapshot.manifest.createdAt,
+                    origin: snapshot.meeting.origin, importedFileName: snapshot.meeting.importedFileName))
         }
         return document
     }
@@ -172,8 +176,11 @@ public enum SessionExports {
         /// An empty or partial record would leave existing files unknown, so it counts as damaged.
         var isValid: Bool {
             let names = Set(SessionExports.formats.map(SessionExports.fileName))
-            guard names.isSubset(of: Set(files.keys)) || names.isSubset(of: Set((pending ?? [:]).keys)) else {
-                return false
+            // A write in progress has recorded every format in `pending`; a finished one, in `files`.
+            if let pending {
+                guard names.isSubset(of: Set(pending.keys)) else { return false }
+            } else {
+                guard names.isSubset(of: Set(files.keys)) else { return false }
             }
             return [files, pending ?? [:]].allSatisfy { entries in
                 entries.allSatisfy { name, digest in

@@ -93,6 +93,9 @@ public struct SessionSummary: Codable, Sendable, Equatable, Identifiable {
     public var languageWork: LanguageWork?
     /// Where `name` came from (`MeetingNaming.source`: meeting.json's, else inferred from the name).
     public var nameSource: MeetingNameSource
+    /// The name shown when the meeting has no name of the user's and no generated title (`MeetingNaming.fallbackName`):
+    /// `name`, or the made-up name when a leftover name sits under a `default` source.
+    public var shownName: String
     /// Why meeting.json cannot be read (damaged, of another session, written by a newer build, unreadable now); nil
     /// when it can, or when there is none (a meeting saved before it existed). Rename refuses such a meeting.
     public var metadataProblem: String?
@@ -112,13 +115,15 @@ public struct SessionSummary: Codable, Sendable, Equatable, Identifiable {
         case id, directory, name, createdAt, source, origin, state, manifestStatus, savedSeconds, chunkCount
         case transcriptID, transcriptProblem, transcriptRefused, speakerState, labelMessage, runID, labelsReadyAt
         case hasSpeakerEdits, phase, pid, liveness, bytes, derivedBytes, audioDeleted, languageWork, nameSource
+        case shownName
         case metadataProblem, exportsProblem, jobInProgress
     }
 
     /// The title the Meetings list shows (`MeetingNaming.title`, the rule the transcript files' heading follows too):
     /// the user's name, else the title of a summary of the current transcript, else the name.
     public var displayTitle: String {
-        MeetingNaming.title(name: name, source: nameSource, summary: generatedSummary, transcriptID: transcriptID)
+        MeetingNaming.title(name: name, source: nameSource, summary: generatedSummary, transcriptID: transcriptID,
+                            fallback: shownName)
     }
 
     /// The generated title the meeting can show (`MeetingNaming.title`'s rule): a summary of the current transcript's;
@@ -142,7 +147,7 @@ public struct SessionSummary: Codable, Sendable, Equatable, Identifiable {
                 liveness: RecorderLiveness, bytes: Int64 = 0, derivedBytes: Int64 = 0, audioDeleted: Bool = false,
                 languageWork: LanguageWork? = nil, nameSource: MeetingNameSource? = nil,
                 generatedSummary: MeetingSummaryRecord? = nil, metadataProblem: String? = nil,
-                exportsProblem: String? = nil, jobInProgress: String? = nil) {
+                exportsProblem: String? = nil, jobInProgress: String? = nil, shownName: String? = nil) {
         self.id = id; self.directory = directory; self.name = name; self.createdAt = createdAt
         self.source = source; self.origin = origin; self.state = state; self.manifestStatus = manifestStatus
         self.savedSeconds = savedSeconds; self.chunkCount = chunkCount; self.transcriptID = transcriptID
@@ -157,6 +162,7 @@ public struct SessionSummary: Codable, Sendable, Equatable, Identifiable {
         self.metadataProblem = metadataProblem
         self.exportsProblem = exportsProblem
         self.jobInProgress = jobInProgress
+        self.shownName = shownName ?? name
     }
 }
 
@@ -249,7 +255,14 @@ public enum SessionCatalog {
             metadataProblem: { if case .failure(let error) = meetingRead { error.localizedDescription } else { nil } }(),
             exportsProblem: SessionExports.recordIsFromNewerVersion(session: session)
                 ? "exports/.generated.json was written by a newer version of Voice is Local." : nil,
-            jobInProgress: jobInProgress(jobState ?? DeepTranscriptionLock.state(), sessionID: manifest.id))
+            jobInProgress: jobInProgress(jobState ?? DeepTranscriptionLock.state(), sessionID: manifest.id),
+            shownName: meeting.map {
+                MeetingNaming.fallbackName(
+                    name: manifest.name,
+                    source: MeetingNaming.source(stored: $0.nameSource, name: manifest.name,
+                                                 importedFileName: $0.origin == .imported ? $0.importedFileName : nil),
+                    createdAt: manifest.createdAt, origin: $0.origin, importedFileName: $0.importedFileName)
+            })
     }
 
     /// What the background-job lock says runs on meeting `sessionID`: a summary or a final transcript of it, in any

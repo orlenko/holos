@@ -573,7 +573,7 @@ final class MeetingsPane: NSViewController, NSTableViewDataSource, NSTableViewDe
         lines.append(Self.stateText(summary) + " · " + MeetingFormat.size(summary.bytes) + " on disk")
         if isLive {
             lines.append("Double-click or press Return to watch the live transcript.")
-        } else if MeetingActionPolicy.renames(summary) {
+        } else if enabledActions(summary).contains(.rename) {
             lines.append("Double-click the title or press ⌘R to rename the meeting.")
         }
         if let message = summary.labelMessage, summary.speakerState != .labelled { lines.append(message) }

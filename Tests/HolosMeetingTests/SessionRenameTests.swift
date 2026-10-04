@@ -882,7 +882,11 @@ private func listed(name: String, source: MeetingNameSource, generated: String?)
     let outcome = await SessionRenameCommand.run(request)
     #expect(chmod(session.path, 0o700) == 0)
     #expect(outcome.exitCode == 3, "Partly written: the files may show the old title")
-    #expect(outcome.message.contains("could not be put back"))
+    #expect(outcome.message.contains("could not be undone"))
+    // The user's name was written first: stopped there, the source is still default, so the meeting shows its
+    // generated title, as it did before.
+    #expect(try meetingJSON(session)["nameSource"] as? String == "default")
+    #expect(SessionCatalog.summary(session: session, jobState: .free).displayTitle == "Parser rewrite and release plan")
 }
 
 // MARK: - Jobs elsewhere, each write on the locked folder, people read at the write
@@ -1092,4 +1096,90 @@ private func listed(name: String, source: MeetingNameSource, generated: String?)
     #expect(outcome.message.contains("saved"))
     #expect(try SessionArchive.readManifest(at: session).name == "Weekly sync")
     #expect(try meetingJSON(session)["nameSource"] as? String == "user", "The rest is still written")
+}
+
+// MARK: - Partial writes show what was asked
+
+@Test func aLeftoverNameIsNotShownForTheGeneratedTitle() {
+    let start = Date(timeIntervalSince1970: 1_790_000_000)
+    // The source says Voice is Local made the name up, but the manifest still has the user's: the made-up one shows.
+    #expect(MeetingNaming.fallbackName(name: "Weekly sync", source: .default, createdAt: start, origin: .recorded,
+                                       importedFileName: nil, timeZone: utc) == "Meeting 2026-09-21 14:13")
+    #expect(MeetingNaming.fallbackName(name: "Meeting 2026-09-21 09:00", source: .default, createdAt: start,
+                                       origin: .recorded, importedFileName: nil, timeZone: utc)
+        == "Meeting 2026-09-21 09:00")
+    #expect(MeetingNaming.fallbackName(name: "board call", source: .default, createdAt: start, origin: .imported,
+                                       importedFileName: "board call.m4a", timeZone: utc) == "board call")
+    #expect(MeetingNaming.fallbackName(name: "Weekly sync", source: .user, createdAt: start, origin: .recorded,
+                                       importedFileName: nil, timeZone: utc) == "Weekly sync")
+    #expect(MeetingNaming.title(name: "Weekly sync", source: .default, summary: nil, transcriptID: "T",
+                                fallback: "Meeting 2026-09-21 14:13") == "Meeting 2026-09-21 14:13")
+    var summary = listed(name: "Weekly sync", source: .default, generated: nil)
+    summary.shownName = "Meeting 2026-09-21 14:13"
+    #expect(summary.displayTitle == "Meeting 2026-09-21 14:13")
+}
+
+@Test func aPartialGeneratedRenameAlreadyShowsTheGeneratedTitle() async throws {
+    let temp = try TemporaryDirectory("rename")
+    defer { temp.remove() }
+    let session = try await renameSession(in: temp.url)
+    try writeSummary(session)
+    _ = await rename(session, "Weekly sync")
+    // --generated writes nameSource first; then the folder turns read-only, so the made-up name is not written, and
+    // the source cannot be put back.
+    var request = SessionRenameCommand.Request(session: session, name: nil, voiceInputs: { voice },
+                                               jobLock: temp.url.appendingPathComponent("jobs.lock"), timeZone: utc)
+    request.nameSourceWriter = { source, folder, meeting in
+        try SessionRenameCommand.writeNameSource(source, session: folder, meeting: meeting)
+        _ = chmod(folder.path, 0o500)
+    }
+    let partial = await SessionRenameCommand.run(request)
+    #expect(chmod(session.path, 0o700) == 0)
+    #expect(partial.exitCode == 3)
+    #expect(try meetingJSON(session)["nameSource"] as? String == "default")
+    #expect(try SessionArchive.readManifest(at: session).name == "Weekly sync", "Left over")
+    // Already shows what was asked, and the files (headed "Weekly sync") read as out of date.
+    let summary = SessionCatalog.summary(session: session, jobState: .free)
+    #expect(summary.displayTitle == "Parser rewrite and release plan")
+    #expect(MeetingNaming.currentTitle(session: session) == "Parser rewrite and release plan")
+    #expect(SessionExports.filesState(session: session, title: summary.displayTitle) == .stale)
+    // Update Transcript Files finishes it as --generated: the made-up name, and the files.
+    #expect(MeetingRenameRequest.retry(summary) == .generated)
+    let update = await rename(session, nil)
+    #expect(update.status == .renamed)
+    #expect(update.exitCode == 0)
+    let manifest = try SessionArchive.readManifest(at: session)
+    #expect(manifest.name == MeetingStartSettings.defaultName(now: manifest.createdAt, timeZone: utc))
+    #expect(SessionExports.filesState(session: session, title: summary.displayTitle) == .current)
+}
+
+@Test func aPublishedNameSourceIsAPartialRenameNotARollback() async throws {
+    let temp = try TemporaryDirectory("rename")
+    defer { temp.remove() }
+    let session = try await renameSession(in: temp.url)
+    struct SyncFailed: Error {}
+    var request = SessionRenameCommand.Request(session: session, name: "Weekly sync", voiceInputs: { voice },
+                                               jobLock: temp.url.appendingPathComponent("jobs.lock"), timeZone: utc)
+    // meeting.json is in place, then its folder cannot be synced.
+    request.nameSourceWriter = { source, folder, meeting in
+        try SessionRenameCommand.writeNameSource(source, session: folder, meeting: meeting)
+        throw SyncFailed()
+    }
+    let outcome = await SessionRenameCommand.run(request)
+    #expect(outcome.exitCode == 3)
+    #expect(outcome.message.contains("saved"))
+    #expect(try SessionArchive.readManifest(at: session).name == "Weekly sync", "Not rolled back")
+    #expect(try meetingJSON(session)["nameSource"] as? String == "user")
+    #expect(SessionCatalog.summary(session: session, jobState: .free).displayTitle == "Weekly sync")
+}
+
+@Test func aPendingMapMustBeCompleteWhateverFilesHolds() async throws {
+    let temp = try TemporaryDirectory("rename")
+    defer { temp.remove() }
+    let session = try await renameSession(in: temp.url)
+    let digest = String(repeating: "a", count: 64)
+    let all = #""transcript.md":"\#(digest)","transcript.json":"\#(digest)","transcript.txt":"\#(digest)""#
+    let record = #"{"schemaVersion":1,"files":{\#(all)},"pending":{"transcript.md":"\#(digest)"}}"#
+    try AtomicFile.write(Data(record.utf8), to: SessionPaths.generatedExports(session))
+    #expect(try !SessionExports.hasUsableRecord(session: session))
 }
