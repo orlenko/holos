@@ -882,6 +882,23 @@ private func trackDocument(source: AudioSource) -> ExportDocument {
     #expect(MeetingSummarySchedule.satisfied([legacy], by: [made("R2")]).isEmpty)
 }
 
+@Test func requestsGivenIDsWhenLoadedKeepThemAfterAReload() throws {
+    // A queue saved before requests had IDs: each gets one, and the data to save back at once.
+    let legacy = Data(#"[{"sessionID":"a","requestedAtMilliseconds":5},{"sessionID":"b","requestedAtMilliseconds":6}]"#
+        .utf8)
+    let first = MeetingSummarySchedule.decodeRequests(legacy)
+    #expect(first.requests.map(\.sessionID) == ["a", "b"])
+    let saved = try #require(first.migrated)
+    // Reloaded from what was saved: the same IDs, and nothing more to save.
+    let reloaded = MeetingSummarySchedule.decodeRequests(saved)
+    #expect(reloaded.requests == first.requests)
+    #expect(reloaded.migrated == nil)
+    #expect(MeetingSummarySchedule.decodeRequests(saved).requests.map(\.id) == first.requests.map(\.id))
+    // Nothing saved, or something unreadable: no requests.
+    #expect(MeetingSummarySchedule.decodeRequests(nil).requests.isEmpty)
+    #expect(MeetingSummarySchedule.decodeRequests(Data("{".utf8)).requests.isEmpty)
+}
+
 @Test func aRunForARequestWritesItsID() async throws {
     let temp = try TemporaryDirectory("summary")
     defer { temp.remove() }

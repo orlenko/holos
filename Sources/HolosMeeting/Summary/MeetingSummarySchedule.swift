@@ -169,6 +169,19 @@ public enum MeetingSummarySchedule {
         }
     }
 
+    /// The app's saved queue (`data`), and the data to save back at once when requests saved before they had IDs got
+    /// theirs now (nil when none did): saved before anything can run, those IDs are the ones a run writes into
+    /// summary.json, so a reload does not give them new ones that nothing answers.
+    public static func decodeRequests(_ data: Data?) -> (requests: [Request], migrated: Data?) {
+        struct Probe: Decodable { var id: String? }
+        guard let data, let requests = try? HolosJSON.decoder().decode([Request].self, from: data) else {
+            return ([], nil)
+        }
+        let probes = (try? HolosJSON.decoder().decode([Probe].self, from: data)) ?? []
+        guard probes.contains(where: { $0.id == nil }) else { return (requests, nil) }
+        return (requests, try? HolosJSON.encoder(pretty: false).encode(requests))
+    }
+
     /// People's names and "Remember voices" as one string, for the key cache.
     static func voiceStamp(names: [String: String], recognition: Bool) -> String {
         let text = names.sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value)" }.joined(separator: "\u{1F}")

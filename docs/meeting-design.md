@@ -5172,7 +5172,8 @@ new click replaces it), each with a random ID (no clock time, which can be set b
 preferences would start again); the run made for it passes it (`--answers-request`, hidden) and summary.json keeps
 it (`answersRequest`). One that summary.json already answers (current, its files written, made for that ID; a
 summary made for none answers none) is dropped, so a command that finished while the app was closed is not run
-again. A summary saved without its transcript files is not counted as
+again. A request saved before requests had IDs gets one when the queue loads, saved back at once
+(`MeetingSummarySchedule.decodeRequests`), so the ID a run writes is the one the queue keeps. A summary saved without its transcript files is not counted as
 tried: its files are rewritten (without the model) five minutes later, also with the setting off
 or without Apple Intelligence. Summarize is off, with
 the reason as its tooltip, when Apple Intelligence cannot be used; a request that ends without a

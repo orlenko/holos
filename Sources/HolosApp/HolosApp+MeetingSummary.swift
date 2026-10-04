@@ -48,8 +48,10 @@ final class MeetingSummaryAppState {
     }
 
     private static func loadRequests() -> [MeetingSummarySchedule.Request] {
-        guard let data = UserDefaults.standard.data(forKey: requestsKey) else { return [] }
-        return (try? HolosJSON.decoder().decode([MeetingSummarySchedule.Request].self, from: data)) ?? []
+        let loaded = MeetingSummarySchedule.decodeRequests(UserDefaults.standard.data(forKey: requestsKey))
+        // Requests saved before they had IDs got theirs now: saved at once, before anything can run them.
+        if let migrated = loaded.migrated { UserDefaults.standard.set(migrated, forKey: requestsKey) }
+        return loaded.requests
     }
 
     /// The people store could not be used for good (a newer build wrote it): no summary starts until it changes, and
