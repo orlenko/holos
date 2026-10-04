@@ -249,63 +249,21 @@ public enum MeetingNaming {
     /// the user's name, else the title of a summary made from the current transcript (`transcriptID`), else the name
     /// (the default one). A summary of an earlier transcript (a final transcript replaced it) gives no title until it
     /// is made again, since the transcript files cannot carry it.
-    ///
-    /// `fallback` is the name shown when neither applies (`fallbackName`; nil: `name`).
     public static func title(name: String, source: MeetingNameSource, summary: MeetingSummaryRecord?,
-                             transcriptID: String?, fallback: String? = nil) -> String {
-        displayTitle(name: fallback ?? name, source: source,
+                             transcriptID: String?) -> String {
+        displayTitle(name: name, source: source,
                      generatedTitle: MeetingSummaryStore.current(summary, transcriptID: transcriptID)?.title)
     }
 
-    /// Whether `name` is the one Voice is Local made up for this meeting, from its own data (not merely shaped like
-    /// one): an import's file name without its extension ("Imported meeting" without one), "Meeting" (the
-    /// command-line default), or "Meeting yyyy-MM-dd HH:mm" for when it started, in any time zone (within 15 hours of
-    /// `createdAt`: the start panel suggests it a few minutes before recording begins, and the zone may have changed
-    /// since). A user's name of that shape for another day is not.
-    public static func isMadeUp(_ name: String, createdAt: Date, origin: MeetingOrigin,
-                                importedFileName: String?) -> Bool {
-        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return false }
-        if trimmed == madeUpName(createdAt: createdAt, origin: origin, importedFileName: importedFileName) {
-            return true
+    /// A meeting's name: meeting.json's (`MeetingInfo.name`, written with its `nameSource` in one write by a rename,
+    /// the one place a rename commits), else, for a meeting never renamed (or one meeting.json cannot be read for), the
+    /// manifest's. The manifest's name is a copy a rename updates after meeting.json; when they differ, the meeting's
+    /// files read as out of date and Update Transcript Files (Finish Rename) writes the copy again.
+    public static func name(manifestName: String, meeting: MeetingInfo?) -> String {
+        guard let name = meeting?.name, !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return manifestName
         }
-        if origin == .imported { return false }
-        if trimmed == "Meeting" { return true }
-        guard let match = trimmed.wholeMatch(of: /Meeting (\d{4}-\d{2}-\d{2} \d{2}:\d{2})/) else { return false }
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.calendar = Calendar(identifier: .gregorian)
-        formatter.timeZone = TimeZone(identifier: "UTC")
-        formatter.dateFormat = "yyyy-MM-dd HH:mm"
-        guard let stamped = formatter.date(from: String(match.1)) else { return false }
-        return abs(stamped.timeIntervalSince(createdAt)) <= 15 * 3600
-    }
-
-    /// The name Voice is Local makes up for a meeting, from its own data: an import's file name without its extension
-    /// (else "Imported meeting"), or a recording's start ("Meeting 2026-10-03 14:00", in `timeZone`).
-    public static func madeUpName(createdAt: Date, origin: MeetingOrigin, importedFileName: String?,
-                                  timeZone: TimeZone = .current) -> String {
-        if origin == .imported {
-            let stem = ((importedFileName ?? "") as NSString).deletingPathExtension
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            return stem.isEmpty ? "Imported meeting" : stem
-        }
-        return MeetingStartSettings.defaultName(now: createdAt, timeZone: timeZone)
-    }
-
-    /// The name a meeting shows when it has no name of the user's and no generated title (`title`'s `fallback`): its
-    /// manifest name, except when the source written in meeting.json (`source`: callers pass the stored one, not one
-    /// inferred from the name) is `default` but the name is not the one Voice is Local made up (a
-    /// `--generated` rename stopped after writing the source, before the made-up name): then the made-up name, so
-    /// a leftover name of the user's never shows as if it were the generated one.
-    public static func fallbackName(name: String, source: MeetingNameSource, createdAt: Date, origin: MeetingOrigin,
-                                    importedFileName: String?, timeZone: TimeZone = .current) -> String {
-        guard source == .default,
-              !isMadeUp(name, createdAt: createdAt, origin: origin, importedFileName: importedFileName) else {
-            return name
-        }
-        return madeUpName(createdAt: createdAt, origin: origin, importedFileName: importedFileName,
-                          timeZone: timeZone)
+        return name
     }
 
     /// The user's name, else `generatedTitle`, else the name (`title` decides which generated title counts).
@@ -336,16 +294,15 @@ public enum MeetingNaming {
     }
 
     /// The name a meeting gets back when the user chooses its generated title again (`MeetingNameSource.default`):
-    /// its name when its source (`currentSource`, as `source` reads it) is already `default`, else, whatever the name
-    /// looks like (a user may have typed one that matches the default pattern), the default name made from the
-    /// meeting's own data: an import's file name without the extension (else "Imported meeting"), or a recording's
-    /// start ("Meeting 2026-10-03 14:00", in `timeZone`).
+    /// its name when its source (`currentSource`, as `source` reads it) is already `default` (the name and source are
+    /// written together, so a `default` source always sits beside the name Voice is Local made up), else, whatever
+    /// the name looks like (a user may have typed one that matches the default pattern), the default name made from
+    /// the meeting's own data: an import's file name without the extension (else "Imported meeting"), or a
+    /// recording's start ("Meeting 2026-10-03 14:00", in `timeZone`).
     public static func defaultName(current: String, currentSource: MeetingNameSource, createdAt: Date,
                                    origin: MeetingOrigin, importedFileName: String?,
                                    timeZone: TimeZone = .current) -> String {
-        // Kept only when it is a made-up name too (a leftover name of the user's under a `default` source is not).
-        if currentSource == .default,
-           isMadeUp(current, createdAt: createdAt, origin: origin, importedFileName: importedFileName) {
+        if currentSource == .default, !current.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             return current
         }
         if origin == .imported {
@@ -356,26 +313,22 @@ public enum MeetingNaming {
         return MeetingStartSettings.defaultName(now: createdAt, timeZone: timeZone)
     }
 
-    /// The title a meeting shows now (`title`), read from its folder: the manifest's name, meeting.json's
-    /// `nameSource` (unknown when meeting.json cannot be read: the user's), summary.json and the current transcript's
-    /// ID. Nil without a readable manifest. For windows that show a meeting outside the list (Review).
+    /// The title a meeting shows now (`title`), read from its folder: its name (`name(manifestName:meeting:)`),
+    /// meeting.json's `nameSource` (unknown when meeting.json cannot be read: the user's), summary.json and the current
+    /// transcript's ID. Nil without a readable manifest. For windows that show a meeting outside the list (Review).
     public static func currentTitle(session: URL) -> String? {
         guard let manifest = try? SessionArchive.readManifest(at: session) else { return nil }
         let meeting = try? SessionFiles.meetingInfo(session: session, manifest: manifest)
+        let name = name(manifestName: manifest.name, meeting: meeting)
         let source = meeting.map {
-            MeetingNaming.source(stored: $0.nameSource, name: manifest.name,
+            MeetingNaming.source(stored: $0.nameSource, name: name,
                                  importedFileName: $0.origin == .imported ? $0.importedFileName : nil)
         } ?? .user
         // The revision read and checked as the catalog reads it (`SessionFiles.currentTranscript`), so the title is
         // the one the Meetings list shows: none of a summary when the transcript cannot be read.
-        return title(name: manifest.name, source: source,
+        return title(name: name, source: source,
                      summary: MeetingSummaryStore.readIfUsable(session: session, sessionID: manifest.id),
-                     transcriptID: try? SessionFiles.currentTranscript(session: session)?.id,
-                     fallback: meeting.map {
-                         fallbackName(name: manifest.name, source: $0.nameSource ?? .user,
-                                      createdAt: manifest.createdAt,
-                                      origin: $0.origin, importedFileName: $0.importedFileName)
-                     })
+                     transcriptID: try? SessionFiles.currentTranscript(session: session)?.id)
     }
 }
 

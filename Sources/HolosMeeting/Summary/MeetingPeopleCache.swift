@@ -81,8 +81,8 @@ public final class TranscriptFilesCache: Sendable {
     public init() {}
 
     public func state(of summary: SessionSummary) -> SessionExports.FilesState {
-        // A switch to the generated title left unfinished: out of date whatever the files hold.
-        if summary.nameIsUnfinished { return .stale }
+        // The manifest's copy of the name not updated after a rename: out of date whatever the files hold.
+        if summary.nameCopyIsStale { return .stale }
         let session = summary.directory
         let stamp = (SessionExports.formats.map { SessionPaths.export($0.rawValue, in: session) }
             + [SessionPaths.generatedExports(session), SessionPaths.transcriptPointer(session)])

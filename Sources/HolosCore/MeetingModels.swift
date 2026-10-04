@@ -200,19 +200,24 @@ public struct MeetingInfo: Codable, Sendable, Equatable {
     /// post-processing transcribes the saved audio again in each and keeps, passage by passage, the language that
     /// fits (LANG2, §4.14). Nil for one language and in older sessions.
     public var languages: [String]?
-    /// Where the manifest's name came from; nil in meetings saved before it was recorded, whose source
+    /// Where the meeting's name came from; nil in meetings saved before it was recorded, whose source
     /// `MeetingNaming.source` infers from the name.
     public var nameSource: MeetingNameSource?
+    /// The meeting's name, written by a rename together with `nameSource` in one write (the rename's commit point,
+    /// docs/meeting-design.md §4.17); the manifest's name is a copy updated after it. Nil until a rename: the
+    /// manifest's name is the meeting's.
+    public var name: String?
 
     public init(schemaVersion: Int = 1, sessionID: String, mode: MeetingMode, othersInRoom: Bool,
                 applicationBundleID: String? = nil, origin: MeetingOrigin = .recorded,
                 importedFileName: String? = nil, expectedSpeakers: Int? = nil, createdAt: Date = Date(),
-                languages: [String]? = nil, nameSource: MeetingNameSource? = nil) {
+                languages: [String]? = nil, nameSource: MeetingNameSource? = nil, name: String? = nil) {
         self.schemaVersion = schemaVersion; self.sessionID = sessionID; self.mode = mode
         self.othersInRoom = othersInRoom; self.applicationBundleID = applicationBundleID
         self.origin = origin; self.importedFileName = importedFileName
         self.expectedSpeakers = expectedSpeakers; self.createdAt = createdAt; self.languages = languages
         self.nameSource = nameSource
+        self.name = name
     }
 
     /// Settings assumed for archives created before meeting.json existed.

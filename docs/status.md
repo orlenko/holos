@@ -424,9 +424,11 @@ thumbnail timeline, and a larger local-model benchmark are follow-ups.
 - Renaming a meeting (docs/meeting-design.md §4.17): Rename… in the row's menu, ⌘R, or a
   double-click on the title edits the name in the row (Return saves, Escape cancels; empty, or
   Use Generated Title, gives back the generated title); `voiceislocal session rename <session>
-  <name> | --generated [--json]` does the same. The name goes to the manifest and meeting.json's
-  `nameSource` becomes `user` (`default` for the generated title), under the processing lease and
-  the writer lock, then the transcript files are rewritten without the model. Refused while
+  <name> | --generated [--json]` does the same. The name and its `nameSource` (`user`, or
+  `default` for the generated title) are committed to meeting.json in one write, under the processing
+  lease and the writer lock; the manifest's name is then updated as a copy, and the transcript files
+  are rewritten without the model. A stale copy or files read as out of date and are repaired by
+  Update Transcript Files (Finish Rename). Refused while
   recording or saving, while another command holds the meeting, and while a final transcript or
   summary of it runs. Unit-tested on fixture sessions (persisted, reverted, refusals, files,
   special characters, long names); the row's editor rendered offscreen in light and dark; not

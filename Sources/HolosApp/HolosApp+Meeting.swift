@@ -928,13 +928,17 @@ extension HolosAppDelegate: NSMenuDelegate {
             showSessionInUse(summary, doing: controller.sessionsInUse[summary.id])
             return
         }
+        // A Review's failed rewrite marked before the rename started is the one its rewrite makes up for; a newer one
+        // (a review that failed meanwhile) is kept.
+        let pendingGeneration = PendingExports().generation(summary.id)
         let output = Self.temporaryFile("out")
         let errors = Self.temporaryFile("err")
         do {
             try maintenance.run(MeetingRenameRun.arguments(session: summary.directory, request: request,
                                                            expectedID: summary.id),
                                 standardOutput: output, standardError: errors) { [weak self] code in
-                self?.renameEnded(summary, code: code, output: output, errors: errors)
+                self?.renameEnded(summary, code: code, pendingGeneration: pendingGeneration, output: output,
+                                  errors: errors)
             }
         } catch {
             controller.endUsing(summary.id)
@@ -944,7 +948,8 @@ extension HolosAppDelegate: NSMenuDelegate {
         }
     }
 
-    private func renameEnded(_ summary: SessionSummary, code: Int32, output: URL, errors: URL) {
+    private func renameEnded(_ summary: SessionSummary, code: Int32, pendingGeneration: Int, output: URL,
+                             errors: URL) {
         // A result about another meeting (it cannot be, with --expect-id) is not applied to this one.
         let outcome = (try? AtomicFile.readIfPresent(output, maxBytes: 1 << 20)).flatMap {
             $0.flatMap { try? HolosJSON.decoder().decode(SessionRenameCommand.Outcome.self, from: $0) }
@@ -954,7 +959,7 @@ extension HolosAppDelegate: NSMenuDelegate {
         Self.removeFile(output)
         Self.removeFile(errors)
         // The files were rewritten from the saved speaker labels: a Review's earlier failed rewrite is made up for.
-        if outcome?.exportsUpdated == true { PendingExports().clear(summary.id) }
+        if outcome?.exportsUpdated == true { PendingExports().clear(summary.id, ifGeneration: pendingGeneration) }
         meeting.controller?.endUsing(summary.id)
         refreshReviewTitle(summary.id)
         meeting.meetingsPane?.renameEnded(summary, outcome: outcome, failure: failure)

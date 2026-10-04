@@ -420,7 +420,7 @@ final class MeetingsPane: NSViewController, NSTableViewDataSource, NSTableViewDe
                 cache.keep(only: Set(summaries.map(\.id)))
                 var stale: Set<String> = []
                 for summary in summaries where MeetingSummarySchedule.isFinished(summary.state)
-                    && (summary.transcriptID != nil || summary.nameIsUnfinished) {
+                    && (summary.transcriptID != nil || summary.nameCopyIsStale) {
                     if filesCache?.state(of: summary) == .stale { stale.insert(summary.id) }
                 }
                 filesCache?.keep(only: Set(summaries.map(\.id)))
@@ -932,15 +932,16 @@ final class MeetingsPane: NSViewController, NSTableViewDataSource, NSTableViewDe
            let index = sessions.firstIndex(where: { $0.id == id }) {
             sessions[index].name = name
             sessions[index].nameSource = source
-            // The name shown without a generated title is the new one (`MeetingNaming.fallbackName` of it).
-            sessions[index].shownName = name
+            // The manifest's copy follows when the rename wrote it; the next read of the catalog says.
+            sessions[index].manifestName = name
             reloadKeepingSelection()
             updateLiveHeader()
             onTitleChanged?(id)
         }
         refresh()
         updateButtons()
-        if let alert = MeetingRenameRun.alert(for: outcome, shown: shown, failure: failure) {
+        if let alert = MeetingRenameRun.alert(for: outcome, shown: shown, failure: failure,
+                                              repair: MeetingRenameRun.repairTitle(summary)) {
             showSheet(alert.title, alert.text)
         }
     }

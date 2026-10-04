@@ -11,6 +11,8 @@ public struct ExportWriteResult: Sendable, Equatable {
     public var movedAside: [URL]
     /// What the snapshot the exports were written from skipped or could not use; nil when nothing was written.
     public var diagnostics: SpeakerSnapshotDiagnostics?
+    /// The files carry the summary (summary.json's, current for this transcript and these names).
+    public var includesSummary = false
 
     public init(written: [URL] = [], movedAside: [URL] = [], diagnostics: SpeakerSnapshotDiagnostics? = nil) {
         self.written = written; self.movedAside = movedAside; self.diagnostics = diagnostics
@@ -76,8 +78,10 @@ public enum SessionExports {
                                         check: () throws -> Void = {}) throws -> ExportWriteResult {
         let snapshot = try SpeakerSessionSnapshot.load(session: session, profileNames: profileNames,
                                                        applyRecognition: applyRecognition)
-        let rendered = try renderAll(exportDocument(snapshot, selfName: selfName, summaryRecord: summaryRecord))
-        let result = try write(rendered, session: session, snapshot: snapshot, check: check)
+        let document = try exportDocument(snapshot, selfName: selfName, summaryRecord: summaryRecord)
+        let rendered = try renderAll(document)
+        var result = try write(rendered, session: session, snapshot: snapshot, check: check)
+        result.includesSummary = document.summary != nil
         log.info("Session \(snapshot.manifest.id, privacy: .public): wrote \(result.written.count, privacy: .public) exports; moved \(result.movedAside.count, privacy: .public) edited exports aside")
         return result
     }
@@ -106,6 +110,8 @@ public enum SessionExports {
                                selfName: String? = nil, summaryRecord: MeetingSummaryRecord?? = nil) throws
         -> ExportDocument {
         var document = snapshot.exportDocument()
+        // The meeting's name (meeting.json's after a rename, else the manifest's), in every file.
+        document.metadata.name = meetingName(snapshot)
         if snapshot.transcriptChanged, let current = try SessionFiles.currentTranscript(session: snapshot.session) {
             document.transcript = current
             document.run = nil
@@ -119,16 +125,9 @@ public enum SessionExports {
                                              record: record)
             // The heading follows the rule the Meetings list does (`MeetingNaming.title`): the title of a summary of
             // this transcript heads the files also while its text is left out (made with other speaker names).
-            let source = nameSource(snapshot)
             document.heading = MeetingNaming.title(
-                name: snapshot.manifest.name, source: source,
-                summary: record,
-                transcriptID: document.transcript.id,
-                fallback: MeetingNaming.fallbackName(
-                    name: snapshot.manifest.name,
-                    source: snapshot.meetingInfoDamaged ? .user : (snapshot.meeting.nameSource ?? .user),
-                    createdAt: snapshot.manifest.createdAt,
-                    origin: snapshot.meeting.origin, importedFileName: snapshot.meeting.importedFileName))
+                name: document.metadata.name, source: nameSource(snapshot), summary: record,
+                transcriptID: document.transcript.id)
         }
         return document
     }
@@ -137,8 +136,14 @@ public enum SessionExports {
     /// replaces it.
     static func nameSource(_ snapshot: SpeakerSessionSnapshot) -> MeetingNameSource {
         snapshot.meetingInfoDamaged ? .user : MeetingNaming.source(
-            stored: snapshot.meeting.nameSource, name: snapshot.manifest.name,
+            stored: snapshot.meeting.nameSource, name: meetingName(snapshot),
             importedFileName: snapshot.meeting.origin == .imported ? snapshot.meeting.importedFileName : nil)
+    }
+
+    /// The meeting's name (`MeetingNaming.name`): meeting.json's, else (none, or meeting.json damaged) the manifest's.
+    static func meetingName(_ snapshot: SpeakerSessionSnapshot) -> String {
+        MeetingNaming.name(manifestName: snapshot.manifest.name,
+                           meeting: snapshot.meetingInfoDamaged ? nil : snapshot.meeting)
     }
 
     /// summary.json for the exports (docs/meeting-design.md §4.17), when one can be read and is current (`key`: made

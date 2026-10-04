@@ -93,9 +93,9 @@ public struct SessionSummary: Codable, Sendable, Equatable, Identifiable {
     public var languageWork: LanguageWork?
     /// Where `name` came from (`MeetingNaming.source`: meeting.json's, else inferred from the name).
     public var nameSource: MeetingNameSource
-    /// The name shown when the meeting has no name of the user's and no generated title (`MeetingNaming.fallbackName`):
-    /// `name`, or the made-up name when a leftover name sits under a `default` source.
-    public var shownName: String
+    /// The manifest's name: a copy of `name` (`MeetingNaming.name`) a rename updates after meeting.json; different
+    /// from it when that second write did not happen (`nameCopyIsStale`).
+    public var manifestName: String
     /// Why meeting.json cannot be read (damaged, of another session, written by a newer build, unreadable now); nil
     /// when it can, or when there is none (a meeting saved before it existed). Rename refuses such a meeting.
     public var metadataProblem: String?
@@ -118,21 +118,19 @@ public struct SessionSummary: Codable, Sendable, Equatable, Identifiable {
         case id, directory, name, createdAt, source, origin, state, manifestStatus, savedSeconds, chunkCount
         case transcriptID, transcriptProblem, transcriptRefused, speakerState, labelMessage, runID, labelsReadyAt
         case hasSpeakerEdits, phase, pid, liveness, bytes, derivedBytes, audioDeleted, languageWork, nameSource
-        case shownName
+        case manifestName
         case metadataProblem, exportsProblem, jobInProgress, summaryProblem
     }
 
     /// The title the Meetings list shows (`MeetingNaming.title`, the rule the transcript files' heading follows too):
     /// the user's name, else the title of a summary of the current transcript, else the name.
     public var displayTitle: String {
-        MeetingNaming.title(name: name, source: nameSource, summary: generatedSummary, transcriptID: transcriptID,
-                            fallback: shownName)
+        MeetingNaming.title(name: name, source: nameSource, summary: generatedSummary, transcriptID: transcriptID)
     }
 
-    /// A switch to the generated title not finished: the source is `default` but the manifest still has a name Voice
-    /// is Local did not make up (`shownName` is the made-up one). Its transcript files read as out of date, so Update
-    /// Transcript Files (`--generated`) finishes it, also when the title shown did not change.
-    public var nameIsUnfinished: Bool { nameSource == .default && shownName != name }
+    /// The manifest's copy of the name was not updated after a rename committed it to meeting.json: the meeting's
+    /// files read as out of date, so Update Transcript Files (Finish Rename) writes the copy, and the files, again.
+    public var nameCopyIsStale: Bool { manifestName != name }
 
     /// The generated title the meeting can show (`MeetingNaming.title`'s rule): a summary of the current transcript's;
     /// nil otherwise. What Use Generated Title and the rename editor offer.
@@ -156,7 +154,7 @@ public struct SessionSummary: Codable, Sendable, Equatable, Identifiable {
                 languageWork: LanguageWork? = nil, nameSource: MeetingNameSource? = nil,
                 generatedSummary: MeetingSummaryRecord? = nil, metadataProblem: String? = nil,
                 exportsProblem: String? = nil, jobInProgress: String? = nil, summaryProblem: String? = nil,
-                shownName: String? = nil) {
+                manifestName: String? = nil) {
         self.id = id; self.directory = directory; self.name = name; self.createdAt = createdAt
         self.source = source; self.origin = origin; self.state = state; self.manifestStatus = manifestStatus
         self.savedSeconds = savedSeconds; self.chunkCount = chunkCount; self.transcriptID = transcriptID
@@ -172,7 +170,7 @@ public struct SessionSummary: Codable, Sendable, Equatable, Identifiable {
         self.exportsProblem = exportsProblem
         self.jobInProgress = jobInProgress
         self.summaryProblem = summaryProblem
-        self.shownName = shownName ?? name
+        self.manifestName = manifestName ?? name
     }
 }
 
@@ -244,8 +242,10 @@ public enum SessionCatalog {
             transcriptProblem = error.localizedDescription
             transcriptRefused = !SessionFiles.isDamage(error)
         }
+        // The meeting's name: meeting.json's when a rename wrote it there, else the manifest's.
+        let name = MeetingNaming.name(manifestName: manifest.name, meeting: meeting)
         return SessionSummary(
-            id: manifest.id, directory: session, name: manifest.name, createdAt: manifest.createdAt,
+            id: manifest.id, directory: session, name: name, createdAt: manifest.createdAt,
             source: manifest.source, origin: origin,
             state: state(manifestStatus: manifest.status, liveness: liveness), manifestStatus: manifest.status,
             savedSeconds: manifest.savedSeconds, chunkCount: manifest.chunks.count, transcriptID: transcriptID,
@@ -259,7 +259,7 @@ public enum SessionCatalog {
             // came from unknown: the user's, so a generated title never replaces it. Only a missing one (a meeting
             // saved before it existed) is inferred from the name.
             nameSource: meeting.map {
-                MeetingNaming.source(stored: $0.nameSource, name: manifest.name,
+                MeetingNaming.source(stored: $0.nameSource, name: name,
                                      importedFileName: $0.origin == .imported ? $0.importedFileName : nil)
             } ?? .user,
             generatedSummary: summaryRead.record,
@@ -267,12 +267,7 @@ public enum SessionCatalog {
             exportsProblem: SessionExports.recordProblem(session: session),
             jobInProgress: jobInProgress(jobState ?? DeepTranscriptionLock.state(), sessionID: manifest.id),
             summaryProblem: summaryRead.problem,
-            shownName: meeting.map {
-                // Only a source written as `default` (a rename): one inferred from the name is that name.
-                MeetingNaming.fallbackName(
-                    name: manifest.name, source: $0.nameSource ?? .user,
-                    createdAt: manifest.createdAt, origin: $0.origin, importedFileName: $0.importedFileName)
-            })
+            manifestName: manifest.name)
     }
 
     /// What the background-job lock says runs on meeting `sessionID`: a summary or a final transcript of it, in any
