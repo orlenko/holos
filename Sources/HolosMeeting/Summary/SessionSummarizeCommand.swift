@@ -138,7 +138,9 @@ public enum SessionSummarizeCommand {
             return done
         }
 
-        // What to summarize: the transcript the exports show, with speaker names.
+        // What to summarize: the transcript the exports show, with speaker names. The speaker labels it was read with
+        // are noted, so a summary made while they changed (a rename in Terminal) is not saved with the old names.
+        let speakers = speakerRevision(session)
         let input: MeetingSummaryInput
         do {
             let snapshot = try SpeakerSessionSnapshot.load(session: session, profileNames: request.profileNames,
@@ -192,7 +194,7 @@ public enum SessionSummarizeCommand {
             return outcome(.cancelled, "Summarizing was cancelled; nothing was written.",
                            transcriptID: transcriptID)
         }
-        var result = await save(record, request: request, transcriptID: transcriptID,
+        var result = await save(record, request: request, transcriptID: transcriptID, speakers: speakers,
                                 message: "Summarized the meeting.") { outcome($0, $1, transcriptID: $2, code: $3) }
         result.stats = made.stats
         log.notice("Session \(id, privacy: .public): summary \(result.status.rawValue, privacy: .public) in \(made.stats.calls, privacy: .public) calls")
@@ -202,7 +204,8 @@ public enum SessionSummarizeCommand {
     /// Saves `record` under the processing lease, only while `transcriptID` is still current, then rewrites the
     /// transcript files with it. The record is written with `exportsPending` first and again without it once the
     /// files are rewritten, so a failure there leaves it set and the next run rewrites them (without asking the model).
-    private static func save(_ record: MeetingSummaryRecord, request: Request, transcriptID: String, message: String,
+    private static func save(_ record: MeetingSummaryRecord, request: Request, transcriptID: String,
+                             speakers: String? = nil, message: String,
                              outcome: (Status, String, String?, Int32) -> Outcome) async -> Outcome {
         let session = request.session
         let lease: ProcessingLease
@@ -217,6 +220,11 @@ public enum SessionSummarizeCommand {
             return try await lease.withUse(for: session) { () async throws -> Outcome in
                 guard try SessionFiles.readableCurrentTranscriptID(session: session) == transcriptID else {
                     return outcome(.changed, "The transcript changed while it was summarized; try again.",
+                                   transcriptID, 1)
+                }
+                // Speaker labels changed meanwhile: the summary names people as they were, so it is made again.
+                if let speakers, speakerRevision(session) != speakers {
+                    return outcome(.changed, "The speaker labels changed while the meeting was summarized; try again.",
                                    transcriptID, 1)
                 }
                 // The last point where a cancellation stops it: from here summary.json (atomic writes) and the
@@ -246,5 +254,12 @@ public enum SessionSummarizeCommand {
         } catch {
             return outcome(.failed, "Cannot save the summary: \(error.localizedDescription)", transcriptID, 1)
         }
+    }
+
+    /// The speaker labels as files: the head and the edit journal, each by size and modification time. Any change to
+    /// either (a relabel, a rename, a merge) changes it.
+    static func speakerRevision(_ session: URL) -> String {
+        MeetingPeopleCache.fileStamp(SessionPaths.head(session)) + "|"
+            + MeetingPeopleCache.fileStamp(SessionPaths.edits(session))
     }
 }

@@ -33,7 +33,7 @@ private final class ScriptedSummaryModel: Sendable {
             name: "fake", contextTokens: contextTokens,
             notes: { [self] instructions, prompt in
                 noteCalls.update { $0.append((instructions, prompt)) }
-                return try await notes(prompt)
+                return MeetingSummaryNotes(notes: try await notes(prompt))
             },
             summary: { [self] instructions, prompt in
                 summaryCalls.update { $0.append((instructions, prompt)) }
@@ -809,12 +809,13 @@ private func trackDocument(source: AudioSource) -> ExportDocument {
     func made(_ at: Date?, summary: String? = "T", pending: Bool = false) -> MeetingSummarySchedule.Candidate {
         MeetingSummarySchedule.Candidate(sessionID: "a", path: "/a.holos", createdAt: scheduleNow, transcriptID: "T",
                                          summaryTranscriptID: summary, idle: true, exportsPending: pending,
-                                         summaryCreatedAt: at)
+                                         summaryCreatedAt: at.map(MeetingSummarySchedule.milliseconds))
     }
     // Made by a command that finished while the app was closed.
     #expect(MeetingSummarySchedule.satisfied([request], by: [made(asked.addingTimeInterval(120))]) == ["a"])
-    // The same second counts (dates are kept to the second).
-    #expect(MeetingSummarySchedule.satisfied([request], by: [made(scheduleNow.addingTimeInterval(-600))]) == ["a"])
+    #expect(MeetingSummarySchedule.satisfied([request], by: [made(asked.addingTimeInterval(0.2))]) == ["a"])
+    // Made earlier in the same second: a click after it is still to do.
+    #expect(MeetingSummarySchedule.satisfied([request], by: [made(asked.addingTimeInterval(-0.3))]).isEmpty)
     // Older than the request, of another transcript, or with its files not rewritten: still to do.
     #expect(MeetingSummarySchedule.satisfied([request], by: [made(asked.addingTimeInterval(-60))]).isEmpty)
     #expect(MeetingSummarySchedule.satisfied([request], by: [made(scheduleNow, summary: "T0")]).isEmpty)
@@ -892,6 +893,68 @@ private func trackDocument(source: AudioSource) -> ExportDocument {
                                transcriptID: "T", liveness: .exited, generatedSummary: record)
     #expect(named.displayTitle == "Weekly sync")
     #expect(MeetingListFormat.matches(named, people: [], query: "parser rewrite"))
+}
+
+@Test func aSummaryMadeWhileSpeakerLabelsChangedIsNotSaved() async throws {
+    let temp = try TemporaryDirectory("summary")
+    defer { temp.remove() }
+    let (session, _, run) = try await SessionFixtures.labelledSession(in: temp.url, track: "mic")
+    let first = try #require(run.speakers.first)
+    // A rename in Terminal while the model works.
+    let scripted = ScriptedSummaryModel(summary: { _ in
+        try SessionFixtures.appendEdits([.rename(speakerID: first.id, name: "Kim")], session: session)
+        return MeetingSummaryDraft(title: "Parser plan", summary: "Alex planned the parser.")
+    })
+    let outcome = await SessionSummarizeCommand.run(SessionSummarizeCommand.Request(session: session)) { _ in
+        .available(scripted.model())
+    }
+    #expect(outcome.status == .changed)
+    #expect(outcome.status.retriesLater)
+    #expect(!SessionFixtures.exists(SessionPaths.summary(session)))
+}
+
+@Test func abbreviationsDoNotEndASentence() {
+    #expect(MeetingSummaryDraft.cleanSummary("Dr. Smith reviewed the plan. The team approved it. Then lunch.")
+        == "Dr. Smith reviewed the plan. The team approved it.")
+    #expect(MeetingSummarizer.sentences("Mr. Lee met Dr. Smith at 3 p.m. on Friday. They agreed.").count == 2)
+}
+
+@Test func theSchemasRefusedFieldCountsInAnyLanguage() async throws {
+    // A refusal the phrase list does not know ("Ich kann das nicht zusammenfassen.") is seen through the field.
+    let calls = SharedValue(0)
+    let model = MeetingSummaryModel(
+        name: "fake", contextTokens: 400,
+        notes: { _, prompt in
+            calls.update { $0 += 1 }
+            return prompt.contains("Part 1 of")
+                ? MeetingSummaryNotes(notes: ["Ich kann das nicht zusammenfassen."], refused: true)
+                : MeetingSummaryNotes(notes: ["The team planned the release."])
+        },
+        summary: { _, _ in MeetingSummaryDraft(title: "Release plan", summary: "They planned the release.") })
+    let result = try await MeetingSummarizer(model: model).summarize(input(lines(30)))
+    #expect(result.stats.skippedParts == 1)
+
+    let refusing = MeetingSummaryModel(
+        name: "fake", contextTokens: 4096, notes: { _, _ in MeetingSummaryNotes(notes: []) },
+        summary: { _, _ in MeetingSummaryDraft(title: "Kein Titel", summary: "Nicht möglich.", refused: true) })
+    await #expect(throws: MeetingSummarizer.Failure.self) {
+        _ = try await MeetingSummarizer(model: refusing).summarize(input(lines(3)))
+    }
+}
+
+@Test func aBatchThatCannotBeCondensedKeepsNotesOfEveryPart() async throws {
+    let scripted = ScriptedSummaryModel(notes: { prompt in
+        if prompt.hasPrefix("Notes on consecutive parts") { throw MeetingSummaryModelError.refused }
+        let part = prompt.split(separator: " ").dropFirst().first.map(String.init) ?? "?"
+        return (0..<6).map { "Part \(part) note \($0) " + String(repeating: "about the release plan ", count: 4) }
+    })
+    let result = try await MeetingSummarizer(model: scripted.model(contextTokens: 1_000)).summarize(input(lines(40)))
+    let final = try #require(scripted.summaryCalls.value.first)
+    for part in 1...result.stats.parts {
+        #expect(final.prompt.contains("Part \(part) note 0 "))
+    }
+    #expect(MeetingSummarizer.roundRobin([["a1", "a2", "a3"], ["b1"], ["c1", "c2"]], limit: 5)
+        == ["a1", "b1", "c1", "a2", "c2"])
 }
 
 @Test func aNameTheUserGaveIsTheirsWhateverItLooksLike() throws {

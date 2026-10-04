@@ -85,12 +85,16 @@ extension Session {
 enum OnDeviceSummary {
     @Generable(description: "Notes on one part of a meeting")
     struct PartNotes {
+        @Guide(description: "True if you cannot summarize this text; false otherwise")
+        var refused: Bool
         @Guide(description: "Two to five short notes, one sentence each", .maximumCount(6))
         var notes: [String]
     }
 
     @Generable(description: "A meeting's title and summary")
     struct Summary {
+        @Guide(description: "True if you cannot summarize this text; false otherwise")
+        var refused: Bool
         @Guide(description: "At most 8 words naming what was discussed; no date, does not begin with Meeting")
         var title: String
         @Guide(description: "One or two sentences on what the meeting was about and what came out of it")
@@ -113,9 +117,10 @@ enum OnDeviceSummary {
             notes: { instructions, prompt in
                 let session = LanguageModelSession(model: model, instructions: instructions)
                 do {
-                    return try await session.respond(
+                    let answer = try await session.respond(
                         to: prompt, generating: PartNotes.self,
-                        options: GenerationOptions(samplingMode: .greedy, maximumResponseTokens: 400)).content.notes
+                        options: GenerationOptions(samplingMode: .greedy, maximumResponseTokens: 400)).content
+                    return MeetingSummaryNotes(notes: answer.notes, refused: answer.refused)
                 } catch {
                     throw mapped(error)
                 }
@@ -127,7 +132,7 @@ enum OnDeviceSummary {
                         to: prompt, generating: Summary.self,
                         options: GenerationOptions(samplingMode: .greedy, maximumResponseTokens: 600)).content
                     return MeetingSummaryDraft(title: answer.title, summary: answer.summary, points: answer.keyPoints,
-                                               actions: answer.actionItems)
+                                               actions: answer.actionItems, refused: answer.refused)
                 } catch {
                     throw mapped(error)
                 }

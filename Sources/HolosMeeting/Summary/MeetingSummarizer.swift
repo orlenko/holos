@@ -1,5 +1,6 @@
 import Foundation
 import HolosCore
+import NaturalLanguage
 
 /// What the summary model gives back for a whole meeting before it is checked (`MeetingSummaryDraft.cleaned`).
 public struct MeetingSummaryDraft: Sendable, Equatable {
@@ -7,9 +8,23 @@ public struct MeetingSummaryDraft: Sendable, Equatable {
     public var summary: String
     public var points: [String]
     public var actions: [String]
+    /// The model said it cannot summarize the text (the schema's own field, so a refusal in any language is seen).
+    public var refused: Bool
 
-    public init(title: String, summary: String, points: [String] = [], actions: [String] = []) {
+    public init(title: String, summary: String, points: [String] = [], actions: [String] = [], refused: Bool = false) {
         self.title = title; self.summary = summary; self.points = points; self.actions = actions
+        self.refused = refused
+    }
+}
+
+/// What the summary model gives back for one part of a meeting.
+public struct MeetingSummaryNotes: Sendable, Equatable {
+    public var notes: [String]
+    /// The model said it cannot summarize the part (the schema's own field, in any language).
+    public var refused: Bool
+
+    public init(notes: [String], refused: Bool = false) {
+        self.notes = notes; self.refused = refused
     }
 }
 
@@ -32,12 +47,13 @@ public struct MeetingSummaryModel: Sendable {
     /// The model's context in tokens (`SystemLanguageModel.contextSize`, 8,192 on macOS 27, 4,096 on 26).
     public var contextTokens: Int
     /// Short notes about one part of a meeting (`instructions`, `prompt`).
-    public var notes: @Sendable (_ instructions: String, _ prompt: String) async throws -> [String]
+    public var notes: @Sendable (_ instructions: String, _ prompt: String) async throws -> MeetingSummaryNotes
     /// The title, summary, key points and action items.
     public var summary: @Sendable (_ instructions: String, _ prompt: String) async throws -> MeetingSummaryDraft
 
     public init(name: String, contextTokens: Int,
-                notes: @escaping @Sendable (_ instructions: String, _ prompt: String) async throws -> [String],
+                notes: @escaping @Sendable (_ instructions: String, _ prompt: String) async throws
+                    -> MeetingSummaryNotes,
                 summary: @escaping @Sendable (_ instructions: String, _ prompt: String) async throws
                     -> MeetingSummaryDraft) {
         self.name = name; self.contextTokens = contextTokens; self.notes = notes; self.summary = summary
@@ -230,11 +246,12 @@ public struct MeetingSummarizer: Sendable {
         let prompt = Self.notesPrompt(part: part, index: index, of: count)
         let model = model
         do {
-            guard let notes = try await call(&run, { try await model.notes(instructions, prompt) }) else {
+            guard let answer = try await call(&run, { try await model.notes(instructions, prompt) }),
+                  !answer.refused else {
                 return skippedPiece(&run)
             }
-            let cleaned = MeetingSummaryDraft.cleanList(notes, limit: 6)
-            // A refusal written as a note ("I'm sorry, I cannot…") is a refused part: it is left out and counted.
+            let cleaned = MeetingSummaryDraft.cleanList(answer.notes, limit: 6)
+            // A refusal written as a note ("I'm sorry, I cannot…") is a refused part too: it is left out and counted.
             guard !cleaned.isEmpty, !cleaned.contains(where: MeetingSummaryDraft.isRefusal) else {
                 return skippedPiece(&run)
             }
@@ -271,16 +288,17 @@ public struct MeetingSummarizer: Sendable {
                 let instructions = Self.condenseInstructions(language: input.language)
                 let prompt = Self.condensePrompt(batch)
                 let model = model
-                let found: [String]?
+                let found: MeetingSummaryNotes?
                 do {
                     found = try await call(&run, { try await model.notes(instructions, prompt) })
                 } catch MeetingSummaryModelError.contextExceeded {
                     found = nil
                 }
-                let condensed = MeetingSummaryDraft.cleanList(found ?? [], limit: 6)
+                let condensed = found?.refused == true
+                    ? [] : MeetingSummaryDraft.cleanList(found?.notes ?? [], limit: 6)
                 let cleaned = condensed.contains(where: MeetingSummaryDraft.isRefusal) ? [] : condensed
-                // A batch the model would not condense (or refused to) keeps its first notes.
-                next.append(cleaned.isEmpty ? Array(batch.flatMap { $0 }.prefix(6)) : cleaned)
+                // A batch the model would not condense (or refused to) keeps notes of every part in it.
+                next.append(cleaned.isEmpty ? Self.roundRobin(batch, limit: max(6, batch.count)) : cleaned)
             }
             current = next
         }
@@ -321,6 +339,7 @@ public struct MeetingSummarizer: Sendable {
             throw Failure.unusableAnswer("The meeting's notes did not fit the model.")
         }
         guard let answer else { throw Failure.unusableAnswer("The model did not summarize the meeting.") }
+        if answer.refused { throw Failure.unusableAnswer("The model declined to summarize the meeting.") }
         switch answer.cleaned() {
         case .success(let draft): return draft
         case .failure(let problem): throw Failure.unusableAnswer(problem.message)
@@ -376,27 +395,30 @@ public struct MeetingSummarizer: Sendable {
         return pieces
     }
 
-    /// Sentences of `text`, cut after ".", "!", "?" or "…" followed by a space, and after "。", "！" or "？".
+    /// Sentences of `text` as the NaturalLanguage tokenizer finds them, so an abbreviation ("Dr. Smith") does not end
+    /// one, and Chinese and Japanese sentences end without a space; each trimmed.
     static func sentences(_ text: String) -> [String] {
+        let tokenizer = NLTokenizer(unit: .sentence)
+        tokenizer.string = text
         var result: [String] = []
-        var current = ""
-        var previous: Character?
-        for character in text {
-            if character == " ", let previous, ".!?…".contains(previous) {
-                result.append(current)
-                current = ""
-            } else {
-                current.append(character)
-                // Chinese and Japanese end a sentence without a space after it.
-                if "。！？".contains(character) {
-                    result.append(current)
-                    current = ""
-                }
-            }
-            previous = character
+        tokenizer.enumerateTokens(in: text.startIndex..<text.endIndex) { range, _ in
+            let sentence = text[range].trimmingCharacters(in: .whitespacesAndNewlines)
+            if !sentence.isEmpty { result.append(sentence) }
+            return true
         }
-        if !current.isEmpty { result.append(current) }
-        return result.filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
+        return result
+    }
+
+    /// The parts' notes in turns, the first of each part first, until `limit`: what a batch keeps when it could not be
+    /// condensed, so no part of it drops out.
+    static func roundRobin(_ batch: [[String]], limit: Int) -> [String] {
+        var kept: [String] = []
+        var depth = 0
+        while kept.count < limit, batch.contains(where: { $0.count > depth }) {
+            for part in batch where part.count > depth && kept.count < limit { kept.append(part[depth]) }
+            depth += 1
+        }
+        return kept
     }
 
     /// Runs of whole words that fit `budget`; a word longer than that (text without spaces: Chinese, Japanese,
@@ -472,7 +494,7 @@ public struct MeetingSummarizer: Sendable {
         """
         You take notes on one part of a meeting. Write 2 to 5 short notes in \(languageName(language)), one sentence \
         each: the topics discussed, what was decided, and tasks someone agreed to do, with the person's name when the \
-        transcript gives it.
+        transcript gives it. Set refused to true, with no notes, only if you cannot summarize this text.
         \(dataRule)
         """
     }
@@ -505,6 +527,7 @@ public struct MeetingSummarizer: Sendable {
             - keyPoints: up to 5 main facts, topics or decisions (not tasks), one short sentence each.
             - actionItems: up to 5 tasks someone agreed to do, starting with the person when known; none when there \
             are none.
+            - refused: true only if you cannot summarize this text.
             \(dataRule)
             """
     }

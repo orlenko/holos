@@ -4956,10 +4956,12 @@ name without " (auto)", the unnamed channel speaker ("Me") as the person who is 
 (else the account's full name). The model's context is 8,192 tokens on macOS 27 (4,096 on 26;
 `contextSize` is read, never assumed), so the transcript is cut into parts of at most 55 % of
 it, estimated high at one token per three UTF-8 bytes; a turn longer than a part is cut at
-sentence ends (also "。！？" without a space), then at words, then between characters (grapheme
+sentence ends (NaturalLanguage's sentence tokenizer, so "Dr. Smith" is one sentence and "。！？"
+end one without a space), then at words, then between characters (grapheme
 clusters, for text without spaces), each piece keeping its speaker. A meeting that fits one part is
 summarized in one call; otherwise each part gets two to five notes (one call each), notes too
-long for the final prompt are condensed in batches (at most three rounds, then cut), and one
+long for the final prompt are condensed in batches (at most three rounds, then cut; a batch the
+model will not condense keeps notes of every part in it, the first of each first), and one
 call writes the title, summary, key points and action items from the notes in order. Structured
 output (`@Generable`), greedy sampling, a fresh session per call, guardrails for content
 transformations (as the AI fix), at most 400/600 response tokens, a 90 s limit per call. Every
@@ -4970,7 +4972,9 @@ words are in (the meeting's locale; for a merged transcript, the segments' langu
 their characters other than spaces, so Chinese, Japanese and Thai count as much as they say).
 Without speaker labels the turns are named by track: the microphone of a call becomes the user,
 the system audio "Others", and a microphone in the room "Someone", never "Microphone"; a turn
-nobody was assigned to is "Someone" with speaker labels too. A part the model refuses (a refusal or guardrail, or notes that read as one: "I'm sorry",
+nobody was assigned to is "Someone" with speaker labels too. Both schemas have a `refused` field ("true if you cannot summarize this text"), which the model
+sets in any language: a part with it is refused, and so is a final answer. A part the model
+refuses (a refusal or guardrail, the field, or notes that read as one as a backup: "I'm sorry",
 "I cannot", "As an AI…", one list of openings, any case) or does not answer in time is left out
 and counted (more than half left out fails the run); a part too long for the context is split in two
 and asked again (twice at most; each half counts as a piece, and one left out, or still too long,
@@ -4993,7 +4997,10 @@ to date, 3 when written but the transcript files could not be rewritten, 1 other
 `status` in the JSON (`written`, `current`, `noTranscript`, `unavailable`, `busy`, `changed`,
 `failed`, `cancelled`). A session that was not finished properly (manifest recording, processing
 or interrupted, no live writer) is refused before the model, as `session deep-transcribe` refuses
-it: Recover first. For its whole life it holds the deep transcription lock (§4.16), with
+it: Recover first. The speaker labels it read (the head and the edit journal, by size and
+modification time) are checked again at the save; changed meanwhile (a rename in Terminal), the
+summary is not saved (`changed`, made again later), so it never names people as they were. For
+its whole life it holds the deep transcription lock (§4.16), with
 `kind` `summary` in what it writes there: one summary or final transcript runs at a time on this
 Mac, and one started before an app relaunch is seen as busy (the app never adopts or signals a
 job it did not start; Review waits only for a deep pass). Another holder makes it exit 1 as
@@ -5032,7 +5039,8 @@ meeting's menu offers Summarize (Again), which runs with `--force`, also with th
 the request is saved and stays until it ends for good (written, up to date, failed, unavailable)
 or Cancel Summarize drops it, so a request that had to wait runs later. Each keeps when it was
 asked for; one that summary.json already answers (of the current transcript, its files written,
-made at or after the request, to the second) is dropped, so a command that finished while the
+made at or after the request, to the millisecond: `createdAtMilliseconds` in summary.json, as
+JSON dates keep whole seconds) is dropped, so a command that finished while the
 app was closed is not run again. A summary saved without its transcript files is not counted as
 tried: its files are rewritten (without the model) five minutes later, also with the setting off
 or without Apple Intelligence. Summarize is off, with

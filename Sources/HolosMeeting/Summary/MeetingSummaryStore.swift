@@ -32,10 +32,14 @@ public struct MeetingSummaryRecord: Codable, Sendable, Equatable {
     /// Set while the transcript files are being rewritten with it, and left set when that failed: the next run
     /// rewrites them without making the summary again.
     public var exportsPending: Bool?
+    /// `createdAt` in milliseconds since 1970: JSON dates keep whole seconds, too coarse to tell a summary from a
+    /// request made in the same second (`MeetingSummarySchedule.satisfied`).
+    public var createdAtMilliseconds: Int64?
 
     public init(schemaVersion: Int = currentVersion, sessionID: String, transcriptID: String, title: String,
                 summary: String, points: [String] = [], actions: [String] = [], model: String,
                 language: String? = nil, createdAt: Date = Date(), parts: Int? = nil, skippedParts: Int? = nil) {
+        createdAtMilliseconds = MeetingSummarySchedule.milliseconds(createdAt)
         self.schemaVersion = schemaVersion; self.sessionID = sessionID; self.transcriptID = transcriptID
         self.title = title; self.summary = summary; self.points = points; self.actions = actions
         self.model = model; self.language = language; self.createdAt = createdAt

@@ -24,12 +24,12 @@ public enum MeetingSummarySchedule {
         public var finished: Bool
         /// summary.json says the transcript files were not rewritten with it (`exportsPending`).
         public var exportsPending: Bool
-        /// When summary.json was made.
-        public var summaryCreatedAt: Date?
+        /// When summary.json was made, in milliseconds since 1970 (`MeetingSummaryRecord.createdAtMilliseconds`).
+        public var summaryCreatedAt: Int64?
 
         public init(sessionID: String, path: String, createdAt: Date, transcriptID: String?,
                     summaryTranscriptID: String?, idle: Bool, finished: Bool = true, exportsPending: Bool = false,
-                    summaryCreatedAt: Date? = nil) {
+                    summaryCreatedAt: Int64? = nil) {
             self.sessionID = sessionID; self.path = path; self.createdAt = createdAt
             self.transcriptID = transcriptID; self.summaryTranscriptID = summaryTranscriptID; self.idle = idle
             self.finished = finished; self.exportsPending = exportsPending; self.summaryCreatedAt = summaryCreatedAt
@@ -128,15 +128,19 @@ public enum MeetingSummarySchedule {
     /// A Summarize Again the user asked for, saved until it ends for good (the app's queue).
     public struct Request: Codable, Sendable, Equatable {
         public var sessionID: String
-        public var requestedAt: Date
+        /// When it was asked for, in milliseconds since 1970.
+        public var requestedAtMilliseconds: Int64
 
         public init(sessionID: String, requestedAt: Date) {
-            self.sessionID = sessionID; self.requestedAt = requestedAt
+            self.sessionID = sessionID; requestedAtMilliseconds = MeetingSummarySchedule.milliseconds(requestedAt)
         }
     }
 
+    /// Milliseconds since 1970.
+    public static func milliseconds(_ date: Date) -> Int64 { Int64((date.timeIntervalSince1970 * 1000).rounded(.down)) }
+
     /// The requests a summary already answers: summary.json is of the current transcript, its files are written,
-    /// and it was made at or after the request (to the second, as the file keeps dates). A request saved before a
+    /// and it was made at or after the request, to the millisecond (a summary without that time answers none). A request saved before a
     /// quit whose command finished without the app is then not made again.
     public static func satisfied(_ requests: [Request], by candidates: [Candidate]) -> Set<String> {
         var done: Set<String> = []
@@ -144,8 +148,7 @@ public enum MeetingSummarySchedule {
             guard let candidate = candidates.first(where: { $0.sessionID == request.sessionID }),
                   let made = candidate.summaryCreatedAt, candidate.transcriptID != nil,
                   candidate.summaryTranscriptID == candidate.transcriptID, !candidate.exportsPending,
-                  made.timeIntervalSince1970 >= request.requestedAt.timeIntervalSince1970.rounded(.down)
-            else { continue }
+                  made >= request.requestedAtMilliseconds else { continue }
             done.insert(request.sessionID)
         }
         return done
@@ -172,7 +175,7 @@ public enum MeetingSummarySchedule {
                              transcriptID: transcriptID, summaryTranscriptID: summary?.transcriptID,
                              idle: !active && !processing, finished: isFinished(state),
                              exportsPending: summary?.exportsPending == true,
-                             summaryCreatedAt: summary?.createdAt)
+                             summaryCreatedAt: summary?.createdAtMilliseconds)
         }
     }
 }
