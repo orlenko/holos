@@ -7,15 +7,19 @@ import HolosCore
 public enum MeetingActionPolicy {
     public enum Action: String, CaseIterable, Sendable {
         case recover, labelSpeakers, showInFinder, openTranscript, saveTranscript, deleteAudio, deleteMeeting, cleanUp
+        case rename
     }
 
     /// The enabled actions for `summary` (nil: nothing selected). `inUse`: the app is working on the meeting
-    /// (`MeetingController.sessionsInUse`); `hasExport`: exports/transcript.md is a regular file.
+    /// (`MeetingController.sessionsInUse`); `hasExport`: exports/transcript.md is a regular file; `transcriptFiles`: any
+    /// transcript file (Markdown, JSON, text) is there, as Rename checks it (`SessionExports.hasTranscriptFiles`;
+    /// nil: `hasExport`).
     ///
     /// Show in Finder and Open Transcript take no lock. Every other action is off while the app works on the meeting.
-    /// The ones that take the processing lease (Recover, Label Speakers, Delete Audio, Delete Meeting, Clean Up) are
-    /// also off while another process holds the meeting (`isLive`), which would refuse them.
-    public static func enabled(_ summary: SessionSummary?, inUse: Bool, hasExport: Bool) -> Set<Action> {
+    /// The ones that take the processing lease (Recover, Label Speakers, Delete Audio, Delete Meeting, Clean Up,
+    /// Rename) are also off while another process holds the meeting (`isLive`), which would refuse them.
+    public static func enabled(_ summary: SessionSummary?, inUse: Bool, hasExport: Bool,
+                               transcriptFiles: Bool? = nil) -> Set<Action> {
         guard let summary else { return [] }
         var actions: Set<Action> = [.showInFinder]
         if hasExport { actions.insert(.openTranscript) }
@@ -27,7 +31,67 @@ public enum MeetingActionPolicy {
         if deletesAudio(summary) { actions.insert(.deleteAudio) }
         actions.insert(.deleteMeeting)
         if summary.derivedBytes > 0 { actions.insert(.cleanUp) }
+        if renameRefusal(summary, hasExport: transcriptFiles ?? hasExport) == nil { actions.insert(.rename) }
         return actions
+    }
+
+    /// `voiceislocal session rename` can rename the meeting (`SessionRenameCommand`): it is finished by the predicate
+    /// summaries and final transcripts use (`MeetingSummarySchedule.isFinished`), so not still saving, interrupted
+    /// (Recover first), incomplete, failed or damaged, and its current transcript, if any, can be read (the command
+    /// refuses one that is damaged, from a newer build, or unreadable now).
+    public static func renames(_ summary: SessionSummary) -> Bool {
+        renameRefusal(summary) == nil
+    }
+
+    /// Why Rename is off for `summary` (its tooltip), or nil when the command would rename it; holding the meeting
+    /// (in use, live) is said elsewhere.
+    ///
+    /// `hasExport`: transcript files are there, which a meeting without a current transcript cannot rewrite.
+    public static func renameRefusal(_ summary: SessionSummary, hasExport: Bool = false) -> String? {
+        guard MeetingSummarySchedule.isFinished(summary.state) else {
+            return summary.state == .recording || summary.state == .processing
+                ? "The meeting can be renamed once it is saved."
+                : "The meeting was not saved properly; Recover it first, then rename it."
+        }
+        if let job = summary.jobInProgress {
+            return job + " Rename it when that is done."
+        }
+        // As for the export record: without a transcript and transcript files the summary does not matter.
+        if let problem = summary.summaryProblem,
+           summary.transcriptID != nil || summary.transcriptProblem != nil || hasExport {
+            if problem.contains("newer version") {
+                return "Its summary was written by a newer version of Voice is Local, so its transcript files cannot "
+                    + "follow a new name; update Voice is Local to rename it."
+            }
+            return "Its summary cannot be read now, so its transcript files cannot follow a new name; try again "
+                + "later. \(problem)"
+        }
+        // A meeting without a transcript and transcript files is renamed without touching them: their record does not
+        // matter then.
+        if let problem = summary.exportsProblem,
+           summary.transcriptID != nil || summary.transcriptProblem != nil || hasExport {
+            if problem.contains("newer version") {
+                return "Its transcript files were written by a newer version of Voice is Local, so they cannot follow "
+                    + "a new name; update Voice is Local to rename it."
+            }
+            return "The record of its transcript files cannot be read now, so they cannot follow a new name; try "
+                + "again later. \(problem)"
+        }
+        if summary.transcriptID == nil, summary.transcriptProblem == nil, hasExport {
+            return "Its transcript is missing but its transcript files exist, so they cannot follow a new name; "
+                + "Recover it first."
+        }
+        if let problem = summary.metadataProblem {
+            return "Its meeting.json, which records where the name came from, cannot be read: \(problem)"
+        }
+        if let problem = summary.transcriptProblem {
+            if summary.transcriptRefused, problem.localizedCaseInsensitiveContains("newer") {
+                return "Its transcript was written by a newer version of Voice is Local, so its transcript files "
+                    + "cannot follow a new name: \(problem)"
+            }
+            return "Its transcript cannot be read, so its transcript files cannot follow a new name: \(problem)"
+        }
+        return nil
     }
 
     /// A recorder or another Holos command holds the meeting (its writer lock or processing lease): recording,

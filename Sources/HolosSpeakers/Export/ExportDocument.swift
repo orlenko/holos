@@ -42,6 +42,9 @@ public struct ExportDocument: Sendable, Equatable {
     /// The generated summary (summary.json, docs/meeting-design.md §4.17); used only when it was made from
     /// `transcript`.
     public var summary: ExportSummary?
+    /// The Markdown heading when it is not the meeting's name (`metadata.name`): the meeting's title as Voice is Local
+    /// shows it (docs/meeting-design.md §4.17). Nil: the summary's title when `titleIsHeading`, else the name.
+    public var heading: String?
 
     public init(metadata: ExportMetadata, transcript: Transcript, run: DiarizationRun? = nil,
                 projection: SpeakerProjection? = nil, gaps: [TimelineGap] = [], markers: [TimelineMarker] = [],
@@ -131,6 +134,11 @@ public struct ExportBlock: Sendable, Equatable {
 /// "System audio" by track (a segment without a track takes it from a single-track `metadata.source`).
 /// Suggestions (`ProjectedSpeaker.suggestion`) never appear, and no format contains vectors of any kind.
 public enum TranscriptExporter {
+    /// The first line of the Markdown export of a meeting titled `title` ("# Weekly sync", escaped as it is written).
+    public static func markdownHeading(_ title: String) -> String {
+        "# " + MarkdownExport.title(title)
+    }
+
     public static func render(_ document: ExportDocument, format: ExportFormat) throws -> Data {
         let content = ExportContent(document)
         switch format {

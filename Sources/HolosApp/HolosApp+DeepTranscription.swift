@@ -265,7 +265,7 @@ extension HolosAppDelegate {
             return
         }
         guard DeepTranscriptionSchedule.isFinished(summary.state, audioDeleted: summary.audioDeleted) else {
-            showDeepAlert("“\(Self.short(summary.name))” is not finished.",
+            showDeepAlert("“\(Self.short(summary.displayTitle))” is not finished.",
                           "Recover it first if it was interrupted, or wait until it is saved.")
             return
         }

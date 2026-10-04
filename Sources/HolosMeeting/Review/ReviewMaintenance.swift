@@ -121,28 +121,50 @@ public struct PendingVoiceSamples {
 public struct PendingExports {
     public static let key = "meeting.exportsPending"
     private let defaults: UserDefaults
+    private let key = PendingExports.key
 
     public init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
     }
 
-    public var sessionIDs: Set<String> { Set(defaults.stringArray(forKey: Self.key) ?? []) }
+    public var sessionIDs: Set<String> { Set(defaults.stringArray(forKey: key) ?? []) }
 
     public func contains(_ sessionID: String) -> Bool { sessionIDs.contains(sessionID) }
 
-    public func mark(_ sessionID: String) {
-        var ids = sessionIDs
-        guard ids.insert(sessionID).inserted else { return }
-        defaults.set(ids.sorted(), forKey: Self.key)
+    /// How many times each meeting was marked, so a check that began before a newer mark does not clear it.
+    static let generationsKey = "meeting.exportsPendingGeneration"
+
+    private var generations: [String: Int] {
+        (defaults.dictionary(forKey: Self.generationsKey) as? [String: Int]) ?? [:]
     }
 
+    /// The meeting's mark count now: it only grows (0 if never marked).
+    public func generation(_ sessionID: String) -> Int { generations[sessionID] ?? 0 }
+
+    public func mark(_ sessionID: String) {
+        var counts = generations
+        counts[sessionID, default: 0] += 1
+        defaults.set(counts, forKey: Self.generationsKey)
+        var ids = sessionIDs
+        guard ids.insert(sessionID).inserted else { return }
+        defaults.set(ids.sorted(), forKey: key)
+    }
+
+    /// Removes the mark; its count stays, so a later mark gets a higher one than any read before.
     public func clear(_ sessionID: String) {
         var ids = sessionIDs
         guard ids.remove(sessionID) != nil else { return }
         if ids.isEmpty {
-            defaults.removeObject(forKey: Self.key)
+            defaults.removeObject(forKey: key)
         } else {
-            defaults.set(ids.sorted(), forKey: Self.key)
+            defaults.set(ids.sorted(), forKey: key)
         }
+    }
+
+    /// Clears the mark only when it was not set again since `generation` was read (a check that started earlier
+    /// cannot clear a newer failure).
+    public func clear(_ sessionID: String, ifGeneration generation: Int) {
+        guard self.generation(sessionID) == generation else { return }
+        clear(sessionID)
     }
 }

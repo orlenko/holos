@@ -13,11 +13,12 @@ import UniformTypeIdentifiers
 /// A search field filters by title, summary and people. The actions on the selected meeting are buttons below the list
 /// and the row's menu. Recover, Label Speakers, and the deletions run `voiceislocal` commands through the app delegate,
 /// which also opens Review (PR9, §5.10); the rest (Show in Finder, the Quick Look preview, Save Transcript As…, Clean
-/// Up) happen here. The meeting being recorded or saved comes first, marked "● Recording". Double-click (or Return)
-/// opens what `MeetingOpenPolicy` says: the live transcript (`LiveMeetingViewController`, shown in place of the list
-/// until ‹ Meetings or Escape) for that meeting, Review for a labelled one, the preview otherwise; ⌫ is Delete
-/// Meeting…. The main window's Meetings section; it refreshes every 2 s while on screen, reading the listing off the
-/// main actor.
+/// Up, Rename) happen here. The meeting being recorded or saved comes first, marked "● Recording". Double-click (or
+/// Return) opens what `MeetingOpenPolicy` says: the live transcript (`LiveMeetingViewController`, shown in place of the
+/// list until ‹ Meetings or Escape) for that meeting, Review for a labelled one, the preview otherwise; ⌫ is Delete
+/// Meeting…. Rename… (the menu, ⌘R, or a double-click on the title's text) edits the name in the row: Return saves it
+/// as the user's (an empty name gives back the generated title), Escape cancels (`SessionRenameCommand`, §4.17). The
+/// main window's Meetings section; it refreshes every 2 s while on screen, reading the listing off the main actor.
 @MainActor
 final class MeetingsPane: NSViewController, NSTableViewDataSource, NSTableViewDelegate,
     @preconcurrency QLPreviewPanelDataSource, QLPreviewPanelDelegate, MainSectionContent {
@@ -56,6 +57,10 @@ final class MeetingsPane: NSViewController, NSTableViewDataSource, NSTableViewDe
     /// The people each meeting's speaker labels name, by session ID.
     private var people: [String: [String]] = [:]
     private let peopleCache = MeetingPeopleCache()
+    /// Whether each meeting's transcript files are out of date (`SessionExports.filesState`), read again only when a
+    /// file or the title changed; and the meetings whose files are (Update Transcript Files).
+    private let filesCache = TranscriptFilesCache()
+    private var staleFiles: Set<String> = []
     /// Maintenance commands running, by session ID.
     private var running: [String: String] = [:]
     /// Deep transcription passes queued or running, by session ID: what the meeting's badge says
@@ -75,6 +80,16 @@ final class MeetingsPane: NSViewController, NSTableViewDataSource, NSTableViewDe
     var summaryRequested: (String) -> Bool = { _ in false }
     /// Why Apple Intelligence cannot summarize here (Summarize is off with it as the tooltip); nil when it can.
     var summaryUnavailableReason: () -> String? = { nil }
+    /// Runs a rename (the app delegate: `MeetingRenameRun`); `renameEnded` reports.
+    var runRename: ((SessionSummary, MeetingRenameRequest) -> Void)?
+    /// The title a meeting shows changed (its ID): a rename here, or a change the catalog read shows (a rename in
+    /// Terminal, a new generated title). Review follows; the live transcript's header follows the list.
+    var onTitleChanged: ((String) -> Void)?
+    /// The name being edited in the list, with the meeting as it was when the editor opened (what is saved is compared
+    /// with that); the rows are not rebuilt meanwhile.
+    private var renaming: MeetingRenameEdit?
+    /// The rows were asked to be rebuilt while a name was edited: they are once it ends.
+    private var reloadDeferred = false
     private var pendingSelection: String?
     private var refreshTask: Task<Void, Never>?
     private var loading = false
@@ -118,6 +133,7 @@ final class MeetingsPane: NSViewController, NSTableViewDataSource, NSTableViewDe
         table.doubleAction = #selector(openSelected)
         table.onReturn = { [weak self] in self?.openSelection() }
         table.onDelete = { [weak self] in self?.deleteMeeting() }
+        table.onRename = { [weak self] in self?.renameSelected() }
         table.setAccessibilityLabel("Meetings")
         let menu = NSMenu()
         menu.delegate = self
@@ -382,7 +398,17 @@ final class MeetingsPane: NSViewController, NSTableViewDataSource, NSTableViewDe
             // A meeting that misses a language is checked for its speech model, so Label Speakers is offered once
             // the language can be detected (§4.14). The people its labels name come from a cache that reads a
             // meeting's labels again only when they changed.
-            let listed = await Task.detached { () -> ([SessionSummary], [String: [String]], Int64?) in
+            // Whether each finished meeting's transcript files are out of date is read from the files (cached until
+            // a file or the title changes), whoever wrote them. A Review's failed rewrite (`PendingExports`) is
+            // checked against what the saved labels would write, and forgotten once the files match.
+            let reviewPending = PendingExports().sessionIDs
+            // Read before the check, so a mark set again meanwhile (a review that failed again) is kept.
+            let reviewGenerations = Dictionary(uniqueKeysWithValues: reviewPending.map {
+                ($0, PendingExports().generation($0))
+            })
+            let filesCache = self?.filesCache
+            let listed = await Task.detached {
+                () -> ([SessionSummary], [String: [String]], Int64?, Set<String>, Set<String>) in
                 let summaries = await SessionCatalog.checkingLanguageModels(SessionCatalog.list(root: root))
                 let store = SpeakerProfileStore()
                 let names = VoiceProfileService.profileNames(store: store)
@@ -392,10 +418,25 @@ final class MeetingsPane: NSViewController, NSTableViewDataSource, NSTableViewDe
                     people[summary.id] = cache.people(of: summary, profileNames: names, applyRecognition: recognition)
                 }
                 cache.keep(only: Set(summaries.map(\.id)))
-                return (summaries, people, try? VolumeFreeSpace().availableBytes(at: root))
+                var stale: Set<String> = []
+                for summary in summaries where MeetingSummarySchedule.isFinished(summary.state)
+                    && (summary.transcriptID != nil || summary.nameCopyIsStale) {
+                    if filesCache?.state(of: summary) == .stale { stale.insert(summary.id) }
+                }
+                filesCache?.keep(only: Set(summaries.map(\.id)))
+                let selfName = VoiceProfileService.ownName(store: store)
+                let reviewMadeUp = Set(summaries.filter {
+                    reviewPending.contains($0.id) && SessionExports.filesMatchLabels(
+                        session: $0.directory, profileNames: names, applyRecognition: recognition, selfName: selfName)
+                }.map(\.id))
+                return (summaries, people, try? VolumeFreeSpace().availableBytes(at: root), stale, reviewMadeUp)
             }.value
             guard let self else { return }
             self.loading = false
+            self.staleFiles = listed.3
+            for id in listed.4 where self.running[id] == nil {
+                PendingExports().clear(id, ifGeneration: reviewGenerations[id] ?? 0)
+            }
             self.show(listed.0, people: listed.1, freeBytes: listed.2)
         }
     }
@@ -405,7 +446,9 @@ final class MeetingsPane: NSViewController, NSTableViewDataSource, NSTableViewDe
         let requested = pendingSelection
         let selected = requested ?? selectedSession?.id
         pendingSelection = nil
+        let shownTitles = Dictionary(sessions.map { ($0.id, $0.displayTitle) }, uniquingKeysWith: { first, _ in first })
         sessions = MeetingOpenPolicy.ordered(listed, liveSessionID: liveSessionID)
+        for id in MeetingListFormat.titlesChanged(from: shownTitles, to: sessions) { onTitleChanged?(id) }
         self.people = people
         // A meeting asked for that the search hides: the search is cleared, so it is seen.
         if let requested, !search.stringValue.isEmpty,
@@ -421,8 +464,13 @@ final class MeetingsPane: NSViewController, NSTableViewDataSource, NSTableViewDe
         updateLiveHeader()
     }
 
-    /// Rebuilds the rows from `sessions` and the search, keeping the meeting `id` selected.
+    /// Rebuilds the rows from `sessions` and the search, keeping the meeting `id` selected. Not while a name is edited
+    /// (the editor is in a row): then once the editing ends.
     private func reloadRows(selecting id: String?, scroll: Bool = false) {
+        if renaming != nil {
+            reloadDeferred = true
+            return
+        }
         let query = search.stringValue
         let shown = sessions.filter { MeetingListFormat.matches($0, people: people[$0.id] ?? [], query: query) }
         rows = MeetingListFormat.groups(shown, now: Date()).flatMap { group in
@@ -529,7 +577,11 @@ final class MeetingsPane: NSViewController, NSTableViewDataSource, NSTableViewDe
         if summary.displayTitle != summary.name { lines.append("Named “\(summary.name)”; the title was written by "
             + "Apple Intelligence from the transcript.") }
         lines.append(Self.stateText(summary) + " · " + MeetingFormat.size(summary.bytes) + " on disk")
-        if isLive { lines.append("Double-click or press Return to watch the live transcript.") }
+        if isLive {
+            lines.append("Double-click or press Return to watch the live transcript.")
+        } else if enabledActions(summary).contains(.rename) {
+            lines.append("Double-click the title or press ⌘R to rename the meeting.")
+        }
         if let message = summary.labelMessage, summary.speakerState != .labelled { lines.append(message) }
         return lines.joined(separator: "\n")
     }
@@ -571,7 +623,8 @@ final class MeetingsPane: NSViewController, NSTableViewDataSource, NSTableViewDe
     /// buttons show it, and every way to an action (button, menu, ⌫, Return, double-click) checks it again when used.
     private func enabledActions(_ summary: SessionSummary?) -> Set<MeetingActionPolicy.Action> {
         MeetingActionPolicy.enabled(summary, inUse: summary.map { running[$0.id] != nil } ?? false,
-                                    hasExport: summary.map(hasExport) ?? false)
+                                    hasExport: summary.map(hasExport) ?? false,
+                                    transcriptFiles: summary.map { SessionExports.hasTranscriptFiles(session: $0.directory) })
     }
 
     /// exports/transcript.md is a regular file.
@@ -620,6 +673,13 @@ final class MeetingsPane: NSViewController, NSTableViewDataSource, NSTableViewDe
             if PendingExports().contains(summary.id) {
                 parts.append("The transcript files are older than the speaker labels; open Review to update them.")
             }
+            // Not while a command works on it (a rename rewriting them).
+            if staleFiles.contains(summary.id), running[summary.id] == nil {
+                parts.append(summary.transcriptID == nil
+                    ? "The meeting's rename did not finish; right-click it and choose Finish Rename."
+                    : "The transcript files are out of date (another title, or a rewrite that did not finish); "
+                        + "right-click the meeting and choose Update Transcript Files.")
+            }
             statusLabel.stringValue = parts.joined(separator: " ")
         } else {
             statusLabel.stringValue = ""
@@ -647,9 +707,16 @@ final class MeetingsPane: NSViewController, NSTableViewDataSource, NSTableViewDe
         openReview(summary)
     }
 
-    /// Double-click: as Return.
+    /// Double-click: on the title's text, Rename (when it can be renamed); elsewhere, as Return.
     @objc private func openSelected() {
-        guard session(at: table.clickedRow) != nil else { return }
+        let row = table.clickedRow
+        guard let summary = session(at: row) else { return }
+        if enabledActions(summary).contains(.rename), let event = NSApp.currentEvent,
+           let cell = table.view(atColumn: 0, row: row, makeIfNecessary: false) as? MeetingRowView,
+           cell.titleTextContains(event.locationInWindow) {
+            beginRename(summary)
+            return
+        }
         openSelection()
     }
 
@@ -792,6 +859,98 @@ final class MeetingsPane: NSViewController, NSTableViewDataSource, NSTableViewDe
         }
     }
 
+    // MARK: - Rename
+
+    /// ⌘R, and the menu's Rename…: edits the selected meeting's name in its row.
+    @objc private func renameSelected() {
+        guard let summary = selection(for: .rename) else { return }
+        beginRename(summary)
+    }
+
+    /// The editor in the meeting's row, with the title it shows selected. Return saves (an empty name: the generated
+    /// title), Escape cancels.
+    private func beginRename(_ summary: SessionSummary) {
+        guard renaming == nil, let index = rowIndex(of: summary.id) else { return }
+        if table.selectedRow != index {
+            table.selectRowIndexes(IndexSet(integer: index), byExtendingSelection: false)
+        }
+        table.scrollRowToVisible(index)
+        guard let cell = table.view(atColumn: 0, row: index, makeIfNecessary: true) as? MeetingRowView else { return }
+        let edit = MeetingRenameEdit(summary)
+        renaming = edit
+        let id = summary.id
+        let placeholder = summary.currentGeneratedTitle.map { "Leave empty to use “\($0)”" }
+            ?? "Leave empty to use the default name"
+        cell.beginRenaming(edit.text, placeholder: placeholder,
+                           commit: { [weak self] text in self?.endRename(id, saving: text) },
+                           cancel: { [weak self] in self?.endRename(id, saving: nil) })
+    }
+
+    /// The editor closed: the rows are rebuilt if they were asked to be meanwhile, and the name is saved when it
+    /// changes the title the editor opened with (`saving` nil: cancelled). A refresh while it was open (a summary
+    /// finished) does not count as an edit.
+    private func endRename(_ id: String, saving text: String?) {
+        guard let edit = renaming, edit.sessionID == id else { return }
+        renaming = nil
+        if reloadDeferred {
+            reloadDeferred = false
+            reloadKeepingSelection()
+        }
+        guard let text, let request = edit.request(typed: text) else { return }
+        rename(sessions.first(where: { $0.id == id }) ?? edit.original, to: request)
+    }
+
+    /// The menu's Update Transcript Files, for files out of date (`SessionExports.filesState`): the rename the meeting
+    /// has now (`MeetingRenameRequest.retry`), which writes no name and rewrites the files for the title shown and the
+    /// saved labels.
+    @objc private func updateTranscriptFiles(_ sender: NSMenuItem) {
+        guard let id = sender.representedObject as? String, let summary = sessions.first(where: { $0.id == id }),
+              enabledActions(summary).contains(.rename) else { return }
+        rename(summary, to: .retry(summary))
+    }
+
+    /// The menu's Use Generated Title.
+    @objc private func useGeneratedTitle(_ sender: NSMenuItem) {
+        guard let id = sender.representedObject as? String, let summary = sessions.first(where: { $0.id == id }),
+              enabledActions(summary).contains(.rename) else { return }
+        rename(summary, to: .generated)
+    }
+
+    /// Asks the app to run the rename (`runRename`: `voiceislocal session rename` as a detached child, the meeting
+    /// registered as in use meanwhile); `renameEnded` reports.
+    private func rename(_ summary: SessionSummary, to request: MeetingRenameRequest) {
+        runRename?(summary, request)
+    }
+
+    /// The rename command of `summary` ended: `outcome` is its result (nil when it gave none, with `failure` saying
+    /// why). The new title shows at once (the next read of the catalog says the same), and a failure says why.
+    func renameEnded(_ summary: SessionSummary, outcome: SessionRenameCommand.Outcome?, failure: String?) {
+        let id = summary.id
+        let shown = Self.short(summary.displayTitle)
+        if let outcome, outcome.renamed || outcome.status == .unchanged, let name = outcome.name,
+           let source = outcome.nameSource,
+           let index = sessions.firstIndex(where: { $0.id == id }) {
+            sessions[index].name = name
+            sessions[index].nameSource = source
+            // The manifest's copy follows when the rename wrote it; the next read of the catalog says.
+            sessions[index].manifestName = name
+            reloadKeepingSelection()
+            updateLiveHeader()
+            onTitleChanged?(id)
+        }
+        refresh()
+        updateButtons()
+        if let alert = MeetingRenameRun.alert(for: outcome, shown: shown, failure: failure,
+                                              repair: MeetingRenameRun.repairTitle(summary)) {
+            showSheet(alert.title, alert.text)
+        }
+    }
+
+    /// At most 60 characters of a title, for alerts.
+    private static func short(_ text: String) -> String {
+        text.count > 60 ? String(text.prefix(59)) + "…" : text
+    }
+
     private func showSheet(_ title: String, _ text: String) {
         let alert = NSAlert()
         alert.messageText = title
@@ -880,7 +1039,9 @@ final class PreviewingWindow: NSWindow {
 
 extension MeetingsPane: NSMenuDelegate {
     /// The row clicked, which becomes the selection: Open, Live Transcript, Review…, Open Transcript, Show in Finder,
-    /// Save Transcript As…; Summarize Again; Make Final Transcript Now (also for a meeting queued automatically, which
+    /// Save Transcript As…; Rename… (⌘R), while the user's name hides a generated title Use Generated Title, and after
+    /// a rename whose transcript files could not be rewritten Update Transcript Files;
+    /// Summarize Again; Make Final Transcript Now (also for a meeting queued automatically, which
     /// it upgrades), and Cancel Final Transcript while it is queued or running; Recover…, Label Speakers, Delete
     /// Audio…, Delete Meeting…. Each is enabled as its button is.
     func menuNeedsUpdate(_ menu: NSMenu) {
@@ -903,6 +1064,41 @@ extension MeetingsPane: NSMenuDelegate {
         add("Open Transcript", #selector(openTranscript), enabled.contains(.openTranscript))
         add("Show in Finder", #selector(showInFinder), enabled.contains(.showInFinder))
         add("Save Transcript As…", #selector(saveTranscript), enabled.contains(.saveTranscript))
+
+        menu.addItem(.separator())
+        let rename = NSMenuItem(title: "Rename…", action: #selector(renameSelected), keyEquivalent: "r")
+        rename.keyEquivalentModifierMask = .command
+        rename.target = self
+        rename.isEnabled = enabled.contains(.rename)
+        rename.toolTip = MeetingActionPolicy.renameRefusal(
+            summary, hasExport: SessionExports.hasTranscriptFiles(session: summary.directory))
+            ?? ("Gives the meeting a name of your own, which no title Apple Intelligence writes replaces. "
+                + "You can also double-click its title.")
+        menu.addItem(rename)
+        // Offered while the user's name hides a generated title.
+        if summary.nameSource.isUser, let generated = summary.currentGeneratedTitle {
+            let item = NSMenuItem(title: "Use Generated Title", action: #selector(useGeneratedTitle(_:)),
+                                  keyEquivalent: "")
+            item.target = self
+            item.representedObject = summary.id
+            item.isEnabled = enabled.contains(.rename)
+            item.toolTip = "Shows “\(generated)”, the title Apple Intelligence wrote, instead of “\(summary.name)”."
+            menu.addItem(item)
+        }
+        // Transcript files out of date, read from the files: rewritten for the title shown.
+        if staleFiles.contains(summary.id), running[summary.id] == nil {
+            let item = NSMenuItem(title: MeetingRenameRun.repairTitle(summary),
+                                  action: #selector(updateTranscriptFiles(_:)),
+                                  keyEquivalent: "")
+            item.target = self
+            item.representedObject = summary.id
+            item.isEnabled = enabled.contains(.rename)
+            item.toolTip = MeetingActionPolicy.renameRefusal(
+                summary, hasExport: SessionExports.hasTranscriptFiles(session: summary.directory))
+                ?? "Writes the meeting's transcript files again with its title and speakers; nothing is summarized "
+                + "again."
+            menu.addItem(item)
+        }
 
         menu.addItem(.separator())
         let summarize = NSMenuItem(title: summary.generatedSummary == nil ? "Summarize" : "Summarize Again",
@@ -1010,9 +1206,10 @@ final class MeetingGroupView: NSTableCellView {
 }
 
 /// One meeting: its title (bold) with its badges, when and how long and who on the line below, and its summary in up
-/// to two lines.
+/// to two lines. While the meeting is renamed, an editor takes the place of the title and its badges: Return (or
+/// leaving it) saves, Escape cancels.
 @MainActor
-final class MeetingRowView: NSTableCellView {
+final class MeetingRowView: NSTableCellView, NSTextFieldDelegate {
     struct Content: Equatable {
         var title: String
         var detail: String
@@ -1022,9 +1219,19 @@ final class MeetingRowView: NSTableCellView {
     }
 
     private let title = NSTextField(labelWithString: "")
+    private let editor = NSTextField(string: "")
     private let detail = NSTextField(labelWithString: "")
     private let summary = NSTextField(wrappingLabelWithString: "")
     private let badges = NSStackView()
+    /// While renaming: what Return (or leaving the editor) and Escape do. Each is called once per rename.
+    private var onCommit: ((String) -> Void)?
+    private var onCancel: (() -> Void)?
+    var isRenaming: Bool { onCommit != nil }
+    private weak var header: NSStackView?
+    /// Pushes the badges to the right; hidden while renaming, so the editor alone spans the line.
+    private let spacer = NSView()
+    /// The editor spans the title line while it shows (set when it is attached to the line).
+    private var editorWidth: NSLayoutConstraint?
 
     /// The row's height: three lines of text and up to two of summary, or two without a summary.
     static func height(hasSummary: Bool) -> CGFloat { hasSummary ? 84 : 52 }
@@ -1049,9 +1256,22 @@ final class MeetingRowView: NSTableCellView {
         badges.distribution = .fill
         badges.setContentHuggingPriority(.required, for: .horizontal)
         badges.setContentCompressionResistancePriority(.required, for: .horizontal)
-        let header = NSStackView(views: [title, NSView(), badges])
+        editor.font = .systemFont(ofSize: 13, weight: .semibold)
+        editor.bezelStyle = .roundedBezel
+        editor.lineBreakMode = .byTruncatingTail
+        editor.usesSingleLineMode = true
+        editor.cell?.isScrollable = true
+        editor.cell?.wraps = false
+        editor.delegate = self
+        editor.isHidden = true
+        editor.setAccessibilityLabel("Meeting name")
+        editor.toolTip = "Return saves the name, Escape cancels. Leave it empty to use the title Apple Intelligence "
+            + "wrote."
+        editor.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        let header = NSStackView(views: [title, editor, spacer, badges])
         header.spacing = 6
         header.alignment = .centerY
+        self.header = header
         let stack = NSStackView(views: [header, detail, summary])
         stack.orientation = .vertical
         stack.alignment = .leading
@@ -1107,6 +1327,85 @@ final class MeetingRowView: NSTableCellView {
         if !content.badges.isEmpty { label += ". " + content.badges.map(\.text).joined(separator: ", ") }
         if let text = content.summary { label += ". " + text }
         setAccessibilityLabel(label)
+    }
+
+    // MARK: - Renaming
+
+    /// Whether `point` (in window coordinates) is on the title's text, not the empty space after it.
+    func titleTextContains(_ point: NSPoint) -> Bool {
+        guard !isRenaming, !title.isHidden else { return false }
+        let local = title.convert(point, from: nil)
+        let width = min(title.bounds.width, title.attributedStringValue.size().width + 4)
+        return local.x >= 0 && local.x <= width && local.y >= 0 && local.y <= title.bounds.height
+    }
+
+    /// Shows the editor in place of the title and its badges, with `text` selected and `placeholder` shown when it is
+    /// emptied, and gives it the keyboard.
+    func beginRenaming(_ text: String, placeholder: String, commit: @escaping (String) -> Void,
+                       cancel: @escaping () -> Void) {
+        onCommit = commit
+        onCancel = cancel
+        editor.stringValue = text
+        editor.placeholderString = placeholder
+        title.isHidden = true
+        badges.isHidden = true
+        spacer.isHidden = true
+        editor.isHidden = false
+        if editorWidth == nil, let header {
+            editorWidth = editor.widthAnchor.constraint(equalTo: header.widthAnchor)
+        }
+        editorWidth?.isActive = true
+        window?.makeFirstResponder(editor)
+        editor.currentEditor()?.selectAll(nil)
+    }
+
+    /// Back to the title, without saving (the pane saves what `commit` was given).
+    func endRenaming() {
+        onCommit = nil
+        onCancel = nil
+        editorWidth?.isActive = false
+        editor.isHidden = true
+        title.isHidden = false
+        badges.isHidden = false
+        spacer.isHidden = false
+    }
+
+    /// A row scrolled away while it was renamed is cancelled before the view shows another meeting.
+    override func prepareForReuse() {
+        super.prepareForReuse()
+        finish(saving: false)
+    }
+
+    private func finish(saving: Bool) {
+        guard let commit = onCommit, let cancel = onCancel else { return }
+        let text = editor.stringValue
+        // Return or Escape: the keyboard goes back to the list. Leaving the editor by a click keeps it where it went.
+        let hadKeyboard = (window?.firstResponder as? NSText)?.delegate === editor
+        endRenaming()
+        if hadKeyboard {
+            var view = superview
+            while let current = view, !(current is NSTableView) { view = current.superview }
+            window?.makeFirstResponder(view)
+        }
+        if saving { commit(text) } else { cancel() }
+    }
+
+    func control(_ control: NSControl, textView: NSTextView, doCommandBy selector: Selector) -> Bool {
+        switch selector {
+        case #selector(NSResponder.insertNewline(_:)):
+            finish(saving: true)
+            return true
+        case #selector(NSResponder.cancelOperation(_:)), #selector(NSResponder.complete(_:)):
+            finish(saving: false)
+            return true
+        default:
+            return false
+        }
+    }
+
+    /// Leaving the editor (a click elsewhere, Tab) saves the name, as in the Finder.
+    func controlTextDidEndEditing(_ notification: Notification) {
+        finish(saving: true)
     }
 }
 

@@ -350,6 +350,25 @@ Meetings › "Title and summarize meetings with Apple Intelligence" (on by defau
 each meeting in the background once its transcript is final, and again after a final
 transcript; right-click a meeting for Summarize Again.
 
+A name you give a meeting is kept: rename it in the Meetings list (right-click › Rename…, ⌘R,
+or double-click its title; Return saves, Escape cancels, an empty name or Use Generated Title
+gives back the generated title), or from Terminal:
+
+```sh
+voiceislocal session rename <session> "Weekly sync"    # your name; no generated title replaces it
+voiceislocal session rename <session> --generated      # show the title Apple Intelligence wrote again
+voiceislocal session rename <session> "Weekly sync" --json
+```
+
+A name is one line of at most 60 characters (a longer one is cut, at a space when it can be).
+The transcript files are rewritten so the Markdown heading follows; nothing is summarized again.
+It exits 0 when renamed (or the meeting already had that name), 3 when renamed but the
+transcript files could not be rewritten (run the same rename again to rewrite them), and 1
+otherwise, with nothing changed: the meeting is
+recording or being saved, another command or a final transcript or summary of it is working on
+it, it was interrupted or not finished properly (recover it first), or its transcript cannot be
+read (damaged, from a newer version, or unreadable for now).
+
 ## Quick start
 
 ```sh
@@ -378,6 +397,7 @@ voiceislocal="$BIN_DIR/voiceislocal"
 "$voiceislocal" session fix-words <session>    # fix misheard words with today's corrections and terms
 "$voiceislocal" session deep-transcribe <session>   # transcribe again with the local Whisper model
 "$voiceislocal" session summarize <session>    # title, summary, key points and action items, on this Mac
+"$voiceislocal" session rename <session> "Weekly sync"   # your name for it; --generated for the title again
 "$voiceislocal" session list                   # sessions, newest first, with state and size
 "$voiceislocal" speakers list <session>        # a session's speakers; also rename, merge, assign, ...
 "$voiceislocal" speakers rename <session> S2 "Maria"

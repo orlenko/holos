@@ -42,7 +42,8 @@ enum MarkdownExport {
     static func render(_ content: ExportContent) -> Data {
         let metadata = content.document.metadata
         let (date, time) = localDateAndTime(metadata.createdAt, in: metadata.timeZone)
-        let heading = content.summary.flatMap { $0.titleIsHeading ? $0.title : nil } ?? metadata.name
+        let heading = content.document.heading ?? content.summary.flatMap { $0.titleIsHeading ? $0.title : nil }
+            ?? metadata.name
         var text = "# \(title(heading))\n\n"
         text += "- Date: \(date)\n"
         text += "- Started: \(time)\n"
@@ -125,7 +126,7 @@ enum MarkdownExport {
 
     // MARK: Header
 
-    private static func title(_ name: String) -> String {
+    static func title(_ name: String) -> String {
         var title = escapeInline(ExportText.singleLine(name))
         if title.isEmpty { title = "Meeting" }
         // A trailing "#" would close the ATX heading.

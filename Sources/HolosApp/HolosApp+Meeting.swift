@@ -52,6 +52,9 @@ final class MeetingAppState {
     /// Open review windows by session ID (one per meeting), and reviews being opened (the window once shown, nil when
     /// it was not).
     var reviewWindows: [String: ReviewWindow] = [:]
+    /// Checks the open review windows' titles every 2 s, whatever the main window shows, so a rename in Terminal (or
+    /// a new generated title) reaches them; it ends when the last one closes.
+    var reviewTitleWatch: Task<Void, Never>?
     var openingReviews: [String: Task<ReviewWindow?, Never>] = [:]
     /// The run of the Meetings or interrupted-prompt command working on a meeting, by session ID
     /// (`ReviewMaintenance`).
@@ -592,8 +595,12 @@ extension HolosAppDelegate: NSMenuDelegate {
         let state = meeting.controller?.state ?? .idle
         let follows = state.sessionID == sessionID
         let status = follows ? meeting.controller?.status : nil
-        let name = status?.name ?? (follows ? meeting.controller?.reducer.meetingName : nil) ?? summary?.name ?? "Meeting"
         let phase = LiveMeetingPhase.of(sessionID: sessionID, state: state, summary: summary)
+        // Once saved, the title the Meetings list shows (a rename, or the generated title); while it records, the
+        // name it was started with.
+        let finished = phase == .saved || phase == .interrupted || phase == .failed
+        let name = (finished ? summary?.displayTitle : nil) ?? status?.name
+            ?? (follows ? meeting.controller?.reducer.meetingName : nil) ?? summary?.displayTitle ?? "Meeting"
         let detail: String
         switch phase {
         case .starting:
@@ -667,13 +674,13 @@ extension HolosAppDelegate: NSMenuDelegate {
             root: controller.root,
             perform: { [weak self] action, summary in self?.performMeetingAction(action, summary) },
             openReview: { [weak self] summary in
-                self?.openReview(sessionID: summary.id, directory: summary.directory, name: summary.name)
+                self?.openReview(sessionID: summary.id, directory: summary.directory, name: summary.displayTitle)
             },
             beginUsing: { [weak controller] id, doing in controller?.beginUsing(id, for: doing) ?? false },
             endUsing: { [weak controller] id in controller?.endUsing(id) },
             liveHeader: { [weak self] id, summary in
                 self?.liveMeetingHeader(sessionID: id, summary: summary)
-                    ?? LiveMeetingHeader(name: summary?.name ?? "Meeting", phase: .saved, detail: "")
+                    ?? LiveMeetingHeader(name: summary?.displayTitle ?? "Meeting", phase: .saved, detail: "")
             },
             learnLiveText: { [weak self] state, heard, meant in
                 self?.learnMeetingCorrection(state: state, heard: heard, meant: meant) ?? .init()
@@ -686,6 +693,10 @@ extension HolosAppDelegate: NSMenuDelegate {
         pane.onCancelSummary = { [weak self] id in self?.cancelMeetingSummary(id) }
         pane.summaryRequested = { [weak self] id in self?.meeting.summaries.requested.contains(id) ?? false }
         pane.summaryUnavailableReason = { [weak self] in self?.meetingSummaryUnavailableReason }
+        // A rename, here or in Terminal, or a new generated title shows in the meeting's Review window (the live
+        // transcript's header follows the list).
+        pane.onTitleChanged = { [weak self] id in self?.refreshReviewTitle(id) }
+        pane.runRename = { [weak self] summary, request in self?.runRename(summary, request) }
         pane.update(summarizing: meeting.summaries.running?.sessionID)
         pane.update(meetingState: controller.state)
         meeting.meetingsPane = pane
@@ -705,7 +716,7 @@ extension HolosAppDelegate: NSMenuDelegate {
             showSessionInUse(summary, doing: doing)
             return
         }
-        let name = Self.short(summary.name)
+        let name = Self.short(summary.displayTitle)
         let path = summary.directory.path
         let arguments: [String]
         let doing: String
@@ -746,7 +757,7 @@ extension HolosAppDelegate: NSMenuDelegate {
             showSessionInUse(summary, doing: controller.sessionsInUse[summary.id])
             return
         }
-        let name = Self.short(summary.name)
+        let name = Self.short(summary.displayTitle)
         let hold = ReviewMaintenance.Hold(Self.maintenanceCommand(action))
         meeting.maintenanceOn[summary.id] = hold
         Task { [weak self] in
@@ -814,14 +825,14 @@ extension HolosAppDelegate: NSMenuDelegate {
             maintenanceFinished(summary.id)
             Self.removeFile(output)
             Self.removeFile(errors)
-            let title = action == .recover ? "Voice is Local could not recover “\(Self.short(summary.name))”."
+            let title = action == .recover ? "Voice is Local could not recover “\(Self.short(summary.displayTitle))”."
                 : "Voice is Local could not run the command."
             showMeetingAlert(title, error.localizedDescription)
         }
     }
 
     private func showSessionInUse(_ summary: SessionSummary, doing: String?) {
-        showMeetingAlert("Voice is Local is working on “\(Self.short(summary.name))”.",
+        showMeetingAlert("Voice is Local is working on “\(Self.short(summary.displayTitle))”.",
                          (doing.map { $0 + " " } ?? "") + "Try again when it finishes; the Meetings list shows when it is done.")
     }
 
@@ -836,7 +847,7 @@ extension HolosAppDelegate: NSMenuDelegate {
         // open review shows the meeting as the command left it (new transcript, labels, or no audio).
         maintenanceFinished(summary.id)
         meeting.meetingsPane?.refresh()
-        let name = Self.short(summary.name)
+        let name = Self.short(summary.displayTitle)
         if code == 0, action == .deleteMeeting || action == .deleteAudio {
             // No voice can be learned from the meeting any more.
             PendingVoiceSamples().clear(summary.id)
@@ -873,6 +884,86 @@ extension HolosAppDelegate: NSMenuDelegate {
     }
 
     // MARK: - Review window (PR9)
+
+    /// The meeting's Review window, when open, takes the title the Meetings list shows now (`MeetingNaming.currentTitle`,
+    /// read off the main actor): after a rename, and after a summary, whose generated title may be the one shown.
+    func refreshReviewTitle(_ sessionID: String) {
+        // The folder the review was opened with (a session folder may have any `<something>.holos` name).
+        guard let window = meeting.reviewWindows[sessionID] else { return }
+        let session = window.review.session
+        Task { [weak self, weak window] in
+            let title = await Task.detached { MeetingNaming.currentTitle(session: session) }.value
+            guard let self, let window, let title, self.meeting.reviewWindows[sessionID] === window,
+                  window.meetingTitle != title else { return }
+            window.meetingTitle = title
+        }
+    }
+
+    /// Starts `reviewTitleWatch` unless it runs: every 2 s each open review window takes the title its meeting shows.
+    private func watchReviewTitles() {
+        guard meeting.reviewTitleWatch == nil else { return }
+        meeting.reviewTitleWatch = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(2))
+                guard let self else { return }
+                guard !self.meeting.reviewWindows.isEmpty else {
+                    self.meeting.reviewTitleWatch = nil
+                    return
+                }
+                for id in self.meeting.reviewWindows.keys { self.refreshReviewTitle(id) }
+            }
+        }
+    }
+
+    // MARK: - Rename (§4.17)
+
+    /// Runs a rename from Meetings as `voiceislocal session rename` (`MeetingRenameRun`), a child in its own session
+    /// like the other maintenance commands, so quitting never cuts it between its writes. The meeting is registered as
+    /// in use meanwhile ("Renaming…"; one already in use is turned down with an alert). Nothing is remembered about it:
+    /// whether its transcript files are out of date afterwards is read from the files (the Meetings list's
+    /// `TranscriptFilesCache`), so a quit before it ends, or a rename in Terminal, shows the same way.
+    func runRename(_ summary: SessionSummary, _ request: MeetingRenameRequest) {
+        guard let controller = meeting.controller, let maintenance = meeting.maintenance else { return }
+        guard controller.beginUsing(summary.id, for: "Renaming…") else {
+            showSessionInUse(summary, doing: controller.sessionsInUse[summary.id])
+            return
+        }
+        // A Review's failed rewrite marked before the rename started is the one its rewrite makes up for; a newer one
+        // (a review that failed meanwhile) is kept.
+        let pendingGeneration = PendingExports().generation(summary.id)
+        let output = Self.temporaryFile("out")
+        let errors = Self.temporaryFile("err")
+        do {
+            try maintenance.run(MeetingRenameRun.arguments(session: summary.directory, request: request,
+                                                           expectedID: summary.id),
+                                standardOutput: output, standardError: errors) { [weak self] code in
+                self?.renameEnded(summary, code: code, pendingGeneration: pendingGeneration, output: output,
+                                  errors: errors)
+            }
+        } catch {
+            controller.endUsing(summary.id)
+            Self.removeFile(output)
+            Self.removeFile(errors)
+            meeting.meetingsPane?.renameEnded(summary, outcome: nil, failure: error.localizedDescription)
+        }
+    }
+
+    private func renameEnded(_ summary: SessionSummary, code: Int32, pendingGeneration: Int, output: URL,
+                             errors: URL) {
+        // A result about another meeting (it cannot be, with --expect-id) is not applied to this one.
+        let outcome = (try? AtomicFile.readIfPresent(output, maxBytes: 1 << 20)).flatMap {
+            $0.flatMap { try? HolosJSON.decoder().decode(SessionRenameCommand.Outcome.self, from: $0) }
+        }.flatMap { $0.sessionID.map { $0.caseInsensitiveCompare(summary.id) == .orderedSame } ?? true ? $0 : nil }
+        let failure = Self.commandResult(output: output, errors: errors)
+            ?? "The rename command ended with code \(code)."
+        Self.removeFile(output)
+        Self.removeFile(errors)
+        // The files were rewritten from the saved speaker labels: a Review's earlier failed rewrite is made up for.
+        if outcome?.exportsUpdated == true { PendingExports().clear(summary.id, ifGeneration: pendingGeneration) }
+        meeting.controller?.endUsing(summary.id)
+        refreshReviewTitle(summary.id)
+        meeting.meetingsPane?.renameEnded(summary, outcome: outcome, failure: failure)
+    }
 
     /// Opens the review window of a labelled meeting (or brings it forward) and reports `reviewOpened`, which clears
     /// a "Name Speakers" offer for it. The labels load off the main actor first. When the meeting cannot be reviewed,
@@ -945,12 +1036,13 @@ extension HolosAppDelegate: NSMenuDelegate {
             guard let self else { return }
             if let window {
                 if self.meeting.reviewWindows[sessionID] === window { self.meeting.reviewWindows[sessionID] = nil }
-                self.reviewClosed(sessionID, review: window.review)
+                self.reviewClosed(sessionID, review: window.review, title: window.meetingTitle)
             }
             self.setDockPresence(false, for: dockKey)
         }
         window.onRelabel = { [weak self] running in self?.reviewRelabelChanged(sessionID, running: running) }
         meeting.reviewWindows[sessionID] = window
+        watchReviewTitles()
         setDockPresence(true, for: dockKey)
         // Rewriting them failed when an earlier review of the meeting closed.
         if PendingExports().contains(sessionID) { window.review.markExportsPending() }
@@ -959,7 +1051,7 @@ extension HolosAppDelegate: NSMenuDelegate {
     /// A review window closed and saved: when its transcript files could not be rewritten, the meeting is marked
     /// (Meetings says so, and the next review rewrites them) and an alert says what happened, unless Holos is
     /// quitting or the meeting is being deleted.
-    private func reviewClosed(_ sessionID: String, review: ReviewSession) {
+    private func reviewClosed(_ sessionID: String, review: ReviewSession, title: String) {
         guard review.exportsPending else {
             PendingExports().clear(sessionID)
             return
@@ -968,7 +1060,7 @@ extension HolosAppDelegate: NSMenuDelegate {
         if let controller = meeting.controller { meeting.meetingsPane?.update(running: controller.sessionsInUse) }
         Self.meetingLog.error("Session \(sessionID, privacy: .public): transcript files not rewritten when the review closed; marked pending")
         guard !meeting.quitting, meeting.maintenanceOn[sessionID]?.command != .deleteMeeting else { return }
-        let name = Self.short(review.sessionName)
+        let name = Self.short(title)
         let problem = review.exportProblem.map { "\n\n" + $0 } ?? ""
         Task { [weak self] in
             self?.showMeetingAlert(
@@ -1127,7 +1219,7 @@ extension HolosAppDelegate: NSMenuDelegate {
             prompted.insert(summary.id)
             UserDefaults.standard.set(Array(prompted), forKey: MeetingAppState.promptedKey)
             let alert = NSAlert()
-            alert.messageText = "Voice is Local found an interrupted recording: \(Self.short(summary.name)) (\(MeetingFormat.clock(summary.savedSeconds)) saved)."
+            alert.messageText = "Voice is Local found an interrupted recording: \(Self.short(summary.displayTitle)) (\(MeetingFormat.clock(summary.savedSeconds)) saved)."
             alert.informativeText = "Recover indexes its saved audio, rebuilds the transcript, and labels speakers. You can also recover it later from Meetings."
             alert.addButton(withTitle: "Recover")
             alert.addButton(withTitle: "Later")

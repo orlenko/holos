@@ -102,6 +102,9 @@ public enum MeetingEventKind {
     public static let resumed = "resumed"
     /// at, requestID, label (optional)
     public static let marker = "marker"
+    /// nameSource: the user renamed the meeting (`user`), or chose its generated title again (`default`); the name
+    /// itself is in the manifest (docs/meeting-design.md §4.17)
+    public static let renamed = "renamed"
     /// at, phaseBeforeSleep (recording | paused | waiting)
     public static let systemWillSleep = "systemWillSleep"
     /// at, sleptSeconds, action (resume | wait | finalize)
@@ -160,7 +163,7 @@ public enum MeetingOrigin: String, Codable, Sendable {
 }
 
 /// Where a meeting's name (`SessionManifest.name`) came from (docs/meeting-design.md §4.17): `user` named it (typed a
-/// name in the start panel, `--name`), `default` is the name Voice is Local made up ("Meeting 2026-10-03 14:00", an
+/// name in the start panel, `--name`, or renamed it), `default` is the name Voice is Local made up ("Meeting 2026-10-03 14:00", an
 /// imported file's name). A generated title never replaces a `user` name; any value a newer Voice is Local writes is
 /// treated as `user`, so it is never overwritten either.
 public struct MeetingNameSource: OpenStringCode {
@@ -176,7 +179,8 @@ public struct MeetingNameSource: OpenStringCode {
     public var isUser: Bool { self != .default && self != .generated }
 }
 
-/// How a meeting was set up. Written once to `meeting.json` when a recording or import starts.
+/// How a meeting was set up. Written to `meeting.json` when a recording or import starts; a rename changes its
+/// `nameSource` (docs/meeting-design.md §4.17).
 public struct MeetingInfo: Codable, Sendable, Equatable {
     public var schemaVersion: Int
     public var sessionID: String
@@ -196,19 +200,24 @@ public struct MeetingInfo: Codable, Sendable, Equatable {
     /// post-processing transcribes the saved audio again in each and keeps, passage by passage, the language that
     /// fits (LANG2, §4.14). Nil for one language and in older sessions.
     public var languages: [String]?
-    /// Where the manifest's name came from; nil in meetings saved before it was recorded, whose source
+    /// Where the meeting's name came from; nil in meetings saved before it was recorded, whose source
     /// `MeetingNaming.source` infers from the name.
     public var nameSource: MeetingNameSource?
+    /// The meeting's name, written by a rename together with `nameSource` in one write (the rename's commit point,
+    /// docs/meeting-design.md §4.17); the manifest's name is a copy updated after it. Nil until a rename: the
+    /// manifest's name is the meeting's.
+    public var name: String?
 
     public init(schemaVersion: Int = 1, sessionID: String, mode: MeetingMode, othersInRoom: Bool,
                 applicationBundleID: String? = nil, origin: MeetingOrigin = .recorded,
                 importedFileName: String? = nil, expectedSpeakers: Int? = nil, createdAt: Date = Date(),
-                languages: [String]? = nil, nameSource: MeetingNameSource? = nil) {
+                languages: [String]? = nil, nameSource: MeetingNameSource? = nil, name: String? = nil) {
         self.schemaVersion = schemaVersion; self.sessionID = sessionID; self.mode = mode
         self.othersInRoom = othersInRoom; self.applicationBundleID = applicationBundleID
         self.origin = origin; self.importedFileName = importedFileName
         self.expectedSpeakers = expectedSpeakers; self.createdAt = createdAt; self.languages = languages
         self.nameSource = nameSource
+        self.name = name
     }
 
     /// Settings assumed for archives created before meeting.json existed.

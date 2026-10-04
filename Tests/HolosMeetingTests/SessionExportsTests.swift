@@ -104,7 +104,10 @@ private func exportsMakeWritableAndAppend(_ text: String, to url: URL) throws {
     try AtomicFile.write(written, to: text, permissions: 0o400)
     var record = try AtomicFile.readJSON(SessionExports.GeneratedRecord.self,
                                          from: SessionPaths.generatedExports(session))
-    record.pending = ["transcript.txt": SessionExports.sha256(written)]
+    // As `beginWrite` records it: every format (the others as they would be written again).
+    var pending = record.files
+    pending["transcript.txt"] = SessionExports.sha256(written)
+    record.pending = pending
     try AtomicFile.writeJSON(record, to: SessionPaths.generatedExports(session))
     #expect(try SessionExports.regenerate(session: session).movedAside.isEmpty)
 }
@@ -120,7 +123,10 @@ private func exportsMakeWritableAndAppend(_ text: String, to url: URL) throws {
     try AtomicFile.write(written, to: text, permissions: 0o400)
     var record = try AtomicFile.readJSON(SessionExports.GeneratedRecord.self,
                                          from: SessionPaths.generatedExports(session))
-    record.pending = ["transcript.txt": SessionExports.sha256(written)]
+    // As `beginWrite` records it: every format (the others as they would be written again).
+    var pending = record.files
+    pending["transcript.txt"] = SessionExports.sha256(written)
+    record.pending = pending
     try AtomicFile.writeJSON(record, to: SessionPaths.generatedExports(session))
     // Regeneration 2 recorded other pending digests, then stopped before replacing any file.
     let snapshot = try SpeakerSessionSnapshot.load(session: session)

@@ -421,6 +421,18 @@ thumbnail timeline, and a larger local-model benchmark are follow-ups.
   Week and month, with the title, start, length, people, the summary, and badges instead of
   columns; a search field filters by title, summary and people; the row's menu has every action.
   Rendered offscreen with invented meetings in light and dark; not yet seen in the running app.
+- Renaming a meeting (docs/meeting-design.md §4.17): Rename… in the row's menu, ⌘R, or a
+  double-click on the title edits the name in the row (Return saves, Escape cancels; empty, or
+  Use Generated Title, gives back the generated title); `voiceislocal session rename <session>
+  <name> | --generated [--json]` does the same. The name and its `nameSource` (`user`, or
+  `default` for the generated title) are committed to meeting.json in one write, under the processing
+  lease and the writer lock; the manifest's name is then updated as a copy, and the transcript files
+  are rewritten without the model. A stale copy or files read as out of date and are repaired by
+  Update Transcript Files (Finish Rename). Refused while
+  recording or saving, while another command holds the meeting, and while a final transcript or
+  summary of it runs. Unit-tested on fixture sessions (persisted, reverted, refusals, files,
+  special characters, long names); the row's editor rendered offscreen in light and dark; not
+  yet used in the running app.
 - Main window (docs/design.md "Main window"): **Open Voice is Local** (⌘0) opens one
   window with a sidebar: History (⌘1), Corrections (⌘2), Meetings (⌘3), People (⌘4),
   Reading (⌘5), and Settings (⌘,), with a

@@ -811,19 +811,23 @@ extension MeetingSummaryDraft {
             return nil
         }
         // Capitalized before the length is cut: a capital can be longer than its letter ("ß" is "SS").
-        title = first.uppercased() + title.dropFirst()
-        if title.count > maximumTitleCharacters {
-            // At the last space within the limit when there is one, else between characters.
-            let cut = String(title.prefix(maximumTitleCharacters))
-            if let space = cut.lastIndex(of: " "),
-               cut.distance(from: cut.startIndex, to: space) >= maximumTitleCharacters / 2 {
-                title = String(cut[..<space])
-            } else {
-                title = cut
-            }
-            title = title.trimmingCharacters(in: CharacterSet(charactersIn: ".,;:–—-、，。").union(.whitespaces))
-        }
+        title = cut(first.uppercased() + title.dropFirst(), toCharacters: maximumTitleCharacters)
         return title.isEmpty ? nil : title
+    }
+
+    /// `text` when it has at most `limit` characters; otherwise cut at the last space within the limit when one is
+    /// past half of it, else between characters (for text without spaces), with trailing punctuation and spaces
+    /// removed. Titles, and names the user gives a meeting (`MeetingNaming.cleanUserName`), are cut this way.
+    public static func cut(_ text: String, toCharacters limit: Int) -> String {
+        guard text.count > limit else { return text }
+        let cut = String(text.prefix(limit))
+        let kept: String
+        if let space = cut.lastIndex(of: " "), cut.distance(from: cut.startIndex, to: space) >= limit / 2 {
+            kept = String(cut[..<space])
+        } else {
+            kept = cut
+        }
+        return kept.trimmingCharacters(in: CharacterSet(charactersIn: ".,;:–—-、，。").union(.whitespaces))
     }
 
     /// Words a cut title must not end with.

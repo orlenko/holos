@@ -27,6 +27,11 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate {
     var onClose: (() -> Void)?
     /// Called with true when a relabel starts from the window and false when it ends.
     var onRelabel: ((Bool) -> Void)?
+    /// The meeting's title as the Meetings list shows it (`MeetingNaming.currentTitle`): the window's title, and the
+    /// name Save As… suggests. A rename in the list sets it.
+    var meetingTitle: String {
+        didSet { window.title = "\(meetingTitle) — Review" }
+    }
 
     private let window: ReviewKeyWindow
     private let player = ReviewPlayer()
@@ -91,17 +96,19 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate {
         let review = try await ReviewSession(session: session, profiles: SpeakerProfileStore(), maintenance: maintenance,
                                              analyseVoices: true, pendingVoices: PendingVoiceSamples())
         review.autoMergeVoices = UserDefaults.standard.bool(forKey: autoMergeKey)
-        return ReviewWindow(sessionID: sessionID, review: review)
+        let title = await Task.detached { MeetingNaming.currentTitle(session: session) }.value
+        return ReviewWindow(sessionID: sessionID, review: review, title: title)
     }
 
-    init(sessionID: String, review: ReviewSession) {
+    init(sessionID: String, review: ReviewSession, title: String? = nil) {
         self.sessionID = sessionID
         self.review = review
+        meetingTitle = title ?? review.sessionName
         window = ReviewKeyWindow(contentRect: NSRect(x: 0, y: 0, width: 1100, height: 720),
                                  styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered,
                                  defer: true)
         super.init()
-        window.title = "\(review.sessionName) — Review"
+        window.title = "\(meetingTitle) — Review"
         window.isReleasedWhenClosed = false
         window.contentMinSize = NSSize(width: 900, height: 560)
         window.delegate = self
@@ -928,7 +935,7 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate {
         accessory.edgeInsets = NSEdgeInsets(top: 8, left: 8, bottom: 8, right: 8)
         panel.accessoryView = accessory
         panel.allowedContentTypes = [UTType(filenameExtension: "md") ?? .plainText]
-        panel.nameFieldStringValue = Self.fileName(review.sessionName) + ".md"
+        panel.nameFieldStringValue = Self.fileName(meetingTitle) + ".md"
         panel.canCreateDirectories = true
         let chooser = ExportFormatChooser(panel: panel, popup: formats)
         formats.target = chooser

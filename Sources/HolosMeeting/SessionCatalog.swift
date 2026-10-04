@@ -93,8 +93,23 @@ public struct SessionSummary: Codable, Sendable, Equatable, Identifiable {
     public var languageWork: LanguageWork?
     /// Where `name` came from (`MeetingNaming.source`: meeting.json's, else inferred from the name).
     public var nameSource: MeetingNameSource
-    /// summary.json, when it can be read: possibly of an earlier transcript (`summaryIsCurrent` says), which is
-    /// still shown until the new one is made.
+    /// The manifest's name: a copy of `name` (`MeetingNaming.name`) a rename updates after meeting.json; different
+    /// from it when that second write did not happen (`nameCopyIsStale`).
+    public var manifestName: String
+    /// Why meeting.json cannot be read (damaged, of another session, written by a newer build, unreadable now); nil
+    /// when it can, or when there is none (a meeting saved before it existed). Rename refuses such a meeting.
+    public var metadataProblem: String?
+    /// Why the transcript files cannot be rewritten now (`SessionExports.recordProblem`): exports/.generated.json was
+    /// written by a newer build, or cannot be read. Nil otherwise. Rename refuses such a meeting.
+    public var exportsProblem: String?
+    /// A summary or final transcript of this meeting running in any process (`SessionCatalog.jobInProgress`), or nil.
+    /// Rename refuses such a meeting.
+    public var jobInProgress: String?
+    /// Why summary.json cannot be used now: written by a newer build, or not readable (permissions, not a regular
+    /// file, an I/O error). Nil when it can, is missing or damaged. Rename refuses such a meeting.
+    public var summaryProblem: String?
+    /// summary.json, when it can be read: possibly of an earlier transcript (`summaryIsCurrent` says), whose summary
+    /// text is still shown until the new one is made, but not its title (`displayTitle`).
     public var generatedSummary: MeetingSummaryRecord? = nil
 
     /// Every field but `generatedSummary`, which holds what the meeting was about: `session list --json` and anything
@@ -103,12 +118,24 @@ public struct SessionSummary: Codable, Sendable, Equatable, Identifiable {
         case id, directory, name, createdAt, source, origin, state, manifestStatus, savedSeconds, chunkCount
         case transcriptID, transcriptProblem, transcriptRefused, speakerState, labelMessage, runID, labelsReadyAt
         case hasSpeakerEdits, phase, pid, liveness, bytes, derivedBytes, audioDeleted, languageWork, nameSource
+        case manifestName
+        case metadataProblem, exportsProblem, jobInProgress, summaryProblem
     }
 
-    /// The title the Meetings list shows (`MeetingNaming.displayTitle`): the user's name, else the generated title,
-    /// else the name.
+    /// The title the Meetings list shows (`MeetingNaming.title`, the rule the transcript files' heading follows too):
+    /// the user's name, else the title of a summary of the current transcript, else the name.
     public var displayTitle: String {
-        MeetingNaming.displayTitle(name: name, source: nameSource, generatedTitle: generatedSummary?.title)
+        MeetingNaming.title(name: name, source: nameSource, summary: generatedSummary, transcriptID: transcriptID)
+    }
+
+    /// The manifest's copy of the name was not updated after a rename committed it to meeting.json: the meeting's
+    /// files read as out of date, so Update Transcript Files (Finish Rename) writes the copy, and the files, again.
+    public var nameCopyIsStale: Bool { manifestName != name }
+
+    /// The generated title the meeting can show (`MeetingNaming.title`'s rule): a summary of the current transcript's;
+    /// nil otherwise. What Use Generated Title and the rename editor offer.
+    public var currentGeneratedTitle: String? {
+        MeetingSummaryStore.current(generatedSummary, transcriptID: transcriptID).flatMap { $0.title.isEmpty ? nil : $0.title }
     }
 
     /// The summary was made from the current transcript.
@@ -125,7 +152,9 @@ public struct SessionSummary: Codable, Sendable, Equatable, Identifiable {
                 hasSpeakerEdits: Bool = false, phase: RecorderPhase? = nil, pid: Int32? = nil,
                 liveness: RecorderLiveness, bytes: Int64 = 0, derivedBytes: Int64 = 0, audioDeleted: Bool = false,
                 languageWork: LanguageWork? = nil, nameSource: MeetingNameSource? = nil,
-                generatedSummary: MeetingSummaryRecord? = nil) {
+                generatedSummary: MeetingSummaryRecord? = nil, metadataProblem: String? = nil,
+                exportsProblem: String? = nil, jobInProgress: String? = nil, summaryProblem: String? = nil,
+                manifestName: String? = nil) {
         self.id = id; self.directory = directory; self.name = name; self.createdAt = createdAt
         self.source = source; self.origin = origin; self.state = state; self.manifestStatus = manifestStatus
         self.savedSeconds = savedSeconds; self.chunkCount = chunkCount; self.transcriptID = transcriptID
@@ -137,6 +166,11 @@ public struct SessionSummary: Codable, Sendable, Equatable, Identifiable {
         self.languageWork = languageWork
         self.nameSource = MeetingNaming.source(stored: nameSource, name: name)
         self.generatedSummary = generatedSummary
+        self.metadataProblem = metadataProblem
+        self.exportsProblem = exportsProblem
+        self.jobInProgress = jobInProgress
+        self.summaryProblem = summaryProblem
+        self.manifestName = manifestName ?? name
     }
 }
 
@@ -156,13 +190,18 @@ public enum SessionCatalog {
     /// such as an import's staging folder). A missing or unreadable `root` gives an empty list. Sessions created in
     /// the same second are ordered by ID.
     public static func list(root: URL = HolosPaths.sessions, now: Date = Date()) -> [SessionSummary] {
-        sessionFolders(in: root).map { summary(session: $0, now: now) }.sorted { left, right in
+        // The background-job lock is read once for the whole listing.
+        let job = DeepTranscriptionLock.state()
+        return sessionFolders(in: root).map { summary(session: $0, now: now, jobState: job) }.sorted { left, right in
             if left.createdAt != right.createdAt { return left.createdAt > right.createdAt }
             return left.id < right.id
         }
     }
 
-    public static func summary(session: URL, now: Date = Date()) -> SessionSummary {
+    /// `jobState`: the background-job lock (`DeepTranscriptionLock.state()`, read when nil), which says whether a
+    /// summary or final transcript of this meeting runs in any process (`jobInProgress`).
+    public static func summary(session: URL, now: Date = Date(), jobState: DeepTranscriptionLock.State? = nil)
+        -> SessionSummary {
         let liveness = RecorderChannel.liveness(session: session, now: now)
         let status = try? RecorderChannel.readStatus(session: session)
         let sizes = sizes(of: session)
@@ -182,6 +221,7 @@ public enum SessionCatalog {
                 derivedBytes: sizes.derived, audioDeleted: audioDeleted(session, sessionID: nil))
         }
         let meetingRead = Result { try SessionFiles.meetingInfo(session: session, manifest: manifest) }
+        let summaryRead = MeetingSummaryStore.readChecked(session: session, sessionID: manifest.id)
         let meeting = try? meetingRead.get()
         let origin = meeting?.origin ?? .recorded
         let speakers = speakerLabels(session, liveness: liveness)
@@ -202,8 +242,10 @@ public enum SessionCatalog {
             transcriptProblem = error.localizedDescription
             transcriptRefused = !SessionFiles.isDamage(error)
         }
+        // The meeting's name: meeting.json's when a rename wrote it there, else the manifest's.
+        let name = MeetingNaming.name(manifestName: manifest.name, meeting: meeting)
         return SessionSummary(
-            id: manifest.id, directory: session, name: manifest.name, createdAt: manifest.createdAt,
+            id: manifest.id, directory: session, name: name, createdAt: manifest.createdAt,
             source: manifest.source, origin: origin,
             state: state(manifestStatus: manifest.status, liveness: liveness), manifestStatus: manifest.status,
             savedSeconds: manifest.savedSeconds, chunkCount: manifest.chunks.count, transcriptID: transcriptID,
@@ -217,10 +259,30 @@ public enum SessionCatalog {
             // came from unknown: the user's, so a generated title never replaces it. Only a missing one (a meeting
             // saved before it existed) is inferred from the name.
             nameSource: meeting.map {
-                MeetingNaming.source(stored: $0.nameSource, name: manifest.name,
+                MeetingNaming.source(stored: $0.nameSource, name: name,
                                      importedFileName: $0.origin == .imported ? $0.importedFileName : nil)
             } ?? .user,
-            generatedSummary: MeetingSummaryStore.readIfUsable(session: session, sessionID: manifest.id))
+            generatedSummary: summaryRead.record,
+            metadataProblem: { if case .failure(let error) = meetingRead { error.localizedDescription } else { nil } }(),
+            exportsProblem: SessionExports.recordProblem(session: session),
+            jobInProgress: jobInProgress(jobState ?? DeepTranscriptionLock.state(), sessionID: manifest.id),
+            summaryProblem: summaryRead.problem,
+            manifestName: manifest.name)
+    }
+
+    /// What the background-job lock says runs on meeting `sessionID`: a summary or a final transcript of it, in any
+    /// process (one started in Terminal holds the lock without holding the meeting until it saves). Nil otherwise.
+    ///
+    /// A lock held by a job that has not written who it is yet (`held(nil)`) holds every meeting, as the rename command
+    /// counts it.
+    static func jobInProgress(_ state: DeepTranscriptionLock.State, sessionID: String) -> String? {
+        guard case .held(let named) = state else { return nil }
+        guard let holder = named else {
+            return "A background job (a summary or final transcript) is starting."
+        }
+        guard holder.sessionID.caseInsensitiveCompare(sessionID) == .orderedSame else { return nil }
+        return holder.isSummary ? "A summary of this meeting is being written."
+            : "A final transcript of this meeting is being made."
     }
 
     /// `summaries` with `LanguageWork.ready` set where a run would detect a language now

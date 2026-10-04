@@ -172,6 +172,21 @@ public enum MeetingSummaryStore {
         return record
     }
 
+    /// summary.json when it can be used, and why it cannot when that is not damage (written by a newer build, or not
+    /// readable now): what the catalog keeps. A missing or damaged one is no problem (made again).
+    public static func readChecked(session: URL, sessionID: String) -> (record: MeetingSummaryRecord?, problem: String?) {
+        do {
+            return (try read(session: session, sessionID: sessionID), nil)
+        } catch let error where SessionFiles.isDamage(error) {
+            return (nil, nil)
+        } catch {
+            if case .unavailable? = error as? HolosError {
+                return (nil, "summary.json was written by a newer version of Voice is Local.")
+            }
+            return (nil, "summary.json cannot be read: \(error.localizedDescription)")
+        }
+    }
+
     /// summary.json when it can be used, else nil (the reason is logged): what the Meetings list shows.
     public static func readIfUsable(session: URL, sessionID: String) -> MeetingSummaryRecord? {
         do {
@@ -230,11 +245,90 @@ public enum MeetingNaming {
         return .user
     }
 
-    /// What the Meetings list shows: the user's name, else the generated title, else the name.
+    /// A meeting's title, the one rule the Meetings list, Review, the rename command and the Markdown heading follow:
+    /// the user's name, else the title of a summary made from the current transcript (`transcriptID`), else the name
+    /// (the default one). A summary of an earlier transcript (a final transcript replaced it) gives no title until it
+    /// is made again, since the transcript files cannot carry it.
+    public static func title(name: String, source: MeetingNameSource, summary: MeetingSummaryRecord?,
+                             transcriptID: String?) -> String {
+        displayTitle(name: name, source: source,
+                     generatedTitle: MeetingSummaryStore.current(summary, transcriptID: transcriptID)?.title)
+    }
+
+    /// A meeting's name: meeting.json's (`MeetingInfo.name`, written with its `nameSource` in one write by a rename,
+    /// the one place a rename commits), else, for a meeting never renamed (or one meeting.json cannot be read for), the
+    /// manifest's. The manifest's name is a copy a rename updates after meeting.json; when they differ, the meeting's
+    /// files read as out of date and Update Transcript Files (Finish Rename) writes the copy again.
+    public static func name(manifestName: String, meeting: MeetingInfo?) -> String {
+        guard let name = meeting?.name, !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return manifestName
+        }
+        return name
+    }
+
+    /// The user's name, else `generatedTitle`, else the name (`title` decides which generated title counts).
     public static func displayTitle(name: String, source: MeetingNameSource, generatedTitle: String?) -> String {
         if source.isUser { return name }
         if let generatedTitle, !generatedTitle.isEmpty { return generatedTitle }
         return name
+    }
+
+    /// Most characters of a name the user gives a meeting by renaming it: as many as a generated title.
+    public static let maximumUserNameCharacters = MeetingSummaryDraft.maximumTitleCharacters
+    /// And at most this many UTF-8 bytes: a character can carry any number of combining marks.
+    public static let maximumUserNameBytes = 240
+
+    /// A name the user typed to rename a meeting, as it is saved: one line (runs of spaces, tabs and line breaks
+    /// become one space), without control characters, trimmed, and cut as titles are (`MeetingSummaryDraft.cut`) to
+    /// `maximumUserNameCharacters` and `maximumUserNameBytes`. Nil when nothing is left: an empty name means "use the
+    /// generated title".
+    public static func cleanUserName(_ text: String) -> String? {
+        let visible = String(String.UnicodeScalarView(text.unicodeScalars.map {
+            $0.properties.generalCategory == .control ? " " : $0
+        }))
+        var name = visible.split(whereSeparator: { $0.isWhitespace || $0.isNewline }).joined(separator: " ")
+        name = MeetingSummaryDraft.cut(name, toCharacters: maximumUserNameCharacters)
+        while name.utf8.count > maximumUserNameBytes { name.removeLast() }
+        name = name.trimmingCharacters(in: .whitespaces)
+        return name.isEmpty ? nil : name
+    }
+
+    /// The name a meeting gets back when the user chooses its generated title again (`MeetingNameSource.default`):
+    /// its name when its source (`currentSource`, as `source` reads it) is already `default` (the name and source are
+    /// written together, so a `default` source always sits beside the name Voice is Local made up), else, whatever
+    /// the name looks like (a user may have typed one that matches the default pattern), the default name made from
+    /// the meeting's own data: an import's file name without the extension (else "Imported meeting"), or a
+    /// recording's start ("Meeting 2026-10-03 14:00", in `timeZone`).
+    public static func defaultName(current: String, currentSource: MeetingNameSource, createdAt: Date,
+                                   origin: MeetingOrigin, importedFileName: String?,
+                                   timeZone: TimeZone = .current) -> String {
+        if currentSource == .default, !current.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return current
+        }
+        if origin == .imported {
+            let stem = ((importedFileName ?? "") as NSString).deletingPathExtension
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            return stem.isEmpty ? "Imported meeting" : stem
+        }
+        return MeetingStartSettings.defaultName(now: createdAt, timeZone: timeZone)
+    }
+
+    /// The title a meeting shows now (`title`), read from its folder: its name (`name(manifestName:meeting:)`),
+    /// meeting.json's `nameSource` (unknown when meeting.json cannot be read: the user's), summary.json and the current
+    /// transcript's ID. Nil without a readable manifest. For windows that show a meeting outside the list (Review).
+    public static func currentTitle(session: URL) -> String? {
+        guard let manifest = try? SessionArchive.readManifest(at: session) else { return nil }
+        let meeting = try? SessionFiles.meetingInfo(session: session, manifest: manifest)
+        let name = name(manifestName: manifest.name, meeting: meeting)
+        let source = meeting.map {
+            MeetingNaming.source(stored: $0.nameSource, name: name,
+                                 importedFileName: $0.origin == .imported ? $0.importedFileName : nil)
+        } ?? .user
+        // The revision read and checked as the catalog reads it (`SessionFiles.currentTranscript`), so the title is
+        // the one the Meetings list shows: none of a summary when the transcript cannot be read.
+        return title(name: name, source: source,
+                     summary: MeetingSummaryStore.readIfUsable(session: session, sessionID: manifest.id),
+                     transcriptID: try? SessionFiles.currentTranscript(session: session)?.id)
     }
 }
 
