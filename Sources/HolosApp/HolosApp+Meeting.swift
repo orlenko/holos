@@ -690,8 +690,9 @@ extension HolosAppDelegate: NSMenuDelegate {
         pane.onCancelSummary = { [weak self] id in self?.cancelMeetingSummary(id) }
         pane.summaryRequested = { [weak self] id in self?.meeting.summaries.requested.contains(id) ?? false }
         pane.summaryUnavailableReason = { [weak self] in self?.meetingSummaryUnavailableReason }
-        // A rename shows at once in the meeting's Review window (the live transcript's header follows the list).
-        pane.onRenamed = { [weak self] id in self?.refreshReviewTitle(id) }
+        // A rename, here or in Terminal, or a new generated title shows in the meeting's Review window (the live
+        // transcript's header follows the list).
+        pane.onTitleChanged = { [weak self] id in self?.refreshReviewTitle(id) }
         pane.update(summarizing: meeting.summaries.running?.sessionID)
         pane.update(meetingState: controller.state)
         meeting.meetingsPane = pane

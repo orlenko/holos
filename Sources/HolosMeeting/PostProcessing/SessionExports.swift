@@ -56,10 +56,10 @@ public enum SessionExports {
     /// `.generated.json` nor the digest a regeneration recorded just before writing it (a crash in between; files
     /// accepted that way are folded into the recorded digests, so repeated interruptions keep them), is
     /// copied to `exports/edited-<YYYYMMDD-HHMMSS>.<ext>` (0600, local time; `-2`, `-3`, … when taken) and listed
-    /// in `movedAside`. Before any export was generated here (no `.generated.json`), the speaker-less exports
-    /// `SessionArchive.saveTranscript` writes for the current transcript count as generated; any other existing file
-    /// is moved aside. A `.generated.json` from a newer Holos is refused (`unavailable`); a damaged one records
-    /// nothing, so every existing file that differs is moved aside.
+    /// in `movedAside`. Without a usable record (no `.generated.json`, or a damaged one, which records nothing), the
+    /// speaker-less exports `SessionArchive.saveTranscript` writes for the current transcript count as generated; any
+    /// other existing file that differs is moved aside. A `.generated.json` from a newer Holos is refused
+    /// (`unavailable`).
     ///
     /// `selfName` names the unnamed channel speaker in the summary's key (nil: `VoiceProfileService.ownName()`): the
     /// summary command passes the one it checked, so the files it marks written carry its summary.
@@ -177,7 +177,8 @@ public enum SessionExports {
     static func beginWrite(_ rendered: [(format: ExportFormat, data: Data)], session: URL,
                            snapshot: SpeakerSessionSnapshot) throws -> [URL] {
         try AtomicFile.ensurePrivateDirectory(SessionPaths.exports(session))
-        let record = try readRecord(session: session)
+        let read = try readRecordChecked(session: session)
+        let record = read.record
         let digests = digestsByName(rendered)
 
         var movedAside: [URL] = []
@@ -195,12 +196,13 @@ public enum SessionExports {
                 files[name] = digest
                 continue
             }
-            if let record {
-                if record.isGenerated(name, digest: digest) {
-                    files[name] = digest
-                    continue
-                }
-            } else {
+            if let record, record.isGenerated(name, digest: digest) {
+                files[name] = digest
+                continue
+            }
+            // Without a usable record (none, or a damaged one), the speaker-less files the recording wrote are still
+            // known by what they hold.
+            if record == nil || read.damaged {
                 if !legacyLoaded {
                     legacy = legacyExports(session: session, snapshot: snapshot)
                     legacyLoaded = true
@@ -230,17 +232,37 @@ public enum SessionExports {
         }
     }
 
-    /// nil when no export was ever generated here; an empty record when the file is damaged.
-    private static func readRecord(session: URL) throws -> GeneratedRecord? {
-        let name = "exports/.generated.json"
+    /// Whether exports/.generated.json is there and can be read as a record of what was generated: false when it is
+    /// missing or damaged (a regeneration then knows existing files only by what they hold). One a newer Voice is
+    /// Local wrote throws `unavailable`; one that cannot be read now throws its error.
+    static func hasUsableRecord(session: URL) throws -> Bool {
         guard let data = try AtomicFile.readIfPresent(SessionPaths.generatedExports(session), maxBytes: 1 << 20) else {
-            return nil
+            return false
         }
         do {
-            return try SessionFiles.decode(GeneratedRecord.self, from: data, current: 1, name: name)
+            _ = try SessionFiles.decode(GeneratedRecord.self, from: data, current: 1, name: "exports/.generated.json")
+            return true
+        } catch let error where SessionFiles.isDamage(error) {
+            return false
+        }
+    }
+
+    /// nil when no export was ever generated here; an empty record when the file is damaged.
+    private static func readRecord(session: URL) throws -> GeneratedRecord? {
+        try readRecordChecked(session: session).record
+    }
+
+    /// `readRecord`, and whether the file was damaged (the record is then empty).
+    private static func readRecordChecked(session: URL) throws -> (record: GeneratedRecord?, damaged: Bool) {
+        let name = "exports/.generated.json"
+        guard let data = try AtomicFile.readIfPresent(SessionPaths.generatedExports(session), maxBytes: 1 << 20) else {
+            return (nil, false)
+        }
+        do {
+            return (try SessionFiles.decode(GeneratedRecord.self, from: data, current: 1, name: name), false)
         } catch let error where SessionFiles.isDamage(error) {
             log.error("\(name, privacy: .public) is damaged; every edited export will be moved aside")
-            return GeneratedRecord(files: [:])
+            return (GeneratedRecord(files: [:]), true)
         }
     }
 

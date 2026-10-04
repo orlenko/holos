@@ -159,6 +159,18 @@ public enum MeetingListFormat {
         return badges
     }
 
+    // MARK: - Titles
+
+    /// The meetings in `summaries` whose title (`displayTitle`) differs from the one `shown` had for them (by session
+    /// ID; meetings not shown before are left out): after a catalog read, the meetings renamed elsewhere or given a
+    /// new generated title, whose open windows follow.
+    public static func titlesChanged(from shown: [String: String], to summaries: [SessionSummary]) -> [String] {
+        summaries.compactMap { summary in
+            guard let before = shown[summary.id], before != summary.displayTitle else { return nil }
+            return summary.id
+        }
+    }
+
     // MARK: - Search
 
     /// Whether `query`'s words all appear (any case, any accents) in the meeting's title, name, generated title and

@@ -518,3 +518,81 @@ private func listed(name: String, source: MeetingNameSource, generated: String?)
     #expect(outcome.exportsUpdated)
     #expect(try SessionArchive.readManifest(at: session).name == long)
 }
+
+// MARK: - Under the lease, records, failed writes
+
+@Test func whatARenameDecidesFromIsReadUnderTheLease() async throws {
+    let temp = try TemporaryDirectory("rename")
+    defer { temp.remove() }
+    let session = try await renameSession(in: temp.url, name: "Weekly sync")
+    try writeSummary(session)
+    let lock = temp.url.appendingPathComponent("jobs.lock")
+    // The generated title is asked for; while it waits for the lease, another rename gives the meeting a name.
+    var request = SessionRenameCommand.Request(session: session, name: nil, voiceInputs: { voice }, jobLock: lock,
+                                               timeZone: utc)
+    request.beforeLease = {
+        let other = await SessionRenameCommand.run(SessionRenameCommand.Request(
+            session: session, name: "Roadmap review", voiceInputs: { voice }, jobLock: lock, timeZone: utc))
+        #expect(other.status == .renamed)
+    }
+    let outcome = await SessionRenameCommand.run(request)
+    #expect(outcome.status == .renamed, "Not unchanged: the name the other rename gave is replaced")
+    #expect(outcome.nameSource == .default)
+    #expect(try meetingJSON(session)["nameSource"] as? String == "default")
+    #expect(SessionCatalog.summary(session: session).displayTitle == "Parser rewrite and release plan")
+}
+
+@Test func filesWithADamagedRecordAreNotMovedAside() async throws {
+    let temp = try TemporaryDirectory("rename")
+    defer { temp.remove() }
+    let session = try await renameSession(in: temp.url, legacyExports: true)
+    try AtomicFile.write(Data("{".utf8), to: SessionPaths.generatedExports(session))
+    let outcome = await rename(session, "Design review")
+    #expect(outcome.status == .renamed)
+    #expect(outcome.exitCode == 0)
+    #expect(try editedExports(session).isEmpty)
+    #expect(SessionFixtures.text(SessionPaths.export("md", in: session)).hasPrefix("# Design review\n"))
+}
+
+@Test func aNameSourceThatCannotBeWrittenLeavesTheMeetingAsItWas() async throws {
+    let temp = try TemporaryDirectory("rename")
+    defer { temp.remove() }
+    let session = try await renameSession(in: temp.url)
+    try writeSummary(session)
+    struct WriteFailed: Error {}
+    func failing(_ name: String?) async -> SessionRenameCommand.Outcome {
+        var request = SessionRenameCommand.Request(session: session, name: name, voiceInputs: { voice },
+                                                   jobLock: temp.url.appendingPathComponent("jobs.lock"),
+                                                   timeZone: utc)
+        request.nameSourceWriter = { _, _, _ in throw WriteFailed() }
+        return await SessionRenameCommand.run(request)
+    }
+    // A name of the user's: the manifest gets its old name back.
+    let named = await failing("Weekly sync")
+    #expect(named.status == .failed)
+    #expect(named.exitCode == 1)
+    #expect(try SessionArchive.readManifest(at: session).name == "Meeting 2026-10-03 14:00")
+    #expect(try meetingJSON(session)["nameSource"] as? String == "default")
+
+    // The generated title back, from a name of the user's: the user's name stays, and a retry does it.
+    _ = await rename(session, "Weekly sync")
+    let generated = await failing(nil)
+    #expect(generated.status == .failed)
+    #expect(try SessionArchive.readManifest(at: session).name == "Weekly sync")
+    #expect(try meetingJSON(session)["nameSource"] as? String == "user")
+    let retried = await rename(session, nil)
+    #expect(retried.status == .renamed)
+    #expect(try meetingJSON(session)["nameSource"] as? String == "default")
+    #expect(try SessionArchive.readManifest(at: session).name != "Weekly sync")
+}
+
+@Test func theListNoticesTitlesChangedElsewhere() {
+    let before = ["S": "Parser plan", "T": "Weekly sync"]
+    let renamed = listed(name: "Roadmap review", source: .user, generated: "Parser plan")
+    var other = listed(name: "Weekly sync", source: .user, generated: nil)
+    other.id = "T"
+    var new = listed(name: "Budget", source: .user, generated: nil)
+    new.id = "U"
+    #expect(MeetingListFormat.titlesChanged(from: before, to: [renamed, other, new]) == ["S"])
+    #expect(MeetingListFormat.titlesChanged(from: [:], to: [renamed]).isEmpty)
+}

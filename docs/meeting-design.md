@@ -4025,7 +4025,9 @@ Timestamps are `HH:MM:SS` in Markdown.
 `exports/.generated.json`. Before writing, if a file on disk no longer matches its
 recorded digest (someone edited it), it moves that file to
 `exports/edited-<YYYYMMDD-HHMMSS>.<ext>` (0600) and returns it in `movedAside`; the
-review window's status line and `holos session export --all` say so. The app's "Open
+review window's status line and `holos session export --all` say so. Without a usable record (none,
+or a damaged one), the speaker-less files the recording wrote for the current transcript still count
+as generated, so they are rewritten rather than moved aside. The app's "Open
 Transcript" shows a Quick Look preview; "Save Transcript As…" (NSSavePanel, default
 `~/Documents/<meeting name>.md`, or `.txt`) makes the editable copy.
 
@@ -5026,14 +5028,19 @@ time).
 meeting.json is patched as a JSON object, so fields a newer build added within schema 1 are kept;
 a meeting without one gets one with its inferred settings; one that cannot be read (damaged,
 newer) refuses the rename. Both writes are atomic, under the processing lease and the writer lock
-(`openForMaintenance`), in the order that a crash between them leaves either the rename not made
-or the generated title shown, never the default name as the user's; a `renamed` event
-(`nameSource`) is journaled. Then the transcript files are rewritten under the speaker lock with
+(`openForMaintenance`): the manifest's name first, then meeting.json's `nameSource`; when that second
+write fails, the manifest gets its previous name back, so a failure leaves the meeting as it was, and
+a crash between them leaves a name and source that differ from the ones asked for, which a retry
+writes again. A `renamed` event (`nameSource`) is journaled. Then the transcript files are rewritten under the speaker lock with
 the people store's names, Remember voices and the user's own name read once (the key a current
 summary is checked with), so the Markdown heading follows and the summary stays, without the
-model; transcript files written before any was generated here (no `exports/.generated.json`) are
-first rewritten under the old name, so they are not taken for edited files and moved aside, and when
-that fails (or the record cannot be read) nothing is changed (`failed`, or `unreadable`). A current
+model; transcript files without a usable record of what was generated (no `exports/.generated.json`,
+or a damaged one, `SessionExports.hasUsableRecord`) are first rewritten under the old name, so they
+are not taken for edited files and moved aside, and when that fails (or the record cannot be read
+now, or a newer build wrote it) nothing is changed (`failed`, or `unreadable`). Everything the rename
+decides from (the manifest, meeting.json, the name asked for, whether it is already so) is read
+after the processing lease is taken, so another rename that ends while this one waits for the lease
+is seen; the recorder's liveness is read before it (the rename's own lease would read as one). A current
 transcript that is there but cannot be read refuses the rename before anything is written, rather
 than leaving the files with the old title: one a newer build wrote, or a damaged one, `failed`
 (update, or Recover); anything else `unreadable`, tried again later. Refused (`busy`, exit 1) while
@@ -5068,8 +5075,9 @@ command or background job starts on it meanwhile, and a meeting in use is refuse
 The new title shows at once in the list and the search, Review's window title
 (`ReviewWindow.meetingTitle`, also the name Save As… suggests) and the live transcript's header
 once the meeting is saved; the app's alerts name meetings by the title shown. An open Review window
-takes the title the list shows (`MeetingNaming.currentTitle`) after a rename and after a summary
-ends, whose generated title may be the one shown.
+takes the title the list shows (`MeetingNaming.currentTitle`) after a rename, after a summary
+ends, and when a catalog read (the list's 2 s refresh) shows a meeting's title changed
+(`MeetingListFormat.titlesChanged`: a rename in Terminal, or anything else).
 
 **Making it** (`MeetingSummarizer`, `SessionSummarizeCommand`). The current transcript as the
 exports show it (`SessionExports.exportDocument`), as speaker lines ("Alex: …"): an automatic
@@ -5267,7 +5275,9 @@ given back (also for a user's name that looks like a default one), what the edit
 long older name left as it was is not rewritten), when Rename is offered; the command: the name and
 `nameSource` saved with other meeting.json fields kept, the heading and summary in the files,
 the generated title back, older transcript files not moved aside, and nothing changed when they
-cannot be prepared, a rename whose files failed finished by asking again, a meeting without transcript, refusals while held by a command, a summary or
+cannot be prepared or their record is damaged, a rename whose files failed finished by asking again,
+the state read under the lease after another rename, a meeting.json write that fails putting the old
+name back, titles changed elsewhere noticed by the list, a meeting without transcript, refusals while held by a command, a summary or
 final transcript of it, or a recorder, an interrupted recording (also after capture stopped), a
 transcript from a newer build, damaged, or unreadable now, an unreadable meeting.json).
 

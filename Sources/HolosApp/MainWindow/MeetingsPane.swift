@@ -76,8 +76,9 @@ final class MeetingsPane: NSViewController, NSTableViewDataSource, NSTableViewDe
     var summaryRequested: (String) -> Bool = { _ in false }
     /// Why Apple Intelligence cannot summarize here (Summarize is off with it as the tooltip); nil when it can.
     var summaryUnavailableReason: () -> String? = { nil }
-    /// A meeting was renamed (its ID): Review follows (the live transcript's header follows the list).
-    var onRenamed: ((String) -> Void)?
+    /// The title a meeting shows changed (its ID): a rename here, or a change the catalog read shows (a rename in
+    /// Terminal, a new generated title). Review follows; the live transcript's header follows the list.
+    var onTitleChanged: ((String) -> Void)?
     /// The name being edited in the list, with the meeting as it was when the editor opened (what is saved is compared
     /// with that); the rows are not rebuilt meanwhile.
     private var renaming: MeetingRenameEdit?
@@ -414,7 +415,9 @@ final class MeetingsPane: NSViewController, NSTableViewDataSource, NSTableViewDe
         let requested = pendingSelection
         let selected = requested ?? selectedSession?.id
         pendingSelection = nil
+        let shownTitles = Dictionary(sessions.map { ($0.id, $0.displayTitle) }, uniquingKeysWith: { first, _ in first })
         sessions = MeetingOpenPolicy.ordered(listed, liveSessionID: liveSessionID)
+        for id in MeetingListFormat.titlesChanged(from: shownTitles, to: sessions) { onTitleChanged?(id) }
         self.people = people
         // A meeting asked for that the search hides: the search is cleared, so it is seen.
         if let requested, !search.stringValue.isEmpty,
@@ -901,7 +904,7 @@ final class MeetingsPane: NSViewController, NSTableViewDataSource, NSTableViewDe
                 self.sessions[index].nameSource = source
                 self.reloadKeepingSelection()
                 self.updateLiveHeader()
-                self.onRenamed?(id)
+                self.onTitleChanged?(id)
             }
             // Files left with the old title are remembered, so the meeting says so and offers Update Transcript Files.
             let stale = PendingExports.afterRename()
