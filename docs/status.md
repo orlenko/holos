@@ -432,6 +432,14 @@ thumbnail timeline, and a larger local-model benchmark are follow-ups.
   items; the language and shortcut submenus moved to Settings. The Setup Assistant, the
   meeting start panel, Review, and the dictation preview stay separate windows. Built and
   compiled only: nothing of the main window has been seen on screen yet.
+- Settings chapters and search (docs/design.md "Main window"): the sidebar lists Settings'
+  cards as chapters under it; choosing one scrolls its card to the top, and the sidebar
+  follows the card at the top while scrolling. A search field above the page (⌘F) shows only
+  the settings whose title, caption, or keywords match (a fuzzy scorer, `SettingsSearch`,
+  unit-tested with the chapter-at-offset mapping); Return goes to the outlined best match,
+  Escape clears. Rendered offscreen (sidebar and page) in light and dark: the page, a query,
+  no match, a chosen chapter, and Return; not yet seen in the running app (smooth scrolling,
+  focus moves, and VoiceOver announcements are unverified).
 - Live transcript in the main window (docs/design.md "Live transcript"): the meeting being
   recorded is the first row of Meetings ("● Recording"), and opening it (double-click,
   Return, Live Transcript, or the menu bar's Show Live Transcript…) shows its words in place

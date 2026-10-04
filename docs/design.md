@@ -224,7 +224,28 @@ system audio, deep transcription, titles and summaries with Apple Intelligence, 
 labels, a link to People for remembered voices), Reading (default
 voice, speed, output folder), History and privacy (Keep dictations, the count, Clear
 History…, Keep the audio of dictations and its disk use), and Run Setup Assistant…; it polls
-the permissions every second while on screen. The meeting's live transcript is part of
+the permissions every second while on screen.
+
+Settings stays one scrolling page, with chapters and a search field (`SettingsChapter`,
+`SettingsChapterTracking`, `SettingsSearch`). The sidebar lists the cards under Settings as
+chapters (General, Permissions, Dictation, Meetings, Reading, History and privacy), always
+shown and indented under it. Choosing a chapter scrolls its card to the top, smoothly when
+Settings was already on screen (at once with Reduce Motion), and clears a search. While the
+user scrolls, the sidebar marks the chapter whose card has reached the top (within 60 points);
+at the end of the page, where the last cards cannot reach the top, it keeps the chapter the
+user chose while its card is in view, else marks the last one. The Settings row shows the page
+from the top; ⌘, and the menus' Settings… show it where it was left (the sidebar marks the
+chapter it shows, or Settings at the top). A search field above the page (⌘F while Settings
+shows) filters as the user types: each word of the query must match a setting's title,
+caption (a status row's current detail line), or keywords, ignoring case, diacritics, and
+width, as the text's start, a word's start, inside a word (three letters or more), or as
+letters in order within one word of a title or keyword ("dctn"); a title counts three times,
+a keyword twice, a caption once, and ties keep page order. Only the matching settings show,
+in page order, under their cards' headings; a row its state hides (Input Monitoring) is never
+shown; "No settings match" when none does. The best match is outlined: Return clears the
+search, scrolls to it, outlines it for a moment, and moves the focus to its control when the
+control can take it (Full Keyboard Access); Escape clears the search and returns to where the
+page was. VoiceOver hears how many settings match and where Return goes. The meeting's live transcript is part of
 Meetings (see "Live transcript"). The Setup Assistant, the meeting start panel, Review
 (Name Speakers), and the dictation preview stay separate windows.
 
@@ -251,7 +272,7 @@ Assistant, the meeting start panel, and alerts. Views draw with semantic colours
 are set in `updateLayer`, custom drawing in `draw(_:)`), so they redraw for either.
 
 Keyboard: ⌘1–⌘5 and ⌘, switch sections; ⌘F focuses the section's search field (History,
-Meetings); ↑↓ move
+Meetings, Settings); ↑↓ move
 in lists, Return opens (History: the text; Meetings: the live transcript, Review, or the
 transcript), ⌫ deletes
 after a confirmation (History: the dictation; Meetings: Delete Meeting…; People:

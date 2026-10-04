@@ -109,9 +109,10 @@ enum SetupAction: Int, CaseIterable {
 /// The main window's Settings section (it replaces the Setup window): cards for General, Permissions, Dictation,
 /// Meetings, Reading, and History and privacy, and a way back to the Setup Assistant. It shows `SetupState`, which the app delegate refreshes
 /// every second while the section is on screen (TCC has no change notification), and reports each change through its
-/// callbacks.
+/// callbacks. The sidebar lists the cards as chapters (`show(chapter:animated:)`, `onChapterChange`), and a search
+/// field above the page shows only the settings that match (`SettingsSearch`).
 @MainActor
-final class SettingsPane: NSViewController, MainSectionContent {
+final class SettingsPane: NSViewController, MainSectionContent, NSSearchFieldDelegate {
     private enum Mark { case done, pending, problem }
     private struct Row {
         let icon: NSImageView
@@ -121,6 +122,29 @@ final class SettingsPane: NSViewController, MainSectionContent {
         /// A link under the button; only permission rows show it (System Settings…).
         let link: NSButton
         let grid: NSGridView
+        /// What `set` last asked for; shown only while the row is (`applyRowButtons`).
+        var wantsButton = false
+        var wantsLink = false
+    }
+
+    /// One setting the search finds (`SettingsSearch`): a row of a grid, or views of a card's stack.
+    private struct SearchItem {
+        /// Nil for the Setup Assistant footer.
+        let chapter: SettingsChapter?
+        let entry: SettingsSearch.Entry
+        /// A status row's detail line: what it says now is searched as its caption.
+        var liveCaption: NSTextField?
+        /// The card's views it is made of, hidden when it does not match.
+        var views: [NSView] = []
+        /// Its grid, and a view in its row: the row is hidden when it does not match.
+        var grid: NSGridView?
+        var gridAnchor: NSView?
+        /// Views shown along with it: the option it is indented under.
+        var context: [NSView] = []
+        /// A status row, which its state can hide (Input Monitoring).
+        var action: SetupAction?
+        /// What Return focuses, when it takes the focus.
+        var focus: NSView?
     }
 
     struct Callbacks {
@@ -169,7 +193,33 @@ final class SettingsPane: NSViewController, MainSectionContent {
         checkboxWithTitle: "Keep the audio of dictations (for Run Again)", target: nil, action: nil)
     private let historyAudioUsage = SettingsPane.note("")
     private var rows: [SetupAction: Row] = [:]
+    /// Status rows their state hides (Input Monitoring until macOS refuses the hotkey tap).
+    private var stateHidden: Set<SetupAction> = []
     private static let textWidth: CGFloat = 360
+
+    // Chapters and search.
+    /// A chapter came to the top while the user scrolled (not while `show(chapter:)` scrolls).
+    var onChapterChange: ((SettingsChapter) -> Void)?
+    /// The chapter the page shows: the one at the top, or the one chosen.
+    private(set) var currentChapter = SettingsChapter.general
+    private let search = NSSearchField()
+    private let scroll = NSScrollView()
+    private let document = FlippedView()
+    private var sections: [SettingsChapter: NSView] = [:]
+    private var grids: [NSGridView] = []
+    /// Each grid's width, the card's: off while the search hides the grid whole, whose empty width would squeeze
+    /// every card to it.
+    private var gridWidths: [ObjectIdentifier: NSLayoutConstraint] = [:]
+    private let noMatches = NSTextField(wrappingLabelWithString: "")
+    private var items: [SearchItem] = []
+    /// The items that match the query, best first; nil while there is no query.
+    private var matches: [Int]?
+    /// `show(chapter:)` is scrolling: the scroll does not move the sidebar.
+    private var scrollingToChapter = false
+    /// The setting Return went to, outlined for a moment.
+    private var highlight: NSView?
+    /// The best match, outlined while the search lasts.
+    private var outline: SettingsHighlightView?
 
     init(callbacks: Callbacks) {
         self.callbacks = callbacks
@@ -182,9 +232,14 @@ final class SettingsPane: NSViewController, MainSectionContent {
 
     // MARK: - Layout
 
+    /// The search field above the scrolling page of cards.
     private func makeContent() -> NSView {
+        noMatches.font = .systemFont(ofSize: 13)
+        noMatches.textColor = .secondaryLabelColor
+        noMatches.isHidden = true
         let stack = NSStackView(views: [
-            generalCard(), permissionsCard(), dictationCard(), meetingsCard(), readingCard(), historyCard(), assistantFooter(),
+            noMatches, generalCard(), permissionsCard(), dictationCard(), meetingsCard(), readingCard(), historyCard(),
+            assistantFooter(),
         ])
         stack.orientation = .vertical
         stack.alignment = .leading
@@ -194,16 +249,50 @@ final class SettingsPane: NSViewController, MainSectionContent {
             view.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
         }
 
-        let document = FlippedView()
         document.translatesAutoresizingMaskIntoConstraints = false
         document.addSubview(stack)
-        let scroll = NSScrollView()
         scroll.hasVerticalScroller = true
         scroll.drawsBackground = false
         scroll.documentView = document
+        scroll.translatesAutoresizingMaskIntoConstraints = false
+        scroll.contentView.postsBoundsChangedNotifications = true
+        NotificationCenter.default.addObserver(self, selector: #selector(scrolled), name: NSView.boundsDidChangeNotification,
+                                               object: scroll.contentView)
         let fill = stack.trailingAnchor.constraint(equalTo: document.trailingAnchor, constant: -28)
         fill.priority = .defaultHigh
+
+        search.placeholderString = "Search settings"
+        search.sendsSearchStringImmediately = true
+        search.target = self
+        search.action = #selector(searchChanged)
+        search.delegate = self
+        search.setAccessibilityLabel("Search settings")
+        search.toolTip = "Return goes to the best match; Escape clears the search."
+        search.translatesAutoresizingMaskIntoConstraints = false
+        let searchWidth = search.widthAnchor.constraint(equalToConstant: 340)
+        searchWidth.priority = .defaultHigh
+
+        // A hairline where the page scrolls under the search field.
+        let separator = NSBox()
+        separator.boxType = .separator
+        separator.translatesAutoresizingMaskIntoConstraints = false
+
+        let root = NSView()
+        root.addSubview(search)
+        root.addSubview(separator)
+        root.addSubview(scroll)
         NSLayoutConstraint.activate([
+            search.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 28),
+            search.trailingAnchor.constraint(lessThanOrEqualTo: root.trailingAnchor, constant: -28),
+            searchWidth,
+            search.topAnchor.constraint(equalTo: root.topAnchor, constant: 14),
+            separator.topAnchor.constraint(equalTo: search.bottomAnchor, constant: 10),
+            separator.leadingAnchor.constraint(equalTo: root.leadingAnchor),
+            separator.trailingAnchor.constraint(equalTo: root.trailingAnchor),
+            scroll.topAnchor.constraint(equalTo: separator.bottomAnchor),
+            scroll.leadingAnchor.constraint(equalTo: root.leadingAnchor),
+            scroll.trailingAnchor.constraint(equalTo: root.trailingAnchor),
+            scroll.bottomAnchor.constraint(equalTo: root.bottomAnchor),
             document.leadingAnchor.constraint(equalTo: scroll.contentView.leadingAnchor),
             document.topAnchor.constraint(equalTo: scroll.contentView.topAnchor),
             document.widthAnchor.constraint(equalTo: scroll.contentView.widthAnchor),
@@ -211,10 +300,10 @@ final class SettingsPane: NSViewController, MainSectionContent {
             stack.trailingAnchor.constraint(lessThanOrEqualTo: document.trailingAnchor, constant: -28),
             stack.widthAnchor.constraint(lessThanOrEqualToConstant: 760),
             fill,
-            stack.topAnchor.constraint(equalTo: document.topAnchor, constant: 20),
+            stack.topAnchor.constraint(equalTo: document.topAnchor, constant: 16),
             stack.bottomAnchor.constraint(equalTo: document.bottomAnchor, constant: -28),
         ])
-        return scroll
+        return root
     }
 
     /// Settings › General: whether the window opens at launch, and the appearance of every window.
@@ -231,23 +320,34 @@ final class SettingsPane: NSViewController, MainSectionContent {
         launch.orientation = .vertical
         launch.alignment = .leading
         launch.spacing = 4
+        addItem(.general, openAtLaunchToggle.title, caption: launchNote.stringValue,
+                keywords: ["launch", "startup", "login", "menu bar", "quit"], views: [launch],
+                focus: openAtLaunchToggle)
 
         let grid = makeGrid()
         appearanceControl.target = self
         appearanceControl.action = #selector(appearanceChosen(_:))
         appearanceControl.segmentDistribution = .fillEqually
         appearanceControl.setAccessibilityLabel("Appearance")
-        addControlRow("circle.lefthalf.filled", "Appearance",
+        addControlRow(.general, "circle.lefthalf.filled", "Appearance",
                       "Every Voice is Local window and the dictation preview; System follows macOS",
+                      keywords: ["dark mode", "light mode", "theme", "colour", "color"],
                       control: appearanceControl, to: grid)
-        return card("General", [launch, grid], widths: [launch, launchNote, grid])
+        return card(.general, [launch, grid], widths: [launch, launchNote, grid])
     }
 
     private func permissionsCard() -> NSView {
         let grid = makeGrid()
+        let keywords: [SetupAction: [String]] = [
+            .microphone: ["mic", "privacy", "permission", "voice"],
+            .accessibility: ["insert text", "typing", "privacy", "permission", "allow"],
+            .systemAudio: ["screen recording", "computer audio", "system sound", "privacy", "permission", "allow"],
+            .inputMonitoring: ["keyboard", "hotkey", "shortcut", "privacy", "permission", "allow"],
+        ]
         for (action, title) in [(SetupAction.microphone, "Microphone"), (.accessibility, "Accessibility"),
                                 (.systemAudio, "System audio"), (.inputMonitoring, "Input Monitoring")] {
             addRow(action, title, to: grid)
+            addRowItem(.permissions, action, keywords: keywords[action] ?? [])
         }
         setRowHidden(.inputMonitoring, true)  // until macOS refuses the hotkey tap (`update`)
         let note = Self.note("""
@@ -257,12 +357,14 @@ final class SettingsPane: NSViewController, MainSectionContent {
             before it was renamed; remove it the same way. Allow… only asks macOS (its prompt appears once); \
             System Settings… only opens the page.
             """)
-        return card("Permissions", [grid, note], widths: [grid, note])
+        addItem(.permissions, "", caption: note.stringValue, keywords: [], views: [note], focus: nil)
+        return card(.permissions, [grid, note], widths: [grid, note])
     }
 
     private func dictationCard() -> NSView {
         let grid = makeGrid()
         addRow(.dictation, "Dictation", to: grid)
+        addRowItem(.dictation, .dictation, keywords: ["turn on", "turn off", "enable", "start"])
 
         shortcutPopup.target = self
         shortcutPopup.action = #selector(shortcutChosen(_:))
@@ -273,14 +375,18 @@ final class SettingsPane: NSViewController, MainSectionContent {
             shortcutPopup.menu?.addItem(item)
         }
         shortcutPopup.setAccessibilityLabel("Hold-to-talk shortcut")
-        addControlRow("keyboard", "Hold-to-talk shortcut", "Hold it, wait for Listening, speak, release",
+        addControlRow(.dictation, "keyboard", "Hold-to-talk shortcut", "Hold it, wait for Listening, speak, release",
+                      keywords: ["hotkey", "key", "right option", "control option space", "push to talk"],
                       control: shortcutPopup, to: grid)
 
         languagePopup.target = self
         languagePopup.action = #selector(languageChosen(_:))
         languagePopup.setAccessibilityLabel("Dictation language")
-        addControlRow("globe", "Dictation language", "Used from the next dictation", control: languagePopup, to: grid)
+        addControlRow(.dictation, "globe", "Dictation language", "Used from the next dictation",
+                      keywords: ["locale", "english", "french", "français", "langue"], control: languagePopup, to: grid)
         addRow(.assets, "Speech model", to: grid)
+        addRowItem(.dictation, .assets, title: "Speech model",
+                   keywords: ["download", "install", "recognition", "asset"])
 
         for (toggle, action) in [(fillerToggle, SetupAction.toggleFillers), (aiFixToggle, .toggleAIFix),
                                  (previewToggle, .togglePreview), (spokenCodeToggle, .toggleSpokenCode),
@@ -309,8 +415,22 @@ final class SettingsPane: NSViewController, MainSectionContent {
         opacityRow.spacing = 10
         opacityRow.edgeInsets = NSEdgeInsets(top: 0, left: 20, bottom: 0, right: 0)
 
-        return card("Dictation", [grid, fillerToggle, spokenCodeToggle, backticksRow, aiFixToggle, previewToggle,
-                                  opacityRow], widths: [grid])
+        addItem(.dictation, "Remove filler words", caption: "", keywords: ["um", "uh", "euh", "fillers", "clean up"],
+                views: [fillerToggle], focus: fillerToggle)
+        addItem(.dictation, spokenCodeToggle.title, caption: spokenCodeToggle.toolTip ?? "",
+                keywords: ["code", "path", "file", "command", "terminal", "programming"],
+                views: [spokenCodeToggle], focus: spokenCodeToggle)
+        addItem(.dictation, spokenCodeBackticksToggle.title, caption: spokenCodeBackticksToggle.toolTip ?? "",
+                keywords: ["backtick", "markdown", "code"], views: [backticksRow], focus: spokenCodeBackticksToggle,
+                context: [spokenCodeToggle])
+        addItem(.dictation, Self.aiFixTitle, caption: aiFixToggle.toolTip ?? "",
+                keywords: ["ai", "correct", "mistakes", "on-device", "model"], views: [aiFixToggle], focus: aiFixToggle)
+        addItem(.dictation, previewToggle.title, caption: previewToggle.toolTip ?? "",
+                keywords: ["overlay", "panel", "hud", "show text"], views: [previewToggle], focus: previewToggle)
+        addItem(.dictation, "Preview opacity", caption: "", keywords: ["transparency", "transparent", "see through"],
+                views: [opacityRow], focus: opacitySlider, context: [previewToggle])
+        return card(.dictation, [grid, fillerToggle, spokenCodeToggle, backticksRow, aiFixToggle, previewToggle,
+                                 opacityRow], widths: [grid])
     }
 
     private func meetingsCard() -> NSView {
@@ -350,8 +470,24 @@ final class SettingsPane: NSViewController, MainSectionContent {
             + "with each person's samples.", button: "Open People")
         rows[.people]?.icon.image = NSImage(systemSymbolName: "person.2", accessibilityDescription: nil)
         rows[.people]?.icon.contentTintColor = .secondaryLabelColor
-        return card("Meetings", [recordSystemAudioToggle, detail, screenCaptureToggle, screenDetail,
-                                 deepTranscriptionToggle, deepDetail, meetingSummariesToggle, summariesDetail, grid],
+
+        addItem(.meetings, recordSystemAudioToggle.title, caption: detail.stringValue,
+                keywords: ["system sound", "computer audio", "calls", "zoom", "video"],
+                views: [recordSystemAudioToggle, detail], focus: recordSystemAudioToggle)
+        addItem(.meetings, MeetingScreenText.settingTitle, caption: screenDetail.stringValue,
+                keywords: ["screen", "screenshot", "display", "slides", "capture"],
+                views: [screenCaptureToggle, screenDetail], focus: screenCaptureToggle)
+        addItem(.meetings, deepTranscriptionToggle.title, caption: deepDetail.stringValue,
+                keywords: ["whisper", "final transcript", "accuracy", "transcribe again"],
+                views: [deepTranscriptionToggle, deepDetail], focus: deepTranscriptionToggle)
+        addItem(.meetings, Self.meetingSummariesTitle, caption: summariesDetail.stringValue,
+                keywords: ["summary", "summaries", "titles", "action items", "key points", "ai"],
+                views: [meetingSummariesToggle, summariesDetail], focus: meetingSummariesToggle)
+        addRowItem(.meetings, .speakerModels, keywords: ["diarization", "speakers", "who spoke", "install"])
+        addRowItem(.meetings, .deepTranscriptionModel, keywords: ["whisper", "model", "download"])
+        addRowItem(.meetings, .people, keywords: ["people", "voices", "names", "voice profiles"])
+        return card(.meetings, [recordSystemAudioToggle, detail, screenCaptureToggle, screenDetail,
+                                deepTranscriptionToggle, deepDetail, meetingSummariesToggle, summariesDetail, grid],
                     widths: [detail, screenDetail, deepDetail, summariesDetail, grid])
     }
 
@@ -361,8 +497,10 @@ final class SettingsPane: NSViewController, MainSectionContent {
         readingVoicePopup.target = self
         readingVoicePopup.action = #selector(readingVoiceChosen(_:))
         readingVoicePopup.setAccessibilityLabel("Default reading voice")
-        addControlRow("person.wave.2", "Voice", "Premium voices sound best; add them in System Settings › "
-                      + "Accessibility › Spoken Content", control: readingVoicePopup, to: grid)
+        addControlRow(.reading, "person.wave.2", "Voice", "Premium voices sound best; add them in System Settings › "
+                      + "Accessibility › Spoken Content",
+                      keywords: ["reading voice", "text to speech", "tts", "premium", "siri"],
+                      control: readingVoicePopup, to: grid)
 
         readingSpeedSlider.numberOfTickMarks = 7
         readingSpeedSlider.allowsTickMarkValuesOnly = true
@@ -373,7 +511,9 @@ final class SettingsPane: NSViewController, MainSectionContent {
         readingSpeedLabel.textColor = .secondaryLabelColor
         let speed = NSStackView(views: [readingSpeedSlider, readingSpeedLabel])
         speed.spacing = 8
-        addControlRow("gauge.with.needle", "Speed", "0.8× to 1.4× of the voice's normal pace", control: speed, to: grid)
+        addControlRow(.reading, "gauge.with.needle", "Speed", "0.8× to 1.4× of the voice's normal pace",
+                      keywords: ["rate", "pace", "faster", "slower", "reading speed"], control: speed,
+                      focus: readingSpeedSlider, to: grid)
 
         let (text, _, detail) = Self.labels("Save audio files in")
         readingFolderDetail = detail
@@ -385,13 +525,17 @@ final class SettingsPane: NSViewController, MainSectionContent {
         choose.setAccessibilityLabel("Choose the folder audio files are saved in")
         grid.addRow(with: [icon, text, choose])
         finishRow(in: grid)
+        items.append(SearchItem(chapter: .reading, entry: SettingsSearch.Entry(
+            title: "Save audio files in", keywords: ["folder", "location", "output", "music", "files"]),
+            liveCaption: detail, grid: grid, gridAnchor: icon, focus: choose))
 
         let note = Self.note("""
             Readings are made on this Mac: nothing is uploaded, and the only thing fetched is the page you paste. \
             While a reading is made, its parts are kept in Application Support so it can continue after a stop.
             """)
+        addItem(.reading, "", caption: note.stringValue, keywords: [], views: [note], focus: nil)
         refreshReadingCard()
-        return card("Reading", [grid, note], widths: [grid, note])
+        return card(.reading, [grid, note], widths: [grid, note])
     }
 
     /// Shows Settings › Reading as saved (and the voices installed now).
@@ -444,9 +588,11 @@ final class SettingsPane: NSViewController, MainSectionContent {
             retentionPopup.menu?.addItem(item)
         }
         retentionPopup.setAccessibilityLabel("Keep dictations")
-        addControlRow("clock.arrow.circlepath", "Keep dictations", "Off stops recording new dictations",
+        addControlRow(.history, "clock.arrow.circlepath", "Keep dictations", "Off stops recording new dictations",
+                      keywords: ["retention", "days", "forever", "history", "privacy"],
                       control: retentionPopup, to: grid)
         addRow(.clearHistory, "History", to: grid)
+        addRowItem(.history, .clearHistory, keywords: ["clear history", "delete", "erase", "privacy"])
         historyAudioToggle.target = self
         historyAudioToggle.action = #selector(buttonPressed(_:))
         historyAudioToggle.tag = SetupAction.toggleHistoryAudio.rawValue
@@ -461,7 +607,11 @@ final class SettingsPane: NSViewController, MainSectionContent {
             History keeps each dictation's text, the text as heard, the app, and the language, and, when the box \
             above is on, its audio, only on this Mac. Nothing is copied to the clipboard unless you choose Copy.
             """)
-        return card("History and privacy", [grid, audio, note], widths: [grid, note])
+        addItem(.history, historyAudioToggle.title, caption: historyAudioToggle.toolTip ?? "",
+                keywords: ["audio", "run again", "disk", "storage", "recordings"], views: [audio],
+                focus: historyAudioToggle)
+        addItem(.history, "", caption: note.stringValue, keywords: [], views: [note], focus: nil)
+        return card(.history, [grid, audio, note], widths: [grid, note])
     }
 
     private func assistantFooter() -> NSView {
@@ -472,11 +622,14 @@ final class SettingsPane: NSViewController, MainSectionContent {
         let stack = NSStackView(views: [button, text])
         stack.spacing = 12
         stack.alignment = .centerY
+        addItem(nil, "Run Setup Assistant", caption: text.stringValue,
+                keywords: ["setup", "assistant", "onboarding", "wizard", "first launch"], views: [stack], focus: button)
         return stack
     }
 
     /// A card: a bold title over a rounded box holding `views`; `widths` stretch to the box.
-    private func card(_ title: String, _ views: [NSView], widths: [NSView]) -> NSView {
+    private func card(_ chapter: SettingsChapter, _ views: [NSView], widths: [NSView]) -> NSView {
+        let title = chapter.title
         let heading = NSTextField(labelWithString: title)
         heading.font = .systemFont(ofSize: 13, weight: .semibold)
         heading.setAccessibilityRole(.staticText)
@@ -493,7 +646,11 @@ final class SettingsPane: NSViewController, MainSectionContent {
             inner.topAnchor.constraint(equalTo: box.topAnchor, constant: 14),
             inner.bottomAnchor.constraint(equalTo: box.bottomAnchor, constant: -14),
         ])
-        for view in widths { view.widthAnchor.constraint(equalTo: inner.widthAnchor).isActive = true }
+        for view in widths {
+            let width = view.widthAnchor.constraint(equalTo: inner.widthAnchor)
+            width.isActive = true
+            if view is NSGridView { gridWidths[ObjectIdentifier(view)] = width }
+        }
         box.setAccessibilityElement(true)
         box.setAccessibilityRole(.group)
         box.setAccessibilityLabel(title)
@@ -502,6 +659,7 @@ final class SettingsPane: NSViewController, MainSectionContent {
         section.alignment = .leading
         section.spacing = 8
         box.widthAnchor.constraint(equalTo: section.widthAnchor).isActive = true
+        sections[chapter] = section
         return section
     }
 
@@ -509,10 +667,30 @@ final class SettingsPane: NSViewController, MainSectionContent {
         let grid = NSGridView()
         grid.rowSpacing = 14
         grid.columnSpacing = 12
+        grids.append(grid)
         return grid
     }
 
+    /// A setting made of a card's views (a checkbox and its note); `context`: views shown along with it.
+    private func addItem(_ chapter: SettingsChapter?, _ title: String, caption: String, keywords: [String],
+                         views: [NSView], focus: NSView?, context: [NSView] = []) {
+        items.append(SearchItem(chapter: chapter, entry: SettingsSearch.Entry(title: title, caption: caption,
+                                                                              keywords: keywords),
+                                views: views, context: context, focus: focus))
+    }
+
+    /// A status row (`addRow`): its title, and what its detail line says when searched.
+    private func addRowItem(_ chapter: SettingsChapter, _ action: SetupAction, title: String? = nil,
+                            keywords: [String]) {
+        guard let row = rows[action] else { return }
+        items.append(SearchItem(chapter: chapter, entry: SettingsSearch.Entry(
+            title: title ?? row.title.stringValue, keywords: keywords), liveCaption: row.detail,
+            grid: row.grid, gridAnchor: row.icon, action: action, focus: row.button))
+    }
+
     private func finishRow(in grid: NSGridView) {
+        // The icons in a narrow column, so the titles line up at the card's left on every card.
+        grid.column(at: 0).width = 24
         grid.column(at: 0).xPlacement = .center
         grid.column(at: 2).xPlacement = .trailing
         grid.row(at: grid.numberOfRows - 1).yPlacement = .center
@@ -538,9 +716,10 @@ final class SettingsPane: NSViewController, MainSectionContent {
         rows[action] = Row(icon: icon, title: titleLabel, detail: detail, button: button, link: link, grid: grid)
     }
 
-    /// A row whose control is a pop-up menu.
-    private func addControlRow(_ symbol: String, _ title: String, _ detailText: String, control: NSView,
-                               to grid: NSGridView) {
+    /// A row whose control is a pop-up menu, a segmented control, or a slider; searched by its title, detail, and
+    /// `keywords`. `focus`: what Return in the search focuses, when not `control`.
+    private func addControlRow(_ chapter: SettingsChapter, _ symbol: String, _ title: String, _ detailText: String,
+                               keywords: [String], control: NSView, focus: NSView? = nil, to grid: NSGridView) {
         let (text, _, detail) = Self.labels(title)
         detail.stringValue = detailText
         let icon = NSImageView(image: NSImage(systemSymbolName: symbol, accessibilityDescription: nil) ?? NSImage())
@@ -549,6 +728,9 @@ final class SettingsPane: NSViewController, MainSectionContent {
         control.widthAnchor.constraint(equalToConstant: 200).isActive = true
         grid.addRow(with: [icon, text, control])
         finishRow(in: grid)
+        items.append(SearchItem(chapter: chapter, entry: SettingsSearch.Entry(title: title, caption: detailText,
+                                                                              keywords: keywords),
+                                grid: grid, gridAnchor: icon, focus: focus ?? control))
     }
 
     /// A row's bold title over its detail line.
@@ -743,6 +925,8 @@ final class SettingsPane: NSViewController, MainSectionContent {
         historyAudioUsage.stringValue = HistoryAudio.usageText(bytes: state.historyAudioBytes,
                                                                keeps: state.historyKeepsAudio
                                                                    && state.historyRetention.records)
+        // A detail that changed can move the best match under its outline.
+        if matches != nil { placeBestMatchOutline() }
     }
 
     private func select(_ popup: NSPopUpButton, _ value: String) {
@@ -770,11 +954,29 @@ final class SettingsPane: NSViewController, MainSectionContent {
         languagePopup.isEnabled = state.localeChangeable
     }
 
+    /// Hides a status row for its state (Input Monitoring); the search never shows a row hidden so.
     private func setRowHidden(_ action: SetupAction, _ hidden: Bool) {
-        guard let row = rows[action], let gridRow = row.grid.cell(for: row.icon)?.row, gridRow.isHidden != hidden else {
+        guard stateHidden.contains(action) != hidden else { return }
+        if hidden { stateHidden.insert(action) } else { stateHidden.remove(action) }
+        guard matches != nil else {
+            applyVisibility()
             return
         }
-        gridRow.isHidden = hidden
+        matches = rankedMatches()
+        applyVisibility()
+        view.layoutSubtreeIfNeeded()
+        trackChapter()
+    }
+
+    /// Shows a status row's button and link as `set` last asked, unless the row is hidden.
+    private func applyRowButtons(_ action: SetupAction) {
+        guard let row = rows[action] else { return }
+        // A view shown inside a hidden grid row is left unplaced and draws over another row.
+        let rowHidden = row.grid.cell(for: row.icon)?.row?.isHidden ?? false
+        let button = row.wantsButton && !rowHidden
+        if row.button.isHidden == button { row.button.isHidden = !button }
+        let link = row.wantsLink && !rowHidden
+        if row.link.isHidden == link { row.link.isHidden = !link }
     }
 
     /// A permission row (`PermissionButtons`): not granted, Allow… sends `action` (ask macOS) and the System
@@ -804,14 +1006,13 @@ final class SettingsPane: NSViewController, MainSectionContent {
         row.icon.image = NSImage(systemSymbolName: symbol, accessibilityDescription: description)
         row.icon.contentTintColor = color
         row.detail.stringValue = detail
-        // A view shown inside a hidden grid row is left unplaced and draws over another row.
-        let rowHidden = row.grid.cell(for: row.icon)?.row?.isHidden ?? false
-        row.button.isHidden = title == nil || rowHidden
+        rows[action]?.wantsButton = title != nil
+        rows[action]?.wantsLink = link != nil
+        applyRowButtons(action)
         row.button.title = title ?? ""
         row.button.tag = (sends ?? action).rawValue
         row.button.isEnabled = enabled
         row.button.setAccessibilityLabel(title.map { "\($0) — \(row.title.stringValue)" })
-        row.link.isHidden = link == nil || rowHidden
         if let link {
             if row.link.title != link.title {
                 row.link.attributedTitle = NSAttributedString(string: link.title, attributes: [
@@ -821,6 +1022,227 @@ final class SettingsPane: NSViewController, MainSectionContent {
             row.link.tag = link.sends.rawValue
             row.link.setAccessibilityLabel("\(link.title) — \(row.title.stringValue)")
         }
+    }
+
+    // MARK: - Chapters
+
+    var searchField: NSSearchField? { search }
+
+    /// The page is scrolled to its top.
+    var isAtTop: Bool { scroll.contentView.bounds.minY <= 1 }
+
+    /// Scrolls to `chapter`'s card, or to the top for nil, smoothly when `animated` (never with Reduce Motion).
+    /// A search is cleared first, so the chapter shows whole. The sidebar already marks it: `onChapterChange` is not
+    /// called.
+    func show(chapter: SettingsChapter?, animated: Bool) {
+        if matches != nil || !search.stringValue.isEmpty {
+            search.stringValue = ""
+            matches = nil
+            applyVisibility()
+        }
+        view.layoutSubtreeIfNeeded()
+        currentChapter = chapter ?? .general
+        let clip = scroll.contentView
+        let target = chapter.flatMap { sections[$0] }.map {
+            SettingsChapterTracking.offset(toShow: Double(top(of: $0)), viewport: Double(clip.bounds.height),
+                                           contentHeight: Double(document.frame.height), margin: 12)
+        } ?? 0
+        scrollTo(CGFloat(target), animated: animated && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion)
+    }
+
+    private func scrollTo(_ y: CGFloat, animated: Bool) {
+        let clip = scroll.contentView
+        let point = NSPoint(x: clip.bounds.minX, y: y)
+        scrollingToChapter = true
+        guard animated, abs(clip.bounds.minY - y) > 1 else {
+            clip.scroll(to: point)
+            scroll.reflectScrolledClipView(clip)
+            scrollingToChapter = false
+            return
+        }
+        NSAnimationContext.runAnimationGroup({ context in
+            context.duration = 0.3
+            context.allowsImplicitAnimation = true
+            clip.animator().setBoundsOrigin(point)
+        }, completionHandler: { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.scroll.reflectScrolledClipView(self.scroll.contentView)
+                self.scrollingToChapter = false
+            }
+        })
+    }
+
+    /// A view's top in the page.
+    private func top(of view: NSView) -> CGFloat {
+        view.convert(view.bounds, to: document).minY
+    }
+
+    @objc private func scrolled() {
+        guard !scrollingToChapter else { return }
+        trackChapter()
+    }
+
+    /// Marks the chapter at the top in the sidebar when it changed (`SettingsChapterTracking`).
+    private func trackChapter() {
+        let tops: [Double?] = SettingsChapter.allCases.map { chapter in
+            guard let section = sections[chapter], !section.isHidden else { return nil }
+            return Double(top(of: section))
+        }
+        let clip = scroll.contentView.bounds
+        guard let index = SettingsChapterTracking.chapter(
+            offset: Double(clip.minY), viewport: Double(clip.height), contentHeight: Double(document.frame.height),
+            tops: tops, selected: currentChapter.rawValue),
+            let chapter = SettingsChapter(rawValue: index), chapter != currentChapter else { return }
+        currentChapter = chapter
+        onChapterChange?(chapter)
+    }
+
+    // MARK: - Search
+
+    /// Where the page was when a search began; clearing the search goes back there.
+    private var offsetBeforeSearch: CGFloat = 0
+
+    @objc private func searchChanged() {
+        let wasSearching = matches != nil
+        if !wasSearching { offsetBeforeSearch = scroll.contentView.bounds.minY }
+        matches = rankedMatches()
+        applyVisibility()
+        view.layoutSubtreeIfNeeded()
+        if matches != nil {
+            scrollTo(0, animated: false)
+        } else if wasSearching {
+            scrollTo(min(offsetBeforeSearch, max(0, document.frame.height - scroll.contentView.bounds.height)),
+                     animated: false)
+        }
+        trackChapter()
+        announce(matches.map { matches in
+            guard let best = matches.first else { return "No settings match" }
+            let count = "\(matches.count) \(matches.count == 1 ? "setting matches" : "settings match")"
+            return "\(count); Return goes to \(title(of: items[best]))"
+        })
+    }
+
+    /// The best match, what Return goes to, is outlined while the search lasts; without a search, nothing is.
+    private func placeBestMatchOutline() {
+        guard let best = matches?.first else {
+            outline?.removeFromSuperview()
+            outline = nil
+            return
+        }
+        view.layoutSubtreeIfNeeded()
+        guard let frame = frame(of: items[best]) else { return }
+        if let outline {
+            outline.place(over: frame)
+        } else {
+            let made = SettingsHighlightView(frame: .zero)
+            made.place(over: frame)
+            document.addSubview(made)
+            outline = made
+        }
+    }
+
+    private func title(of item: SearchItem) -> String {
+        item.entry.title.isEmpty ? item.chapter?.title ?? "Settings" : item.entry.title
+    }
+
+    /// The items matching the query, best first (`SettingsSearch`), without rows their state hides; nil without a
+    /// query.
+    private func rankedMatches() -> [Int]? {
+        let query = search.stringValue
+        guard !SettingsSearch.words(query).isEmpty else { return nil }
+        let candidates = items.indices.filter { items[$0].action.map { !stateHidden.contains($0) } ?? true }
+        let entries = candidates.map { index in
+            var entry = items[index].entry
+            if let live = items[index].liveCaption { entry.caption = live.stringValue }
+            return entry
+        }
+        return SettingsSearch.rank(query, entries).map { candidates[$0] }
+    }
+
+    /// Shows the items that match (all without a query), the cards holding them with their headings, and a line
+    /// when nothing matches.
+    private func applyVisibility() {
+        let shown = matches.map(Set.init)
+        var visibleViews = Set<ObjectIdentifier>()
+        var chapters = Set<SettingsChapter>()
+        for (index, item) in items.enumerated() where shown?.contains(index) ?? true {
+            for view in item.views + item.context { visibleViews.insert(ObjectIdentifier(view)) }
+            if let chapter = item.chapter { chapters.insert(chapter) }
+        }
+        for (index, item) in items.enumerated() {
+            for view in item.views + item.context {
+                let visible = visibleViews.contains(ObjectIdentifier(view))
+                if view.isHidden == visible { view.isHidden = !visible }
+            }
+            guard let grid = item.grid, let anchor = item.gridAnchor, let row = grid.cell(for: anchor)?.row else {
+                continue
+            }
+            let hidden = !(shown?.contains(index) ?? true) || item.action.map(stateHidden.contains) == true
+            if row.isHidden != hidden { row.isHidden = hidden }
+            // Never leave a view of a hidden row on screen, unplaced.
+            for column in 0..<row.numberOfCells {
+                if let view = row.cell(at: column).contentView, view.isHidden != hidden { view.isHidden = hidden }
+            }
+        }
+        for grid in grids {
+            let empty = (0..<grid.numberOfRows).allSatisfy { grid.row(at: $0).isHidden }
+            if grid.isHidden != empty { grid.isHidden = empty }
+            if let width = gridWidths[ObjectIdentifier(grid)], width.isActive == empty { width.isActive = !empty }
+        }
+        for (chapter, section) in sections {
+            let hidden = shown != nil && !chapters.contains(chapter)
+            if section.isHidden != hidden { section.isHidden = hidden }
+        }
+        for action in rows.keys { applyRowButtons(action) }
+        let none = matches?.isEmpty == true
+        noMatches.stringValue = none ? "No settings match “\(search.stringValue)”. Press Escape to see them all." : ""
+        if noMatches.isHidden == none { noMatches.isHidden = !none }
+        placeBestMatchOutline()
+    }
+
+    /// Return in the search field: clears the search, scrolls the best match into view, and outlines it for a
+    /// moment; its control takes the focus when it can.
+    private func goToBestMatch() {
+        guard let best = matches?.first else {
+            NSSound.beep()
+            return
+        }
+        let item = items[best]
+        search.stringValue = ""
+        matches = nil
+        applyVisibility()
+        view.layoutSubtreeIfNeeded()
+        guard let frame = frame(of: item) else { return }
+        let clip = scroll.contentView.bounds
+        // Below the top, so the card's heading and the rows above it give context.
+        let target = max(0, min(frame.minY - 80, document.frame.height - clip.height))
+        scrollTo(target, animated: false)
+        if let chapter = item.chapter, chapter != currentChapter {
+            currentChapter = chapter
+            onChapterChange?(chapter)
+        }
+        highlight = SettingsHighlightView.flash(frame, in: document, replacing: highlight)
+        if let focus = item.focus, focus.canBecomeKeyView { view.window?.makeFirstResponder(focus) }
+        announce("Went to \(title(of: item))")
+    }
+
+    /// The item's frame in the page: its grid row, or its views.
+    private func frame(of item: SearchItem) -> NSRect? {
+        var views = item.views.filter { !$0.isHidden }
+        if let grid = item.grid, let anchor = item.gridAnchor, let row = grid.cell(for: anchor)?.row {
+            views += (0..<row.numberOfCells).compactMap { row.cell(at: $0).contentView }
+        }
+        let frames = views.map { $0.convert($0.bounds, to: document) }
+        guard let first = frames.first else { return nil }
+        return frames.dropFirst().reduce(first) { $0.union($1) }
+    }
+
+    private func announce(_ text: String?) {
+        guard let text, NSWorkspace.shared.isVoiceOverEnabled else { return }
+        NSAccessibility.post(element: search, notification: .announcementRequested, userInfo: [
+            .announcement: text, .priority: NSAccessibilityPriorityLevel.medium.rawValue,
+        ])
     }
 
     // MARK: - Actions
@@ -856,6 +1278,25 @@ final class SettingsPane: NSViewController, MainSectionContent {
     @objc private func buttonPressed(_ sender: NSButton) {
         guard let action = SetupAction(rawValue: sender.tag) else { return }
         callbacks.perform(action)
+    }
+
+    // MARK: - NSSearchFieldDelegate
+
+    /// Return goes to the best match; Escape clears the search (and does nothing more when it is empty).
+    func control(_ control: NSControl, textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
+        guard control === search else { return false }
+        switch commandSelector {
+        case #selector(NSResponder.insertNewline(_:)):
+            goToBestMatch()
+            return true
+        case #selector(NSResponder.cancelOperation(_:)):
+            guard !search.stringValue.isEmpty else { return false }
+            search.stringValue = ""
+            searchChanged()
+            return true
+        default:
+            return false
+        }
     }
 }
 
