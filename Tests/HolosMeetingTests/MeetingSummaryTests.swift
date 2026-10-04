@@ -1314,6 +1314,34 @@ private func trackDocument(source: AudioSource) -> ExportDocument {
     #expect(scripted.summaryCalls.value.isEmpty)
 }
 
+@Test func chineseAndJapaneseDatesAreRemoved() {
+    #expect(MeetingSummaryDraft.cleanTitle("2026年10月3日の予算会議", language: "ja-JP") == "予算会議")
+    #expect(MeetingSummaryDraft.cleanTitle("10月の振り返り", language: "ja-JP") == "振り返り")
+    #expect(MeetingSummaryDraft.cleanTitle("月曜日の定例会", language: "ja-JP") == "定例会")
+    #expect(MeetingSummaryDraft.cleanTitle("10月3日预算评审", language: "zh-CN") == "预算评审")
+    #expect(MeetingSummaryDraft.cleanTitle("星期一的周会", language: "zh-CN") == "周会")
+    #expect(MeetingSummaryDraft.cleanTitle("3号楼装修计划", language: "zh-CN") == "3号楼装修计划")
+}
+
+@Test func aKeyThatCouldNotBeReadIsReadAgain() async throws {
+    let temp = try TemporaryDirectory("summary")
+    defer { temp.remove() }
+    let session = try await summarizeSession(in: temp.url)
+    let manifest = try SessionArchive.readManifest(at: session)
+    let transcriptID = try #require(try SessionArchive.currentTranscriptID(at: session))
+    let revision = SessionPaths.transcript(transcriptID, in: session)
+    func key() -> MeetingSummaryKey? {
+        MeetingSummarySchedule.key(session: session, sessionID: manifest.id, transcriptID: transcriptID,
+                                   profileNames: [:], recognition: true, selfName: "Me")
+    }
+    // Unreadable for now: no key, and none kept.
+    try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: revision.path)
+    #expect(key() == nil)
+    try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: revision.path)
+    // Readable again, with the same inputs: read, not the failure remembered.
+    #expect(key()?.transcriptID == transcriptID)
+}
+
 @Test func aNameTheUserGaveIsTheirsWhateverItLooksLike() throws {
     let root = URL(fileURLWithPath: "/tmp/sessions")
     var typed = MeetingStartSettings(name: "Meeting 2026-10-03 14:00", source: .microphone)

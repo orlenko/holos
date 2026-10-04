@@ -166,7 +166,9 @@ public enum MeetingSummarySchedule {
         if let cached = keyCache.withLock({ $0[sessionID] }), cached.inputs == inputs { return cached.key }
         let key = MeetingSummaryKey.load(session: session, profileNames: profileNames, applyRecognition: recognition,
                                          selfName: selfName)
-        keyCache.withLock { $0[sessionID] = (inputs, key) }
+        // Only a key that could be read is kept: a read that failed (a file busy or unreadable for now) is tried again
+        // at the next scan.
+        if let key { keyCache.withLock { $0[sessionID] = (inputs, key) } }
         return key
     }
 

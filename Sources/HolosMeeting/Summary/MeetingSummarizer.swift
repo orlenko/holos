@@ -786,6 +786,17 @@ extension MeetingSummaryDraft {
             "\\b(?:\(months))\\.?\\s+(?:de\\s+)?\\d{4}\\b",
             "\\b(?:\(weekdays))\\b,?",
             #"\b(?:today|tonight|aujourd'hui|aujourd’hui|heute|hoy)\b"#,
+            // Chinese and Japanese dates and weekdays, written without spaces, so without word boundaries:
+            // "2026年10月3日", "10月3日", "2026年10月", "10月", "3日"; "月曜日", "星期一", "周一", "週一"; "今日", "今天".
+            #"\d{2,4}年\d{1,2}月(?:\d{1,2}[日号])?"#,
+            #"\d{1,2}月\d{1,2}[日号]"#,
+            #"\d{1,2}月"#,
+            #"\d{1,2}日"#,
+            #"\d{2,4}年"#,
+            #"[月火水木金土日]曜日?"#,
+            #"(?:星期|礼拜|禮拜)[一二三四五六日天]"#,
+            #"[周週][一二三四五六日]"#,
+            #"今日|今天"#,
         ]
         var result = text
         for pattern in patterns {
@@ -793,7 +804,8 @@ extension MeetingSummaryDraft {
             let range = NSRange(result.startIndex..., in: result)
             result = regex.stringByReplacingMatches(in: result, range: range, withTemplate: " ")
         }
-        result = oneLine(result)
+        // A particle left at either end ("の会議", "的周会", "振り返り（）").
+        result = oneLine(result).trimmingCharacters(in: CharacterSet(charactersIn: "の的、，（）()").union(.whitespaces))
         // "Budget review on" → "Budget review"; "Plan for" stays for `danglingWords`.
         let leftovers: Set<String> = ["on", "le", "du", "of", "am", "vom", "den", "el", "del", "de", "-", "–", "—", ","]
         var words = result.split(separator: " ").map(String.init)

@@ -4994,7 +4994,8 @@ never saved as a whole one, and an older summary stays.
 and a final period removed, a leading "Meeting about/on/…", "Meeting:", "Réunion sur …" removed,
 dates, times, weekdays and "today" removed (month and weekday names of the summary's language from
 the system's calendar, and English and French; short weekday names are not, as Spanish "mar" is
-also "sea"), at most 8 words and 60 characters (at a space when one
+also "sea"; Chinese and Japanese dates and weekdays by pattern, "2026年10月3日", "10月", "月曜日",
+"星期一", with a particle left at either end, "の", "的", removed), at most 8 words and 60 characters (at a space when one
 is past half of that, else between characters, for text without spaces) without a dangling "and", "of",
 "the", "de", "pour" …; "Meeting" alone is no title. The summary: one line, at most two
 sentences and 320 characters. Key points and action items: bullets and numbering removed, "None"
@@ -5012,7 +5013,8 @@ tracks without labels) and the people named. Renames, links, merges, assignments
 the person who is you renamed, and Remember voices' automatic names all change it. summary.json stores it; a summary
 is current only while its key is the meeting's, computed the same way by the command, the exports
 and the app's scan (no model; the scan caches it per meeting until the transcript, the speaker
-files, or people's names change). The exports (also those rewritten after a speaker edit) carry
+files, or people's names change; a key that could not be read is not cached, so it is read again
+at the next scan). The exports (also those rewritten after a speaker edit) carry
 the summary only while it is current, so corrected labels never sit beside a summary made with
 the old ones. Only a current summary with its transcript files left to write is export-only
 work; anything else is model work under every rule (setting, model, battery, failed attempts,
