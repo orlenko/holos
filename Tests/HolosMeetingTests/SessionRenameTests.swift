@@ -491,29 +491,6 @@ private func listed(name: String, source: MeetingNameSource, generated: String?)
     #expect(MeetingRenameRequest.retry(generated) == .generated)
 }
 
-@Test func filesLeftWithTheOldTitleAreRememberedWithTheRenameAskedFor() throws {
-    let suite = "holos-tests-\(UUID().uuidString)"
-    let defaults = try #require(UserDefaults(suiteName: suite))
-    defer { defaults.removePersistentDomain(forName: suite) }
-    let pending = PendingRenames(defaults: defaults)
-    pending.mark("A", .generated)
-    pending.mark("B", .user("Weekly sync"))
-    // Kept for the next launch, with what was asked for, so Update Transcript Files finishes exactly that.
-    #expect(PendingRenames(defaults: defaults).request("A") == .generated)
-    #expect(PendingRenames(defaults: defaults).request("B") == .user("Weekly sync"))
-    #expect(pending.contains("A") && !pending.contains("C"))
-    // Apart from the files a review could not rewrite.
-    #expect(!PendingExports(defaults: defaults).contains("A"))
-    pending.clear("A")
-    pending.clear("B")
-    #expect(defaults.object(forKey: PendingRenames.key) == nil)
-    // A run that changed nothing puts back what was there.
-    pending.restore("A", to: .user("Old"))
-    #expect(pending.request("A") == .user("Old"))
-    pending.restore("A", to: nil)
-    #expect(!pending.contains("A"))
-}
-
 @Test func theSameLongNameAskedForAgainIsNotCut() async throws {
     let temp = try TemporaryDirectory("rename")
     defer { temp.remove() }
@@ -633,19 +610,8 @@ private func listed(name: String, source: MeetingNameSource, generated: String?)
         == ["session", "rename", "--generated", "--json", "--", "/tmp/S.holos"])
 }
 
-@Test func filesAreMarkedOutOfDateUntilARenameSaysOtherwise() throws {
-    func outcome(_ code: Int32) -> SessionRenameCommand.Outcome {
-        SessionRenameCommand.Outcome(sessionID: "S", status: code == 1 ? .busy : .renamed, message: "m", exitCode: code)
-    }
-    #expect(!MeetingRenameRun.staysMarked(outcome: outcome(0), wasMarked: true))
-    #expect(MeetingRenameRun.staysMarked(outcome: outcome(3), wasMarked: false))
-    // Nothing changed: as it was before the run.
-    #expect(!MeetingRenameRun.staysMarked(outcome: outcome(1), wasMarked: false))
-    #expect(MeetingRenameRun.staysMarked(outcome: outcome(1), wasMarked: true))
-    // No result (the command was stopped): what it changed is not known.
-    #expect(MeetingRenameRun.staysMarked(outcome: nil, wasMarked: false))
-    // The command's JSON is read back.
-    var written = outcome(3)
+@Test func theCommandsResultIsReadBack() throws {
+    var written = SessionRenameCommand.Outcome(sessionID: "S", status: .renamed, message: "m", exitCode: 3)
     written.name = "Weekly sync"
     written.nameSource = .user
     let decoded = try HolosJSON.decoder().decode(SessionRenameCommand.Outcome.self,
@@ -917,7 +883,6 @@ private func listed(name: String, source: MeetingNameSource, generated: String?)
     #expect(chmod(session.path, 0o700) == 0)
     #expect(outcome.exitCode == 3, "Partly written: the files may show the old title")
     #expect(outcome.message.contains("could not be put back"))
-    #expect(MeetingRenameRun.staysMarked(outcome: outcome, wasMarked: false))
 }
 
 // MARK: - Jobs elsewhere, each write on the locked folder, people read at the write
@@ -996,63 +961,135 @@ private func listed(name: String, source: MeetingNameSource, generated: String?)
 
 // MARK: - Finishing a partial rename, and noticing files rewritten elsewhere
 
-@Test func aPartialGeneratedRenameIsFinishedAsAsked() async throws {
-    let temp = try TemporaryDirectory("rename")
-    defer { temp.remove() }
-    let session = try await renameSession(in: temp.url)
-    try writeSummary(session)
-    _ = await rename(session, "Weekly sync")
-    // --generated wrote the default name, then the folder turned read-only: the user source stayed.
-    struct WriteFailed: Error {}
-    var request = SessionRenameCommand.Request(session: session, name: nil, voiceInputs: { voice },
-                                               jobLock: temp.url.appendingPathComponent("jobs.lock"), timeZone: utc)
-    request.nameSourceWriter = { _, folder, _ in
-        _ = chmod(folder.path, 0o500)
-        throw WriteFailed()
-    }
-    let partial = await SessionRenameCommand.run(request)
-    #expect(chmod(session.path, 0o700) == 0)
-    #expect(partial.exitCode == 3)
-    // What Update Transcript Files retries: the rename asked for, not the name the meeting shows now.
-    let suite = "holos-tests-\(UUID().uuidString)"
-    let defaults = try #require(UserDefaults(suiteName: suite))
-    defer { defaults.removePersistentDomain(forName: suite) }
-    let pending = PendingRenames(defaults: defaults)
-    pending.mark(try SessionArchive.readManifest(at: session).id, .generated)
-    let summary = SessionCatalog.summary(session: session, jobState: .free)
-    let retry = MeetingRenameRun.retry(summary, pending: pending)
-    #expect(retry == .generated)
-    let finished = await rename(session, retry.typedName)
-    #expect(finished.exitCode == 0)
-    #expect(try meetingJSON(session)["nameSource"] as? String == "default")
-    #expect(SessionCatalog.summary(session: session, jobState: .free).displayTitle == "Parser rewrite and release plan")
-    // Without a mark, the rename the meeting has now.
-    pending.clear(summary.id)
-    #expect(MeetingRenameRun.retry(summary, pending: pending) == .retry(summary))
-}
 
-@Test func theFilesAreKnownToShowTheTitleWhoeverWroteThem() async throws {
+// MARK: - Transcript files out of date, derived from the files
+
+@Test func theFilesAreCurrentOnlyWhenTheyShowTheTitleAndMatchTheirRecord() async throws {
     let temp = try TemporaryDirectory("rename")
     defer { temp.remove() }
+    #expect(SessionExports.filesState(
+        session: try await SessionFixtures.makeSession(in: temp.url, transcript: nil), title: "x") == .none)
     let session = try await renameSession(in: temp.url)
     try writeSummary(session)
-    #expect(SessionExports.filesShowTitle(session: session, title: "Parser rewrite and release plan"))
-    // A rename whose files were not rewritten: they show the old title.
+    func state() -> SessionExports.FilesState {
+        SessionExports.filesState(session: session,
+                                  title: SessionCatalog.summary(session: session, jobState: .free).displayTitle)
+    }
+    func rewrite() throws {
+        try SessionArchive.withSpeakerLock(at: session) {
+            _ = try SessionExports.regenerateLocked(session: session, profileNames: voice.names,
+                                                    applyRecognition: voice.recognition, selfName: voice.selfName)
+        }
+    }
+    #expect(state() == .current)
+    // A rename whose files were not rewritten: the heading is the old title.
     struct Unreadable: Error {}
     let failed = await SessionRenameCommand.run(SessionRenameCommand.Request(
         session: session, name: "Weekly *sync* #2", voiceInputs: { throw Unreadable() },
         jobLock: temp.url.appendingPathComponent("jobs.lock"), timeZone: utc))
     #expect(failed.exitCode == 3)
-    let title = SessionCatalog.summary(session: session, jobState: .free).displayTitle
-    #expect(title == "Weekly *sync* #2")
-    #expect(!SessionExports.filesShowTitle(session: session, title: title))
-    // Another writer rewrites them (Review, a summary, the command run again): now they do.
-    try SessionArchive.withSpeakerLock(at: session) {
-        _ = try SessionExports.regenerateLocked(session: session, profileNames: voice.names,
-                                                applyRecognition: voice.recognition, selfName: voice.selfName)
-    }
-    #expect(SessionExports.filesShowTitle(session: session, title: title))
-    // A record that cannot be used is not trusted.
+    #expect(state() == .stale)
+    // Whoever rewrites them (Review, a summary, a command in Terminal), they are current.
+    try rewrite()
+    #expect(state() == .current)
+    // transcript.json no longer what was recorded (a write cut short, an edit).
+    try AtomicFile.write(Data("{}".utf8), to: SessionPaths.export("json", in: session))
+    #expect(state() == .stale)
+    try rewrite()
+    #expect(state() == .current)
+    // A damaged record, or one left mid-write (pending), is not trusted.
+    let record = try Data(contentsOf: SessionPaths.generatedExports(session))
     try AtomicFile.write(Data("{".utf8), to: SessionPaths.generatedExports(session))
-    #expect(!SessionExports.filesShowTitle(session: session, title: title))
+    #expect(state() == .stale)
+    var object = try #require(try JSONSerialization.jsonObject(with: record) as? [String: Any])
+    object["pending"] = object["files"]
+    try AtomicFile.write(try JSONSerialization.data(withJSONObject: object), to: SessionPaths.generatedExports(session))
+    #expect(state() == .stale)
+}
+
+@Test func updateTranscriptFilesRewritesThemForTheTitleShown() async throws {
+    let temp = try TemporaryDirectory("rename")
+    defer { temp.remove() }
+    let session = try await renameSession(in: temp.url)
+    try writeSummary(session)
+    struct Unreadable: Error {}
+    _ = await SessionRenameCommand.run(SessionRenameCommand.Request(
+        session: session, name: "Weekly sync", voiceInputs: { throw Unreadable() },
+        jobLock: temp.url.appendingPathComponent("jobs.lock"), timeZone: utc))
+    let summary = SessionCatalog.summary(session: session, jobState: .free)
+    #expect(SessionExports.filesState(session: session, title: summary.displayTitle) == .stale)
+    // What the menu runs: the rename the meeting has now, which writes no name and rewrites the files.
+    let update = await rename(session, MeetingRenameRequest.retry(summary).typedName)
+    #expect(update.status == .unchanged)
+    #expect(update.exportsUpdated)
+    #expect(SessionExports.filesState(session: session, title: summary.displayTitle) == .current)
+}
+
+@Test func filesStateIsCachedUntilAFileOrTheTitleChanges() async throws {
+    let temp = try TemporaryDirectory("rename")
+    defer { temp.remove() }
+    let session = try await renameSession(in: temp.url)
+    try writeSummary(session)
+    let cache = TranscriptFilesCache()
+    var summary = SessionCatalog.summary(session: session, jobState: .free)
+    #expect(cache.state(of: summary) == .current)
+    summary.name = "Weekly sync"
+    summary.nameSource = .user
+    #expect(cache.state(of: summary) == .stale, "Another title is looked at again")
+    try AtomicFile.write(Data("{}".utf8), to: SessionPaths.export("json", in: session))
+    #expect(cache.state(of: SessionCatalog.summary(session: session, jobState: .free)) == .stale,
+            "A changed file is looked at again")
+}
+
+@Test func filesBehindTheSpeakerLabelsAreKnown() async throws {
+    let temp = try TemporaryDirectory("rename")
+    defer { temp.remove() }
+    let (session, _, run) = try await SessionFixtures.labelledSession(in: temp.url, track: "mic")
+    try SessionExports.regenerate(session: session)
+    #expect(SessionExports.filesMatchLabels(session: session, profileNames: [:], applyRecognition: true,
+                                            selfName: "Robin"))
+    let first = try #require(run.speakers.first)
+    try SessionFixtures.appendEdits([.rename(speakerID: first.id, name: "Alex")], session: session)
+    #expect(!SessionExports.filesMatchLabels(session: session, profileNames: [:], applyRecognition: true,
+                                             selfName: "Robin"))
+}
+
+@Test func eachTranscriptFileWriteChecksTheFolder() async throws {
+    let temp = try TemporaryDirectory("rename")
+    defer { temp.remove() }
+    let session = try await renameSession(in: temp.url)
+    let calls = SharedValue(0)
+    try SessionArchive.withSpeakerLock(at: session) {
+        _ = try SessionExports.regenerateLocked(session: session, selfName: "Robin", check: {
+            calls.update { $0 += 1 }
+        })
+    }
+    // Before the pending record, each of the three files, and the final record.
+    #expect(calls.value == 5)
+    struct Moved: Error {}
+    let stopped = SharedValue(0)
+    #expect(throws: Moved.self) {
+        try SessionArchive.withSpeakerLock(at: session) {
+            _ = try SessionExports.regenerateLocked(session: session, selfName: "Robin", check: {
+                stopped.update { $0 += 1 }
+                if stopped.value == 3 { throw Moved() }
+            })
+        }
+    }
+    #expect(stopped.value == 3, "Nothing written after a failed check")
+}
+
+@Test func aNameSavedButNotConfirmedIsAPartialRename() async throws {
+    let temp = try TemporaryDirectory("rename")
+    defer { temp.remove() }
+    let session = try await renameSession(in: temp.url)
+    var request = SessionRenameCommand.Request(session: session, name: "Weekly sync", voiceInputs: { voice },
+                                               jobLock: temp.url.appendingPathComponent("jobs.lock"), timeZone: utc)
+    // The manifest was renamed into place, then its folder could not be synced.
+    request.failAfterNameWrite = true
+    let outcome = await SessionRenameCommand.run(request)
+    #expect(outcome.exitCode == 3)
+    #expect(outcome.message.contains("saved"))
+    #expect(try SessionArchive.readManifest(at: session).name == "Weekly sync")
+    #expect(try meetingJSON(session)["nameSource"] as? String == "user", "The rest is still written")
 }

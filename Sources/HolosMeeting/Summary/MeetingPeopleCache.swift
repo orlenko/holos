@@ -66,3 +66,35 @@ public final class MeetingPeopleCache: Sendable {
         return "\(info.st_size):\(info.st_mtimespec.tv_sec).\(info.st_mtimespec.tv_nsec)"
     }
 }
+
+/// `SessionExports.filesState` per meeting, read again only when a transcript file or its record changed (by size and
+/// modification time) or the title shown did; the Meetings list asks for every finished meeting every 2 s.
+public final class TranscriptFilesCache: Sendable {
+    private struct Entry {
+        var stamp: String
+        var title: String
+        var state: SessionExports.FilesState
+    }
+
+    private let entries = Mutex<[String: Entry]>([:])
+
+    public init() {}
+
+    public func state(of summary: SessionSummary) -> SessionExports.FilesState {
+        let session = summary.directory
+        let stamp = (SessionExports.formats.map { SessionPaths.export($0.rawValue, in: session) }
+            + [SessionPaths.generatedExports(session)]).map(MeetingPeopleCache.fileStamp).joined(separator: "|")
+        let title = summary.displayTitle
+        if let entry = entries.withLock({ $0[summary.id] }), entry.stamp == stamp, entry.title == title {
+            return entry.state
+        }
+        let state = SessionExports.filesState(session: session, title: title)
+        entries.withLock { $0[summary.id] = Entry(stamp: stamp, title: title, state: state) }
+        return state
+    }
+
+    /// Forgets meetings no longer listed.
+    public func keep(only ids: Set<String>) {
+        entries.withLock { all in all = all.filter { ids.contains($0.key) } }
+    }
+}

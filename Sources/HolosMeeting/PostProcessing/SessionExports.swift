@@ -63,14 +63,17 @@ public enum SessionExports {
     ///
     /// `selfName` names the unnamed channel speaker in the summary's key (nil: `VoiceProfileService.ownName()`): the
     /// summary command passes the one it checked, so the files it marks written carry its summary.
+    ///
+    /// `check` runs before each write (the pending record, each file, the final record), so a caller holding the
+    /// processing lease can check the folder is still the one it locks (`ProcessingLease.verify`) and stop when not.
     @discardableResult
     public static func regenerateLocked(session: URL, profileNames: [String: String] = [:],
-                                        applyRecognition: Bool = true, selfName: String? = nil) throws
-        -> ExportWriteResult {
+                                        applyRecognition: Bool = true, selfName: String? = nil,
+                                        check: () throws -> Void = {}) throws -> ExportWriteResult {
         let snapshot = try SpeakerSessionSnapshot.load(session: session, profileNames: profileNames,
                                                        applyRecognition: applyRecognition)
         let rendered = try renderAll(exportDocument(snapshot, selfName: selfName))
-        let result = try write(rendered, session: session, snapshot: snapshot)
+        let result = try write(rendered, session: session, snapshot: snapshot, check: check)
         log.info("Session \(snapshot.manifest.id, privacy: .public): wrote \(result.written.count, privacy: .public) exports; moved \(result.movedAside.count, privacy: .public) edited exports aside")
         return result
     }
@@ -182,14 +185,18 @@ public enum SessionExports {
     }
 
     private static func write(_ rendered: [(format: ExportFormat, data: Data)], session: URL,
-                              snapshot: SpeakerSessionSnapshot) throws -> ExportWriteResult {
+                              snapshot: SpeakerSessionSnapshot, check: () throws -> Void = {}) throws
+        -> ExportWriteResult {
+        try check()
         var result = ExportWriteResult(movedAside: try beginWrite(rendered, session: session, snapshot: snapshot),
                                        diagnostics: snapshot.diagnostics)
         for entry in rendered {
+            try check()
             let url = SessionPaths.export(entry.format.rawValue, in: session)
             try AtomicFile.write(entry.data, to: url, permissions: generatedPermissions)
             result.written.append(url)
         }
+        try check()
         try AtomicFile.writeJSON(GeneratedRecord(files: digestsByName(rendered)), to: SessionPaths.generatedExports(session))
         return result
     }
@@ -261,15 +268,56 @@ public enum SessionExports {
         }
     }
 
-    /// Whether the transcript files show `title`: transcript.md begins with its heading
-    /// (`TranscriptExporter.markdownHeading`) and the record of what was generated is usable (`hasUsableRecord`).
-    /// Whoever rewrote them (a rename, Review, a summary, a command in Terminal). False when it cannot be told.
-    public static func filesShowTitle(session: URL, title: String) -> Bool {
-        guard (try? hasUsableRecord(session: session)) == true,
-              let data = try? AtomicFile.readIfPresent(SessionPaths.export("md", in: session), maxBytes: maxExportBytes)
-        else { return false }
-        let firstLine = String(decoding: data.prefix { $0 != 0x0A }, as: UTF8.self)
-        return firstLine == TranscriptExporter.markdownHeading(title)
+    /// Whether a meeting's transcript files are what a finished rewrite left for the title it shows (§4.17).
+    public enum FilesState: Sendable, Equatable {
+        /// No transcript file: nothing to bring up to date.
+        case none
+        /// Every file is the one the record says was written last (no rewrite left halfway), and transcript.md is
+        /// headed by the meeting's title.
+        case current
+        /// Out of date: the record is missing, damaged, from a newer build or left mid-write (`pending`), a file is
+        /// missing or not the one it records, or the heading is another title.
+        case stale
+    }
+
+    /// The state of the transcript files, derived from the files themselves each time (whoever wrote them: a rename,
+    /// Review, a summary, a command in Terminal), for a meeting titled `title` (`MeetingNaming.title`). Nothing is
+    /// remembered between calls; `TranscriptFilesCache` saves reading unchanged files again.
+    public static func filesState(session: URL, title: String) -> FilesState {
+        guard hasTranscriptFiles(session: session) else { return .none }
+        guard let read = try? readRecordChecked(session: session), let record = read.record, !read.damaged,
+              record.pending == nil else { return .stale }
+        var markdown: Data?
+        for format in formats {
+            guard let data = try? AtomicFile.readIfPresent(SessionPaths.export(format.rawValue, in: session),
+                                                           maxBytes: maxExportBytes),
+                  record.files[fileName(format)] == sha256(data) else { return .stale }
+            if format == .md { markdown = data }
+        }
+        guard let markdown else { return .stale }
+        let firstLine = String(decoding: markdown.prefix { $0 != 0x0A }, as: UTF8.self)
+        return firstLine == TranscriptExporter.markdownHeading(title) ? .current : .stale
+    }
+
+    /// Whether the transcript files are exactly what a rewrite with the saved speaker labels (and these people's
+    /// names, Remember voices and own name) would write now: the check that a Review's failed rewrite
+    /// (`PendingExports`) was made up for by another writer since. Renders every format; false when anything cannot
+    /// be read.
+    public static func filesMatchLabels(session: URL, profileNames: [String: String], applyRecognition: Bool,
+                                        selfName: String) -> Bool {
+        do {
+            let snapshot = try SpeakerSessionSnapshot.load(session: session, profileNames: profileNames,
+                                                           applyRecognition: applyRecognition)
+            for entry in try renderAll(exportDocument(snapshot, selfName: selfName)) {
+                guard let existing = try AtomicFile.readIfPresent(SessionPaths.export(entry.format.rawValue,
+                                                                                      in: session),
+                                                                  maxBytes: maxExportBytes),
+                      existing == entry.data else { return false }
+            }
+            return true
+        } catch {
+            return false
+        }
     }
 
     /// Whether any transcript file this build writes (Markdown, JSON, text) is in the session's exports.

@@ -919,28 +919,23 @@ extension HolosAppDelegate: NSMenuDelegate {
 
     /// Runs a rename from Meetings as `voiceislocal session rename` (`MeetingRenameRun`), a child in its own session
     /// like the other maintenance commands, so quitting never cuts it between its writes. The meeting is registered as
-    /// in use meanwhile ("Renaming…"; one already in use is turned down with an alert), and marked as having transcript
-    /// files that may show an old title before it starts, so a quit before it ends leaves Update Transcript Files
-    /// offered; its result decides the mark afterwards.
+    /// in use meanwhile ("Renaming…"; one already in use is turned down with an alert). Nothing is remembered about it:
+    /// whether its transcript files are out of date afterwards is read from the files (the Meetings list's
+    /// `TranscriptFilesCache`), so a quit before it ends, or a rename in Terminal, shows the same way.
     func runRename(_ summary: SessionSummary, _ request: MeetingRenameRequest) {
         guard let controller = meeting.controller, let maintenance = meeting.maintenance else { return }
         guard controller.beginUsing(summary.id, for: "Renaming…") else {
             showSessionInUse(summary, doing: controller.sessionsInUse[summary.id])
             return
         }
-        let pending = PendingRenames()
-        let previous = pending.request(summary.id)
-        pending.mark(summary.id, request)
         let output = Self.temporaryFile("out")
         let errors = Self.temporaryFile("err")
         do {
             try maintenance.run(MeetingRenameRun.arguments(session: summary.directory, request: request),
                                 standardOutput: output, standardError: errors) { [weak self] code in
-                self?.renameEnded(summary, request, code: code, previous: previous, output: output, errors: errors)
+                self?.renameEnded(summary, code: code, output: output, errors: errors)
             }
         } catch {
-            // It never started: nothing changed.
-            pending.restore(summary.id, to: previous)
             controller.endUsing(summary.id)
             Self.removeFile(output)
             Self.removeFile(errors)
@@ -948,8 +943,7 @@ extension HolosAppDelegate: NSMenuDelegate {
         }
     }
 
-    private func renameEnded(_ summary: SessionSummary, _ request: MeetingRenameRequest, code: Int32,
-                             previous: MeetingRenameRequest?, output: URL, errors: URL) {
+    private func renameEnded(_ summary: SessionSummary, code: Int32, output: URL, errors: URL) {
         let outcome = (try? AtomicFile.readIfPresent(output, maxBytes: 1 << 20)).flatMap {
             $0.flatMap { try? HolosJSON.decoder().decode(SessionRenameCommand.Outcome.self, from: $0) }
         }
@@ -957,14 +951,8 @@ extension HolosAppDelegate: NSMenuDelegate {
             ?? "The rename command ended with code \(code)."
         Self.removeFile(output)
         Self.removeFile(errors)
-        let pending = PendingRenames()
-        switch outcome?.exitCode {
-        case 0?: pending.clear(summary.id)
-        // Nothing changed: as before the run.
-        case 1?: pending.restore(summary.id, to: previous)
-        // Partly done, or no result: the rename asked for stays, for Update Transcript Files.
-        default: pending.mark(summary.id, request)
-        }
+        // The files were rewritten from the saved speaker labels: a Review's earlier failed rewrite is made up for.
+        if outcome?.exportsUpdated == true { PendingExports().clear(summary.id) }
         meeting.controller?.endUsing(summary.id)
         refreshReviewTitle(summary.id)
         meeting.meetingsPane?.renameEnded(summary, outcome: outcome, failure: failure)

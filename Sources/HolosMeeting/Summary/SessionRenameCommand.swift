@@ -4,13 +4,16 @@ import HolosStorage
 import os
 
 /// What the Meetings list's rename editor (and its Use Generated Title) asks `SessionRenameCommand` for. Pure.
-public enum MeetingRenameRequest: Sendable, Equatable, Codable {
+public enum MeetingRenameRequest: Sendable, Equatable {
     /// The user's name, as typed.
     case user(String)
     /// The generated title again (`nameSource` `default`).
     case generated
 
     /// The name for `SessionRenameCommand.Request.name`: nil for the generated title.
+    ///
+    /// Update Transcript Files runs `retry` of the meeting as it is now: the command writes no name and rewrites the
+    /// files for the title shown and the saved labels.
     public var typedName: String? {
         if case .user(let name) = self { return name }
         return nil
@@ -58,86 +61,14 @@ public struct MeetingRenameEdit: Sendable, Equatable {
     }
 }
 
-/// Meetings renamed whose transcript files may still show an old title (docs/meeting-design.md §4.17), each with the
-/// rename asked for, so Update Transcript Files finishes exactly that (a partial `--generated` as `--generated`). Kept in
-/// UserDefaults by session ID; Meetings says so and offers Update Transcript Files, and clears it once the files show the
-/// title the meeting shows (`SessionExports.filesShowTitle`), whoever rewrote them.
-public struct PendingRenames {
-    public static let key = "meeting.renamePending"
-    private let defaults: UserDefaults
-
-    public init(defaults: UserDefaults = .standard) {
-        self.defaults = defaults
-    }
-
-    private var all: [String: MeetingRenameRequest] {
-        guard let data = defaults.data(forKey: Self.key),
-              let decoded = try? JSONDecoder().decode([String: MeetingRenameRequest].self, from: data) else { return [:] }
-        return decoded
-    }
-
-    private func store(_ all: [String: MeetingRenameRequest]) {
-        guard !all.isEmpty, let data = try? JSONEncoder().encode(all) else {
-            defaults.removeObject(forKey: Self.key)
-            return
-        }
-        defaults.set(data, forKey: Self.key)
-    }
-
-    public var sessionIDs: Set<String> { Set(all.keys) }
-
-    public func contains(_ sessionID: String) -> Bool { all[sessionID] != nil }
-
-    /// The rename asked for, while the meeting is marked.
-    public func request(_ sessionID: String) -> MeetingRenameRequest? { all[sessionID] }
-
-    public func mark(_ sessionID: String, _ request: MeetingRenameRequest) {
-        var all = all
-        all[sessionID] = request
-        store(all)
-    }
-
-    public func clear(_ sessionID: String) {
-        var all = all
-        guard all.removeValue(forKey: sessionID) != nil else { return }
-        store(all)
-    }
-
-    /// Puts back what was there before a run (`previous`; nil: no mark).
-    public func restore(_ sessionID: String, to previous: MeetingRenameRequest?) {
-        if let previous { mark(sessionID, previous) } else { clear(sessionID) }
-    }
-}
-
 /// How the app runs a rename: as `voiceislocal session rename`, a child in its own session like the other
-/// maintenance commands, so quitting the app never cuts it between its writes. The meeting is marked as having
-/// transcript files that may show an old title (`PendingRenames`, with the rename) before the command starts; the mark stays
-/// unless the command's result says otherwise (`staysMarked`), so a quit before it ends leaves Update Transcript Files
-/// offered after the next launch. Pure.
+/// maintenance commands, so quitting the app never cuts it between its writes. Nothing about it is remembered: whether
+/// the transcript files are out of date afterwards is read from the files (`SessionExports.filesState`). Pure.
 public enum MeetingRenameRun {
     /// The command's arguments: the session's path and the name after `--`, so a name starting with "-" is a name.
     public static func arguments(session: URL, request: MeetingRenameRequest) -> [String] {
         if let name = request.typedName { return ["session", "rename", "--json", "--", session.path, name] }
         return ["session", "rename", "--generated", "--json", "--", session.path]
-    }
-
-    /// Whether the meeting stays marked once the command ended: not after exit 0 (the files show the title), yes after
-    /// exit 3 (they do not); after exit 1 nothing was changed, so as before the run (`wasMarked`); without a result
-    /// (stopped, or it could not start) what it changed is not known, so yes.
-    /// What Update Transcript Files runs for `summary`: the rename asked for when the meeting was marked, else the
-    /// rename it has now (`MeetingRenameRequest.retry`).
-    public static func retry(_ summary: SessionSummary, pending: PendingRenames = PendingRenames())
-        -> MeetingRenameRequest {
-        pending.request(summary.id) ?? .retry(summary)
-    }
-
-    public static func staysMarked(outcome: SessionRenameCommand.Outcome?, wasMarked: Bool) -> Bool {
-        guard let outcome else { return true }
-        switch outcome.exitCode {
-        case 0: return false
-        case 1: return wasMarked
-        default: return true
-        }
     }
 }
 
@@ -173,6 +104,8 @@ public enum SessionRenameCommand {
         /// Tests: runs before each step that writes ("prepare", "write", "nameSource", "regenerate"), just before the
         /// folder is checked again.
         var beforeStep: (@Sendable (String) async -> Void)?
+        /// Tests: the manifest's name is written, then an error as if its folder could not be synced.
+        var failAfterNameWrite = false
         /// Tests: writes meeting.json's `nameSource` in place of `writeNameSource` (a write that fails).
         var nameSourceWriter: (@Sendable (MeetingNameSource, URL, MeetingInfo) throws -> Void)?
 
@@ -355,7 +288,7 @@ public enum SessionRenameCommand {
                 return refused(.busy, moved + "; nothing was changed. Try again.")
             }
             do {
-                try regenerate(session: session, request: request)
+                try regenerate(session: session, request: request, lease: lease)
                 return done(.unchanged, message, exports: true)
             } catch {
                 return done(.unchanged, message + " The transcript files were not rewritten: "
@@ -385,7 +318,7 @@ public enum SessionRenameCommand {
                     return refused(.busy, moved + "; nothing was changed. Try again.")
                 }
                 do {
-                    try regenerate(session: session, request: request)
+                    try regenerate(session: session, request: request, lease: lease)
                 } catch {
                     return refused(.failed, "Cannot prepare this meeting's transcript files for the new name, so its "
                         + "name was not changed: \(error.localizedDescription)")
@@ -399,6 +332,7 @@ public enum SessionRenameCommand {
         }
         do {
             try await writeName(target, manifest: manifest, meeting: meeting, session: session, lease: lease,
+                                failAfterNameWrite: request.failAfterNameWrite,
                                 check: {
                                     do {
                                         try await checkpoint("nameSource")
@@ -429,7 +363,7 @@ public enum SessionRenameCommand {
             return done(.renamed, message + " " + moved + ", so its transcript files were not rewritten.", code: 3)
         }
         do {
-            try regenerate(session: session, request: request)
+            try regenerate(session: session, request: request, lease: lease)
             return done(.renamed, message, exports: true)
         } catch {
             return done(.renamed, message + " The transcript files were not rewritten: \(error.localizedDescription)",
@@ -449,11 +383,22 @@ public enum SessionRenameCommand {
     /// source differ from what is asked, so they are written again). A `renamed` event is journaled.
     static func writeName(_ target: (name: String, source: MeetingNameSource), manifest: SessionManifest,
                           meeting: MeetingInfo, session: URL, lease: ProcessingLease,
+                          failAfterNameWrite: Bool = false,
                           check: () async throws -> Void = {},
                           nameSourceWriter: (MeetingNameSource, URL, MeetingInfo) throws -> Void) async throws {
         let archive = try SessionArchive.openForMaintenance(at: session, lease: lease)
         do {
-            try await archive.setName(target.name)
+            // A manifest write can fail after the new one is in place (its folder not synced): then the name is
+            // written, and the rest is still written; the rename ends as partial (exit 3), and the files, not
+            // rewritten, read as out of date (Update Transcript Files).
+            var unconfirmed: (any Error)?
+            do {
+                try await archive.setName(target.name)
+                if failAfterNameWrite { throw HolosError.io("Cannot sync the session folder.") }
+            } catch {
+                guard (try? SessionArchive.readManifest(at: session))?.name == target.name else { throw error }
+                unconfirmed = error
+            }
             // The folder is checked again before the second write (`check` throws `PartialRename` when it moved).
             try await check()
             do {
@@ -475,6 +420,11 @@ public enum SessionRenameCommand {
                                               details: ["nameSource": target.source.rawValue])
             } catch {
                 log.error("Session \(manifest.id, privacy: .public): rename not journaled: \(error.localizedDescription, privacy: .private)")
+            }
+            if let unconfirmed {
+                throw PartialRename(message: "The new name was saved, but saving it could not be confirmed "
+                    + "(\(unconfirmed.localizedDescription)), so the transcript files were not rewritten; choose "
+                    + "Update Transcript Files, or rename it again.")
             }
         } catch {
             await archive.releaseLock()
@@ -600,10 +550,13 @@ public enum SessionRenameCommand {
     /// held until the files are written, as `session summarize` does at its save, so a change to the people (Remember
     /// voices turned off, a rename) never lands between the read and the files; a summary that is current stays in
     /// them (its key is computed with the same names).
-    private static func regenerate(session: URL, request: Request) throws {
+    ///
+    /// Each write it makes is preceded by `lease.verify`: the folder must still be the one the lease locks.
+    private static func regenerate(session: URL, request: Request, lease: ProcessingLease) throws {
         func write(_ voice: SessionSummarizeCommand.VoiceInputs) throws {
             _ = try SessionExports.regenerateLocked(session: session, profileNames: voice.names,
-                                                    applyRecognition: voice.recognition, selfName: voice.selfName)
+                                                    applyRecognition: voice.recognition, selfName: voice.selfName,
+                                                    check: { try lease.verify(for: session) })
         }
         try SessionArchive.withSpeakerLock(at: session) {
             if let read = request.voiceInputs {

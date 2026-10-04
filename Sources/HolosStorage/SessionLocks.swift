@@ -69,6 +69,14 @@ public final class ProcessingLease: Sendable {
         return try await body()
     }
 
+    /// Checks, without running anything under it, that the lease is held and `directory` still opens to the folder it
+    /// was taken in (device and inode, as `withUse`); throws `HolosError.invalidInput` when not. For a caller that
+    /// checks again before each of several writes made by path.
+    public func verify(for directory: URL) throws {
+        try beginUse(for: directory)
+        endUse()
+    }
+
     /// Hands the lease to a child process without a moment in which the lock is free (the in-process recorder's
     /// hand-off to `voiceislocal session diarize --lease-fd 3`, docs/meeting-design.md §4.1). Calls `spawn` with a locked
     /// descriptor that shares the lease's open file description; `spawn` must make the child inherit it (for example
