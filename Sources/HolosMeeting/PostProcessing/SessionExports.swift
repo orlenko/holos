@@ -91,22 +91,25 @@ public enum SessionExports {
     /// were labelled (`transcriptChanged`). The head run's labels then name words of the earlier transcript, so the
     /// exports show the current transcript without speakers until speakers are labelled again; a newer transcript
     /// never disappears from them.
-    static func exportDocument(_ snapshot: SpeakerSessionSnapshot) throws -> ExportDocument {
+    static func exportDocument(_ snapshot: SpeakerSessionSnapshot, withSummary: Bool = true) throws -> ExportDocument {
         var document = snapshot.exportDocument()
         if snapshot.transcriptChanged, let current = try SessionFiles.currentTranscript(session: snapshot.session) {
             document.transcript = current
             document.run = nil
             document.projection = nil
         }
-        document.summary = exportSummary(snapshot)
+        if withSummary { document.summary = exportSummary(snapshot, key: MeetingSummaryKey(document)) }
         return document
     }
 
-    /// summary.json for the exports (docs/meeting-design.md §4.17), when one can be read; the exporter uses it only
-    /// for the transcript it was made from. Its title heads the Markdown export unless the user named the meeting.
-    static func exportSummary(_ snapshot: SpeakerSessionSnapshot) -> ExportSummary? {
+    /// summary.json for the exports (docs/meeting-design.md §4.17), when one can be read and is current (`key`: made
+    /// from this transcript with these speakers' names); otherwise the exports leave it out, so corrected speaker
+    /// labels never sit beside a summary made with the old ones. Its title heads the Markdown export unless the user
+    /// named the meeting.
+    static func exportSummary(_ snapshot: SpeakerSessionSnapshot, key: MeetingSummaryKey) -> ExportSummary? {
         guard let record = MeetingSummaryStore.readIfUsable(session: snapshot.session,
-                                                            sessionID: snapshot.manifest.id) else { return nil }
+                                                            sessionID: snapshot.manifest.id),
+              key.isCurrent(record) else { return nil }
         let source = MeetingNaming.source(stored: snapshot.meeting.nameSource, name: snapshot.manifest.name)
         return ExportSummary(transcriptID: record.transcriptID, title: record.title, summary: record.summary,
                              points: record.points, actions: record.actions,

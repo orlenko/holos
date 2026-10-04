@@ -36,17 +36,15 @@ public struct MeetingSummaryRecord: Codable, Sendable, Equatable {
     /// `createdAt` in milliseconds since 1970: JSON dates keep whole seconds, too coarse to tell a summary from a
     /// request made in the same second (`MeetingSummarySchedule.satisfied`).
     public var createdAtMilliseconds: Int64?
-    /// The speaker labels and people's names it was made with (`MeetingSummarySchedule.speakerStamp`), and a digest
-    /// of the names it used (`MeetingSummarySource.speakersDigest`): when the stamp changes, the summary is made again
-    /// if the names it would use changed, else only the stamp is updated.
-    public var speakerStamp: String?
-    public var speakersDigest: String?
+    /// The speakers' names it was made with (`MeetingSummaryKey.namesDigest`): with `transcriptID`, its key. It is
+    /// current only while that key is the meeting's (`MeetingSummaryKey.isCurrent`).
+    public var namesDigest: String?
 
     public init(schemaVersion: Int = currentVersion, sessionID: String, transcriptID: String, title: String,
                 summary: String, points: [String] = [], actions: [String] = [], model: String,
                 language: String? = nil, createdAt: Date = Date(), parts: Int? = nil, skippedParts: Int? = nil,
-                speakerStamp: String? = nil, speakersDigest: String? = nil) {
-        self.speakerStamp = speakerStamp; self.speakersDigest = speakersDigest
+                namesDigest: String? = nil) {
+        self.namesDigest = namesDigest
         createdAtMilliseconds = MeetingSummarySchedule.milliseconds(createdAt)
         self.schemaVersion = schemaVersion; self.sessionID = sessionID; self.transcriptID = transcriptID
         self.title = title; self.summary = summary; self.points = points; self.actions = actions
@@ -69,6 +67,52 @@ extension MeetingSummaryRecord: CustomStringConvertible, CustomDebugStringConver
         Mirror(self, children: ["sessionID": sessionID, "transcriptID": transcriptID, "points": points.count,
                                 "actions": actions.count, "model": model], displayStyle: .struct)
     }
+}
+
+/// What a summary is of: the transcript and the speakers' names as the exports show them (docs/meeting-design.md
+/// §4.17). A summary is current only while its stored key is the meeting's; then the exports carry it, and it is not
+/// made again. Computed the same way everywhere (the command, the exports, the app's scan), without the model.
+public struct MeetingSummaryKey: Sendable, Equatable {
+    public var transcriptID: String
+    /// A digest of every speaker's displayed label in the projection of `transcriptID` ("Alex", "Jim (auto)",
+    /// "Speaker 2"), by speaker ID: renames, links, merges, assignments, people renamed, and Remember voices
+    /// (automatic names) all change it. "none" without speaker labels for this transcript.
+    public var namesDigest: String
+
+    public init(transcriptID: String, namesDigest: String) {
+        self.transcriptID = transcriptID; self.namesDigest = namesDigest
+    }
+
+    /// The key of what `document` shows (the exports' document).
+    public init(_ document: ExportDocument) {
+        transcriptID = document.transcript.id
+        let projection = document.projection.flatMap { $0.transcriptID == document.transcript.id ? $0 : nil }
+        guard let projection else {
+            namesDigest = "none"
+            return
+        }
+        let text = projection.speakers.sorted { $0.id < $1.id }.map { "\($0.id)=\($0.label)" }
+            .joined(separator: "\u{1F}")
+        namesDigest = SHA256.hash(data: Data(text.utf8)).map { String(format: "%02x", $0) }.joined()
+    }
+
+    /// The meeting's key now, with people's names and Remember voices as the exports apply them; nil without a
+    /// readable transcript.
+    public static func load(session: URL, profileNames: [String: String], applyRecognition: Bool) -> MeetingSummaryKey? {
+        guard let snapshot = try? SpeakerSessionSnapshot.load(session: session, profileNames: profileNames,
+                                                              applyRecognition: applyRecognition),
+              let document = try? SessionExports.exportDocument(snapshot, withSummary: false) else { return nil }
+        return MeetingSummaryKey(document)
+    }
+
+    /// `record` is of this transcript and these names.
+    public func isCurrent(_ record: MeetingSummaryRecord?) -> Bool {
+        guard let record else { return false }
+        return record.transcriptID == transcriptID && record.namesDigest == namesDigest
+    }
+
+    /// One string, for the app's record of runs that failed.
+    public var text: String { transcriptID + "|" + namesDigest }
 }
 
 /// Reads and writes `summary.json`, and decides when a meeting needs one.
@@ -101,13 +145,6 @@ public enum MeetingSummaryStore {
     /// Replaces summary.json (0600). Callers hold the session's processing lease.
     static func write(_ record: MeetingSummaryRecord, session: URL) throws {
         try AtomicFile.writeJSON(record, to: SessionPaths.summary(session))
-    }
-
-    /// Whether a summary should be made for the current transcript `transcriptID`: there is one, and the record is
-    /// missing or of another transcript (or a new one was asked for, `force`).
-    public static func needsSummary(record: MeetingSummaryRecord?, transcriptID: String?, force: Bool = false) -> Bool {
-        guard transcriptID != nil else { return false }
-        return force || record?.transcriptID != transcriptID
     }
 
     /// The record, when it was made from `transcriptID` (the current transcript); nil when it is out of date.
@@ -181,15 +218,6 @@ public enum MeetingSummarySource {
 
     /// What a turn of nobody known is called in the prompt.
     static let unnamedSpeaker = "Someone"
-
-    /// A digest of the names the summary is made with: the speakers of its lines in the order they first speak, and
-    /// the people named.
-    public static func speakersDigest(_ input: MeetingSummaryInput) -> String {
-        var seen: Set<String> = []
-        let speakers = input.lines.map(\.speaker).filter { seen.insert($0).inserted }
-        let text = speakers.joined(separator: "\u{1F}") + "\u{1E}" + input.people.joined(separator: "\u{1F}")
-        return SHA256.hash(data: Data(text.utf8)).map { String(format: "%02x", $0) }.joined()
-    }
 
     /// The people a projection names (an explicit name, a linked or automatically matched person), most talk first;
     /// "Speaker 2" and the unnamed channel speaker ("Me") are not people.

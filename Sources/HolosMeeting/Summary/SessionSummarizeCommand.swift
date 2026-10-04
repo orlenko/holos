@@ -129,35 +129,11 @@ public enum SessionSummarizeCommand {
         guard let transcriptID else {
             return outcome(.noTranscript, "This meeting has no transcript to summarize.")
         }
-        // Who the summary names depends on the speaker labels and people's names as well as the transcript: their
-        // stamp now, compared with the one the summary was made with.
-        let stampNow = MeetingSummarySchedule.speakerStamp(
-            session: session,
-            voice: MeetingSummarySchedule.voiceStamp(names: request.profileNames,
-                                                     recognition: request.applyRecognition))
-        let transcriptCurrent = !MeetingSummaryStore.needsSummary(record: existing, transcriptID: transcriptID,
-                                                                  force: request.force)
-        if transcriptCurrent, let existing, existing.speakerStamp == stampNow {
-            // Up to date, unless the transcript files were not rewritten with it: that is done now, checked again at
-            // the save like any summary (labels and names unchanged).
-            if existing.exportsPending == true {
-                return await save(existing, request: request, transcriptID: transcriptID,
-                                  speakers: speakerRevision(session),
-                                  message: "Rewrote the transcript files with the summary.") {
-                    outcome($0, $1, transcriptID: $2, code: $3)
-                }
-            }
-            var done = outcome(.current, "The summary is up to date.", transcriptID: transcriptID, code: 0)
-            done.summary = existing
-            return done
-        }
-        // Otherwise the labels or names changed since (with the transcript files written or not): whether the
-        // summary's names did is known once they are read; a summary is never re-exported with old names.
-
         // What to summarize: the transcript the exports show, with speaker names. The speaker labels it was read with
         // are noted, so a summary made while they changed (a rename in Terminal) is not saved with the old names.
         let speakers = speakerRevision(session)
         let input: MeetingSummaryInput
+        let key: MeetingSummaryKey
         do {
             let snapshot = try SpeakerSessionSnapshot.load(session: session, profileNames: request.profileNames,
                                                            applyRecognition: request.applyRecognition)
@@ -167,19 +143,23 @@ public enum SessionSummarizeCommand {
                                transcriptID: transcriptID)
             }
             input = MeetingSummarySource.input(document: document, selfName: request.selfName)
+            key = MeetingSummaryKey(document)
         } catch {
             return outcome(.failed, "Cannot read the transcript: \(error.localizedDescription)",
                            transcriptID: transcriptID)
         }
-        let digest = MeetingSummarySource.speakersDigest(input)
-        if transcriptCurrent, var existing {
-            // The labels changed but not the names the summary was made with (a relabel that kept them): it stays,
-            // noted with the new stamp. Otherwise it is made again with the names as they are now.
-            if existing.speakersDigest == digest {
-                existing.speakerStamp = stampNow
+        // Current (the transcript and the speakers' names it was made with): kept, unless its transcript files were
+        // not rewritten with it, which is done now, checked again at the save like any summary.
+        if !request.force, let existing, key.isCurrent(existing) {
+            if existing.exportsPending == true {
                 return await save(existing, request: request, transcriptID: transcriptID, speakers: speakers,
-                                  message: "The summary is up to date.") { outcome($0, $1, transcriptID: $2, code: $3) }
+                                  message: "Rewrote the transcript files with the summary.") {
+                    outcome($0, $1, transcriptID: $2, code: $3)
+                }
             }
+            var done = outcome(.current, "The summary is up to date.", transcriptID: transcriptID, code: 0)
+            done.summary = existing
+            return done
         }
         let summaryModel: MeetingSummaryModel
         switch model(input.language) {
@@ -213,8 +193,7 @@ public enum SessionSummarizeCommand {
         let record = MeetingSummaryRecord(
             sessionID: id, transcriptID: transcriptID, title: made.draft.title, summary: made.draft.summary,
             points: made.draft.points, actions: made.draft.actions, model: summaryModel.name, language: input.language,
-            parts: made.stats.parts, skippedParts: made.stats.skippedParts, speakerStamp: stampNow,
-            speakersDigest: digest)
+            parts: made.stats.parts, skippedParts: made.stats.skippedParts, namesDigest: key.namesDigest)
 
         // A cancellation that came while the model answered writes nothing.
         if Task.isCancelled {

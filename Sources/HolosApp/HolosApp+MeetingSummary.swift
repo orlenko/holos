@@ -24,8 +24,8 @@ final class MeetingSummaryAppState {
 
     /// The meeting summarized now and the child's pid (0 while it starts).
     var running: (sessionID: String, pid: Int32)?
-    /// The transcript each meeting was last tried with when no summary came of it for good (failed, unavailable),
-    /// so it is not tried again until its transcript changes; kept until the app quits.
+    /// The key (transcript and speakers' names) each meeting was last tried with when no summary came of it (failed),
+    /// so it is not tried again until that key changes; kept until the app quits.
     var attempted: [String: String] = [:]
     /// Meetings refused for now (busy, transcript changed, stopped for a meeting): skipped until then.
     var delayedUntil: [String: Date] = [:]
@@ -158,10 +158,9 @@ extension HolosAppDelegate {
             let candidates = await Task.detached { () -> [MeetingSummarySchedule.Candidate] in
                 // People's names and Remember voices, once per scan: a summary whose names changed is made again.
                 let store = SpeakerProfileStore()
-                let voice = MeetingSummarySchedule.voiceStamp(
-                    names: VoiceProfileService.profileNames(store: store),
-                    recognition: VoiceProfileService.recognitionAllowed(store: store))
-                return MeetingSummarySchedule.scan(root: root, voiceStamp: voice)
+                return MeetingSummarySchedule.scan(root: root,
+                                                   profileNames: VoiceProfileService.profileNames(store: store),
+                                                   recognition: VoiceProfileService.recognitionAllowed(store: store))
             }.value
             guard let self else { return }
             self.meeting.summaries.scanning = false
@@ -202,7 +201,9 @@ extension HolosAppDelegate {
             now: now)
         guard case .run(let sessionID, let path, let force) = MeetingSummarySchedule.next(candidates, situation)
         else { return }
-        let transcriptID = candidates.first { $0.sessionID == sessionID }?.transcriptID
+        // A failure is remembered by the meeting's key (transcript and speakers' names): either changing makes it
+        // due again.
+        let key = candidates.first { $0.sessionID == sessionID }?.key
         // Marked running before the meeting is taken: taking it schedules again (`onSessionsInUseChanged`), which must
         // then see a summary running and start nothing else. The meeting is held for the whole run, as for a final
         // transcript, so Review and the meeting's commands wait and its speaker labels cannot change under it.
@@ -217,8 +218,7 @@ extension HolosAppDelegate {
         do {
             let pid = try maintenance.run(["session", "summarize", path, "--json"] + (force ? ["--force"] : []),
                                           standardOutput: output, standardError: errors) { [weak self] code in
-                self?.meetingSummaryEnded(sessionID, transcriptID: transcriptID, code: code, output: output,
-                                          errors: errors)
+                self?.meetingSummaryEnded(sessionID, key: key, code: code, output: output, errors: errors)
             }
             meeting.summaries.running = (sessionID, pid)
             Self.summaryLog.notice("Summary of \(sessionID, privacy: .public) started")
@@ -233,8 +233,7 @@ extension HolosAppDelegate {
         meeting.meetingsPane?.update(summarizing: meeting.summaries.running?.sessionID)
     }
 
-    private func meetingSummaryEnded(_ sessionID: String, transcriptID: String?, code: Int32, output: URL,
-                                     errors: URL) {
+    private func meetingSummaryEnded(_ sessionID: String, key: String?, code: Int32, output: URL, errors: URL) {
         let outcome = (try? AtomicFile.readIfPresent(output, maxBytes: 4 << 20)).flatMap {
             $0.flatMap { try? HolosJSON.decoder().decode(SummaryOutcome.self, from: $0) }
         }
@@ -260,9 +259,9 @@ extension HolosAppDelegate {
                 // Saved, but its transcript files were not rewritten (`exportsPending`): rewritten later, without the
                 // model, after a delay.
                 meeting.summaries.delayedUntil[sessionID] = Date().addingTimeInterval(300)
-            } else if code != 0, let transcriptID {
-                // A failure is not tried again automatically for this transcript.
-                meeting.summaries.attempted[sessionID] = transcriptID
+            } else if code != 0, let key {
+                // A failure is not tried again automatically for this transcript and these names.
+                meeting.summaries.attempted[sessionID] = key
             }
             // Asked for from the meeting's menu and not made: the user is told why (as Make Final Transcript Now),
             // for example a language Apple Intelligence does not support.

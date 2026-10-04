@@ -4998,14 +4998,18 @@ and repeats dropped, at most five each, a key point that repeats an action item 
 or an empty title or summary fails the run, and nothing is written.
 
 **When.** `voiceislocal session summarize <session> [--force] [--json]` makes one when
-summary.json is missing or of another transcript, or with `--force`. A summary also records the
-speaker labels and people's names it was made with (`speakerStamp`: head and edit journal,
-people's names and Remember voices) and a digest of the names it used (`speakersDigest`): when
-the stamp changed (Review, `speakers rename/link/assign/merge`, a person renamed), the command
-reads the names again and makes the summary again if they changed, else only notes the new
-stamp, without the model. Transcript files left without their summary are rewritten only while
-the stamp is unchanged; otherwise the names are checked first, so a summary is never re-exported
-with old names. The app's scan compares the stamp too; exit 0 when written or up
+summary.json is not current, or with `--force`. Currency is one key (`MeetingSummaryKey`): the
+transcript ID and `namesDigest`, a digest of every speaker's displayed label in the exports'
+projection of that transcript (renames, links, merges, assignments, people renamed, and Remember
+voices' automatic names all change it; "none" without labels). summary.json stores it; a summary
+is current only while its key is the meeting's, computed the same way by the command, the exports
+and the app's scan (no model; the scan caches it per meeting until the transcript, the speaker
+files, or people's names change). The exports (also those rewritten after a speaker edit) carry
+the summary only while it is current, so corrected labels never sit beside a summary made with
+the old ones. Only a current summary with its transcript files left to write is export-only
+work; anything else is model work under every rule (setting, model, battery, failed attempts,
+which are remembered by the full key). A Summarize Again request whose summary is current with
+files pending only gets them rewritten; any other runs forced. Exit 0 when written or up
 to date, 3 when written but the transcript files could not be rewritten, 1 otherwise, with
 `status` in the JSON (`written`, `current`, `noTranscript`, `unavailable`, `busy`, `changed`,
 `failed`, `cancelled`). A session that was not finished properly (manifest recording, processing

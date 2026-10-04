@@ -334,13 +334,16 @@ private func input(_ lines: [MeetingSummaryLine]) -> MeetingSummaryInput {
 
 // MARK: - When a summary is made
 
-@Test func aSummaryIsMadeOnlyForANewTranscript() {
-    let record = MeetingSummaryRecord(sessionID: "S", transcriptID: "T1", title: "t", summary: "s", model: "fake")
-    #expect(MeetingSummaryStore.needsSummary(record: nil, transcriptID: "T1"))
-    #expect(!MeetingSummaryStore.needsSummary(record: record, transcriptID: "T1"))
-    #expect(MeetingSummaryStore.needsSummary(record: record, transcriptID: "T2"))
-    #expect(MeetingSummaryStore.needsSummary(record: record, transcriptID: "T1", force: true))
-    #expect(!MeetingSummaryStore.needsSummary(record: nil, transcriptID: nil, force: true))
+@Test func aSummaryIsCurrentOnlyForItsTranscriptAndNames() {
+    let record = MeetingSummaryRecord(sessionID: "S", transcriptID: "T1", title: "t", summary: "s", model: "fake",
+                                      namesDigest: "N1")
+    #expect(MeetingSummaryKey(transcriptID: "T1", namesDigest: "N1").isCurrent(record))
+    #expect(!MeetingSummaryKey(transcriptID: "T2", namesDigest: "N1").isCurrent(record))
+    #expect(!MeetingSummaryKey(transcriptID: "T1", namesDigest: "N2").isCurrent(record))
+    #expect(!MeetingSummaryKey(transcriptID: "T1", namesDigest: "N1").isCurrent(nil))
+    var older = record
+    older.namesDigest = nil
+    #expect(!MeetingSummaryKey(transcriptID: "T1", namesDigest: "N1").isCurrent(older))
     #expect(MeetingSummaryStore.current(record, transcriptID: "T2") == nil)
 }
 
@@ -1041,24 +1044,77 @@ private func trackDocument(source: AudioSource) -> ExportDocument {
         await SessionSummarizeCommand.run(request) { _ in .available(scripted.model()) }
     }
     #expect(await summarize().status == .written)
-    let voice = MeetingSummarySchedule.voiceStamp(names: [:], recognition: true)
-    #expect(MeetingSummarySchedule.scan(root: temp.url, voiceStamp: voice).first?.needsSummary == false)
+    #expect(MeetingSummarySchedule.scan(root: temp.url).first?.needsSummary == false)
     #expect(await summarize().status == .current)
     #expect(scripted.summaryCalls.value.count == 1)
 
-    // An edit that changes no name: noted, not made again.
+    // An edit that changes no name: still current, not made again.
     try SessionFixtures.appendEdits([.excludeFromEnrollment(turnIDs: ["T1"])], session: session)
-    #expect(MeetingSummarySchedule.scan(root: temp.url, voiceStamp: voice).first?.needsSummary == true)
-    _ = await summarize()
+    #expect(MeetingSummarySchedule.scan(root: temp.url).first?.needsSummary == false)
+    #expect(await summarize().status == .current)
     #expect(scripted.summaryCalls.value.count == 1)
-    #expect(MeetingSummarySchedule.scan(root: temp.url, voiceStamp: voice).first?.needsSummary == false)
 
-    // A rename: made again with the new name.
+    // A rename: not current (the exports leave it out), so it is made again with the new name.
     try SessionFixtures.appendEdits([.rename(speakerID: first.id, name: "Kim")], session: session)
-    #expect(MeetingSummarySchedule.scan(root: temp.url, voiceStamp: voice).first?.needsSummary == true)
+    let stale = try #require(MeetingSummarySchedule.scan(root: temp.url).first)
+    #expect(stale.needsSummary)
+    #expect(!stale.onlyExportsPending)
     #expect(await summarize().status == .written)
     #expect(scripted.summaryCalls.value.count == 2)
     #expect(scripted.summaryCalls.value.last?.prompt.contains("Kim: ") == true)
+}
+
+@Test func exportsLeaveOutASummaryMadeWithOtherNames() async throws {
+    let temp = try TemporaryDirectory("summary")
+    defer { temp.remove() }
+    let (session, _, run) = try await SessionFixtures.labelledSession(in: temp.url, track: "mic")
+    let first = try #require(run.speakers.first)
+    _ = await SessionSummarizeCommand.run(SessionSummarizeCommand.Request(session: session)) { _ in
+        .available(ScriptedSummaryModel().model())
+    }
+    #expect(SessionFixtures.text(SessionPaths.export("md", in: session)).contains("## Summary"))
+    // A rename regenerates the exports (as Review and `speakers rename` do): the summary of the old names drops out.
+    try SessionFixtures.appendEdits([.rename(speakerID: first.id, name: "Kim")], session: session)
+    try SessionExports.regenerate(session: session)
+    #expect(!SessionFixtures.text(SessionPaths.export("md", in: session)).contains("## Summary"))
+    #expect(!SessionFixtures.text(SessionPaths.export("json", in: session)).contains("\"summary\" : {"))
+}
+
+@Test func staleSummaryWithPendingFilesIsModelWork() {
+    // Made with other names, its files never written: model work, under every filter.
+    let stale = MeetingSummarySchedule.Candidate(sessionID: "a", path: "/a.holos", createdAt: scheduleNow,
+                                                 transcriptID: "T", summaryTranscriptID: "T", idle: true,
+                                                 exportsPending: true, summaryCurrent: false, key: "T|N2")
+    #expect(stale.needsSummary)
+    #expect(!stale.onlyExportsPending)
+    #expect(MeetingSummarySchedule.next([stale], situation(enabled: false)) == .wait)
+    #expect(MeetingSummarySchedule.next([stale], situation(available: false)) == .wait)
+    #expect(MeetingSummarySchedule.next([stale], situation(attempted: ["a": "T|N2"])) == .wait)
+    #expect(MeetingSummarySchedule.next([stale], situation()) == .run(sessionID: "a", path: "/a.holos", force: false))
+}
+
+@Test func failedAttemptsAreRememberedByTheFullKey() {
+    let renamed = MeetingSummarySchedule.Candidate(sessionID: "a", path: "/a.holos", createdAt: scheduleNow,
+                                                   transcriptID: "T", summaryTranscriptID: "T", idle: true,
+                                                   summaryCurrent: false, key: "T|N3")
+    // A failure with the earlier names does not hold back the same transcript with new ones.
+    #expect(MeetingSummarySchedule.next([renamed], situation(attempted: ["a": "T|N2"]))
+        == .run(sessionID: "a", path: "/a.holos", force: false))
+    #expect(MeetingSummarySchedule.next([renamed], situation(attempted: ["a": "T|N3"])) == .wait)
+}
+
+@Test func aRequestWithACurrentSummaryAndPendingFilesOnlyRewritesThem() {
+    let pending = MeetingSummarySchedule.Candidate(sessionID: "a", path: "/a.holos", createdAt: scheduleNow,
+                                                   transcriptID: "T", summaryTranscriptID: "T", idle: true,
+                                                   exportsPending: true, summaryCurrent: true)
+    #expect(MeetingSummarySchedule.next([pending], situation(requested: ["a"]))
+        == .run(sessionID: "a", path: "/a.holos", force: false))
+    // Without pending files a request is forced, as asked.
+    let current = MeetingSummarySchedule.Candidate(sessionID: "a", path: "/a.holos", createdAt: scheduleNow,
+                                                   transcriptID: "T", summaryTranscriptID: "T", idle: true,
+                                                   summaryCurrent: true)
+    #expect(MeetingSummarySchedule.next([current], situation(requested: ["a"]))
+        == .run(sessionID: "a", path: "/a.holos", force: true))
 }
 
 @Test func aVeryLongNameIsCappedBeforeTheBudget() async throws {
