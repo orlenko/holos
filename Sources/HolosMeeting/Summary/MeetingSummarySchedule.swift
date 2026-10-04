@@ -123,7 +123,7 @@ public enum MeetingSummarySchedule {
                     && !situation.finalTranscriptQueued.contains(candidate.sessionID)
                     && (candidate.onlyExportsPending
                         || situation.attempted[candidate.sessionID] != candidate.transcriptID)
-                    && (!situation.onBattery
+                    && (!situation.onBattery || candidate.onlyExportsPending
                         || situation.now.timeIntervalSince(candidate.createdAt) <= recentOnBattery)
             }
             .sorted { $0.createdAt != $1.createdAt ? $0.createdAt > $1.createdAt : $0.sessionID < $1.sessionID }

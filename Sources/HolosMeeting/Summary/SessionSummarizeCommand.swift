@@ -137,21 +137,22 @@ public enum SessionSummarizeCommand {
                                                      recognition: request.applyRecognition))
         let transcriptCurrent = !MeetingSummaryStore.needsSummary(record: existing, transcriptID: transcriptID,
                                                                   force: request.force)
-        if transcriptCurrent, let existing {
-            // Up to date, unless the transcript files were not rewritten with it: that is done now.
+        if transcriptCurrent, let existing, existing.speakerStamp == stampNow {
+            // Up to date, unless the transcript files were not rewritten with it: that is done now, checked again at
+            // the save like any summary (labels and names unchanged).
             if existing.exportsPending == true {
                 return await save(existing, request: request, transcriptID: transcriptID,
+                                  speakers: speakerRevision(session),
                                   message: "Rewrote the transcript files with the summary.") {
                     outcome($0, $1, transcriptID: $2, code: $3)
                 }
             }
-            if existing.speakerStamp == stampNow {
-                var done = outcome(.current, "The summary is up to date.", transcriptID: transcriptID, code: 0)
-                done.summary = existing
-                return done
-            }
-            // The labels or names changed since: whether the summary's names did is known once they are read.
+            var done = outcome(.current, "The summary is up to date.", transcriptID: transcriptID, code: 0)
+            done.summary = existing
+            return done
         }
+        // Otherwise the labels or names changed since (with the transcript files written or not): whether the
+        // summary's names did is known once they are read; a summary is never re-exported with old names.
 
         // What to summarize: the transcript the exports show, with speaker names. The speaker labels it was read with
         // are noted, so a summary made while they changed (a rename in Terminal) is not saved with the old names.

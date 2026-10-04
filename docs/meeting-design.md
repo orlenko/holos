@@ -5003,7 +5003,9 @@ speaker labels and people's names it was made with (`speakerStamp`: head and edi
 people's names and Remember voices) and a digest of the names it used (`speakersDigest`): when
 the stamp changed (Review, `speakers rename/link/assign/merge`, a person renamed), the command
 reads the names again and makes the summary again if they changed, else only notes the new
-stamp, without the model. The app's scan compares the stamp too; exit 0 when written or up
+stamp, without the model. Transcript files left without their summary are rewritten only while
+the stamp is unchanged; otherwise the names are checked first, so a summary is never re-exported
+with old names. The app's scan compares the stamp too; exit 0 when written or up
 to date, 3 when written but the transcript files could not be rewritten, 1 otherwise, with
 `status` in the JSON (`written`, `current`, `noTranscript`, `unavailable`, `busy`, `changed`,
 `failed`, `cancelled`). A session that was not finished properly (manifest recording, processing
@@ -5055,7 +5057,9 @@ final transcript, or a summary another app process started), or for a meeting in
 review; a final transcript likewise waits for a summary. A run going on when a meeting starts
 is stopped (SIGTERM; nothing is written) and made again a minute later. `busy`, `changed` and
 `cancelled` are tried again a minute later; a failure is not tried again for that transcript
-until the app starts again. On battery only meetings from the last two days are summarized. A
+until the app starts again. On battery only meetings from the last two days are summarized (transcript files left without
+their summary are rewritten whatever their age: no model call). A scan that ends after a
+reconciliation began starts nothing; the next one does. A
 meeting's menu offers Summarize (Again), which runs with `--force`, also with the setting off;
 the request is saved and stays until it ends for good (written, up to date, failed, unavailable)
 or Cancel Summarize drops it, so a request that had to wait runs later. Each keeps when it was

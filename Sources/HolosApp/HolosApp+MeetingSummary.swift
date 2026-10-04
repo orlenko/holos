@@ -170,8 +170,10 @@ extension HolosAppDelegate {
     }
 
     private func startNextMeetingSummary(_ candidates: [MeetingSummarySchedule.Candidate]) {
+        // A reconciliation that began while the folder was scanned holds summaries back; the next look starts one.
         guard let controller = meeting.controller, let maintenance = meeting.maintenance,
-              meeting.summaries.running == nil else { return }
+              meeting.summaries.running == nil, meeting.summaries.launchReady,
+              meeting.summaries.reconciling == 0 else { return }
         let now = Date()
         meeting.summaries.delayedUntil = meeting.summaries.delayedUntil.filter { $0.value > now }
         // A request for a meeting that is gone is dropped, and so is one a summary made since already answers (a

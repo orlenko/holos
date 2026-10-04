@@ -1099,6 +1099,36 @@ private func trackDocument(source: AudioSource) -> ExportDocument {
     #expect(decoded.id == "S")
 }
 
+@Test func pendingTranscriptFilesAreNotRewrittenWithOldNames() async throws {
+    let temp = try TemporaryDirectory("summary")
+    defer { temp.remove() }
+    let (session, _, run) = try await SessionFixtures.labelledSession(in: temp.url, track: "mic")
+    let first = try #require(run.speakers.first)
+    let exports = SessionPaths.exports(session)
+    try? FileManager.default.removeItem(at: exports)
+    #expect(FileManager.default.createFile(atPath: exports.path, contents: Data("x".utf8)))
+    let scripted = ScriptedSummaryModel()
+    let request = SessionSummarizeCommand.Request(session: session)
+    #expect(await SessionSummarizeCommand.run(request) { _ in .available(scripted.model()) }.exitCode == 3)
+    try FileManager.default.removeItem(at: exports)
+    // A rename before the retry: the summary is made again with the new name, not re-exported with the old one.
+    try SessionFixtures.appendEdits([.rename(speakerID: first.id, name: "Kim")], session: session)
+    let again = await SessionSummarizeCommand.run(request) { _ in .available(scripted.model()) }
+    #expect(again.status == .written)
+    #expect(scripted.summaryCalls.value.count == 2)
+    #expect(scripted.summaryCalls.value.last?.prompt.contains("Kim: ") == true)
+    #expect(again.summary?.exportsPending == nil)
+}
+
+@Test func exportOnlyRetriesRunOnBatteryForOldMeetings() {
+    let old = MeetingSummarySchedule.Candidate(sessionID: "a", path: "/a.holos",
+                                               createdAt: scheduleNow.addingTimeInterval(-30 * 86_400),
+                                               transcriptID: "T", summaryTranscriptID: "T", idle: true,
+                                               exportsPending: true)
+    #expect(MeetingSummarySchedule.next([old], situation(battery: true))
+        == .run(sessionID: "a", path: "/a.holos", force: false))
+}
+
 @Test func aNameTheUserGaveIsTheirsWhateverItLooksLike() throws {
     let root = URL(fileURLWithPath: "/tmp/sessions")
     var typed = MeetingStartSettings(name: "Meeting 2026-10-03 14:00", source: .microphone)
