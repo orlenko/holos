@@ -212,7 +212,9 @@ public enum SessionRenameCommand {
         let currentSource = MeetingNaming.source(
             stored: meeting.nameSource, name: manifest.name,
             importedFileName: meeting.origin == .imported ? meeting.importedFileName : nil)
-        let generated = MeetingSummaryStore.readIfUsable(session: session, sessionID: id)?.title
+        // The generated title the meeting can show: one of a summary of the current transcript (`MeetingNaming.title`,
+        // the rule the list and the transcript files' heading follow), read with the transcript below.
+        var generated: String?
         func done(_ status: Status, _ message: String, exports: Bool = false, code: Int32 = 0) -> Outcome {
             Outcome(sessionID: id, status: status, name: target.name, nameSource: target.source,
                     title: MeetingNaming.displayTitle(name: target.name, source: target.source,
@@ -226,12 +228,15 @@ public enum SessionRenameCommand {
 
         // The transcript files must follow the name, so a transcript that is there but cannot be read refuses the
         // rename rather than leaving them with the old title.
-        let hasTranscript: Bool
+        let transcriptID: String?
         do {
-            hasTranscript = try SessionFiles.currentTranscript(session: session) != nil
+            transcriptID = try SessionFiles.currentTranscript(session: session)?.id
         } catch {
             return transcriptRefusal(error, id: id)
         }
+        let hasTranscript = transcriptID != nil
+        generated = MeetingSummaryStore.current(MeetingSummaryStore.readIfUsable(session: session, sessionID: id),
+                                                transcriptID: transcriptID)?.title
         let inputs = Result { try request.voiceInputs() }
         if unchanged {
             let message = target.source.isUser ? "The meeting already has this name."
@@ -391,9 +396,11 @@ public enum SessionRenameCommand {
                            + "later: " + error.localizedDescription, exitCode: 1)
     }
 
-    /// exports/transcript.md or transcript.txt is there.
+    /// Any of the transcript files `SessionExports` writes (Markdown, JSON, text) is there.
     static func hasExportFiles(_ session: URL) -> Bool {
-        ["md", "txt"].contains { FileManager.default.fileExists(atPath: SessionPaths.export($0, in: session).path) }
+        SessionExports.formats.contains {
+            FileManager.default.fileExists(atPath: SessionPaths.export($0.rawValue, in: session).path)
+        }
     }
 
     /// Why the meeting cannot be renamed now, or nil: it records or saves, or a final transcript or a summary of it is

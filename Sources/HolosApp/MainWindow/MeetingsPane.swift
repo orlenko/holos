@@ -1191,6 +1191,8 @@ final class MeetingRowView: NSTableCellView, NSTextFieldDelegate {
     private var onCancel: (() -> Void)?
     var isRenaming: Bool { onCommit != nil }
     private weak var header: NSStackView?
+    /// Pushes the badges to the right; hidden while renaming, so the editor alone spans the line.
+    private let spacer = NSView()
     /// The editor spans the title line while it shows (set when it is attached to the line).
     private var editorWidth: NSLayoutConstraint?
 
@@ -1229,7 +1231,7 @@ final class MeetingRowView: NSTableCellView, NSTextFieldDelegate {
         editor.toolTip = "Return saves the name, Escape cancels. Leave it empty to use the title Apple Intelligence "
             + "wrote."
         editor.setContentHuggingPriority(.defaultLow, for: .horizontal)
-        let header = NSStackView(views: [title, editor, NSView(), badges])
+        let header = NSStackView(views: [title, editor, spacer, badges])
         header.spacing = 6
         header.alignment = .centerY
         self.header = header
@@ -1310,6 +1312,7 @@ final class MeetingRowView: NSTableCellView, NSTextFieldDelegate {
         editor.placeholderString = placeholder
         title.isHidden = true
         badges.isHidden = true
+        spacer.isHidden = true
         editor.isHidden = false
         if editorWidth == nil, let header {
             editorWidth = editor.widthAnchor.constraint(equalTo: header.widthAnchor)
@@ -1327,6 +1330,7 @@ final class MeetingRowView: NSTableCellView, NSTextFieldDelegate {
         editor.isHidden = true
         title.isHidden = false
         badges.isHidden = false
+        spacer.isHidden = false
     }
 
     /// A row scrolled away while it was renamed is cancelled before the view shows another meeting.

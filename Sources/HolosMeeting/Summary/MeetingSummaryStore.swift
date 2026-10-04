@@ -230,7 +230,17 @@ public enum MeetingNaming {
         return .user
     }
 
-    /// What the Meetings list shows: the user's name, else the generated title, else the name.
+    /// A meeting's title, the one rule the Meetings list, Review, the rename command and the Markdown heading follow:
+    /// the user's name, else the title of a summary made from the current transcript (`transcriptID`), else the name
+    /// (the default one). A summary of an earlier transcript (a final transcript replaced it) gives no title until it
+    /// is made again, since the transcript files cannot carry it.
+    public static func title(name: String, source: MeetingNameSource, summary: MeetingSummaryRecord?,
+                             transcriptID: String?) -> String {
+        displayTitle(name: name, source: source,
+                     generatedTitle: MeetingSummaryStore.current(summary, transcriptID: transcriptID)?.title)
+    }
+
+    /// The user's name, else `generatedTitle`, else the name (`title` decides which generated title counts).
     public static func displayTitle(name: String, source: MeetingNameSource, generatedTitle: String?) -> String {
         if source.isUser { return name }
         if let generatedTitle, !generatedTitle.isEmpty { return generatedTitle }
@@ -276,9 +286,9 @@ public enum MeetingNaming {
         return MeetingStartSettings.defaultName(now: createdAt, timeZone: timeZone)
     }
 
-    /// The title a meeting shows now (`displayTitle`), read from its folder: the manifest's name, meeting.json's
-    /// `nameSource` (unknown when meeting.json cannot be read: the user's), and summary.json's title. Nil without a
-    /// readable manifest. For windows that show a meeting outside the list (Review).
+    /// The title a meeting shows now (`title`), read from its folder: the manifest's name, meeting.json's
+    /// `nameSource` (unknown when meeting.json cannot be read: the user's), summary.json and the current transcript's
+    /// ID. Nil without a readable manifest. For windows that show a meeting outside the list (Review).
     public static func currentTitle(session: URL) -> String? {
         guard let manifest = try? SessionArchive.readManifest(at: session) else { return nil }
         let meeting = try? SessionFiles.meetingInfo(session: session, manifest: manifest)
@@ -286,9 +296,10 @@ public enum MeetingNaming {
             MeetingNaming.source(stored: $0.nameSource, name: manifest.name,
                                  importedFileName: $0.origin == .imported ? $0.importedFileName : nil)
         } ?? .user
-        return displayTitle(name: manifest.name, source: source,
-                            generatedTitle: MeetingSummaryStore.readIfUsable(session: session,
-                                                                             sessionID: manifest.id)?.title)
+        // The pointer alone (no revision read): this runs every 2 s for each open review window.
+        return title(name: manifest.name, source: source,
+                     summary: MeetingSummaryStore.readIfUsable(session: session, sessionID: manifest.id),
+                     transcriptID: try? SessionArchive.currentTranscriptID(at: session))
     }
 }
 

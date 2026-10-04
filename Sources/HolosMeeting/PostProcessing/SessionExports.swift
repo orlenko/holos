@@ -106,8 +106,22 @@ public enum SessionExports {
         if withSummary {
             let selfName = selfName ?? VoiceProfileService.ownName()
             document.summary = exportSummary(snapshot, key: MeetingSummaryKey(document, selfName: selfName))
+            // The heading follows the rule the Meetings list does (`MeetingNaming.title`): the title of a summary of
+            // this transcript heads the files also while its text is left out (made with other speaker names).
+            document.heading = MeetingNaming.title(
+                name: snapshot.manifest.name, source: nameSource(snapshot),
+                summary: MeetingSummaryStore.readIfUsable(session: snapshot.session, sessionID: snapshot.manifest.id),
+                transcriptID: document.transcript.id)
         }
         return document
+    }
+
+    /// Where the meeting's name came from; a damaged meeting.json leaves it unknown: the user's, so no generated title
+    /// replaces it.
+    static func nameSource(_ snapshot: SpeakerSessionSnapshot) -> MeetingNameSource {
+        snapshot.meetingInfoDamaged ? .user : MeetingNaming.source(
+            stored: snapshot.meeting.nameSource, name: snapshot.manifest.name,
+            importedFileName: snapshot.meeting.origin == .imported ? snapshot.meeting.importedFileName : nil)
     }
 
     /// summary.json for the exports (docs/meeting-design.md §4.17), when one can be read and is current (`key`: made
@@ -118,10 +132,7 @@ public enum SessionExports {
         guard let record = MeetingSummaryStore.readIfUsable(session: snapshot.session,
                                                             sessionID: snapshot.manifest.id),
               key.isCurrent(record) else { return nil }
-        // A damaged meeting.json leaves where the name came from unknown: the user's, so the title never replaces it.
-        let source = snapshot.meetingInfoDamaged ? .user : MeetingNaming.source(
-            stored: snapshot.meeting.nameSource, name: snapshot.manifest.name,
-            importedFileName: snapshot.meeting.origin == .imported ? snapshot.meeting.importedFileName : nil)
+        let source = nameSource(snapshot)
         return ExportSummary(transcriptID: record.transcriptID, title: record.title, summary: record.summary,
                              points: record.points, actions: record.actions,
                              model: MeetingSummaryModel.displayName(record.model), titleIsHeading: !source.isUser)

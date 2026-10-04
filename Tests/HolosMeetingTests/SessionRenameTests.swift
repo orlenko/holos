@@ -110,8 +110,8 @@ private func editedExports(_ session: URL) throws -> [String] {
 
 private func listed(name: String, source: MeetingNameSource, generated: String?) -> SessionSummary {
     SessionSummary(id: "S", directory: URL(fileURLWithPath: "/tmp/S.holos"), name: name, createdAt: Date(),
-                   source: .microphone, state: .complete, manifestStatus: "complete", liveness: .exited,
-                   nameSource: source,
+                   source: .microphone, state: .complete, manifestStatus: "complete", transcriptID: "T",
+                   liveness: .exited, nameSource: source,
                    generatedSummary: generated.map {
                        MeetingSummaryRecord(sessionID: "S", transcriptID: "T", title: $0, summary: "s", model: "fake")
                    })
@@ -641,4 +641,77 @@ private func listed(name: String, source: MeetingNameSource, generated: String?)
     let decoded = try HolosJSON.decoder().decode(SessionRenameCommand.Outcome.self,
                                                  from: HolosJSON.encoder().encode(written))
     #expect(decoded == written)
+}
+
+// MARK: - One title for the list and the files
+
+@Test func theTitleShownAndTheHeadingFollowOneRule() {
+    let current = MeetingSummaryRecord(sessionID: "S", transcriptID: "T2", title: "Parser plan", summary: "s",
+                                       model: "fake")
+    // The user's name, else the title of a summary of the current transcript, else the name.
+    #expect(MeetingNaming.title(name: "Weekly sync", source: .user, summary: current, transcriptID: "T2")
+        == "Weekly sync")
+    #expect(MeetingNaming.title(name: "Meeting 2026-10-03 14:00", source: .default, summary: current,
+                                transcriptID: "T2") == "Parser plan")
+    #expect(MeetingNaming.title(name: "Meeting 2026-10-03 14:00", source: .default, summary: current,
+                                transcriptID: "T3") == "Meeting 2026-10-03 14:00", "Of an earlier transcript")
+    #expect(MeetingNaming.title(name: "Meeting 2026-10-03 14:00", source: .default, summary: nil,
+                                transcriptID: "T2") == "Meeting 2026-10-03 14:00")
+    var stale = listed(name: "Meeting 2026-10-03 14:00", source: .default, generated: "Parser plan")
+    stale.transcriptID = "T-newer"
+    #expect(stale.displayTitle == "Meeting 2026-10-03 14:00")
+}
+
+@Test func aSummaryOfAnEarlierTranscriptHeadsNeitherTheListNorTheFiles() async throws {
+    let temp = try TemporaryDirectory("rename")
+    defer { temp.remove() }
+    let session = try await renameSession(in: temp.url, name: "Weekly sync")
+    try writeSummary(session)
+    _ = await rename(session, "Weekly sync")
+    // A final transcript replaces the one the summary was made from.
+    let newer = SessionFixtures.transcript(SessionFixtures.alternatingSegments(track: "mic", wordsPerTurn: 8))
+    try await SessionFixtures.saveTranscript(newer, in: session)
+    let outcome = await rename(session, nil)
+    #expect(outcome.status == .renamed)
+    let manifest = try SessionArchive.readManifest(at: session)
+    #expect(outcome.title == manifest.name, "No summary of this transcript yet: the default name")
+    #expect(SessionCatalog.summary(session: session).displayTitle == manifest.name)
+    #expect(MeetingNaming.currentTitle(session: session) == manifest.name)
+    #expect(SessionFixtures.text(SessionPaths.export("md", in: session)).hasPrefix("# \(manifest.name)\n"))
+}
+
+@Test func theTitleOfASummaryMadeWithOtherNamesStillHeadsTheFiles() async throws {
+    let temp = try TemporaryDirectory("rename")
+    defer { temp.remove() }
+    let session = try await renameSession(in: temp.url)
+    try writeSummary(session)
+    // Speaker names changed since: the summary is left out of the files, but it is of this transcript.
+    var record = try #require(try MeetingSummaryStore.read(session: session,
+                                                         sessionID: SessionArchive.readManifest(at: session).id))
+    record.namesDigest = "other names"
+    try MeetingSummaryStore.write(record, session: session)
+    let outcome = await rename(session, "Weekly sync")
+    #expect(outcome.status == .renamed)
+    let back = await rename(session, nil)
+    #expect(back.title == "Parser rewrite and release plan")
+    #expect(SessionCatalog.summary(session: session).displayTitle == "Parser rewrite and release plan")
+    let markdown = SessionFixtures.text(SessionPaths.export("md", in: session))
+    #expect(markdown.hasPrefix("# Parser rewrite and release plan\n"))
+    #expect(!markdown.contains("## Summary"))
+}
+
+@Test func aGeneratedJSONFileAloneIsPreparedToo() async throws {
+    let temp = try TemporaryDirectory("rename")
+    defer { temp.remove() }
+    let session = try await renameSession(in: temp.url)
+    try writeSummary(session)
+    // Only transcript.json is left, with no record of what was generated.
+    for file in [SessionPaths.export("md", in: session), SessionPaths.export("txt", in: session),
+                 SessionPaths.generatedExports(session)] {
+        try FileManager.default.removeItem(at: file)
+    }
+    let outcome = await rename(session, "Design review")
+    #expect(outcome.exitCode == 0)
+    #expect(try editedExports(session).isEmpty)
+    #expect(SessionFixtures.text(SessionPaths.export("json", in: session)).contains("Design review"))
 }

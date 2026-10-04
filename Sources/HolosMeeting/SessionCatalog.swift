@@ -93,8 +93,8 @@ public struct SessionSummary: Codable, Sendable, Equatable, Identifiable {
     public var languageWork: LanguageWork?
     /// Where `name` came from (`MeetingNaming.source`: meeting.json's, else inferred from the name).
     public var nameSource: MeetingNameSource
-    /// summary.json, when it can be read: possibly of an earlier transcript (`summaryIsCurrent` says), which is
-    /// still shown until the new one is made.
+    /// summary.json, when it can be read: possibly of an earlier transcript (`summaryIsCurrent` says), whose summary
+    /// text is still shown until the new one is made, but not its title (`displayTitle`).
     public var generatedSummary: MeetingSummaryRecord? = nil
 
     /// Every field but `generatedSummary`, which holds what the meeting was about: `session list --json` and anything
@@ -105,10 +105,10 @@ public struct SessionSummary: Codable, Sendable, Equatable, Identifiable {
         case hasSpeakerEdits, phase, pid, liveness, bytes, derivedBytes, audioDeleted, languageWork, nameSource
     }
 
-    /// The title the Meetings list shows (`MeetingNaming.displayTitle`): the user's name, else the generated title,
-    /// else the name.
+    /// The title the Meetings list shows (`MeetingNaming.title`, the rule the transcript files' heading follows too):
+    /// the user's name, else the title of a summary of the current transcript, else the name.
     public var displayTitle: String {
-        MeetingNaming.displayTitle(name: name, source: nameSource, generatedTitle: generatedSummary?.title)
+        MeetingNaming.title(name: name, source: nameSource, summary: generatedSummary, transcriptID: transcriptID)
     }
 
     /// The summary was made from the current transcript.

@@ -1053,8 +1053,9 @@ keeps the total and free space. A search field above the list (⌘F) filters by 
 summary, key points, action items and people, ignoring case and accents.
 
 The title is the name the user gave the meeting (in the start panel, `--name`, or by renaming
-it), else the title Apple Intelligence wrote, else the default name ("Meeting 2026-10-03
-14:00"); a generated title never replaces a name the user gave.
+it), else the title Apple Intelligence wrote for the current transcript, else the default name
+("Meeting 2026-10-03 14:00"); a generated title never replaces a name the user gave. The
+Markdown transcript file's heading follows the same rule.
 
 A finished meeting is renamed in its row: the menu's Rename… (⌘R in the list) or a
 double-click on the title's text (a double-click elsewhere on the row still opens it) turns the

@@ -5008,9 +5008,13 @@ its file. Any other value counts as the user's. Meetings saved before it have no
 (`MeetingNaming.source`), and so does an older import named after its file (the file name without
 its extension), so nothing is rewritten to migrate them. A meeting.json that is there but cannot be read
 (damaged, unreadable now, from a newer build) leaves the source unknown, counted as the user's: no generated
-title replaces the name in the list or the Markdown heading. The list shows the user's
-name, else the generated title, else the name (`MeetingNaming.displayTitle`); a generated
-title never replaces the manifest's name.
+title replaces the name in the list or the Markdown heading. One rule gives a meeting's title
+everywhere (`MeetingNaming.title`: the Meetings list, Review, the rename command's result, and the
+Markdown heading, `ExportDocument.heading`): the user's name, else the title of a summary made from
+the current transcript, else the name. A summary of an earlier transcript (a final transcript
+replaced it) gives no title until it is made again, since the transcript files cannot carry it;
+the title of a summary of this transcript made with other speaker names still heads the files,
+whose summary section leaves it out. A generated title never replaces the manifest's name.
 
 **Renaming** (`SessionRenameCommand`, `voiceislocal session rename <session> <name> |
 --generated [--json]`, and the Meetings list's Rename…; the user asked 2026-10-03 for generated
@@ -5035,7 +5039,8 @@ writes again. A `renamed` event (`nameSource`) is journaled. Then the transcript
 the people store's names, Remember voices and the user's own name read once (the key a current
 summary is checked with), so the Markdown heading follows and the summary stays, without the
 model; transcript files without a usable record of what was generated (no `exports/.generated.json`,
-or a damaged one, `SessionExports.hasUsableRecord`) are first rewritten under the old name, so they
+or a damaged one, `SessionExports.hasUsableRecord`; any of the Markdown, JSON and text files) are
+first rewritten under the old name, so they
 are not taken for edited files and moved aside, and when that fails (or the record cannot be read
 now, or a newer build wrote it) nothing is changed (`failed`, or `unreadable`). Everything the rename
 decides from (the manifest, meeting.json, the name asked for, whether it is already so) is read
@@ -5287,7 +5292,8 @@ long older name left as it was is not rewritten), when Rename is offered; the co
 `nameSource` saved with other meeting.json fields kept, the heading and summary in the files,
 the generated title back, older transcript files not moved aside, and nothing changed when they
 cannot be prepared or their record is damaged, a rename whose files failed finished by asking again,
-the state read under the lease after another rename, a meeting.json write that fails putting the old
+the state read under the lease after another rename, a JSON file alone prepared, one title rule for
+the list and the heading (a summary of an earlier transcript, or made with other names), a meeting.json write that fails putting the old
 name back, titles changed elsewhere noticed by the list, a meeting without transcript, refusals while held by a command, a summary or
 final transcript of it, or a recorder, an interrupted recording (also after capture stopped), a
 transcript from a newer build, damaged, or unreadable now, an unreadable meeting.json).
