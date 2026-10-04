@@ -4976,15 +4976,14 @@ their characters other than spaces, so Chinese, Japanese and Thai count as much 
 Without speaker labels the turns are named by track: the microphone of a call becomes the user,
 the system audio "Others", and a microphone in the room "Someone", never "Microphone"; a turn
 nobody was assigned to is "Someone" with speaker labels too. The final answer's schema has a `refused` field, last ("true only if you could not summarize
-this text at all"), which the model sets in any language: a final answer marked refused that says
-little (fewer than two items, or one under twelve words, or, in a script without spaces, under 24
-characters) fails the run; a substantive one is kept.
+this text at all"), which the model sets in any language: a final answer marked refused fails the run, whatever it says
+(on the three real meetings the final answer never set it).
 The notes schema has none: measured on the three real meetings, Apple's model set it on 2, 2 and
 1 parts of ordinary meetings when it came first (and wrote no notes for them), and failed to
 produce parseable output on two meetings when it came last; without it every part gave notes. A
 part's refusal comes as the framework's refusal error, in any language. A part the model
 refuses (a refusal or guardrail, the field, or notes that read as one as a backup: "I'm sorry",
-"I cannot", "As an AI…", one list of openings, any case) or does not answer in time is left out
+"I cannot", "As an AI…", "抱歉", "无法", "申し訳", "できません"…, one list of openings, any case) or does not answer in time is left out
 and counted (more than half left out fails the run); a part too long for the context is split in two
 and asked again (twice at most; each half counts as a piece, and one left out, or still too long,
 counts as left out, so the more-than-half rule weighs pieces); two calls in a row that time out stop the run (a final call that timed out once is made again, as
@@ -4994,8 +4993,8 @@ never saved as a whole one, and an older summary stays.
 
 **Checking the answer** (`MeetingSummaryDraft.cleaned`). The title: one line, quotes, "Title:"
 and a final period removed, a leading "Meeting about/on/…", "Meeting:", "Réunion sur …" removed,
-dates, times, weekdays and "today" removed (numeric dates only with three parts, or a slash with a
-valid day and month: a two-part dotted number such as "Python 3.11" is a version and stays; month and weekday names of the summary's language from
+dates written with a month name, weekdays and "today" removed (numbers alone are kept, as they can be
+versions, "Release 1.2.3", "Python 3.11.8"; the prompt asks for no dates; month and weekday names of the summary's language from
 the system's calendar, and English and French; short weekday names are not, as Spanish "mar" is
 also "sea"; Chinese and Japanese dates and weekdays by pattern, "2026年10月3日", "10月", "月曜日",
 "星期一", with a particle left at either end, "の", "的", removed), at most 8 words and 60 characters (at a space when one
@@ -5025,7 +5024,7 @@ which are remembered by the full key). A Summarize Again request whose summary i
 files pending only gets them rewritten; any other runs forced. Exit 0 when written or up
 to date, 3 when written but the transcript files could not be rewritten, 1 otherwise, with
 `status` in the JSON (`written`, `current`, `noTranscript`, `unavailable`, `busy`, `changed`,
-`failed`, `cancelled`). A session that is not finished by the predicate the app's schedule uses
+`unreadable` (the transcript could not be read), `failed`, `cancelled`). A session that is not finished by the predicate the app's schedule uses
 (`MeetingSummarySchedule.isFinished`: interrupted, still processing, incomplete, failed, damaged)
 is refused before the model: Recover first. The speaker labels it read (the head and the edit journal, by size and
 modification time) are checked again at the save: the whole key is computed again from the labels as
@@ -5038,7 +5037,8 @@ and the files; changed meanwhile (a rename in Terminal, a person
 renamed), the summary is not saved (`changed`, made again later), so it never names people as
 they were. Lines stay (speaker, text) through every cut and are rendered only in a prompt, so a
 name containing ": " cannot be misread. The speaker lock is held from that check through summary.json and the export
-rewrite (`SessionExports.regenerateLocked`), so no speaker edit lands between them. Speaker and
+rewrite (`SessionExports.regenerateLocked`, with the names and Remember voices read for that check, so a
+name edited past what the prompt shows reaches the files), so no speaker edit lands between them. Speaker and
 people's names go into prompts cut to 40 characters (with "…"), so a name of any length leaves
 every part room for the words. `session list --json` leaves summaries out (`SessionSummary`
 does not encode `generatedSummary`). For
@@ -5078,8 +5078,8 @@ read, and the schedule skips it), and a meeting queued for a final transcript is
 after it. Nothing starts while a meeting starts, records or saves, while the lock is held (a
 final transcript, or a summary another app process started), or for a meeting in use or under
 review; a final transcript likewise waits for a summary. A run going on when a meeting starts
-is stopped (SIGTERM; nothing is written) and made again a minute later. `busy`, `changed` and
-`cancelled` are tried again a minute later; a failure is not tried again for that transcript
+is stopped (SIGTERM; nothing is written) and made again a minute later. `busy`, `changed`,
+`unreadable` and `cancelled` are tried again a minute later; a failure is not tried again for that transcript
 until the app starts again. On battery only meetings from the last two days are summarized (transcript files left without
 their summary are rewritten whatever their age: no model call). A scan that ends after a
 reconciliation began starts nothing; the next one does. A

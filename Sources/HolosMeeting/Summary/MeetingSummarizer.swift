@@ -263,11 +263,9 @@ public struct MeetingSummarizer: Sendable {
                 return skippedPiece(&run)
             }
             let cleaned = MeetingSummaryDraft.cleanList(answer.notes, limit: 6)
-            // A refusal written as a note ("I'm sorry, I cannot…") is a refused part: it is left out and counted. So is
-            // one the model marked refused, unless it wrote real notes anyway (Apple's model set the field on parts of
-            // ordinary meetings it summarized well without it).
-            guard !cleaned.isEmpty, !cleaned.contains(where: MeetingSummaryDraft.isRefusal),
-                  !answer.refused || MeetingSummaryDraft.isSubstantive(cleaned) else {
+            // A refusal written as a note ("I'm sorry, I cannot…", "抱歉…") is a refused part: it is left out and
+            // counted. So is one the model marked refused.
+            guard !cleaned.isEmpty, !cleaned.contains(where: MeetingSummaryDraft.isRefusal), !answer.refused else {
                 return skippedPiece(&run)
             }
             run.pieces += 1
@@ -361,8 +359,8 @@ public struct MeetingSummarizer: Sendable {
         guard let answer else { throw Failure.unusableAnswer("The model did not summarize the meeting.") }
         switch answer.cleaned(language: input.language) {
         case .success(let draft):
-            // Marked refused and saying little: a refusal, in whatever language. A real summary marked refused is kept.
-            if answer.refused, !MeetingSummaryDraft.isSubstantive([draft.summary] + draft.points + draft.actions) {
+            // Marked refused: a refusal, in whatever language it is written.
+            if answer.refused {
                 throw Failure.unusableAnswer("The model declined to summarize the meeting.")
             }
             return draft
@@ -658,20 +656,6 @@ extension MeetingSummaryDraft {
         return Double(a.intersection(b).count) >= 0.8 * Double(smaller.count)
     }
 
-    /// Text that says something: at least two items, or one of at least twelve words, or, in a script written without
-    /// spaces (Chinese, Japanese, Thai), of at least 24 characters. A refusal is one short sentence, so a `refused`
-    /// mark on substantive text is not taken for one.
-    static func isSubstantive(_ items: [String]) -> Bool {
-        let filled = items.filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
-        if filled.count >= 2 { return true }
-        guard let item = filled.first else { return false }
-        let words = item.split(whereSeparator: \.isWhitespace).count
-        if words >= 12 { return true }
-        // Few spaces for its length: a script without them, counted by characters.
-        let characters = item.filter { !$0.isWhitespace }.count
-        return words <= 3 && characters >= 24
-    }
-
     /// A refusal or an assistant's aside rather than a summary.
     static func isRefusal(_ text: String) -> Bool {
         let lowered = text.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
@@ -685,6 +669,7 @@ extension MeetingSummaryDraft {
         "i'm sorry", "i am sorry", "sorry,", "i apologize", "i cannot", "i can't", "i can not", "i'm unable",
         "i am unable", "i won't", "i will not", "as an ai", "as a language model", "i'm not able", "i am not able",
         "je suis désolé", "désolé", "je ne peux pas", "en tant qu'ia", "je ne suis pas en mesure",
+        "抱歉", "对不起", "无法", "申し訳", "できません",
     ]
 
     /// One line: whitespace collapsed, trimmed, and a speaker label the model repeated ("Speaker 3 will…", "Unknown
@@ -733,7 +718,7 @@ extension MeetingSummaryDraft {
     }
 
     /// The title as the list shows it, or nil when nothing usable is left: one line, quotes and a final period
-    /// removed, a leading "Meeting about …" / "Meeting:" / "Réunion sur …" removed, dates, times and weekdays removed,
+    /// removed, a leading "Meeting about …" / "Meeting:" / "Réunion sur …" removed, dates with month names and weekdays removed,
     /// at most `maximumTitleWords` words (without a dangling "and", "of", "the" … at the end), first letter capital.
     public static func cleanTitle(_ text: String, language: String? = nil) -> String? {
         var title = oneLine(text)
@@ -780,21 +765,16 @@ extension MeetingSummaryDraft {
         "et", "ou", "de", "du", "des", "la", "le", "les", "un", "une", "pour", "avec", "sur", "à", "au", "aux", "en",
     ]
 
-    /// `text` without dates ("2026-10-03", "10/3", "October 3, 2026", "3 octobre", "3. Oktober", "3 de octubre"),
-    /// times ("14:00", "2 pm"), weekdays, "today", and the words that led into them ("on", "le", "am", "del"). Month
+    /// `text` without dates written with a month name ("October 3, 2026", "3 octobre", "3. Oktober", "3 de octubre",
+    /// "2026年10月3日"), weekdays, "today", and the words that led into them ("on", "le", "am", "del"). Month
     /// and weekday names are those of `language` (the summary's) as the system knows them, and English and French.
     static func removingDates(_ text: String, language: String? = nil) -> String {
         let names = dateWords(language: language)
         let months = names.months
         let weekdays = names.weekdays
+        // Only dates written with a month or weekday name: numbers alone ("10/3", "3.10.2026", "14:00") are kept, since
+        // they can be versions ("Release 1.2.3", "Python 3.11.8"); the prompt asks for a title without dates.
         let patterns = [
-            #"\b\d{4}-\d{1,2}-\d{1,2}\b"#,
-            // Three-part dates ("3.10.2026", "10/3/2026", "3-10-26"), and two-part ones only with a slash and a valid
-            // day and month ("10/3"): a two-part dotted number is a version ("Python 3.11", "macOS 15.2"), kept.
-            #"\b\d{1,2}[/.\-]\d{1,2}[/.\-]\d{2,4}\b"#,
-            #"\b(?:(?:0?[1-9]|1[0-2])/(?:0?[1-9]|[12]\d|3[01])|(?:0?[1-9]|[12]\d|3[01])/(?:0?[1-9]|1[0-2]))\b"#,
-            #"\b\d{1,2}[:h]\d{2}\s*(?:am|pm)?\b"#,
-            #"\b\d{1,2}\s*(?:am|pm)\b"#,
             // "October 3, 2026", "octubre 3"; "3 octobre", "3. Oktober 2026", "3 de octubre de 2026"; "octobre 2026".
             "\\b(?:\(months))\\.?\\s+\\d{1,2}(?:st|nd|rd|th)?(?:,?\\s+\\d{4})?\\b",
             "\\b\\d{1,2}(?:er|\\.)?\\s+(?:de\\s+|of\\s+)?(?:\(months))\\.?(?:\\s+(?:de\\s+)?\\d{4})?\\b",

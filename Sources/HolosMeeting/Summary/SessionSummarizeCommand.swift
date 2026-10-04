@@ -88,12 +88,16 @@ public enum SessionSummarizeCommand {
         public static let busy = Status("busy")
         /// The current transcript changed while the summary was made: try again.
         public static let changed = Status("changed")
+        /// The session's files could not be read (a volume or file briefly unavailable): try again later.
+        public static let unreadable = Status("unreadable")
         public static let failed = Status("failed")
         /// Stopped (Ctrl-C, or SIGTERM from the app when a meeting starts) before anything was written.
         public static let cancelled = Status("cancelled")
 
         /// Whether the app tries again later for the same transcript.
-        public var retriesLater: Bool { self == .busy || self == .changed || self == .cancelled }
+        public var retriesLater: Bool {
+            self == .busy || self == .changed || self == .unreadable || self == .cancelled
+        }
     }
 
     public struct Outcome: Sendable, Encodable {
@@ -159,7 +163,7 @@ public enum SessionSummarizeCommand {
                 existing = nil
             }
         } catch {
-            return outcome(.failed, error.localizedDescription)
+            return outcome(.unreadable, "Cannot read the transcript: \(error.localizedDescription)")
         }
         guard let transcriptID else {
             return outcome(.noTranscript, "This meeting has no transcript to summarize.")
@@ -179,7 +183,7 @@ public enum SessionSummarizeCommand {
             input = MeetingSummarySource.input(document: document, selfName: request.selfName)
             key = MeetingSummaryKey(document, selfName: request.selfName)
         } catch {
-            return outcome(.failed, "Cannot read the transcript: \(error.localizedDescription)",
+            return outcome(.unreadable, "Cannot read the transcript: \(error.localizedDescription)",
                            transcriptID: transcriptID)
         }
         // Current (the transcript and the speakers' names it was made with): kept, unless its transcript files were
@@ -326,8 +330,10 @@ public enum SessionSummarizeCommand {
         var written = outcome(.written, message, transcriptID, 0)
         written.summary = pending
         do {
-            try SessionExports.regenerateLocked(session: session, profileNames: request.profileNames,
-                                                applyRecognition: request.applyRecognition)
+            // With the names and Remember voices just checked, read under the locks: the files name people as the
+            // summary does, even when the request's names (from before the model ran) are out of date.
+            try SessionExports.regenerateLocked(session: session, profileNames: fresh.names,
+                                                applyRecognition: fresh.recognition)
             var done = record
             done.exportsPending = nil
             try MeetingSummaryStore.write(done, session: session)

@@ -144,7 +144,7 @@ private func input(_ lines: [MeetingSummaryLine]) -> MeetingSummaryInput {
     #expect(MeetingSummaryDraft.cleanTitle("\"Roadmap planning.\"") == "Roadmap planning")
     #expect(MeetingSummaryDraft.cleanTitle("Title: Hiring plan for the data team") == "Hiring plan for the data team")
     #expect(MeetingSummaryDraft.cleanTitle("Budget review on October 3, 2026") == "Budget review")
-    #expect(MeetingSummaryDraft.cleanTitle("Sprint retro 2026-10-03 14:00") == "Sprint retro")
+    #expect(MeetingSummaryDraft.cleanTitle("Sprint retro on Friday, October 3") == "Sprint retro")
     #expect(MeetingSummaryDraft.cleanTitle("Monday standup") == "Standup")
     #expect(MeetingSummaryDraft.cleanTitle("Réunion sur le budget 2027") == "Le budget 2027")
     #expect(MeetingSummaryDraft.cleanTitle("Revue du 3 octobre") == "Revue")
@@ -951,23 +951,32 @@ private func trackDocument(source: AudioSource) -> ExportDocument {
     }
 }
 
-@Test func aRefusedMarkOnRealNotesIsIgnored() async throws {
-    // Apple's model set the field on parts of ordinary meetings it summarized well: substantive text wins.
+@Test func aRefusedMarkFailsTheRunWhateverTheAnswerSays() async throws {
+    // Notes marked refused are a skipped part, however real they look; a final answer marked refused fails the run.
     let model = MeetingSummaryModel(
         name: "fake", contextTokens: 400,
-        notes: { _, _ in
-            MeetingSummaryNotes(notes: ["The team planned the release.", "Alex drafts the plan."], refused: true)
+        notes: { _, prompt in
+            prompt.contains("Part 1 of")
+                ? MeetingSummaryNotes(notes: ["The team planned the release.", "Alex drafts the plan."], refused: true)
+                : MeetingSummaryNotes(notes: ["The beta moves a week."])
         },
         summary: { _, _ in
             MeetingSummaryDraft(title: "Release plan", summary: "The team planned the release.",
                                 points: ["The beta moves a week."], actions: ["Alex drafts the plan."], refused: true)
         })
-    let result = try await MeetingSummarizer(model: model).summarize(input(lines(30)))
-    #expect(result.stats.skippedParts == 0)
-    #expect(result.draft.title == "Release plan")
-    #expect(MeetingSummaryDraft.isSubstantive(["One two three four five six seven eight nine ten eleven twelve."]))
-    #expect(!MeetingSummaryDraft.isSubstantive(["Ich kann das nicht zusammenfassen."]))
-    #expect(!MeetingSummaryDraft.isSubstantive([]))
+    await #expect(throws: MeetingSummarizer.Failure.self) {
+        _ = try await MeetingSummarizer(model: model).summarize(input(lines(30)))
+    }
+    let notesOnly = MeetingSummaryModel(
+        name: "fake", contextTokens: 400,
+        notes: { _, prompt in
+            prompt.contains("Part 1 of")
+                ? MeetingSummaryNotes(notes: ["The team planned the release.", "Alex drafts the plan."], refused: true)
+                : MeetingSummaryNotes(notes: ["The beta moves a week."])
+        },
+        summary: { _, _ in MeetingSummaryDraft(title: "Release plan", summary: "The beta moves a week.") })
+    let result = try await MeetingSummarizer(model: notesOnly).summarize(input(lines(30)))
+    #expect(result.stats.skippedParts == 1)
 }
 
 @Test func aBatchThatCannotBeCondensedKeepsNotesOfEveryPart() async throws {
@@ -1038,6 +1047,26 @@ private func trackDocument(source: AudioSource) -> ExportDocument {
         session: session, selfName: "Robin", applyRecognition: true,
         voiceInputsNow: { .init(names: [:], recognition: false, selfName: "Robin") })
     #expect(await SessionSummarizeCommand.run(same) { _ in .available(scripted.model()) }.status == .written)
+}
+
+@Test func theExportsUseTheNamesCheckedAtTheSave() async throws {
+    let temp = try TemporaryDirectory("summary")
+    defer { temp.remove() }
+    let (session, _, _) = try await SessionFixtures.labelledSession(in: temp.url)
+    try SpeakerEditor.apply([.linkProfile(speakerID: "system:S1", profileID: "P-LONG")],
+                            view: try SessionFixtures.view(session), session: session, source: "cli",
+                            regenerateExports: false)
+    // A long name edited past what the prompt shows (`shortName`): the key is the same, the exports' name is not.
+    let before = "Alexandra Konstantinopoulou-Whitfield of Smithtown"
+    let after = "Alexandra Konstantinopoulou-Whitfield of Smithville"
+    let request = SessionSummarizeCommand.Request(
+        session: session, selfName: "Robin", profileNames: ["P-LONG": before], applyRecognition: true,
+        voiceInputsNow: { .init(names: ["P-LONG": after], recognition: true, selfName: "Robin") })
+    let outcome = await SessionSummarizeCommand.run(request) { _ in .available(ScriptedSummaryModel().model()) }
+    #expect(outcome.status == .written)
+    let markdown = SessionFixtures.text(SessionPaths.export("md", in: session))
+    #expect(markdown.contains(after))
+    #expect(!markdown.contains(before))
 }
 
 @Test func aSpeakerNameWithAColonStaysWholeThroughSplitting() {
@@ -1370,6 +1399,22 @@ private func trackDocument(source: AudioSource) -> ExportDocument {
     #expect(key()?.transcriptID == transcriptID)
 }
 
+@Test func aTranscriptTheCommandCannotReadIsTriedAgainLater() async throws {
+    let temp = try TemporaryDirectory("summary")
+    defer { temp.remove() }
+    let session = try await summarizeSession(in: temp.url)
+    let transcriptID = try #require(try SessionArchive.currentTranscriptID(at: session))
+    let revision = SessionPaths.transcript(transcriptID, in: session)
+    try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: revision.path)
+    let scripted = ScriptedSummaryModel()
+    let outcome = await run(session, scripted)
+    try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: revision.path)
+    #expect(outcome.status == .unreadable)
+    #expect(outcome.status.retriesLater)
+    #expect(scripted.summaryCalls.value.isEmpty)
+    #expect(await run(session, scripted).status == .written)
+}
+
 @Test func aFinalCallThatTimedOutOnceIsMadeAgain() async throws {
     let calls = SharedValue(0)
     let scripted = ScriptedSummaryModel(summary: { _ in
@@ -1421,29 +1466,28 @@ private func trackDocument(source: AudioSource) -> ExportDocument {
     #expect(cache.people(of: summary, profileNames: [:], applyRecognition: true) == ["Alex"])
 }
 
-@Test func aChineseSummaryMarkedRefusedIsKeptWhenItSaysSomething() async throws {
-    let real = "团队决定先重写解析器，再在下周发布测试版本，并通知所有相关同事。"
-    #expect(MeetingSummaryDraft.isSubstantive([real]))
-    #expect(!MeetingSummaryDraft.isSubstantive(["抱歉，我无法总结。"]))
-    let model = MeetingSummaryModel(
-        name: "fake", contextTokens: 4096, notes: { _, _ in MeetingSummaryNotes(notes: []) },
-        summary: { _, _ in MeetingSummaryDraft(title: "解析器重写计划", summary: real, refused: true) })
-    let result = try await MeetingSummarizer(model: model).summarize(input(lines(3)))
-    #expect(result.draft.summary == real)
-    let refusing = MeetingSummaryModel(
-        name: "fake", contextTokens: 4096, notes: { _, _ in MeetingSummaryNotes(notes: []) },
-        summary: { _, _ in MeetingSummaryDraft(title: "无", summary: "抱歉，我无法总结。", refused: true) })
-    await #expect(throws: MeetingSummarizer.Failure.self) {
-        _ = try await MeetingSummarizer(model: refusing).summarize(input(lines(3)))
+@Test func chineseAndJapaneseRefusalNotesAreSkipped() async throws {
+    for refusal in ["抱歉，我无法总结。", "对不起，这段内容我不能总结。", "无法总结这段文字。",
+                    "申し訳ありませんが、要約できません。", "できません。"] {
+        #expect(MeetingSummaryDraft.isRefusal(refusal), "\(refusal)")
     }
+    #expect(!MeetingSummaryDraft.isRefusal("团队决定先重写解析器，再在下周发布测试版本。"))
+    let model = MeetingSummaryModel(
+        name: "fake", contextTokens: 400,
+        notes: { _, prompt in
+            MeetingSummaryNotes(notes: [prompt.contains("Part 1 of") ? "抱歉，我无法总结。" : "团队计划了发布。"])
+        },
+        summary: { _, _ in MeetingSummaryDraft(title: "发布计划", summary: "团队计划了发布。") })
+    let result = try await MeetingSummarizer(model: model).summarize(input(lines(30)))
+    #expect(result.stats.skippedParts == 1)
 }
 
 @Test func versionNumbersAreNotTakenForDates() {
     #expect(MeetingSummaryDraft.cleanTitle("Python 3.11 migration") == "Python 3.11 migration")
     #expect(MeetingSummaryDraft.cleanTitle("macOS 15.2 rollout") == "MacOS 15.2 rollout")
-    #expect(MeetingSummaryDraft.cleanTitle("10/3/2026 review") == "Review")
-    #expect(MeetingSummaryDraft.cleanTitle("Review of 10/3") == "Review")
-    #expect(MeetingSummaryDraft.cleanTitle("Sprint 3.10.2026 retro") == "Sprint retro")
+    #expect(MeetingSummaryDraft.cleanTitle("Release 1.2.3 planning") == "Release 1.2.3 planning")
+    #expect(MeetingSummaryDraft.cleanTitle("Python 3.11.8 migration") == "Python 3.11.8 migration")
+    #expect(MeetingSummaryDraft.cleanTitle("Release 10/3 review") == "Release 10/3 review")
 }
 
 @Test func theSaveHoldsThePeopleStoreWhileItChecks() async throws {
