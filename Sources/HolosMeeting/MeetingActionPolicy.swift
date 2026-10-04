@@ -34,9 +34,28 @@ public enum MeetingActionPolicy {
 
     /// `voiceislocal session rename` can rename the meeting (`SessionRenameCommand`): it is finished by the predicate
     /// summaries and final transcripts use (`MeetingSummarySchedule.isFinished`), so not still saving, interrupted
-    /// (Recover first), incomplete, failed or damaged.
+    /// (Recover first), incomplete, failed or damaged, and its current transcript, if any, can be read (the command
+    /// refuses one that is damaged, from a newer build, or unreadable now).
     public static func renames(_ summary: SessionSummary) -> Bool {
-        MeetingSummarySchedule.isFinished(summary.state)
+        renameRefusal(summary) == nil
+    }
+
+    /// Why Rename is off for `summary` (its tooltip), or nil when the command would rename it; holding the meeting
+    /// (in use, live) is said elsewhere.
+    public static func renameRefusal(_ summary: SessionSummary) -> String? {
+        guard MeetingSummarySchedule.isFinished(summary.state) else {
+            return summary.state == .recording || summary.state == .processing
+                ? "The meeting can be renamed once it is saved."
+                : "The meeting was not saved properly; Recover it first, then rename it."
+        }
+        if let problem = summary.transcriptProblem {
+            if summary.transcriptRefused, problem.localizedCaseInsensitiveContains("newer") {
+                return "Its transcript was written by a newer version of Voice is Local, so its transcript files "
+                    + "cannot follow a new name: \(problem)"
+            }
+            return "Its transcript cannot be read, so its transcript files cannot follow a new name: \(problem)"
+        }
+        return nil
     }
 
     /// A recorder or another Holos command holds the meeting (its writer lock or processing lease): recording,

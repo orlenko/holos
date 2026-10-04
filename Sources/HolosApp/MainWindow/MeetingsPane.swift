@@ -76,6 +76,8 @@ final class MeetingsPane: NSViewController, NSTableViewDataSource, NSTableViewDe
     var summaryRequested: (String) -> Bool = { _ in false }
     /// Why Apple Intelligence cannot summarize here (Summarize is off with it as the tooltip); nil when it can.
     var summaryUnavailableReason: () -> String? = { nil }
+    /// Runs a rename (the app delegate: `MeetingRenameRun`); `renameEnded` reports.
+    var runRename: ((SessionSummary, MeetingRenameRequest) -> Void)?
     /// The title a meeting shows changed (its ID): a rename here, or a change the catalog read shows (a rename in
     /// Terminal, a new generated title). Review follows; the live transcript's header follows the list.
     var onTitleChanged: ((String) -> Void)?
@@ -641,7 +643,8 @@ final class MeetingsPane: NSViewController, NSTableViewDataSource, NSTableViewDe
             if PendingExports().contains(summary.id) {
                 parts.append("The transcript files are older than the speaker labels; open Review to update them.")
             }
-            if PendingExports.afterRename().contains(summary.id) {
+            // Marked while a rename runs too (in case the app quits before it ends): said only once it has.
+            if PendingExports.afterRename().contains(summary.id), running[summary.id] == nil {
                 parts.append("The transcript files still show the meeting's old title; right-click it and choose "
                     + "Update Transcript Files.")
             }
@@ -880,47 +883,34 @@ final class MeetingsPane: NSViewController, NSTableViewDataSource, NSTableViewDe
         rename(summary, to: .generated)
     }
 
-    /// Saves the name (`SessionRenameCommand`, off the main actor) while the meeting is registered as in use, so no
-    /// command or background job starts on it meanwhile; then the list, Review and the live transcript show it.
+    /// Asks the app to run the rename (`runRename`: `voiceislocal session rename` as a detached child, the meeting
+    /// registered as in use meanwhile); `renameEnded` reports.
     private func rename(_ summary: SessionSummary, to request: MeetingRenameRequest) {
+        runRename?(summary, request)
+    }
+
+    /// The rename command of `summary` ended: `outcome` is its result (nil when it gave none, with `failure` saying
+    /// why). The new title shows at once (the next read of the catalog says the same), and a failure says why.
+    func renameEnded(_ summary: SessionSummary, outcome: SessionRenameCommand.Outcome?, failure: String?) {
         let id = summary.id
-        let session = summary.directory
         let shown = Self.short(summary.displayTitle)
-        guard beginUsing(id, "Renaming…") else {
-            showSheet("Voice is Local could not rename “\(shown)”.", Self.inUseText(running[id]))
-            return
+        if let outcome, outcome.exitCode != 1, let name = outcome.name, let source = outcome.nameSource,
+           let index = sessions.firstIndex(where: { $0.id == id }) {
+            sessions[index].name = name
+            sessions[index].nameSource = source
+            reloadKeepingSelection()
+            updateLiveHeader()
+            onTitleChanged?(id)
         }
-        let typed = request.typedName
-        Task { [weak self] in
-            let outcome = await Task.detached {
-                await SessionRenameCommand.run(SessionRenameCommand.Request(session: session, name: typed))
-            }.value
-            guard let self else { return }
-            self.endUsing(id)
-            if outcome.exitCode != 1, let name = outcome.name, let source = outcome.nameSource,
-               let index = self.sessions.firstIndex(where: { $0.id == id }) {
-                // Shown at once; the next read of the catalog says the same.
-                self.sessions[index].name = name
-                self.sessions[index].nameSource = source
-                self.reloadKeepingSelection()
-                self.updateLiveHeader()
-                self.onTitleChanged?(id)
-            }
-            // Files left with the old title are remembered, so the meeting says so and offers Update Transcript Files.
-            let stale = PendingExports.afterRename()
-            switch outcome.exitCode {
-            case 0: stale.clear(id)
-            case 3: stale.mark(id)
-            default: break
-            }
-            self.refresh()
-            switch outcome.exitCode {
-            case 0: break
-            case 3: self.showSheet("“\(shown)” was renamed, but its transcript files still show the old title.",
-                                   outcome.message + "\n\nRight-click the meeting and choose Update Transcript Files "
-                                       + "to try again.")
-            default: self.showSheet("Voice is Local could not rename “\(shown)”.", outcome.message)
-            }
+        refresh()
+        updateButtons()
+        switch outcome?.exitCode {
+        case 0?: break
+        case 3?: showSheet("“\(shown)” was renamed, but its transcript files still show the old title.",
+                           (outcome?.message ?? "") + "\n\nRight-click the meeting and choose Update Transcript Files "
+                               + "to try again.")
+        default: showSheet("Voice is Local could not rename “\(shown)”.",
+                           outcome?.message ?? failure ?? "The rename command stopped before it said how it ended.")
         }
     }
 
@@ -1048,8 +1038,9 @@ extension MeetingsPane: NSMenuDelegate {
         rename.keyEquivalentModifierMask = .command
         rename.target = self
         rename.isEnabled = enabled.contains(.rename)
-        rename.toolTip = "Gives the meeting a name of your own, which no title Apple Intelligence writes replaces. "
-            + "You can also double-click its title."
+        rename.toolTip = MeetingActionPolicy.renameRefusal(summary)
+            ?? ("Gives the meeting a name of your own, which no title Apple Intelligence writes replaces. "
+                + "You can also double-click its title.")
         menu.addItem(rename)
         // Offered while the user's name hides a generated title.
         if summary.nameSource.isUser, let generated = summary.generatedSummary?.title, !generated.isEmpty {

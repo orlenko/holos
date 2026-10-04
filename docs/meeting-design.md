@@ -5069,15 +5069,26 @@ remembered (`PendingExports.afterRename`, session IDs in UserDefaults): the meet
 says the files still show the old title, and its menu offers Update Transcript Files, which runs
 the same rename again (`MeetingRenameRequest.retry`: the user's name exactly, which the command does
 not clean when it equals the current one, or the generated title) and clears the mark on exit 0.
-An unedited save in the editor never runs it. The command runs
-in the app process while the meeting is registered as in use (`beginUsing`, "Renaming…"), so no
-command or background job starts on it meanwhile, and a meeting in use is refused with an alert.
+An unedited save in the editor never runs it. The app runs the rename as `voiceislocal session
+rename … --json` (`MeetingRenameRun.arguments`: the name after `--`, so one starting with "-" is a
+name), a child in its own session like the other maintenance commands, so quitting the app never
+cuts it between its writes; the meeting is registered as in use meanwhile (`beginUsing`,
+"Renaming…"), so no command or background job starts on it, and a meeting in use is refused with
+an alert. The mark is set before the child starts and its JSON result decides it afterwards
+(`MeetingRenameRun.staysMarked`: cleared on exit 0, kept on exit 3, as before on exit 1, kept when
+there is no result), so a quit before the rename ends leaves Update Transcript Files offered after
+the next launch (the status line says so only once no command runs on the meeting). Rename is off,
+with the reason as its tooltip (`MeetingActionPolicy.renameRefusal`), wherever the command refuses
+without trying: a meeting not finished, or one whose current transcript the catalog could not read
+(`transcriptProblem`).
 The new title shows at once in the list and the search, Review's window title
 (`ReviewWindow.meetingTitle`, also the name Save As… suggests) and the live transcript's header
 once the meeting is saved; the app's alerts name meetings by the title shown. An open Review window
 takes the title the list shows (`MeetingNaming.currentTitle`) after a rename, after a summary
-ends, and when a catalog read (the list's 2 s refresh) shows a meeting's title changed
-(`MeetingListFormat.titlesChanged`: a rename in Terminal, or anything else).
+ends, when a catalog read (the list's 2 s refresh) shows a meeting's title changed
+(`MeetingListFormat.titlesChanged`), and every 2 s while any review window is open, whatever the
+main window shows (`reviewTitleWatch`, which ends with the last window), so a rename in Terminal
+reaches it.
 
 **Making it** (`MeetingSummarizer`, `SessionSummarizeCommand`). The current transcript as the
 exports show it (`SessionExports.exportDocument`), as speaker lines ("Alex: …"): an automatic

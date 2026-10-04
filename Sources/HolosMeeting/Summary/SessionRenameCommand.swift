@@ -58,6 +58,31 @@ public struct MeetingRenameEdit: Sendable, Equatable {
     }
 }
 
+/// How the app runs a rename: as `voiceislocal session rename`, a child in its own session like the other
+/// maintenance commands, so quitting the app never cuts it between its writes. The meeting is marked as having
+/// transcript files that may show an old title (`PendingExports.afterRename`) before the command starts; the mark stays
+/// unless the command's result says otherwise (`staysMarked`), so a quit before it ends leaves Update Transcript Files
+/// offered after the next launch. Pure.
+public enum MeetingRenameRun {
+    /// The command's arguments: the session's path and the name after `--`, so a name starting with "-" is a name.
+    public static func arguments(session: URL, request: MeetingRenameRequest) -> [String] {
+        if let name = request.typedName { return ["session", "rename", "--json", "--", session.path, name] }
+        return ["session", "rename", "--generated", "--json", "--", session.path]
+    }
+
+    /// Whether the meeting stays marked once the command ended: not after exit 0 (the files show the title), yes after
+    /// exit 3 (they do not); after exit 1 nothing was changed, so as before the run (`wasMarked`); without a result
+    /// (stopped, or it could not start) what it changed is not known, so yes.
+    public static func staysMarked(outcome: SessionRenameCommand.Outcome?, wasMarked: Bool) -> Bool {
+        guard let outcome else { return true }
+        switch outcome.exitCode {
+        case 0: return false
+        case 1: return wasMarked
+        default: return true
+        }
+    }
+}
+
 /// `voiceislocal session rename` and the Meetings list's Rename… (docs/meeting-design.md §4.17): gives a finished
 /// meeting the user's name (`MeetingNameSource.user`, which no generated title replaces), or gives it back its
 /// generated title (`default`, the name Voice is Local made up). The name is the manifest's; where it came from is
@@ -115,7 +140,8 @@ public enum SessionRenameCommand {
         public static let failed = Status("failed")
     }
 
-    public struct Outcome: Sendable, Encodable, Equatable {
+    /// What the command prints with `--json`, which the app reads back (`MeetingRenameRun`).
+    public struct Outcome: Sendable, Codable, Equatable {
         public var sessionID: String?
         public var status: Status
         /// The manifest's name now.

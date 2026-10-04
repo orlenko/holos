@@ -596,3 +596,49 @@ private func listed(name: String, source: MeetingNameSource, generated: String?)
     #expect(MeetingListFormat.titlesChanged(from: before, to: [renamed, other, new]) == ["S"])
     #expect(MeetingListFormat.titlesChanged(from: [:], to: [renamed]).isEmpty)
 }
+
+// MARK: - Offering Rename, and running it from the app
+
+@Test func renameIsNotOfferedForATranscriptThatCannotBeRead() {
+    var summary = listed(name: "Weekly sync", source: .user, generated: nil)
+    #expect(MeetingActionPolicy.renames(summary))
+    #expect(MeetingActionPolicy.renameRefusal(summary) == nil)
+    summary.transcriptProblem = "transcripts/T.json is damaged or was not written by Voice is Local."
+    #expect(!MeetingActionPolicy.renames(summary))
+    #expect(!MeetingActionPolicy.enabled(summary, inUse: false, hasExport: true).contains(.rename))
+    #expect(MeetingActionPolicy.renameRefusal(summary)?.contains("transcript cannot be read") == true)
+    summary.transcriptRefused = true
+    summary.transcriptProblem = "transcripts/T.json was written by a newer version of Voice is Local."
+    #expect(MeetingActionPolicy.renameRefusal(summary)?.contains("newer version") == true)
+    var interrupted = listed(name: "Weekly sync", source: .user, generated: nil)
+    interrupted.state = .interrupted
+    #expect(MeetingActionPolicy.renameRefusal(interrupted)?.contains("Recover") == true)
+}
+
+@Test func theAppRunsTheRenameAsTheCommand() {
+    let session = URL(fileURLWithPath: "/tmp/S.holos")
+    #expect(MeetingRenameRun.arguments(session: session, request: .user("-v Weekly sync"))
+        == ["session", "rename", "--json", "--", "/tmp/S.holos", "-v Weekly sync"])
+    #expect(MeetingRenameRun.arguments(session: session, request: .generated)
+        == ["session", "rename", "--generated", "--json", "--", "/tmp/S.holos"])
+}
+
+@Test func filesAreMarkedOutOfDateUntilARenameSaysOtherwise() throws {
+    func outcome(_ code: Int32) -> SessionRenameCommand.Outcome {
+        SessionRenameCommand.Outcome(sessionID: "S", status: code == 1 ? .busy : .renamed, message: "m", exitCode: code)
+    }
+    #expect(!MeetingRenameRun.staysMarked(outcome: outcome(0), wasMarked: true))
+    #expect(MeetingRenameRun.staysMarked(outcome: outcome(3), wasMarked: false))
+    // Nothing changed: as it was before the run.
+    #expect(!MeetingRenameRun.staysMarked(outcome: outcome(1), wasMarked: false))
+    #expect(MeetingRenameRun.staysMarked(outcome: outcome(1), wasMarked: true))
+    // No result (the command was stopped): what it changed is not known.
+    #expect(MeetingRenameRun.staysMarked(outcome: nil, wasMarked: false))
+    // The command's JSON is read back.
+    var written = outcome(3)
+    written.name = "Weekly sync"
+    written.nameSource = .user
+    let decoded = try HolosJSON.decoder().decode(SessionRenameCommand.Outcome.self,
+                                                 from: HolosJSON.encoder().encode(written))
+    #expect(decoded == written)
+}
