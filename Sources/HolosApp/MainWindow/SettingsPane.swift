@@ -297,6 +297,10 @@ final class SettingsPane: NSViewController, MainSectionContent, NSSearchFieldDel
             searchWidth,
             search.topAnchor.constraint(equalTo: root.topAnchor, constant: 14),
             separator.topAnchor.constraint(equalTo: search.bottomAnchor, constant: 10),
+            // A separator box has no height of its own: without this, the space between the search field and the
+            // bottom was split between it and the page at random, and in some windows the box took all of it (drawn
+            // as a vertical line, since it was taller than wide) and left the page no height at all.
+            separator.heightAnchor.constraint(equalToConstant: 1),
             separator.leadingAnchor.constraint(equalTo: root.leadingAnchor),
             separator.trailingAnchor.constraint(equalTo: root.trailingAnchor),
             scroll.topAnchor.constraint(equalTo: separator.bottomAnchor),
