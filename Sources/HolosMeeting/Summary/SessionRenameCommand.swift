@@ -98,9 +98,12 @@ public enum SessionRenameCommand {
         public var session: URL
         /// The name the user typed; nil, or empty once cleaned (`MeetingNaming.cleanUserName`): the generated title.
         public var name: String?
-        /// People's names, Remember voices and the user's own name, for the transcript files (read when they are
-        /// rewritten). One that throws leaves the files as they were (exit 3).
-        public var voiceInputs: @Sendable () throws -> SessionSummarizeCommand.VoiceInputs
+        /// People's names, Remember voices and the user's own name for the transcript files: read from `profileStore`
+        /// under its lock, inside the speaker lock (speakers → profiles), when each file rewrite runs, as `session
+        /// summarize` reads them at its save; or, when set (tests), from this closure at the same moment. A read that
+        /// fails leaves the files as they were.
+        public var voiceInputs: (@Sendable () throws -> SessionSummarizeCommand.VoiceInputs)?
+        public var profileStore: SpeakerProfileStore
         /// The deep transcription lock (§4.16), which a final transcript or a summary holds.
         public var jobLock: URL
         /// For the default name a recording gets back ("Meeting 2026-10-03 14:00").
@@ -109,16 +112,18 @@ public enum SessionRenameCommand {
         var beforeLease: (@Sendable () async -> Void)?
         /// Tests: runs just after the lease is taken (the folder moved or replaced then).
         var afterLease: (@Sendable () async -> Void)?
+        /// Tests: runs before each step that writes ("prepare", "write", "nameSource", "regenerate"), just before the
+        /// folder is checked again.
+        var beforeStep: (@Sendable (String) async -> Void)?
         /// Tests: writes meeting.json's `nameSource` in place of `writeNameSource` (a write that fails).
         var nameSourceWriter: (@Sendable (MeetingNameSource, URL, MeetingInfo) throws -> Void)?
 
         public init(session: URL, name: String?,
-                    voiceInputs: @escaping @Sendable () throws -> SessionSummarizeCommand.VoiceInputs = {
-                        try SessionSummarizeCommand.VoiceInputs.read()
-                    },
+                    voiceInputs: (@Sendable () throws -> SessionSummarizeCommand.VoiceInputs)? = nil,
+                    profileStore: SpeakerProfileStore = SpeakerProfileStore(),
                     jobLock: URL = DeepTranscriptionLock.url, timeZone: TimeZone = .current) {
-            self.session = session; self.name = name; self.voiceInputs = voiceInputs; self.jobLock = jobLock
-            self.timeZone = timeZone
+            self.session = session; self.name = name; self.voiceInputs = voiceInputs; self.profileStore = profileStore
+            self.jobLock = jobLock; self.timeZone = timeZone
         }
     }
 
@@ -274,14 +279,25 @@ public enum SessionRenameCommand {
         }
         generated = MeetingSummaryStore.current(MeetingSummaryStore.readIfUsable(session: session, sessionID: id),
                                                 transcriptID: transcriptID)?.title
-        let inputs = Result { try request.voiceInputs() }
+        // Before each step that writes, the folder at the path is checked again to be the one the lease locks (the
+        // device and inode check of the lease's use): a folder moved or replaced meanwhile gets nothing written.
+        func checkpoint(_ step: String) async throws {
+            await request.beforeStep?(step)
+            try await lease.withUse(for: session) {}
+        }
+        let moved = "This meeting's folder was moved or replaced while it was being renamed"
         if unchanged {
             let message = target.source.isUser ? "The meeting already has this name."
                 : "The meeting already shows its generated title."
             guard hasTranscript else { return done(.unchanged, message) }
             // Rewriting files that already show the title writes the same bytes.
             do {
-                try regenerate(session: session, voice: inputs.get())
+                try await checkpoint("regenerate")
+            } catch {
+                return refused(.busy, moved + "; nothing was changed. Try again.")
+            }
+            do {
+                try regenerate(session: session, request: request)
                 return done(.unchanged, message, exports: true)
             } catch {
                 return done(.unchanged, message + " The transcript files were not rewritten: "
@@ -306,7 +322,12 @@ public enum SessionRenameCommand {
             }
             if !usable, hasExportFiles(session) {
                 do {
-                    try regenerate(session: session, voice: inputs.get())
+                    try await checkpoint("prepare")
+                } catch {
+                    return refused(.busy, moved + "; nothing was changed. Try again.")
+                }
+                do {
+                    try regenerate(session: session, request: request)
                 } catch {
                     return refused(.failed, "Cannot prepare this meeting's transcript files for the new name, so its "
                         + "name was not changed: \(error.localizedDescription)")
@@ -314,7 +335,21 @@ public enum SessionRenameCommand {
             }
         }
         do {
+            try await checkpoint("write")
+        } catch {
+            return refused(.busy, moved + "; nothing was changed. Try again.")
+        }
+        do {
             try await writeName(target, manifest: manifest, meeting: meeting, session: session, lease: lease,
+                                check: {
+                                    do {
+                                        try await checkpoint("nameSource")
+                                    } catch {
+                                        throw PartialRename(message: moved + " after its new name was written, so "
+                                            + "the rest was not; its transcript files may still show the old title. "
+                                            + "Rename it again.")
+                                    }
+                                },
                                 nameSourceWriter: request.nameSourceWriter ?? {
                                     try writeNameSource($0, session: $1, meeting: $2)
                                 })
@@ -331,7 +366,12 @@ public enum SessionRenameCommand {
             : "The meeting shows its generated title again."
         guard hasTranscript else { return done(.renamed, message) }
         do {
-            try regenerate(session: session, voice: inputs.get())
+            try await checkpoint("regenerate")
+        } catch {
+            return done(.renamed, message + " " + moved + ", so its transcript files were not rewritten.", code: 3)
+        }
+        do {
+            try regenerate(session: session, request: request)
             return done(.renamed, message, exports: true)
         } catch {
             return done(.renamed, message + " The transcript files were not rewritten: \(error.localizedDescription)",
@@ -351,10 +391,13 @@ public enum SessionRenameCommand {
     /// source differ from what is asked, so they are written again). A `renamed` event is journaled.
     static func writeName(_ target: (name: String, source: MeetingNameSource), manifest: SessionManifest,
                           meeting: MeetingInfo, session: URL, lease: ProcessingLease,
+                          check: () async throws -> Void = {},
                           nameSourceWriter: (MeetingNameSource, URL, MeetingInfo) throws -> Void) async throws {
         let archive = try SessionArchive.openForMaintenance(at: session, lease: lease)
         do {
             try await archive.setName(target.name)
+            // The folder is checked again before the second write (`check` throws `PartialRename` when it moved).
+            try await check()
             do {
                 try nameSourceWriter(target.source, session, meeting)
             } catch {
@@ -494,12 +537,25 @@ public enum SessionRenameCommand {
         try AtomicFile.write(data, to: url)
     }
 
-    /// Rewrites the transcript files under the speaker lock, with `voice`'s names, so a summary that is current stays
-    /// in them (its key is computed with the same names).
-    private static func regenerate(session: URL, voice: SessionSummarizeCommand.VoiceInputs) throws {
-        try SessionArchive.withSpeakerLock(at: session) {
+    /// Rewrites the transcript files under the speaker lock, with people's names, Remember voices and the user's own
+    /// name read then: from the people store under its lock (taken after the speaker lock, speakers → profiles) and
+    /// held until the files are written, as `session summarize` does at its save, so a change to the people (Remember
+    /// voices turned off, a rename) never lands between the read and the files; a summary that is current stays in
+    /// them (its key is computed with the same names).
+    private static func regenerate(session: URL, request: Request) throws {
+        func write(_ voice: SessionSummarizeCommand.VoiceInputs) throws {
             _ = try SessionExports.regenerateLocked(session: session, profileNames: voice.names,
                                                     applyRecognition: voice.recognition, selfName: voice.selfName)
+        }
+        try SessionArchive.withSpeakerLock(at: session) {
+            if let read = request.voiceInputs {
+                try write(read())
+                return
+            }
+            let store = request.profileStore
+            try store.withLockedRead { result in
+                try write(SessionSummarizeCommand.VoiceInputs.from(try result.get(), store: store))
+            }
         }
     }
 }

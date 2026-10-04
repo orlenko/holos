@@ -909,3 +909,77 @@ private func listed(name: String, source: MeetingNameSource, generated: String?)
     #expect(outcome.message.contains("could not be put back"))
     #expect(MeetingRenameRun.staysMarked(outcome: outcome, wasMarked: false))
 }
+
+// MARK: - Jobs elsewhere, each write on the locked folder, people read at the write
+
+@Test func aSummaryOrFinalTranscriptRunningElsewhereTurnsRenameOff() async throws {
+    let temp = try TemporaryDirectory("rename")
+    defer { temp.remove() }
+    let session = try await renameSession(in: temp.url)
+    let id = try SessionArchive.readManifest(at: session).id
+    #expect(SessionCatalog.summary(session: session, jobState: .free).jobInProgress == nil)
+    let summary = SessionCatalog.summary(
+        session: session, jobState: .held(DeepTranscriptionLock.Holder(pid: 1, sessionID: id, force: false,
+                                                                       kind: DeepTranscriptionLock.Holder.summaryKind)))
+    #expect(summary.jobInProgress?.contains("summary") == true)
+    #expect(!MeetingActionPolicy.renames(summary))
+    #expect(MeetingActionPolicy.renameRefusal(summary)?.contains("summary") == true)
+    let deep = SessionCatalog.summary(
+        session: session, jobState: .held(DeepTranscriptionLock.Holder(pid: 1, sessionID: id, force: false)))
+    #expect(deep.jobInProgress?.contains("final transcript") == true)
+    // Another meeting's job leaves this one alone.
+    let other = SessionCatalog.summary(
+        session: session, jobState: .held(DeepTranscriptionLock.Holder(pid: 1, sessionID: "OTHER", force: false)))
+    #expect(other.jobInProgress == nil)
+    #expect(MeetingActionPolicy.renames(other))
+}
+
+@Test func eachWriteChecksTheLockedFolder() async throws {
+    for (step, expectedCode) in [("prepare", Int32(1)), ("regenerate", Int32(3)), ("unchanged", Int32(1))] {
+        let temp = try TemporaryDirectory("rename")
+        defer { temp.remove() }
+        let session = try await renameSession(in: temp.url, name: "Weekly sync", legacyExports: step == "prepare")
+        if step == "unchanged" { _ = await rename(session, "Weekly sync") }
+        let moved = temp.url.appendingPathComponent("moved", isDirectory: true)
+        var request = SessionRenameCommand.Request(
+            session: session, name: step == "unchanged" ? "Weekly sync" : "Design review", voiceInputs: { voice },
+            jobLock: temp.url.appendingPathComponent("jobs.lock"), timeZone: utc)
+        request.beforeStep = { reached in
+            guard reached == (step == "unchanged" ? "regenerate" : step) else { return }
+            try? FileManager.default.moveItem(at: session, to: moved)
+            try? FileManager.default.copyItem(at: moved, to: session)
+        }
+        let outcome = await SessionRenameCommand.run(request)
+        #expect(outcome.exitCode == expectedCode, "\(step)")
+        #expect(outcome.message.contains("moved or replaced"), "\(step)")
+        #expect(!outcome.exportsUpdated, "\(step)")
+    }
+}
+
+@Test func peopleAreReadWhenTheFilesAreWritten() async throws {
+    let temp = try TemporaryDirectory("rename")
+    defer { temp.remove() }
+    let session = try await renameSession(in: temp.url)
+    let order = SharedValue<[String]>([])
+    var request = SessionRenameCommand.Request(
+        session: session, name: "Design review",
+        voiceInputs: {
+            order.update { $0.append("read") }
+            return voice
+        },
+        jobLock: temp.url.appendingPathComponent("jobs.lock"), timeZone: utc)
+    request.beforeStep = { step in order.update { $0.append(step) } }
+    let outcome = await SessionRenameCommand.run(request)
+    #expect(outcome.exitCode == 0)
+    // Read under the locks at the write, after everything before it, not once up front.
+    #expect(order.value.last == "read")
+    #expect(order.value.suffix(2) == ["regenerate", "read"])
+
+    // The people store itself, read under its lock (speakers, then profiles) at the write.
+    let store = SpeakerProfileStore(directory: temp.url.appendingPathComponent("Speakers", isDirectory: true))
+    try store.update { $0.profiles.append(SpeakerProfile(displayName: "Robin", isSelf: true)) }
+    var stored = SessionRenameCommand.Request(session: session, name: "Roadmap review",
+                                              jobLock: temp.url.appendingPathComponent("jobs.lock"), timeZone: utc)
+    stored.profileStore = store
+    #expect(await SessionRenameCommand.run(stored).exitCode == 0)
+}

@@ -5040,7 +5040,10 @@ meeting marked for Update Transcript Files), and
 a crash between them leaves a name and source that differ from the ones asked for, which a retry
 writes again. A `renamed` event (`nameSource`) is journaled. Then the transcript files are rewritten under the speaker lock with
 the people store's names, Remember voices and the user's own name read once (the key a current
-summary is checked with), so the Markdown heading follows and the summary stays, without the
+summary is checked with; read from the people store under its lock, inside the speaker lock, when
+each rewrite runs and held until the files are written, as `session summarize` does at its save,
+so Remember voices turned off or a person renamed meanwhile reaches the files), so the Markdown
+heading follows and the summary stays, without the
 model; transcript files without a usable record of what was generated (no `exports/.generated.json`,
 or a damaged one, `SessionExports.hasUsableRecord`: one that does not decode, or whose entries are not
 the transcript file names with a 64-digit lowercase SHA-256, or that does not cover all three
@@ -5052,8 +5055,10 @@ now, or a newer build wrote it) nothing is changed (`failed`, or `unreadable`). 
 decides from (the manifest, meeting.json, the name asked for, whether it is already so) is read
 after the processing lease is taken, so another rename that ends while this one waits for the lease
 is seen; all of it runs in the lease's use (`ProcessingLease.withUse`, the device and inode check
-every processing command makes) and checks the manifest's ID is the one asked for, so a folder moved
-or replaced meanwhile is left alone (`busy`); the recorder's liveness is read before it (the rename's own lease would read as one). A current
+every processing command makes) and checks the manifest's ID is the one asked for, and the folder is
+checked again before each step that writes (the preparation, the name, its source, each rewrite of
+the files), so a folder moved or replaced meanwhile gets nothing more written (`busy` before the
+name; exit 3 once the name is written); the recorder's liveness is read before it (the rename's own lease would read as one). A current
 transcript that is there but cannot be read refuses the rename before anything is written, rather
 than leaving the files with the old title: one a newer build wrote, or a damaged one, `failed`
 (update, or Recover); anything else `unreadable`, tried again later. Refused (`busy`, exit 1) while
@@ -5094,7 +5099,9 @@ an alert. The mark is set before the child starts and its JSON result decides it
 there is no result), so a quit before the rename ends leaves Update Transcript Files offered after
 the next launch (the status line says so only once no command runs on the meeting). Rename is off,
 with the reason as its tooltip (`MeetingActionPolicy.renameRefusal`), wherever the command refuses
-without trying: a meeting not finished, one whose exports/.generated.json a newer build wrote
+without trying: a meeting not finished, one a summary or final transcript of which runs in any
+process (`jobInProgress`, from the background-job lock: one started in Terminal holds it without
+holding the meeting until it saves), one whose exports/.generated.json a newer build wrote
 (`exportsProblem`), one without a current transcript whose transcript files exist (any of the
 three, `SessionExports.hasTranscriptFiles`, as the command checks them; they could not
 follow the name: the command refuses it too, "transcript missing; recover it first"), one whose
@@ -5318,7 +5325,9 @@ turning Rename off, the generated title offered only from a current summary, Rev
 the list's when the transcript is damaged, the same name keeping a source a newer build wrote, export records with malformed entries counted as
 damaged, also an empty or partial one, a newer export record and transcript files without a
 transcript (a JSON file alone too) turning Rename off, a folder replaced once the lease is taken
-left alone, a name that cannot be put back exiting 3, a
+left alone and each write checking the folder again, a job of the meeting running elsewhere turning
+Rename off, people read under their lock when the files are written, a name that cannot be put back
+exiting 3, a
 transcript from a newer build, damaged, or unreadable now, an unreadable meeting.json).
 
 **Follow-ups.** The summary in Review. If Apple's model proves too weak on long or noisy meetings, a local

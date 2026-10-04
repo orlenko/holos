@@ -99,6 +99,9 @@ public struct SessionSummary: Codable, Sendable, Equatable, Identifiable {
     /// Why the transcript files cannot be rewritten: exports/.generated.json was written by a newer build. Nil
     /// otherwise. Rename refuses such a meeting (its files could not follow the name).
     public var exportsProblem: String?
+    /// A summary or final transcript of this meeting running in any process (`SessionCatalog.jobInProgress`), or nil.
+    /// Rename refuses such a meeting.
+    public var jobInProgress: String?
     /// summary.json, when it can be read: possibly of an earlier transcript (`summaryIsCurrent` says), whose summary
     /// text is still shown until the new one is made, but not its title (`displayTitle`).
     public var generatedSummary: MeetingSummaryRecord? = nil
@@ -109,7 +112,7 @@ public struct SessionSummary: Codable, Sendable, Equatable, Identifiable {
         case id, directory, name, createdAt, source, origin, state, manifestStatus, savedSeconds, chunkCount
         case transcriptID, transcriptProblem, transcriptRefused, speakerState, labelMessage, runID, labelsReadyAt
         case hasSpeakerEdits, phase, pid, liveness, bytes, derivedBytes, audioDeleted, languageWork, nameSource
-        case metadataProblem, exportsProblem
+        case metadataProblem, exportsProblem, jobInProgress
     }
 
     /// The title the Meetings list shows (`MeetingNaming.title`, the rule the transcript files' heading follows too):
@@ -139,7 +142,7 @@ public struct SessionSummary: Codable, Sendable, Equatable, Identifiable {
                 liveness: RecorderLiveness, bytes: Int64 = 0, derivedBytes: Int64 = 0, audioDeleted: Bool = false,
                 languageWork: LanguageWork? = nil, nameSource: MeetingNameSource? = nil,
                 generatedSummary: MeetingSummaryRecord? = nil, metadataProblem: String? = nil,
-                exportsProblem: String? = nil) {
+                exportsProblem: String? = nil, jobInProgress: String? = nil) {
         self.id = id; self.directory = directory; self.name = name; self.createdAt = createdAt
         self.source = source; self.origin = origin; self.state = state; self.manifestStatus = manifestStatus
         self.savedSeconds = savedSeconds; self.chunkCount = chunkCount; self.transcriptID = transcriptID
@@ -153,6 +156,7 @@ public struct SessionSummary: Codable, Sendable, Equatable, Identifiable {
         self.generatedSummary = generatedSummary
         self.metadataProblem = metadataProblem
         self.exportsProblem = exportsProblem
+        self.jobInProgress = jobInProgress
     }
 }
 
@@ -172,13 +176,18 @@ public enum SessionCatalog {
     /// such as an import's staging folder). A missing or unreadable `root` gives an empty list. Sessions created in
     /// the same second are ordered by ID.
     public static func list(root: URL = HolosPaths.sessions, now: Date = Date()) -> [SessionSummary] {
-        sessionFolders(in: root).map { summary(session: $0, now: now) }.sorted { left, right in
+        // The background-job lock is read once for the whole listing.
+        let job = DeepTranscriptionLock.state()
+        return sessionFolders(in: root).map { summary(session: $0, now: now, jobState: job) }.sorted { left, right in
             if left.createdAt != right.createdAt { return left.createdAt > right.createdAt }
             return left.id < right.id
         }
     }
 
-    public static func summary(session: URL, now: Date = Date()) -> SessionSummary {
+    /// `jobState`: the background-job lock (`DeepTranscriptionLock.state()`, read when nil), which says whether a
+    /// summary or final transcript of this meeting runs in any process (`jobInProgress`).
+    public static func summary(session: URL, now: Date = Date(), jobState: DeepTranscriptionLock.State? = nil)
+        -> SessionSummary {
         let liveness = RecorderChannel.liveness(session: session, now: now)
         let status = try? RecorderChannel.readStatus(session: session)
         let sizes = sizes(of: session)
@@ -239,7 +248,18 @@ public enum SessionCatalog {
             generatedSummary: MeetingSummaryStore.readIfUsable(session: session, sessionID: manifest.id),
             metadataProblem: { if case .failure(let error) = meetingRead { error.localizedDescription } else { nil } }(),
             exportsProblem: SessionExports.recordIsFromNewerVersion(session: session)
-                ? "exports/.generated.json was written by a newer version of Voice is Local." : nil)
+                ? "exports/.generated.json was written by a newer version of Voice is Local." : nil,
+            jobInProgress: jobInProgress(jobState ?? DeepTranscriptionLock.state(), sessionID: manifest.id))
+    }
+
+    /// What the background-job lock says runs on meeting `sessionID`: a summary or a final transcript of it, in any
+    /// process (one started in Terminal holds the lock without holding the meeting until it saves). Nil otherwise.
+    static func jobInProgress(_ state: DeepTranscriptionLock.State, sessionID: String) -> String? {
+        guard case .held(let holder?) = state, holder.sessionID.caseInsensitiveCompare(sessionID) == .orderedSame else {
+            return nil
+        }
+        return holder.isSummary ? "A summary of this meeting is being written."
+            : "A final transcript of this meeting is being made."
     }
 
     /// `summaries` with `LanguageWork.ready` set where a run would detect a language now

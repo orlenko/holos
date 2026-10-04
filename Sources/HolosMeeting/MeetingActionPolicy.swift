@@ -53,6 +53,9 @@ public enum MeetingActionPolicy {
                 ? "The meeting can be renamed once it is saved."
                 : "The meeting was not saved properly; Recover it first, then rename it."
         }
+        if let job = summary.jobInProgress {
+            return job + " Rename it when that is done."
+        }
         if summary.exportsProblem != nil {
             return "Its transcript files were written by a newer version of Voice is Local, so they cannot follow a "
                 + "new name; update Voice is Local to rename it."
