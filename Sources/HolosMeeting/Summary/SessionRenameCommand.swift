@@ -319,9 +319,10 @@ public enum SessionRenameCommand {
         }
         // A summary.json a newer build wrote cannot be carried into the rewritten files (they would lose it, and the
         // generated title): refused, as other newer files are. A damaged one counts as none.
+        // Without a transcript nothing is exported and no summary can give a title: summary.json does not matter then.
         let summaryRecord: MeetingSummaryRecord?
         do {
-            summaryRecord = try MeetingSummaryStore.read(session: session, sessionID: id)
+            summaryRecord = hasTranscript ? try MeetingSummaryStore.read(session: session, sessionID: id) : nil
         } catch let error where SessionFiles.isDamage(error) {
             summaryRecord = nil
         } catch {

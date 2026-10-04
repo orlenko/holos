@@ -5060,8 +5060,8 @@ is off for it, with the reason as the tooltip. A preparation that stops after it
 rewritten under the old name; only one that stops before any write exits 1 (each write counts
 from its check, since a publication can land and then fail on the folder sync). The folder is
 checked once more before the `renamed` event is journaled; a replaced one gets no event (exit 3). A
-meeting without a transcript and transcript files is renamed whatever its export record says, in
-the policy and the command alike (the files are not touched); a stale copy of its name is offered
+meeting without a transcript and transcript files is renamed whatever its export record and its
+summary.json say (neither is read), in the policy and the command alike (the files are not touched); a stale copy of its name is offered
 as Finish Rename (`MeetingRenameRun.repairTitle`). The summary
 the rename read and checked at its start is the one the rewrites write (`regenerateLocked`'s
 `summaryRecord`), not read again. The app passes the meeting it means (`--expect-id`); a folder

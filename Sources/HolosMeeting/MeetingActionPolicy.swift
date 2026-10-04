@@ -56,7 +56,9 @@ public enum MeetingActionPolicy {
         if let job = summary.jobInProgress {
             return job + " Rename it when that is done."
         }
-        if let problem = summary.summaryProblem {
+        // As for the export record: without a transcript and transcript files the summary does not matter.
+        if let problem = summary.summaryProblem,
+           summary.transcriptID != nil || summary.transcriptProblem != nil || hasExport {
             if problem.contains("newer version") {
                 return "Its summary was written by a newer version of Voice is Local, so its transcript files cannot "
                     + "follow a new name; update Voice is Local to rename it."

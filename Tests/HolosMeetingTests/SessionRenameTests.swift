@@ -1660,3 +1660,18 @@ private func listed(name: String, source: MeetingNameSource, generated: String?)
     #expect(after.st_ino == before.st_ino && after.st_size == before.st_size)
     #expect(cache.state(of: summary) == .stale)
 }
+
+@Test func aTranscriptFreeMeetingIsRenamedWhateverItsSummary() async throws {
+    let temp = try TemporaryDirectory("rename")
+    defer { temp.remove() }
+    let session = try await SessionFixtures.makeSession(in: temp.url, transcript: nil)
+    let id = try SessionArchive.readManifest(at: session).id
+    try AtomicFile.write(Data(#"{"schemaVersion":2,"sessionID":"\#(id)"}"#.utf8), to: SessionPaths.summary(session))
+    let listed = SessionCatalog.summary(session: session, jobState: .free)
+    #expect(listed.summaryProblem != nil)
+    // No transcript and no transcript file: nothing is exported, so the summary does not matter.
+    #expect(MeetingActionPolicy.renameRefusal(listed, hasExport: false) == nil)
+    #expect(MeetingActionPolicy.enabled(listed, inUse: false, hasExport: false, transcriptFiles: false)
+        .contains(.rename))
+    #expect(await rename(session, "Hallway chat").status == .renamed)
+}
