@@ -5107,7 +5107,8 @@ the meeting has a transcript (a rewrite that failed before its first file), when
 generated is missing, damaged, from a newer build or left mid-write (`pending`), when any of the
 three files is missing or not the one the record says was written, or when transcript.md is not
 headed by the title the meeting shows, or transcript.json does not record the manifest's name (a
-rename that changed the name but not the title shown) (`MeetingNaming.title`, escaped as the export writes it,
+rename that changed the name but not the title shown) or the current transcript's ID (a final
+transcript or recovery that saved a new transcript and stopped before the rewrite) (`MeetingNaming.title`, escaped as the export writes it,
 `TranscriptExporter.markdownHeading`). Then the meeting's status line says so (not while a command
 works on it) and its menu offers Update Transcript Files, which runs the rename the meeting has now
 (`MeetingRenameRequest.retry`: the user's name exactly, which the command does not clean when it
@@ -5360,7 +5361,7 @@ already showing the generated title and finished by Update Transcript Files; a u
 after its name showing what it showed), a published source treated as partial, a pending map that
 must be complete, a transcript without files out of date, a check before moving an edited file aside,
 a job not yet named holding every meeting, an unreadable export record turning Rename off, the
-name in transcript.json checked, a preparation reported when the rename then fails, a
+name in transcript.json checked, files of an earlier transcript out of date, a preparation reported when the rename then fails, a
 transcript from a newer build, damaged, or unreadable now, an unreadable meeting.json).
 
 **Follow-ups.** The summary in Review. If Apple's model proves too weak on long or noisy meetings, a local

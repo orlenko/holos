@@ -310,8 +310,10 @@ public enum SessionExports {
     /// Review, a summary, a command in Terminal), for a meeting titled `title` (`MeetingNaming.title`). Nothing is
     /// remembered between calls; `TranscriptFilesCache` saves reading unchanged files again.
     ///
-    /// `name`, when given, is the manifest's name, which transcript.json records (`session.name`): a rename that
-    /// changed only the name, not the title shown, is out of date until the files are rewritten too.
+    /// transcript.json must be of the current transcript (`transcriptID`): files left from an earlier one (a new one
+    /// saved, the rewrite not done) are out of date. `name`, when given, is the manifest's name, which transcript.json
+    /// records (`session.name`): a rename that changed only the name, not the title shown, is out of date until the
+    /// files are rewritten too.
     public static func filesState(session: URL, title: String, name: String? = nil) -> FilesState {
         // No file: nothing to bring up to date only without a transcript; a meeting with one has its files written
         // (one missing them, a rewrite that failed before its first file, is out of date).
@@ -326,9 +328,15 @@ public enum SessionExports {
                                                            maxBytes: maxExportBytes),
                   record.files[fileName(format)] == sha256(data) else { return .stale }
             if format == .md { markdown = data }
-            if format == .json, let name {
+            if format == .json {
                 let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
-                guard (object?["session"] as? [String: Any])?["name"] as? String == name else { return .stale }
+                // Of the current transcript (a new one saved by a final transcript or a recovery that stopped before
+                // the rewrite leaves files of the earlier one).
+                guard let transcriptID = try? SessionArchive.currentTranscriptID(at: session),
+                      object?["transcriptID"] as? String == transcriptID else { return .stale }
+                if let name {
+                    guard (object?["session"] as? [String: Any])?["name"] as? String == name else { return .stale }
+                }
             }
         }
         guard let markdown else { return .stale }

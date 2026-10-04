@@ -1288,3 +1288,21 @@ private func listed(name: String, source: MeetingNameSource, generated: String?)
     #expect(outcome.message.contains("rewritten under the old name"))
     #expect(try SessionArchive.readManifest(at: session).name == "Meeting 2026-10-03 14:00", "The name was put back")
 }
+
+@Test func filesOfAnEarlierTranscriptAreOutOfDate() async throws {
+    let temp = try TemporaryDirectory("rename")
+    defer { temp.remove() }
+    let session = try await renameSession(in: temp.url, name: "Weekly sync")
+    _ = await rename(session, "Weekly sync")
+    var summary = SessionCatalog.summary(session: session, jobState: .free)
+    #expect(SessionExports.filesState(session: session, title: summary.displayTitle, name: summary.name) == .current)
+    // A final transcript (or a recovery) saved a new transcript, then stopped before rewriting the files: the name
+    // and heading are the same, but transcript.json is of the earlier revision.
+    let newer = SessionFixtures.transcript(SessionFixtures.alternatingSegments(track: "mic", wordsPerTurn: 8))
+    try await SessionFixtures.saveTranscript(newer, in: session)
+    summary = SessionCatalog.summary(session: session, jobState: .free)
+    #expect(SessionExports.filesState(session: session, title: summary.displayTitle, name: summary.name) == .stale)
+    #expect(TranscriptFilesCache().state(of: summary) == .stale)
+    _ = await rename(session, "Weekly sync")
+    #expect(SessionExports.filesState(session: session, title: summary.displayTitle, name: summary.name) == .current)
+}
