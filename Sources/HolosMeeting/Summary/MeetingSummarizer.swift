@@ -192,8 +192,7 @@ public struct MeetingSummarizer: Sendable {
             if run.skipped * 2 > run.pieces || notes.isEmpty {
                 throw Failure.tooManyFailures("\(run.skipped) of \(run.pieces) parts of the meeting gave no notes.")
             }
-            let condensed = try await condense(notes, input: input, run: &run)
-            draft = try await final(source: .notes(condensed), input: input, run: &run)
+            draft = try await finalFromNotes(notes, input: input, run: &run)
         }
         stats.calls = run.calls
         stats.skippedParts = run.skipped
@@ -288,27 +287,76 @@ public struct MeetingSummarizer: Sendable {
         return []
     }
 
+    /// The final call on the parts' notes, condensed to fit. Notes the estimate let through but the model's count
+    /// did not are condensed again, another level over their two halves, and asked about again; only notes that
+    /// cannot shrink further (a single note, or a level that made them no shorter) fail.
+    private func finalFromNotes(_ notes: [[String]], input: MeetingSummaryInput, run: inout RunState) async throws
+        -> MeetingSummaryDraft {
+        var current = try await condense(notes, input: input, run: &run)
+        while true {
+            do {
+                return try await final(source: .notes(current), input: input, run: &run)
+            } catch MeetingSummaryModelError.contextExceeded {
+                let size = Self.estimatedTokens(Self.notesText(current))
+                guard let halves = Self.noteHalves(current) else {
+                    throw Failure.unusableAnswer("The meeting's notes did not fit the model.")
+                }
+                // Another level: each half condensed to one part's notes; a half the model would not condense keeps
+                // half of its notes (of every part in it, in turn).
+                var smaller: [[String]] = []
+                for half in halves {
+                    try Task.checkCancellation()
+                    let condensed = try await condenseBatch(half, input: input, run: &run)
+                    smaller.append(condensed.isEmpty
+                        ? Self.roundRobin(half, limit: max(1, half.joined().count / 2)) : condensed)
+                }
+                guard Self.estimatedTokens(Self.notesText(smaller)) < size else {
+                    throw Failure.unusableAnswer("The meeting's notes did not fit the model.")
+                }
+                current = smaller
+            }
+        }
+    }
+
+    /// `notes` in two halves for another level of condensing: the parts in two, or a single part's notes in two;
+    /// nil for a single note.
+    static func noteHalves(_ notes: [[String]]) -> [[[String]]]? {
+        if notes.count >= 2 {
+            let middle = notes.count / 2
+            return [Array(notes[..<middle]), Array(notes[middle...])]
+        }
+        guard let part = notes.first, part.count >= 2 else { return nil }
+        let middle = part.count / 2
+        return [[Array(part[..<middle])], [Array(part[middle...])]]
+    }
+
+    /// One batch of notes condensed by the model; none when it would not (refused, too long, nothing usable).
+    private func condenseBatch(_ batch: [[String]], input: MeetingSummaryInput, run: inout RunState) async throws
+        -> [String] {
+        let instructions = Self.condenseInstructions(language: input.language)
+        let prompt = Self.condensePrompt(batch)
+        let model = model
+        let found: MeetingSummaryNotes?
+        do {
+            found = try await call(&run, { try await model.notes(instructions, prompt) })
+        } catch MeetingSummaryModelError.contextExceeded {
+            found = nil
+        }
+        let condensed = found?.refused == true ? [] : MeetingSummaryDraft.cleanList(found?.notes ?? [], limit: 6)
+        return condensed.contains(where: MeetingSummaryDraft.isRefusal) ? [] : condensed
+    }
+
     /// The parts' notes, condensed in batches until they fit the final prompt. Each round makes fewer, shorter notes;
     /// after three rounds the notes are cut to fit.
     func condense(_ notes: [[String]], input: MeetingSummaryInput, run: inout RunState) async throws -> [[String]] {
+        let budget = finalBudget
         var current = notes
         for _ in 0..<3 {
-            guard Self.estimatedTokens(Self.notesText(current)) > finalBudget else { return current }
+            guard Self.estimatedTokens(Self.notesText(current)) > budget else { return current }
             var next: [[String]] = []
-            for batch in Self.batches(current, budget: finalBudget) {
+            for batch in Self.batches(current, budget: budget) {
                 try Task.checkCancellation()
-                let instructions = Self.condenseInstructions(language: input.language)
-                let prompt = Self.condensePrompt(batch)
-                let model = model
-                let found: MeetingSummaryNotes?
-                do {
-                    found = try await call(&run, { try await model.notes(instructions, prompt) })
-                } catch MeetingSummaryModelError.contextExceeded {
-                    found = nil
-                }
-                let condensed = found?.refused == true
-                    ? [] : MeetingSummaryDraft.cleanList(found?.notes ?? [], limit: 6)
-                let cleaned = condensed.contains(where: MeetingSummaryDraft.isRefusal) ? [] : condensed
+                let cleaned = try await condenseBatch(batch, input: input, run: &run)
                 // A batch the model would not condense (or refused to) keeps notes of every part in it.
                 next.append(cleaned.isEmpty ? Self.roundRobin(batch, limit: max(6, batch.count)) : cleaned)
             }
@@ -316,7 +364,7 @@ public struct MeetingSummarizer: Sendable {
         }
         // Still too long: the earliest notes of each part, until they fit.
         var kept = current
-        while Self.estimatedTokens(Self.notesText(kept)) > finalBudget,
+        while Self.estimatedTokens(Self.notesText(kept)) > budget,
               let longest = kept.indices.max(by: { kept[$0].count < kept[$1].count }), kept[longest].count > 1 {
             kept[longest].removeLast()
         }
@@ -345,17 +393,12 @@ public struct MeetingSummarizer: Sendable {
                                         people: input.people)
         let model = model
         var answer: MeetingSummaryDraft?
-        do {
-            // A call that timed out is made again, as a part's would be, until `maximumTimeoutsInARow` in a row
-            // (then `call` stops the run).
-            repeat {
-                answer = try await call(&run, { try await model.summary(instructions, prompt) })
-            } while answer == nil && run.timeoutsInARow > 0
-        } catch MeetingSummaryModelError.contextExceeded {
-            // A transcript too long for one call is summarized from notes instead (`summarize`).
-            if !fromNotes { throw MeetingSummaryModelError.contextExceeded }
-            throw Failure.unusableAnswer("The meeting's notes did not fit the model.")
-        }
+        // A call that timed out is made again, as a part's would be, until `maximumTimeoutsInARow` in a row (then
+        // `call` stops the run). One too long for the context throws `contextExceeded`: a transcript is then
+        // summarized from notes instead, and notes are condensed again (`summarize`, `finalFromNotes`).
+        repeat {
+            answer = try await call(&run, { try await model.summary(instructions, prompt) })
+        } while answer == nil && run.timeoutsInARow > 0
         guard let answer else { throw Failure.unusableAnswer("The model did not summarize the meeting.") }
         switch answer.cleaned(language: input.language) {
         case .success(let draft):
@@ -767,7 +810,7 @@ extension MeetingSummaryDraft {
     ]
 
     /// `text` without dates written with a month name ("October 3, 2026", "3 octobre", "3. Oktober", "3 de octubre",
-    /// "2026年10月3日"), weekdays, "today", and the words that led into them ("on", "le", "am", "del"). Month
+    /// "2026年10月3日"), weekdays, and the words that led into them ("on", "le", "am", "del"). Month
     /// and weekday names are those of `language` (the summary's) as the system knows them, and English and French.
     static func removingDates(_ text: String, language: String? = nil) -> String {
         let names = dateWords(language: language)
@@ -781,9 +824,8 @@ extension MeetingSummaryDraft {
             "\\b\\d{1,2}(?:er|\\.)?\\s+(?:de\\s+|of\\s+)?(?:\(months))\\.?(?:\\s+(?:de\\s+)?\\d{4})?\\b",
             "\\b(?:\(months))\\.?\\s+(?:de\\s+)?\\d{4}\\b",
             "\\b(?:\(weekdays))\\b,?",
-            #"\b(?:today|tonight|aujourd'hui|aujourd’hui|heute|hoy)\b"#,
             // Chinese and Japanese dates and weekdays, written without spaces, so without word boundaries:
-            // "2026年10月3日", "10月3日", "2026年10月", "10月"; "月曜日", "星期一", "周一", "週一"; "今日", "今天".
+            // "2026年10月3日", "10月3日", "2026年10月", "10月"; "月曜日", "星期一", "周一", "週一".
             // A year only before a month and a day only after one, so "10年計画" (a ten-year plan) and "3日間" (three
             // days) stay.
             #"\d{4}年\s*\d{1,2}月(?:\s*\d{1,2}[日号])?"#,
@@ -792,15 +834,13 @@ extension MeetingSummaryDraft {
             #"[月火水木金土日]曜日?"#,
             #"(?:星期|礼拜|禮拜)[一二三四五六日天]"#,
             #"[周週][一二三四五六日]"#,
-            #"今日|今天"#,
             // Korean, with or without spaces and with a possessive 의 after it: "2026년 10월 3일", "10월 3일",
-            // "2026년 10월", "10월"; "월요일"; "오늘". A year only before a month and a day only after one, so
+            // "2026년 10월", "10월"; "월요일". A year only before a month and a day only after one, so
             // "10년 계획" (a ten-year plan) and "3일 워크숍" (a three-day workshop) stay.
             #"\d{4}년\s*\d{1,2}월(?:\s*\d{1,2}일)?의?"#,
             #"\d{1,2}월\s*\d{1,2}일의?"#,
             #"\d{1,2}월의?"#,
             #"[월화수목금토일]요일의?"#,
-            #"오늘의?"#,
         ]
         var result = text
         for pattern in patterns {

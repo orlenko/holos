@@ -4965,7 +4965,10 @@ its lines, or a single line's text cut at sentences, words or characters; it fai
 cannot be cut); otherwise each part gets two to five notes (one call each), notes too
 long for the final prompt are condensed in batches (at most three rounds, then cut; a batch the
 model will not condense keeps notes of every part in it, the first of each first), and one
-call writes the title, summary, key points and action items from the notes in order. Structured
+call writes the title, summary, key points and action items from the notes in order. Notes the model finds too
+long for that call after all are condensed another level, over their two halves (the parts in two, or a single
+part's notes in two; a half the model will not condense keeps half its notes), and asked again; it fails only for a
+single note, or a level that made the notes no shorter. Structured
 output (`@Generable`), greedy sampling, a fresh session per call, guardrails for content
 transformations (as the AI fix), at most 400/600 response tokens, a 90 s limit per call. Every
 prompt fences the transcript (and the people's names, in their own fenced list) in `<<<`/`>>>` (a space follows every "<" or ">" in the data that another follows, so it holds no fence of
@@ -4994,12 +4997,13 @@ never saved as a whole one, and an older summary stays.
 
 **Checking the answer** (`MeetingSummaryDraft.cleaned`). The title: one line, quotes, "Title:"
 and a final period removed, a leading "Meeting about/on/…", "Meeting:", "Réunion sur …" removed,
-dates written with a month name, weekdays and "today" removed (numbers alone are kept, as they can be
-versions, "Release 1.2.3", "Python 3.11.8"; the prompt asks for no dates; month and weekday names of the summary's language from
+dates written with a month name and weekdays removed (numbers alone are kept, as they can be
+versions, "Release 1.2.3", "Python 3.11.8", and so are relative days such as "today", since no list of them covers
+every language; the prompt asks for no dates; month and weekday names of the summary's language from
 the system's calendar, and English and French; short weekday names are not, as Spanish "mar" is
 also "sea"; Chinese and Japanese dates and weekdays by pattern, "2026年10月3日", "10月", "月曜日",
 "星期一", with a particle left at either end, "の", "的", removed; Korean the same way, "2026년 10월 3일", "10월 3일의",
-"월요일", "오늘"; in all three a year only before a month and a day only after one, so "10年計画", "3日間", "10년 계획"
+"월요일"; in all three a year only before a month and a day only after one, so "10年計画", "3日間", "10년 계획"
 and "3일 워크숍" stay), at most 8 words and 60 characters (at a space when one
 is past half of that, else between characters, for text without spaces) without a dangling "and", "of",
 "the", "de", "pour" …; "Meeting" alone is no title. The summary: one line, at most two
@@ -5046,7 +5050,8 @@ they were. Lines stay (speaker, text) through every cut and are rendered only in
 name containing ": " cannot be misread. The speaker lock is held from that check through summary.json and the export
 rewrite (`SessionExports.regenerateLocked`, with the names and Remember voices read for that check, so a
 name edited past what the prompt shows reaches the files), so no speaker edit lands between them. Speaker and
-people's names go into prompts cut to 40 characters (with "…"), so a name of any length leaves
+people's names go into prompts cut to 40 characters and 160 UTF-8 bytes, between characters (with "…"), so a
+name of any length, or of characters carrying any number of combining marks, leaves
 every part room for the words. `session list --json` leaves summaries out (`SessionSummary`
 does not encode `generatedSummary`). For
 its whole life it holds the deep transcription lock (§4.16), with

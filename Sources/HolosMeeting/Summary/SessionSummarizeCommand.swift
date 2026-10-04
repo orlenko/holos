@@ -359,10 +359,11 @@ public enum SessionSummarizeCommand {
         var written = outcome(.written, message, transcriptID, 0)
         written.summary = pending
         do {
-            // With the names and Remember voices just checked, read under the locks: the files name people as the
-            // summary does, even when the request's names (from before the model ran) are out of date.
+            // With the names, Remember voices and the user's own name just checked, read under the locks: the files
+            // name people as the summary does, even when the request's (from before the model ran) are out of date,
+            // and their summary key is the record's, so the files written carry the summary.
             try SessionExports.regenerateLocked(session: session, profileNames: fresh.names,
-                                                applyRecognition: fresh.recognition)
+                                                applyRecognition: fresh.recognition, selfName: fresh.selfName)
             var done = record
             done.exportsPending = nil
             try MeetingSummaryStore.write(done, session: session)

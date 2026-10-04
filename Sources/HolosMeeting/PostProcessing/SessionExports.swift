@@ -60,12 +60,16 @@ public enum SessionExports {
     /// `SessionArchive.saveTranscript` writes for the current transcript count as generated; any other existing file
     /// is moved aside. A `.generated.json` from a newer Holos is refused (`unavailable`); a damaged one records
     /// nothing, so every existing file that differs is moved aside.
+    ///
+    /// `selfName` names the unnamed channel speaker in the summary's key (nil: `VoiceProfileService.ownName()`): the
+    /// summary command passes the one it checked, so the files it marks written carry its summary.
     @discardableResult
     public static func regenerateLocked(session: URL, profileNames: [String: String] = [:],
-                                        applyRecognition: Bool = true) throws -> ExportWriteResult {
+                                        applyRecognition: Bool = true, selfName: String? = nil) throws
+        -> ExportWriteResult {
         let snapshot = try SpeakerSessionSnapshot.load(session: session, profileNames: profileNames,
                                                        applyRecognition: applyRecognition)
-        let rendered = try renderAll(exportDocument(snapshot))
+        let rendered = try renderAll(exportDocument(snapshot, selfName: selfName))
         let result = try write(rendered, session: session, snapshot: snapshot)
         log.info("Session \(snapshot.manifest.id, privacy: .public): wrote \(result.written.count, privacy: .public) exports; moved \(result.movedAside.count, privacy: .public) edited exports aside")
         return result
@@ -91,7 +95,8 @@ public enum SessionExports {
     /// were labelled (`transcriptChanged`). The head run's labels then name words of the earlier transcript, so the
     /// exports show the current transcript without speakers until speakers are labelled again; a newer transcript
     /// never disappears from them.
-    static func exportDocument(_ snapshot: SpeakerSessionSnapshot, withSummary: Bool = true) throws -> ExportDocument {
+    static func exportDocument(_ snapshot: SpeakerSessionSnapshot, withSummary: Bool = true,
+                               selfName: String? = nil) throws -> ExportDocument {
         var document = snapshot.exportDocument()
         if snapshot.transcriptChanged, let current = try SessionFiles.currentTranscript(session: snapshot.session) {
             document.transcript = current
@@ -99,8 +104,8 @@ public enum SessionExports {
             document.projection = nil
         }
         if withSummary {
-            document.summary = exportSummary(snapshot, key: MeetingSummaryKey(document,
-                                                                              selfName: VoiceProfileService.ownName()))
+            let selfName = selfName ?? VoiceProfileService.ownName()
+            document.summary = exportSummary(snapshot, key: MeetingSummaryKey(document, selfName: selfName))
         }
         return document
     }

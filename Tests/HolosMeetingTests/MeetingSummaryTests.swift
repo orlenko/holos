@@ -165,6 +165,9 @@ private func input(_ lines: [MeetingSummaryLine]) -> MeetingSummaryInput {
     #expect(MeetingSummaryDraft.cleanTitle("Budget review on October 3, 2026") == "Budget review")
     #expect(MeetingSummaryDraft.cleanTitle("Sprint retro on Friday, October 3") == "Sprint retro")
     #expect(MeetingSummaryDraft.cleanTitle("Monday standup") == "Standup")
+    // Relative days are left to the prompt's "no dates": no list of them covers every language.
+    #expect(MeetingSummaryDraft.cleanTitle("Budget review today") == "Budget review today")
+    #expect(MeetingSummaryDraft.cleanTitle("今日の予算会議", language: "ja-JP") == "今日の予算会議")
     #expect(MeetingSummaryDraft.cleanTitle("Réunion sur le budget 2027") == "Le budget 2027")
     #expect(MeetingSummaryDraft.cleanTitle("Revue du 3 octobre") == "Revue")
     #expect(MeetingSummaryDraft.cleanTitle("Parser rewrite, release dates and the plan for testing everything")
@@ -970,6 +973,35 @@ private func trackDocument(source: AudioSource) -> ExportDocument {
     }
 }
 
+@Test func notesTooLongForTheModelAreCondensedAgain() async throws {
+    // The estimate lets the notes through, the model's count does not (its first final call): another level over
+    // the notes' halves, and asked again.
+    let finals = SharedValue(0)
+    @Sendable func condensing(_ prompt: String) -> [String] {
+        if let match = prompt.firstMatch(of: /Part (\d+) of/) {
+            return (1...3).map { "Part note \(match.1) \($0) about the release." }
+        }
+        return prompt.contains("Condensed") ? ["Short."] : ["Condensed batch about the release."]
+    }
+    let scripted = ScriptedSummaryModel(notes: condensing, summary: { _ in
+        finals.update { $0 += 1 }
+        if finals.value == 1 { throw MeetingSummaryModelError.contextExceeded }
+        return MeetingSummaryDraft(title: "Release plan", summary: "The team planned the release.")
+    })
+    let result = try await MeetingSummarizer(model: scripted.model(contextTokens: 400)).summarize(input(lines(30)))
+    #expect(result.draft.title == "Release plan")
+    let prompts = scripted.summaryCalls.value.map(\.prompt)
+    #expect(prompts.count == 2)
+    #expect(prompts.last.map { $0.count < prompts[0].count } == true)
+
+    // Notes that never fit, however far condensed: the run fails, after a bounded number of calls.
+    let never = ScriptedSummaryModel(notes: condensing, summary: { _ in throw MeetingSummaryModelError.contextExceeded })
+    await #expect(throws: MeetingSummarizer.Failure.self) {
+        _ = try await MeetingSummarizer(model: never.model(contextTokens: 400)).summarize(input(lines(30)))
+    }
+    #expect(never.summaryCalls.value.count < 12)
+}
+
 @Test func aRefusedMarkFailsTheRunWhateverTheAnswerSays() async throws {
     // Notes marked refused are a skipped part, however real they look; a final answer marked refused fails the run.
     let model = MeetingSummaryModel(
@@ -1215,6 +1247,22 @@ private func trackDocument(source: AudioSource) -> ExportDocument {
     #expect(MeetingSummarySource.shortName("Alex") == "Alex")
 }
 
+@Test func aNameOfFewCharactersWithThousandsOfMarksIsCutByBytes() {
+    // Three characters, each carrying 2,000 combining marks: few characters, megabytes of prompt.
+    let heavy = String(repeating: "a" + String(repeating: "\u{0301}", count: 2_000), count: 3)
+    #expect(heavy.count == 3)
+    let short = MeetingSummarySource.shortName(heavy)
+    #expect(short.utf8.count <= MeetingSummarySource.maximumNameBytes)
+    #expect(short.hasSuffix("…"))
+    // Cut between characters, never inside one, and a name of ordinary characters keeps up to 40 of them.
+    #expect(short.unicodeScalars.filter { $0 == "\u{0301}" }.count % 2_000 == 0)
+    let accented = String(repeating: "é", count: 39)
+    #expect(MeetingSummarySource.shortName(accented) == accented)
+    let wide = String(repeating: "名", count: 60)
+    #expect(MeetingSummarySource.shortName(wide).utf8.count <= MeetingSummarySource.maximumNameBytes)
+    #expect(MeetingSummarySource.shortName(wide).count == MeetingSummarySource.maximumNameCharacters)
+}
+
 @Test func theSessionListLeavesSummariesOut() throws {
     let record = MeetingSummaryRecord(sessionID: "S", transcriptID: "T", title: "Private topic",
                                       summary: "Something only the meeting knows.", model: "fake")
@@ -1282,6 +1330,9 @@ private func trackDocument(source: AudioSource) -> ExportDocument {
     }
     #expect(outcome.status == .written)
     #expect(scripted.summaryCalls.value.first?.prompt.contains("Robin: Thanks everyone") == true)
+    // The files are written with the name the save checked, not the account's: they carry the summary.
+    let written = try #require(outcome.summary)
+    #expect(SessionFixtures.text(SessionPaths.export("md", in: session)).contains(written.summary))
     #expect(MeetingSummarySchedule.scan(root: temp.url, selfName: "Robin").first?.needsSummary == false)
     // The person who is you renamed in People: the prompt's name changed, so the summary is stale.
     let renamed = try #require(MeetingSummarySchedule.scan(root: temp.url, selfName: "Robin Lee").first)

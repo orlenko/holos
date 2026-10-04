@@ -236,12 +236,23 @@ public enum MeetingSummarySource {
     /// Most characters of a speaker's or person's name in a prompt: a name is the user's text, of any length, and must
     /// leave every part room for the words.
     public static let maximumNameCharacters = 40
+    /// And at most this many UTF-8 bytes: a character can carry any number of combining marks.
+    public static let maximumNameBytes = 160
 
-    /// `name` on one line, at most `maximumNameCharacters` (cut, with "…").
+    /// `name` on one line, at most `maximumNameCharacters` and `maximumNameBytes` (cut between characters, with
+    /// "…").
     public static func shortName(_ name: String) -> String {
         let line = name.split(whereSeparator: { $0.isWhitespace || $0.isNewline }).joined(separator: " ")
-        guard line.count > maximumNameCharacters else { return line }
-        return String(line.prefix(maximumNameCharacters - 1)) + "…"
+        guard line.count > maximumNameCharacters || line.utf8.count > maximumNameBytes else { return line }
+        let ellipsis = "…"
+        var kept = ""
+        var bytes = ellipsis.utf8.count
+        for character in line.prefix(maximumNameCharacters - 1) {
+            bytes += character.utf8.count
+            guard bytes <= maximumNameBytes else { break }
+            kept.append(character)
+        }
+        return kept + ellipsis
     }
 
     /// What a turn of nobody known is called in the prompt.
