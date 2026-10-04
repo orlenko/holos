@@ -5114,7 +5114,12 @@ job it did not start; Review waits only for a deep pass). Another holder makes i
 `busy`. Ctrl-C or SIGTERM cancels it: before the save nothing is written (`cancelled`); the save
 (summary.json, then the exports) is never cut short. summary.json is written with
 `exportsPending` first and again without it once the exports are rewritten, so when they fail
-(exit 3) the next run, and the app's next scan, rewrite them without asking the model again. It reads saved revisions
+(exit 3) the next run, and the app's next scan, rewrite them without asking the model again; when
+exports/.generated.json was written by a newer build they cannot be, so the run is `failed` (exit 3, the summary
+kept) and the scan leaves the meeting alone (`summaryFromNewerVersion`). A summary.json that decodes but breaks
+the record's rules (`MeetingSummaryRecord.problem`: an empty or over-long title or summary, more than five key
+points or action items or one over its length, part counts that do not add up, a time before 2020 or more than a
+day ahead) counts as damaged: missing, and made again. It reads saved revisions
 without the meeting's locks, so it never holds the meeting while the model runs. After writing it rewrites the exports: `transcript.md` gets "## Summary" (the
 summary, **Key points**, **Action items**, and "Written on this Mac by Apple Intelligence from
 the transcript; it can be wrong.") and "## Transcript" before the turns, and the generated title

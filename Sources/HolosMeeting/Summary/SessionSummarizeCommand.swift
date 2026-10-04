@@ -387,6 +387,10 @@ public enum SessionSummarizeCommand {
         } catch {
             written.message += " The transcript files were not rewritten: \(error.localizedDescription)"
             written.exitCode = 3
+            // A file a newer Voice is Local wrote (exports/.generated.json, `unavailable`) is in the way for good: not
+            // tried again (the scan leaves the meeting alone, `summaryFromNewerVersion`). Anything else is tried
+            // again later, without the model (`exportsPending`).
+            if case .unavailable? = error as? HolosError { written.status = .failed }
         }
         return written
     }

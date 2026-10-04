@@ -1485,6 +1485,69 @@ private func trackDocument(source: AudioSource) -> ExportDocument {
     #expect(SessionCatalog.hasSession(UUID().uuidString, in: root) == nil)
 }
 
+@Test func aDamagedButDecodableSummaryIsMadeAgain() async throws {
+    let temp = try TemporaryDirectory("summary")
+    defer { temp.remove() }
+    let session = try await summarizeSession(in: temp.url)
+    let scripted = ScriptedSummaryModel()
+    #expect(await run(session, scripted).status == .written)
+    let id = try SessionArchive.readManifest(at: session).id
+    let good = try #require(try MeetingSummaryStore.read(session: session, sessionID: id))
+    #expect(good.problem() == nil)
+    var damaged: [MeetingSummaryRecord] = []
+    var empty = good
+    empty.title = " "
+    damaged.append(empty)
+    var future = good
+    future.createdAtMilliseconds = .max
+    damaged.append(future)
+    var old = good
+    old.createdAtMilliseconds = 0
+    damaged.append(old)
+    var long = good
+    long.summary = String(repeating: "word ", count: 200)
+    damaged.append(long)
+    var many = good
+    many.actions = (1...9).map { "Alex does task \($0)" }
+    damaged.append(many)
+    for record in damaged {
+        #expect(record.problem() != nil)
+        try MeetingSummaryStore.write(record, session: session)
+        #expect((try? MeetingSummaryStore.read(session: session, sessionID: id)) == nil)
+        #expect(MeetingSummaryStore.readIfUsable(session: session, sessionID: id) == nil)
+        // Counted as missing: made again, not taken as current.
+        #expect(await run(session, scripted).status == .written)
+    }
+}
+
+@Test func transcriptFilesANewerBuildOwnsAreLeftAlone() async throws {
+    let temp = try TemporaryDirectory("summary")
+    defer { temp.remove() }
+    let session = try await summarizeSession(in: temp.url)
+    let scripted = ScriptedSummaryModel()
+    #expect(await run(session, scripted).status == .written)
+    let id = try SessionArchive.readManifest(at: session).id
+    var record = try #require(try MeetingSummaryStore.read(session: session, sessionID: id))
+    record.exportsPending = true
+    try MeetingSummaryStore.write(record, session: session)
+    try? FileManager.default.removeItem(at: SessionPaths.generatedExports(session))
+    try Data(#"{"schemaVersion": 99, "files": {}}"#.utf8).write(to: SessionPaths.generatedExports(session))
+    #expect(SessionExports.recordIsFromNewerVersion(session: session))
+    // The scan leaves it alone instead of rewriting the files every few minutes…
+    let candidate = try #require(MeetingSummarySchedule.scan(root: temp.url, selfName: VoiceProfileService.ownName())
+        .first)
+    #expect(candidate.summaryFromNewerVersion)
+    #expect(!candidate.needsSummary)
+    #expect(MeetingSummarySchedule.next([candidate], situation()) == .wait)
+    // …and a run says why, for good (not tried again), keeping the summary.
+    let outcome = await run(session, scripted)
+    #expect(outcome.status == .failed)
+    #expect(!outcome.status.retriesLater)
+    #expect(outcome.exitCode == 3)
+    #expect(outcome.message.contains("newer version"))
+    #expect(scripted.summaryCalls.value.count == 1)
+}
+
 @Test func aSummaryANewerBuildWroteIsLeftAlone() async throws {
     let temp = try TemporaryDirectory("summary")
     defer { temp.remove() }

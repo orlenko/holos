@@ -40,6 +40,35 @@ public struct MeetingSummaryRecord: Codable, Sendable, Equatable {
     /// current only while that key is the meeting's (`MeetingSummaryKey.isCurrent`).
     public var namesDigest: String?
 
+    /// What breaks the rules every summary Voice is Local writes meets (`MeetingSummaryDraft.cleaned`), or nil: a
+    /// title and a summary within their lengths, at most five key points and five action items within theirs, part
+    /// counts that add up, and a time from 2020 on and not in the future (a day of clock skew allowed).
+    func problem(now: Date = Date()) -> String? {
+        let title = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        let summary = summary.trimmingCharacters(in: .whitespacesAndNewlines)
+        if title.isEmpty || title.count > MeetingSummaryDraft.maximumTitleCharacters { return "the title" }
+        // The summary and the items are cut with "…" after their limit.
+        if summary.isEmpty || summary.count > MeetingSummaryDraft.maximumSummaryCharacters + 1 { return "the summary" }
+        for list in [points, actions] where list.count > MeetingSummaryDraft.maximumItems || list.contains(where: {
+            $0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                || $0.count > MeetingSummaryDraft.maximumItemCharacters + 1
+        }) {
+            return "the key points or action items"
+        }
+        if let parts, parts < 0 { return "the parts" }
+        if let skippedParts, skippedParts < 0 || skippedParts > (parts ?? .max) { return "the parts left out" }
+        let earliest = MeetingSummaryRecord.earliestMilliseconds
+        let latest = MeetingSummarySchedule.milliseconds(now.addingTimeInterval(24 * 3600))
+        for stamp in [MeetingSummarySchedule.milliseconds(createdAt)] + (createdAtMilliseconds.map { [$0] } ?? [])
+        where stamp < earliest || stamp > latest {
+            return "the time it was made"
+        }
+        return nil
+    }
+
+    /// 2020-01-01 UTC in milliseconds: no summary was made before.
+    static let earliestMilliseconds: Int64 = 1_577_836_800_000
+
     public init(schemaVersion: Int = currentVersion, sessionID: String, transcriptID: String, title: String,
                 summary: String, points: [String] = [], actions: [String] = [], model: String,
                 language: String? = nil, createdAt: Date = Date(), parts: Int? = nil, skippedParts: Int? = nil,
@@ -120,7 +149,8 @@ public enum MeetingSummaryStore {
     static let name = "summary.json"
 
     /// summary.json; nil when there is none. One written by a newer Voice is Local is refused (`unavailable`); a
-    /// damaged one, or one of another session, is `invalidInput`.
+    /// damaged one (one that decodes but breaks the record's rules, `problem`), or one of another session, is
+    /// `invalidInput`, so it counts as missing and is made again.
     public static func read(session: URL, sessionID: String) throws -> MeetingSummaryRecord? {
         guard let data = try AtomicFile.readIfPresent(SessionPaths.summary(session), maxBytes: 1 << 20) else {
             return nil
@@ -128,6 +158,7 @@ public enum MeetingSummaryStore {
         let record = try SessionFiles.decode(MeetingSummaryRecord.self, from: data,
                                              current: MeetingSummaryRecord.currentVersion, name: name)
         guard record.sessionID == sessionID else { throw HolosError.invalidInput("\(name) belongs to another session.") }
+        if let problem = record.problem() { throw HolosError.invalidInput("\(name) is damaged: \(problem).") }
         return record
     }
 

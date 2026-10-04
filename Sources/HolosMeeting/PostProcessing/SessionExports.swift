@@ -217,6 +217,18 @@ public enum SessionExports {
 
     private static func fileName(_ format: ExportFormat) -> String { "transcript.\(format.rawValue)" }
 
+    /// Whether `exports/.generated.json` was written by a newer Voice is Local: the transcript files cannot be
+    /// rewritten until it is updated, so nothing tries again meanwhile.
+    public static func recordIsFromNewerVersion(session: URL) -> Bool {
+        do {
+            _ = try readRecord(session: session)
+            return false
+        } catch {
+            if case .unavailable? = error as? HolosError { return true }
+            return false
+        }
+    }
+
     /// nil when no export was ever generated here; an empty record when the file is damaged.
     private static func readRecord(session: URL) throws -> GeneratedRecord? {
         let name = "exports/.generated.json"

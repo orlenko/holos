@@ -32,8 +32,9 @@ public enum MeetingSummarySchedule {
         public var summaryCurrent: Bool
         /// The meeting's key (`MeetingSummaryKey.text`): what a run that failed is remembered by.
         public var key: String?
-        /// summary.json was written by a newer Voice is Local: the meeting is left alone (only a Summarize Again the
-        /// user asks for runs, and reports why it cannot).
+        /// summary.json was written by a newer Voice is Local, or its transcript files are left to rewrite and
+        /// exports/.generated.json was: the meeting is left alone (only a Summarize Again the user asks for runs, and
+        /// reports why it cannot).
         public var summaryFromNewerVersion: Bool
 
         /// `summaryCurrent` nil: the summary is current when it is of the current transcript; `key` nil: the
@@ -229,7 +230,8 @@ public enum MeetingSummarySchedule {
                              exportsPending: summary?.exportsPending == true,
                              summaryCreatedAt: summary?.createdAtMilliseconds,
                              summaryCurrent: key?.isCurrent(summary) ?? false, key: key?.text ?? transcriptID,
-                             summaryFromNewerVersion: newer)
+                             summaryFromNewerVersion: newer || (summary?.exportsPending == true
+                                 && SessionExports.recordIsFromNewerVersion(session: session)))
         }
     }
 }
