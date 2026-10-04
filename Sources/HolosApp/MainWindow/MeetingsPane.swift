@@ -1038,7 +1038,7 @@ extension MeetingsPane: NSMenuDelegate {
         rename.keyEquivalentModifierMask = .command
         rename.target = self
         rename.isEnabled = enabled.contains(.rename)
-        rename.toolTip = MeetingActionPolicy.renameRefusal(summary)
+        rename.toolTip = MeetingActionPolicy.renameRefusal(summary, hasExport: hasExport(summary))
             ?? ("Gives the meeting a name of your own, which no title Apple Intelligence writes replaces. "
                 + "You can also double-click its title.")
         menu.addItem(rename)

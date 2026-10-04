@@ -161,6 +161,18 @@ public enum SessionExports {
         func isGenerated(_ name: String, digest: String) -> Bool {
             files[name] == digest || pending?[name] == digest
         }
+
+        /// Every entry names a transcript file this build writes and holds a SHA-256 as `write` records it (64
+        /// lowercase hex digits). A record that decodes but breaks this is damaged.
+        var isValid: Bool {
+            let names = Set(SessionExports.formats.map(SessionExports.fileName))
+            return [files, pending ?? [:]].allSatisfy { entries in
+                entries.allSatisfy { name, digest in
+                    names.contains(name) && digest.utf8.count == 64
+                        && digest.utf8.allSatisfy { (0x30...0x39).contains($0) || (0x61...0x66).contains($0) }
+                }
+            }
+        }
     }
 
     private static func write(_ rendered: [(format: ExportFormat, data: Data)], session: URL,
@@ -229,7 +241,7 @@ public enum SessionExports {
         return movedAside
     }
 
-    private static func fileName(_ format: ExportFormat) -> String { "transcript.\(format.rawValue)" }
+    static func fileName(_ format: ExportFormat) -> String { "transcript.\(format.rawValue)" }
 
     /// Whether `exports/.generated.json` was written by a newer Voice is Local: the transcript files cannot be
     /// rewritten until it is updated, so nothing tries again meanwhile.
@@ -247,15 +259,8 @@ public enum SessionExports {
     /// missing or damaged (a regeneration then knows existing files only by what they hold). One a newer Voice is
     /// Local wrote throws `unavailable`; one that cannot be read now throws its error.
     static func hasUsableRecord(session: URL) throws -> Bool {
-        guard let data = try AtomicFile.readIfPresent(SessionPaths.generatedExports(session), maxBytes: 1 << 20) else {
-            return false
-        }
-        do {
-            _ = try SessionFiles.decode(GeneratedRecord.self, from: data, current: 1, name: "exports/.generated.json")
-            return true
-        } catch let error where SessionFiles.isDamage(error) {
-            return false
-        }
+        let read = try readRecordChecked(session: session)
+        return read.record != nil && !read.damaged
     }
 
     /// nil when no export was ever generated here; an empty record when the file is damaged.
@@ -270,7 +275,9 @@ public enum SessionExports {
             return (nil, false)
         }
         do {
-            return (try SessionFiles.decode(GeneratedRecord.self, from: data, current: 1, name: name), false)
+            let record = try SessionFiles.decode(GeneratedRecord.self, from: data, current: 1, name: name)
+            guard record.isValid else { throw HolosError.invalidInput("\(name) holds an entry this build cannot use.") }
+            return (record, false)
         } catch let error where SessionFiles.isDamage(error) {
             log.error("\(name, privacy: .public) is damaged; every edited export will be moved aside")
             return (GeneratedRecord(files: [:]), true)

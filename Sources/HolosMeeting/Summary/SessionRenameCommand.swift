@@ -236,6 +236,16 @@ public enum SessionRenameCommand {
             return transcriptRefusal(error, id: id)
         }
         let hasTranscript = transcriptID != nil
+        // Transcript files the rename must rewrite: with no transcript to write them from, they would keep the old
+        // title, so the rename is refused; and none can be written over a record a newer build wrote.
+        if !hasTranscript, hasExportFiles(session) {
+            return refused(.failed, "This meeting's transcript is missing but its transcript files exist, so they "
+                + "cannot follow a new name; recover it first (voiceislocal session recover \(id)).")
+        }
+        if SessionExports.recordIsFromNewerVersion(session: session) {
+            return refused(.failed, "This meeting's transcript files were written by a newer version of Voice is "
+                + "Local, so they cannot follow a new name; update Voice is Local to rename it.")
+        }
         generated = MeetingSummaryStore.current(MeetingSummaryStore.readIfUsable(session: session, sessionID: id),
                                                 transcriptID: transcriptID)?.title
         let inputs = Result { try request.voiceInputs() }

@@ -774,3 +774,57 @@ private func listed(name: String, source: MeetingNameSource, generated: String?)
     #expect(await rename(session, "Weekly sync").status == .unchanged)
     #expect(try meetingJSON(session)["nameSource"] == nil)
 }
+
+// MARK: - Export records and orphaned files
+
+@Test func aRecordWithMalformedValuesCountsAsDamaged() async throws {
+    for record in [#"{"schemaVersion":1,"files":{"transcript.md":"x"}}"#,
+                   #"{"schemaVersion":1,"files":{"notes.md":"\#(String(repeating: "a", count: 64))"}}"#,
+                   #"{"schemaVersion":1,"files":{},"pending":{"transcript.md":"\#(String(repeating: "A", count: 64))"}}"#] {
+        let temp = try TemporaryDirectory("rename")
+        defer { temp.remove() }
+        let session = try await renameSession(in: temp.url, legacyExports: true)
+        try AtomicFile.write(Data(record.utf8), to: SessionPaths.generatedExports(session))
+        #expect(try !SessionExports.hasUsableRecord(session: session), "\(record)")
+        let outcome = await rename(session, "Design review")
+        #expect(outcome.exitCode == 0)
+        #expect(try editedExports(session).isEmpty, "\(record)")
+    }
+}
+
+@Test func anExportRecordFromANewerBuildTurnsRenameOff() async throws {
+    let temp = try TemporaryDirectory("rename")
+    defer { temp.remove() }
+    let session = try await renameSession(in: temp.url)
+    try writeSummary(session)
+    #expect(SessionCatalog.summary(session: session).exportsProblem == nil)
+    try AtomicFile.write(Data(#"{"schemaVersion":2,"files":{}}"#.utf8), to: SessionPaths.generatedExports(session))
+    let listed = SessionCatalog.summary(session: session)
+    #expect(listed.exportsProblem != nil)
+    #expect(!MeetingActionPolicy.renames(listed))
+    #expect(MeetingActionPolicy.renameRefusal(listed)?.contains("newer version") == true)
+    let outcome = await rename(session, "Weekly sync")
+    #expect(outcome.status == .failed)
+    #expect(try SessionArchive.readManifest(at: session).name == "Meeting 2026-10-03 14:00")
+}
+
+@Test func transcriptFilesWithoutATranscriptRefuseTheRename() async throws {
+    let temp = try TemporaryDirectory("rename")
+    defer { temp.remove() }
+    let session = try await renameSession(in: temp.url)
+    try writeSummary(session)
+    // The transcript is gone (pointer and revisions); its files are not.
+    let transcripts = session.appendingPathComponent("transcripts", isDirectory: true)
+    for file in try FileManager.default.contentsOfDirectory(atPath: transcripts.path) {
+        try FileManager.default.removeItem(at: transcripts.appendingPathComponent(file))
+    }
+    let listed = SessionCatalog.summary(session: session)
+    #expect(listed.transcriptID == nil)
+    #expect(MeetingActionPolicy.renameRefusal(listed, hasExport: true)?.contains("transcript is missing") == true)
+    #expect(!MeetingActionPolicy.enabled(listed, inUse: false, hasExport: true).contains(.rename))
+    #expect(MeetingActionPolicy.renameRefusal(listed, hasExport: false) == nil)
+    let outcome = await rename(session, "Weekly sync")
+    #expect(outcome.status == .failed)
+    #expect(outcome.message.contains("transcript is missing"))
+    #expect(try SessionArchive.readManifest(at: session).name == "Meeting 2026-10-03 14:00")
+}

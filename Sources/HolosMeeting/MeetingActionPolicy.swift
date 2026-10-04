@@ -28,7 +28,7 @@ public enum MeetingActionPolicy {
         if deletesAudio(summary) { actions.insert(.deleteAudio) }
         actions.insert(.deleteMeeting)
         if summary.derivedBytes > 0 { actions.insert(.cleanUp) }
-        if renames(summary) { actions.insert(.rename) }
+        if renameRefusal(summary, hasExport: hasExport) == nil { actions.insert(.rename) }
         return actions
     }
 
@@ -42,11 +42,21 @@ public enum MeetingActionPolicy {
 
     /// Why Rename is off for `summary` (its tooltip), or nil when the command would rename it; holding the meeting
     /// (in use, live) is said elsewhere.
-    public static func renameRefusal(_ summary: SessionSummary) -> String? {
+    ///
+    /// `hasExport`: transcript files are there, which a meeting without a current transcript cannot rewrite.
+    public static func renameRefusal(_ summary: SessionSummary, hasExport: Bool = false) -> String? {
         guard MeetingSummarySchedule.isFinished(summary.state) else {
             return summary.state == .recording || summary.state == .processing
                 ? "The meeting can be renamed once it is saved."
                 : "The meeting was not saved properly; Recover it first, then rename it."
+        }
+        if summary.exportsProblem != nil {
+            return "Its transcript files were written by a newer version of Voice is Local, so they cannot follow a "
+                + "new name; update Voice is Local to rename it."
+        }
+        if summary.transcriptID == nil, summary.transcriptProblem == nil, hasExport {
+            return "Its transcript is missing but its transcript files exist, so they cannot follow a new name; "
+                + "Recover it first."
         }
         if let problem = summary.metadataProblem {
             return "Its meeting.json, which records where the name came from, cannot be read: \(problem)"

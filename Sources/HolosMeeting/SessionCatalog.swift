@@ -96,6 +96,9 @@ public struct SessionSummary: Codable, Sendable, Equatable, Identifiable {
     /// Why meeting.json cannot be read (damaged, of another session, written by a newer build, unreadable now); nil
     /// when it can, or when there is none (a meeting saved before it existed). Rename refuses such a meeting.
     public var metadataProblem: String?
+    /// Why the transcript files cannot be rewritten: exports/.generated.json was written by a newer build. Nil
+    /// otherwise. Rename refuses such a meeting (its files could not follow the name).
+    public var exportsProblem: String?
     /// summary.json, when it can be read: possibly of an earlier transcript (`summaryIsCurrent` says), whose summary
     /// text is still shown until the new one is made, but not its title (`displayTitle`).
     public var generatedSummary: MeetingSummaryRecord? = nil
@@ -106,7 +109,7 @@ public struct SessionSummary: Codable, Sendable, Equatable, Identifiable {
         case id, directory, name, createdAt, source, origin, state, manifestStatus, savedSeconds, chunkCount
         case transcriptID, transcriptProblem, transcriptRefused, speakerState, labelMessage, runID, labelsReadyAt
         case hasSpeakerEdits, phase, pid, liveness, bytes, derivedBytes, audioDeleted, languageWork, nameSource
-        case metadataProblem
+        case metadataProblem, exportsProblem
     }
 
     /// The title the Meetings list shows (`MeetingNaming.title`, the rule the transcript files' heading follows too):
@@ -135,7 +138,8 @@ public struct SessionSummary: Codable, Sendable, Equatable, Identifiable {
                 hasSpeakerEdits: Bool = false, phase: RecorderPhase? = nil, pid: Int32? = nil,
                 liveness: RecorderLiveness, bytes: Int64 = 0, derivedBytes: Int64 = 0, audioDeleted: Bool = false,
                 languageWork: LanguageWork? = nil, nameSource: MeetingNameSource? = nil,
-                generatedSummary: MeetingSummaryRecord? = nil, metadataProblem: String? = nil) {
+                generatedSummary: MeetingSummaryRecord? = nil, metadataProblem: String? = nil,
+                exportsProblem: String? = nil) {
         self.id = id; self.directory = directory; self.name = name; self.createdAt = createdAt
         self.source = source; self.origin = origin; self.state = state; self.manifestStatus = manifestStatus
         self.savedSeconds = savedSeconds; self.chunkCount = chunkCount; self.transcriptID = transcriptID
@@ -148,6 +152,7 @@ public struct SessionSummary: Codable, Sendable, Equatable, Identifiable {
         self.nameSource = MeetingNaming.source(stored: nameSource, name: name)
         self.generatedSummary = generatedSummary
         self.metadataProblem = metadataProblem
+        self.exportsProblem = exportsProblem
     }
 }
 
@@ -232,7 +237,9 @@ public enum SessionCatalog {
                                      importedFileName: $0.origin == .imported ? $0.importedFileName : nil)
             } ?? .user,
             generatedSummary: MeetingSummaryStore.readIfUsable(session: session, sessionID: manifest.id),
-            metadataProblem: { if case .failure(let error) = meetingRead { error.localizedDescription } else { nil } }())
+            metadataProblem: { if case .failure(let error) = meetingRead { error.localizedDescription } else { nil } }(),
+            exportsProblem: SessionExports.recordIsFromNewerVersion(session: session)
+                ? "exports/.generated.json was written by a newer version of Voice is Local." : nil)
     }
 
     /// `summaries` with `LanguageWork.ready` set where a run would detect a language now

@@ -888,8 +888,9 @@ extension HolosAppDelegate: NSMenuDelegate {
     /// The meeting's Review window, when open, takes the title the Meetings list shows now (`MeetingNaming.currentTitle`,
     /// read off the main actor): after a rename, and after a summary, whose generated title may be the one shown.
     func refreshReviewTitle(_ sessionID: String) {
-        guard let window = meeting.reviewWindows[sessionID], let controller = meeting.controller else { return }
-        let session = controller.sessionURL(sessionID)
+        // The folder the review was opened with (a session folder may have any `<something>.holos` name).
+        guard let window = meeting.reviewWindows[sessionID] else { return }
+        let session = window.review.session
         Task { [weak self, weak window] in
             let title = await Task.detached { MeetingNaming.currentTitle(session: session) }.value
             guard let self, let window, let title, self.meeting.reviewWindows[sessionID] === window,
