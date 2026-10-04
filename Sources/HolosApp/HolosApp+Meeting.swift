@@ -118,8 +118,10 @@ extension HolosAppDelegate: NSMenuDelegate {
             guard let controller else { return }
             self?.meeting.meetingsPane?.update(running: controller.sessionsInUse)
             // A meeting another command let go of may be the next deep transcription's, or the next summary's.
-            self?.scheduleDeepTranscription()
+            // Summaries are looked for first, so a Summarize Again waiting goes before the next automatic pass (which
+            // waits for that scan).
             self?.scheduleMeetingSummaries()
+            self?.scheduleDeepTranscription()
         }
         // Reviews open, opening, or still saving after they closed: the automatic relabel leaves those meetings alone.
         controller.sessionsUnderReview = { [weak self] in

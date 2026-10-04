@@ -33,9 +33,11 @@ public struct MeetingSummaryRecord: Codable, Sendable, Equatable {
     /// Set while the transcript files are being rewritten with it, and left set when that failed: the next run
     /// rewrites them without making the summary again.
     public var exportsPending: Bool?
-    /// `createdAt` in milliseconds since 1970: JSON dates keep whole seconds, too coarse to tell a summary from a
-    /// request made in the same second (`MeetingSummarySchedule.satisfied`).
+    /// `createdAt` in milliseconds since 1970 (JSON dates keep whole seconds).
     public var createdAtMilliseconds: Int64?
+    /// The Summarize Again request it was made for (`MeetingSummarySchedule.Request.sequence`): it answers that
+    /// request and every earlier one (`MeetingSummarySchedule.satisfied`). Nil for one made without a request.
+    public var answersRequest: Int64?
     /// The speakers' names it was made with (`MeetingSummaryKey.namesDigest`): with `transcriptID`, its key. It is
     /// current only while that key is the meeting's (`MeetingSummaryKey.isCurrent`).
     public var namesDigest: String?
@@ -56,6 +58,7 @@ public struct MeetingSummaryRecord: Codable, Sendable, Equatable {
             return "the key points or action items"
         }
         if let parts, parts < 0 { return "the parts" }
+        if let answersRequest, answersRequest < 1 { return "the request it answers" }
         if let skippedParts, skippedParts < 0 || skippedParts > (parts ?? .max) { return "the parts left out" }
         let earliest = MeetingSummaryRecord.earliestMilliseconds
         let latest = MeetingSummarySchedule.milliseconds(now.addingTimeInterval(24 * 3600))

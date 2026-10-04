@@ -31,8 +31,9 @@ final class MeetingSummaryAppState {
     var delayedUntil: [String: Date] = [:]
     /// Summarize Again, newest last: saved on every change, and kept until the run ends for good (written, current,
     /// failed, unavailable), so a request that had to wait (a meeting started, another job ran, the app quit) runs
-    /// later, forced. Each keeps when it was asked for, so one a command finished while the app was closed is
-    /// recognized as done (`MeetingSummarySchedule.satisfied`).
+    /// later, forced. Each has a number from a counter that only grows (`requestSequenceKey`), which its run writes
+    /// into summary.json, so one a command finished while the app was closed is recognized as done
+    /// (`MeetingSummarySchedule.satisfied`).
     static let requestsKey = "meetingSummaryRequestQueue"
     var requests: [MeetingSummarySchedule.Request] = MeetingSummaryAppState.loadRequests() {
         didSet {
@@ -49,8 +50,25 @@ final class MeetingSummaryAppState {
 
     private static func loadRequests() -> [MeetingSummarySchedule.Request] {
         guard let data = UserDefaults.standard.data(forKey: requestsKey) else { return [] }
-        return (try? HolosJSON.decoder().decode([MeetingSummarySchedule.Request].self, from: data)) ?? []
+        var requests = (try? HolosJSON.decoder().decode([MeetingSummarySchedule.Request].self, from: data)) ?? []
+        // Saved before requests had numbers: numbered now, in order.
+        for index in requests.indices where requests[index].sequence <= 0 { requests[index].sequence = nextSequence() }
+        return requests
     }
+
+    /// The counter of Summarize Again requests, saved: it only grows.
+    static let requestSequenceKey = "meetingSummaryRequestSequence"
+
+    /// The next request's number.
+    static func nextSequence() -> Int64 {
+        let next = Int64(UserDefaults.standard.integer(forKey: requestSequenceKey)) + 1
+        UserDefaults.standard.set(Int(next), forKey: requestSequenceKey)
+        return next
+    }
+
+    /// The people store could not be used for good (a newer build wrote it): no summary starts until it changes, and
+    /// Settings and the Meetings list say why.
+    var peopleStoreProblem: String?
     /// The run going now was stopped because a meeting started.
     var preempted: String?
     var scanning = false
@@ -103,7 +121,9 @@ extension HolosAppDelegate {
     }
 
     /// Why Apple Intelligence cannot summarize meetings on this Mac, for Settings; nil when it can.
-    var meetingSummaryUnavailableReason: String? { OnDeviceFix.unavailableReason }
+    var meetingSummaryUnavailableReason: String? {
+        OnDeviceFix.unavailableReason ?? meeting.summaries.peopleStoreProblem
+    }
 
     /// Settings › Meetings › "Title and summarize meetings with Apple Intelligence".
     func toggleMeetingSummaries() {
@@ -119,7 +139,8 @@ extension HolosAppDelegate {
     /// Meetings › Summarize Again: made next (forced), also with the setting off.
     func summarizeMeetingAgain(_ summary: SessionSummary) {
         meeting.summaries.removeRequest(summary.id)
-        meeting.summaries.requests.append(MeetingSummarySchedule.Request(sessionID: summary.id, requestedAt: Date()))
+        meeting.summaries.requests.append(MeetingSummarySchedule.Request(
+            sessionID: summary.id, sequence: MeetingSummaryAppState.nextSequence()))
         meeting.summaries.delayedUntil[summary.id] = nil
         scheduleMeetingSummaries()
     }
@@ -156,13 +177,18 @@ extension HolosAppDelegate {
         let root = controller.root
         let requested = meeting.summaries.requested
         Task { [weak self] in
-            let (candidates, gone) = await Task.detached { () -> ([MeetingSummarySchedule.Candidate], Set<String>) in
+            let scan = await Task.detached { () -> PeopleStoreScan in
                 // People's names and Remember voices, once per scan: a summary whose names changed is made again. A
-                // people store that cannot be read lists meetings without names; the command then fails at once,
-                // before the model, with the reason.
-                let voice = (try? SessionSummarizeCommand.VoiceInputs.read())
-                    ?? SessionSummarizeCommand.VoiceInputs(names: [:], recognition: false,
-                                                           selfName: VoiceProfileService.ownName())
+                // people store that cannot be read stops the scan: no key is made up from no names (every meeting
+                // that names someone would look out of date); one a newer build wrote stops summaries until it
+                // changes.
+                let voice: SessionSummarizeCommand.VoiceInputs
+                do {
+                    voice = try SessionSummarizeCommand.VoiceInputs.read()
+                } catch {
+                    let terminal = SessionSummarizeCommand.peopleStoreStatus(error) == .failed
+                    return .unreadable(terminal ? "the people store: \(error.localizedDescription)" : nil)
+                }
                 let candidates = MeetingSummarySchedule.scan(root: root, profileNames: voice.names,
                                                              recognition: voice.recognition, selfName: voice.selfName)
                 // A requested meeting the scan did not list is gone only when no folder holds it, whatever the
@@ -171,11 +197,26 @@ extension HolosAppDelegate {
                 let gone = Set(requested.filter {
                     !listed.contains($0) && SessionCatalog.hasSession($0, in: root) == false
                 })
-                return (candidates, gone)
+                return .scanned(candidates, gone)
             }.value
             guard let self else { return }
             self.meeting.summaries.scanning = false
-            self.startNextMeetingSummary(candidates, gone: gone)
+            switch scan {
+            case .unreadable(let problem):
+                // Transient (nil): looked at again at the next scan. For good: said once, in Settings and the list.
+                if let problem, problem != self.meeting.summaries.peopleStoreProblem {
+                    self.meeting.summaries.peopleStoreProblem = problem
+                    self.updateSettings()
+                    self.meeting.meetingsPane?.refresh()
+                }
+            case .scanned(let candidates, let gone):
+                if self.meeting.summaries.peopleStoreProblem != nil {
+                    self.meeting.summaries.peopleStoreProblem = nil
+                    self.updateSettings()
+                    self.meeting.meetingsPane?.refresh()
+                }
+                self.startNextMeetingSummary(candidates, gone: gone)
+            }
             self.meetingSummaryScanEnded()
         }
     }
@@ -191,6 +232,12 @@ extension HolosAppDelegate {
             item.runNow && !inUse.contains(item.sessionID)
                 && (meeting.deep.delayed[item.sessionID].map { $0 <= now } ?? true)
         }
+    }
+
+    /// A scan's result: the meetings, or a people store it could not read (with the reason when that is for good).
+    private enum PeopleStoreScan: Sendable {
+        case scanned([MeetingSummarySchedule.Candidate], Set<String>)
+        case unreadable(String?)
     }
 
     /// An automatic final transcript held back for this scan (`waitsForSummaryScan`) is looked at again: it starts
@@ -241,7 +288,12 @@ extension HolosAppDelegate {
         let output = Self.temporaryFile("summary")
         let errors = Self.temporaryFile("summary-err")
         do {
-            let pid = try maintenance.run(["session", "summarize", path, "--json"] + (force ? ["--force"] : []),
+            // Run for a Summarize Again: its number goes into summary.json, so the request is known answered.
+            let answers = meeting.summaries.requests.last { $0.sessionID == sessionID }.map {
+                ["--answers-request", String($0.sequence)]
+            } ?? []
+            let pid = try maintenance.run(["session", "summarize", path, "--json"] + (force ? ["--force"] : [])
+                                              + answers,
                                           standardOutput: output, standardError: errors) { [weak self] code in
                 self?.meetingSummaryEnded(sessionID, key: key, code: code, output: output, errors: errors)
             }

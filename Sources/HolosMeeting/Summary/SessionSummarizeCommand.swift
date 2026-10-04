@@ -30,6 +30,9 @@ public enum SessionSummarizeCommand {
         /// docs/meeting-design.md §1.7) until the summary and the transcript files are written, so no rename of a
         /// person lands between the check and the files. Nil: `voiceInputsNow`, else the request's own inputs.
         public var profileStore: SpeakerProfileStore?
+        /// The Summarize Again request this run is for (the app's number for it): written into summary.json
+        /// (`answersRequest`), so the request is known to be answered even when the app did not see the run end.
+        public var answersRequest: Int64?
 
         public init(session: URL, force: Bool = false, selfName: String = VoiceProfileService.ownName(),
                     profileNames: [String: String] = [:],
@@ -192,6 +195,9 @@ public enum SessionSummarizeCommand {
         // not rewritten with it, which is done now, checked again at the save like any summary.
         if !request.force, let existing, key.isCurrent(existing) {
             if existing.exportsPending == true {
+                // Rewritten for a request: the summary answers it from now on.
+                var existing = existing
+                if let asked = request.answersRequest { existing.answersRequest = max(existing.answersRequest ?? 0, asked) }
                 return await save(existing, request: request, transcriptID: transcriptID, key: key,
                                   message: "Rewrote the transcript files with the summary.") {
                     outcome($0, $1, transcriptID: $2, code: $3)
@@ -230,10 +236,11 @@ public enum SessionSummarizeCommand {
             }
             return outcome(.failed, error.localizedDescription, transcriptID: transcriptID)
         }
-        let record = MeetingSummaryRecord(
+        var record = MeetingSummaryRecord(
             sessionID: id, transcriptID: transcriptID, title: made.draft.title, summary: made.draft.summary,
             points: made.draft.points, actions: made.draft.actions, model: summaryModel.name, language: input.language,
             parts: made.stats.parts, skippedParts: made.stats.skippedParts, namesDigest: key.namesDigest)
+        record.answersRequest = request.answersRequest
 
         // A cancellation that came while the model answered writes nothing.
         if Task.isCancelled {

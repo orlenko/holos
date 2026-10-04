@@ -858,24 +858,50 @@ private func trackDocument(source: AudioSource) -> ExportDocument {
     #expect(!prompt.contains("Unknown speaker"))
 }
 
-@Test func aRequestASummaryAlreadyAnswersIsDone() {
-    let asked = scheduleNow.addingTimeInterval(-600 + 0.7)
-    let request = MeetingSummarySchedule.Request(sessionID: "a", requestedAt: asked)
-    func made(_ at: Date?, summary: String? = "T", pending: Bool = false) -> MeetingSummarySchedule.Candidate {
+@Test func aRequestASummaryAlreadyAnswersIsDone() throws {
+    let request = MeetingSummarySchedule.Request(sessionID: "a", sequence: 7)
+    func made(_ answers: Int64?, summary: String? = "T", pending: Bool = false) -> MeetingSummarySchedule.Candidate {
         MeetingSummarySchedule.Candidate(sessionID: "a", path: "/a.holos", createdAt: scheduleNow, transcriptID: "T",
                                          summaryTranscriptID: summary, idle: true, exportsPending: pending,
-                                         summaryCreatedAt: at.map(MeetingSummarySchedule.milliseconds))
+                                         summaryAnswersRequest: answers)
     }
-    // Made by a command that finished while the app was closed.
-    #expect(MeetingSummarySchedule.satisfied([request], by: [made(asked.addingTimeInterval(120))]) == ["a"])
-    #expect(MeetingSummarySchedule.satisfied([request], by: [made(asked.addingTimeInterval(0.2))]) == ["a"])
-    // Made earlier in the same second: a click after it is still to do.
-    #expect(MeetingSummarySchedule.satisfied([request], by: [made(asked.addingTimeInterval(-0.3))]).isEmpty)
-    // Older than the request, of another transcript, or with its files not rewritten: still to do.
-    #expect(MeetingSummarySchedule.satisfied([request], by: [made(asked.addingTimeInterval(-60))]).isEmpty)
-    #expect(MeetingSummarySchedule.satisfied([request], by: [made(scheduleNow, summary: "T0")]).isEmpty)
-    #expect(MeetingSummarySchedule.satisfied([request], by: [made(scheduleNow, pending: true)]).isEmpty)
+    // Made for this request (by a command that finished while the app was closed), or for a later one.
+    #expect(MeetingSummarySchedule.satisfied([request], by: [made(7)]) == ["a"])
+    #expect(MeetingSummarySchedule.satisfied([request], by: [made(9)]) == ["a"])
+    // Made for an earlier request or none (whatever its clock time), of another transcript, or with its files not
+    // rewritten: still to do.
+    #expect(MeetingSummarySchedule.satisfied([request], by: [made(6)]).isEmpty)
+    #expect(MeetingSummarySchedule.satisfied([request], by: [made(nil)]).isEmpty)
+    #expect(MeetingSummarySchedule.satisfied([request], by: [made(7, summary: "T0")]).isEmpty)
+    #expect(MeetingSummarySchedule.satisfied([request], by: [made(7, pending: true)]).isEmpty)
     #expect(MeetingSummarySchedule.satisfied([request], by: [made(nil, summary: nil)]).isEmpty)
+    // A request saved before requests had numbers decodes as 0, answered by nothing until the app numbers it.
+    let legacy = try HolosJSON.decoder().decode(MeetingSummarySchedule.Request.self,
+                                                from: Data(#"{"sessionID":"a","requestedAtMilliseconds":5}"#.utf8))
+    #expect(legacy.sequence == 0)
+    #expect(MeetingSummarySchedule.satisfied([legacy], by: [made(9)]).isEmpty)
+}
+
+@Test func aRunForARequestWritesItsNumber() async throws {
+    let temp = try TemporaryDirectory("summary")
+    defer { temp.remove() }
+    let session = try await summarizeSession(in: temp.url)
+    var request = SessionSummarizeCommand.Request(session: session, force: true)
+    request.answersRequest = 12
+    let scripted = ScriptedSummaryModel()
+    let outcome = await SessionSummarizeCommand.run(request) { _ in .available(scripted.model()) }
+    #expect(outcome.summary?.answersRequest == 12)
+    let candidate = try #require(MeetingSummarySchedule.scan(root: temp.url, selfName: VoiceProfileService.ownName())
+        .first)
+    #expect(candidate.summaryAnswersRequest == 12)
+    let asked = MeetingSummarySchedule.Request(sessionID: candidate.sessionID, sequence: 12)
+    #expect(MeetingSummarySchedule.satisfied([asked], by: [candidate]) == [candidate.sessionID])
+    let later = MeetingSummarySchedule.Request(sessionID: candidate.sessionID, sequence: 13)
+    #expect(MeetingSummarySchedule.satisfied([later], by: [candidate]).isEmpty)
+    // A number below 1 is no request: the record is damaged.
+    var damaged = try #require(outcome.summary)
+    damaged.answersRequest = 0
+    #expect(damaged.problem() != nil)
 }
 
 @Test func transcriptFilesLeftWithoutTheirSummaryAreRewrittenWithTheSettingOff() {

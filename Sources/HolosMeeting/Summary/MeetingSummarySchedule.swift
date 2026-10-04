@@ -26,8 +26,8 @@ public enum MeetingSummarySchedule {
         public var finished: Bool
         /// summary.json says the transcript files were not rewritten with it (`exportsPending`).
         public var exportsPending: Bool
-        /// When summary.json was made, in milliseconds since 1970 (`MeetingSummaryRecord.createdAtMilliseconds`).
-        public var summaryCreatedAt: Int64?
+        /// The Summarize Again request summary.json was made for (`MeetingSummaryRecord.answersRequest`), if any.
+        public var summaryAnswersRequest: Int64?
         /// summary.json's key is the meeting's (`MeetingSummaryKey.isCurrent`: this transcript, these speakers' names).
         public var summaryCurrent: Bool
         /// The meeting's key (`MeetingSummaryKey.text`): what a run that failed is remembered by.
@@ -41,11 +41,11 @@ public enum MeetingSummarySchedule {
         /// transcript ID.
         public init(sessionID: String, path: String, createdAt: Date, transcriptID: String?,
                     summaryTranscriptID: String?, idle: Bool, finished: Bool = true, exportsPending: Bool = false,
-                    summaryCreatedAt: Int64? = nil, summaryCurrent: Bool? = nil, key: String? = nil,
+                    summaryAnswersRequest: Int64? = nil, summaryCurrent: Bool? = nil, key: String? = nil,
                     summaryFromNewerVersion: Bool = false) {
             self.sessionID = sessionID; self.path = path; self.createdAt = createdAt
             self.transcriptID = transcriptID; self.summaryTranscriptID = summaryTranscriptID; self.idle = idle
-            self.finished = finished; self.exportsPending = exportsPending; self.summaryCreatedAt = summaryCreatedAt
+            self.finished = finished; self.exportsPending = exportsPending; self.summaryAnswersRequest = summaryAnswersRequest
             self.summaryCurrent = summaryCurrent ?? (transcriptID != nil && summaryTranscriptID == transcriptID)
             self.key = key ?? transcriptID
             self.summaryFromNewerVersion = summaryFromNewerVersion
@@ -150,11 +150,21 @@ public enum MeetingSummarySchedule {
     /// A Summarize Again the user asked for, saved until it ends for good (the app's queue).
     public struct Request: Codable, Sendable, Equatable {
         public var sessionID: String
-        /// When it was asked for, in milliseconds since 1970.
-        public var requestedAtMilliseconds: Int64
+        /// Its number, from a counter that only grows (never a clock time, which can go back): the run made for it
+        /// writes it into summary.json (`answersRequest`), and a summary that answers it or a later one is its answer.
+        /// 0 for a request saved before requests had numbers (the app numbers it when it loads the queue).
+        public var sequence: Int64
 
-        public init(sessionID: String, requestedAt: Date) {
-            self.sessionID = sessionID; requestedAtMilliseconds = MeetingSummarySchedule.milliseconds(requestedAt)
+        public init(sessionID: String, sequence: Int64) {
+            self.sessionID = sessionID; self.sequence = sequence
+        }
+
+        private enum CodingKeys: String, CodingKey { case sessionID, sequence }
+
+        public init(from decoder: any Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            sessionID = try container.decode(String.self, forKey: .sessionID)
+            sequence = try container.decodeIfPresent(Int64.self, forKey: .sequence) ?? 0
         }
     }
 
@@ -187,15 +197,16 @@ public enum MeetingSummarySchedule {
     /// Milliseconds since 1970.
     public static func milliseconds(_ date: Date) -> Int64 { Int64((date.timeIntervalSince1970 * 1000).rounded(.down)) }
 
-    /// The requests a summary already answers: summary.json is of the current transcript, its files are written,
-    /// and it was made at or after the request, to the millisecond (a summary without that time answers none). A
-    /// request saved before a quit whose command finished without the app is then not made again.
+    /// The requests a summary already answers: summary.json is current, its files are written, and it was made for
+    /// this request or a later one (`answersRequest` at least its number; a summary made for none answers none). A
+    /// request saved before a quit whose command finished without the app is then not made again. No clock time is
+    /// compared, so a clock set back cannot make an older summary answer a newer request.
     public static func satisfied(_ requests: [Request], by candidates: [Candidate]) -> Set<String> {
         var done: Set<String> = []
-        for request in requests {
+        for request in requests where request.sequence > 0 {
             guard let candidate = candidates.first(where: { $0.sessionID == request.sessionID }),
-                  let made = candidate.summaryCreatedAt, candidate.summaryCurrent, !candidate.exportsPending,
-                  made >= request.requestedAtMilliseconds else { continue }
+                  let answered = candidate.summaryAnswersRequest, candidate.summaryCurrent, !candidate.exportsPending,
+                  answered >= request.sequence else { continue }
             done.insert(request.sessionID)
         }
         return done
@@ -228,7 +239,7 @@ public enum MeetingSummarySchedule {
                              transcriptID: transcriptID, summaryTranscriptID: summary?.transcriptID,
                              idle: !active && !processing, finished: isFinished(state),
                              exportsPending: summary?.exportsPending == true,
-                             summaryCreatedAt: summary?.createdAtMilliseconds,
+                             summaryAnswersRequest: summary?.answersRequest,
                              summaryCurrent: key?.isCurrent(summary) ?? false, key: key?.text ?? transcriptID,
                              summaryFromNewerVersion: newer || (summary?.exportsPending == true
                                  && SessionExports.recordIsFromNewerVersion(session: session)))

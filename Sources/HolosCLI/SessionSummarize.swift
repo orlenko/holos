@@ -26,6 +26,8 @@ extension Session {
         @Argument(help: "Path to a .holos folder, or a session ID.") var path: String
         @Flag(help: "Summarize again even when the summary is of the current transcript.") var force = false
         @Flag(help: "Print the result as JSON (with the summary).") var json = false
+        /// The app's number for the Summarize Again request this run is for (written into summary.json).
+        @Option(help: .hidden) var answersRequest: Int64?
 
         mutating func run() async throws {
             let session = try SessionLocator.resolve(path)
@@ -70,9 +72,11 @@ extension Session {
         /// one, also across an app relaunch (docs/meeting-design.md §4.17).
         private func summarize(_ session: URL, sessionID: String, voice: SessionSummarizeCommand.VoiceInputs)
             async throws -> SessionSummarizeCommand.Outcome {
-            let request = SessionSummarizeCommand.Request(
+            var asked = SessionSummarizeCommand.Request(
                 session: session, force: force, selfName: voice.selfName, profileNames: voice.names,
                 applyRecognition: voice.recognition, profileStore: SpeakerProfileStore())
+            asked.answersRequest = answersRequest
+            let request = asked
             guard let held = try DeepTranscriptionLock.take(
                 DeepTranscriptionLock.Holder(pid: getpid(), sessionID: sessionID, force: force,
                                              kind: DeepTranscriptionLock.Holder.summaryKind)) else {
