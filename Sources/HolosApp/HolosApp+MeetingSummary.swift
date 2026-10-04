@@ -160,7 +160,8 @@ extension HolosAppDelegate {
                 let store = SpeakerProfileStore()
                 return MeetingSummarySchedule.scan(root: root,
                                                    profileNames: VoiceProfileService.profileNames(store: store),
-                                                   recognition: VoiceProfileService.recognitionAllowed(store: store))
+                                                   recognition: VoiceProfileService.recognitionAllowed(store: store),
+                                                   selfName: VoiceProfileService.ownName(store: store))
             }.value
             guard let self else { return }
             self.meeting.summaries.scanning = false

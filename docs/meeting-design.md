@@ -4999,9 +4999,11 @@ or an empty title or summary fails the run, and nothing is written.
 
 **When.** `voiceislocal session summarize <session> [--force] [--json]` makes one when
 summary.json is not current, or with `--force`. Currency is one key (`MeetingSummaryKey`): the
-transcript ID and `namesDigest`, a digest of every speaker's displayed label in the exports'
-projection of that transcript (renames, links, merges, assignments, people renamed, and Remember
-voices' automatic names all change it; "none" without labels). summary.json stores it; a summary
+transcript ID and `namesDigest`, a digest of the names exactly as the prompt gives them, built by
+the one function the prompt uses (`MeetingSummarySource.promptSpeakers`): its speakers in the order
+they first speak (the user's own name for the unnamed channel speaker, "Others"/"Someone" for
+tracks without labels) and the people named. Renames, links, merges, assignments, people renamed,
+the person who is you renamed, and Remember voices' automatic names all change it. summary.json stores it; a summary
 is current only while its key is the meeting's, computed the same way by the command, the exports
 and the app's scan (no model; the scan caches it per meeting until the transcript, the speaker
 files, or people's names change). The exports (also those rewritten after a speaker edit) carry

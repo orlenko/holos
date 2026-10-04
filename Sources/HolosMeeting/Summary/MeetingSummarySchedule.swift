@@ -160,11 +160,12 @@ public enum MeetingSummarySchedule {
 
     /// The meeting's key (`MeetingSummaryKey.load`), from the cache while its inputs are unchanged.
     static func key(session: URL, sessionID: String, transcriptID: String, profileNames: [String: String],
-                    recognition: Bool) -> MeetingSummaryKey? {
+                    recognition: Bool, selfName: String) -> MeetingSummaryKey? {
         let inputs = transcriptID + "|" + SessionSummarizeCommand.speakerRevision(session) + "|"
-            + voiceStamp(names: profileNames, recognition: recognition)
+            + voiceStamp(names: profileNames, recognition: recognition) + "|" + selfName
         if let cached = keyCache.withLock({ $0[sessionID] }), cached.inputs == inputs { return cached.key }
-        let key = MeetingSummaryKey.load(session: session, profileNames: profileNames, applyRecognition: recognition)
+        let key = MeetingSummaryKey.load(session: session, profileNames: profileNames, applyRecognition: recognition,
+                                         selfName: selfName)
         keyCache.withLock { $0[sessionID] = (inputs, key) }
         return key
     }
@@ -195,7 +196,8 @@ public enum MeetingSummarySchedule {
     /// The meetings under `root`, as `next` needs them: lock probes, the transcript pointer, summary.json, and each
     /// meeting's key (`MeetingSummaryKey`, with `profileNames` and `recognition` as the exports apply them; read again
     /// only when its inputs changed). Folders that cannot be read are left out.
-    public static func scan(root: URL, profileNames: [String: String] = [:], recognition: Bool = true) -> [Candidate] {
+    public static func scan(root: URL, profileNames: [String: String] = [:], recognition: Bool = true,
+                            selfName: String = VoiceProfileService.ownName()) -> [Candidate] {
         SessionCatalog.sessionFolders(in: root).compactMap { session in
             guard let manifest = try? SessionArchive.readManifest(at: session) else { return nil }
             let active = (try? SessionArchive.isActive(at: session)) ?? true
@@ -206,7 +208,7 @@ public enum MeetingSummarySchedule {
                                              liveness: RecorderChannel.liveness(session: session))
             let key = transcriptID.flatMap {
                 Self.key(session: session, sessionID: manifest.id, transcriptID: $0, profileNames: profileNames,
-                         recognition: recognition)
+                         recognition: recognition, selfName: selfName)
             }
             return Candidate(sessionID: manifest.id, path: session.path, createdAt: manifest.createdAt,
                              transcriptID: transcriptID, summaryTranscriptID: summary?.transcriptID,

@@ -74,35 +74,34 @@ extension MeetingSummaryRecord: CustomStringConvertible, CustomDebugStringConver
 /// made again. Computed the same way everywhere (the command, the exports, the app's scan), without the model.
 public struct MeetingSummaryKey: Sendable, Equatable {
     public var transcriptID: String
-    /// A digest of every speaker's displayed label in the projection of `transcriptID` ("Alex", "Jim (auto)",
-    /// "Speaker 2"), by speaker ID: renames, links, merges, assignments, people renamed, and Remember voices
-    /// (automatic names) all change it. "none" without speaker labels for this transcript.
+    /// A digest of the names exactly as the prompt gives them (`MeetingSummarySource.promptSpeakers`): the speakers
+    /// of its lines in the order they first speak, the user's own name for the unnamed channel speaker, and the
+    /// people named. Renames, links, merges, assignments, people renamed (the user too), and Remember voices'
+    /// automatic names all change it.
     public var namesDigest: String
 
     public init(transcriptID: String, namesDigest: String) {
         self.transcriptID = transcriptID; self.namesDigest = namesDigest
     }
 
-    /// The key of what `document` shows (the exports' document).
-    public init(_ document: ExportDocument) {
+    /// The key of what `document` shows (the exports' document), with `selfName` for the unnamed channel speaker.
+    public init(_ document: ExportDocument, selfName: String) {
         transcriptID = document.transcript.id
-        let projection = document.projection.flatMap { $0.transcriptID == document.transcript.id ? $0 : nil }
-        guard let projection else {
-            namesDigest = "none"
-            return
-        }
-        let text = projection.speakers.sorted { $0.id < $1.id }.map { "\($0.id)=\($0.label)" }
-            .joined(separator: "\u{1F}")
+        let speakers = MeetingSummarySource.promptSpeakers(document: document, selfName: selfName)
+        var seen: Set<String> = []
+        let names = speakers.lines.map(\.speaker).filter { seen.insert($0).inserted }
+        let text = names.joined(separator: "\u{1F}") + "\u{1E}" + speakers.people.joined(separator: "\u{1F}")
         namesDigest = SHA256.hash(data: Data(text.utf8)).map { String(format: "%02x", $0) }.joined()
     }
 
-    /// The meeting's key now, with people's names and Remember voices as the exports apply them; nil without a
-    /// readable transcript.
-    public static func load(session: URL, profileNames: [String: String], applyRecognition: Bool) -> MeetingSummaryKey? {
+    /// The meeting's key now, with people's names, Remember voices and the user's own name as the exports and the
+    /// prompt apply them; nil without a readable transcript.
+    public static func load(session: URL, profileNames: [String: String], applyRecognition: Bool,
+                            selfName: String) -> MeetingSummaryKey? {
         guard let snapshot = try? SpeakerSessionSnapshot.load(session: session, profileNames: profileNames,
                                                               applyRecognition: applyRecognition),
               let document = try? SessionExports.exportDocument(snapshot, withSummary: false) else { return nil }
-        return MeetingSummaryKey(document)
+        return MeetingSummaryKey(document, selfName: selfName)
     }
 
     /// `record` is of this transcript and these names.
@@ -183,6 +182,17 @@ public enum MeetingSummarySource {
     /// The document's speaker blocks as lines ("Alex: …"): an automatic name without " (auto)", the channel speaker
     /// ("Me") as `selfName`; the language most of the words are in; the length; and the people the labels name.
     public static func input(document: ExportDocument, selfName: String) -> MeetingSummaryInput {
+        let speakers = promptSpeakers(document: document, selfName: selfName)
+        return MeetingSummaryInput(lines: speakers.lines, language: mainLanguage(document.transcript),
+                                   durationSeconds: document.metadata.durationSeconds, people: speakers.people)
+    }
+
+    /// The prompt's speaker lines and people, built once for the prompt and for the summary's key
+    /// (`MeetingSummaryKey`), so the key hashes exactly the names the model is given: an automatic name without
+    /// " (auto)", the unnamed channel speaker as `selfName`, track names without labels mapped to the user, "Others"
+    /// or "Someone", each cut to `maximumNameCharacters`.
+    static func promptSpeakers(document: ExportDocument, selfName: String)
+        -> (lines: [MeetingSummaryLine], people: [String]) {
         let projection = document.projection.flatMap { $0.transcriptID == document.transcript.id ? $0 : nil }
         var labels: [String: String] = [:]
         if projection == nil {
@@ -200,9 +210,7 @@ public enum MeetingSummarySource {
         let lines = TranscriptExporter.blocks(document).map { block in
             MeetingSummaryLine(speaker: shortName(labels[block.speakerLabel] ?? block.speakerLabel), text: block.text)
         }
-        return MeetingSummaryInput(lines: lines, language: mainLanguage(document.transcript),
-                                   durationSeconds: document.metadata.durationSeconds,
-                                   people: (projection.map { people($0) } ?? []).map(shortName))
+        return (lines, (projection.map { people($0) } ?? []).map(shortName))
     }
 
     /// Most characters of a speaker's or person's name in a prompt: a name is the user's text, of any length, and must

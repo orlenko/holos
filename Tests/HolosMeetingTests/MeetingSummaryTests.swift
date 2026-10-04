@@ -1185,6 +1185,40 @@ private func trackDocument(source: AudioSource) -> ExportDocument {
         == .run(sessionID: "a", path: "/a.holos", force: false))
 }
 
+@Test func renamingTheUserMakesTheirMeetingsSummaryStale() async throws {
+    let temp = try TemporaryDirectory("summary")
+    defer { temp.remove() }
+    // A call whose microphone is the user's channel ("Me" in the labels, the user's own name in the prompt).
+    let transcript = SessionFixtures.transcript(
+        SessionFixtures.alternatingSegments(track: "system") + [
+            SessionFixtures.segment(["Thanks", "everyone", "for", "joining"], track: "mic", start: 21),
+        ])
+    let session = try await SessionFixtures.makeSession(in: temp.url, source: .microphoneAndSystem,
+                                                        audioSeconds: ["mic": 25, "system": 25], mode: .call,
+                                                        transcript: transcript)
+    try SessionFixtures.writeHeadRun(session: session, transcript: transcript,
+                                     outputs: ["system": SessionFixtures.alternatingOutput()],
+                                     policies: ["mic": .channel(speakerID: "mic:me", displayName: "Me")])
+    let scripted = ScriptedSummaryModel()
+    let outcome = await SessionSummarizeCommand.run(SessionSummarizeCommand.Request(session: session,
+                                                                                    selfName: "Robin")) { _ in
+        .available(scripted.model())
+    }
+    #expect(outcome.status == .written)
+    #expect(scripted.summaryCalls.value.first?.prompt.contains("Robin: Thanks everyone") == true)
+    #expect(MeetingSummarySchedule.scan(root: temp.url, selfName: "Robin").first?.needsSummary == false)
+    // The person who is you renamed in People: the prompt's name changed, so the summary is stale.
+    let renamed = try #require(MeetingSummarySchedule.scan(root: temp.url, selfName: "Robin Lee").first)
+    #expect(renamed.needsSummary)
+    #expect(!renamed.onlyExportsPending)
+    let again = await SessionSummarizeCommand.run(SessionSummarizeCommand.Request(session: session,
+                                                                                  selfName: "Robin Lee")) { _ in
+        .available(scripted.model())
+    }
+    #expect(again.status == .written)
+    #expect(scripted.summaryCalls.value.last?.prompt.contains("Robin Lee: Thanks everyone") == true)
+}
+
 @Test func aNameTheUserGaveIsTheirsWhateverItLooksLike() throws {
     let root = URL(fileURLWithPath: "/tmp/sessions")
     var typed = MeetingStartSettings(name: "Meeting 2026-10-03 14:00", source: .microphone)

@@ -27,7 +27,8 @@ public enum SessionSummarizeCommand {
         /// read again at the save, so a summary made while they changed is not saved. Nil keeps the request's.
         public var voiceInputsNow: (@Sendable () -> (names: [String: String], recognition: Bool))?
 
-        public init(session: URL, force: Bool = false, selfName: String = "Me", profileNames: [String: String] = [:],
+        public init(session: URL, force: Bool = false, selfName: String = VoiceProfileService.ownName(),
+                    profileNames: [String: String] = [:],
                     applyRecognition: Bool = true,
                     voiceInputsNow: (@Sendable () -> (names: [String: String], recognition: Bool))? = nil) {
             self.session = session; self.force = force; self.selfName = selfName; self.profileNames = profileNames
@@ -143,7 +144,7 @@ public enum SessionSummarizeCommand {
                                transcriptID: transcriptID)
             }
             input = MeetingSummarySource.input(document: document, selfName: request.selfName)
-            key = MeetingSummaryKey(document)
+            key = MeetingSummaryKey(document, selfName: request.selfName)
         } catch {
             return outcome(.failed, "Cannot read the transcript: \(error.localizedDescription)",
                            transcriptID: transcriptID)

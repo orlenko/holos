@@ -98,7 +98,10 @@ public enum SessionExports {
             document.run = nil
             document.projection = nil
         }
-        if withSummary { document.summary = exportSummary(snapshot, key: MeetingSummaryKey(document)) }
+        if withSummary {
+            document.summary = exportSummary(snapshot, key: MeetingSummaryKey(document,
+                                                                              selfName: VoiceProfileService.ownName()))
+        }
         return document
     }
 
