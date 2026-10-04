@@ -402,6 +402,10 @@ final class MeetingsPane: NSViewController, NSTableViewDataSource, NSTableViewDe
             // a file or the title changes), whoever wrote them. A Review's failed rewrite (`PendingExports`) is
             // checked against what the saved labels would write, and forgotten once the files match.
             let reviewPending = PendingExports().sessionIDs
+            // Read before the check, so a mark set again meanwhile (a review that failed again) is kept.
+            let reviewGenerations = Dictionary(uniqueKeysWithValues: reviewPending.map {
+                ($0, PendingExports().generation($0))
+            })
             let filesCache = self?.filesCache
             let listed = await Task.detached {
                 () -> ([SessionSummary], [String: [String]], Int64?, Set<String>, Set<String>) in
@@ -430,7 +434,9 @@ final class MeetingsPane: NSViewController, NSTableViewDataSource, NSTableViewDe
             guard let self else { return }
             self.loading = false
             self.staleFiles = listed.3
-            for id in listed.4 where self.running[id] == nil { PendingExports().clear(id) }
+            for id in listed.4 where self.running[id] == nil {
+                PendingExports().clear(id, ifGeneration: reviewGenerations[id] ?? 0)
+            }
             self.show(listed.0, people: listed.1, freeBytes: listed.2)
         }
     }
@@ -919,23 +925,21 @@ final class MeetingsPane: NSViewController, NSTableViewDataSource, NSTableViewDe
     func renameEnded(_ summary: SessionSummary, outcome: SessionRenameCommand.Outcome?, failure: String?) {
         let id = summary.id
         let shown = Self.short(summary.displayTitle)
-        if let outcome, outcome.exitCode != 1, let name = outcome.name, let source = outcome.nameSource,
+        if let outcome, outcome.renamed || outcome.status == .unchanged, let name = outcome.name,
+           let source = outcome.nameSource,
            let index = sessions.firstIndex(where: { $0.id == id }) {
             sessions[index].name = name
             sessions[index].nameSource = source
+            // The name shown without a generated title is the new one (`MeetingNaming.fallbackName` of it).
+            sessions[index].shownName = name
             reloadKeepingSelection()
             updateLiveHeader()
             onTitleChanged?(id)
         }
         refresh()
         updateButtons()
-        switch outcome?.exitCode {
-        case 0?: break
-        case 3?: showSheet("“\(shown)” was renamed, but its transcript files still show the old title.",
-                           (outcome?.message ?? "") + "\n\nRight-click the meeting and choose Update Transcript Files "
-                               + "to try again.")
-        default: showSheet("Voice is Local could not rename “\(shown)”.",
-                           outcome?.message ?? failure ?? "The rename command stopped before it said how it ended.")
+        if let alert = MeetingRenameRun.alert(for: outcome, shown: shown, failure: failure) {
+            showSheet(alert.title, alert.text)
         }
     }
 

@@ -70,6 +70,25 @@ public enum MeetingRenameRun {
         if let name = request.typedName { return ["session", "rename", "--json", "--", session.path, name] }
         return ["session", "rename", "--generated", "--json", "--", session.path]
     }
+
+    /// What the app says when a rename of the meeting titled `shown` ended (nil: nothing, it worked): exit 3 with the
+    /// name changed says the files still show the old title (Update Transcript Files); exit 3 without it (the files
+    /// rewritten under the old name, then the rename failed) and any other failure say it was not renamed.
+    public static func alert(for outcome: SessionRenameCommand.Outcome?, shown: String, failure: String?)
+        -> (title: String, text: String)? {
+        guard let outcome else {
+            return ("Voice is Local could not rename “\(shown)”.",
+                    failure ?? "The rename command stopped before it said how it ended.")
+        }
+        switch outcome.exitCode {
+        case 0: return nil
+        case 3 where outcome.renamed:
+            return ("“\(shown)” was renamed, but its transcript files still show the old title.",
+                    outcome.message + "\n\nRight-click the meeting and choose Update Transcript Files to try again.")
+        default:
+            return ("Voice is Local could not rename “\(shown)”.", outcome.message)
+        }
+    }
 }
 
 /// `voiceislocal session rename` and the Meetings list's Rename… (docs/meeting-design.md §4.17): gives a finished
@@ -150,15 +169,19 @@ public enum SessionRenameCommand {
         public var title: String?
         /// The transcript files were rewritten with the new title.
         public var exportsUpdated: Bool
+        /// The name (or its source) was changed, wholly or partly; false when nothing of the name changed (refused,
+        /// unchanged, or undone after a failure, also when the files were rewritten under the old name first).
+        public var renamed: Bool
         public var message: String
         /// 0 renamed or unchanged; 3 renamed (or unchanged) but the transcript files could not be rewritten, or partly
         /// renamed (the previous name could not be put back after a failed write); 1 otherwise, with nothing changed.
         public var exitCode: Int32
 
         public init(sessionID: String?, status: Status, name: String? = nil, nameSource: MeetingNameSource? = nil,
-                    title: String? = nil, exportsUpdated: Bool = false, message: String, exitCode: Int32) {
+                    title: String? = nil, exportsUpdated: Bool = false, renamed: Bool = false, message: String,
+                    exitCode: Int32) {
             self.sessionID = sessionID; self.status = status; self.name = name; self.nameSource = nameSource
-            self.title = title; self.exportsUpdated = exportsUpdated; self.message = message
+            self.title = title; self.exportsUpdated = exportsUpdated; self.renamed = renamed; self.message = message
             self.exitCode = exitCode
         }
     }
@@ -241,7 +264,7 @@ public enum SessionRenameCommand {
             Outcome(sessionID: id, status: status, name: target.name, nameSource: target.source,
                     title: MeetingNaming.displayTitle(name: target.name, source: target.source,
                                                       generatedTitle: generated),
-                    exportsUpdated: exports, message: message, exitCode: code)
+                    exportsUpdated: exports, renamed: status == .renamed, message: message, exitCode: code)
         }
         // Already so: nothing to write, but the transcript files are still rewritten below, so a rename whose files
         // could not be rewritten (exit 3) is finished by asking for it again.
@@ -268,8 +291,19 @@ public enum SessionRenameCommand {
             return refused(.failed, "This meeting's transcript files were written by a newer version of Voice is "
                 + "Local, so they cannot follow a new name; update Voice is Local to rename it.")
         }
-        generated = MeetingSummaryStore.current(MeetingSummaryStore.readIfUsable(session: session, sessionID: id),
-                                                transcriptID: transcriptID)?.title
+        // A summary.json a newer build wrote cannot be carried into the rewritten files (they would lose it, and the
+        // generated title): refused, as other newer files are. A damaged one counts as none.
+        let summaryRecord: MeetingSummaryRecord?
+        do {
+            summaryRecord = try MeetingSummaryStore.read(session: session, sessionID: id)
+        } catch {
+            if case .unavailable? = error as? HolosError {
+                return refused(.failed, "This meeting's summary was written by a newer version of Voice is Local, so "
+                    + "its transcript files cannot follow a new name; update Voice is Local to rename it.")
+            }
+            summaryRecord = nil
+        }
+        generated = MeetingSummaryStore.current(summaryRecord, transcriptID: transcriptID)?.title
         // Before each step that writes, the folder at the path is checked again to be the one the lease locks (the
         // device and inode check of the lease's use): a folder moved or replaced meanwhile gets nothing written.
         func checkpoint(_ step: String) async throws {
@@ -357,7 +391,7 @@ public enum SessionRenameCommand {
         } catch let partial as PartialRename {
             // The new name may be in the manifest without its source, and the files were not rewritten: exit 3, so
             // the app keeps the meeting marked (Update Transcript Files).
-            return Outcome(sessionID: id, status: .failed, message: partial.message, exitCode: 3)
+            return Outcome(sessionID: id, status: .failed, renamed: true, message: partial.message, exitCode: 3)
         } catch {
             return failed(.failed, "Cannot rename the meeting: \(error.localizedDescription)")
         }

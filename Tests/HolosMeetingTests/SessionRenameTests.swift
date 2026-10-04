@@ -1306,3 +1306,64 @@ private func listed(name: String, source: MeetingNameSource, generated: String?)
     _ = await rename(session, "Weekly sync")
     #expect(SessionExports.filesState(session: session, title: summary.displayTitle, name: summary.name) == .current)
 }
+
+// MARK: - Renamed or not, newer summaries, pending marks, the shown name
+
+@Test func theAlertSaysWhetherTheMeetingWasRenamed() async throws {
+    let temp = try TemporaryDirectory("rename")
+    defer { temp.remove() }
+    // Prepared under the old name, then the rename failed and was undone: exit 3, not renamed.
+    let session = try await renameSession(in: temp.url, legacyExports: true)
+    struct WriteFailed: Error {}
+    var request = SessionRenameCommand.Request(session: session, name: "Design review", voiceInputs: { voice },
+                                               jobLock: temp.url.appendingPathComponent("jobs.lock"), timeZone: utc)
+    request.nameSourceWriter = { _, _, _ in throw WriteFailed() }
+    let notRenamed = await SessionRenameCommand.run(request)
+    #expect(notRenamed.exitCode == 3)
+    #expect(!notRenamed.renamed)
+    #expect(MeetingRenameRun.alert(for: notRenamed, shown: "M", failure: nil)?.title == "Voice is Local could not rename “M”.")
+    // Renamed, the files not rewritten: exit 3, renamed.
+    struct Unreadable: Error {}
+    let renamed = await SessionRenameCommand.run(SessionRenameCommand.Request(
+        session: session, name: "Design review", voiceInputs: { throw Unreadable() },
+        jobLock: temp.url.appendingPathComponent("jobs.lock"), timeZone: utc))
+    #expect(renamed.exitCode == 3)
+    #expect(renamed.renamed)
+    #expect(MeetingRenameRun.alert(for: renamed, shown: "M", failure: nil)?.text.contains("Update Transcript Files")
+        == true)
+    #expect(MeetingRenameRun.alert(for: SessionRenameCommand.Outcome(sessionID: "S", status: .renamed, message: "m",
+                                                                     exitCode: 0), shown: "M", failure: nil) == nil)
+    #expect(MeetingRenameRun.alert(for: nil, shown: "M", failure: "stopped")?.text == "stopped")
+}
+
+@Test func aSummaryFromANewerBuildRefusesTheRename() async throws {
+    let temp = try TemporaryDirectory("rename")
+    defer { temp.remove() }
+    let session = try await renameSession(in: temp.url)
+    try writeSummary(session)
+    var object = try #require(try JSONSerialization.jsonObject(
+        with: Data(contentsOf: SessionPaths.summary(session))) as? [String: Any])
+    object["schemaVersion"] = 2
+    try AtomicFile.write(try JSONSerialization.data(withJSONObject: object), to: SessionPaths.summary(session))
+    let before = SessionFixtures.text(SessionPaths.export("md", in: session))
+    let outcome = await rename(session, "Weekly sync")
+    #expect(outcome.status == .failed)
+    #expect(outcome.message.contains("newer version"))
+    #expect(try SessionArchive.readManifest(at: session).name == "Meeting 2026-10-03 14:00")
+    #expect(SessionFixtures.text(SessionPaths.export("md", in: session)) == before, "The files keep their summary")
+}
+
+@Test func aPendingMarkSetAgainDuringACheckIsKept() throws {
+    let suite = "holos-tests-\(UUID().uuidString)"
+    let defaults = try #require(UserDefaults(suiteName: suite))
+    defer { defaults.removePersistentDomain(forName: suite) }
+    let pending = PendingExports(defaults: defaults)
+    pending.mark("A")
+    let seen = pending.generation("A")
+    // A review closed meanwhile and could not rewrite the files again.
+    pending.mark("A")
+    pending.clear("A", ifGeneration: seen)
+    #expect(pending.contains("A"), "Set again after the check began")
+    pending.clear("A", ifGeneration: pending.generation("A"))
+    #expect(!pending.contains("A"))
+}

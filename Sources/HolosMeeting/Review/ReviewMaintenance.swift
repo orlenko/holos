@@ -131,13 +131,34 @@ public struct PendingExports {
 
     public func contains(_ sessionID: String) -> Bool { sessionIDs.contains(sessionID) }
 
+    /// How many times each meeting was marked, so a check that began before a newer mark does not clear it.
+    static let generationsKey = "meeting.exportsPendingGeneration"
+
+    private var generations: [String: Int] {
+        (defaults.dictionary(forKey: Self.generationsKey) as? [String: Int]) ?? [:]
+    }
+
+    /// The meeting's mark count now (0 if never marked since it was last cleared).
+    public func generation(_ sessionID: String) -> Int { generations[sessionID] ?? 0 }
+
     public func mark(_ sessionID: String) {
+        var counts = generations
+        counts[sessionID, default: 0] += 1
+        defaults.set(counts, forKey: Self.generationsKey)
         var ids = sessionIDs
         guard ids.insert(sessionID).inserted else { return }
         defaults.set(ids.sorted(), forKey: key)
     }
 
     public func clear(_ sessionID: String) {
+        var counts = generations
+        if counts.removeValue(forKey: sessionID) != nil {
+            if counts.isEmpty {
+                defaults.removeObject(forKey: Self.generationsKey)
+            } else {
+                defaults.set(counts, forKey: Self.generationsKey)
+            }
+        }
         var ids = sessionIDs
         guard ids.remove(sessionID) != nil else { return }
         if ids.isEmpty {
@@ -145,5 +166,12 @@ public struct PendingExports {
         } else {
             defaults.set(ids.sorted(), forKey: key)
         }
+    }
+
+    /// Clears the mark only when it was not set again since `generation` was read (a check that started earlier
+    /// cannot clear a newer failure).
+    public func clear(_ sessionID: String, ifGeneration generation: Int) {
+        guard self.generation(sessionID) == generation else { return }
+        clear(sessionID)
     }
 }
