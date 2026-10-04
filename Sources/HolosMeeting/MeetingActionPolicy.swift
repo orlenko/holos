@@ -64,7 +64,10 @@ public enum MeetingActionPolicy {
             return "Its summary cannot be read now, so its transcript files cannot follow a new name; try again "
                 + "later. \(problem)"
         }
-        if let problem = summary.exportsProblem {
+        // A meeting without a transcript and transcript files is renamed without touching them: their record does not
+        // matter then.
+        if let problem = summary.exportsProblem,
+           summary.transcriptID != nil || summary.transcriptProblem != nil || hasExport {
             if problem.contains("newer version") {
                 return "Its transcript files were written by a newer version of Voice is Local, so they cannot follow "
                     + "a new name; update Voice is Local to rename it."

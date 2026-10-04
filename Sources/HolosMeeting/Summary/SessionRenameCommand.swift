@@ -290,7 +290,8 @@ public enum SessionRenameCommand {
             return refused(.failed, "This meeting's transcript is missing but its transcript files exist, so they "
                 + "cannot follow a new name; recover it first (voiceislocal session recover \(id)).")
         }
-        if SessionExports.recordIsFromNewerVersion(session: session) {
+        // Without a transcript and transcript files the rename does not touch them, so their record does not matter.
+        if hasTranscript || hasExportFiles(session), SessionExports.recordIsFromNewerVersion(session: session) {
             return refused(.failed, "This meeting's transcript files were written by a newer version of Voice is "
                 + "Local, so they cannot follow a new name; update Voice is Local to rename it.")
         }
@@ -391,9 +392,9 @@ public enum SessionRenameCommand {
         do {
             try await writeName(target, manifest: manifest, meeting: meeting, session: session, lease: lease,
                                 failAfterNameWrite: request.failAfterNameWrite,
-                                check: {
+                                check: { step in
                                     do {
-                                        try await checkpoint("nameSource")
+                                        try await checkpoint(step)
                                     } catch {
                                         throw PartialRename(message: moved + " after its new name was written, so "
                                             + "the rest was not; its transcript files may still show the old title. "
@@ -451,7 +452,7 @@ public enum SessionRenameCommand {
     static func writeName(_ target: (name: String, source: MeetingNameSource), manifest: SessionManifest,
                           meeting: MeetingInfo, session: URL, lease: ProcessingLease,
                           failAfterNameWrite: Bool = false,
-                          check: () async throws -> Void = {},
+                          check: (_ step: String) async throws -> Void = { _ in },
                           nameSourceWriter: (MeetingNameSource, URL, MeetingInfo) throws -> Void) async throws {
         let archive = try SessionArchive.openForMaintenance(at: session, lease: lease)
         var unconfirmed: (any Error)?
@@ -488,7 +489,7 @@ public enum SessionRenameCommand {
             if target.source.isUser {
                 try await writeManifestName()
                 // The folder is checked again before the second write (`check` throws `PartialRename` when it moved).
-                try await check()
+                try await check("nameSource")
                 do {
                     try writeSource()
                 } catch {
@@ -497,7 +498,7 @@ public enum SessionRenameCommand {
                 }
             } else {
                 try writeSource()
-                try await check()
+                try await check("nameSource")
                 do {
                     try await writeManifestName()
                 } catch {
@@ -509,6 +510,8 @@ public enum SessionRenameCommand {
                     throw error
                 }
             }
+            // The folder is checked once more before the journal is written: a replaced one gets no event.
+            try await check("event")
             do {
                 try await archive.recordEvent(kind: MeetingEventKind.renamed,
                                               details: ["nameSource": target.source.rawValue])
@@ -662,8 +665,9 @@ public enum SessionRenameCommand {
                 writes?.made = checks - 1
                 throw error
             }
-            // Each check is before a write; a write that fails leaves nothing (atomic), so the ones before it count.
-            writes?.made = checks - 1
+            // Each check is before a write, counted as made from here: a publication can land and then fail (its
+            // folder not synced), so a write that fails may have changed the files.
+            writes?.made = checks
         }
         func write(_ voice: SessionSummarizeCommand.VoiceInputs) throws {
             _ = try SessionExports.regenerateLocked(session: session, profileNames: voice.names,

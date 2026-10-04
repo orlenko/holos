@@ -1427,3 +1427,85 @@ private func listed(name: String, source: MeetingNameSource, generated: String?)
     #expect(newer.summaryProblem?.contains("newer version") == true)
     #expect(MeetingActionPolicy.renameRefusal(newer)?.contains("newer version") == true)
 }
+
+// MARK: - Writes that may land, the event on the locked folder, an unfinished switch, transcript-free meetings
+
+@Test func aFirstWriteThatFailsMayHaveLandedAndIsReported() async throws {
+    let temp = try TemporaryDirectory("rename")
+    defer { temp.remove() }
+    let session = try await renameSession(in: temp.url, legacyExports: true)
+    let exports = SessionPaths.exports(session)
+    var request = SessionRenameCommand.Request(session: session, name: "Design review", voiceInputs: { voice },
+                                               jobLock: temp.url.appendingPathComponent("jobs.lock"), timeZone: utc)
+    // The pending record's write fails (its folder turned read-only); a publication that fails may have landed.
+    request.exportCheck = { call in if call == 1 { _ = chmod(exports.path, 0o500) } }
+    let outcome = await SessionRenameCommand.run(request)
+    #expect(chmod(exports.path, 0o700) == 0)
+    #expect(outcome.exitCode == 3)
+    #expect(outcome.message.contains("partly rewritten"))
+}
+
+@Test func theEventIsWrittenOnlyOnTheLockedFolder() async throws {
+    let temp = try TemporaryDirectory("rename")
+    defer { temp.remove() }
+    let session = try await renameSession(in: temp.url)
+    let moved = temp.url.appendingPathComponent("moved", isDirectory: true)
+    var request = SessionRenameCommand.Request(session: session, name: "Weekly sync", voiceInputs: { voice },
+                                               jobLock: temp.url.appendingPathComponent("jobs.lock"), timeZone: utc)
+    request.beforeStep = { step in
+        guard step == "event" else { return }
+        try? FileManager.default.moveItem(at: session, to: moved)
+        try? FileManager.default.copyItem(at: moved, to: session)
+    }
+    let outcome = await SessionRenameCommand.run(request)
+    #expect(outcome.exitCode == 3)
+    #expect(outcome.message.contains("moved or replaced"))
+    // Neither folder got the event.
+    for folder in [moved, session] {
+        #expect(try SessionArchive.readEvents(at: folder).events.last?.kind != MeetingEventKind.renamed)
+    }
+}
+
+@Test func anUnfinishedSwitchToTheGeneratedTitleIsOutOfDate() async throws {
+    let temp = try TemporaryDirectory("rename")
+    defer { temp.remove() }
+    let session = try await renameSession(in: temp.url)
+    try writeSummary(session)
+    // The user's name is the generated title word for word; --generated writes its source, then stops.
+    _ = await rename(session, "Parser rewrite and release plan")
+    var request = SessionRenameCommand.Request(session: session, name: nil, voiceInputs: { voice },
+                                               jobLock: temp.url.appendingPathComponent("jobs.lock"), timeZone: utc)
+    request.nameSourceWriter = { source, folder, meeting in
+        try SessionRenameCommand.writeNameSource(source, session: folder, meeting: meeting)
+        _ = chmod(folder.path, 0o500)
+    }
+    let partial = await SessionRenameCommand.run(request)
+    #expect(chmod(session.path, 0o700) == 0)
+    #expect(partial.exitCode == 3)
+    let summary = SessionCatalog.summary(session: session, jobState: .free)
+    #expect(summary.nameSource == .default)
+    #expect(summary.name == "Parser rewrite and release plan", "Left over")
+    #expect(summary.displayTitle == "Parser rewrite and release plan", "The title shown is the same")
+    // The heading and the name in the files match, but the switch is not done: out of date, for Update.
+    #expect(TranscriptFilesCache().state(of: summary) == .stale)
+    #expect(MeetingRenameRequest.retry(summary) == .generated)
+    #expect(await rename(session, nil).exitCode == 0)
+    let done = SessionCatalog.summary(session: session, jobState: .free)
+    #expect(done.name == MeetingStartSettings.defaultName(now: done.createdAt, timeZone: utc))
+    #expect(TranscriptFilesCache().state(of: done) == .current)
+}
+
+@Test func aTranscriptFreeMeetingIsRenamedWhateverItsExportRecord() async throws {
+    let temp = try TemporaryDirectory("rename")
+    defer { temp.remove() }
+    let session = try await SessionFixtures.makeSession(in: temp.url, transcript: nil)
+    try AtomicFile.write(Data(#"{"schemaVersion":2,"files":{}}"#.utf8), to: SessionPaths.generatedExports(session))
+    let listed = SessionCatalog.summary(session: session, jobState: .free)
+    #expect(listed.exportsProblem != nil)
+    // No transcript and no transcript file: the rename does not touch the files, so the record does not matter.
+    #expect(MeetingActionPolicy.renameRefusal(listed, hasExport: false) == nil)
+    #expect(MeetingActionPolicy.enabled(listed, inUse: false, hasExport: false, transcriptFiles: false)
+        .contains(.rename))
+    let outcome = await rename(session, "Hallway chat")
+    #expect(outcome.status == .renamed)
+}

@@ -5056,7 +5056,14 @@ that cannot be read now (`unreadable`, tried again later); only a missing or dam
 none. The catalog keeps the reason (`summaryProblem`, `MeetingSummaryStore.readChecked`) and Rename
 is off for it, with the reason as the tooltip. A preparation that stops after its first write
 (the pending record, a file moved aside or replaced) exits 3, saying the files were partly
-rewritten under the old name; only one that stops before any write exits 1. A write that
+rewritten under the old name; only one that stops before any write exits 1 (each write counts
+from its check, since a publication can land and then fail on the folder sync). The folder is
+checked once more before the `renamed` event is journaled; a replaced one gets no event (exit 3). A
+switch to the generated title left unfinished (source `default`, the manifest still holding a name
+Voice is Local did not make up, `SessionSummary.nameIsUnfinished`) reads as out of date whatever the
+files hold, so Update Transcript Files finishes it even when the title shown did not change. A
+meeting without a transcript and transcript files is renamed whatever its export record says, in
+the policy and the command alike (the files are not touched). A write that
 fails after its new file is in place (its folder not synced; the name or source read back is the
 new one) counts as written: the rest is still written, the files are not rewritten, exit 3, and they
 read as out of date. A crash between them leaves a name and source that differ from the ones asked
@@ -5375,7 +5382,9 @@ a job not yet named holding every meeting, an unreadable export record turning R
 name in transcript.json checked, files of an earlier transcript out of date, the
 alert telling renamed from not renamed, a newer summary.json refusing, a mark set again during a check
 kept, a preparation stopped after its first write exiting 3, a cleared mark never reusing a count, an
-unreadable summary.json refusing and turning Rename off, a preparation reported when the rename then fails, a
+unreadable summary.json refusing and turning Rename off, a failed first write that may have landed
+reported, the event only on the locked folder, an unfinished switch out of date, a transcript-free
+meeting renamed whatever its export record, a preparation reported when the rename then fails, a
 transcript from a newer build, damaged, or unreadable now, an unreadable meeting.json).
 
 **Follow-ups.** The summary in Review. If Apple's model proves too weak on long or noisy meetings, a local

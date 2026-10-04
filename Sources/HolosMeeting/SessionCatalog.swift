@@ -129,6 +129,11 @@ public struct SessionSummary: Codable, Sendable, Equatable, Identifiable {
                             fallback: shownName)
     }
 
+    /// A switch to the generated title not finished: the source is `default` but the manifest still has a name Voice
+    /// is Local did not make up (`shownName` is the made-up one). Its transcript files read as out of date, so Update
+    /// Transcript Files (`--generated`) finishes it, also when the title shown did not change.
+    public var nameIsUnfinished: Bool { nameSource == .default && shownName != name }
+
     /// The generated title the meeting can show (`MeetingNaming.title`'s rule): a summary of the current transcript's;
     /// nil otherwise. What Use Generated Title and the rename editor offer.
     public var currentGeneratedTitle: String? {
