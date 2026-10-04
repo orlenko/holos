@@ -5089,8 +5089,9 @@ after the processing lease is taken, so another rename that ends while this one 
 is seen; all of it runs in the lease's use (`ProcessingLease.withUse`, the device and inode check
 every processing command makes) and checks the manifest's ID is the one asked for, and the folder is
 checked again before each step that writes (the preparation, the name, its source, each rewrite of
-the files, and within a rewrite before each file moved aside as edited, the pending record, each file
-and the final record:
+the files, and within a rewrite before the exports folder is made sure of, each file moved aside as
+edited, the pending record, each file and the final record; and again right before the commit, once
+the archive is open:
 `SessionExports.regenerateLocked`'s `check`, `ProcessingLease.verify`), so a folder moved or replaced meanwhile gets nothing more written (`busy` before the
 name; exit 3 once the name is written); the recorder's liveness is read before it (the rename's own lease would read as one). A current
 transcript that is there but cannot be read refuses the rename before anything is written, rather

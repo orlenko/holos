@@ -1051,8 +1051,8 @@ private func listed(name: String, source: MeetingNameSource, generated: String?)
             calls.update { $0 += 1 }
         })
     }
-    // Before the pending record, each of the three files, and the final record.
-    #expect(calls.value == 5)
+    // Before the exports folder is made sure of, the pending record, each of the three files, and the final record.
+    #expect(calls.value == 6)
     struct Moved: Error {}
     let stopped = SharedValue(0)
     #expect(throws: Moved.self) {
@@ -1152,12 +1152,12 @@ private func listed(name: String, source: MeetingNameSource, generated: String?)
     }
     #expect(calls.value == 1)
     #expect(try editedExports(session).isEmpty)
-    // Otherwise one check more: before the move, the pending record, each file and the final record.
+    // Otherwise one check more: before the folder, the move, the pending record, each file and the final record.
     calls.set(0)
     try SessionArchive.withSpeakerLock(at: session) {
         _ = try SessionExports.regenerateLocked(session: session, selfName: "Robin", check: { calls.update { $0 += 1 } })
     }
-    #expect(calls.value == 6)
+    #expect(calls.value == 7)
     #expect(try editedExports(session).count == 1)
 }
 
@@ -1369,7 +1369,7 @@ private func listed(name: String, source: MeetingNameSource, generated: String?)
     var request = SessionRenameCommand.Request(session: session, name: "Design review", voiceInputs: { voice },
                                                jobLock: temp.url.appendingPathComponent("jobs.lock"), timeZone: utc)
     // The pending record's write fails (its folder turned read-only); a publication that fails may have landed.
-    request.exportCheck = { call in if call == 1 { _ = chmod(exports.path, 0o500) } }
+    request.exportCheck = { call in if call == 2 { _ = chmod(exports.path, 0o500) } }
     let outcome = await SessionRenameCommand.run(request)
     #expect(chmod(exports.path, 0o700) == 0)
     #expect(outcome.exitCode == 3)
@@ -1564,4 +1564,25 @@ private func listed(name: String, source: MeetingNameSource, generated: String?)
     try MeetingSummaryStore.write(record, session: session)
     #expect(await rename(session, "Weekly sync").exitCode == 0)
     #expect(try MeetingSummaryStore.read(session: session, sessionID: id)?.exportsPending == nil)
+}
+
+@Test func theCommitIsWrittenOnlyOnTheLockedFolder() async throws {
+    let temp = try TemporaryDirectory("rename")
+    defer { temp.remove() }
+    let session = try await renameSession(in: temp.url)
+    let moved = temp.url.appendingPathComponent("moved", isDirectory: true)
+    var request = SessionRenameCommand.Request(session: session, name: "Weekly sync", voiceInputs: { voice },
+                                               jobLock: temp.url.appendingPathComponent("jobs.lock"), timeZone: utc)
+    // Replaced while the archive was opened for the writes, just before the commit.
+    request.beforeStep = { step in
+        guard step == "commit" else { return }
+        try? FileManager.default.moveItem(at: session, to: moved)
+        try? FileManager.default.copyItem(at: moved, to: session)
+    }
+    let outcome = await SessionRenameCommand.run(request)
+    #expect(outcome.status == .busy)
+    #expect(outcome.exitCode == 1)
+    #expect(!outcome.renamed)
+    for folder in [moved, session] { #expect(try meetingJSON(folder)["name"] == nil) }
+    #expect(try SessionArchive.readManifest(at: session).name == "Meeting 2026-10-03 14:00")
 }

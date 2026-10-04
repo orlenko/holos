@@ -66,8 +66,9 @@ public enum SessionExports {
     /// `selfName` names the unnamed channel speaker in the summary's key (nil: `VoiceProfileService.ownName()`): the
     /// summary command passes the one it checked, so the files it marks written carry its summary.
     ///
-    /// `check` runs before each write (the pending record, each file, the final record), so a caller holding the
-    /// processing lease can check the folder is still the one it locks (`ProcessingLease.verify`) and stop when not.
+    /// `check` runs before each write (the exports folder, the pending record, each file, the final record), so a
+    /// caller holding the processing lease can check the folder is still the one it locks (`ProcessingLease.verify`)
+    /// and stop when not.
     @discardableResult
     ///
     /// `summaryRecord`: summary.json as the caller read and checked it (nil inside: none), used instead of reading it
@@ -232,9 +233,11 @@ public enum SessionExports {
     /// digests about to be written as `pending`. Returns the files moved aside. (Tests call it alone to stand for
     /// a regeneration interrupted before it replaced any file.)
     ///
-    /// `check` runs before each write it makes (each file moved aside, the pending record).
+    /// `check` runs before each write it makes (the exports folder, each file moved aside, the pending record).
     static func beginWrite(_ rendered: [(format: ExportFormat, data: Data)], session: URL,
                            snapshot: SpeakerSessionSnapshot, check: () throws -> Void = {}) throws -> [URL] {
+        // Making sure of the exports folder can create it: checked first like every other write.
+        try check()
         try AtomicFile.ensurePrivateDirectory(SessionPaths.exports(session))
         let read = try readRecordChecked(session: session)
         let record = read.record

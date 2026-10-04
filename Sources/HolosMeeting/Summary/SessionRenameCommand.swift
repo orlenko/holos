@@ -135,8 +135,8 @@ public enum SessionRenameCommand {
         var beforeLease: (@Sendable () async -> Void)?
         /// Tests: runs just after the lease is taken (the folder moved or replaced then).
         var afterLease: (@Sendable () async -> Void)?
-        /// Tests: runs before each step that writes ("prepare", "write", "manifest", "event", "regenerate"), just before
-        /// the folder is checked again.
+        /// Tests: runs before each step that writes ("prepare", "write", "commit", "manifest", "event", "regenerate"),
+        /// just before the folder is checked again.
         var beforeStep: (@Sendable (String) async -> Void)?
         /// Tests: the manifest's copy of the name is written, then an error as if its folder could not be synced.
         var failAfterNameWrite = false
@@ -442,6 +442,13 @@ public enum SessionRenameCommand {
             archive = try SessionArchive.openForMaintenance(at: session, lease: lease)
         } catch {
             return failed(.failed, "Cannot rename the meeting: \(error.localizedDescription)")
+        }
+        // The folder is checked again right before the commit: opening the archive took time.
+        do {
+            try await checkpoint("commit")
+        } catch {
+            await archive.releaseLock()
+            return failed(.busy, moved + "; its name was not changed. Try again.")
         }
         var unfinished: [String] = []
         do {
