@@ -238,15 +238,17 @@ last one; scrolling that card out of view ends the choice, and a chapter scrolli
 counts as chosen. Scrolling from the top with the Settings row marked marks General at once.
 Clicking the marked chapter (or Settings) again goes back to its top. The Settings row shows the page
 from the top; ⌘, and the menus' Settings… show it where it was left (the sidebar marks the
-chapter it shows, or Settings at the top). A search field above the page (⌘F while Settings
+chapter it shows, or Settings at the top). While a search is open the sidebar marks the
+Settings row, whatever the filtered page shows. A search field above the page (⌘F while Settings
 shows) filters as the user types: each word of the query must match a setting's title,
 caption (a status row's current detail line), or keywords, ignoring case, diacritics, and
 width, as the text's start, a word's start, inside a word (three letters or more), or as
 letters in order within one word of a title or keyword ("dctn"); a title counts three times,
 a keyword twice, a caption once, and ties keep page order. Only the matching settings show,
 in page order, under their cards' headings; a row its state hides (Input Monitoring) is never
-shown; "No settings match" when none does. When a status row's detail changes under an open
-search (a permission granted meanwhile), the search runs again; the page stays where it is
+shown; "No settings match" when none does. When a searched caption changes under an open
+search (a status row's detail, a permission granted meanwhile; the reading folder chosen
+again), the search runs again; the page stays where it is
 unless the best match changed. The best match is outlined: Return clears the
 search, scrolls to it, outlines it for a moment, and moves the focus to its control when the
 control can take it (Full Keyboard Access); the sidebar marks its chapter, or, for Run Setup

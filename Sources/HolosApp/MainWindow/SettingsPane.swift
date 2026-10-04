@@ -132,7 +132,8 @@ final class SettingsPane: NSViewController, MainSectionContent, NSSearchFieldDel
         /// Nil for the Setup Assistant footer.
         let chapter: SettingsChapter?
         let entry: SettingsSearch.Entry
-        /// A status row's detail line: what it says now is searched as its caption.
+        /// A status row's detail line, or the reading folder: what it says now is searched as its caption. Only
+        /// `setCaption` changes it.
         var liveCaption: NSTextField?
         /// The card's views it is made of, hidden when it does not match.
         var views: [NSView] = []
@@ -198,9 +199,10 @@ final class SettingsPane: NSViewController, MainSectionContent, NSSearchFieldDel
     private static let textWidth: CGFloat = 360
 
     // Chapters and search.
-    /// The chapter at the top, on each scroll by the user (not while `show(chapter:)` scrolls) and after a search or
-    /// Return moved the page; repeats included, so the sidebar can leave the Settings row for General.
-    var onChapterChange: ((SettingsChapter) -> Void)?
+    /// What the sidebar marks: the chapter at the top, on each scroll by the user (not while `show(chapter:)`
+    /// scrolls) and after a search or Return moved the page, repeats included, so the sidebar can leave the Settings
+    /// row for General; nil, the Settings row, while a search is open.
+    var onChapterChange: ((SettingsChapter?) -> Void)?
     /// The chapter the page shows: the one at the top, or the one chosen.
     private(set) var currentChapter = SettingsChapter.general
     /// The chapter the user chose in the sidebar (or went to with Return) while its card stays in view: at the end of
@@ -547,8 +549,25 @@ final class SettingsPane: NSViewController, MainSectionContent, NSSearchFieldDel
         ReadingVoicePopup.fill(readingVoicePopup, selecting: ReadingPreferences.voice)
         readingSpeedSlider.doubleValue = ReadingPreferences.speed
         readingSpeedLabel.stringValue = ReadingSpeed.label(readingSpeedSlider.doubleValue)
-        readingFolderDetail?.stringValue = ReadingPreferences.folderText
+        if let readingFolderDetail { setCaption(readingFolderDetail, ReadingPreferences.folderText) }
     }
+
+    /// Sets a searched caption (an item's `liveCaption`: a status row's detail line, the reading folder): the one way
+    /// they change, so an open search runs again when one does (`refreshSearch`); during `update`, once at its end.
+    private func setCaption(_ field: NSTextField, _ text: String) {
+        guard field.stringValue != text else { return }
+        field.stringValue = text
+        guard matches != nil else { return }
+        if updating {
+            captionChanged = true
+        } else {
+            refreshSearch()
+        }
+    }
+
+    /// `update` is running: a caption change runs the search again once, at its end.
+    private var updating = false
+    private var captionChanged = false
 
     func sectionDidShow() {
         refreshReadingCard()
@@ -764,6 +783,16 @@ final class SettingsPane: NSViewController, MainSectionContent, NSSearchFieldDel
     // MARK: - State
 
     func update(_ state: SetupState) {
+        updating = true
+        defer {
+            updating = false
+            if captionChanged {
+                captionChanged = false
+                refreshSearch()
+            } else if matches != nil {
+                placeBestMatchOutline()  // a title or line of another height can move the best match
+            }
+        }
         let language = DictationLanguage.name(of: state.locale)
         updateLanguagePopup(state)
         select(shortcutPopup, state.shortcut.rawValue)
@@ -929,12 +958,11 @@ final class SettingsPane: NSViewController, MainSectionContent, NSSearchFieldDel
         historyAudioUsage.stringValue = HistoryAudio.usageText(bytes: state.historyAudioBytes,
                                                                keeps: state.historyKeepsAudio
                                                                    && state.historyRetention.records)
-        refreshSearch()
     }
 
-    /// A status row's detail line, which the search reads as its caption, may have changed under an open search
-    /// (a permission granted in System Settings): runs the search again. The page stays where the user has it unless
-    /// the best match changed.
+    /// A searched caption changed under an open search (a permission granted in System Settings, another reading
+    /// folder; `setCaption`): runs the search again. The page stays where the user has it unless the best match
+    /// changed.
     private func refreshSearch() {
         guard let previous = matches else { return }
         let current = rankedMatches() ?? []
@@ -1028,7 +1056,7 @@ final class SettingsPane: NSViewController, MainSectionContent, NSSearchFieldDel
         }
         row.icon.image = NSImage(systemSymbolName: symbol, accessibilityDescription: description)
         row.icon.contentTintColor = color
-        row.detail.stringValue = detail
+        setCaption(row.detail, detail)
         rows[action]?.wantsButton = title != nil
         rows[action]?.wantsLink = link != nil
         applyRowButtons(action)
@@ -1120,14 +1148,26 @@ final class SettingsPane: NSViewController, MainSectionContent, NSSearchFieldDel
             top: tops[chosen.rawValue], offset: Double(clip.minY), viewport: Double(clip.height)) {
             chosenChapter = nil
         }
-        guard let index = SettingsChapterTracking.chapter(
+        let index = SettingsChapterTracking.chapter(
             offset: Double(clip.minY), viewport: Double(clip.height), contentHeight: Double(document.frame.height),
-            tops: tops, chosen: chosenChapter?.rawValue),
-            let chapter = SettingsChapter(rawValue: index) else { return }
+            tops: tops, chosen: chosenChapter?.rawValue)
+        guard let index, let chapter = SettingsChapter(rawValue: index) else {
+            if matches != nil { onChapterChange?(nil) }  // nothing matches: still the Settings row
+            return
+        }
         currentChapter = chapter
-        // Reported even when unchanged here: the sidebar may show the Settings row (the page opened at its top, or
-        // the row was clicked) while this is General, and it ignores a chapter it already marks.
-        onChapterChange?(chapter)
+        // While a search is open the sidebar marks the Settings row: the filtered page's cards are not chapters in
+        // order. Otherwise the chapter at the top, reported even when unchanged here: the sidebar may show the
+        // Settings row (the page opened at its top, or the row was clicked) while this is General, and it ignores a
+        // chapter it already marks.
+        onChapterChange?(SettingsChapterTracking.markWhileScrolling(searching: matches != nil, chapter: index)
+            .flatMap(SettingsChapter.init(rawValue:)))
+    }
+
+    /// What the sidebar marks when Settings comes on screen as it was left (⌘, or Settings…): nil for the Settings row.
+    var sidebarMarkOnShow: SettingsChapter? {
+        SettingsChapterTracking.markOnShow(searching: matches != nil, atTop: isAtTop, current: currentChapter.rawValue)
+            .flatMap(SettingsChapter.init(rawValue:))
     }
 
     // MARK: - Search

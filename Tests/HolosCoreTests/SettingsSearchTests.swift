@@ -130,6 +130,23 @@ private func chapter(_ offset: Double, tops: [Double?] = tops, chosen: Int? = ni
     #expect(chapter(1_300, chosen: 2) == 5)
 }
 
+@Test func settingsReopensMarkingTheChapterItShowsOrSettingsItself() {
+    // Left on Meetings: ⌘, marks Meetings.
+    #expect(SettingsChapterTracking.markOnShow(searching: false, atTop: false, current: 3) == 3)
+    // At the top of the page: the Settings row.
+    #expect(SettingsChapterTracking.markOnShow(searching: false, atTop: true, current: 0) == nil)
+    // A search is open: its top is not the page's, and the cards shown are not chapters in order: the Settings row,
+    // wherever the filtered page is scrolled.
+    #expect(SettingsChapterTracking.markOnShow(searching: true, atTop: true, current: 1) == nil)
+    #expect(SettingsChapterTracking.markOnShow(searching: true, atTop: false, current: 4) == nil)
+}
+
+@Test func whileSearchingScrollingMarksTheSettingsRow() {
+    #expect(SettingsChapterTracking.markWhileScrolling(searching: true, chapter: 2) == nil)
+    #expect(SettingsChapterTracking.markWhileScrolling(searching: false, chapter: 2) == 2)
+    #expect(SettingsChapterTracking.markWhileScrolling(searching: false, chapter: 0) == 0)
+}
+
 @Test func goingToTheFooterMarksTheChapterAtItsPlace() {
     // Return on Run Setup Assistant (no chapter of its own) scrolls to the end with nothing chosen: the last chapter.
     #expect(chapter(1_300, chosen: nil) == 5)

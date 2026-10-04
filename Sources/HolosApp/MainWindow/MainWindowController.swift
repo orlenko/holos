@@ -231,10 +231,10 @@ final class MainWindowController: NSObject, NSWindowDelegate {
     }
 
     private func select(_ section: MainSection) {
-        // Settings as it was left: the sidebar marks the chapter it shows, or Settings itself at the top. Already on
-        // Settings, the sidebar keeps what it marks.
+        // Settings as it was left: the sidebar marks the chapter it shows, or Settings itself at the top and while a
+        // search is open (`sidebarMarkOnShow`). Already on Settings, the sidebar keeps what it marks.
         if section != .settings || current != .settings {
-            let chapter = section == .settings ? settingsPane.flatMap { $0.isAtTop ? nil : $0.currentChapter } : nil
+            let chapter = section == .settings ? settingsPane?.sidebarMarkOnShow : nil
             sidebar.select(section, chapter: chapter)
         }
         guard section != current else { return }

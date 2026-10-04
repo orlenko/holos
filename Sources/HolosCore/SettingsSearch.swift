@@ -153,6 +153,19 @@ public enum SettingsChapterTracking {
         return shown.last(where: { $0.1 <= offset + reachedMargin })?.0 ?? first.0
     }
 
+    /// What the sidebar marks when Settings comes on screen as it was left (⌘, or Settings…): the chapter it shows
+    /// (`current`), or nil for the Settings row at the page's top and while a search is open (a filtered page's top
+    /// is not the page's, and its cards are only the ones that match).
+    public static func markOnShow(searching: Bool, atTop: Bool, current: Int) -> Int? {
+        searching || atTop ? nil : current
+    }
+
+    /// What the sidebar marks as the user scrolls: the chapter at the top (`chapter`), or nil for the Settings row
+    /// while a search is open.
+    public static func markWhileScrolling(searching: Bool, chapter: Int) -> Int? {
+        searching ? nil : chapter
+    }
+
     /// Whether a chapter the user chose still counts as chosen: its card's top (nil while hidden) is in view. Scrolling
     /// it out of view, either way, ends the choice.
     public static func keepsChosen(top: Double?, offset: Double, viewport: Double) -> Bool {
