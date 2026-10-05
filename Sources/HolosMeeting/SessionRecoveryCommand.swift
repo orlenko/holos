@@ -394,7 +394,7 @@ public enum SessionRecoveryCommand {
                 // A failure (an unreadable corrections.json or words.json, say) is tried again once it may pass;
                 // a fix made, kept, or skipped over edited labels is what a new run would do again.
                 return outcome.result != .failed
-            case .recognize:
+            case .recognize, .echo:
                 return outcome.result != .failed
             case .render, .diarize, .align:
                 return outcome.result == .succeeded

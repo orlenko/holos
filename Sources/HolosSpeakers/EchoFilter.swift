@@ -154,6 +154,32 @@ public enum EchoFilter {
         return spans
     }
 
+    /// `DroppedWords.reason` of microphone words the acoustic analysis (`EchoAnalysis`) finds to be echo and the text
+    /// filter does not.
+    public static let acousticReason = "acousticEcho"
+
+    /// Microphone spans the acoustic echo mask drops: every effective word of the segments whose track is exactly
+    /// "mic" for which `AcousticEchoMask.isEcho(start:end:)` is true, except the words in `excluding` (those the text
+    /// filter already dropped). A word the mask cannot judge (times that are not numbers, or past its last frame) is
+    /// kept. Spans cover consecutive dropped words of one segment, in microphone word order.
+    public static func acousticEchoSpans(transcript: Transcript, mask: AcousticEchoMask,
+                                         excluding: Set<WordRef> = []) -> [WordSpan] {
+        var spans: [WordSpan] = []
+        for segment in SpeakerAlignment.trackSegments(transcript.segments, track: microphoneTrack,
+                                                      includeUntracked: false) {
+            for (index, word) in WordTiming.effectiveWords(of: segment).enumerated() {
+                let ref = WordRef(segmentID: segment.id, word: index)
+                guard !excluding.contains(ref), mask.isEcho(start: word.start, end: word.end) == true else { continue }
+                if let last = spans.last, last.segmentID == ref.segmentID, last.end == ref.word {
+                    spans[spans.count - 1].end += 1
+                } else {
+                    spans.append(WordSpan(segmentID: ref.segmentID, first: ref.word, end: ref.word + 1))
+                }
+            }
+        }
+        return spans
+    }
+
     /// Every word position `spans` cover (also the live transcript's, `LiveTranscript`).
     public static func words(in spans: [WordSpan]) -> Set<WordRef> {
         var refs = Set<WordRef>()

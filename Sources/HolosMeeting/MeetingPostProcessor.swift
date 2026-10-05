@@ -71,8 +71,10 @@ public struct PostProcessingOptions: Sendable, Equatable {
 /// hints; 1d `wordFixes`: learned corrections and the word list's "often heard as" terms applied to that transcript,
 /// which becomes a new current revision (`WordFixStage`; nothing is recorded without corrections or such terms);
 /// 2 track policies; 3 the head decision (an edited head of this transcript is kept unless `force`); 4 `render` each
-/// diarized track to `derived/<track>-16k.caf`; 5 `diarize` them one at a time and map the times back to the
-/// session; 6 `align`: build and publish the run (no voice embeddings; `speakers/voice/` only with
+/// diarized track to `derived/<track>-16k.caf`; 4b `echo`: a call's acoustic echo mask from its microphone and system
+/// audio (rendering what stage 4 did not), saved in `echo/` (§5.11); 5 `diarize` them one at a time and map the times
+/// back to the session; 6 `align`: build and publish the run, dropping microphone words either echo filter flags (no
+/// voice embeddings; `speakers/voice/` only with
 /// `forceVoiceData`) with names carried over; 7 `recognize` (PR10), then live speaker-name hints; 8 `export`; 9 delete `derived/` and write the
 /// final record.
 public struct MeetingPostProcessor: Sendable {
@@ -454,6 +456,11 @@ public struct MeetingPostProcessor: Sendable {
             return result
         }
 
+        // A call's acoustic echo mask (§5.11): the one stored for this audio, or stage 4b makes it.
+        let echoSaved: EchoAnalysisStage.Saved? = EchoAnalysisStage.applies(meeting: meeting, manifest: manifest)
+            ? EchoAnalysisStage.saved(session: session, manifest: manifest) : nil
+        var echoMask = echoSaved?.mask
+
         // Stages 4 and 5: render and diarize the diarized tracks.
         var outputs: [String: DiarizerOutput] = [:]
         var engine: DiarizationEngineInfo?
@@ -486,6 +493,9 @@ public struct MeetingPostProcessor: Sendable {
                 result.problem = failure.message
                 return result
             }
+            if case .missing? = echoSaved {
+                echoMask = try analyzeEcho(rendered, session: session, manifest: manifest, recorder: recorder)
+            }
             let hint = SpeakerAnalysis.speakerHint(options: options, meeting: meeting, diarizedTracks: diarized.count)
             switch try await diarize(rendered, diarizer: diarizer, hint: hint, recorder: recorder) {
             case .success(let diarization):
@@ -513,7 +523,7 @@ public struct MeetingPostProcessor: Sendable {
         let built = SpeakerRunBuilder.build(
             sessionID: manifest.id, transcript: transcript,
             tracks: plans.map { SpeakerRunBuilder.TrackInput(track: $0.track, policy: $0.policy, output: outputs[$0.track]) },
-            engine: engine, parameters: SpeakerAnalysis.alignmentParameters(meeting: meeting))
+            engine: engine, parameters: SpeakerAnalysis.alignmentParameters(meeting: meeting), acousticEcho: echoMask)
         // Building a long meeting's run takes a while; a cancellation meanwhile publishes nothing.
         try Task.checkCancellation()
         do {
@@ -609,6 +619,54 @@ public struct MeetingPostProcessor: Sendable {
         }
         recorder.end(.render, .succeeded, since: started)
         return .success(rendered)
+    }
+
+    /// Stage 4b (calls, §5.11), with the stage recorded when there is system audio to compare: the acoustic echo
+    /// analysis of the microphone and system audio, saved in `echo/`. Stage 4's renders are reused; a track it did not
+    /// render (the microphone of a call labelled as "Me") is rendered here, so a track that cannot be rendered, or too
+    /// little disk space, costs only the mask. A failure is recorded and the speakers are labelled without the mask
+    /// (the text echo filter still runs); only cancellation throws.
+    private func analyzeEcho(_ rendered: [RenderedTrack], session: URL, manifest: SessionManifest,
+                             recorder: StageRecorder) throws -> AcousticEchoMask? {
+        let needed = EchoAnalysisStage.renderTracks(manifest: manifest)
+        guard !needed.isEmpty else {
+            // No system audio: nothing to compare, so no stage; the verdict is still saved.
+            do {
+                return try EchoAnalysisStage.analyze(session: session, manifest: manifest, microphone: nil,
+                                                     system: nil).mask
+            } catch let error where !(error is CancellationError) {
+                Self.log.error("Session \(manifest.id, privacy: .public): cannot save the echo analysis: \(error.localizedDescription, privacy: .private)")
+                return nil
+            }
+        }
+        let message = "Finding microphone echo…"
+        let started = recorder.begin(.echo, track: "mic", message: message)
+        let journal = recorder.journal
+        do {
+            var tracks = Dictionary(rendered.map { ($0.track, $0) }, uniquingKeysWith: { first, _ in first })
+            for track in needed where tracks[track] == nil {
+                let seconds = TrackRenderer.renderedSeconds(manifest: manifest, track: track)
+                if let free = try? freeSpace.availableBytes(at: SessionPaths.derived(session)),
+                   !SpeakerAnalysis.renderAllowed(freeBytes: free, renderSeconds: seconds) {
+                    throw HolosError.unavailable("Not enough disk space to prepare the audio for the echo check.")
+                }
+                tracks[track] = try TrackRenderer.render(session: session, manifest: manifest, track: track,
+                                                         to: SessionPaths.render(track: track, in: session))
+            }
+            let microphone = tracks["mic"]
+            let system = tracks["system"]
+            let stored = try EchoAnalysisStage.analyze(
+                session: session, manifest: manifest, microphone: microphone, system: system,
+                progress: { fraction in
+                    journal.progress(PostProcessingProgress(stage: .echo, track: "mic", fraction: fraction,
+                                                            message: message))
+                })
+            recorder.end(.echo, .succeeded, EchoAnalysisStage.message(stored.record), since: started)
+            return stored.mask
+        } catch let error where !(error is CancellationError) {
+            recorder.end(.echo, .failed, error.localizedDescription, since: started)
+            return nil
+        }
     }
 
     /// Stage 5, with the stage recorded: one track at a time, times mapped back to the session timeline.
