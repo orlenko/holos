@@ -33,8 +33,6 @@ struct SetupState {
     /// Opacity of the dictation preview, 0.3–1.0.
     var previewOpacity: Double
     var message: String
-    /// A meeting is recording, so dictation is paused (docs/meeting-design.md §4.12).
-    var dictationPausedForMeeting = false
     /// `voiceislocal doctor --json` speakerModels: "verified", "notInstalled", "damaged"; "installing" while
     /// `voiceislocal setup --speakers` runs; "unavailable" when the voiceislocal tool cannot run; "unknown" when it ran but did not
     /// report them; nil before the first check.
@@ -911,10 +909,7 @@ final class SettingsPane: NSViewController, MainSectionContent, NSSearchFieldDel
             }
         }
 
-        if state.dictationPausedForMeeting {
-            set(.dictation, .pending, "Paused during meeting recording — resumes when the recording stops",
-                button: "Turn On", enabled: false)
-        } else if state.enabling {
+        if state.enabling {
             set(.dictation, .pending, "Starting…", button: "Turn On", enabled: false)
         } else if state.dictationEnabled {
             set(.dictation, .done, "On — hold \(state.shortcutTitle), wait for Listening, speak, release",

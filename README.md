@@ -110,7 +110,7 @@ Install… the same way; a language whose model is missing is left out and the f
 message says so. Dictation keeps its one language. The recorder's log is
 `~/Library/Logs/Holos/recorder-<id>.log`;
 `defaults write ca.orlenko.holos.app meetingRecorderMode inProcess` records inside
-the app instead. Dictation is paused while a meeting records. If a permission prompt
+the app instead. Dictation remains available while a meeting records. If a permission prompt
 is open when you choose Stop Recording, the recorder stops once the prompt is
 answered. **Meetings** (⌘3 in the main window) lists recordings and can recover them,
 label their speakers, open or save the transcript, delete the audio or the whole meeting,
@@ -169,7 +169,7 @@ Meeting can also forget the voice samples learned from that meeting. See the
 | Settings | ⌘, | General (open the window when the app starts; Appearance: System, Light, or Dark), Permissions, Dictation (on/off, shortcut, language, speech model, fillers, spoken paths and commands as code, Apple Intelligence fix, preview), Meetings (system audio, speaker labels), Reading (default voice, speed, output folder), History and privacy (how long, Clear History…, keep the audio and its disk use), and **Run Setup Assistant…** (was the Setup window). |
 
 A card at the bottom of the sidebar shows the dictation status ("Dictation ready", or
-"Dictation paused during meeting recording"). The window remembers its size and place;
+"Dictation ready"). The window remembers its size and place;
 ↑↓ move in lists, Return opens, Tab reaches the sidebar, list and detail, and every
 control is a standard one, so Full Keyboard Access and VoiceOver work. The Setup
 Assistant, the meeting start panel, the live transcript, Review (Name Speakers), and the

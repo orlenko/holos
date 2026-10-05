@@ -30,7 +30,7 @@ stops and reports it; it does not edit a file owned by another PR.
 | 3 | Int16 audio now; AAC compaction later | PR2a (`AudioChunkWriter`); system audio is also recorded mono (§4.5) |
 | 4 | Recorder = bundled `holos` CLI child of the app; in-process fallback allowed | §4.1, §4.6, PR4 (`RecorderLauncher` with both implementations) |
 | 5 | Sleep < 15 min resumes, else finalize at the sleep point | §4.4, PR2b. Refinement to confirm: sleep that starts while *paused* keeps the meeting paused (§9 Q1) |
-| 6 | Dictation is paused during meeting recording; no dictation markers | §4.12, PR4 |
+| 6 | Dictation remains available during meeting recording; no dictation markers | §4.12, PR4 |
 | 7 | No live speaker labels in v1 | Diarization runs only after stop (§4.7) |
 | 8 | Consent is the user's responsibility; dismissible reminder in the start panel | PR4 start panel |
 | 9 | Built-in laptop microphone; no device picker; no boundary-mic test | §4.12. In-person meetings record the built-in microphone. Refinement to confirm: online calls record the system default input (the headset the call app uses), shown as a static label (§9 Q2) |
@@ -46,7 +46,7 @@ stops and reports it; it does not edit a file owned by another PR.
 | PR2a → PR2b | 2 | Long recordings: recorder loop, files, control, disk, capture pump, stop path (a); sleep, power, device changes, watchdog, microphone selection (b) | — |
 | PR3 | 3 | Recovery with the journal transcript, session catalog, delete audio / delete meeting | — |
 | PR8 | 3 | `SpeakerEditor`, `holos speakers …`, `holos session export` | — |
-| PR4 | 4 | Menu bar meeting controls, start panel, child launch/reattach, Meetings window, dictation pause, model install from the app, automatic relabel | — |
+| PR4 | 4 | Menu bar meeting controls, start panel, child launch/reattach, Meetings window, concurrent dictation, model install from the app, automatic relabel | — |
 | PR10 | 4 | People (names and opt-in voiceprints), recognition as suggestions, People window, `holos people` | — |
 | PR9 | 5 | Transcript review window | — |
 | PR11 | 5 | Online-call refinements: echo filter, headphone warning | — |
@@ -1068,7 +1068,7 @@ public enum RecorderPhase: String, Codable, Sendable, CaseIterable {
         self = RecorderPhase(rawValue: raw) ?? .unknown
     }
 
-    /// True from launch until capture has stopped. Dictation stays paused while this is true.
+    /// True from launch until capture has stopped. Independent of dictation availability.
     public var isMeetingActive: Bool {
         switch self {
         case .starting, .recording, .paused, .waiting, .sleeping, .stopping, .unknown: true
@@ -4049,29 +4049,24 @@ public struct ExportWriteResult: Sendable, Equatable {
 }
 ```
 
-### 4.12 Dictation pause, microphone selection, vocabulary
+### 4.12 Concurrent dictation, microphone selection, vocabulary
 
-**Dictation pause (decision 6, PR4).** `MeetingController.dictationShouldPause` is true
-while the observed meeting's phase `isMeetingActive` (starting, recording, paused,
-waiting, sleeping, stopping, unknown) or the controller is in `starting`.
-`HolosAppDelegate` reacts:
+**Concurrent dictation (decision 6, revised).** A meeting never cancels, disables,
+re-enables, or restores dictation. Its hotkey, enable toggle, shortcut settings,
+Copy/Discard and corrections remain available throughout the meeting lifecycle,
+including when following a recorder started elsewhere. No dictation markers are
+written. Sleep/session changes still cancel the utterance and disable the hotkey
+monitor without changing the saved enable preference. Meeting resume/save does
+not enable dictation: the user must explicitly enable it after suspension.
+Deferred Setup Assistant download completions also respect this suspension;
+only a successful explicit enable (including an explicit setup enable choice)
+clears the independent `DictationSessionPolicy`.
 
-- On pause: cancel any running utterance (`controller.cancel()`), stop the hotkey monitor
-  (Right Option goes back to other apps), and keep the persisted `dictationEnabled`
-  flag. The whole dictation block of the menu (status line, enable toggle, shortcut
-  submenu, Copy/Discard, Correct Last Dictation) is replaced by one disabled line,
-  "Dictation paused during meeting recording". This message takes precedence over every
-  other dictation message.
-- `handle(.began)`, `enable()`, and `changeShortcut` return early while paused.
-- `suspendForSessionChange` also sets a `suspendedBySleep` flag (in memory) alongside
-  what it does today.
-- On resume (capture stopped: phase transcribing or later, or the recorder died): call
-  `enable()` only if `dictationEnabled` is persisted and `suspendedBySleep` is false;
-  otherwise show today's "Paused after sleep/session change — enable from the menu to
-  resume".
-- This applies to every live meeting the app sees, including one started from a
-  terminal after launch (the idle rescan, §4.1; resolution R16). No dictation markers are
-  written anywhere.
+The capture code uses separate input units without requesting exclusive device
+ownership or voice processing. Apple's [SpeechAnalyzer documentation](https://developer.apple.com/documentation/speech/speechanalyzer/setmodules%28_%3A%29)
+states no current backing-engine instance limit on macOS. This is source/documentation
+evidence, not a hardware guarantee: simultaneous microphone capture and speech
+analysis must pass H12 on the target machine and its selected input device.
 
 **Microphone selection (decision 9, PR2b).** `MicrophoneSelection { systemDefault,
 builtIn }`:
@@ -6945,7 +6940,7 @@ README and `docs/status.md`.
 **Goal.** Start, watch, pause, mark, and stop meetings from the menu bar; launch the
 bundled recorder as a child (or in-process); reattach after an app crash and notice
 terminal-started meetings; prompt about interrupted sessions and relabel them
-automatically; confirm quit during a recording; pause dictation while a meeting is
+automatically; confirm quit during a recording; keep dictation available while a meeting is
 active; install speaker models from the app; list, open, save, and delete meetings; and
 lead to naming speakers after a meeting.
 
@@ -6956,12 +6951,11 @@ lead to naming speakers after a meeting.
   `ChildProcessLauncher`, `InProcessLauncher`, `MaintenanceLauncher` for
   `holos session recover|diarize|delete` and `holos setup --speakers` children, and the
   shared `posix_spawn` helper), `AutoRelabelPolicy.swift` (pure).
-- HolosApp, add: `HolosApp+Meeting.swift` (menu section, actions, dictation pause),
+- HolosApp, add: `HolosApp+Meeting.swift` (menu section, actions, concurrent dictation),
   `MeetingStartPanel.swift`, `MeetingsWindow.swift`, `LiveTranscriptWindow.swift`,
   `AboutCredits.swift`.
 - HolosApp, change: `HolosApp.swift` (stored properties, launch hooks,
-  `applicationShouldTerminate`, menu insertion points, dictation-pause guards,
-  `suspendedBySleep`), `SetupWindow.swift` ("Speaker labels" row).
+  `applicationShouldTerminate`, menu insertion points, independent dictation controls), `SetupWindow.swift` ("Speaker labels" row).
 - Change `Resources/App-Info.plist` (`NSMicrophoneUsageDescription`: "Holos uses your
   microphone for push-to-talk dictation and for meeting recordings you start.";
   `CFBundleVersion` 3), `scripts/build-app.sh` (bundle the CLI), `Package.swift`
@@ -7019,7 +7013,6 @@ public enum MeetingEffect: Sendable, Equatable {
     /// SIGTERM to the child: a graceful stop while starting, or the 120 s start timeout.
     case terminateChild(sessionID: String)
     case announce(String)                // first menu line / status item tooltip
-    case setDictationPaused(Bool)
     case finished(sessionID: String, summary: String, speakersReady: Bool)
     /// "Name Speakers — <name>…" at the top of the menu and a dot on the status item, until reviewed.
     case offerNaming(sessionID: String, name: String)
@@ -7028,7 +7021,6 @@ public enum MeetingEffect: Sendable, Equatable {
 
 public struct MeetingReducer: Sendable, Equatable {
     public private(set) var state: MeetingState
-    public var dictationShouldPause: Bool { get }
     public init()
     public mutating func reduce(_ event: MeetingEvent) -> [MeetingEffect]
 }
@@ -7092,31 +7084,28 @@ public enum AutoRelabelPolicy {
 
 **Reducer rules.**
 
-- `startRequested` (idle) → `starting`, effects `launch`, `setDictationPaused(true)`. Not
+- `startRequested` (idle) → `starting`, effects `launch`. Not
   idle → `announce("A meeting is already recording.")`. `launched(pid)` records the pid.
-  `launchFailed` → `failed(message)`, `setDictationPaused(false)`.
+  `launchFailed` → `failed(message)`.
 - While `starting`, liveness comes from the child process, not the folder: a missing
   folder or status is normal. `tick` 5 s after the start without a `recording` status →
   `announce("Waiting for permission…")` once. `tick` 120 s after →
   `terminateChild`, `failed("The recorder did not start within 2 minutes. Details:
-  ~/Library/Logs/Holos/recorder-<id>.log")`, `setDictationPaused(false)`.
+  ~/Library/Logs/Holos/recorder-<id>.log")`.
   `childExited` while starting → `failed(logTail ?? "The recorder stopped before
-  recording started.")`, `setDictationPaused(false)`; no "Recover" text, because nothing
+  recording started.")`; no "Recover" text, because nothing
   was saved. `stopConfirmed` while starting → `terminateChild` (SIGTERM is a graceful
   stop).
 - A fresh `statusRead` for the launched or attached session with phase `isMeetingActive`
-  → `active` from any state, including `failed`; `setDictationPaused(true)` if dictation
-  was resumed.
-- `statusRead` phase `transcribing`/`postprocessing` → `finishing`,
-  `setDictationPaused(false)`.
+  → `active` from any state, including `failed`.
+- `statusRead` phase `transcribing`/`postprocessing` → `finishing`.
 - `statusRead` phase `exited` → `idle`, `finished(id, summary, speakersReady)`, and
   `offerNaming` when speakers are ready (post-processing `succeeded` or `partial`, then
   checked against the saved labels by `MeetingController`). Summary: "Saved Council meeting (2:58:12).
   Speakers labelled." or the exit's post-processing message ("… No speaker labels:
   speaker models are not installed.").
 - `active` + (liveness `dead`, or `childExited` without an `exited` status) →
-  `failed("The recorder stopped unexpectedly. Recover the saved audio from Meetings.")`,
-  `setDictationPaused(false)`.
+  `failed("The recorder stopped unexpectedly. Recover the saved audio from Meetings.")`.
 - `finishing` + (liveness `dead`, or `childExited` without an `exited` status) → `idle`,
   `finished(summary: "Saved Council meeting. Speaker labelling stopped; Holos will retry
   it, or use Label Speakers in Meetings.", speakersReady: false)`.
@@ -7132,7 +7121,7 @@ plus monospaced digits from `status.elapsedSeconds`), `⏸ 1:23:45` when paused,
 `◌ 1:23:45` while waiting for audio, with `⚠` appended while a warning is present.
 While finishing: `waveform` plus `…`.
 
-Menu while recording (dictation items are replaced, §4.12):
+Menu while recording (the normal dictation block remains available, §4.12):
 
 ```
 ● Recording — Council meeting                      (disabled)
@@ -7145,7 +7134,10 @@ Menu while recording (dictation items are replaced, §4.12):
   Show Live Transcript…
   Stop and Save…
 ──────────────
-Dictation paused during meeting recording            (disabled)
+Dictation ready (or off, according to the user's choice)            (disabled)
+Enable / Disable Dictation
+Cancel Dictation / Copy Result / Discard Result        (when applicable)
+Correct Last Dictation…
 ──────────────
 Meetings…
 Setup…
@@ -7277,8 +7269,7 @@ Test `inProcessRecordingEndsOnlyOnceItsExitedStatusIsWritten`.
 About Holos: `NSApp.orderFrontStandardAboutPanel(options: [.credits: …])` with the
 credits text of §4.8 embedded as a string constant (the app has no resource bundle).
 
-**Dictation pause.** §4.12. `HolosAppDelegate` gains `setDictationPaused(_ paused: Bool)`
-called from `MeetingEffect.setDictationPaused`.
+**Concurrent dictation.** §4.12. Meeting effects do not alter dictation state.
 
 **Vocabulary.** The app passes `vocabulary: { corrections.vocabulary }` (the list
 dictation uses). PR10 extends this closure with known people's names.
@@ -7295,15 +7286,15 @@ signature in the middle of a meeting.
 
 | Test | Input | Expected |
 |---|---|---|
-| `startLaunchesAndPausesDictation` | `startRequested` | `starting`; effects `launch`, `setDictationPaused(true)` |
+| `startLaunchesWithoutChangingDictation` | `startRequested` | `starting`; effects `launch` |
 | `recordingStatusMakesActive` | status phase `recording` | `active` |
 | `missingFolderWhileStartingIsNotFailure` | liveness `dead`, no status, 3 s after start | still `starting` |
 | `waitingForPermissionHint` | `tick` 6 s after start, no status | `announce("Waiting for permission…")` once |
-| `startTimesOutAfterTwoMinutes` | `tick` 121 s after start | `terminateChild`; `failed` with the log path; `setDictationPaused(false)` |
+| `startTimesOutAfterTwoMinutes` | `tick` 121 s after start | `terminateChild`; `failed` with the log path |
 | `childExitBeforeRecordingShowsLogTail` | `childExited(1, "The built-in microphone is unavailable…")` | `failed` with that text; no "Recover" |
-| `freshStatusRecoversFromFailed` | `failed(id)`, then a fresh `recording` status for `id` | `active`; `setDictationPaused(true)` |
+| `freshStatusRecoversFromFailed` | `failed(id)`, then a fresh `recording` status for `id` | `active` |
 | `stopWhileStartingTerminatesChild` | `stopConfirmed` in `starting` | `terminateChild` |
-| `captureStopResumesDictation` | status phase `transcribing` | `finishing`; `setDictationPaused(false)` |
+| `captureStopDoesNotChangeDictation` | status phase `transcribing` | `finishing` |
 | `exitedStatusFinishesAndOffersNaming` | phase `exited`, exit `complete`, post-processing succeeded | `idle`; `finished` with the name; `offerNaming` |
 | `finishingDeadGoesIdle` | `finishing`; liveness `dead` | `idle`; `finished` with "Speaker labelling stopped…" |
 | `deadRecorderFails` | `active`; liveness `dead` | `failed` with "Recover" text |
@@ -7898,7 +7889,7 @@ Documentation ownership:
 | H9 | PR2, PR7 | 3 h soak, mic+system, audio playing | recorder RSS growth < 100 MB/h (`ps -o rss` hourly); ≈ 0.69 GB/h written; system audio is a proper mono mix; no unexplained `audioDiscontinuity`; labelled transcript ≤ 5 min after stop; diarization peak RSS < 4 GB |
 | H10 | PR2 | Record into a small disk image (`hdiutil create -size 2g`, `HOLOS_DATA_DIR` on it) | start warns or refuses per §4.5; recording stops by itself below 500 MB with audio saved; speaker labelling is skipped with the disk message |
 | H11 | PR2 | Pause a meeting, close the lid for 20 minutes, open it | the meeting is still paused; Resume continues it in the same session |
-| H12 | PR4 | During a meeting, hold Right Option in a text field | no dictation; the key reaches the app; the menu shows only "Dictation paused during meeting recording"; dictation works again after stop |
+| H12 | PR4 | During a meeting, hold Right Option in a text field | dictation inserts normally; both meeting tracks continue; sleep still requires explicit enable |
 | H13 | PR4 | Quit during a recording: each choice | behaves as §5.8 |
 | H14 | PR9 | Import the 89-min Otter meeting and label it from scratch in the review window | done in under 10 minutes |
 | H15 | PR10 | Turn on Remember voices; confirm a speaker in meeting A; record or import meeting B with that person | B suggests them ("Maybe …"); Forget removes the suggestion next time |
@@ -7932,7 +7923,7 @@ the review changed them); R43 onward come from the review (§10).
 | R13 | "Mic = Me" and condition tags in PR11 | Mic = Me is a track policy in PR5a/PR7b; condition tags ship with samples in PR10; PR11 keeps echo removal and the headphone warning. |
 | R14 | "Notify" after resuming from sleep | Menu and status-item warning only; no user notifications (they need a new permission). |
 | R15 | Dark wake and closed lid | Resume only with the lid open; `sleepStart` and the phase before sleep are set only on the transition into sleep; the 15-minute limit uses continuous time and also triggers from the 1 s tick. |
-| R16 | Pause dictation for terminal-started recordings? | Yes, for any live meeting under the default sessions root, found by the idle rescan. |
+| R16 | Keep dictation available for terminal-started recordings? | Yes. The idle rescan follows the meeting without changing dictation. |
 | R17 | "Built-in mic only" when AirPods connect | In person: pinned to the built-in microphone. Calls: the system default input (Q2). |
 | R18 | What does pause do? | Stops capture (the microphone indicator goes off) and releases the idle-sleep assertion; session time keeps running; the gap is marked; 6 h paused ends the recording. |
 | R19 | SpeechAnalyzer and timestamp jumps (plan risk) | A new speech session at every epoch boundary or gap over 1 s, and every session is rebased to 0 with its base added back. |

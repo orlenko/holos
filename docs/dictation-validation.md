@@ -93,8 +93,8 @@ recording), then:
 1. **Open with ⌘0**: open the menu bar menu and choose **Open Voice is Local** (⌘0): one
    window, about 1280 × 800 the first time, with the sidebar (Dictation: History,
    Corrections; Meetings: Meetings, People; Listen: Reading; Settings) and the status card
-   at its bottom ("Dictation ready" and the current message; "Dictation paused during
-   meeting recording" while a meeting records). Resize it, close it, reopen it: same size
+   at its bottom ("Dictation ready" and the current message, independently of meetings).
+   Resize it, close it, reopen it: same size
    and place. The app shows in the Dock and ⌘-Tab while it is open. Check light and dark
    mode.
 2. **⌘1–⌘5 and ⌘,**: with the window key, each switches section (History, Corrections,

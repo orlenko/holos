@@ -37,12 +37,11 @@ private func isFailed(_ state: MeetingState) -> String? {
     return nil
 }
 
-@Test func startLaunchesAndPausesDictation() {
+@Test func startLaunchesWithoutChangingDictation() {
     var reducer = MeetingReducer()
     let effects = reducer.reduce(.startRequested(reducerSettings, sessionID: reducerID, at: reducerStart))
     #expect(reducer.state == .starting(sessionID: reducerID, since: reducerStart, pid: nil))
-    #expect(effects == [.launch(reducerSettings, sessionID: reducerID), .setDictationPaused(true)])
-    #expect(reducer.dictationShouldPause)
+    #expect(effects == [.launch(reducerSettings, sessionID: reducerID)])
     _ = reducer.reduce(.launched(pid: 4_242, at: reducerStart))
     #expect(reducer.state == .starting(sessionID: reducerID, since: reducerStart, pid: 4_242))
 }
@@ -53,8 +52,15 @@ private func isFailed(_ state: MeetingState) -> String? {
     let effects = reducer.reduce(event)
     guard case .statusRead(let status?, _, _) = event else { return }
     #expect(reducer.state == .active(sessionID: reducerID, status: status))
-    #expect(effects.isEmpty, "Dictation was already paused while starting.")
-    #expect(reducer.dictationShouldPause)
+    #expect(effects.isEmpty)
+}
+
+/// Meeting status transitions never emit an effect that could cancel or restore dictation.
+@Test(arguments: [RecorderPhase.recording, .paused, .waiting, .sleeping, .stopping,
+                  .transcribing, .postprocessing])
+func meetingLifecycleHasNoDictationEffects(_ phase: RecorderPhase) {
+    var reducer = activeReducer()
+    #expect(reducer.reduce(read(phase, after: 20)).isEmpty)
 }
 
 @Test func missingFolderWhileStartingIsNotFailure() {
@@ -84,11 +90,9 @@ private func isFailed(_ state: MeetingState) -> String? {
     var reducer = startedReducer()
     let effects = reducer.reduce(.tick(at: reducerStart.addingTimeInterval(121)))
     #expect(effects.first == .terminateChild(sessionID: reducerID))
-    #expect(effects.contains(.setDictationPaused(false)))
     let message = isFailed(reducer.state)
     #expect(message?.contains("did not start within 2 minutes") == true)
     #expect(message?.contains("~/Library/Logs/Holos/recorder-\(reducerID).log") == true)
-    #expect(!reducer.dictationShouldPause)
 }
 
 @Test func childExitBeforeRecordingShowsLogTail() {
@@ -97,7 +101,7 @@ private func isFailed(_ state: MeetingState) -> String? {
     let effects = reducer.reduce(.childExited(code: 1, logTail: tail, at: reducerStart.addingTimeInterval(2)))
     #expect(isFailed(reducer.state) == tail)
     #expect(isFailed(reducer.state)?.contains("Recover") == false)
-    #expect(effects == [.setDictationPaused(false)])
+    #expect(effects.isEmpty)
 }
 
 @Test func childExitWithoutLogSaysNothingWasRecorded() {
@@ -114,7 +118,7 @@ private func isFailed(_ state: MeetingState) -> String? {
     let effects = reducer.reduce(event)
     guard case .statusRead(let status?, _, _) = event else { return }
     #expect(reducer.state == .active(sessionID: reducerID, status: status))
-    #expect(effects == [.setDictationPaused(true)])
+    #expect(effects.isEmpty)
 }
 
 @Test func staleOrOtherSessionStatusIsIgnored() {
@@ -141,7 +145,7 @@ private func isFailed(_ state: MeetingState) -> String? {
     // The child then ends before recording: the start was stopped, not failed.
     let effects = reducer.reduce(.childExited(code: 0, logTail: nil, at: reducerStart.addingTimeInterval(3)))
     #expect(reducer.state == .idle)
-    #expect(effects.contains(.setDictationPaused(false)))
+    #expect(effects == [.announce(MeetingReducer.cancelledBeforeStart)])
 }
 
 @Test func stopWhileWaitingForPermissionDoesNotTimeOut() {
@@ -195,13 +199,13 @@ private func isFailed(_ state: MeetingState) -> String? {
     #expect(reducer.reduce(.stopConfirmed) == [.send(.stop, label: nil, sessionID: reducerID)])
 }
 
-@Test func captureStopResumesDictation() {
+@Test func captureStopDoesNotChangeDictation() {
     var reducer = activeReducer()
     let event = read(.transcribing, after: 20)
     let effects = reducer.reduce(event)
     guard case .statusRead(let status?, _, _) = event else { return }
     #expect(reducer.state == .finishing(sessionID: reducerID, status: status))
-    #expect(effects == [.setDictationPaused(false)])
+    #expect(effects.isEmpty)
 }
 
 @Test func exitedStatusFinishesAndOffersNaming() {
@@ -235,7 +239,6 @@ private func isFailed(_ state: MeetingState) -> String? {
     #expect(effects.contains(.finished(sessionID: reducerID, summary: "Saved Council meeting (0:00:30). \(message)",
                                        speakersReady: true)))
     #expect(effects.contains(.offerNaming(sessionID: reducerID, name: "Council meeting")))
-    #expect(effects.contains(.setDictationPaused(false)))
     // Post-processing that failed saved no labels to check.
     var failed = activeReducer()
     let failure = RecorderExit(archiveStatus: ArchiveStatus.complete, reason: .requested, postprocessing: .failed)
@@ -302,7 +305,7 @@ private func isFailed(_ state: MeetingState) -> String? {
     var reducer = activeReducer()
     let effects = reducer.reduce(.statusRead(nil, liveness: .dead, at: reducerStart.addingTimeInterval(20)))
     #expect(isFailed(reducer.state) == "The recorder stopped unexpectedly. Recover the saved audio from Meetings.")
-    #expect(effects == [.setDictationPaused(false)])
+    #expect(effects.isEmpty)
 }
 
 @Test func deadRecorderMarkedExitedByMaintenanceIsNotASave() {
@@ -358,10 +361,10 @@ private func isFailed(_ state: MeetingState) -> String? {
     #expect(id == reducerID)
 }
 
-@Test func reattachedMeetingPausesDictation() {
+@Test func reattachedMeetingKeepsDictationIndependent() {
     var reducer = MeetingReducer()
     let status = meetingStatus(reducerID, phase: .paused, updatedAt: reducerStart)
-    #expect(reducer.reduce(.reattached(sessionID: reducerID, status: status)) == [.setDictationPaused(true)])
+    #expect(reducer.reduce(.reattached(sessionID: reducerID, status: status)).isEmpty)
     #expect(reducer.state == .active(sessionID: reducerID, status: status))
     var labelling = MeetingReducer()
     let post = meetingStatus(reducerID, phase: .postprocessing, updatedAt: reducerStart)

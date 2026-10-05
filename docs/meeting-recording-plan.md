@@ -2,7 +2,7 @@
 
 Status: approved plan, not implemented. Produced by a planning agent on 2026-09-23 from the code on
 `main` and web research. The user reviewed §8 on 2026-09-23: recommendations 1–5, 7, and 8 accepted;
-6 and 9 changed (dictation is paused during meeting recording; built-in laptop mic only).
+6 and 9 changed (dictation remains available during meeting recording; built-in laptop mic only).
 
 ## 1. Summary
 
@@ -152,9 +152,9 @@ duration; Recover runs `SessionArchive.recover`, rebuilds the transcript from
 `transcriptFinalized` events, retranscribes only uncovered audio, then diarizes and exports. Tail
 loss is at most one open 30 s chunk.
 
-**Dictation during a meeting.** Paused while a meeting recording is active (decision 6): the hotkey
-does nothing and the menu says "Dictation paused during meeting recording". It resumes when the
-recording stops. No dictation markers in the meeting transcript.
+**Dictation during a meeting.** Available throughout the meeting lifecycle (revised decision 6).
+Starting, pausing, saving, or reattaching to a meeting never changes dictation's enabled state.
+Sleep/session suspension still requires explicit re-enabling. No dictation markers in the transcript.
 
 ## 4. Transcription and diarization pipeline
 
@@ -261,7 +261,7 @@ the Markdown written in `saveTranscript` (`SessionArchive.swift:190–201`).
   retranscribe only uncovered audio, list interrupted sessions. Tests: torn journal tail, coverage
   gaps, idempotent recovery.
 - **PR4 — Menu bar meeting controls.** Start panel, indicator, stop confirmation, toggle shortcut,
-  child start/reattach, interrupted-session prompt, quit dialog, dictation paused while recording. Tests: a
+  child start/reattach, interrupted-session prompt, quit dialog, concurrent dictation. Tests: a
   `MeetingController` reducer with a fake recorder. Manual: new `docs/meeting-validation.md`.
 - **PR5 — HolosSpeakers values, alignment, exporters** (no ML dependency). Synthetic tests for
   boundary words, gap words, flicker smoothing, overlap, untimed segments, split turns, edit
@@ -307,7 +307,7 @@ Decisions (recommendation in brackets; the user's answer follows each):
 5. **Sleep policy.** [Resume after sleep under 15 min; otherwise finalize at the sleep point.]
    **Accepted.**
 6. **Dictation during a meeting.** [Allow it and mark it in the transcript.] **Changed:** not
-   needed; pause dictation while a meeting recording is active.
+   needed; keep dictation independent of meeting recording.
 7. **Live speaker labels.** [Not in v1; revisit LS-EEND or Nemotron 3 later.] **Accepted.**
 8. **Recording consent.** [User's responsibility; dismissible one-line reminder in the start
    panel.] **Accepted.**

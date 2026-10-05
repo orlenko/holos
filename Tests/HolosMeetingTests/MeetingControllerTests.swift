@@ -23,10 +23,6 @@ private final class ControllerProbe {
     var dismissed: [String: String] = [:]
 
     var offers: [MeetingEffect] { effects.filter { if case .offerNaming = $0 { true } else { false } } }
-
-    var dictation: [Bool] {
-        effects.compactMap { if case .setDictationPaused(let paused) = $0 { paused } else { nil } }
-    }
 }
 
 /// A controller over `root` with the fake launcher, in-memory relabel attempts, and a private vocabulary folder.
@@ -91,8 +87,6 @@ private func exists(_ url: URL) -> Bool {
     }
     #expect(id == archive.id)
     #expect(status.phase == .recording)
-    #expect(probe.dictation == [true])
-    #expect(controller.dictationShouldPause)
     try await archive.finish(status: ArchiveStatus.complete)
 }
 
@@ -114,7 +108,6 @@ private func exists(_ url: URL) -> Bool {
     defer { controller.stopMonitoring() }
     controller.attachOnLaunch()
     #expect(controller.state == .idle)
-    #expect(probe.dictation.isEmpty)
 }
 
 /// Rewrites a test recorder's status.json at most once a second, as the recorder's heartbeat does, so a status stays
@@ -167,7 +160,6 @@ private final class ControllerHeartbeat {
         Issue.record("Expected active after one rescan, got \(controller.state).")
         return
     }
-    #expect(probe.dictation == [true])
     // It stops: capture ends, then the recorder exits.
     heartbeat.status.phase = .transcribing
     heartbeat.beat(force: true)
@@ -176,7 +168,6 @@ private final class ControllerHeartbeat {
         if case .finishing = controller.state { return true }
         return false
     })
-    #expect(probe.dictation == [true, false])
     // A recorder writes exited before it lets its last lock go, so it never reads as dead on the way out.
     let exit = RecorderExit(archiveStatus: ArchiveStatus.complete, reason: .requested)
     try AtomicFile.writeJSON(meetingStatus(archive.id, phase: .exited, exit: exit), to: SessionPaths.status(archive.directory))
@@ -259,7 +250,6 @@ private final class ControllerHeartbeat {
         return
     }
     #expect(id == archive.id)
-    #expect(probe.dictation.isEmpty, "Capture has stopped: dictation is not paused.")
     #expect(throws: HolosError.self) { try controller.start(MeetingStartSettings(name: "Next", source: .microphone)) }
     try await archive.finish(status: ArchiveStatus.complete)
 }
@@ -444,7 +434,6 @@ private final class ControllerHeartbeat {
     #expect(error?.errorDescription?.contains("Not enough free disk space") == true)
     #expect(launcher.launches.isEmpty)
     #expect(controller.state == .idle)
-    #expect(probe.dictation.isEmpty)
 }
 
 @Test @MainActor func inPersonStartRefusedWithoutBuiltInMic() throws {
@@ -478,7 +467,6 @@ private final class ControllerHeartbeat {
     }
     #expect(id == launcher.launches.first?.sessionID)
     #expect(pid == 4_242)
-    #expect(probe.dictation == [true])
 }
 
 @Test @MainActor func vocabularyIsAskedForTheMeetingLanguages() throws {
@@ -541,7 +529,6 @@ private final class ControllerHeartbeat {
     let left = (try? FileManager.default.contentsOfDirectory(atPath: vocabularyFolder.path)) ?? []
     #expect(left.isEmpty, "The vocabulary file must not outlive a failed launch: \(left)")
     #expect(controller.state == .failed(sessionID: nil, message: "Cannot start holos: spawn failed."))
-    #expect(!probe.dictation.contains(true), "Dictation was never paused for a start that did not happen.")
 }
 
 @Test @MainActor func vocabularyFileRemovedOnEarlyExit() async throws {
@@ -559,7 +546,6 @@ private final class ControllerHeartbeat {
     #expect(!exists(file))
     #expect(controller.state == .failed(sessionID: launcher.launches.first?.sessionID,
                                         message: "The built-in microphone is unavailable. Open the lid and try again."))
-    #expect(probe.dictation == [true, false])
 }
 
 @Test @MainActor func vocabularyFileRemovedOnFirstStatus() async throws {
@@ -651,7 +637,6 @@ private final class ControllerHeartbeat {
         probe.effects.contains { if case .finished(id, _, false) = $0 { true } else { false } }
     })
     #expect(!probe.effects.contains { if case .offerNaming = $0 { true } else { false } })
-    #expect(probe.dictation == [true, false])
     // The child's exit afterwards changes nothing.
     launcher.exit(code: 0, logTail: nil)
     #expect(controller.state == .idle)

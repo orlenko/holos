@@ -111,7 +111,6 @@ extension HolosAppDelegate {
 
     /// A recorder is starting, recording, or saving (the app reattached to it at launch): Meetings shows its progress.
     private var meetingRecordingAtLaunch: Bool {
-        if meeting.dictationPaused { return true }
         switch meeting.controller?.state {
         case .starting, .active, .finishing: return true
         case .idle, .failed, nil: return false
