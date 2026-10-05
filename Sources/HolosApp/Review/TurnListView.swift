@@ -336,8 +336,13 @@ final class TurnTextView: NSTextView {
     override func resetCursorRects() {
         guard let layout = layoutManager, let container = textContainer, !wordStarts.isEmpty else { return }
         let glyphs = layout.glyphRange(for: container)
+        let visible = visibleRect
         layout.enumerateLineFragments(forGlyphRange: glyphs) { _, used, _, _, _ in
-            self.addCursorRect(used.intersection(self.visibleRect), cursor: .pointingHand)
+            // A line outside the visible part (a row the table laid out off screen) has no cursor rect: the
+            // intersection is the null rect, whose infinite origin AppKit rejects with an exception.
+            let rect = used.intersection(visible)
+            guard !rect.isNull, !rect.isEmpty else { return }
+            self.addCursorRect(rect, cursor: .pointingHand)
         }
     }
 }
