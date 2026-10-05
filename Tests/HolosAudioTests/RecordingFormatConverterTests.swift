@@ -93,3 +93,16 @@ func recordingFormatResamplesToContiguous48kMono(rate: Double) throws {
     }
     #expect(output.filter { $0.track == "system" }.map(\.frame.samples) == system.map(\.frame.samples))
 }
+
+@Test(arguments: [48_000.0, 44_100.0])
+func recordingFormatCarriesTrackLocalRestart(rate: Double) throws {
+    let converter = RecordingFormatConverter()
+    let input = try converterFrames(rate: rate, values: [0.2, 0.3], count: 4)
+    let marked = input.enumerated().map { index, audio in
+        CapturedAudio(track: "system", frame: audio.frame,
+                      discontinuity: index == 0 ? .captureRestarted : nil)
+    }
+    let output = try convertAll(marked, with: converter) + converter.flush()
+    #expect(output.first?.discontinuity == .captureRestarted)
+    #expect(output.dropFirst().allSatisfy { $0.discontinuity == nil })
+}

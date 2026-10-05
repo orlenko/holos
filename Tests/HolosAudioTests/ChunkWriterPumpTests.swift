@@ -30,6 +30,34 @@ private func pumpEventually(timeout: Duration = .seconds(10), _ condition: () ->
     return condition()
 }
 
+/// Tail markers wait behind samples on a slow disk and a resume journals only the part not already saved.
+@Test(.timeLimit(.minutes(1)), arguments: [true, false])
+func unavailableTailUsesQueuedSamplesWithoutDuplicatingResume(initialAudio: Bool) async throws {
+    let (archive, root) = try pumpArchive(.microphoneAndSystem)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let writer = AudioChunkWriter(archive: archive)
+    let pump = ChunkWriterPump(writer: writer)
+    if initialAudio { #expect(pump.push(try pumpFrame("system", at: 0))) }
+    // No writer task yet: both the samples and marker wait in the same queue.
+    pump.noteUnavailableTails(tracks: ["system"], at: 1)
+    let run = Task { try await pump.run() }
+    try await pump.closeAll(expectingGap: .paused)
+    pump.noteGap(track: "system", reason: .audioUnavailable)
+    let resumed = try pumpFrame("system", at: 2)
+    #expect(pump.push(CapturedAudio(track: resumed.track, frame: resumed.frame, discontinuity: .audioUnavailable)))
+    pump.finish()
+    try await run.value
+    try await writer.finish()
+    try await archive.finish(status: ArchiveStatus.complete)
+    let gaps = try SessionArchive.readEvents(at: archive.directory).events
+        .filter { $0.kind == MeetingEventKind.audioDiscontinuity }
+    #expect(gaps.count == 2)
+    #expect(Double(gaps[0].details["previousEnd"] ?? "") == (initialAudio ? 0.1 : 0))
+    #expect(Double(gaps[0].details["nextStart"] ?? "") == 1)
+    #expect(Double(gaps[1].details["previousEnd"] ?? "") == 1)
+    #expect(Double(gaps[1].details["nextStart"] ?? "") == 2)
+}
+
 /// The writer is stalled (its task has not started) while 20 s of frames arrive: nothing is dropped, and everything
 /// is written once it runs.
 @Test(.timeLimit(.minutes(1))) func pumpAbsorbsSlowWriter() async throws {

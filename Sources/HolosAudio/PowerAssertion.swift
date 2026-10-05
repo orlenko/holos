@@ -4,18 +4,28 @@ import IOKit.pwr_mgt
 import os
 import Synchronization
 
-/// Keeps the Mac from idle-sleeping while a meeting records (docs/meeting-design.md §4.4). Lid close and forced sleep
-/// still happen. Held from `starting` through post-processing, except while the meeting is paused.
-public final class PowerAssertion: Sendable {
+/// Prevents idle system or display sleep (docs/meeting-design.md §4.4), never lid close or forced sleep.
+/// System assertions span processing; display assertions are held only while capture is active.
+public protocol PowerAssertionHandle: Sendable {
+    func release()
+}
+
+public final class PowerAssertion: PowerAssertionHandle {
+    public enum Kind: Sendable {
+        case system
+        case display
+    }
     private static let log = Logger(subsystem: "ca.orlenko.holos.app", category: "power")
 
     /// The IOKit assertion; nil once released.
     private let assertion: Mutex<IOPMAssertionID?>
 
-    /// `kIOPMAssertionTypePreventUserIdleSystemSleep` named `reason`. Released by `release()` or deinit.
-    public init(reason: String) throws {
+    /// The selected idle-sleep assertion named `reason`. Released by `release()` or deinit.
+    public init(reason: String, kind: Kind = .system) throws {
         var id: IOPMAssertionID = 0
-        let result = IOPMAssertionCreateWithName(kIOPMAssertionTypePreventUserIdleSystemSleep as CFString,
+        let type = kind == .display ? kIOPMAssertionTypePreventUserIdleDisplaySleep
+                                    : kIOPMAssertionTypePreventUserIdleSystemSleep
+        let result = IOPMAssertionCreateWithName(type as CFString,
                                                  IOPMAssertionLevel(kIOPMAssertionLevelOn), reason as CFString, &id)
         guard result == kIOReturnSuccess else {
             throw HolosError.unavailable("Could not keep the Mac awake for the recording (IOKit error \(result)).")

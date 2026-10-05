@@ -21,13 +21,20 @@ public struct CaptureRequest: Sendable, Equatable {
     /// The optional screen capture (docs/meeting-design.md §4.15), saved into `sessionDirectory`.
     public var screen: ScreenCaptureTarget?
     public var sessionDirectory: URL?
+    /// Carry a known system outage into a new epoch; only an accepted system frame clears it.
+    public var initialSystemUnavailable: Bool
+    /// The recorder already closed the previous epoch for this reason (pause/sleep/restart).
+    /// A first system frame must not replace that boundary with a generic startup-gap reason.
+    public var boundaryReason: GapReason?
 
     public init(source: AudioSource, applicationBundleID: String? = nil, timelineOffset: Double = 0,
                 microphone: MicrophoneSelection = .systemDefault, offsetHostTime: Double? = nil,
-                screen: ScreenCaptureTarget? = nil, sessionDirectory: URL? = nil) {
+                screen: ScreenCaptureTarget? = nil, sessionDirectory: URL? = nil,
+                initialSystemUnavailable: Bool = false, boundaryReason: GapReason? = nil) {
         self.source = source; self.applicationBundleID = applicationBundleID; self.timelineOffset = timelineOffset
         self.microphone = microphone; self.offsetHostTime = offsetHostTime
         self.screen = screen; self.sessionDirectory = sessionDirectory
+        self.initialSystemUnavailable = initialSystemUnavailable; self.boundaryReason = boundaryReason
     }
 }
 
@@ -39,6 +46,11 @@ public struct CaptureRequest: Sendable, Equatable {
     var hostTimeOrigin: Double { get }
     /// Buffers dropped because the frame stream was full; capture continues after a drop.
     var droppedBuffers: Int { get }
+    /// Tracks independently retrying while other tracks continue. Cleared only when that track delivers audio.
+    var unavailableTracks: Set<String> { get }
+    /// Sources whose unwritten tail must be saved at epoch end, including a healthy stream never heard yet.
+    /// Separate from warnings: a silent initial stream is not necessarily an outage.
+    var unavailableTailTracks: Set<String> { get }
     func start(_ request: CaptureRequest) async throws
     func stop() async throws
 }
@@ -46,6 +58,8 @@ public struct CaptureRequest: Sendable, Equatable {
 extension MeetingCapture {
     /// A capture that never drops buffers.
     public var droppedBuffers: Int { 0 }
+    public var unavailableTracks: Set<String> { [] }
+    public var unavailableTailTracks: Set<String> { unavailableTracks }
 }
 
 /// Wraps `AudioCapture`, passing the epoch's timeline offset and microphone selection through.
