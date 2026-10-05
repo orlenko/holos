@@ -4058,6 +4058,9 @@ including when following a recorder started elsewhere. No dictation markers are
 written. Sleep/session changes still cancel the utterance and disable the hotkey
 monitor without changing the saved enable preference. Meeting resume/save does
 not enable dictation: the user must explicitly enable it after suspension.
+Deferred Setup Assistant download completions also respect this suspension;
+only a successful explicit enable (including an explicit setup enable choice)
+clears the independent `DictationSessionPolicy`.
 
 The capture code uses separate input units without requesting exclusive device
 ownership or voice processing. Apple's [SpeechAnalyzer documentation](https://developer.apple.com/documentation/speech/speechanalyzer/setmodules%28_%3A%29)

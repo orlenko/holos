@@ -87,6 +87,9 @@ Result: Pending.
    until explicitly enabled. Meeting resume/save must not automatically enable it.
 5. Repeat on the selected input device and target macOS hardware. This manual
    acceptance check has not been performed by the reducer tests.
+6. Finish Setup while a speech-model download is pending, then sleep/lock before
+   it completes. After returning, download completion must not re-enable the hotkey.
+   An explicit enable remains available and clears the suspension after success.
 
 Pass: concurrent dictation works without disrupting either meeting track;
 controls remain available; meeting lifecycle never changes the user's choice.

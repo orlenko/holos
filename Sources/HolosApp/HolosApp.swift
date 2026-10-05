@@ -52,6 +52,8 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
     /// Meeting recording controls (HolosApp+Meeting.swift, docs/meeting-design.md §5.8).
     let meeting = MeetingAppState()
     private(set) var enabled = false
+    /// Session suspension belongs to dictation, not to a meeting; deferred setup cannot clear it.
+    var dictationSession = DictationSessionPolicy()
     private var enabling = false
     private(set) var installingAssets = false
     private var enableGeneration = 0
@@ -461,6 +463,7 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
                 self.monitor = monitor
                 self.enabled = true
                 self.enabling = false
+                self.dictationSession.didEnable()
                 UserDefaults.standard.set(true, forKey: "dictationEnabled")
                 self.enableWhenSpeechModelInstalled = false  // done: the assistant's deferred enable is fulfilled
                 if let app = NSWorkspace.shared.frontmostApplication { TextInsertion.enableAccessibility(for: app) }
@@ -1624,7 +1627,7 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
                 // The Setup Assistant finished while this downloaded (in this run or before a quit or its reopen).
                 if self.enableWhenSpeechModelInstalled {
                     self.enableWhenSpeechModelInstalled = false
-                    self.enableDictationFromSetup()
+                    self.enableDictationFromSetup(deferred: true)
                 }
             } catch {
                 self.installingAssets = false
@@ -1639,6 +1642,7 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
 
     private func suspendForSessionChange() {
         // Sleep/session suspension is cleared only by an explicit enable, never by a meeting ending.
+        dictationSession.suspend()
         disable(persist: false)
         discardResult()
         show("Paused after sleep/session change — enable from the menu to resume")

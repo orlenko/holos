@@ -213,7 +213,10 @@ extension HolosAppDelegate {
     }
 
     /// Setup can enable dictation during meetings too; normal permission and asset checks still apply.
-    func enableDictationFromSetup() { enable() }
+    func enableDictationFromSetup(deferred: Bool = false) {
+        guard dictationSession.allowsSetupEnable(deferred: deferred) else { return }
+        enable()
+    }
 
     /// At launch, before the assistant's window: resumes what the assistant started or deferred and a quit (its
     /// planned reopen included) cut short. The speech model install restarts when dictation waits for it, and turns
