@@ -54,7 +54,11 @@ struct SettingsEmbeddingTests {
         let document = try #require(scroll.documentView)
         let visible = scroll.contentView.documentVisibleRect
         #expect(visible.height > 0)
-        #expect(Self.cards(in: document).contains { visible.intersects($0.convert($0.bounds, to: document)) })
+        // The chosen chapter's card starts in view; the page was scrolled away from its top to get there.
+        let section = try #require(pane.section(for: chapter))
+        let frame = section.convert(section.bounds, to: document)
+        #expect(frame.minY >= visible.minY && frame.minY < visible.maxY)
+        #expect(visible.minY > 0)
         Self.render(window, name: "settings-chapter-\(chapter.title)")
     }
 

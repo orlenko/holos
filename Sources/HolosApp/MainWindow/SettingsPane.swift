@@ -1110,6 +1110,9 @@ final class SettingsPane: NSViewController, MainSectionContent, NSSearchFieldDel
 
     var searchField: NSSearchField? { search }
 
+    /// The view that holds `chapter`'s card in the page (tests).
+    func section(for chapter: SettingsChapter) -> NSView? { sections[chapter] }
+
     /// The page is scrolled to its top.
     var isAtTop: Bool { scroll.contentView.bounds.minY <= 1 }
 
