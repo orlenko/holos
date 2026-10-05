@@ -15,6 +15,8 @@ import Synchronization
     private var system: (any MeetingCapture)?
     private var microphoneTask: Task<Void, Never>?
     private var systemTask: Task<Void, Never>?
+    /// Shared by recovery and Stop: a timeout does not launch a second native stop or abandon its cleanup.
+    private var systemStopTask: Task<Void, Error>?
     private var stopped = false
     private var started = false
     private var systemReading = false
@@ -24,6 +26,7 @@ import Synchronization
     var retryDelay: Duration = .milliseconds(500)
     var startLimit: Duration = .seconds(10)
     var stopLimit: Duration = .seconds(5)
+    private(set) var systemRetryAttempt = 0
 
     public init(bufferCapacity: Int = 4096) {
         let pair = AsyncThrowingStream<CapturedAudio, Error>.makeStream(bufferingPolicy: .bufferingOldest(bufferCapacity))
@@ -69,6 +72,9 @@ import Synchronization
             } catch { await self.primaryEnded(error: error) }
         }
         guard request.source == .microphoneAndSystem else { return }
+        // Even a successful content query can delay the first frame. Mark its leading interval without
+        // treating a healthy (possibly silent) startup as a failure or showing the retry warning.
+        relay.expectInitialSystemBoundary()
         // A slow content query / locked display must not hold up microphone frames or the recorder loop.
         var systemRequest = request
         systemRequest.source = .system
@@ -85,9 +91,10 @@ import Synchronization
         if !stopped { relay.finish(error: error) }
     }
 
-    private func retrySystem(_ request: CaptureRequest) async {
-        var attempt = 0
+    private func retrySystem(_ request: CaptureRequest, attempt initialAttempt: Int = 0) async {
+        var attempt = initialAttempt
         while !stopped, !Task.isCancelled {
+            systemRetryAttempt = attempt
             let child = makeCapture()
             system = child
             let recoveries = relay.recoveries
@@ -95,7 +102,7 @@ import Synchronization
             switch await awaitWithTimeout(startLimit, { try await starting.value }) {
             case .finished(.success):
                 if stopped || Task.isCancelled {
-                    try? await child.stop()
+                    _ = await settleSystemStop(child)
                     return
                 }
                 systemReading = true
@@ -115,28 +122,55 @@ import Synchronization
                 // If it eventually returns, release it and retry. Stop also releases it immediately and later.
                 starting.cancel()
                 relay.systemUnavailable()
-                _ = await awaitWithTimeout(stopLimit, cancellable: false) { try await child.stop() }
+                let stopping = beginSystemStop(child)
+                _ = await awaitWithTimeout(stopLimit, cancellable: false) { try await stopping.value }
                 systemTask = Task {
                     _ = await starting.result
-                    _ = await awaitWithTimeout(stopLimit, cancellable: false) { try await child.stop() }
+                    // Settle the in-flight stop first. The late start may have acquired a handle afterwards,
+                    // so also settle a fresh stop before any retry. This worker may wait; the recorder never does.
+                    _ = await settleSystemStop(child)
+                    guard await settleSystemStop(child) else { return }
                     guard !stopped, !Task.isCancelled else { return }
                     retiredDrops += child.droppedBuffers
                     system = nil
-                    do { try await Task.sleep(for: retryDelay) } catch { return }
-                    await retrySystem(request)
+                    let next = min(attempt + 1, 6)
+                    do { try await Task.sleep(for: Self.retryWait(attempt: attempt, base: retryDelay)) }
+                    catch { return }
+                    await retrySystem(request, attempt: next)
                 }
                 return
             }
             guard !stopped, !Task.isCancelled else { return }
             relay.systemUnavailable()
-            _ = await awaitWithTimeout(stopLimit, cancellable: false) { try await child.stop() }
+            guard await settleSystemStop(child), !stopped, !Task.isCancelled else { return }
             retiredDrops += child.droppedBuffers
             system = nil
             if relay.recoveries > recoveries { attempt = 0 }
-            let delay = min(.seconds(30), retryDelay * (1 << min(attempt, 6)))
+            let delay = Self.retryWait(attempt: attempt, base: retryDelay)
             attempt = min(attempt + 1, 6)
             do { try await Task.sleep(for: delay) } catch { return }
         }
+    }
+
+    static func retryWait(attempt: Int, base: Duration) -> Duration {
+        min(.seconds(30), base * (1 << min(max(0, attempt), 6)))
+    }
+
+    private func beginSystemStop(_ child: any MeetingCapture) -> Task<Void, Error> {
+        if let systemStopTask { return systemStopTask }
+        let stopping = Task { try await child.stop() }
+        systemStopTask = stopping
+        return stopping
+    }
+
+    /// Only the serial recovery worker clears this task. Stop can await the same task within its own budget.
+    /// A failed/unresolved cleanup keeps the source unavailable, never multiplying potentially active SCStreams.
+    private func settleSystemStop(_ child: any MeetingCapture) async -> Bool {
+        let stopping = beginSystemStop(child)
+        let outcome = await stopping.result
+        systemStopTask = nil
+        if case .success = outcome { return true }
+        return false
     }
 
     /// Runs off the main actor, so the microphone and system stream do not compete with UI work.
@@ -158,13 +192,23 @@ import Synchronization
         stopped = true
         let deadline = ContinuousClock.now.advanced(by: stopLimit)
         if !systemReading { systemTask?.cancel() }
-        let children = [microphone, system].compactMap { $0 }
+        let primary = microphone
+        let systemStopping = system.map { beginSystemStop($0) }
         // Concurrent stops keep the recorder's single stop budget, not two sequential native stop budgets.
         let limit = stopLimit
         let failure = await withTaskGroup(of: (any Error)?.self, returning: (any Error)?.self) { group in
-            for child in children {
+            if let primary {
                 group.addTask {
-                    switch await awaitWithTimeout(limit, cancellable: false, { try await child.stop() }) {
+                    switch await awaitWithTimeout(limit, cancellable: false, { try await primary.stop() }) {
+                    case .finished(.failure(let error)): return error
+                    case .timedOut: return HolosError.io("Audio capture stop timed out.")
+                    default: return nil
+                    }
+                }
+            }
+            if let systemStopping {
+                group.addTask {
+                    switch await awaitWithTimeout(limit, cancellable: false, { try await systemStopping.value }) {
                     case .finished(.failure(let error)): return error
                     case .timedOut: return HolosError.io("Audio capture stop timed out.")
                     default: return nil
@@ -211,6 +255,8 @@ private final class IndependentCaptureRelay: Sendable {
     var unavailableTracks: Set<String> { state.withLock { $0.systemMissing ? ["system"] : [] } }
     var droppedBuffers: Int { state.withLock { $0.dropped } }
     var recoveries: Int { state.withLock { $0.recoveries } }
+
+    func expectInitialSystemBoundary() { state.withLock { $0.systemBoundary = true } }
 
     func systemUnavailable() {
         state.withLock {

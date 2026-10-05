@@ -875,6 +875,10 @@ private final class Recorder {
     private func stopCurrentCapture(deadline: ContinuousClock.Instant? = nil) async -> Error? {
         holdDisplay(false)
         guard let capture, !captureStopped else { return nil }
+        let stopAt = clock.now()
+        // Also runs for pause/sleep/restart, when final Stop may have no live capture left. Queue after draining
+        // so the writer uses the last saved sample, not a potentially stale status snapshot.
+        defer { pump.noteUnavailableTails(tracks: capture.unavailableTracks, at: stopAt) }
         captureStopped = true
         let alreadyEnded = monitor.requestStop(epoch: captureEpoch)
         let limit = dependencies.timeouts.captureStop
@@ -1248,8 +1252,6 @@ private final class Recorder {
         holdPower(true)
         await setPhase(.stopping)
         answerRequestsWhileStopping()
-        let missingAtStop = captureStopped ? [] : capture?.unavailableTracks ?? []
-        let stopAt = clock.now()
         // 1. Stop capture, drain the consumer, let the pump drain into the writer, close every chunk. A failed stop is a
         // capture error (a timeout only records captureFailed); a CancellationError from it is a cancellation.
         if let failure = await stopCurrentCapture() { recordingError = recordingError ?? failure }
@@ -1258,17 +1260,6 @@ private final class Recorder {
             do { try await writerTask.value } catch { recordingError = recordingError ?? error }
         }
         do { try await writer.finish() } catch { recordingError = recordingError ?? error }
-        // No recovered frame will arrive to mark a still-missing source's tail.
-        let seenAtStop = monitor.trackInfo()
-        for track in missingAtStop {
-            let previousEnd = seenAtStop[track]?.lastFrameEnd ?? 0
-            if stopAt > previousEnd {
-                await recordEvent(MeetingEventKind.audioDiscontinuity, [
-                    "track": track, "previousEnd": String(previousEnd), "nextStart": String(stopAt),
-                    "reason": GapReason.audioUnavailable.rawValue,
-                ])
-            }
-        }
         if Task.isCancelled { cancelled = true }
         // Audio is durable: a second signal now ends processing at once.
         dependencies.stop.restoreDefaultHandlers()

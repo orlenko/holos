@@ -2538,8 +2538,12 @@ use `IndependentMeetingCapture`: an AVAudioEngine microphone and a separate,
 system-only ScreenCaptureKit stream. System failure (including unavailable/locked
 displays) never stops, restarts, or rebases the microphone. A failed initial system
 start also leaves microphone recording active. Only that stream retries with
-0.5–30 s backoff and bounded start/stop awaits. A hung native start is not multiplied:
-its late result is stopped before another attempt. Silence alone is not a failure.
+0.5–30 s backoff and bounded startup/recorder-stop awaits. Timeout retries retain
+their attempt count. A hung native start is not multiplied: its late result and
+any in-flight cleanup settle before another attempt. The background recovery
+worker may keep waiting for cleanup while the microphone and recorder remain
+responsive; failed cleanup leaves system audio unavailable instead of spawning
+another potentially concurrent stream. Silence alone is not a failure.
 
 Both captures share the microphone's host origin, including retry setup time.
 The first accepted recovered system frame carries an ordered track-local
@@ -2548,6 +2552,12 @@ speech; the mic gets no boundary. The bounded merged queue retains a boundary an
 drop mark when that frame is dropped. `unavailableTracks` supplies a visible
 `systemAudioUnavailable` warning and stalled system-track status until audio
 actually arrives. The recording phase stays active while the microphone runs.
+The first system frame also carries a leading `audioUnavailable` boundary when
+initial setup succeeds after a delay; this does not show a retry warning for a
+healthy silent stream. A still-unavailable source's tail is journaled in writer
+queue order when capture stops for pause, sleep, restart, or final Stop. If audio
+later resumes, its boundary starts after the tail already saved, avoiding duplicate
+gap intervals while preserving the actual sample-end continuity anchor.
 Pause, sleep, and stop release both captures; deliberate Stop Sharing retains the
 existing requested-stop behavior. Microphone failures retain recorder-wide
 recovery, and a system-only recording retains the existing waiting/backoff policy.

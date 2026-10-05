@@ -14,6 +14,8 @@ import Testing
     var startError: Error?
     var startGate = false
     var releaseStart = false
+    var gatedStopFrom = Int.max
+    var releaseStop = false
     var hostTimeOrigin: Double { 1_000 }
     init() { (frames, output) = AsyncThrowingStream.makeStream() }
     func start(_ request: CaptureRequest) async throws {
@@ -28,7 +30,13 @@ import Testing
         output.yield(try FakeFrame(track: track, start: at).captured(offset: 0))
     }
     func fail(_ error: Error = HolosError.io("Display unavailable.")) { output.finish(throwing: error) }
-    func stop() async throws { stops += 1; output.finish() }
+    func stop() async throws {
+        stops += 1
+        output.finish()
+        while stops >= gatedStopFrom && !releaseStop {
+            await Task.detached { try? await Task.sleep(for: .milliseconds(1)) }.value
+        }
+    }
 }
 
 @MainActor private final class IndependentNativeFactory {
@@ -172,6 +180,55 @@ func deliberateStopSharingStillEndsTheMeeting() async throws {
 }
 
 @Test(.timeLimit(.minutes(1))) @MainActor
+func lateSystemStartMustFinishCleanupBeforeRetrying() async throws {
+    let mic = IndependentNativeCapture(), system = IndependentNativeCapture(), later = IndependentNativeCapture()
+    system.startGate = true
+    system.gatedStopFrom = 2
+    let factory = IndependentNativeFactory([mic, system, later])
+    let capture = isolatedCapture(factory)
+    let heard = SharedValue<Int>(0)
+    let consumer = Task {
+        do { for try await audio in capture.frames {
+            if audio.track == "mic" { heard.update { $0 += 1 } }
+        } } catch { Issue.record("Unexpected error: \(error)") }
+    }
+    try await capture.start(CaptureRequest(source: .microphoneAndSystem))
+    #expect(await eventually { system.stops == 1 })
+    system.releaseStart = true
+    #expect(await eventually { system.stops == 2 })
+    try mic.emit("mic", at: 0)
+    #expect(await eventually { heard.value == 1 })
+    #expect(factory.made == 2, "No new native stream while late cleanup is unresolved.")
+    // Stop must share the same unresolved cleanup rather than call native stop concurrently.
+    do { try await capture.stop() } catch { /* The gated native stop intentionally exceeds the stop budget. */ }
+    #expect(system.stops == 2)
+    system.releaseStop = true
+    await consumer.value
+    #expect(factory.made == 2, "Finishing cleanup after Stop cannot restart capture.")
+}
+
+@Test(.timeLimit(.minutes(1))) @MainActor
+func consecutiveSystemStartTimeoutsPreserveBackoff() async throws {
+    let mic = IndependentNativeCapture(), first = IndependentNativeCapture()
+    let second = IndependentNativeCapture(), third = IndependentNativeCapture()
+    first.startGate = true
+    second.startGate = true
+    let factory = IndependentNativeFactory([mic, first, second, third])
+    let capture = isolatedCapture(factory)
+    try await capture.start(CaptureRequest(source: .microphoneAndSystem))
+    #expect(await eventually { first.stops >= 1 })
+    first.releaseStart = true
+    #expect(await eventually { second.stops >= 1 })
+    #expect(capture.systemRetryAttempt == 1)
+    second.releaseStart = true
+    #expect(await eventually { third.requests.count == 1 })
+    #expect(capture.systemRetryAttempt == 2)
+    #expect(IndependentMeetingCapture.retryWait(attempt: 2, base: .milliseconds(500)) == .seconds(2))
+    #expect(IndependentMeetingCapture.retryWait(attempt: 6, base: .milliseconds(500)) == .seconds(30))
+    try await capture.stop()
+}
+
+@Test(.timeLimit(.minutes(1))) @MainActor
 func aDroppedRecoveryFrameRetainsItsSystemOnlyBoundary() async throws {
     let mic = IndependentNativeCapture(), first = IndependentNativeCapture(), resumed = IndependentNativeCapture()
     let factory = IndependentNativeFactory([mic, first, resumed])
@@ -203,6 +260,111 @@ private final class IndependentDisplayAssertion: PowerAssertionHandle {
     let releases: SharedValue<Int>
     init(_ releases: SharedValue<Int>) { self.releases = releases }
     func release() { releases.update { $0 += 1 } }
+}
+
+@Test(.timeLimit(.minutes(1))) @MainActor
+func successfulDelayedSystemStartRecordsItsLeadingGapWithoutAWarning() async throws {
+    let temp = try TemporaryDirectory()
+    defer { temp.remove() }
+    let mic = IndependentNativeCapture(), system = IndependentNativeCapture()
+    system.startGate = true
+    let capture = isolatedCapture(IndependentNativeFactory([mic, system]))
+    // The gate is released explicitly, not by a wall-clock timing assertion.
+    capture.startLimit = .seconds(30)
+    let stop = ManualStopSource(), clock = ManualSessionClock(0)
+    let statuses = SharedValue<[RecorderStatus]>([])
+    let dependencies = recorderDependencies(captures: FakeCaptureFactory(), stop: stop, clock: clock,
+        makeCapture: { capture }, statusObserver: { status in statuses.update { $0.append(status) } })
+    let run = Task { try await RecordingWorkflow.run(.testing(root: temp.url, source: .microphoneAndSystem,
+                                                             recordOnly: true), dependencies: dependencies) }
+    #expect(await eventually { system.requests.count == 1 })
+    try mic.emit("mic", at: 0)
+    #expect(await eventually {
+        statuses.value.last?.tracks.first(where: { $0.track == "mic" })?.lastFrameSeconds != nil
+    })
+    #expect(capture.unavailableTracks.isEmpty)
+    clock.set(1)
+    system.releaseStart = true
+    try system.emit("system", at: 1)
+    #expect(await eventually {
+        statuses.value.last?.tracks.first(where: { $0.track == "system" })?.lastFrameSeconds != nil
+    })
+    stop.requestStop()
+    let outcome = try await run.value
+    #expect(!statuses.value.contains { $0.warnings.contains { $0.code.rawValue == "systemAudioUnavailable" } })
+    let gaps = try recorderEvents(outcome.directory, MeetingEventKind.audioDiscontinuity)
+    #expect(!gaps.contains { $0.details["track"] == "mic" })
+    #expect(gaps.contains {
+        $0.details["track"] == "system" && Double($0.details["previousEnd"] ?? "") == 0
+            && Double($0.details["nextStart"] ?? "") == 1
+            && $0.details["reason"] == "audioUnavailable"
+    })
+}
+
+private enum MissingSystemStop: CaseIterable, Sendable { case pause, sleep, pauseAndResume }
+
+@Test(.timeLimit(.minutes(1)), arguments: MissingSystemStop.allCases) @MainActor
+private func missingSystemTailSurvivesPauseOrSleep(action: MissingSystemStop) async throws {
+    let temp = try TemporaryDirectory()
+    defer { temp.remove() }
+    let mic = IndependentNativeCapture(), first = IndependentNativeCapture(), failed = IndependentNativeCapture()
+    failed.startError = HolosError.unavailable("Display unavailable.")
+    let capture = isolatedCapture(IndependentNativeFactory([mic, first, failed]))
+    let resumedMic = IndependentNativeCapture(), resumedSystem = IndependentNativeCapture()
+    let resumed = isolatedCapture(IndependentNativeFactory([resumedMic, resumedSystem]))
+    let made = SharedValue<Int>(0), statuses = SharedValue<[RecorderStatus]>([])
+    let stop = ManualStopSource(), clock = ManualSessionClock(0)
+    let power = RecorderFakePower()
+    var dependencies = recorderDependencies(captures: FakeCaptureFactory(), stop: stop, clock: clock,
+        makeCapture: { made.update { $0 += 1 }; return made.value == 1 ? capture : resumed },
+        statusObserver: { status in statuses.update { $0.append(status) } })
+    dependencies.power = power
+    let run = Task { try await RecordingWorkflow.run(.testing(root: temp.url, source: .microphoneAndSystem,
+                                                             recordOnly: true), dependencies: dependencies) }
+    #expect(await eventually { first.requests.count == 1 })
+    try mic.emit("mic", at: 0)
+    try first.emit("system", at: 0)
+    #expect(await eventually {
+        statuses.value.last?.tracks.first(where: { $0.track == "system" })?.lastFrameSeconds != nil
+    })
+    first.fail()
+    #expect(await eventually { capture.unavailableTracks == ["system"] })
+    clock.set(1)
+    let session = try #require(await recorderSession(in: temp.url))
+    if action == .sleep {
+        power.post(.willSleep(token: 42))
+        #expect(await eventually { power.allowed == [42] })
+    } else {
+        #expect(try await recorderSend(.pause, to: session)?.result == .applied)
+    }
+    if action == .pauseAndResume {
+        clock.set(2)
+        #expect(try await recorderSend(.resume, to: session)?.result == .applied)
+        #expect(await eventually { resumedSystem.requests.count == 1 })
+        try resumedMic.emit("mic", at: 2)
+        try resumedSystem.emit("system", at: 2)
+        #expect(await eventually {
+            (statuses.value.last?.tracks.first(where: { $0.track == "system" })?.lastFrameSeconds ?? 0) > 2
+        })
+    }
+    clock.set(3)
+    stop.requestStop()
+    let outcome = try await run.value
+    let gaps = try recorderEvents(outcome.directory, MeetingEventKind.audioDiscontinuity)
+        .filter { $0.details["track"] == "system" }
+    #expect(gaps.contains {
+        abs((Double($0.details["previousEnd"] ?? "") ?? -1) - 0.1) < 0.0001
+            && Double($0.details["nextStart"] ?? "") == 1
+            && $0.details["reason"] == "audioUnavailable"
+    })
+    if action == .pauseAndResume {
+        #expect(gaps.count == 2)
+        #expect(gaps.contains {
+            Double($0.details["previousEnd"] ?? "") == 1 && Double($0.details["nextStart"] ?? "") == 2
+        }, "Resume must not journal the already saved 0.1…1 tail twice.")
+    } else {
+        #expect(gaps.count == 1, "Final Stop after pause/sleep must preserve, not duplicate, the unavailable tail.")
+    }
 }
 
 @Test(.timeLimit(.minutes(1)), arguments: [true, false]) @MainActor

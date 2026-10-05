@@ -51,6 +51,9 @@ public actor AudioChunkWriter {
     private var current: [String: OpenChunk] = [:]
     private var sequence: [String: Int] = [:]
     private var tracks: [String: TrackState] = [:]
+    /// Missing tails already journaled at pause/sleep/stop. A later frame records only the remaining interval,
+    /// without changing sample continuity or duplicating the tail in exports.
+    private var gapRecordedThrough: [String: Double] = [:]
     /// Counters readable without waiting for the actor (a slow disk write must not delay a status update).
     private nonisolated let stats = WriterStats()
 
@@ -136,12 +139,16 @@ public actor AudioChunkWriter {
         if startsNewChunk {
             try await close(track: track)
             if let discontinuity {
-                try await archive.recordEvent(kind: MeetingEventKind.audioDiscontinuity, details: [
-                    "track": track, "previousEnd": String(discontinuity.previousEnd),
-                    "nextStart": String(frame.startTime), "reason": discontinuity.reason,
-                ])
+                let previousEnd = max(discontinuity.previousEnd, gapRecordedThrough[track] ?? 0)
+                if frame.startTime >= previousEnd {
+                    try await archive.recordEvent(kind: MeetingEventKind.audioDiscontinuity, details: [
+                        "track": track, "previousEnd": String(previousEnd),
+                        "nextStart": String(frame.startTime), "reason": discontinuity.reason,
+                    ])
+                }
             }
         }
+        gapRecordedThrough.removeValue(forKey: track)
         if current[track] == nil { try await open(track: track, at: frame) }
         guard var open = current[track] else { throw HolosError.io("Missing audio writer.") }
         if let file = open.descriptorFile {
@@ -184,6 +191,19 @@ public actor AudioChunkWriter {
     public func noteGap(track: String, reason: GapReason) {
         guard tracks[track] != nil else { return }
         markGap(track: track, reason: reason)
+    }
+
+    /// Called in pump order after capture drains, including when no later frame will arrive to mark a boundary.
+    public func recordUnavailableTails(tracks missing: Set<String>, at stop: Double) async throws {
+        for track in missing.sorted() {
+            let previousEnd = max(tracks[track]?.expected ?? 0, gapRecordedThrough[track] ?? 0)
+            guard stop.isFinite, stop > previousEnd else { continue }
+            try await archive.recordEvent(kind: MeetingEventKind.audioDiscontinuity, details: [
+                "track": track, "previousEnd": String(previousEnd), "nextStart": String(stop),
+                "reason": GapReason.audioUnavailable.rawValue,
+            ])
+            gapRecordedThrough[track] = stop
+        }
     }
 
     /// One discontinuity event covers everything between two frames, so one reason wins: a pending `overflow` is

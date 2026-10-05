@@ -16,6 +16,7 @@ public final class ChunkWriterPump: Sendable {
     private enum Item: Sendable {
         case frame(CapturedAudio)
         case gap(track: String, reason: GapReason)
+        case unavailableTails(tracks: Set<String>, at: Double)
         case closeAll(reason: GapReason, marker: UInt64)
     }
 
@@ -83,6 +84,18 @@ public final class ChunkWriterPump: Sendable {
         let queued = state.withLock { state -> Bool in
             guard state.failure == nil else { return false }
             state.queue.append(.gap(track: track, reason: reason))
+            return true
+        }
+        if queued { wake.yield() }
+    }
+
+    /// Queues missing source tails after all drained frames. Nonblocking even when sleep has a hard deadline;
+    /// closeAll/finish still drain this journal entry before completing.
+    public func noteUnavailableTails(tracks: Set<String>, at: Double) {
+        guard !tracks.isEmpty else { return }
+        let queued = state.withLock { state -> Bool in
+            guard state.failure == nil, !state.finished else { return false }
+            state.queue.append(.unavailableTails(tracks: tracks, at: at))
             return true
         }
         if queued { wake.yield() }
@@ -181,6 +194,8 @@ public final class ChunkWriterPump: Sendable {
             try await writer.append(audio)
         case .gap(let track, let reason):
             await writer.noteGap(track: track, reason: reason)
+        case .unavailableTails(let tracks, let at):
+            try await writer.recordUnavailableTails(tracks: tracks, at: at)
         case .closeAll(let reason, let marker):
             // A failure reaches the waiter through `fail`.
             try await writer.closeAll(expectingGap: reason)

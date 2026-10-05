@@ -46,6 +46,22 @@ public enum CaptureInterruption: Error, Equatable, Sendable {
     case configurationChanged
     /// The user stopped sharing (`SCStreamError.Code.userStopped` only).
     case userStoppedSharing
+
+    /// Normalize both startup failures and delegate stops. A deliberate stop must never become a retry.
+    static func screenCaptureError(_ error: any Error) -> any Error {
+        let code = error as NSError
+        if code.domain == SCStreamErrorDomain, code.code == SCStreamError.Code.userStopped.rawValue {
+            return CaptureInterruption.userStoppedSharing
+        }
+        return error
+    }
+
+    /// ScreenCaptureKit uses this exact error when the stream is already stopped or does not exist.
+    /// Other stop failures cannot confirm cleanup and must keep their handle.
+    static func isAlreadyStoppedStream(_ error: any Error) -> Bool {
+        let code = error as NSError
+        return code.domain == SCStreamErrorDomain && code.code == SCStreamError.Code.attemptToStopStreamState.rawValue
+    }
 }
 
 extension CaptureInterruption: LocalizedError {
@@ -283,7 +299,10 @@ public final class AudioCapture {
             }
             catch {
                 removeConfigurationWatchers()
-                throw error
+                // A concurrent Stop may have cleared the stored stream before this late start returned.
+                // Retain this exact handle so the caller's late-result cleanup can still release it.
+                stream = captureStream
+                throw CaptureInterruption.screenCaptureError(error)
             }
         }
         started = true
@@ -295,8 +314,13 @@ public final class AudioCapture {
         engine?.inputNode.removeTap(onBus: 0)
         engine?.stop()
         engine = nil
-        defer { stream = nil; started = false; receiver.finish() }
-        if let stream { try await stream.stopCapture() }
+        // A failed stop may still own a native stream; keep its handle for later cleanup rather than orphan it.
+        defer { started = false; receiver.finish() }
+        if let stream {
+            do { try await stream.stopCapture() }
+            catch { if !CaptureInterruption.isAlreadyStoppedStream(error) { throw error } }
+        }
+        stream = nil
     }
 
     private func checkStartCancellation() throws {
@@ -418,12 +442,7 @@ private final class CaptureReceiver: NSObject, SCStreamOutput, SCStreamDelegate,
     /// Only `SCStreamError.Code.userStopped` means the user stopped sharing; every other stop is a failure, so
     /// ScreenCaptureKit stopping by itself (for example under screen lock) is retried (§4.2).
     func stream(_ stream: SCStream, didStopWithError error: Error) {
-        let code = error as NSError
-        if code.domain == SCStreamErrorDomain, code.code == SCStreamError.Code.userStopped.rawValue {
-            fail(CaptureInterruption.userStoppedSharing)
-        } else {
-            fail(error)
-        }
+        fail(CaptureInterruption.screenCaptureError(error))
     }
 
     func stream(_ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer, of type: SCStreamOutputType) {
