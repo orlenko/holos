@@ -66,6 +66,11 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate {
     /// The last action's error, until the next action.
     private var problem: String?
     private var query = ""
+    /// Turns "Split Turn" broke a paragraph before without splitting a turn (`ReviewParagraphSplit.breakBefore`): the
+    /// window's view only, never saved, and dropped when the speakers are labelled again (turn IDs then name other
+    /// turns).
+    private var paragraphBreaks: Set<String> = []
+    private var paragraphBreaksRunID: String?
     private var positioned = false
     /// The player state the sidebar and the footer last showed.
     private var shownPlayerState = StateChangeTracker<ReviewPlayer.State>()
@@ -205,7 +210,7 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate {
         nextUncertainButton.toolTip = "Select and play the next uncertain turn (⌘')"
         assignPopUp.toolTip = "Give the selected turns to a speaker (or press 1–9 in the turn list)"
         splitButton.bezelStyle = .push
-        splitButton.toolTip = "Split the selected turn in two"
+        splitButton.toolTip = "Split the selected text in two where a new speaker starts"
         searchField.placeholderString = "Search"
         searchField.sendsSearchStringImmediately = true
         searchField.delegate = self
@@ -422,9 +427,19 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate {
 
     private func refresh() {
         let projection = review.projection
-        let turns = query.isEmpty ? projection.turns : review.turns(matching: query)
+        if projection.runID != paragraphBreaksRunID {
+            paragraphBreaks = []
+            paragraphBreaksRunID = projection.runID
+        }
+        var paragraphs = ReviewParagraphs.group(projection.turns, breaks: paragraphBreaks)
+        // A search shows the paragraphs with a matching turn, whole.
+        if !query.isEmpty {
+            let matching = Set(review.turns(matching: query).map(\.id))
+            paragraphs = paragraphs.filter { $0.turnIDs.contains(where: matching.contains) }
+        }
         let people = review.knownPeople()
-        turnList.update(turns: turns, speakers: projection.speakers, people: people, editable: review.isEditable,
+        turnList.update(paragraphs: paragraphs, speakers: projection.speakers, people: people,
+                        editable: review.isEditable,
                         hints: review.profiles == nil ? [:] : review.voiceMatches.turnHints,
                         text: { [review] turn in review.text(of: turn) },
                         words: { [review] turn in review.words(of: turn) },
@@ -484,7 +499,7 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate {
     /// Who is speaking (in the bar), and the turn list's tint and scroll position, for the play head.
     private func refreshFollowing() {
         guard played, player.isReady else {
-            if turnList.playingTurnID != nil { turnList.showPlaying(turnID: nil, at: 0) }
+            turnList.clearPlaying()
             if !speakingLabel.stringValue.isEmpty { speakingLabel.stringValue = "" }
             announcer.reset()
             return
@@ -543,8 +558,9 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate {
             self.assignSignature = assignSignature
         }
         assignPopUp.isEnabled = editable && !selected.isEmpty
-        splitButton.isEnabled = editable && selected.count == 1
-            && review.words(of: selected[0].id).count > 1
+        let paragraphs = turnList.selectedParagraphs
+        splitButton.isEnabled = editable && paragraphs.count == 1
+            && paragraphs[0].turns.reduce(0) { $0 + review.words(of: $1).count } > 1
 
         let suggestions = review.suggestionCount
         confirmAllItem.title = suggestions > 0 ? "Confirm All Suggestions (\(suggestions))" : "Confirm All Suggestions"
@@ -793,7 +809,7 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate {
             NSSound.beep()
             return
         }
-        if !query.isEmpty, !review.turns(matching: query).contains(where: { $0.id == turn.id }) {
+        if !query.isEmpty, !turnList.shows(turnID: turn.id) {
             query = ""
             searchField.stringValue = ""
             refresh()
@@ -825,8 +841,9 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate {
 
     private func newSpeaker(for ids: [String]) {
         guard !ids.isEmpty else { return }
+        let rows = max(1, turnList.rowCount(of: ids))
         let alert = NSAlert()
-        alert.messageText = ids.count == 1 ? "New speaker for this turn" : "New speaker for \(ids.count) turns"
+        alert.messageText = rows == 1 ? "New speaker for this turn" : "New speaker for \(rows) turns"
         alert.informativeText = "Give the new speaker a name, or leave it empty to name them later."
         let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 260, height: 24))
         field.placeholderString = "Name (optional)"
@@ -841,18 +858,35 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate {
         }
     }
 
+    /// Splits the selected row before a chosen word (`ReviewParagraphs.split`): the turn holding the word is split,
+    /// or, at a word that starts a turn, the paragraph only breaks there.
     @objc private func splitTurn() {
-        guard let turn = turnList.selectedTurns.first, turnList.selectedTurns.count == 1 else { return }
-        let words = review.words(of: turn.id)
-        guard words.count > 1 else { return }
-        let sheet = SplitSheet(words: words, onPlay: { [weak self] seconds in self?.play(from: seconds) })
+        let selected = turnList.selectedParagraphs
+        guard selected.count == 1, let paragraph = selected.first else { return }
+        let words = paragraph.turns.map { review.words(of: $0) }
+        guard words.joined().count > 1 else { return }
+        var turnStarts = Set<Int>()
+        var offset = 0
+        for turnWords in words {
+            if offset > 0, !turnWords.isEmpty { turnStarts.insert(offset) }
+            offset += turnWords.count
+        }
+        let sheet = SplitSheet(words: Array(words.joined()), turnStarts: turnStarts,
+                               onPlay: { [weak self] seconds in self?.play(from: seconds) })
         splitSheet = sheet
         window.beginSheet(sheet.panel) { [weak self] response in
             guard let self else { return }
             self.splitSheet = nil
-            guard response == .OK, let word = sheet.splitWord else { return }
-            let turnID = turn.id
-            self.perform { review in try await review.split(turnID: turnID, at: word.ref) }
+            guard response == .OK, let index = sheet.splitIndex,
+                  let split = ReviewParagraphs.split(paragraph, words: words, at: index) else { return }
+            switch split {
+            case .splitTurn(let turnID, let word):
+                self.perform { review in try await review.split(turnID: turnID, at: word) }
+            case .breakBefore(let turnID):
+                self.paragraphBreaks.insert(turnID)
+                self.refresh()
+                self.turnList.select([turnID], scroll: true)
+            }
         }
     }
 
@@ -969,7 +1003,7 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate {
         guard (notification.object as? NSSearchField) === searchField else { return }
         query = searchField.stringValue
         refresh()
-        if let first = turnList.turns.first, turnList.selectedTurnIDs.isEmpty {
+        if let first = turnList.paragraphs.first, turnList.selectedTurnIDs.isEmpty {
             turnList.select([first.id], scroll: true)
         }
     }
@@ -1174,12 +1208,15 @@ private final class ExportFormatChooser: NSObject {
     }
 }
 
-/// Where to split a turn: the turn's words in a read-only text; a click puts the caret where the second part
-/// starts. "Play from Here" plays from that word.
+/// Where to split a row: its words in a read-only text; a click puts the caret where the second part starts. "Play
+/// from Here" plays from that word. At a word that starts a turn of the row, nothing is split: the row only breaks
+/// there.
 @MainActor
 private final class SplitSheet: NSObject, NSTextViewDelegate {
     let panel: NSPanel
     private let words: [ReviewWord]
+    /// Indices of words that start a turn (other than the first).
+    private let turnStarts: Set<Int>
     /// Each word's range in the shown text.
     private var ranges: [NSRange] = []
     private let scroll = NSTextView.scrollableTextView()
@@ -1187,16 +1224,17 @@ private final class SplitSheet: NSObject, NSTextViewDelegate {
         // `scrollableTextView()` always holds a text view.
         scroll.documentView as? NSTextView ?? NSTextView()
     }
-    private let hint = NSTextField(labelWithString: "")
+    private let hint = NSTextField(wrappingLabelWithString: "")
     private let splitButton = NSButton(title: "Split", target: nil, action: nil)
     private let playButton = NSButton(title: "Play from Here", target: nil, action: nil)
     private let onPlay: (Double) -> Void
 
-    /// The first word of the second part, when the caret is after the turn's first word.
-    private(set) var splitWord: ReviewWord?
+    /// The first word of the second part (an index into `words`), when the caret is after the first word.
+    private(set) var splitIndex: Int?
 
-    init(words: [ReviewWord], onPlay: @escaping (Double) -> Void) {
+    init(words: [ReviewWord], turnStarts: Set<Int> = [], onPlay: @escaping (Double) -> Void) {
         self.words = words
+        self.turnStarts = turnStarts
         self.onPlay = onPlay
         panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 520, height: 300), styleMask: [.titled],
                         backing: .buffered, defer: true)
@@ -1221,7 +1259,6 @@ private final class SplitSheet: NSObject, NSTextViewDelegate {
         scroll.borderType = .bezelBorder
         scroll.translatesAutoresizingMaskIntoConstraints = false
         hint.textColor = .secondaryLabelColor
-        hint.lineBreakMode = .byTruncatingTail
         splitButton.keyEquivalent = "\r"
         splitButton.target = self
         splitButton.action = #selector(split)
@@ -1260,18 +1297,19 @@ private final class SplitSheet: NSObject, NSTextViewDelegate {
         let caret = textView.selectedRange().location
         let index = ranges.firstIndex { $0.location + $0.length > caret }
         if let index, index > 0 {
-            splitWord = words[index]
+            splitIndex = index
             hint.stringValue = "The second part starts at “\(words[index].text)” (\(TimeFormat.clock(words[index].start)))."
+                + (turnStarts.contains(index) ? " A turn already starts there, so the text only breaks there." : "")
         } else {
-            splitWord = nil
+            splitIndex = nil
             hint.stringValue = "Click after the first word, where the second part starts."
         }
-        splitButton.isEnabled = splitWord != nil
+        splitButton.isEnabled = splitIndex != nil
         playButton.isEnabled = true
     }
 
     @objc private func split() {
-        guard splitWord != nil else { return }
+        guard splitIndex != nil else { return }
         panel.sheetParent?.endSheet(panel, returnCode: .OK)
     }
 
