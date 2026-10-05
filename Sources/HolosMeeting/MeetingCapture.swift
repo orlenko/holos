@@ -48,6 +48,9 @@ public struct CaptureRequest: Sendable, Equatable {
     var droppedBuffers: Int { get }
     /// Tracks independently retrying while other tracks continue. Cleared only when that track delivers audio.
     var unavailableTracks: Set<String> { get }
+    /// Sources whose unwritten tail must be saved at epoch end, including a healthy stream never heard yet.
+    /// Separate from warnings: a silent initial stream is not necessarily an outage.
+    var unavailableTailTracks: Set<String> { get }
     func start(_ request: CaptureRequest) async throws
     func stop() async throws
 }
@@ -56,6 +59,7 @@ extension MeetingCapture {
     /// A capture that never drops buffers.
     public var droppedBuffers: Int { 0 }
     public var unavailableTracks: Set<String> { [] }
+    public var unavailableTailTracks: Set<String> { unavailableTracks }
 }
 
 /// Wraps `AudioCapture`, passing the epoch's timeline offset and microphone selection through.

@@ -2542,8 +2542,8 @@ start also leaves microphone recording active. Only that stream retries with
 their attempt count. A hung native start is not multiplied: its late result and
 any in-flight cleanup settle before another attempt. The background recovery
 worker may keep waiting for cleanup while the microphone and recorder remain
-responsive; failed cleanup leaves system audio unavailable instead of spawning
-another potentially concurrent stream. Silence alone is not a failure.
+responsive; failed cleanup retries stopping the same retained handle with backoff,
+never spawning another potentially concurrent stream. Silence alone is not a failure.
 
 Both captures share the microphone's host origin, including retry setup time.
 The first accepted recovered system frame carries an ordered track-local
@@ -2562,6 +2562,11 @@ Known system unavailability is carried into a new capture epoch and its warning
 clears only on an accepted system frame, not merely on successful microphone startup.
 The first system frame of a resumed epoch preserves the recorder's pause/sleep/restart
 boundary reason; only the initial epoch uses the generic leading-unavailable reason.
+An epoch that never heard a system frame saves that unwritten tail too, using a
+separate tail-availability accessor so normal silence does not show an outage warning.
+During a confirmed system outage, the generic "nothing may be playing" stall warning
+is suppressed or narrowed to a genuinely stalled microphone; watchdog journal events
+remain available for diagnostics.
 Pause, sleep, and stop release both captures; deliberate Stop Sharing retains the
 existing requested-stop behavior. Microphone failures retain recorder-wide
 recovery, and a system-only recording retains the existing waiting/backoff policy.

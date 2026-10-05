@@ -44,6 +44,7 @@ import Synchronization
     }
 
     public var unavailableTracks: Set<String> { relay.unavailableTracks }
+    public var unavailableTailTracks: Set<String> { relay.unavailableTailTracks }
     public var droppedBuffers: Int {
         relay.droppedBuffers + retiredDrops + (microphone?.droppedBuffers ?? 0) + (system?.droppedBuffers ?? 0)
     }
@@ -51,7 +52,7 @@ import Synchronization
     public func start(_ request: CaptureRequest) async throws {
         guard !started, !stopped else { throw HolosError.invalidInput("Capture is already running or stopped.") }
         started = true
-        if request.source == .microphoneAndSystem || request.initialSystemUnavailable {
+        if request.source != .microphone {
             relay.configureSystemStart(unavailable: request.initialSystemUnavailable, boundary: request.boundaryReason)
         }
         let primary = makeCapture()
@@ -164,13 +165,19 @@ import Synchronization
     }
 
     /// Only the serial recovery worker clears this task. Stop can await the same task within its own budget.
-    /// A failed/unresolved cleanup keeps the source unavailable, never multiplying potentially active SCStreams.
+    /// A failed cleanup retries the same handle with backoff; an unresolved cleanup waits. Neither creates streams.
     private func settleSystemStop(_ child: any MeetingCapture) async -> Bool {
-        let stopping = beginSystemStop(child)
-        let outcome = await stopping.result
-        systemStopTask = nil
-        if case .success = outcome { return true }
-        return false
+        var attempt = 0
+        while true {
+            let stopping = beginSystemStop(child)
+            let outcome = await stopping.result
+            systemStopTask = nil
+            if case .success = outcome { return true }
+            guard !stopped, !Task.isCancelled else { return false }
+            do { try await Task.sleep(for: Self.retryWait(attempt: attempt, base: retryDelay)) }
+            catch { return false }
+            attempt = min(attempt + 1, 6)
+        }
     }
 
     /// Runs off the main actor, so the microphone and system stream do not compete with UI work.
@@ -254,6 +261,9 @@ private final class IndependentCaptureRelay: Sendable {
     private let output: AsyncThrowingStream<CapturedAudio, Error>.Continuation
     init(_ output: AsyncThrowingStream<CapturedAudio, Error>.Continuation) { self.output = output }
     var unavailableTracks: Set<String> { state.withLock { $0.systemMissing ? ["system"] : [] } }
+    var unavailableTailTracks: Set<String> {
+        state.withLock { $0.systemMissing || $0.systemBoundary && !$0.systemHeard ? ["system"] : [] }
+    }
     var droppedBuffers: Int { state.withLock { $0.dropped } }
     var recoveries: Int { state.withLock { $0.recoveries } }
 

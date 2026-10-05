@@ -827,8 +827,7 @@ private final class Recorder {
         case .warn(let warning):
             await warn(warning)
         case .clearWarning(let code):
-            shownWarnings.remove(code)
-            await updateStatus { $0.warnings.removeAll { $0.code == code } }
+            await clearWarning(code)
         case .allowSleep:
             allowSleep()
         case .holdPowerAssertion(let hold):
@@ -878,7 +877,7 @@ private final class Recorder {
         let stopAt = clock.now()
         // Also runs for pause/sleep/restart, when final Stop may have no live capture left. Queue after draining
         // so the writer uses the last saved sample, not a potentially stale status snapshot.
-        defer { pump.noteUnavailableTails(tracks: capture.unavailableTracks, at: stopAt) }
+        defer { pump.noteUnavailableTails(tracks: capture.unavailableTailTracks, at: stopAt) }
         captureStopped = true
         let alreadyEnded = monitor.requestStop(epoch: captureEpoch)
         let limit = dependencies.timeouts.captureStop
@@ -1124,7 +1123,18 @@ private final class Recorder {
         if archiveOpen { await recordEvent(MeetingEventKind.controlRejected, ["file": file, "reason": reason]) }
     }
 
-    private func warn(_ warning: RecorderWarning) async {
+    private func clearWarning(_ code: RecorderWarningCode) async {
+        shownWarnings.remove(code)
+        await updateStatus { $0.warnings.removeAll { $0.code == code } }
+    }
+
+    private func warn(_ requested: RecorderWarning) async {
+        var warning = requested
+        if warning.code == .trackStalled, capture?.unavailableTracks.contains("system") == true {
+            let stalled = machine.stalledTracks.filter { $0 != "system" }
+            guard !stalled.isEmpty else { await clearWarning(.trackStalled); return }
+            warning.message = RecorderMachine.stallMessage(stalled, seconds: machine.watchdog.stallSeconds)
+        }
         let isNew = shownWarnings.insert(warning.code).inserted
         if isNew { reporter.message(warning.message) }
         let code = warning.code
@@ -1175,10 +1185,16 @@ private final class Recorder {
         let systemUnavailable = capture?.unavailableTracks.contains("system") == true
         let systemWarning = RecorderWarningCode("systemAudioUnavailable")
         if systemUnavailable {
+            // A system stall may predate the explicit failure. Replace its presentation before adding the outage
+            // warning; watchdog journal events remain intact, and a concurrent microphone stall stays visible.
+            if shownWarnings.contains(.trackStalled) {
+                await warn(RecorderWarning(code: .trackStalled,
+                    message: RecorderMachine.stallMessage(machine.stalledTracks, seconds: machine.watchdog.stallSeconds)))
+            }
             if !shownWarnings.contains(systemWarning) {
                 await recordEvent(MeetingEventKind.captureWaiting, ["track": "system", "at": String(clock.now())])
                 await warn(RecorderWarning(code: systemWarning,
-                    message: "System audio is unavailable; retrying. Microphone recording continues."))
+                    message: "System audio is unavailable; recovery is pending."))
             }
         } else if shownWarnings.remove(systemWarning) != nil {
             await recordEvent(MeetingEventKind.captureRestarted, ["track": "system", "at": String(clock.now())])
