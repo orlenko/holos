@@ -966,6 +966,9 @@ private final class Recorder {
         let now = clock.now()
         let offsetHostTime = dependencies.hostTime()
         let offset = max(now, lastEnd.map { $0 + 0.01 } ?? 0)
+        let initialSystemUnavailable = plan.source != .microphone
+            && (self.capture?.unavailableTracks.contains("system") == true
+                || shownWarnings.contains(RecorderWarningCode("systemAudioUnavailable")))
         let capture = dependencies.makeCapture()
         self.capture = capture
         captureEpoch = epoch
@@ -975,7 +978,9 @@ private final class Recorder {
         let request = CaptureRequest(source: plan.source, applicationBundleID: options.applicationBundleID,
                                      timelineOffset: offset, microphone: options.microphone,
                                      offsetHostTime: offsetHostTime, screen: options.screen,
-                                     sessionDirectory: options.screen == nil ? nil : archive.directory)
+                                     sessionDirectory: options.screen == nil ? nil : archive.directory,
+                                     initialSystemUnavailable: initialSystemUnavailable,
+                                     boundaryReason: lastGapReason ?? .captureRestarted)
         let starting = Task { @MainActor in try await capture.start(request) }
         let startedAt: Double
         switch await awaitWithTimeout(limit, { try await starting.value }) {

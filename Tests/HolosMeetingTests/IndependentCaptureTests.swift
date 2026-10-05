@@ -303,6 +303,82 @@ func successfulDelayedSystemStartRecordsItsLeadingGapWithoutAWarning() async thr
 
 private enum MissingSystemStop: CaseIterable, Sendable { case pause, sleep, pauseAndResume }
 
+@Test(.timeLimit(.minutes(1)), arguments: [GapReason.paused, .sleep, .captureRestarted, .deviceChanged], [true, false])
+@MainActor
+func resumedSystemPreservesOutageStateAndRecorderBoundary(reason: GapReason, unavailable: Bool) async throws {
+    let temp = try TemporaryDirectory()
+    defer { temp.remove() }
+    let mic = IndependentNativeCapture(), system = IndependentNativeCapture(), failed = IndependentNativeCapture()
+    failed.startError = HolosError.unavailable("Display unavailable.")
+    let capture = isolatedCapture(IndependentNativeFactory([mic, system, failed]))
+    let nextMic = IndependentNativeCapture(), nextSystem = IndependentNativeCapture()
+    nextSystem.startGate = true
+    let next = isolatedCapture(IndependentNativeFactory([nextMic, nextSystem]))
+    next.startLimit = .seconds(30)
+    let made = SharedValue<Int>(0), statuses = SharedValue<[RecorderStatus]>([])
+    let stop = ManualStopSource(), clock = ManualSessionClock(0), power = RecorderFakePower()
+    var dependencies = recorderDependencies(captures: FakeCaptureFactory(), stop: stop, clock: clock,
+        makeCapture: { made.update { $0 += 1 }; return made.value == 1 ? capture : next },
+        statusObserver: { status in statuses.update { $0.append(status) } })
+    dependencies.power = power
+    let run = Task { try await RecordingWorkflow.run(.testing(root: temp.url, source: .microphoneAndSystem,
+                                                             recordOnly: true), dependencies: dependencies) }
+    #expect(await eventually { system.requests.count == 1 })
+    try mic.emit("mic", at: 0)
+    try system.emit("system", at: 0)
+    #expect(await eventually {
+        statuses.value.last?.tracks.allSatisfy { $0.lastFrameSeconds != nil } == true
+    })
+    if unavailable {
+        system.fail()
+        #expect(await eventually {
+            statuses.value.last?.warnings.contains { $0.code.rawValue == "systemAudioUnavailable" } == true
+        })
+    }
+    clock.set(1)
+    let session = try #require(await recorderSession(in: temp.url))
+    switch reason {
+    case .paused:
+        #expect(try await recorderSend(.pause, to: session)?.result == .applied)
+        clock.set(2)
+        #expect(try await recorderSend(.resume, to: session)?.result == .applied)
+    case .sleep:
+        power.post(.willSleep(token: 42))
+        #expect(await eventually { power.allowed == [42] })
+        clock.set(2)
+        power.post(.didWake)
+    case .deviceChanged: mic.fail(CaptureInterruption.configurationChanged)
+    default: mic.fail(HolosError.io("Microphone ended unexpectedly."))
+    }
+    #expect(await eventually { nextSystem.requests.count == 1 })
+    #expect(nextMic.requests.first?.boundaryReason == reason)
+    #expect(nextMic.requests.first?.initialSystemUnavailable == unavailable)
+    clock.set(2)
+    try nextMic.emit("mic", at: 2)
+    #expect(await eventually {
+        (statuses.value.last?.tracks.first(where: { $0.track == "mic" })?.lastFrameSeconds ?? 0) > 2
+    })
+    #expect(next.unavailableTracks.contains("system") == unavailable)
+    #expect(statuses.value.last?.warnings.contains { $0.code.rawValue == "systemAudioUnavailable" } == unavailable)
+    #expect(!(try recorderEvents(session, MeetingEventKind.captureRestarted)).contains { $0.details["track"] == "system" },
+            "Microphone startup cannot journal system recovery before a system frame.")
+    nextSystem.releaseStart = true
+    try nextSystem.emit("system", at: 2)
+    #expect(await eventually {
+        (statuses.value.last?.tracks.first(where: { $0.track == "system" })?.lastFrameSeconds ?? 0) > 2
+            && statuses.value.last?.warnings.contains { $0.code.rawValue == "systemAudioUnavailable" } == false
+    })
+    stop.requestStop()
+    let outcome = try await run.value
+    let gaps = try recorderEvents(outcome.directory, MeetingEventKind.audioDiscontinuity)
+    for track in ["mic", "system"] {
+        #expect(gaps.last(where: { $0.details["track"] == track })?.details["reason"] == reason.rawValue)
+    }
+    let recovered = try recorderEvents(outcome.directory, MeetingEventKind.captureRestarted)
+        .filter { $0.details["track"] == "system" }
+    #expect(recovered.count == (unavailable ? 1 : 0))
+}
+
 @Test(.timeLimit(.minutes(1)), arguments: MissingSystemStop.allCases) @MainActor
 private func missingSystemTailSurvivesPauseOrSleep(action: MissingSystemStop) async throws {
     let temp = try TemporaryDirectory()
@@ -361,6 +437,7 @@ private func missingSystemTailSurvivesPauseOrSleep(action: MissingSystemStop) as
         #expect(gaps.count == 2)
         #expect(gaps.contains {
             Double($0.details["previousEnd"] ?? "") == 1 && Double($0.details["nextStart"] ?? "") == 2
+                && $0.details["reason"] == "paused"
         }, "Resume must not journal the already saved 0.1…1 tail twice.")
     } else {
         #expect(gaps.count == 1, "Final Stop after pause/sleep must preserve, not duplicate, the unavailable tail.")

@@ -2558,6 +2558,10 @@ healthy silent stream. A still-unavailable source's tail is journaled in writer
 queue order when capture stops for pause, sleep, restart, or final Stop. If audio
 later resumes, its boundary starts after the tail already saved, avoiding duplicate
 gap intervals while preserving the actual sample-end continuity anchor.
+Known system unavailability is carried into a new capture epoch and its warning
+clears only on an accepted system frame, not merely on successful microphone startup.
+The first system frame of a resumed epoch preserves the recorder's pause/sleep/restart
+boundary reason; only the initial epoch uses the generic leading-unavailable reason.
 Pause, sleep, and stop release both captures; deliberate Stop Sharing retains the
 existing requested-stop behavior. Microphone failures retain recorder-wide
 recovery, and a system-only recording retains the existing waiting/backoff policy.

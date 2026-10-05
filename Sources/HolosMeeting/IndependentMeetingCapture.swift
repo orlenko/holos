@@ -51,6 +51,9 @@ import Synchronization
     public func start(_ request: CaptureRequest) async throws {
         guard !started, !stopped else { throw HolosError.invalidInput("Capture is already running or stopped.") }
         started = true
+        if request.source == .microphoneAndSystem || request.initialSystemUnavailable {
+            relay.configureSystemStart(unavailable: request.initialSystemUnavailable, boundary: request.boundaryReason)
+        }
         let primary = makeCapture()
         microphone = primary
         var primaryRequest = request
@@ -72,9 +75,6 @@ import Synchronization
             } catch { await self.primaryEnded(error: error) }
         }
         guard request.source == .microphoneAndSystem else { return }
-        // Even a successful content query can delay the first frame. Mark its leading interval without
-        // treating a healthy (possibly silent) startup as a failure or showing the retry warning.
-        relay.expectInitialSystemBoundary()
         // A slow content query / locked display must not hold up microphone frames or the recorder loop.
         var systemRequest = request
         systemRequest.source = .system
@@ -245,6 +245,7 @@ private final class IndependentCaptureRelay: Sendable {
         var systemMissing = false
         var systemHeard = false
         var systemBoundary = false
+        var initialSystemReason: GapReason = .audioUnavailable
         var recoveries = 0
         var dropped = 0
         var pendingDrops: Set<String> = []
@@ -256,7 +257,14 @@ private final class IndependentCaptureRelay: Sendable {
     var droppedBuffers: Int { state.withLock { $0.dropped } }
     var recoveries: Int { state.withLock { $0.recoveries } }
 
-    func expectInitialSystemBoundary() { state.withLock { $0.systemBoundary = true } }
+    func configureSystemStart(unavailable: Bool, boundary: GapReason?) {
+        state.withLock {
+            // A delayed successful first start still has a leading gap, without implying failure/silence.
+            $0.systemBoundary = true
+            $0.systemMissing = unavailable
+            $0.initialSystemReason = boundary ?? .audioUnavailable
+        }
+    }
 
     func systemUnavailable() {
         state.withLock {
@@ -273,7 +281,7 @@ private final class IndependentCaptureRelay: Sendable {
             let frame = CapturedAudio(track: audio.track, frame: audio.frame,
                                       followsDrop: audio.followsDrop || state.pendingDrops.contains(audio.track),
                                       discontinuity: system && state.systemBoundary
-                                        ? (state.systemHeard ? .captureRestarted : .audioUnavailable) : audio.discontinuity)
+                                        ? (state.systemHeard ? .captureRestarted : state.initialSystemReason) : audio.discontinuity)
             switch output.yield(frame) {
             case .enqueued:
                 state.pendingDrops.remove(audio.track)
