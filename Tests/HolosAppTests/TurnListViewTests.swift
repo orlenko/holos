@@ -57,7 +57,6 @@ struct TurnListViewTests {
         #expect(list.selectedTurnIDs == ["T1", "T2"])
         list.select(["T1", "T3"], scroll: false)
         #expect(list.selectedTurnIDs == ["T1", "T2", "T3"])
-        #expect(list.rowCount(of: ["T1", "T2"]) == 1)
         #expect(list.shows(turnID: "T3") && !list.shows(turnID: "T9"))
     }
 
@@ -111,6 +110,35 @@ struct TurnListViewTests {
         #expect(!button.isHidden && button.title == "⚠ Sam?")
         _ = button.sendAction(button.action, to: button.target)
         #expect(accepted == ["T2"])
+    }
+
+    @Test func aHintKeepsTheWarningOfTheParagraphsOtherTurns() throws {
+        // T1 sounds like Sam; T2 (the same row) is uncertain: both show, the warning under the hint.
+        let hint = MeetingTurnHint(turnID: "T1", speakerID: "S2", profileID: "P", name: "Sam", distance: 0.1,
+                                   ownDistance: 0.5)
+        let list = Self.list(hints: ["T1": hint])
+        let cell = try Self.cell(list, row: 0)
+        #expect(!cell.hintButton.isHidden && !cell.warningLabel.isHidden)
+        #expect(cell.warningLabel.stringValue == "⚠ unsure")
+        #expect(cell.warningLabel.frame.minY >= cell.hintButton.frame.maxY)
+        #expect(list.table.rect(ofRow: 0).height >= TurnCellView.stackedHeight)
+        // The hinted turn's own warning gives way to its hint.
+        let own = Self.list(hints: ["T2": MeetingTurnHint(turnID: "T2", speakerID: "S2", profileID: "P", name: "Sam",
+                                                          distance: 0.1, ownDistance: 0.5)])
+        #expect(try Self.cell(own, row: 0).warningLabel.isHidden)
+    }
+
+    @Test func aSpokenTurnASearchHidesTintsNoRow() {
+        // T1 (shown) is interrupted by T9, which the search left out.
+        let list = Self.list()
+        let shown = [Self.turn("T1", "S1", 0, 10)]
+        list.update(paragraphs: ReviewParagraphs.group(shown), speakers: [Self.speaker("S1", 1)], people: [],
+                    editable: true, text: { _ in "alpha beta" }, words: { Self.words[$0.id] ?? [] },
+                    resolve: { $0 })
+        list.showPlaying(turnID: "T9", at: 4)
+        #expect(list.playingParagraphID == nil)
+        list.showPlaying(turnID: "T1", at: 1)
+        #expect(list.playingParagraphID == "T1")
     }
 
     @Test func aTurnJoiningAParagraphKeepsTheSelectionOnItsTurns() {

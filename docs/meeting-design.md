@@ -7656,7 +7656,8 @@ public enum SessionAudioComposition {
   split ("T5/…") and a turn without a known start begin a row. A row shows its first
   turn's time, one speaker pop-up, its turns' texts joined with spaces, and ⚠ when any
   of its turns is uncertain ("overlap" when one of those overlaps); "⚠ Jim?" names the
-  row's first turn that sounds like Jim and gives that turn alone. Rows are only how
+  row's first turn that sounds like Jim and gives that turn alone (that turn's own warning
+  gives way to it; a warning of the row's other turns shows under it). Rows are only how
   turns are shown: edits still name turns, and the journal and exports are unchanged
   (Markdown and text already merge a speaker's consecutive turns into blocks, §4.11).
   Everything per word works across a row's turns: clicking a word, the word playing and

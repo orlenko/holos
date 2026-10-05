@@ -392,8 +392,9 @@ final class TurnListView: NSView, NSTableViewDataSource, NSTableViewDelegate {
     /// The paragraph playing (its ID) and the word of it playing, tinted while shown.
     private(set) var playingParagraphID: String?
     private var playingWord: Int?
-    /// Row heights by paragraph ID (with the words they were measured for), for `heightWidth`.
-    private var heights: [String: (spans: [WordSpan], height: CGFloat)] = [:]
+    /// Row heights by paragraph ID (with the words they were measured for, and whether a hint and a warning are
+    /// stacked), for `heightWidth`.
+    private var heights: [String: (spans: [WordSpan], stacked: Bool, height: CGFloat)] = [:]
     private var heightWidth: CGFloat = 0
     private var heightsStale = false
 
@@ -479,7 +480,11 @@ final class TurnListView: NSView, NSTableViewDataSource, NSTableViewDelegate {
                 || Self.hint(of: old, in: oldHints) != Self.hint(of: paragraph, in: hints) {
                 changed.insert(index)
             }
-            if old.spans != paragraph.spans { resized.insert(index) }
+            if old.spans != paragraph.spans
+                || TurnCellView.stacksWarning(old, hint: Self.hint(of: old, in: oldHints))
+                != TurnCellView.stacksWarning(paragraph, hint: Self.hint(of: paragraph, in: hints)) {
+                resized.insert(index)
+            }
         }
         if menusChanged, let visible = Range(table.rows(in: table.visibleRect)) {
             changed.formUnion(IndexSet(integersIn: visible))
@@ -512,9 +517,6 @@ final class TurnListView: NSView, NSTableViewDataSource, NSTableViewDelegate {
     /// The turn is in a row shown now (search shows only rows with a match).
     func shows(turnID: String) -> Bool { rowOf[turnID] != nil }
 
-    /// How many rows hold `turnIDs`.
-    func rowCount(of turnIDs: [String]) -> Int { Set(turnIDs.compactMap { rowOf[$0] }).count }
-
     /// The hint a paragraph shows: its first turn that sounds like someone named in the meeting.
     private static func hint(of paragraph: ReviewParagraph, in hints: [String: MeetingTurnHint]) -> MeetingTurnHint? {
         guard !hints.isEmpty else { return nil }
@@ -539,14 +541,17 @@ final class TurnListView: NSView, NSTableViewDataSource, NSTableViewDelegate {
         }
         let paragraph = paragraphs[row]
         let spans = paragraph.spans
+        let stacked = TurnCellView.stacksWarning(paragraph, hint: Self.hint(of: paragraph, in: hints))
         // Keyed by ID and checked against the words: a split, or a turn joining or leaving, changes a paragraph's
         // words and keeps its ID.
-        if let cached = heights[paragraph.id], cached.spans == spans { return cached.height }
+        if let cached = heights[paragraph.id], cached.spans == spans, cached.stacked == stacked {
+            return cached.height
+        }
         // Measured as the row's text view lays it out (`TurnCellView.layout`).
         let measured = TurnTextView.height(of: text(of: paragraph),
                                            width: TurnCellView.textViewWidth(forTextWidth: width))
-        let height = max(28, ceil(measured) + 10)
-        heights[paragraph.id] = (spans, height)
+        let height = max(stacked ? TurnCellView.stackedHeight : 28, ceil(measured) + 10)
+        heights[paragraph.id] = (spans, stacked, height)
         return height
     }
 
@@ -584,10 +589,11 @@ final class TurnListView: NSView, NSTableViewDataSource, NSTableViewDelegate {
     // MARK: - Playback
 
     /// Tints the paragraph playing and its word being spoken at `time`: the paragraph of `turnID` (the turn being
-    /// spoken), or in a pause, the paragraph whose span holds `time` (so a pause inside a paragraph does not untint
-    /// it). Nothing in silence between paragraphs.
+    /// spoken; none when it is not shown), or in a pause, the paragraph whose span holds `time` (so a pause inside a
+    /// paragraph does not untint it). Nothing in silence between paragraphs.
     func showPlaying(turnID: String?, at time: Double) {
-        let row = turnID.flatMap { rowOf[$0] } ?? ReviewParagraphs.index(at: time, in: paragraphs)
+        // A turn spoken that is not shown (search left it out) tints no row, not one it overlaps.
+        let row = turnID.map { rowOf[$0] } ?? ReviewParagraphs.index(at: time, in: paragraphs)
         let paragraphID = row.map { paragraphs[$0].id }
         if paragraphID != playingParagraphID {
             if let old = playingParagraphID, let oldRow = rowOf[old] { cell(forRow: oldRow)?.setPlaying(false, word: nil) }
@@ -712,11 +718,15 @@ final class TurnCellView: NSTableCellView {
     let speakerPopUp = NSPopUpButton(frame: .zero, pullsDown: false)
     let warningLabel = NSTextField(labelWithString: "")
     /// "⚠ Jim?": a turn of the paragraph sounds like a person named in the meeting; a click gives that turn to them.
-    /// Shown instead of the warning.
+    /// Shown instead of that turn's warning; the warning of the paragraph's other turns shows under it.
     let hintButton = NSButton(title: "", target: nil, action: nil)
     let bodyText = TurnTextView.make()
     private var menuSignature: [String] = []
     private var isPlayingTurn = false
+    /// The hint and a warning of other turns both show: the warning goes under the hint.
+    private var stacked = false
+    /// The least height of a row whose hint and warning are stacked.
+    static let stackedHeight: CGFloat = 46
 
     override var isFlipped: Bool { true }
 
@@ -793,8 +803,9 @@ final class TurnCellView: NSTableCellView {
         }
         speakerPopUp.isEnabled = editable
         bodyText.canRevertFix = editable
-        warningLabel.stringValue = Self.warning(paragraph)
-        warningLabel.toolTip = Self.warningHelp(paragraph)
+        // The hinted turn's own warning gives way to the hint; the other turns' warning stays.
+        warningLabel.stringValue = Self.warning(paragraph, excluding: hint?.turnID)
+        warningLabel.toolTip = Self.warningHelp(paragraph, excluding: hint?.turnID)
         if let hint {
             hintButton.title = "⚠ \(hint.name)?"
             // In a paragraph of several turns, the hint names the turn it is about by its start.
@@ -806,7 +817,8 @@ final class TurnCellView: NSTableCellView {
             hintButton.isEnabled = editable
         }
         hintButton.isHidden = hint == nil
-        warningLabel.isHidden = hint != nil
+        warningLabel.isHidden = warningLabel.stringValue.isEmpty
+        stacked = Self.stacksWarning(paragraph, hint: hint)
         bodyText.show(text: text, words: words, color: textColor)
         needsLayout = true
     }
@@ -816,8 +828,8 @@ final class TurnCellView: NSTableCellView {
         let height = bounds.height
         timeButton.frame = NSRect(x: 4, y: 4, width: Self.timeWidth, height: 20)
         speakerPopUp.frame = NSRect(x: 4 + Self.timeWidth + Self.gap, y: 2, width: Self.popUpWidth, height: 22)
-        warningLabel.frame = NSRect(x: 4 + Self.timeWidth + Self.gap + Self.popUpWidth + Self.gap, y: 6,
-                                    width: Self.warningWidth, height: 16)
+        warningLabel.frame = NSRect(x: 4 + Self.timeWidth + Self.gap + Self.popUpWidth + Self.gap,
+                                    y: stacked ? 25 : 6, width: Self.warningWidth, height: 16)
         hintButton.frame = NSRect(x: warningLabel.frame.minX, y: 3, width: Self.warningWidth, height: 20)
         // The row is `measured + 10` tall (`TurnListView.tableView(_:heightOfRow:)`): 5 above the text, 5 below.
         let width = Self.textViewWidth(forTextWidth: bounds.width - Self.textX - 4)
@@ -827,18 +839,24 @@ final class TurnCellView: NSTableCellView {
         bodyText.window?.invalidateCursorRects(for: bodyText)
     }
 
-    /// "⚠ overlap", "⚠ unknown", "⚠ unsure", or nothing: a paragraph warns when any of its turns is uncertain, of
-    /// an overlap when one of those overlaps.
-    static func warning(_ paragraph: ReviewParagraph) -> String {
-        let uncertain = paragraph.turns.filter(\.uncertain)
+    /// A hint shows and so does a warning of the paragraph's other turns.
+    static func stacksWarning(_ paragraph: ReviewParagraph, hint: MeetingTurnHint?) -> Bool {
+        guard let hint else { return false }
+        return !warning(paragraph, excluding: hint.turnID).isEmpty
+    }
+
+    /// "⚠ overlap", "⚠ unknown", "⚠ unsure", or nothing: a paragraph warns when any of its turns (but `excluded`) is
+    /// uncertain, of an overlap when one of those overlaps.
+    static func warning(_ paragraph: ReviewParagraph, excluding excluded: String? = nil) -> String {
+        let uncertain = paragraph.turns.filter { $0.uncertain && $0.id != excluded }
         guard !uncertain.isEmpty else { return "" }
         if uncertain.contains(where: \.overlap) { return "⚠ overlap" }
         if paragraph.speakerID == nil { return "⚠ unknown" }
         return "⚠ unsure"
     }
 
-    static func warningHelp(_ paragraph: ReviewParagraph) -> String? {
-        let uncertain = paragraph.turns.filter(\.uncertain)
+    static func warningHelp(_ paragraph: ReviewParagraph, excluding excluded: String? = nil) -> String? {
+        let uncertain = paragraph.turns.filter { $0.uncertain && $0.id != excluded }
         guard !uncertain.isEmpty else { return nil }
         if uncertain.contains(where: \.overlap) { return "Someone else spoke at the same time." }
         if paragraph.speakerID == nil { return "No speaker was found for this text." }

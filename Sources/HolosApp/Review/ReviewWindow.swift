@@ -841,9 +841,9 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate {
 
     private func newSpeaker(for ids: [String]) {
         guard !ids.isEmpty else { return }
-        let rows = max(1, turnList.rowCount(of: ids))
         let alert = NSAlert()
-        alert.messageText = rows == 1 ? "New speaker for this turn" : "New speaker for \(rows) turns"
+        // Every turn the change moves (a row may hold several).
+        alert.messageText = ids.count == 1 ? "New speaker for this turn" : "New speaker for \(ids.count) turns"
         alert.informativeText = "Give the new speaker a name, or leave it empty to name them later."
         let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 260, height: 24))
         field.placeholderString = "Name (optional)"
