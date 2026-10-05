@@ -75,17 +75,21 @@ Recover rebuilds the transcript; at most one 30 s chunk is lost.
 
 Result: Pending.
 
-### H12: Dictation is paused while recording
+### H12: Dictation remains available while recording
 
-1. Enable dictation. Start a meeting recording.
-2. Open the menu: the dictation items are replaced by one line, "Dictation paused during meeting
-   recording".
-3. In a text field of another app, hold Right Option.
-4. Stop the recording; once the menu shows it saving, hold Right Option again.
+1. Enable dictation and start a microphone + system-audio meeting. In another app's
+   text field, hold the dictation shortcut, speak, release, and verify insertion.
+2. Check that both meeting tracks continue without a gap caused by dictation.
+   Repeat after meeting pause/resume and after reattaching to a recorder.
+3. Disable dictation during the meeting, then stop/save: dictation stays off.
+   Enable it during a meeting and confirm the shortcut and normal menu work.
+4. Sleep/lock the machine during a meeting; after returning, dictation remains off
+   until explicitly enabled. Meeting resume/save must not automatically enable it.
+5. Repeat on the selected input device and target macOS hardware. This manual
+   acceptance check has not been performed by the reducer tests.
 
-Pass: no dictation during the meeting and the key reaches the app; the menu shows only the paused
-line; dictation works again after the stop. (After a sleep during the meeting, dictation stays off
-and the menu says to enable it.)
+Pass: concurrent dictation works without disrupting either meeting track;
+controls remain available; meeting lifecycle never changes the user's choice.
 
 Result: Pending.
 

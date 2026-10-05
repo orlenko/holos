@@ -274,8 +274,7 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
                 self.insertionBlockReason = "The active application changed; use Copy Result."
             }
         })
-        // Before dictation starts: a meeting already recording (the app relaunched, or one started in a terminal)
-        // keeps dictation paused.
+        // Follow any existing recorder; its lifecycle is independent of dictation.
         setUpMeetings()
         let dictationEnabled = UserDefaults.standard.bool(forKey: "dictationEnabled")
         // Before the assistant's window opens, so it shows the downloads it started before a quit or its reopen.
@@ -288,7 +287,7 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
         case .verify: showSetupAssistant(verify: true)
         case .markDone, .normal: if dictationEnabled { openMainWindowAtLaunch() } else { showSetup() }
         }
-        if dictationEnabled, !meeting.dictationPaused { enable() }
+        if dictationEnabled { enable() }
     }
 
     /// Closing the last window never quits: Voice is Local lives in the menu bar, and dictation, meeting recordings,
@@ -370,23 +369,16 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
         let menu = NSMenu()
         menu.autoenablesItems = false
         menu.delegate = self
-        if meeting.dictationPaused {
-            // A meeting is recording: this line replaces the dictation block (§4.12), except a result kept from
-            // before the meeting, which stays reachable because nothing copies it to the clipboard on its own.
-            addDictationPausedLine(to: menu)
-            if !retention.kept.isEmpty { addResultItems(to: menu) }
-        } else {
-            let status = NSMenuItem(title: message, action: nil, keyEquivalent: "")
-            status.isEnabled = false
-            menu.addItem(status)
-            let toggle = item("\(enabled ? "Disable" : "Enable") \(shortcutTitle) Dictation", #selector(toggleEnabled))
-            toggle.state = enabled ? .on : .off
-            toggle.isEnabled = !enabling && !installingAssets
-            menu.addItem(toggle)
-            if isBusy { menu.addItem(item("Cancel Dictation", #selector(cancelDictation))) }
-            if !retention.kept.isEmpty { addResultItems(to: menu) }
-            menu.addItem(item("Correct Last Dictation…", #selector(showCorrections)))
-        }
+        let status = NSMenuItem(title: message, action: nil, keyEquivalent: "")
+        status.isEnabled = false
+        menu.addItem(status)
+        let toggle = item("\(enabled ? "Disable" : "Enable") \(shortcutTitle) Dictation", #selector(toggleEnabled))
+        toggle.state = enabled ? .on : .off
+        toggle.isEnabled = !enabling && !installingAssets
+        menu.addItem(toggle)
+        if isBusy { menu.addItem(item("Cancel Dictation", #selector(cancelDictation))) }
+        if !retention.kept.isEmpty { addResultItems(to: menu) }
+        menu.addItem(item("Correct Last Dictation…", #selector(showCorrections)))
         menu.addItem(.separator())
         addMeetingItems(to: menu)
         addWindowItems(to: menu)
@@ -435,8 +427,7 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func enable() {
-        // A recording meeting keeps dictation paused; it resumes when capture stops (§4.12).
-        guard !enabled, !enabling, !installingAssets, !meeting.dictationPaused else { return }
+        guard !enabled, !enabling, !installingAssets else { return }
         guard !refuseIfReplaced() else { return }
         guard AudioCapture.microphonePermission == "authorized", AXIsProcessTrusted() else {
             show("Grant Microphone and Accessibility access in Voice is Local Settings, then enable dictation.")
@@ -470,7 +461,6 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
                 self.monitor = monitor
                 self.enabled = true
                 self.enabling = false
-                self.meeting.suspendedBySleep = false
                 UserDefaults.standard.set(true, forKey: "dictationEnabled")
                 self.enableWhenSpeechModelInstalled = false  // done: the assistant's deferred enable is fulfilled
                 if let app = NSWorkspace.shared.frontmostApplication { TextInsertion.enableAccessibility(for: app) }
@@ -503,8 +493,8 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
         overlay.hide()
     }
 
-    /// Not during a dictation, an enable, or a meeting recording; Settings then shows the current shortcut again.
-    var canChangeShortcut: Bool { !isBusy && !enabling && !meeting.dictationPaused }
+    /// Not during a dictation or an enable; Settings then shows the current shortcut again.
+    var canChangeShortcut: Bool { !isBusy && !enabling }
 
     func changeShortcut(to choice: HotkeyChoice) {
         guard choice != shortcut, canChangeShortcut else {
@@ -571,7 +561,7 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
         guard enabled else { return }
         switch action {
         case .began:
-            guard !meeting.dictationPaused, !isBusy, !refuseIfReplaced(), !TextInsertion.isSecureInputActive() else {
+            guard !isBusy, !refuseIfReplaced(), !TextInsertion.isSecureInputActive() else {
                 return
             }
             overlay.allowShowing()
@@ -1500,9 +1490,7 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
             dictationEnabled: enabled, enabling: enabling, busy: isBusy, shortcutTitle: shortcutTitle,
             shortcut: shortcut, shortcutChangeable: canChangeShortcut,
             removeFillers: removeFillers, showPreview: showPreview, previewOpacity: previewOpacity,
-            // While a meeting records, its pause takes precedence over every other dictation message (§4.12).
-            message: meeting.dictationPaused ? "Dictation paused during meeting recording" : message,
-            dictationPausedForMeeting: meeting.dictationPaused,
+            message: message,
             speakerModels: speakerLabels.status, speakerModelsDetail: speakerLabels.detail,
             speakerModelsBusy: speakerLabels.busy,
             deepTranscriptionModel: deep.model, deepTranscriptionDetail: deep.detail,
@@ -1519,12 +1507,8 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
             openWindowAtLaunch: openWindowAtLaunch, appearance: appearance))
     }
 
-    /// The sidebar's status card: "Dictation ready" and the current message; during a meeting, the pause.
+    /// The sidebar's dictation status, independent of meeting recording.
     private func mainStatus() -> MainStatus {
-        if meeting.dictationPaused {
-            return MainStatus(tone: .paused, title: "Dictation paused",
-                              message: "Dictation paused during meeting recording")
-        }
         if isBusy { return MainStatus(tone: .busy, title: "Dictating", message: message) }
         if enabling || installingAssets { return MainStatus(tone: .busy, title: "Starting…", message: message) }
         if enabled { return MainStatus(tone: .ready, title: "Dictation ready", message: message) }
@@ -1640,7 +1624,7 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
                 // The Setup Assistant finished while this downloaded (in this run or before a quit or its reopen).
                 if self.enableWhenSpeechModelInstalled {
                     self.enableWhenSpeechModelInstalled = false
-                    self.enableWhenMeetingAllows()
+                    self.enableDictationFromSetup()
                 }
             } catch {
                 self.installingAssets = false
@@ -1654,8 +1638,7 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func suspendForSessionChange() {
-        // Remembered so the end of a meeting does not turn dictation back on after a sleep (§4.12).
-        meeting.suspendedBySleep = true
+        // Sleep/session suspension is cleared only by an explicit enable, never by a meeting ending.
         disable(persist: false)
         discardResult()
         show("Paused after sleep/session change — enable from the menu to resume")

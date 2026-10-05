@@ -200,8 +200,8 @@ The app's windows other than the transient ones are one main window, "Voice is L
 native source-list sidebar and the selected section's content. Sections: Dictation ›
 History (⌘1), Corrections (⌘2); Meetings › Meetings (⌘3), People (⌘4); Listen › Reading
 (⌘5, see "Reading section"); Settings (⌘,). A status card at
-the sidebar's bottom shows the dictation state and message ("Dictation paused during
-meeting recording" while a meeting records). The window is 1280 × 800 by default
+the sidebar's bottom shows the dictation state and message, independently of any
+meeting recording. The window is 1280 × 800 by default
 (900 × 560 at least), remembers its frame and sidebar width, and opens from the menu's
 **Open Voice is Local** (⌘0), from History / Meetings / Settings… there, from the main
 menu's Go and Window menus (shown while the window is key), and from every "Setup…"

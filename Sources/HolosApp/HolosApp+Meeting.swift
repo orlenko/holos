@@ -32,10 +32,6 @@ final class MeetingAppState {
     var maintenance: MaintenanceLauncher?
     /// Set in in-process mode (UserDefaults "meetingRecorderMode" = "inProcess").
     var inProcess: InProcessLauncher?
-    /// Dictation is paused because a meeting is recording (§4.12).
-    var dictationPaused = false
-    /// Dictation was suspended by sleep or a session change; a meeting's end then does not turn it back on.
-    var suspendedBySleep = false
     /// The latest `announce` text, shown under the meeting's first menu line.
     var notice: String?
     /// The meeting started from the app that records the microphone alone because System audio was not allowed,
@@ -174,8 +170,6 @@ extension HolosAppDelegate: NSMenuDelegate {
         switch effect {
         case .announce(let text):
             meeting.notice = text
-        case .setDictationPaused(let paused):
-            setDictationPaused(paused)
         case .finished(let sessionID, let summary, _):
             meeting.lastSummary = (sessionID, summary)
             meeting.notice = nil
@@ -188,29 +182,6 @@ extension HolosAppDelegate: NSMenuDelegate {
             break
         case .launch, .send, .terminateChild:
             return
-        }
-        rebuildMenu()
-    }
-
-    // MARK: - Dictation pause (§4.12)
-
-    /// Pauses dictation while a meeting records: the running utterance is cancelled and the hotkey monitor stopped,
-    /// so the shortcut reaches other apps; the saved "dictation enabled" choice is kept. Resuming turns dictation back
-    /// on only if it was enabled and not suspended by sleep since.
-    func setDictationPaused(_ paused: Bool) {
-        guard paused != meeting.dictationPaused else { return }
-        if paused {
-            Self.meetingLog.notice("Dictation paused for a meeting")
-            disable(persist: false)
-            meeting.dictationPaused = true
-        } else {
-            meeting.dictationPaused = false
-            Self.meetingLog.notice("Dictation resumed after a meeting")
-            if meeting.suspendedBySleep {
-                show("Paused after sleep/session change — enable from the menu to resume")
-            } else if UserDefaults.standard.bool(forKey: "dictationEnabled") {
-                enable()
-            }
         }
         rebuildMenu()
     }
@@ -300,11 +271,6 @@ extension HolosAppDelegate: NSMenuDelegate {
         let stop = item("Stop and Save…", #selector(stopMeetingRecording))
         stop.isEnabled = !stopping && meeting.controller?.reducer.stopRequested != true
         menu.addItem(stop)
-    }
-
-    /// The dictation block's replacement while a meeting records.
-    func addDictationPausedLine(to menu: NSMenu) {
-        menu.addItem(disabledLine("Dictation paused during meeting recording"))
     }
 
     func addAboutItem(to menu: NSMenu) {

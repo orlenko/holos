@@ -18,10 +18,10 @@ struct MeetingControllerTuning: Sendable {
 }
 
 /// The app's side of a meeting, without AppKit (docs/meeting-design.md §5.8): starts the recorder, follows its
-/// `status.json`, sends control requests, finds meetings started elsewhere, pauses dictation through its effects,
+/// `status.json`, sends control requests, finds meetings started elsewhere,
 /// cleans up the vocabulary hand-off file, and relabels meetings whose labelling was interrupted.
 ///
-/// Effects the app acts on (`announce`, `setDictationPaused`, `finished`, `offerNaming`, `clearNamingOffer`) go to
+/// Effects the app acts on (`announce`, `finished`, `offerNaming`, `clearNamingOffer`) go to
 /// `onEffect`; `launch`, `send`, and `terminateChild` are carried out here. `onChange` follows every state change,
 /// including each new status of the followed meeting.
 @MainActor public final class MeetingController {
@@ -59,8 +59,6 @@ struct MeetingControllerTuning: Sendable {
         case .idle: nil
         }
     }
-    /// True while dictation must stay paused (§4.12).
-    public var dictationShouldPause: Bool { reducer.dictationShouldPause }
     /// True while an automatic relabel runs.
     public private(set) var relabelling = false
     /// The meeting the automatic relabel is labelling, while it runs.
@@ -425,7 +423,7 @@ struct MeetingControllerTuning: Sendable {
             break
         case .clearNamingOffer(let sessionID):
             dismissNamingOffer(sessionID: sessionID)
-        case .announce, .setDictationPaused:
+        case .announce:
             onEffect(effect)
         }
     }

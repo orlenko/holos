@@ -192,7 +192,7 @@ extension HolosAppDelegate {
                 // Enabling is asynchronous and the app is about to quit: the reopened app enables it at launch.
                 UserDefaults.standard.set(true, forKey: "dictationEnabled")
             } else {
-                enableWhenMeetingAllows()
+                enableDictationFromSetup()
             }
         case .afterReopen:
             // Input Monitoring applies only after a reopen, so enabling now would be refused: the reopened app (or
@@ -212,15 +212,8 @@ extension HolosAppDelegate {
         }
     }
 
-    /// Turns dictation on, or, while a meeting records (which keeps dictation paused and makes `enable()` do
-    /// nothing), saves it as on so the end of the meeting turns it on (§4.12).
-    func enableWhenMeetingAllows() {
-        if meeting.dictationPaused {
-            UserDefaults.standard.set(true, forKey: "dictationEnabled")
-        } else {
-            enable()
-        }
-    }
+    /// Setup can enable dictation during meetings too; normal permission and asset checks still apply.
+    func enableDictationFromSetup() { enable() }
 
     /// At launch, before the assistant's window: resumes what the assistant started or deferred and a quit (its
     /// planned reopen included) cut short. The speech model install restarts when dictation waits for it, and turns

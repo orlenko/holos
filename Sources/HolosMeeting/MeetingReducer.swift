@@ -134,7 +134,6 @@ public enum MeetingEffect: Sendable, Equatable {
     /// SIGTERM to the child: a graceful stop while starting, or the 120 s start timeout.
     case terminateChild(sessionID: String)
     case announce(String)                // first menu line / status item tooltip
-    case setDictationPaused(Bool)
     /// `speakersReady` from the reducer: post-processing ran to its end, so labels may be saved; `MeetingController`
     /// replaces it with the result of checking the saved labels.
     case finished(sessionID: String, summary: String, speakersReady: Bool)
@@ -149,8 +148,6 @@ public struct MeetingReducer: Sendable, Equatable {
     public private(set) var state: MeetingState = .idle
     /// The followed meeting's name, for messages.
     public private(set) var meetingName: String?
-    /// The last `setDictationPaused` value emitted, so each change is emitted once.
-    private var dictationPaused = false
     /// "Waiting for permission…" was announced for this start.
     private var permissionHintShown = false
     /// A stop was sent (or, while starting, the child was asked to terminate) for the followed session.
@@ -180,20 +177,10 @@ public struct MeetingReducer: Sendable, Equatable {
     /// A recording stopped while starting that saved less audio than this was stopped before it started.
     static let cancelledRecordingSeconds = 1.0
 
-    /// True while dictation must stay paused: the followed meeting is starting, or its phase `isMeetingActive`
-    /// (docs/meeting-design.md §4.12).
-    public var dictationShouldPause: Bool {
-        switch state {
-        case .starting: true
-        case .active(_, let status): status.phase.isMeetingActive
-        case .idle, .finishing, .failed: false
-        }
-    }
-
     public init() {}
 
     public mutating func reduce(_ event: MeetingEvent) -> [MeetingEffect] {
-        var effects: [MeetingEffect]
+        let effects: [MeetingEffect]
         switch event {
         case .startRequested(let settings, let sessionID, let at):
             effects = startRequested(settings, sessionID: sessionID, at: at)
@@ -227,7 +214,6 @@ public struct MeetingReducer: Sendable, Equatable {
             state = .idle
             effects = []
         }
-        syncDictation(&effects)
         return effects
     }
 
@@ -454,15 +440,6 @@ public struct MeetingReducer: Sendable, Equatable {
             : "Saved \(name). Speaker labelling stopped; Voice is Local will retry it, or use Label Speakers in Meetings."
         return [.finished(sessionID: sessionID, summary: summary, speakersReady: false)]
     }
-
-    /// Emits `setDictationPaused` when the pause the state calls for changed.
-    private mutating func syncDictation(_ effects: inout [MeetingEffect]) {
-        let wanted = dictationShouldPause
-        guard wanted != dictationPaused else { return }
-        dictationPaused = wanted
-        effects.append(.setDictationPaused(wanted))
-    }
-
     /// Nothing was saved: capture never started.
     private func savedNothing(_ status: RecorderStatus) -> Bool {
         guard let exit = status.exit else { return false }

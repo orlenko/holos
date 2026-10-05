@@ -407,7 +407,7 @@ public enum RecorderPhase: String, Codable, Sendable, CaseIterable {
         self = RecorderPhase(rawValue: raw) ?? .unknown
     }
 
-    /// True from launch until capture has stopped. Dictation stays paused while this is true.
+    /// True from launch until capture has stopped; independent of dictation availability.
     public var isMeetingActive: Bool {
         switch self {
         case .starting, .recording, .paused, .waiting, .sleeping, .stopping, .unknown: true
