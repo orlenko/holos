@@ -268,8 +268,11 @@ final class SettingsPane: NSViewController, MainSectionContent, NSSearchFieldDel
         scroll.contentView.postsBoundsChangedNotifications = true
         NotificationCenter.default.addObserver(self, selector: #selector(scrolled), name: NSView.boundsDidChangeNotification,
                                                object: scroll.contentView)
+        // The cards fill the page up to 760 points. Below the window's own size (NSWindow holds it at 500): above
+        // it, a page wider than 816 points pulled the window's content in to fit, leaving the rest of the window
+        // empty.
         let fill = stack.trailingAnchor.constraint(equalTo: document.trailingAnchor, constant: -28)
-        fill.priority = .defaultHigh
+        fill.priority = NSLayoutConstraint.Priority(rawValue: NSLayoutConstraint.Priority.windowSizeStayPut.rawValue - 10)
 
         search.placeholderString = "Search settings"
         search.sendsSearchStringImmediately = true
@@ -297,6 +300,10 @@ final class SettingsPane: NSViewController, MainSectionContent, NSSearchFieldDel
             searchWidth,
             search.topAnchor.constraint(equalTo: root.topAnchor, constant: 14),
             separator.topAnchor.constraint(equalTo: search.bottomAnchor, constant: 10),
+            // A separator box has no height of its own: without this, the space between the search field and the
+            // bottom was split between it and the page at random, and in some windows the box took all of it (drawn
+            // as a vertical line, since it was taller than wide) and left the page no height at all.
+            separator.heightAnchor.constraint(equalToConstant: 1),
             separator.leadingAnchor.constraint(equalTo: root.leadingAnchor),
             separator.trailingAnchor.constraint(equalTo: root.trailingAnchor),
             scroll.topAnchor.constraint(equalTo: separator.bottomAnchor),
@@ -1102,6 +1109,9 @@ final class SettingsPane: NSViewController, MainSectionContent, NSSearchFieldDel
     // MARK: - Chapters
 
     var searchField: NSSearchField? { search }
+
+    /// The view that holds `chapter`'s card in the page (tests).
+    func section(for chapter: SettingsChapter) -> NSView? { sections[chapter] }
 
     /// The page is scrolled to its top.
     var isAtTop: Bool { scroll.contentView.bounds.minY <= 1 }

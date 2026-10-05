@@ -93,7 +93,8 @@ struct MainStatus: Equatable {
 /// remembers its frame; closing it keeps everything for the next opening.
 @MainActor
 final class MainWindowController: NSObject, NSWindowDelegate {
-    private let window: PreviewingWindow
+    /// Internal so tests can lay a section out in the real window without showing it (`select(_:)`).
+    let window: PreviewingWindow
     private let split = NSSplitViewController()
     private let sidebar: SidebarViewController
     private let container = SectionContainerViewController()
@@ -230,7 +231,9 @@ final class MainWindowController: NSObject, NSWindowDelegate {
         sections[section] as? MainSectionContent
     }
 
-    private func select(_ section: MainSection) {
+    /// Puts `section` in the window and marks it in the sidebar, without bringing the window forward (`show` does);
+    /// tests use it to lay a section out offscreen.
+    func select(_ section: MainSection) {
         // Settings as it was left: the sidebar marks the chapter it shows, or Settings itself at the top and while a
         // search is open (`sidebarMarkOnShow`). Already on Settings, the sidebar keeps what it marks.
         if section != .settings || current != .settings {
