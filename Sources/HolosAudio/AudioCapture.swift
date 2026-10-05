@@ -67,6 +67,8 @@ public final class AudioCapture {
     private var engine: AVAudioEngine?
     private var stream: SCStream?
     private var started = false
+    /// Epochs are single-use. Stop during an asynchronous permission/content/start await forbids a late start.
+    private var stopRequested = false
     /// The AVAudioEngineConfigurationChange observer of a running microphone capture.
     private var configurationObserver: (any NSObjectProtocol)?
     /// Watches the system default input during a call capture that records it.
@@ -142,7 +144,7 @@ public final class AudioCapture {
     /// in clamshell mode). `source: .system` records no microphone at all.
     public func start(source: AudioSource, applicationBundleID: String?, timelineOffset: Double,
                       microphone: MicrophoneSelection, timelineOffsetHostTime: Double? = nil) async throws {
-        try Task.checkCancellation()
+        try checkStartCancellation()
         guard !started else { throw HolosError.invalidInput("Capture is already running.") }
         guard timelineOffset.isFinite, timelineOffset >= 0 else {
             throw HolosError.invalidInput("The capture timeline offset must be a finite, non-negative number.")
@@ -152,7 +154,7 @@ public final class AudioCapture {
         }
         if source != .system {
             let granted = await AVCaptureDevice.requestAccess(for: .audio)
-            try Task.checkCancellation()
+            try checkStartCancellation()
             guard granted else {
                 throw HolosError.permissionDenied("Microphone access is required. Enable it for Voice is Local or your terminal in System Settings > Privacy & Security > Microphone.")
             }
@@ -229,7 +231,7 @@ public final class AudioCapture {
             }
         } else {
             let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: false)
-            try Task.checkCancellation()
+            try checkStartCancellation()
             guard let display = content.displays.first else {
                 throw HolosError.unavailable("System audio capture requires an active display in the logged-in session.")
             }
@@ -273,23 +275,33 @@ public final class AudioCapture {
                     receiver.fail(CaptureInterruption.configurationChanged)
                 }
             }
-            do { try await captureStream.startCapture() }
+            // Stop can reach the native handle even while startCapture has not returned.
+            stream = captureStream
+            do {
+                try await captureStream.startCapture()
+                try checkStartCancellation()
+            }
             catch {
                 removeConfigurationWatchers()
                 throw error
             }
-            stream = captureStream
         }
         started = true
     }
 
     public func stop() async throws {
+        stopRequested = true
         removeConfigurationWatchers()
         engine?.inputNode.removeTap(onBus: 0)
         engine?.stop()
         engine = nil
         defer { stream = nil; started = false; receiver.finish() }
         if let stream { try await stream.stopCapture() }
+    }
+
+    private func checkStartCancellation() throws {
+        try Task.checkCancellation()
+        if stopRequested { throw CancellationError() }
     }
 
     private func removeConfigurationWatchers() {

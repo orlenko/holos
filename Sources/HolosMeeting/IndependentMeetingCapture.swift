@@ -115,6 +115,7 @@ import Synchronization
                 // If it eventually returns, release it and retry. Stop also releases it immediately and later.
                 starting.cancel()
                 relay.systemUnavailable()
+                _ = await awaitWithTimeout(stopLimit, cancellable: false) { try await child.stop() }
                 systemTask = Task {
                     _ = await starting.result
                     _ = await awaitWithTimeout(stopLimit, cancellable: false) { try await child.stop() }

@@ -128,6 +128,32 @@ func slowSystemStartDoesNotBlockMicrophoneAndLateStartIsStopped() async throws {
 }
 
 @Test(.timeLimit(.minutes(1))) @MainActor
+func aTimedOutSystemStartDoesNotAccumulateNativeCaptures() async throws {
+    let mic = IndependentNativeCapture(), system = IndependentNativeCapture()
+    system.startGate = true
+    let factory = IndependentNativeFactory([mic, system])
+    let capture = isolatedCapture(factory)
+    let heard = SharedValue<Int>(0)
+    let consumer = Task {
+        do { for try await audio in capture.frames {
+            if audio.track == "mic" { heard.update { $0 += 1 } }
+        } } catch { Issue.record("Unexpected error: \(error)") }
+    }
+    try await capture.start(CaptureRequest(source: .microphoneAndSystem))
+    #expect(await eventually { capture.unavailableTracks == ["system"] })
+    try mic.emit("mic", at: 0)
+    try mic.emit("mic", at: 0.1)
+    #expect(await eventually { heard.value == 2 })
+    #expect(factory.made == 2, "A hung start must not create more streams on each retry.")
+    try await capture.stop()
+    let stopsBeforeReturn = system.stops
+    system.releaseStart = true
+    #expect(await eventually { system.stops > stopsBeforeReturn })
+    await consumer.value
+    #expect(factory.made == 2)
+}
+
+@Test(.timeLimit(.minutes(1))) @MainActor
 func deliberateStopSharingStillEndsTheMeeting() async throws {
     let mic = IndependentNativeCapture(), system = IndependentNativeCapture()
     let factory = IndependentNativeFactory([mic, system])
