@@ -157,9 +157,10 @@ public struct AcousticEchoMask: Sendable, Equatable {
         return data
     }
 
-    /// Reads `bytes` as written for `frameCount` frames; nil when the length or a class does not fit.
+    /// Reads `bytes` as written for `frameCount` frames; nil when the length or a class does not fit. The count comes
+    /// from a file, so it is checked against the bytes before any arithmetic (a huge count must not overflow).
     public init?(bytes: Data, frameCount: Int) {
-        guard frameCount >= 0, bytes.count == 2 * frameCount else { return nil }
+        guard frameCount >= 0, bytes.count % 2 == 0, frameCount == bytes.count / 2 else { return nil }
         let all = [UInt8](bytes)
         self.init(classes: Array(all[0..<frameCount]),
                   echoLevels: all[frameCount...].map { Int8(bitPattern: $0) })

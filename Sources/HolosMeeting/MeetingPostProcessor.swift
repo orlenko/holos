@@ -466,6 +466,12 @@ public struct MeetingPostProcessor: Sendable {
         var engine: DiarizationEngineInfo?
         if diarized.isEmpty {
             recorder.skip([.render, .diarize], SpeakerAnalysis.noTrackToLabel)
+            // A call whose microphone is "Me" and whose system track has no words still has echo to find: the
+            // analysis does not depend on diarization (it renders what it needs), only on the saved audio.
+            if case .missing? = echoSaved, options.stopReason != .diskLow,
+               (try? SessionFiles.audioDeleted(session: session, sessionID: manifest.id)) == false {
+                echoMask = try analyzeEcho([], session: session, manifest: manifest, recorder: recorder)
+            }
         } else if let diarizer {
             let audioDeleted: Bool
             do {

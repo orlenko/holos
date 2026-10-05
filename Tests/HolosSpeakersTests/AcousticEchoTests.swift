@@ -229,6 +229,119 @@ func headphonesLeaveNothingToMask() throws {
     #expect(delay.agreeingWindows < 3 || Double(delay.agreeingWindows) < 0.3 * Double(delay.windows))
 }
 
+@Test(.timeLimit(.minutes(2)))
+func anInvertedMicrophoneStillFindsTheEcho() throws {
+    // A microphone of inverted polarity records the echo upside down: its correlation peak is negative.
+    let call = SyntheticCall(echoGain: -0.5)
+    let result = try EchoAnalysis.analyze(microphone: InMemoryEchoAudio(call.microphone),
+                                          system: InMemoryEchoAudio(call.system))
+    #expect(result.verdict == .echo)
+    let measured = try #require(result.delay?.milliseconds(at: 30))
+    #expect(abs(measured - SyntheticCall.delay * 1_000) < 1, "measured \(measured) ms")
+    let mask = try #require(result.mask)
+    for interval in echoOnly {
+        #expect(share(frames(in: interval, of: mask), .echo, of: mask) >= 0.9)
+    }
+    for interval in SyntheticCall.localTalks {
+        #expect(share(frames(in: interval, of: mask), .local, of: mask) >= 0.9)
+    }
+}
+
+@Test(.timeLimit(.minutes(2)))
+func aCallOfExactlyThirtySecondsHasThreeDelayWindows() throws {
+    // The last 10 s window ends exactly at the last sample; without it there would be two, fewer than the gate needs.
+    let seconds = 30
+    let call = SyntheticCall()
+    let microphone = Array(call.microphone.prefix(seconds * rate))
+    let system = Array(call.system.prefix(seconds * rate))
+    let result = try EchoAnalysis.analyze(microphone: InMemoryEchoAudio(microphone),
+                                          system: InMemoryEchoAudio(system))
+    #expect(result.delay?.windows == 3)
+    #expect(result.verdict == .echo)
+    let measured = try #require(result.delay?.milliseconds(at: 15))
+    #expect(abs(measured - SyntheticCall.delay * 1_000) < 1)
+}
+
+@Test func oneOutlyingDelayWindowDoesNotDefeatTheFit() throws {
+    // Seven confident windows at 5…65 s, one 200 ms off: a least-squares start (74.6 ms) agrees with none of them.
+    let delays = [46.0, 46, 46, 246, 46, 46, 46]
+    let windows = delays.enumerated().map {
+        EchoAnalysis.DelayWindow(centre: 5 + Double($0.offset) * 10, milliseconds: $0.element, peakRatio: 100)
+    }
+    let fit = EchoAnalysis.fitDelay(windows)
+    #expect(fit.agreeingWindows == 6)
+    #expect(abs(try #require(fit.milliseconds(at: 35)) - 46) < 0.01)
+    #expect(EchoAnalysis.isPresent(fit, duration: 70))
+
+    // An hour with drift (+5 ms/h) and two far-off windows (a Bluetooth hiccup, a loud echo of something else).
+    var drifting = (0..<120).map { index -> EchoAnalysis.DelayWindow in
+        let centre = 15 + Double(index) * 30
+        return EchoAnalysis.DelayWindow(centre: centre, milliseconds: 46 + 5 * centre / 3_600, peakRatio: 100)
+    }
+    drifting[10].milliseconds = 300
+    drifting[90].milliseconds = 12
+    let line = EchoAnalysis.fitDelay(drifting)
+    #expect(line.agreeingWindows == 118)
+    #expect(abs(try #require(line.startMilliseconds) - 46) < 0.01)
+    #expect(abs(try #require(line.driftMillisecondsPerHour) - 5) < 0.01)
+}
+
+@Test func untimedMicrophoneWordsAreKept() {
+    // A microphone segment without word timing over echo (10–12 s) and local speech (12–14 s): its words get
+    // estimated times, which say nothing about the sound, so none is dropped. A timed word in the echo is.
+    let untimed = TranscriptSegment(id: "U", start: 10, end: 14, text: "one two three four five six", track: "mic")
+    let timed = segment("T", words: 1, track: "mic", start: 10.5)
+    let transcript = Transcript(id: "T", createdAt: Date(timeIntervalSince1970: 0), source: "fixture", locale: "en-CA",
+                                backend: .speech, segments: [untimed, timed])
+    let mask = timedMask(seconds: 20, echo: [(10, 12)])
+    #expect(EchoFilter.acousticEchoSpans(transcript: transcript, mask: mask)
+        == [WordSpan(segmentID: "T", first: 0, end: 1)])
+}
+
+@Test func rebuildKeepsTheWordOwnershipTheRunHas() {
+    // A system segment without word timing, split between two speakers. Its run's turns were carried across a word
+    // fix by provenance: words 0–1 are S1's, 2–5 S2's, although aligning the fixed segment's estimated times again
+    // would give word 2 to S1. A timed microphone segment has echo at word 1.
+    let system = TranscriptSegment(id: "S", start: 10, end: 16, text: "a b c d e f", track: "system")
+    let mic = segment("M", words: 4, track: "mic", start: 20)
+    let transcript = Transcript(id: "T", createdAt: Date(timeIntervalSince1970: 0), source: "fixture", locale: "en-CA",
+                                backend: .speech, segments: [system, mic])
+    let output = DiarizerOutput(segments: [RawDiarizationSegment(speaker: "S1", start: 10, end: 13),
+                                           RawDiarizationSegment(speaker: "S2", start: 13, end: 16)],
+                                centroids: [:], windows: [], processingSeconds: 0)
+    var parameters = callParameters
+    parameters.offsetSearchSeconds = 0
+    var run = SpeakerRunBuilder.build(
+        sessionID: session, transcript: transcript,
+        tracks: [SpeakerRunBuilder.TrackInput(track: "mic", policy: .channel(speakerID: "mic:me", displayName: "Me")),
+                 SpeakerRunBuilder.TrackInput(track: "system", policy: .diarized, output: output)],
+        engine: .fake, parameters: parameters).run
+    let first = run.turns.firstIndex { $0.clusterID == "system:S1" }!
+    let second = run.turns.firstIndex { $0.clusterID == "system:S2" }!
+    #expect(run.turns[first].spans == [WordSpan(segmentID: "S", first: 0, end: 3)])
+    run.turns[first].spans = [WordSpan(segmentID: "S", first: 0, end: 2)]
+    run.turns[second].spans = [WordSpan(segmentID: "S", first: 2, end: 6)]
+
+    let echoAtWord1 = timedMask(seconds: 30, echo: [(20.4, 20.7)])
+    let rebuilt = SpeakerRunBuilder.rebuild(run, transcript: transcript, acousticEcho: echoAtWord1)
+    #expect(rebuilt.turns.filter { $0.track == "system" }.map(\.spans)
+        == [[WordSpan(segmentID: "S", first: 0, end: 2)], [WordSpan(segmentID: "S", first: 2, end: 6)]])
+    #expect(rebuilt.turns.filter { $0.track == "mic" }.map(\.spans)
+        == [[WordSpan(segmentID: "M", first: 0, end: 1)], [WordSpan(segmentID: "M", first: 2, end: 4)]])
+    #expect(rebuilt.droppedWords == [DroppedWords(spans: [WordSpan(segmentID: "M", first: 1, end: 2)],
+                                                  reason: EchoFilter.acousticReason)])
+
+    // No echo found, or a mask that flags no word: the run as it is.
+    for mask in [nil, timedMask(seconds: 30, echo: [])] {
+        var same = SpeakerRunBuilder.rebuild(run, transcript: transcript, acousticEcho: mask, id: run.id,
+                                             createdAt: run.createdAt)
+        #expect(same == run)
+        same = SpeakerRunBuilder.rebuild(rebuilt, transcript: transcript, acousticEcho: echoAtWord1, id: rebuilt.id,
+                                         createdAt: rebuilt.createdAt)
+        #expect(same == rebuilt, "Applying the same mask again changes nothing.")
+    }
+}
+
 @Test func missingOrSilentSystemAudioLeavesNothingToMask() throws {
     let call = SyntheticCall()
     let missing = try EchoAnalysis.analyze(microphone: InMemoryEchoAudio(call.microphone), system: nil)
@@ -307,6 +420,10 @@ private func mask(_ classes: [AcousticEchoMask.FrameClass], levels: [Int8]? = ni
     #expect(decoded == original)
     #expect(AcousticEchoMask(bytes: original.bytes, frameCount: 3) == nil)
     #expect(AcousticEchoMask(bytes: Data([7, 0]), frameCount: 1) == nil)
+    // A count from a damaged mask.json must not overflow (2 × Int.max would trap).
+    #expect(AcousticEchoMask(bytes: original.bytes, frameCount: .max) == nil)
+    #expect(AcousticEchoMask(bytes: original.bytes, frameCount: -1) == nil)
+    #expect(AcousticEchoMask(bytes: Data([0, 0, 0]), frameCount: 1) == nil)
 }
 
 // MARK: - Run builder

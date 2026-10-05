@@ -80,11 +80,21 @@ public enum EchoMaskStore {
         return key
     }
 
+    private struct AnalysisVersionProbe: Decodable { var analysisVersion: Int? }
+
     /// The stored analysis when it is of this session's audio as it is now and of this analysis version; nil when
-    /// there is none, it is out of date, or it is damaged (its frames file missing or not the one the record names).
-    /// One written by a newer Voice is Local is refused (`unavailable`); one that cannot be read now throws.
+    /// there is none, it is out of date (other audio, or an older analysis version), or it is damaged (its frames
+    /// file missing or not the one the record names). One written by a newer Voice is Local, by its schema or by its
+    /// analysis version, is refused (`unavailable`), so it is never overwritten; one that cannot be read now throws.
     public static func current(session: URL, manifest: SessionManifest) throws -> Stored? {
         guard let data = try AtomicFile.readIfPresent(recordURL(session), maxBytes: 1 << 20) else { return nil }
+        // Checked before the whole record is decoded: a newer analysis may use values this build does not know (a
+        // new verdict), which must not read as damage and be analysed over.
+        if let version = (try? HolosJSON.decoder().decode(AnalysisVersionProbe.self, from: data))?.analysisVersion,
+           version > EchoAnalysis.version {
+            throw HolosError.unavailable("\(recordName) was made by a newer version of Voice is Local; update Voice "
+                                         + "is Local to use it.")
+        }
         let record: EchoMaskRecord
         do {
             record = try SessionFiles.decode(EchoMaskRecord.self, from: data, current: EchoMaskRecord.currentVersion,

@@ -40,9 +40,11 @@ public struct InMemoryEchoAudio: EchoAudioSource {
 ///
 /// Steps (parameters from the 2026-10-05 research on real calls):
 /// 1. Delay: GCC-PHAT between 10 s windows of both tracks every 30 s (every 10 s in meetings under 5 min) where the
-///    system plays, lags −0.3…1.5 s. A window is confident when its peak is more than 20 times the median; a line is
-///    fitted through the confident windows and refitted three times on those within 3 ms of it (the delay drifts by a
-///    few milliseconds an hour: the two tracks' clocks differ).
+///    system plays, lags −0.3…1.5 s. A window is confident when its largest correlation magnitude (either sign, for
+///    a microphone of inverted polarity) is more than 20 times the median magnitude; a robust (Theil–Sen) line is
+///    fitted through the confident windows, then refitted by least squares three times on those within 3 ms of it
+///    (an outlying window cannot drag the first line away from the rest; the delay drifts by a few milliseconds an
+///    hour: the two tracks' clocks differ).
 /// 2. Gate: echo is present only when at least 3 windows, and at least 30 % of the windows where the system plays,
 ///    are confident and on the line, and the delay is at least 1 ms all meeting long (echo cannot reach the microphone
 ///    before the system audio; a zero lag is the same signal on both tracks, not the room). Otherwise nothing is
@@ -208,7 +210,8 @@ public enum EchoAnalysis {
         var windows: [DelayWindow] = []
         var total = 0
         var start = 0.0
-        while Int(((start + delayWindowSeconds) * Double(sampleRate)).rounded()) < samples {
+        // A window may end exactly at the last sample: a 30 s call has windows at 0, 10 and 20 s.
+        while Int(((start + delayWindowSeconds) * Double(sampleRate)).rounded()) <= samples {
             try Task.checkCancellation()
             let first = Int((start * Double(sampleRate)).rounded())
             try system.read(from: first, count: length, into: &sys)
@@ -231,7 +234,9 @@ public enum EchoAnalysis {
     static func fitDelay(_ windows: [DelayWindow]) -> DelayFit {
         let confident = windows.filter { $0.peakRatio > confidentPeakRatio }
         var result = DelayFit(windows: windows.count, confidentWindows: confident.count, agreeingWindows: 0)
-        guard confident.count >= minimumAgreeingWindows, var line = fitLine(confident) else { return result }
+        // The first line is robust (Theil–Sen): one far-off window would pull a least-squares line so far that no
+        // window agrees with it and the refits have nothing to start from.
+        guard confident.count >= minimumAgreeingWindows, var line = robustLine(confident) else { return result }
         func agrees(_ window: DelayWindow, _ line: (intercept: Double, slope: Double)) -> Bool {
             abs(window.milliseconds - (line.intercept + line.slope * window.centre)) < agreementMilliseconds
         }
@@ -261,6 +266,26 @@ public enum EchoAnalysis {
         guard sxx > 0 else { return (meanD, 0) }
         let slope = sxy / sxx
         return (meanD - slope * meanT, slope)
+    }
+
+    /// The Theil–Sen line: the median slope over every pair of windows with different centres (0 when there is no
+    /// such pair), and the median intercept for it. Up to about 29 % of the windows can be anywhere.
+    static func robustLine(_ windows: [DelayWindow]) -> (intercept: Double, slope: Double)? {
+        guard !windows.isEmpty else { return nil }
+        func median(_ values: [Double]) -> Double {
+            let sorted = values.sorted()
+            let middle = sorted.count / 2
+            return sorted.count % 2 == 1 ? sorted[middle] : (sorted[middle - 1] + sorted[middle]) / 2
+        }
+        var slopes: [Double] = []
+        for first in windows.indices {
+            for second in windows.indices where second > first && windows[second].centre != windows[first].centre {
+                slopes.append((windows[second].milliseconds - windows[first].milliseconds)
+                              / (windows[second].centre - windows[first].centre))
+            }
+        }
+        let slope = slopes.isEmpty ? 0 : median(slopes)
+        return (median(windows.map { $0.milliseconds - slope * $0.centre }), slope)
     }
 
     /// The gate (step 2).
@@ -308,8 +333,8 @@ public enum EchoAnalysis {
 
         deinit { vDSP_destroy_fftsetupD(setup) }
 
-        /// The lag (samples, microphone behind system positive) with the highest correlation, and that peak over the
-        /// median magnitude of every lag in range.
+        /// The lag (samples, microphone behind system positive) with the largest correlation magnitude, and that peak
+        /// over the median magnitude of every lag in range.
         func peak(microphone: [Float], system: [Float]) -> (lag: Int, ratio: Double) {
             transform(microphone, re: &micRe, im: &micIm)
             transform(system, re: &sysRe, im: &sysIm)
@@ -335,14 +360,16 @@ public enum EchoAnalysis {
                     }
                 }
             }
+            // The peak is the largest magnitude, either sign: a microphone wired or mounted with inverted polarity
+            // records the echo upside down, and its correlation peak is negative.
             var best = 0
             for index in lags.indices {
                 let lag = earliestLag + index
-                lags[index] = padded[lag >= 0 ? lag : size + lag]
+                lags[index] = abs(padded[lag >= 0 ? lag : size + lag])
                 if lags[index] > lags[best] { best = index }
             }
             let peak = lags[best]
-            let magnitudes = lags.map(abs).sorted()
+            let magnitudes = lags.sorted()
             let middle = magnitudes.count / 2
             let median = magnitudes.count % 2 == 1 ? magnitudes[middle]
                 : (magnitudes[middle - 1] + magnitudes[middle]) / 2

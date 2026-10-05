@@ -160,8 +160,9 @@ public enum EchoFilter {
 
     /// Microphone spans the acoustic echo mask drops: every effective word of the segments whose track is exactly
     /// "mic" for which `AcousticEchoMask.isEcho(start:end:)` is true, except the words in `excluding` (those the text
-    /// filter already dropped). A word the mask cannot judge (times that are not numbers, or past its last frame) is
-    /// kept. Spans cover consecutive dropped words of one segment, in microphone word order.
+    /// filter already dropped). A word the mask cannot judge is kept: times that are not numbers, past its last frame,
+    /// or estimated (a segment without word timing spreads its words evenly, so their times say nothing about which
+    /// sound they were). Spans cover consecutive dropped words of one segment, in microphone word order.
     public static func acousticEchoSpans(transcript: Transcript, mask: AcousticEchoMask,
                                          excluding: Set<WordRef> = []) -> [WordSpan] {
         var spans: [WordSpan] = []
@@ -169,7 +170,8 @@ public enum EchoFilter {
                                                       includeUntracked: false) {
             for (index, word) in WordTiming.effectiveWords(of: segment).enumerated() {
                 let ref = WordRef(segmentID: segment.id, word: index)
-                guard !excluding.contains(ref), mask.isEcho(start: word.start, end: word.end) == true else { continue }
+                guard !excluding.contains(ref), !word.estimated,
+                      mask.isEcho(start: word.start, end: word.end) == true else { continue }
                 if let last = spans.last, last.segmentID == ref.segmentID, last.end == ref.word {
                     spans[spans.count - 1].end += 1
                 } else {

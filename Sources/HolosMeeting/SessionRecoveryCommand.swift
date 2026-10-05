@@ -362,8 +362,11 @@ public enum SessionRecoveryCommand {
             let message = saved.problems.map(\.localizedDescription).joined(separator: " ")
             log.error("Speaker files are unusable and will be replaced: \(message, privacy: .private)")
         }
+        // A failed echo analysis (§5.11) leaves the record `succeeded`, as the labels were still made, but they keep
+        // the call's echo: they are not current, so Recover runs post-processing again and the analysis is retried.
         guard let record = saved.record,
               record.state == .succeeded || (record.state == .partial && speakerStagesSettled(record)),
+              !record.stages.contains(where: { $0.stage == .echo && $0.result == .failed }),
               record.transcriptID == transcriptID else {
             return nil
         }
@@ -394,8 +397,11 @@ public enum SessionRecoveryCommand {
                 // A failure (an unreadable corrections.json or words.json, say) is tried again once it may pass;
                 // a fix made, kept, or skipped over edited labels is what a new run would do again.
                 return outcome.result != .failed
-            case .recognize, .echo:
+            case .recognize:
                 return outcome.result != .failed
+            case .echo:
+                // Recorded only when the analysis ran; a failure (a render, disk space) is tried again.
+                return outcome.result == .succeeded
             case .render, .diarize, .align:
                 return outcome.result == .succeeded
                     || (outcome.result == .skipped && outcome.message.map(unchangedSkips.contains) == true)

@@ -13,6 +13,10 @@ import os
 public enum SessionEchoAnalyzeCommand {
     private static let log = Logger(subsystem: "ca.orlenko.holos.app", category: "postprocess")
 
+    /// Test hook: while set (a task-local value), called after the labels are rebuilt and before the speaker lock is
+    /// taken to publish them.
+    @TaskLocal static var beforePublish: (@Sendable () throws -> Void)?
+
     public struct Request: Sendable {
         public var session: URL
         /// Analyse again even when the saved analysis is of this audio.
@@ -96,7 +100,9 @@ public enum SessionEchoAnalyzeCommand {
         outcome.analysisSeconds = stored.record.seconds
         let found = EchoAnalysisStage.message(stored.record)
 
-        // The labels, rebuilt on their own diarization with the mask.
+        // The labels, rebuilt on their own diarization with the mask. The journal's length is taken before the
+        // snapshot reads it, so a line appended in between (even one this build cannot read) is caught at the publish.
+        let journalBytes = try journalLength(session)
         let snapshot = try SpeakerSessionSnapshot.load(session: session)
         guard let run = snapshot.run, let projection = snapshot.projection else {
             outcome.summary = found + " The meeting has no speaker labels yet; labelling its speakers (voiceislocal "
@@ -114,24 +120,26 @@ public enum SessionEchoAnalyzeCommand {
             || rebuilt.speakers != run.speakers else {
             outcome.microphoneTurnsAfter = outcome.microphoneTurnsBefore
             outcome.acousticEchoWords = acousticWords(run)
-            outcome.summary = found + " The speaker labels already leave that echo out. Nothing else changed."
+            outcome.summary = found + (stored.mask == nil ? " The speaker labels were left as they are."
+                : " The speaker labels already leave that echo out. Nothing else changed.")
             return outcome
         }
         let carried = SpeakerEditReplay.carry(edits: snapshot.journal.edits, effective: projection.appliedEditIDs,
                                               from: run, to: rebuilt, transcript: snapshot.transcript)
-        var recognition = try? SessionSpeakerStore.readRecognition(runID: run.id, session: session)
-        recognition?.runID = rebuilt.id
-        recognition?.createdAt = rebuilt.createdAt
+        try beforePublish?()
         try SessionArchive.withSpeakerLock(at: session) {
-            // An editor or a relabel may have written since the snapshot: replace nothing then.
-            guard try SessionSpeakerStore.readHead(session: session)?.runID == run.id,
-                  try SessionSpeakerStore.readEdits(session: session).edits.count == snapshot.journal.edits.count else {
+            // An editor or a relabel may have written since the snapshot: replace nothing then. The journal must be
+            // the very one the edits were carried from: complete (no torn, corrupt or newer line), the same lines,
+            // and the same length on disk.
+            let journal = try SessionSpeakerStore.readEdits(session: session)
+            guard try SessionSpeakerStore.readHead(session: session)?.runID == run.id, journal.isComplete,
+                  journal == snapshot.journal, try journalLength(session) == journalBytes else {
                 throw HolosError.unavailable(found + " The speaker labels changed meanwhile, so they were not "
                                              + "rebuilt; run the command again.")
             }
             try SessionSpeakerStore.writeRun(rebuilt, session: session)
             if !carried.edits.isEmpty { try SessionSpeakerStore.appendEdits(carried.edits, session: session) }
-            if let recognition { try SessionSpeakerStore.writeRecognition(recognition, session: session) }
+            if let profiles { carryRecognition(from: run, to: rebuilt, session: session, store: profiles) }
             try SessionSpeakerStore.writeHead(SpeakerHead(runID: rebuilt.id), session: session)
         }
         log.notice("Session \(manifest.id, privacy: .public): speaker labels rebuilt without acoustic echo (run \(rebuilt.id, privacy: .public))")
@@ -194,6 +202,45 @@ public enum SessionEchoAnalyzeCommand {
         progress("Finding microphone echo…")
         return try EchoAnalysisStage.analyze(session: session, manifest: manifest, microphone: renders["mic"],
                                              system: renders["system"])
+    }
+
+    /// Copies the old run's recognition result (voice suggestions) to the rebuilt run, whose speakers keep their IDs.
+    /// The caller holds the speaker lock; `profiles.lock` is taken inside it (the §1.7 order, as `RecognizeStage`
+    /// does), so a forget either landed before and is reflected (the old file read here was already scrubbed, and
+    /// every person the store no longer holds is removed), or lands after and cleans the new file too. Nothing is
+    /// copied while recognition may not be used (`VoiceProfileService.recognitionAllowed`: Remember voices off, or a
+    /// forget still on its way), or when the people or the old result cannot be read; the next relabel compares
+    /// voices again.
+    private static func carryRecognition(from run: DiarizationRun, to rebuilt: DiarizationRun, session: URL,
+                                         store: SpeakerProfileStore) {
+        do {
+            try store.withLockedDatabase { database in
+                guard VoiceProfileService.recognitionAllowed(in: database, store: store),
+                      var result = try SessionSpeakerStore.readRecognition(runID: run.id, session: session) else {
+                    return
+                }
+                let known = Set(database.profiles.map(\.id))
+                _ = result.removeProfiles { !known.contains($0) }
+                result.runID = rebuilt.id
+                result.createdAt = rebuilt.createdAt
+                try SessionSpeakerStore.writeRecognition(result, session: session)
+            }
+        } catch {
+            log.error("Run \(rebuilt.id, privacy: .public): voice suggestions not carried over: \(ProcessSpawner.logCategory(error), privacy: .public)")
+        }
+    }
+
+    /// The edit journal's size in bytes; 0 when there is none.
+    private static func journalLength(_ session: URL) throws -> Int64 {
+        var info = stat()
+        guard lstat(SessionPaths.edits(session).path, &info) == 0 else {
+            let code = errno
+            guard code == ENOENT else {
+                throw HolosError.io("Cannot inspect the speaker edits: \(String(cString: strerror(code))).")
+            }
+            return 0
+        }
+        return Int64(info.st_size)
     }
 
     private static func acousticWords(_ run: DiarizationRun) -> Int {

@@ -207,6 +207,28 @@ func anUnreadableMicrophoneCostsOnlyTheMask() async throws {
     #expect(!SessionFixtures.exists(EchoMaskStore.recordURL(session)))
     let run = try SessionSpeakerStore.readRun(id: try #require(record.runID), session: session)
     #expect(run.droppedWords.isEmpty)
+    // The labels were made, but without the echo analysis they are not current: Recover runs it again.
+    #expect(record.state == .succeeded)
+    #expect(try SessionRecoveryCommand.currentLabels(session, transcriptID: call.transcript.id, canLabel: true) == nil)
+}
+
+@Test(.timeLimit(.minutes(2)))
+func echoIsFoundWhenNoTrackNeedsDiarizing() async throws {
+    // The microphone is "Me" and the system track has no words (its recognition failed): no track is diarized, and
+    // the microphone's echo is still found.
+    let temp = try TemporaryDirectory("echo")
+    defer { temp.remove() }
+    let call = CallTranscript()
+    let micOnly = SessionFixtures.transcript(call.echoSegments + call.ownSegments)
+    let session = try await callSession(in: temp.url, audio: CallAudio.tracks(echo: true), transcript: micOnly)
+    let record = try await MeetingPostProcessor(diarizer: systemDiarizer(), freeSpace: FixedFreeSpace(.max))
+        .run(session: session, lease: nil)
+    #expect(record.state == .succeeded)
+    #expect(record.stages.first { $0.stage == .echo }?.result == .succeeded)
+    #expect(record.stages.first { $0.stage == .diarize }?.result == .skipped)
+    let run = try SessionSpeakerStore.readRun(id: try #require(record.runID), session: session)
+    #expect(run.droppedWords == [DroppedWords(spans: call.echoSpans, reason: EchoFilter.acousticReason)])
+    #expect(try SessionRecoveryCommand.currentLabels(session, transcriptID: micOnly.id, canLabel: true) != nil)
 }
 
 @Test(.timeLimit(.minutes(2)))
@@ -227,7 +249,7 @@ func callWithoutSystemAudioSavesNoEchoWithoutAStage() async throws {
 }
 
 @Test(.timeLimit(.minutes(2)))
-func aMaskOfOtherAudioOrAnotherVersionIsNotUsed() async throws {
+func aMaskOfOtherAudioOrAnOlderVersionIsNotUsedAndANewerOneIsKept() async throws {
     let temp = try TemporaryDirectory("echo")
     defer { temp.remove() }
     let call = CallTranscript()
@@ -246,8 +268,24 @@ func aMaskOfOtherAudioOrAnotherVersionIsNotUsed() async throws {
     otherAudio["system"] = String(repeating: "0", count: 64)
     try EchoMaskStore.write(record(audio: otherAudio), mask: mask, session: session)
     #expect(try EchoMaskStore.current(session: session, manifest: manifest) == nil)
-    try EchoMaskStore.write(record(audio: key, version: EchoAnalysis.version + 1), mask: mask, session: session)
+    // An older analysis is made again; a newer one is refused, never read as out of date.
+    try EchoMaskStore.write(record(audio: key, version: EchoAnalysis.version - 1), mask: mask, session: session)
     #expect(try EchoMaskStore.current(session: session, manifest: manifest) == nil)
+    try EchoMaskStore.write(record(audio: key, version: EchoAnalysis.version + 1), mask: mask, session: session)
+    #expect(throws: HolosError.self) { try EchoMaskStore.current(session: session, manifest: manifest) }
+    // Even with a verdict this build does not know.
+    let unknownVerdict = SessionFixtures.text(EchoMaskStore.recordURL(session))
+        .replacingOccurrences(of: "\"verdict\" : \"echo\"", with: "\"verdict\" : \"echoTwice\"")
+    #expect(unknownVerdict.contains("echoTwice"))
+    try AtomicFile.write(Data(unknownVerdict.utf8), to: EchoMaskStore.recordURL(session))
+    #expect(throws: HolosError.self) { try EchoMaskStore.current(session: session, manifest: manifest) }
+    // Post-processing leaves it as it is and labels without a mask.
+    let newerBytes = try Data(contentsOf: EchoMaskStore.recordURL(session))
+    let processed = try await MeetingPostProcessor(diarizer: systemDiarizer(), freeSpace: FixedFreeSpace(.max))
+        .run(session: session, lease: nil)
+    #expect(!processed.stages.contains { $0.stage == .echo })
+    #expect(try Data(contentsOf: EchoMaskStore.recordURL(session)) == newerBytes)
+    #expect(try SessionSpeakerStore.readRun(id: try #require(processed.runID), session: session).droppedWords.isEmpty)
     // A frames file that is not the one the record names.
     try EchoMaskStore.write(record(audio: key), mask: mask, session: session)
     try AtomicFile.write(Data([1, 1, 1, 0, 0, 0]), to: EchoMaskStore.framesURL(session))
@@ -265,6 +303,7 @@ func aMaskOfOtherAudioOrAnotherVersionIsNotUsed() async throws {
 /// user's words are two clusters.
 private func labelledOldCall(in root: URL) async throws -> (session: URL, call: CallTranscript, run: DiarizationRun) {
     let call = CallTranscript()
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
     let session = try await callSession(in: root, audio: CallAudio.tracks(echo: true), transcript: call.transcript,
                                         othersInRoom: true)
     let micOutput = DiarizerOutput(
@@ -321,6 +360,75 @@ func echoAnalyzeRebuildsAnOldCallKeepingItsEdits() async throws {
     #expect(!again.analysed)
     #expect(again.runID == nil)
     #expect(try SessionSpeakerStore.readHead(session: session)?.runID == head.id)
+}
+
+/// Saves voice suggestions for `runID`: system:S1 may be MARIA, system:S2 may be JIM.
+private func writeSuggestions(runID: String, session: URL) throws {
+    let matches = [("system:S1", "MARIA", "Maria"), ("system:S2", "JIM", "Jim")].map {
+        SpeakerMatch(speakerID: $0.0, profileID: $0.1, profileName: $0.2, distance: 0.2, tier: .possible)
+    }
+    try SessionArchive.withSpeakerLock(at: session) {
+        try SessionSpeakerStore.writeRecognition(
+            RecognitionResult(runID: runID, embeddingModel: DiarizationEngineInfo.fake.embeddingModel,
+                              thresholds: SpeakerRecognizer.defaultThresholds, matches: matches),
+            session: session)
+    }
+}
+
+@Test(.timeLimit(.minutes(2)))
+func echoAnalyzeCarriesSuggestionsOnlyForPeopleTheStoreHolds() async throws {
+    let temp = try TemporaryDirectory("echo")
+    defer { temp.remove() }
+    let store = SpeakerProfileStore(directory: temp.url.appendingPathComponent("Support/Speakers", isDirectory: true))
+    // JIM was forgotten: the store holds MARIA only.
+    try store.update {
+        $0.rememberVoices = true
+        $0.profiles = [SpeakerProfile(id: "MARIA", displayName: "Maria")]
+    }
+    let (session, _, run) = try await labelledOldCall(in: temp.url.appendingPathComponent("a", isDirectory: true))
+    try writeSuggestions(runID: run.id, session: session)
+    let outcome = try await SessionEchoAnalyzeCommand.run(.init(session: session), profiles: store,
+                                                          freeSpace: FixedFreeSpace(.max))
+    let newRun = try #require(outcome.runID)
+    let carried = try #require(try SessionSpeakerStore.readRecognition(runID: newRun, session: session))
+    #expect(carried.runID == newRun)
+    #expect(carried.matches.map(\.profileID) == ["MARIA"])
+
+    // With Remember voices off, nothing is copied.
+    try store.update { $0.rememberVoices = false }
+    let (off, _, offRun) = try await labelledOldCall(in: temp.url.appendingPathComponent("b", isDirectory: true))
+    try writeSuggestions(runID: offRun.id, session: off)
+    let offOutcome = try await SessionEchoAnalyzeCommand.run(.init(session: off), profiles: store,
+                                                             freeSpace: FixedFreeSpace(.max))
+    #expect(try SessionSpeakerStore.readRecognition(runID: try #require(offOutcome.runID), session: off) == nil)
+}
+
+@Test(.timeLimit(.minutes(2)))
+func echoAnalyzeReplacesNothingWhenTheJournalChangesMeanwhile() async throws {
+    let temp = try TemporaryDirectory("echo")
+    defer { temp.remove() }
+    // A torn line, then a complete line this build cannot read (a newer schema), each written while it runs.
+    let lines = [Data("{\"schemaVersion\":1,\"id\":\"TORN".utf8),
+                 Data("{\"schemaVersion\":99,\"id\":\"NEWER\",\"baseRunID\":\"X\"}\n".utf8)]
+    for (index, line) in lines.enumerated() {
+        let (session, _, run) = try await labelledOldCall(in: temp.url.appendingPathComponent("\(index)",
+                                                                                             isDirectory: true))
+        try SessionFixtures.appendEdits([.rename(speakerID: "mic:S2", name: "Person A")], session: session)
+        let journalURL = SessionPaths.edits(session)
+        let before = try Data(contentsOf: journalURL)
+        await #expect(throws: HolosError.self) {
+            try await SessionEchoAnalyzeCommand.$beforePublish.withValue({
+                let handle = try FileHandle(forWritingTo: journalURL)
+                defer { try? handle.close() }
+                try handle.seekToEnd()
+                try handle.write(contentsOf: line)
+            }) {
+                _ = try await SessionEchoAnalyzeCommand.run(.init(session: session), freeSpace: FixedFreeSpace(.max))
+            }
+        }
+        #expect(try SessionSpeakerStore.readHead(session: session)?.runID == run.id)
+        #expect(try Data(contentsOf: journalURL) == before + line)
+    }
 }
 
 @Test func echoAnalyzeLeavesAnInPersonMeetingAlone() async throws {

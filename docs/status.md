@@ -201,7 +201,8 @@ thumbnail timeline, and a larger local-model benchmark are follow-ups.
   audio change nothing. The result is saved in the meeting's `echo/` folder, keyed to its
   audio, and reused by later relabels. On three real calls it removed about 91 % of the
   leftover "Unknown" microphone words and cut the microphone turns from about 600 to about
-  115 per meeting, losing under 2.5 % of the user's own words; it takes 2–3 s per hour of audio.
+  115 per meeting, losing under 2.5 % of the user's own words; it takes about 2 s per hour of audio
+  (about 5 s with preparing both tracks).
   Meetings labelled before it get it with `voiceislocal session echo-analyze <id>`, which
   keeps the speakers and their names and turn edits (no new diarization, no transcript
   change). Muting the echo in review playback and joining fragments into paragraphs are not
