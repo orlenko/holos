@@ -13,8 +13,11 @@ public struct CapturedAudio: Sendable {
     /// Buffers of this track were dropped just before this frame because the frame stream was full
     /// (`CaptureOverflow.dropAndCount`): audio is missing between the previous frame and this one.
     public let followsDrop: Bool
-    public init(track: String, frame: PCMFrame, followsDrop: Bool = false) {
+    /// A track-local restart; ordered with its first resumed frame, never applied to another track.
+    public let discontinuity: GapReason?
+    public init(track: String, frame: PCMFrame, followsDrop: Bool = false, discontinuity: GapReason? = nil) {
         self.track = track; self.frame = frame; self.followsDrop = followsDrop
+        self.discontinuity = discontinuity
     }
 }
 

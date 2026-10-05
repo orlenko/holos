@@ -39,6 +39,8 @@ public struct CaptureRequest: Sendable, Equatable {
     var hostTimeOrigin: Double { get }
     /// Buffers dropped because the frame stream was full; capture continues after a drop.
     var droppedBuffers: Int { get }
+    /// Tracks independently retrying while other tracks continue. Cleared only when that track delivers audio.
+    var unavailableTracks: Set<String> { get }
     func start(_ request: CaptureRequest) async throws
     func stop() async throws
 }
@@ -46,6 +48,7 @@ public struct CaptureRequest: Sendable, Equatable {
 extension MeetingCapture {
     /// A capture that never drops buffers.
     public var droppedBuffers: Int { 0 }
+    public var unavailableTracks: Set<String> { [] }
 }
 
 /// Wraps `AudioCapture`, passing the epoch's timeline offset and microphone selection through.

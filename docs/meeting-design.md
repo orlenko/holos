@@ -2533,11 +2533,25 @@ ScreenCaptureKit with `captureMicrophone = false`, warns `microphoneUnavailable`
 ("Microphone unavailable; recording call audio only"), and retries with the microphone
 on the next `retryNow` for a device-list change.
 
-**If S2 shows ScreenCaptureKit stops under screen lock**, the waiting phase already
-keeps the meeting alive and marks the gap. If that loses too much of the in-room
-microphone, a follow-up captures the call-mode microphone with its own AVAudioEngine
-`MeetingCapture` next to a system-only ScreenCaptureKit capture. No interface in this
-document changes for that.
+**Independent system-audio recovery (2026-10 revision).** Live mic+system meetings
+use `IndependentMeetingCapture`: an AVAudioEngine microphone and a separate,
+system-only ScreenCaptureKit stream. System failure (including unavailable/locked
+displays) never stops, restarts, or rebases the microphone. A failed initial system
+start also leaves microphone recording active. Only that stream retries with
+0.5–30 s backoff and bounded start/stop awaits. A hung native start is not multiplied:
+its late result is stopped before another attempt. Silence alone is not a failure.
+
+Both captures share the microphone's host origin, including retry setup time.
+The first accepted recovered system frame carries an ordered track-local
+`captureRestarted` boundary through format conversion, the chunk writer, and live
+speech; the mic gets no boundary. The bounded merged queue retains a boundary and
+drop mark when that frame is dropped. `unavailableTracks` supplies a visible
+`systemAudioUnavailable` warning and stalled system-track status until audio
+actually arrives. The recording phase stays active while the microphone runs.
+Pause, sleep, and stop release both captures; deliberate Stop Sharing retains the
+existing requested-stop behavior. Microphone failures retain recorder-wide
+recovery, and a system-only recording retains the existing waiting/backoff policy.
+Optional screen-image capture already fails independently of audio.
 
 ### 4.3 Capture → disk path
 
@@ -2580,6 +2594,11 @@ AudioCapture callback ─yield─▶ frames stream (4,096 buffers; overflow drop
   recording") is held from `starting` through post-processing, except while paused
   (`holdPowerAssertion(false)`), so a meeting left paused lets the Mac idle-sleep. Lid
   close and forced sleep still happen.
+- A separate recording-only `kIOPMAssertionTypePreventUserIdleDisplaySleep` assertion
+  prevents idle display sleep from disrupting ScreenCaptureKit. It is released before
+  pause/sleep/stop cleanup, is not held during post-processing, and is reacquired on
+  capture resume. [Apple documents](https://developer.apple.com/documentation/iokit/kiopmassertiontypepreventuseridledisplaysleep)
+  that lid close and machine sleep can still turn the display off.
 - `SystemPowerMonitor` (HolosAudio): `IORegisterForSystemPower` on a dispatch queue. It
   buffers events in a `Mutex` and the loop drains them with `pendingEvents()` every
   100 ms. `canSleep` is allowed immediately by the monitor. `willSleep` is queued for

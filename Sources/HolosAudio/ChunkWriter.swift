@@ -128,6 +128,10 @@ public actor AudioChunkWriter {
                 startsNewChunk = true
                 discontinuity = (state.expected, state.pendingReason ?? "timestampGap")
             }
+        } else if let reason = audio.discontinuity, frame.startTime > 0 {
+            // A source failed before ever delivering: its initial missing interval must also survive export.
+            startsNewChunk = true
+            discontinuity = (0, reason.rawValue)
         }
         if startsNewChunk {
             try await close(track: track)

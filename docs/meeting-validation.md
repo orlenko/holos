@@ -50,6 +50,21 @@ stopped at the prompt ends with "The recording was stopped before it started."
 
 Result: Pending.
 
+### H1b: Idle display sleep and independent system-audio recovery
+
+1. Record mic + system audio. Leave the Mac idle beyond its display-sleep interval:
+   while recording, the display should remain awake. Pause/stop: normal idle sleep
+   should be possible again; saving/post-processing must not keep the display awake.
+2. Deliberately lock/turn off the display, then return. If ScreenCaptureKit stops,
+   the recording shows a system-audio warning while microphone audio continues.
+   Once system audio returns, its warning clears and only its missing interval is marked.
+3. Check the saved microphone track and event journal for continuity across the
+   system outage. Optional screen capture failures must not interrupt audio.
+4. Deliberately close the lid or force system sleep: existing sleep/lid policy still
+   applies; this assertion must not prevent it. Repeat pause/resume and Stop Sharing.
+
+Result: Pending — automated fake-stream tests are not hardware acceptance evidence.
+
 ### H2: The app dies during a recording
 
 1. Start a recording from the menu and let it run for a minute.

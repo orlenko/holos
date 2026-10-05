@@ -85,6 +85,8 @@ public struct RecordingDependencies: Sendable {
     public var power: (any SystemPowerEvents)?
     /// Takes the idle-sleep assertion, named by its argument (§4.4). nil from it: no assertion is held.
     public var makePowerAssertion: @Sendable (String) -> PowerAssertion?
+    /// Recording-only display assertion; inert in tests unless explicitly injected.
+    public var makeDisplayAssertion: @Sendable (String) -> (any PowerAssertionHandle)? = { _ in nil }
     /// The built-in microphone and the system default input, looked up before every capture start (§4.12).
     public var findInputDevices: @Sendable () -> InputDevices
     /// Device-list changes and screen unlocks, after which a waiting recorder retries at once (§4.2); nil: none.
@@ -127,12 +129,20 @@ public struct RecordingDependencies: Sendable {
     /// `PowerAssertion`, `BuiltInMicrophone.devices`, and `AudioEnvironmentEvents`.
     public static func live(stop: any RecorderStopSource, reporter: any RecordingReporter,
                             postProcess: PostProcessHook?) -> RecordingDependencies {
-        RecordingDependencies(makeCapture: { LiveMeetingCapture() }, makeSpeech: appleSpeechFactory,
+        var dependencies = RecordingDependencies(makeCapture: { IndependentMeetingCapture() }, makeSpeech: appleSpeechFactory,
                               stop: stop, reporter: reporter, postProcess: postProcess,
                               makeClock: { ContinuousSessionClock(hostTimeOrigin: $0) }, freeSpace: VolumeFreeSpace(),
                               power: livePowerMonitor(), makePowerAssertion: livePowerAssertion,
                               findInputDevices: { BuiltInMicrophone.devices() },
                               environmentEvents: AudioEnvironmentEvents())
+        dependencies.makeDisplayAssertion = { reason in
+            do { return try PowerAssertion(reason: reason, kind: .display) }
+            catch {
+                log.error("No display-sleep assertion: \(error.localizedDescription, privacy: .public)")
+                return nil
+            }
+        }
+        return dependencies
     }
 
     /// The inert default of `findInputDevices`: a built-in microphone that is also the default input.
@@ -429,6 +439,8 @@ private final class Recorder {
     /// The idle-sleep assertion is wanted (from start to exit, except while paused, §4.4).
     var powerHeld = false
     var powerAssertion: PowerAssertion?
+    var displayAssertion: (any PowerAssertionHandle)?
+    var displayHeld = false
     /// willSleep tokens not yet acknowledged.
     var pendingSleepTokens: [Int] = []
     /// While a willSleep waits for the loop: when the sleep must be allowed (the capture-stop limit plus
@@ -504,7 +516,7 @@ private final class Recorder {
     func run() async throws -> RecordingOutcome {
         // The Mac does not idle-sleep from start to exit, except while paused (§4.4).
         holdPower(true)
-        defer { holdPower(false) }
+        defer { holdDisplay(false); holdPower(false) }
         // Sleep and wake during the start (a permission prompt, speech setup) are queued for the loop, which drains
         // them first; the monitor lets the Mac sleep at once meanwhile (§4.4). A failed start detaches here; a
         // finished loop has detached already.
@@ -513,6 +525,7 @@ private final class Recorder {
         defer { power?.detach() }
         await archive.setJournalSync(.interval(seconds: 1))
         try await start()
+        holdDisplay(true)
         Self.log.notice("Session \(self.archive.id, privacy: .public) started recording (\(self.options.source.rawValue, privacy: .public))")
         reporter.message("Recording \(archive.id): \(options.name)")
         reporter.message("Audio archive: \(archive.directory.path)")
@@ -632,6 +645,10 @@ private final class Recorder {
         consumer = Task.detached(priority: .userInitiated) {
             let format = RecordingFormatConverter()
             func deliver(_ audio: CapturedAudio) {
+                if let reason = audio.discontinuity {
+                    pump.noteGap(track: audio.track, reason: reason)
+                    feeds[audio.track]?.boundary()
+                }
                 if audio.followsDrop {
                     // The capture queue was full just before this frame: the gap is marked right here.
                     pump.noteGap(track: audio.track, reason: .overflow)
@@ -856,6 +873,7 @@ private final class Recorder {
     /// capture failure. Every wait also ends at `deadline`.
     @discardableResult
     private func stopCurrentCapture(deadline: ContinuousClock.Instant? = nil) async -> Error? {
+        holdDisplay(false)
         guard let capture, !captureStopped else { return nil }
         captureStopped = true
         let alreadyEnded = monitor.requestStop(epoch: captureEpoch)
@@ -1002,6 +1020,7 @@ private final class Recorder {
             "timelineOffset": String(offset),
         ])
         startConsumer(capture, epoch: epoch)
+        holdDisplay(true)
         if plan.microphoneName != self.plan.microphoneName {
             let name = plan.microphoneName
             await updateStatus { $0.microphoneName = name }
@@ -1012,6 +1031,18 @@ private final class Recorder {
     }
 
     // MARK: - Power
+
+    /// Display sleep prevention ends before sleep/pause/stop cleanup; forced sleep/lock/lid close remain possible.
+    private func holdDisplay(_ hold: Bool) {
+        guard hold != displayHeld else { return }
+        displayHeld = hold
+        if hold {
+            displayAssertion = dependencies.makeDisplayAssertion(Self.powerAssertionName)
+        } else {
+            displayAssertion?.release()
+            displayAssertion = nil
+        }
+    }
 
     /// Lets every pending sleep go ahead (IOAllowPowerChange).
     private func allowSleep() {
@@ -1132,6 +1163,18 @@ private final class Recorder {
 
     /// Rewrites the live fields of status.json (every tick, and when the phase changes).
     private func refreshStatus() async {
+        let systemUnavailable = capture?.unavailableTracks.contains("system") == true
+        let systemWarning = RecorderWarningCode("systemAudioUnavailable")
+        if systemUnavailable {
+            if !shownWarnings.contains(systemWarning) {
+                await recordEvent(MeetingEventKind.captureWaiting, ["track": "system", "at": String(clock.now())])
+                await warn(RecorderWarning(code: systemWarning,
+                    message: "System audio is unavailable; retrying. Microphone recording continues."))
+            }
+        } else if shownWarnings.remove(systemWarning) != nil {
+            await recordEvent(MeetingEventKind.captureRestarted, ["track": "system", "at": String(clock.now())])
+            await updateStatus { $0.warnings.removeAll { $0.code == systemWarning } }
+        }
         // Drops with no frame after them yet (so no `followsDrop` frame) still warn.
         let captureDrops = capture?.droppedBuffers ?? 0
         let newCaptureDrops = captureDrops > lastCaptureDrops
@@ -1159,7 +1202,8 @@ private final class Recorder {
             return TrackStatus(track: track, transcription: recordOnly ? .off : (live[track]?.transcription ?? .behind),
                                lastFrameSeconds: info?.lastFrameEnd,
                                lastFinalizedSeconds: live[track]?.lastFinalizedSeconds,
-                               sampleRate: info?.sampleRate, channels: info?.channels, stalled: stalled.contains(track),
+                               sampleRate: info?.sampleRate, channels: info?.channels,
+                               stalled: stalled.contains(track) || track == "system" && systemUnavailable,
                                backlogSeconds: backlog[track] ?? 0)
         }
         let latest = live.values.max { ($0.lastFinalizedSeconds ?? -1) < ($1.lastFinalizedSeconds ?? -1) }
@@ -1204,6 +1248,8 @@ private final class Recorder {
         holdPower(true)
         await setPhase(.stopping)
         answerRequestsWhileStopping()
+        let missingAtStop = captureStopped ? [] : capture?.unavailableTracks ?? []
+        let stopAt = clock.now()
         // 1. Stop capture, drain the consumer, let the pump drain into the writer, close every chunk. A failed stop is a
         // capture error (a timeout only records captureFailed); a CancellationError from it is a cancellation.
         if let failure = await stopCurrentCapture() { recordingError = recordingError ?? failure }
@@ -1212,6 +1258,17 @@ private final class Recorder {
             do { try await writerTask.value } catch { recordingError = recordingError ?? error }
         }
         do { try await writer.finish() } catch { recordingError = recordingError ?? error }
+        // No recovered frame will arrive to mark a still-missing source's tail.
+        let seenAtStop = monitor.trackInfo()
+        for track in missingAtStop {
+            let previousEnd = seenAtStop[track]?.lastFrameEnd ?? 0
+            if stopAt > previousEnd {
+                await recordEvent(MeetingEventKind.audioDiscontinuity, [
+                    "track": track, "previousEnd": String(previousEnd), "nextStart": String(stopAt),
+                    "reason": GapReason.audioUnavailable.rawValue,
+                ])
+            }
+        }
         if Task.isCancelled { cancelled = true }
         // Audio is durable: a second signal now ends processing at once.
         dependencies.stop.restoreDefaultHandlers()

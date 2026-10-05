@@ -31,6 +31,7 @@ public final class RecordingFormatConverter {
         var expectedInput: Double
         /// A frame marked `followsDrop` produced no output yet: the next output carries the mark.
         var pendingDrop = false
+        var pendingDiscontinuity: GapReason?
     }
 
     private var runs: [String: Run] = [:]
@@ -45,15 +46,18 @@ public final class RecordingFormatConverter {
         if frame.sampleRate == Self.sampleRate {
             runs[audio.track] = nil
             if frame.channels == 1 { return audio }
-            return CapturedAudio(track: audio.track, frame: mono, followsDrop: audio.followsDrop)
+            return CapturedAudio(track: audio.track, frame: mono, followsDrop: audio.followsDrop,
+                                 discontinuity: audio.discontinuity)
         }
         var run: Run
         if let existing = runs[audio.track], existing.sourceRate == frame.sampleRate, !audio.followsDrop,
+           audio.discontinuity == nil,
            abs(frame.startTime - existing.expectedInput) < FrameContinuity.tolerance {
             run = existing
         } else {
             run = try Self.makeRun(sourceRate: frame.sampleRate, start: frame.startTime)
             run.pendingDrop = audio.followsDrop
+            run.pendingDiscontinuity = audio.discontinuity
         }
         run.expectedInput = frame.startTime + frame.duration
         let output = try Self.resample(mono, with: run)
@@ -64,12 +68,14 @@ public final class RecordingFormatConverter {
             return nil
         }
         let followsDrop = run.pendingDrop
+        let discontinuity = run.pendingDiscontinuity
         run.pendingDrop = false
+        run.pendingDiscontinuity = nil
         runs[audio.track] = run
         return CapturedAudio(track: audio.track,
                              frame: try PCMFrame(samples: output, sampleRate: Self.sampleRate, channels: 1,
                                                  startTime: start),
-                             followsDrop: followsDrop)
+                             followsDrop: followsDrop, discontinuity: discontinuity)
     }
 
     /// What each track's resampler still holds (its filter's look-ahead, about 15 ms), as one last frame per track,
@@ -84,7 +90,7 @@ public final class RecordingFormatConverter {
             flushed.append(CapturedAudio(track: track,
                                          frame: try PCMFrame(samples: samples, sampleRate: Self.sampleRate,
                                                              channels: 1, startTime: start),
-                                         followsDrop: run.pendingDrop))
+                                         followsDrop: run.pendingDrop, discontinuity: run.pendingDiscontinuity))
         }
         return flushed
     }
