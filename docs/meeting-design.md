@@ -7737,7 +7737,8 @@ shown, Otter-style.
   the word's turn and segment (the
   banner says so), since v1 edits one segment of one turn at a time. Return saves, ⌥Return
   saves and adds the new text to the word list, Tab saves and edits the next word, ⇧Tab
-  the previous one, Esc cancels. Space still plays and pauses outside the field; the
+  the previous one, Esc cancels. Closing the window (or quitting) with the field open saves
+  what it holds, before the close learns from the edits. Space still plays and pauses outside the field; the
   timestamp buttons still play. Every word has a VoiceOver action "Edit “word”", which turns
   edit mode on and opens the field. An edited word is dotted-underlined like a fixed word
   ("You changed “heard”"), and its Revert ("Revert to “heard”") is another edit back to what
@@ -7839,7 +7840,9 @@ shown, Otter-style.
   - each is diffed as dictation's Learn does (`CorrectionList.learn`, the recognizer's words
     against the words' shown text, one shown word on each side as context so a lone
     dictionary word is learned only with its neighbour: "cloud now" and "cloud later" are two
-    phrases);
+    phrases). A neighbour is context only when it is shown in the edited word's own turn, as
+    an edit itself may take in: never the next speaker's word at a turn boundary, nor a word
+    hidden as echo; without such a neighbour the rule learns as it does without context;
   - the pairs go to `corrections.json`, the list Corrections (⌘2) shows
     (`CorrectionList.learnKeepingExisting`): a phrase the list lacks is added; one it has
     keeps its correction (an earlier or an external choice wins; within one close, the first

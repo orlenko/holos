@@ -472,6 +472,75 @@ func learningAgainAtTheNextCloseChangesNothingAndASecondOccurrenceIsAdded() asyn
 }
 
 @Test(.timeLimit(.minutes(1))) @MainActor
+func learningTakesContextOnlyFromTheEditedWordsOwnTurnAsShown() async throws {
+    let temp = try TemporaryDirectory("review")
+    defer { temp.remove() }
+    // One segment, two speakers: S1 says "say cloud", S2 "yes please"; then S1's "um cloud echo now", whose "echo"
+    // is hidden.
+    let segment = SessionFixtures.segment(["say", "cloud", "yes", "please"], track: "system", start: 0, wordSeconds: 1)
+    let other = SessionFixtures.segment(["um", "cloud", "echo", "now"], track: "system", start: 10, wordSeconds: 1)
+    let transcript = SessionFixtures.transcript([segment, other])
+    let session = try await SessionFixtures.makeSession(in: temp.url, source: .system, audioSeconds: ["system": 15],
+                                                        mode: .call, transcript: transcript)
+    let manifest = try SessionArchive.readManifest(at: session)
+    let speakers = ["system:S1", "system:S2"].enumerated().map {
+        SessionSpeaker(id: $1, ordinal: $0 + 1, provenance: .diarizer, clusterIDs: [$1])
+    }
+    func turn(_ id: String, _ speaker: String, _ spans: [WordSpan], _ start: Double, _ end: Double) -> SpeakerTurn {
+        SpeakerTurn(id: id, track: "system", start: start, end: end, speakerID: speaker, clusterID: speaker,
+                    spans: spans, overlap: false, otherClusters: [], assignmentScore: 1, timing: .measured)
+    }
+    var run = DiarizationRun(sessionID: manifest.id, transcriptID: transcript.id, engine: .fake,
+                             alignment: AlignmentInfo(version: 1, parameters: .v1),
+                             tracks: [TrackDiarization(track: "system", policy: .diarized, clusters: speakers.map {
+                                 ClusterSummary(clusterID: $0.id, track: "system", speechSeconds: 5)
+                             })],
+                             speakers: speakers,
+                             turns: [turn("T1", "system:S1", [WordSpan(segmentID: segment.id, first: 0, end: 2)], 0, 2),
+                                     turn("T2", "system:S2", [WordSpan(segmentID: segment.id, first: 2, end: 4)], 2, 4),
+                                     turn("T3", "system:S1", [WordSpan(segmentID: other.id, first: 0, end: 2),
+                                                              WordSpan(segmentID: other.id, first: 3, end: 4)],
+                                          10, 14)])
+    run.droppedWords = [DroppedWords(spans: [WordSpan(segmentID: other.id, first: 2, end: 3)], reason: "echo")]
+    try SessionArchive.withSpeakerLock(at: session) {
+        try SessionSpeakerStore.writeRun(run, session: session)
+        try SessionSpeakerStore.writeHead(SpeakerHead(runID: run.id), session: session)
+    }
+    let review = try await wordEditOpen(session)
+    let learner = WordEditLearner(contextual: true)
+    learner.attach(to: review)
+    try await review.editWords(wordEditRefs(review, "T1", [1]), to: "Claude")
+    try await review.editWords(wordEditRefs(review, "T3", [1]), to: "Klaud")
+    await review.close()
+    // Never "yes" (the next speaker's) nor "echo" (hidden): the word before, in the same turn.
+    #expect(learner.taughtBy == [ReviewWordEdit(heard: "cloud", meant: "Claude", before: "say"),
+                                 ReviewWordEdit(heard: "cloud", meant: "Klaud", before: "um")])
+    #expect(learner.list.entries == [Correction(heard: "say cloud", meant: "say Claude"),
+                                     Correction(heard: "um cloud", meant: "um Klaud")])
+}
+
+@Test(.timeLimit(.minutes(1))) @MainActor
+func whatTheOpenFieldHoldsAtCloseIsSavedAndLearned() async throws {
+    let temp = try TemporaryDirectory("review")
+    defer { temp.remove() }
+    let session = try await wordEditSession(in: temp, [
+        WordEditTurn(speaker: "system:S1", start: 0, words: ["ask", "more", "cloud", "now"]),
+    ])
+    let review = try await wordEditOpen(session)
+    let learner = WordEditLearner()
+    learner.attach(to: review)
+    // The field opened on "cloud"; an edit before it in the segment saved since, moving it.
+    let field = wordEditRefs(review, "T1", [2])
+    let seen = review.wordMoves.count
+    try await review.editWords(wordEditRefs(review, "T1", [1]), to: "a lot more")
+    // The window closes with "Claude" typed in the field.
+    await review.close(typed: (words: field, text: "Claude", seenMoves: seen))
+    #expect(try wordEditCurrent(session).segments[0].text == "ask a lot more Claude now")
+    #expect(learner.value("cloud") == "Claude", "Learned at this close, with the edits before it.")
+    #expect(learner.lessons == 1)
+}
+
+@Test(.timeLimit(.minutes(1))) @MainActor
 func anExistingCorrectionIsKeptAndAFailedWriteIsMadeAtTheNextClose() async throws {
     let temp = try TemporaryDirectory("review")
     defer { temp.remove() }

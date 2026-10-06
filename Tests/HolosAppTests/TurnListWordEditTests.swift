@@ -78,6 +78,27 @@ struct TurnListWordEditTests {
         #expect(!press(list, #selector(NSResponder.moveLeft(_:))))
     }
 
+    /// Closing the window ends no editing: the window takes what the open field holds, for the review's close to save.
+    @Test func closingTakesWhatTheOpenFieldHolds() {
+        let (list, saved) = editingList()
+        list.editingWords = true
+        #expect(list.takeOpenWordEdit() == nil, "No field open.")
+        list.table.handleWordClick(row: 0, word: 1, through: 1, extend: false)
+        #expect(list.takeOpenWordEdit() == nil, "Nothing typed.")
+        #expect(list.wordEdit == nil && list.editField.superview == nil)
+
+        list.table.handleWordClick(row: 0, word: 1, through: 1, extend: false)
+        list.editField.stringValue = "Beta"
+        let taken = list.takeOpenWordEdit()
+        #expect(taken?.words.map(\.ref) == [WordRef(segmentID: "T1", word: 1)] && taken?.text == "Beta")
+        #expect(taken?.movesSeen == 0)
+        #expect(list.wordEdit == nil && list.editField.superview == nil)
+        // The field closed without saving on its own: only the close saves it, once.
+        list.controlTextDidEndEditing(Notification(name: NSControl.textDidEndEditingNotification,
+                                                   object: list.editField))
+        #expect(saved().isEmpty)
+    }
+
     @Test func tabSavesAndEditsTheNextWordAcrossRowsAndShiftTabGoesBack() {
         let (list, saved) = editingList()
         list.editingWords = true

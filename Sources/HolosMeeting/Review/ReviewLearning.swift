@@ -9,9 +9,12 @@ import HolosSpeakers
 /// Pure.
 enum ReviewLearning {
     /// The `reviewEdit` fixes of `transcript` as edits: what the recognizer wrote, the words' shown text, and the shown
-    /// words around them. In transcript order (segments by start, then track; fixes by position). An edit back to what
-    /// the recognizer wrote (a Revert) is left out.
-    static func edits(in transcript: Transcript) -> [ReviewWordEdit] {
+    /// words around them as context. In transcript order (segments by start, then track; fixes by position). An edit
+    /// back to what the recognizer wrote (a Revert) is left out. `sameTurn(segmentID, word, neighbour)` says whether a
+    /// neighbouring word may be context: shown in the same turn as the edited word (not another speaker's, not hidden
+    /// as echo), as an edit itself may only take in such words. Without it, no neighbour is.
+    static func edits(in transcript: Transcript,
+                      sameTurn: (_ segmentID: String, _ word: Int, _ neighbour: Int) -> Bool) -> [ReviewWordEdit] {
         let ordered = transcript.segments.sorted { ($0.start, $0.track ?? "") < ($1.start, $1.track ?? "") }
         var edits: [ReviewWordEdit] = []
         for segment in ordered {
@@ -24,12 +27,11 @@ enum ReviewLearning {
                 let heard = TranscriptWordEdit.cleaned(fix.heard)
                 let shown = TranscriptWordEdit.cleaned(meant)
                 guard heard != shown else { continue }
-                edits.append(ReviewWordEdit(
-                    heard: heard, meant: shown,
-                    before: fix.first > 0 ? TranscriptWordEdit.shownText(of: segment, first: fix.first - 1,
-                                                                         end: fix.first) : nil,
-                    after: fix.end < words.count ? TranscriptWordEdit.shownText(of: segment, first: fix.end,
-                                                                                end: fix.end + 1) : nil))
+                let before = fix.first > 0 && sameTurn(segment.id, fix.first, fix.first - 1)
+                    ? TranscriptWordEdit.shownText(of: segment, first: fix.first - 1, end: fix.first) : nil
+                let after = fix.end < words.count && sameTurn(segment.id, fix.end - 1, fix.end)
+                    ? TranscriptWordEdit.shownText(of: segment, first: fix.end, end: fix.end + 1) : nil
+                edits.append(ReviewWordEdit(heard: heard, meant: shown, before: before, after: after))
             }
         }
         return edits

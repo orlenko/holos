@@ -165,6 +165,16 @@ extension TurnListView: NSTextFieldDelegate {
         }
     }
 
+    /// The window is closing (AppKit ends no editing then): closes the field and hands over what it holds to be saved
+    /// before the review closes; nil when nothing was typed.
+    func takeOpenWordEdit() -> (words: [ReviewWord], text: String, movesSeen: Int)? {
+        guard let target = wordEdit else { return nil }
+        let typed = editField.stringValue
+        closeEditField()
+        guard TranscriptWordEdit.cleaned(typed) != TranscriptWordEdit.cleaned(target.shown) else { return nil }
+        return (target.words, typed, target.movesSeen)
+    }
+
     /// Closes the field without saving.
     func cancelWordEdit() {
         guard wordEdit != nil else { return }

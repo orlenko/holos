@@ -711,6 +711,13 @@ public struct ReviewWord: Sendable, Equatable {
     /// edit of the segment was saved); they are moved through the rest first.
     @discardableResult
     public func editWords(_ words: [WordRef], to text: String, seenMoves: Int? = nil) async throws -> ReviewWordEdit? {
+        guard let op = try queuedWordEdit(words, to: text, seenMoves: seenMoves) else { return nil }
+        try await wait(for: op)
+        return op.wordEditResult
+    }
+
+    /// `editWords` up to its change being queued (no wait); nil when there is nothing to edit.
+    private func queuedWordEdit(_ words: [WordRef], to text: String, seenMoves: Int?) throws -> Operation? {
         try requireEditable()
         guard !snapshot.transcriptChanged else { throw Self.labelAgainFirst }
         var words = words
@@ -748,8 +755,7 @@ public struct ReviewWord: Sendable, Equatable {
         }
         let request = TranscriptWordEdit.Request(segmentID: first.segmentID, first: lowest, end: highest + 1,
                                                  text: text)
-        let op = try await enqueue(.editWords(request, segment: segment), optimistic: [])
-        return op.wordEditResult
+        return queued(.editWords(request, segment: segment), optimistic: [])
     }
 
     /// Moves every turn of `speakerID` to `target`; `speakerID` disappears. `target` keeps its name.
@@ -929,8 +935,19 @@ public struct ReviewWord: Sendable, Equatable {
     /// stays true and `exportProblem` says why, so the caller can tell the user and try again later.
     ///
     /// Waits for queued changes to be saved first; later edits are refused.
-    public func close() async {
+    ///
+    /// `typed`: what the window's open edit field holds (closing a window ends no editing): queued as `editWords`
+    /// before the review closes, so it is saved and learned like any edit, or refused (logged) as one would be.
+    public func close(typed: (words: [WordRef], text: String, seenMoves: Int)? = nil) async {
         guard !closed else { return }
+        var typedEdit: Operation?
+        if let typed {
+            do {
+                typedEdit = try queuedWordEdit(typed.words, to: typed.text, seenMoves: typed.seenMoves)
+            } catch {
+                Self.log.error("Session \(self.sessionID, privacy: .public): the edit open at close was not saved (\(ProcessSpawner.logCategory(error), privacy: .public))")
+            }
+        }
         closed = true
         exportTimer?.cancel()
         exportTimer = nil
@@ -949,6 +966,10 @@ public struct ReviewWord: Sendable, Equatable {
                     + "(what you typed: “\(TranscriptWordEdit.cleaned(request.text))”)."
             }
             op.finish(.failure(HolosError.unavailable(message)))
+        }
+        // Queued before the exports, it has run (or was held, above).
+        if case .failure(let error)? = typedEdit?.result {
+            Self.log.error("Session \(self.sessionID, privacy: .public): the edit open at close was not saved (\(ProcessSpawner.logCategory(error), privacy: .public))")
         }
         recomputeProjection()
         await learnFromEdits()
@@ -1070,6 +1091,8 @@ public struct ReviewWord: Sendable, Equatable {
         /// `wordMoves.count` when it was queued: a word edit follows its words through the moves saved since.
         var movesSeen = 0
         var continuation: CheckedContinuation<Void, any Error>?
+        /// How it finished, for a change nobody waits on yet (`queued`).
+        var result: Result<Void, any Error>?
 
         init(kind: Kind, basis: Int, runID: String?, optimistic: [SpeakerEditAction]) {
             self.kind = kind
@@ -1100,6 +1123,7 @@ public struct ReviewWord: Sendable, Equatable {
 
         func finish(_ result: Result<Void, any Error>) {
             finished = true
+            self.result = result
             continuation?.resume(with: result)
             continuation = nil
         }
@@ -1107,19 +1131,30 @@ public struct ReviewWord: Sendable, Equatable {
 
     @discardableResult
     private func enqueue(_ kind: Operation.Kind, optimistic: [SpeakerEditAction]) async throws -> Operation {
+        let op = queued(kind, optimistic: optimistic)
+        try await wait(for: op)
+        return op
+    }
+
+    /// Queues a change at once (it runs once the changes before it ran); `wait` for its outcome.
+    private func queued(_ kind: Operation.Kind, optimistic: [SpeakerEditAction]) -> Operation {
         let op = Operation(kind: kind, basis: savedVersion, runID: snapshot.run?.id, optimistic: optimistic)
         op.movesSeen = wordMoves.count
         // A newer change: voice samples wait for it (`holdSampleSync`); exports alone change no label.
         if case .exports = kind {} else { holdSampleSync() }
+        queue.append(op)
+        recomputeProjection()
+        updateActivity()
+        notify()
+        startDraining()
+        return op
+    }
+
+    private func wait(for op: Operation) async throws {
+        if let result = op.result { return try result.get() }
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, any Error>) in
             op.continuation = continuation
-            queue.append(op)
-            recomputeProjection()
-            updateActivity()
-            notify()
-            startDraining()
         }
-        return op
     }
 
     private func startDraining() {
@@ -1486,7 +1521,18 @@ public struct ReviewWord: Sendable, Equatable {
             Self.log.error("Session \(self.sessionID, privacy: .public): the transcript could not be read to learn from its edits")
             return
         }
-        let corrections = ReviewLearning.corrections(ReviewLearning.edits(in: current), teach: teach)
+        // Context only from the edited word's own turn as shown (never another speaker's word, nor hidden echo): the
+        // labels on this very transcript say which; without them, no context.
+        let turns = snapshot.transcript.id == current.id ? snapshot.projection?.turns ?? [] : []
+        let sameTurn = { (segmentID: String, word: Int, neighbour: Int) -> Bool in
+            turns.contains { turn in
+                [word, neighbour].allSatisfy { index in
+                    turn.spans.contains { $0.segmentID == segmentID && $0.first <= index && index < $0.end }
+                }
+            }
+        }
+        let corrections = ReviewLearning.corrections(ReviewLearning.edits(in: current, sameTurn: sameTurn),
+                                                     teach: teach)
         guard !corrections.isEmpty else { return }
         if learn(corrections) {
             Self.log.info("Session \(self.sessionID, privacy: .public): learned from \(corrections.count, privacy: .public) corrections of review edits")

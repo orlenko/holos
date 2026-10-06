@@ -1299,8 +1299,12 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate {
         player.invalidate()
         review.onChange = nil
         let review = self.review
+        // AppKit ends no editing when a window closes: an open edit field's text is saved (and learned) by the close.
+        let typed = turnList.takeOpenWordEdit().map { open in
+            (words: open.words.map(\.ref), text: open.text, seenMoves: open.movesSeen)
+        }
         closeTask = Task { [weak self] in
-            await review.close()
+            await review.close(typed: typed)
             guard let self else { return }
             let onClose = self.onClose
             self.onClose = nil
