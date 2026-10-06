@@ -158,7 +158,7 @@ final class TurnTableView: NSTableView {
               cell.bodyText.canRevertFix,
               let word = cell.bodyText.word(at: cell.bodyText.convert(point, from: self)),
               let fix = word.fix, word.revertible,
-              cell.bodyText.canRevert(fix) else { return super.menu(for: event) }
+              cell.bodyText.canRevert(fix, at: word.ref) else { return super.menu(for: event) }
         let menu = NSMenu()
         let item = NSMenuItem(title: "Revert to “\(fix.heard)”", action: #selector(revertFix(_:)), keyEquivalent: "")
         item.target = self
@@ -287,9 +287,13 @@ final class TurnTextView: NSTextView {
     /// `fix` can be reverted now: only while words can be edited (`canEditWord`: not after the transcript changed
     /// under the labels, nor while speaker changes cannot all be read), since a revert publishes new words under the
     /// labels as an edit does (an edit's Revert is another edit).
-    func canRevert(_ fix: TranscriptWordFix) -> Bool {
-        canEditWord?() ?? false
+    /// Nor when its segment refuses every edit and revert (`revertRefusal`: an older automatic fix that cannot be
+    /// counted, a damaged mark), where it would fail once asked.
+    func canRevert(_ fix: TranscriptWordFix, at word: WordRef) -> Bool {
+        (canEditWord?() ?? false) && revertRefusal?(word) == nil
     }
+    /// Why the fix on a word cannot be reverted (`ReviewSession.revertRefusal`); nil when it can.
+    var revertRefusal: ((WordRef) -> String?)?
 
     /// With `revertible` false (words edited together, now in two turns), it says how to change them instead.
     static func fixDescription(_ fix: TranscriptWordFix, revertible: Bool = true) -> String {
@@ -323,7 +327,7 @@ final class TurnTextView: NSTextView {
                 })
             }
             if canRevertFix, revertible, index < wordRefs.count, index < wordFixes.count, let fixed = wordFixes[index],
-               canRevert(fixed) {
+               canRevert(fixed, at: wordRefs[index]) {
                 let ref = wordRefs[index]
                 let key = "\(ref.segmentID)\u{1f}\(fixed.first)\u{1f}\(fixed.end)"
                 if offeredFixes.insert(key).inserted {
@@ -474,12 +478,15 @@ final class TurnListView: NSView, NSTableViewDataSource, NSTableViewDelegate {
     var editText: (([ReviewWord]) -> String?)?
     /// Why `words` cannot be edited, known before a field opens (`ReviewSession.wordEditRefusal`); nil when they can.
     var editRefusal: (([ReviewWord]) -> String?)?
-    /// The open field's edit when the review turned read-only while it was open (words, what was typed, the word moves
-    /// it follows): the window queues it, so it waits for the review rather than being lost.
+    /// Why the fix on a word cannot be reverted (`ReviewSession.revertRefusal`); nil when it can. The context menu
+    /// and VoiceOver offer Revert only then.
+    var revertRefusal: ((WordRef) -> String?)?
+    /// The open field's edit when it closes for any reason but Esc or a save (`keepWordEdit`: words, what was typed,
+    /// the word moves it follows): the window queues it, so it waits for the review rather than being lost.
     var onKeepWordEdit: (([ReviewWord], String, Int) -> Void)?
     /// Words can be edited now (`ReviewSession.canEditWords`); edit mode shows, but a click opens no field, otherwise.
     var canEditWords = true {
-        didSet { if !canEditWords { loseWordEdit() } }
+        didSet { if !canEditWords { keepWordEdit() } }
     }
 
     let table = TurnTableView()
@@ -718,6 +725,7 @@ final class TurnListView: NSView, NSTableViewDataSource, NSTableViewDelegate {
             cell.bodyText.onPlay = { [weak self] seconds in self?.onPlay?(seconds) }
             cell.bodyText.onRevertFix = { [weak self] word in self?.onRevertFix?(word) }
             cell.bodyText.canEditWord = { [weak self] in (self?.editable ?? false) && (self?.canEditWords ?? false) }
+            cell.bodyText.revertRefusal = { [weak self] word in self?.revertRefusal?(word) }
             cell.bodyText.onEditWord = { [weak self, weak cell] word in
                 guard let self, let cell, self.editable, self.canEditWords else { return false }
                 let row = self.table.row(for: cell)

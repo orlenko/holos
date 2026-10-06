@@ -401,6 +401,15 @@ public struct ReviewWord: Sendable, Equatable {
         return blockedByOlderFix(segment) ? TranscriptWordEdit.olderFix.localizedDescription : nil
     }
 
+    /// Why the fix on `word` cannot be reverted, known before Revert is offered (context menu, VoiceOver) and checked
+    /// again when it is asked for: its segment refuses every edit and revert (a damaged mark; an older automatic fix
+    /// that cannot be counted, `TranscriptWordEdit.olderFix`). Nil when it can be tried.
+    public func revertRefusal(_ word: WordRef) -> String? {
+        guard let segment = segments[word.segmentID] else { return nil }
+        if TranscriptWordEdit.hasDamagedMark(segment) { return TranscriptWordEdit.damagedMarks.localizedDescription }
+        return blockedByOlderFix(segment) ? TranscriptWordEdit.olderFix.localizedDescription : nil
+    }
+
     /// Words `indices` of `segment` with every fix mark they touch taken in, as an edit takes them
     /// (`TranscriptWordEdit.editing`: a mark is never split), so what is checked before an edit is what it changes.
     /// Only sound marks (`TranscriptWordEdit.isSound`) are taken in, so the range never runs past the segment's words
@@ -835,10 +844,8 @@ public struct ReviewWord: Sendable, Equatable {
     public func revertWordFix(_ word: WordRef) async throws {
         try requireEditable()
         if let blocked = wordEditingBlocked { throw HolosError.invalidInput(blocked) }
-        // Before any fix's words are walked.
-        if let segment = segments[word.segmentID], TranscriptWordEdit.hasDamagedMark(segment) {
-            throw TranscriptWordEdit.damagedMarks
-        }
+        // Before any fix's words are walked, and before anything is queued.
+        if let refusal = revertRefusal(word) { throw HolosError.invalidInput(refusal) }
         // An edit made here goes back to what the recognizer wrote by another edit, undone like any other.
         if let segment = segments[word.segmentID], let edit = (segment.fixes ?? []).first(where: {
             $0.kind == .reviewEdit && $0.first <= word.word && word.word < $0.end

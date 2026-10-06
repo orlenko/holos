@@ -468,6 +468,7 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, Clo
         }
         turnList.editText = { [review] words in review.shownText(of: words.map(\.ref)) }
         turnList.editRefusal = { [review] words in review.wordEditRefusal(words.map(\.ref)) }
+        turnList.revertRefusal = { [review] word in review.revertRefusal(word) }
         turnList.onUserScroll = { [weak self] in
             self?.follow.userScrolled(at: ProcessInfo.processInfo.systemUptime)
         }

@@ -86,6 +86,17 @@ private func isWord(_ word: String) -> Bool { dictionary.contains(word.lowercase
     #expect(WordList.typedTerm("“…”") == nil)
 }
 
+@Test func theHeardSideIsCleanedAsTheTermIs() {
+    // A case-only change: no alias, never the broader "c" for "C#".
+    #expect(TranscriptEditLearning.heardAs(heard: "c#", term: "C#") == nil)
+    #expect(TranscriptEditLearning.heardAs(heard: "c++", term: "C++") == nil)
+    #expect(TranscriptEditLearning.heardAs(heard: ".net", term: ".NET") == nil)
+    #expect(TranscriptEditLearning.heardAs(heard: "github,", term: "GitHub") == nil)
+    // A real alias keeps its own punctuation and loses the sentence's.
+    #expect(TranscriptEditLearning.heardAs(heard: "see sharp,", term: "C#") == "see sharp")
+    #expect(TranscriptEditLearning.heardAs(heard: "c,", term: "C#") == "c")
+}
+
 @Test func aNameOrTermIsOfferedForTheWordList() {
     // Not a dictionary word.
     #expect(TranscriptEditLearning.term(heard: "cloud", meant: "Claude", isDictionaryWord: isWord) == "Claude")

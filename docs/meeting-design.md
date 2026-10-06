@@ -7757,7 +7757,13 @@ shown, Otter-style.
   is queued (`editWords(whileUnread:)`) and waits for the reread as the changes before it do;
   it is checked against the words shown when it was asked for (the transcript read before the
   unreread change), following that change's word move. When it is refused, the field opens
-  again with what was typed, or the banner says it. Space still plays and pauses outside the field; the
+  again with what was typed, or the banner says it. The rule is general: only Esc drops what
+  was typed. However else the field closes (edit mode turned off, a search filtering its row
+  away, its words moved or gone, the review turned read-only), its text is queued as an edit
+  (`TurnListView.keepWordEdit`), and the review's queue keeps it, saves it, or refuses it
+  saying what was typed. An automatic fix's Revert is offered (context menu, VoiceOver) only
+  where its segment allows it (`ReviewSession.revertRefusal`: no damaged mark, no older fix
+  that cannot be counted), and refused before it is queued otherwise. Space still plays and pauses outside the field; the
   timestamp buttons still play. Every word has a VoiceOver action "Edit “word”", which turns
   edit mode on and opens the field; it is offered only while words can be edited (not after
   the transcript changed under the labels), and reports failure when no field opened. An edited word is dotted-underlined like a fixed word
@@ -7837,7 +7843,11 @@ shown, Otter-style.
   (for an automatic fix or a live correction, the words it touched: "你好世界" over two timed
   words, "type c" in "“type c”" over two, "hello — there" over two; a live correction across
   language pieces adds those of a deleted piece it carries), the one source of truth. An older fix without it is counted by the whitespace-separated
-  tokens of its `heard`, as before. *Limit:* an older automatic fix over text without spaces
+  tokens of its `heard`, as before. The count is read only through
+  `TranscriptWordFix.heardWordCount(within:)`, nil when it cannot be right (not positive, more
+  words than `heard` has characters, more than the words left where it stands; compared
+  without adding, so a damaged `Int.max` never overflows); a fix whose recorded count is not
+  right is not sound (`isSound`), like a mark past its segment's words. *Limit:* an older automatic fix over text without spaces
   between its words (Chinese, Japanese) is then counted wrong, and an edit in its segment is
   refused with "This segment has a word fix made by an earlier version of Voice is Local,
   which edits cannot work around yet" (`TranscriptWordEdit.olderFix`); its Revert fails as it
@@ -7995,7 +8005,9 @@ shown, Otter-style.
     without asking. Both keep the punctuation that belongs to the term and drop the
     sentence's (`WordList.typedTerm`): "C#", "C++", ".NET", "Node.js" stay; "GitHub," and
     "Claude." lose the comma and period (a final period only when the rest of the word is
-    plain, so "e.g." keeps it). The term is what was typed, never words the edit took in around it
+    plain, so "e.g." keeps it). What was heard is cleaned the same way before it is compared
+    with the term, so a case-only change ("c#" → "C#") gives no "often heard as", never the
+    broader "c". The term is what was typed, never words the edit took in around it
     ("Yorkshire", not "New Yorkshire", when only "York" of an automatic "New York" was
     edited), and "often heard as" is given only when the recognizer's text for exactly those
     words is known. "Often heard as" is the recognizer's text unless it is the term itself in
@@ -8096,7 +8108,7 @@ whose review is open or still opening):
 | `TranscriptWordEditTests` | hand-built transcripts | one word, more and fewer words, deletion into a neighbour, a fixed transcript's base edited too (word fixes made again give the same words), a fix taken whole, untimed words, refusals, exact restore, shown words to stored indices with hidden echo, an edited word never hidden as echo |
 | `TranscriptEditLearningTests` (HolosCoreTests) | heard/meant pairs | corrections learned with a neighbour; deletions, punctuation, and case changes skipped unless a proper noun; terms offered; often-heard-as |
 | `ReviewWordEditTests` | fixture sessions | edit, learn, speaker edits before and after, undo in order and exactly; edit and deletion inside a paragraph; refusals across turns, segments, hidden words; word fixes made again keep an edit |
-| `TurnListWordEditTests` (HolosAppTests) | the list laid out offscreen | word clicks play or edit by mode; Return, ⌥Return, Esc, Tab, ⇧Tab; selection kept in one turn; mode off closes unsaved; VoiceOver "Edit"; the field follows its words |
+| `TurnListWordEditTests` (HolosAppTests) | the list laid out offscreen | word clicks play or edit by mode; Return, ⌥Return, Esc, Tab, ⇧Tab; selection kept in one turn; only Esc drops what was typed (mode off, a search filtering the row away, words gone, read-only: queued as an edit); VoiceOver "Edit"; Revert offered per segment (`revertRefusal`); the field follows its words |
 
 **Manual.** H14 and H20 in §7.
 

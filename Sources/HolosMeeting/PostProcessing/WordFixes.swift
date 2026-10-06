@@ -11,7 +11,21 @@ extension TranscriptWordFix {
     /// How many recognizer words `heard` stands for: `heardWords`, recorded on every fix written from this version on;
     /// for an older fix without it, `heard`'s whitespace-separated tokens (wrong for text without spaces between its
     /// words, "你好世界" over two timed words: such a fix cannot be edited around, `TranscriptWordEdit.olderFix`).
-    var heardWordCount: Int { heardWords ?? WordFixes.tokens(of: Array(heard.utf16)).count }
+    ///
+    /// The one way it is read: nil when it cannot be right (not positive; more words than `heard` has characters, as
+    /// each recognizer word gives it at least one; more than `available`, the recognizer words left where it stands),
+    /// so no arithmetic is ever made on a damaged count. A fix whose recorded count is not right is not sound
+    /// (`TranscriptWordEdit.isSound`).
+    func heardWordCount(within available: Int = .max) -> Int? {
+        let count: Int
+        if let heardWords {
+            guard heardWords <= heard.utf16.count else { return nil }
+            count = heardWords
+        } else {
+            count = WordFixes.tokens(of: Array(heard.utf16)).count
+        }
+        return count > 0 && count <= available ? count : nil
+    }
 }
 
 public enum WordFixes {
@@ -347,10 +361,12 @@ public enum WordFixes {
             // `segment` is the revision named by `fixedFrom`. It already contains live corrections and Review edits,
             // so such a mark occupies its current word span there; automatic fixes still occupy the recognizer words
             // in `heard`.
-            let count = fix.kind == .reviewRevert || fix.kind == .liveCorrection || fix.kind == .reviewEdit
+            // At most the original words left (`original` <= their count here), compared without adding.
+            let left = originalWords.count - original
+            let counted = fix.kind == .reviewRevert || fix.kind == .liveCorrection || fix.kind == .reviewEdit
                 ? fix.end - fix.first
-                : fix.heardWordCount
-            guard count > 0, original + count <= originalWords.count else { return [] }
+                : fix.heardWordCount(within: left)
+            guard let count = counted, count > 0, count <= left else { return [] }
             result[index] = original..<(original + count)
             current = fix.end
             original += count

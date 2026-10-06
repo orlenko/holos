@@ -674,7 +674,8 @@ enum WordFixStage {
             let originalCount: Int
             switch fix.kind {
             case .correction, .term, .liveCorrection, .reviewEdit:
-                originalCount = fix.heardWordCount
+                // A damaged count is refused below (nil), never multiplied.
+                originalCount = fix.heardWordCount() ?? 0
             case .reviewRevert:
                 originalCount = replacementCount
             default:

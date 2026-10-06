@@ -1352,6 +1352,13 @@ func anEditBesideAnOlderUnspacedFixIsRefusedSayingWhy() async throws {
         try await review.editWords(wordEditRefs(review, "T1", [1]), to: "拜拜")
     }
     #expect(refusal?.localizedDescription == TranscriptWordEdit.olderFix.localizedDescription)
+    // Its automatic fix's Revert is not offered either (it would fail once asked), and is refused if asked.
+    let fixedWord = wordEditRefs(review, "T1", [0])[0]
+    #expect(review.words(of: "T1")[0].fix?.kind == .correction)
+    #expect(review.revertRefusal(fixedWord) == TranscriptWordEdit.olderFix.localizedDescription)
+    let revert = await #expect(throws: HolosError.self) { try await review.revertWordFix(fixedWord) }
+    #expect(revert?.localizedDescription == TranscriptWordEdit.olderFix.localizedDescription)
+    #expect(review.queuedOperations == 0, "Refused before it was queued.")
     #expect(try wordEditCurrent(session).id == fixed.id, "Nothing was written.")
     #expect(review.reloadProblem == nil && review.canEditWords, "The review goes on.")
     await review.close()

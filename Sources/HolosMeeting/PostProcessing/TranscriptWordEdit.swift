@@ -176,13 +176,18 @@ public enum TranscriptWordEdit {
         }
         let baseWords = baseSegment.map(WordTiming.effectiveWords(of:))
         let bounds = baseWords.flatMap { baseBounds(fixes: fixes, current: words, base: $0) }
-        func automatic(_ fix: TranscriptWordFix) -> (text: String, words: Int) {
+        /// A fix's `heard` with its recognizer words (`heardWordCount`; a damaged count is refused, never added up).
+        func recorded(_ fix: TranscriptWordFix) throws -> (text: String, words: Int) {
+            guard let count = fix.heardWordCount() else { throw damagedMarks }
+            return (fix.heard, count)
+        }
+        func automatic(_ fix: TranscriptWordFix) throws -> (text: String, words: Int) {
             guard let baseSegment, let baseWords, let bounds, bounds[fix.first] >= 0, bounds[fix.end] >= 0 else {
-                return (fix.heard, fix.heardWordCount)
+                return try recorded(fix)
             }
             let range = extent(of: bounds[fix.first]..<bounds[fix.end], words: baseWords,
                                utf16: Array(baseSegment.text.utf16))
-            guard !range.isEmpty else { return (fix.heard, fix.heardWordCount) }
+            guard !range.isEmpty else { return try recorded(fix) }
             return (String(decoding: Array(baseSegment.text.utf16)[range], as: UTF16.self),
                     bounds[fix.end] - bounds[fix.first])
         }
@@ -197,8 +202,8 @@ public enum TranscriptWordEdit {
                 piece = fix.first..<fix.end
                 switch fix.kind {
                 case .reviewRevert: recognized = (string(characters(words, piece)), piece.count)
-                case .correction, .term: recognized = automatic(fix)
-                default: recognized = (fix.heard, fix.heardWordCount)
+                case .correction, .term: recognized = try automatic(fix)
+                default: recognized = try recorded(fix)
                 }
             } else {
                 piece = word..<(touched.map(\.first).filter { $0 > word }.min() ?? upper)
@@ -312,8 +317,10 @@ public enum TranscriptWordEdit {
 
     /// Whether `fix` covers words a segment of `wordCount` effective words has (0 ≤ first < end ≤ wordCount). The one
     /// check every walk over a fix's words makes first: a damaged but decodable transcript can hold any numbers.
+    /// A recorded `heardWords` must be right too (`heardWordCount`): one that is not is damaged the same way.
     public static func isSound(_ fix: TranscriptWordFix, wordCount: Int) -> Bool {
         fix.first >= 0 && fix.first < fix.end && fix.end <= wordCount
+            && (fix.heardWords == nil || fix.heardWordCount() != nil)
     }
 
     /// Whether `segment` has a fix mark that is not sound (`isSound`): none of its words is edited, and none of its fixes
@@ -430,13 +437,17 @@ public enum TranscriptWordEdit {
                 return nil
             }
             bounds[fix.first] = baseWord
+            // At most the base words left (`baseWord` <= `base.count` here), compared without adding.
+            let left = base.count - baseWord
             let count: Int
             switch fix.kind {
-            case .correction, .term: count = fix.heardWordCount
+            case .correction, .term:
+                guard let heard = fix.heardWordCount(within: left) else { return nil }
+                count = heard
             case .reviewRevert, .liveCorrection, .reviewEdit: count = fix.end - fix.first
             default: return nil
             }
-            guard count > 0, baseWord + count <= base.count else { return nil }
+            guard count > 0, count <= left else { return nil }
             baseWord += count
             word = fix.end
         }

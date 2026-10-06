@@ -57,7 +57,6 @@ extension TurnListView: NSTextFieldDelegate {
 
     static let selectionStopped = "A selection stays within one segment of one speaker turn for now, so it stops "
         + "there. Edit the rest on its own."
-    static let wordsChanged = "The words being edited changed meanwhile; click them again."
     static let editedAcrossTurns = "These words were edited together and are now in two speaker turns, so they can be "
         + "neither edited nor reverted here; the other words of each turn can."
 
@@ -229,13 +228,14 @@ extension TurnListView: NSTextFieldDelegate {
 
     /// After the rows were updated: the open field follows its words through the review's word moves (an edit saved
     /// earlier in the segment, say the one Tab left, moves their stored indices; a deletion merged into one of them
-    /// changes its time), and must still read the same. A word an edit replaced, and words that cannot be found,
-    /// close the field, and what was typed in it is shown in the banner rather than lost.
+    /// changes its time), and must still read the same. A word an edit replaced, and words that cannot be found (a
+    /// search filtered their row away), close the field, and what was typed in it is queued as an edit
+    /// (`keepWordEdit`), never lost.
     func followWordEdit() {
         guard let target = wordEdit else { return }
         guard editingWords, editable, canEditWords,
               let row = paragraphs.firstIndex(where: { $0.id == target.paragraphID }) else {
-            loseWordEdit()
+            keepWordEdit()
             return
         }
         let all = paragraphWords(paragraphs[row]).words
@@ -247,7 +247,7 @@ extension TurnListView: NSTextFieldDelegate {
               start + refs.count <= all.count,
               zip(refs, all[start...]).allSatisfy({ $0 == $1.ref }),
               zip(target.wordTexts, all[start...]).allSatisfy({ $0 == shownText(of: $1) }) else {
-            loseWordEdit()
+            keepWordEdit()
             return
         }
         let range = start...(start + refs.count - 1)
@@ -260,20 +260,17 @@ extension TurnListView: NSTextFieldDelegate {
         positionEditField(row: row, range: range)
     }
 
-    /// The open field's words are gone: it closes, keeping what was typed in the banner when it was changed.
-    func loseWordEdit() {
-        guard let target = wordEdit else { return }
-        // The review turned read-only (words cannot be edited now): what was typed is handed over to be queued
-        // (`onKeepWordEdit`: it waits for the review, as changes queued before it do), never only shown.
-        if !editable || !canEditWords, let keep = onKeepWordEdit {
-            if let open = takeOpenWordEdit() { keep(open.words, open.text, open.movesSeen) }
-            return
+    /// The open field closes for any reason but Esc (its row filtered away by a search, its words moved or gone, edit
+    /// mode turned off, the review turned read-only): what was typed is never dropped. It is queued as an edit
+    /// (`onKeepWordEdit`, else `onEditWords`): the review's queue waits for a hold, follows the words through the
+    /// moves since, and a refusal opens the field again with what was typed, or shows it in the banner.
+    func keepWordEdit() {
+        guard wordEdit != nil, let open = takeOpenWordEdit() else { return }
+        if let keep = onKeepWordEdit {
+            keep(open.words, open.text, open.movesSeen)
+        } else {
+            onEditWords?(open.words, open.text, false, open.movesSeen)
         }
-        let typed = editField.stringValue
-        cancelWordEdit()
-        let changed = TranscriptWordEdit.cleaned(typed) != TranscriptWordEdit.cleaned(target.shown)
-        onEditMessage?(changed ? Self.wordsChanged + " What you typed: “\(TranscriptWordEdit.cleaned(typed))”."
-                               : Self.wordsChanged)
     }
 
     /// Puts the open field back over its words after the rows' widths or heights changed.
@@ -324,7 +321,8 @@ extension TurnListView: NSTextFieldDelegate {
             (table.view(atColumn: 0, row: row, makeIfNecessary: false) as? TurnCellView)?.bodyText.editingWords
                 = editingWords
         }
-        if !editingWords { cancelWordEdit() }
+        // Edit mode turned off with the field open: what was typed is saved (only Esc drops it).
+        if !editingWords { keepWordEdit() }
         table.needsDisplay = true
     }
 

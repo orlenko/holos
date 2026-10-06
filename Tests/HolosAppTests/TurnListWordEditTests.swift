@@ -161,6 +161,16 @@ struct TurnListWordEditTests {
                 #expect(term?.term == expected, "\(typed), add: \(add)")
             }
         }
+        // A case-only change gives no "often heard as": the heard words are cleaned as the term is, so "c#" is never
+        // the broader "c".
+        for (heard, typed, expected) in [("c#", "C#", "C#"), ("c++", "C++", "C++"), (".net", ".NET", ".NET"),
+                                         ("github,", "GitHub", "GitHub")] {
+            let edit = ReviewWordEdit(heard: heard, meant: typed, typed: typed, typedHeard: heard)
+            for add in [true, false] {
+                let term = ReviewWindow.wordListTerm(after: edit, add: add, isDictionaryWord: { _ in false })
+                #expect(term?.term == expected && term?.heardAs == nil, "\(heard) → \(typed), add: \(add)")
+            }
+        }
     }
 
     @Test func tabSavesAndEditsTheNextWordAcrossRowsAndShiftTabGoesBack() {
@@ -200,14 +210,27 @@ struct TurnListWordEditTests {
         #expect(messages.last == .some(nil))
     }
 
-    @Test func turningEditModeOffClosesTheFieldUnsaved() {
+    /// Only Esc drops what was typed: turning edit mode off saves it.
+    @Test func turningEditModeOffSavesTheFieldAndEscDropsIt() {
         let (list, saved) = editingList()
         list.editingWords = true
         list.table.handleWordClick(row: 0, word: 1, through: 1, extend: false)
         list.editField.stringValue = "changed"
         list.editingWords = false
-        #expect(list.wordEdit == nil && list.editField.superview == nil && saved().isEmpty)
+        #expect(list.wordEdit == nil && list.editField.superview == nil)
+        #expect(saved().map(\.text) == ["changed"] && saved().map(\.words) == [["beta"]])
         #expect(list.table.usesAlternatingRowBackgroundColors)
+        // Nothing typed: nothing saved.
+        list.editingWords = true
+        list.table.handleWordClick(row: 0, word: 1, through: 1, extend: false)
+        list.editingWords = false
+        #expect(saved().count == 1)
+        // Esc.
+        list.editingWords = true
+        list.table.handleWordClick(row: 0, word: 1, through: 1, extend: false)
+        list.editField.stringValue = "dropped"
+        press(list, #selector(NSResponder.cancelOperation(_:)))
+        #expect(list.wordEdit == nil && saved().count == 1)
     }
 
     @Test func voiceOverEditsAWordAndTurnsEditModeOn() throws {
@@ -239,8 +262,28 @@ struct TurnListWordEditTests {
     }
 
     /// The list shown with `words` and the review's word `moves`.
-    private func update(_ list: TurnListView, words: [String: [ReviewWord]], moves: [ReviewWordMove]) {
-        list.update(paragraphs: ReviewParagraphs.group(TurnListViewTests.turns),
+    /// A search for "alpha": Tab saved its edit ("Alfa") and opened the next field; the saved edit leaves the row with
+    /// no match, so the search filters it away. What was typed in the next field is still saved.
+    @Test func aFieldWhoseRowASearchFiltersAwayIsStillSaved() {
+        let (list, saved) = editingList()
+        list.editingWords = true
+        list.table.handleWordClick(row: 0, word: 0, through: 0, extend: false)
+        list.editField.stringValue = "Alfa"
+        press(list, #selector(NSResponder.insertTab(_:)))
+        #expect(list.wordEdit?.words.map(\.text) == ["beta"])
+        list.editField.stringValue = "Beta"
+        var words = TurnListViewTests.words
+        words["T1"] = [TurnListViewTests.word("T1", 0, "Alfa", 0), TurnListViewTests.word("T1", 1, "beta", 1)]
+        let unmatched = ReviewParagraphs.group(TurnListViewTests.turns).filter { !$0.turnIDs.contains("T1") }
+        update(list, words: words, moves: [ReviewWordMove(segmentID: "T1", replaced: 0..<1, replacement: 0..<1)],
+               paragraphs: unmatched)
+        #expect(list.wordEdit == nil)
+        #expect(saved().map(\.text) == ["Alfa", "Beta"] && saved().map(\.words) == [["alpha"], ["beta"]])
+    }
+
+    private func update(_ list: TurnListView, words: [String: [ReviewWord]], moves: [ReviewWordMove],
+                        paragraphs: [ReviewParagraph]? = nil) {
+        list.update(paragraphs: paragraphs ?? ReviewParagraphs.group(TurnListViewTests.turns),
                     speakers: [TurnListViewTests.speaker("S1", 1), TurnListViewTests.speaker("S2", 2)], people: [],
                     editable: true, text: { (words[$0.id] ?? []).map(\.text).joined(separator: " ") },
                     words: { words[$0.id] ?? [] }, resolve: { $0 }, wordMoves: moves)
@@ -304,9 +347,17 @@ struct TurnListWordEditTests {
         let text = try TurnListViewTests.cell(list, row: 0).bodyText
         func names() -> [String] { (text.accessibilityCustomActions() ?? []).map(\.name) }
         #expect(names().contains("Revert to “bet”") && names().contains("Revert to “delt”"))
+        let beta = WordRef(segmentID: "T1", word: 1), delta = WordRef(segmentID: "T2", word: 1)
+        // A segment refusing every revert (an older automatic fix that cannot be counted): its Revert is not offered,
+        // the other segment's is.
+        list.revertRefusal = { $0.segmentID == "T2" ? TranscriptWordEdit.olderFix.localizedDescription : nil }
+        #expect(names().contains("Revert to “bet”") && !names().contains("Revert to “delt”"))
+        #expect(text.canRevert(edited, at: beta) && !text.canRevert(fixed, at: delta), "The context menu too.")
+        list.revertRefusal = nil
         list.canEditWords = false
         #expect(!names().contains("Revert to “bet”") && !names().contains("Revert to “delt”"))
-        #expect(!text.canRevert(edited) && !text.canRevert(fixed), "The context menu follows the same rule.")
+        #expect(!text.canRevert(edited, at: beta) && !text.canRevert(fixed, at: delta),
+                "The context menu follows the same rule.")
     }
 
     @Test func theFieldFollowsItsWordsWhenAnEditEarlierInTheSegmentSaves() throws {
@@ -325,13 +376,14 @@ struct TurnListWordEditTests {
         #expect(list.wordEdit?.words.first?.ref == WordRef(segmentID: "T1", word: 2))
         #expect(try TurnListViewTests.cell(list, row: 0).bodyText.string == "al pha beta gamma delta",
                 "A changed text is shown even when its turns did not change.")
-        // The words gone (changed elsewhere, with no move): the field closes, and what was typed is shown.
+        // The words gone (changed elsewhere, with no move): the field closes, and what was typed is queued as an edit
+        // (the review refuses it, saying what was typed, when its words are not there).
         list.editField.stringValue = "Beta"
         words["T1"] = [TurnListViewTests.word("T1", 0, "alpha", 0)]
         moves = []
         update(list, words: words, moves: moves)
-        #expect(list.wordEdit == nil && saved().isEmpty)
-        #expect(messages.last == TurnListView.wordsChanged + " What you typed: “Beta”.")
+        #expect(list.wordEdit == nil)
+        #expect(saved().map(\.text) == ["Beta"] && saved().map(\.words) == [["beta"]])
     }
 
     @Test func tabAfterADeletionKeepsTheNextFieldOpenOnTheMergedWord() {
@@ -368,8 +420,9 @@ struct TurnListWordEditTests {
         var words = TurnListViewTests.words
         words["T1"] = ["alpha", "beta", "gamma"].enumerated().map { TurnListViewTests.word("T1", $0, $1, Double($0)) }
         update(list, words: words, moves: [ReviewWordMove(segmentID: "T1", replaced: 0..<2, replacement: 0..<3)])
-        #expect(list.wordEdit == nil && saved().isEmpty)
-        #expect(messages.last == TurnListView.wordsChanged + " What you typed: “Beta.”.")
+        // Queued as an edit of the words as they were (the review's queue refuses it, saying what was typed).
+        #expect(list.wordEdit == nil && saved().map(\.text) == ["Beta."])
+        #expect(messages.allSatisfy { $0 == nil })
     }
 
     @Test func theFieldFollowsItsWordsWhenTheTextRewraps() throws {
@@ -450,12 +503,10 @@ struct TurnListWordEditTests {
         list.editingWords = true
         list.table.handleWordClick(row: 0, word: 1, through: 1, extend: false)
         list.editField.stringValue = "Beta"
-        // The transcript changed after labelling: the open field closes keeping what was typed, and none opens.
-        var messages: [String?] = []
-        list.onEditMessage = { messages.append($0) }
+        // The transcript changed after labelling: the open field closes, what was typed is queued (the review refuses
+        // it, saying what was typed), and none opens.
         list.canEditWords = false
-        #expect(list.wordEdit == nil && saved().isEmpty)
-        #expect(messages.last == TurnListView.wordsChanged + " What you typed: “Beta”.")
+        #expect(list.wordEdit == nil && saved().map(\.text) == ["Beta"])
         list.table.handleWordClick(row: 0, word: 0, through: 0, extend: false)
         #expect(list.wordEdit == nil && played.isEmpty)
     }

@@ -544,6 +544,29 @@ private let editEchoMask: AcousticEchoMask = {
     #expect(turn.spans.flatMap { Array($0.first..<$0.end) } == [0, 1, 2, 4, 5, 6, 7, 8, 9])
 }
 
+@Test func aDamagedHeardWordCountIsNeverAddedUp() throws {
+    // A valid-looking fix whose recorded count of recognizer words cannot be right.
+    for heardWords in [Int.max, 0, -1, 6] {
+        let damaged = TranscriptWordFix(first: 1, end: 2, heard: "cloud", kind: .correction, heardWords: heardWords)
+        #expect(damaged.heardWordCount() == nil, "\(heardWords)")
+        var segment = editSegment(["ask", "Claude", "now"])
+        segment.fixes = [damaged]
+        #expect(!TranscriptWordEdit.isSound(damaged, wordCount: 3) && TranscriptWordEdit.hasDamagedMark(segment))
+        // No overflow counting it against the base, nor building word origins from it.
+        let base = editSegment(["ask", "cloud", "now"])
+        #expect(TranscriptWordEdit.baseBounds(fixes: [damaged], current: WordTiming.effectiveWords(of: segment),
+                                              base: WordTiming.effectiveWords(of: base)) == nil)
+        #expect(WordFixes.originalWordRanges(fixes: [damaged], currentWords: WordTiming.effectiveWords(of: segment),
+                                             originalWords: WordTiming.effectiveWords(of: base)).isEmpty)
+        #expect(throws: HolosError.self) {
+            try TranscriptWordEdit.editing(editRequest(0, 1, "as"), in: editTranscript([segment]), base: nil)
+        }
+    }
+    // A sound one: as many words as `heard` can hold, and no more than are left.
+    let sound = TranscriptWordFix(first: 1, end: 2, heard: "cloud", kind: .correction, heardWords: 1)
+    #expect(sound.heardWordCount() == 1 && sound.heardWordCount(within: 0) == nil)
+}
+
 @Test func anEditOverADamagedMarkIsRefusedNeverRead() throws {
     // A damaged but decodable transcript: a mark with no words, and one running backwards, among the edited words.
     for damaged in [TranscriptWordFix(first: 1, end: 1, heard: "cloud", kind: .correction, heardWords: 1),

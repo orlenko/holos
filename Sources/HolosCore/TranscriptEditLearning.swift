@@ -44,9 +44,8 @@ public enum TranscriptEditLearning {
         }
         let term = tokens.joined(separator: " ")
         guard term.count <= WordList.maximumLength else { return nil }
-        let heardWords = Set(heard.split(whereSeparator: \.isWhitespace).map {
-            String($0).trimmingCharacters(in: .punctuationCharacters.union(.symbols))
-        })
+        // The heard words cleaned as the term's are, so the two compare alike ("c#" heard, "C#" meant).
+        let heardWords = Set(heard.split(whereSeparator: \.isWhitespace).map { WordList.termWord(String($0)) })
         let looksLikeAName = tokens.contains { word in
             guard word.contains(where: \.isLetter) else { return false }
             if !isDictionaryWord(word.lowercased()) { return true }
@@ -60,9 +59,10 @@ public enum TranscriptEditLearning {
     /// The "often heard as" phrase to save with `term`: what the recognizer wrote, unless that is the term itself in
     /// another case or spacing, or longer than six words. Nil then.
     public static func heardAs(heard: String, term: String) -> String? {
-        let phrase = heard.split(whereSeparator: \.isWhitespace).map {
-            String($0).trimmingCharacters(in: .punctuationCharacters.union(.symbols))
-        }.filter { !$0.isEmpty }
+        // Cleaned as the term is (`WordList.termWord`): "c#" stays "c#", the same as "C#" in another case, never the
+        // broader "c".
+        let phrase = heard.split(whereSeparator: \.isWhitespace).map { WordList.termWord(String($0)) }
+            .filter { !$0.isEmpty }
         guard !phrase.isEmpty, phrase.count <= 6 else { return nil }
         let joined = phrase.joined(separator: " ")
         guard WordList.isHeardAs(joined, of: term) else { return nil }
