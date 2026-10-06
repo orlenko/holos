@@ -55,18 +55,41 @@ enum ReviewLearning {
         var edits: [ReviewWordEdit] = []
         for segment in ordered {
             let words = WordTiming.effectiveWords(of: segment)
-            for fix in (segment.fixes ?? []).sorted(by: { $0.first < $1.first }) where fix.kind == .reviewEdit {
-                guard fix.first >= 0, fix.first < fix.end, fix.end <= words.count,
-                      let meant = TranscriptWordEdit.shownText(of: segment, first: fix.first, end: fix.end) else {
-                    continue
+            let utf16 = Array(segment.text.utf16)
+            let fixes = (segment.fixes ?? []).filter { fix in
+                fix.kind == .reviewEdit && fix.first >= 0 && fix.first < fix.end && fix.end <= words.count
+            }.sorted { $0.first < $1.first }
+            // Edits side by side in one turn ("bull" → "pull", then "requested" → "request") are one span: learned
+            // apart, each would take the other's corrected word as what was heard beside it ("pull requested"), and
+            // neither rule would match what the recognizer wrote ("bull requested").
+            var spans: [[TranscriptWordFix]] = []
+            for fix in fixes {
+                if let last = spans.last?.last, last.end == fix.first, sameTurn(segment.id, last.end - 1, fix.first) {
+                    spans[spans.count - 1].append(fix)
+                } else {
+                    spans.append([fix])
                 }
-                let heard = TranscriptWordEdit.cleaned(fix.heard)
+            }
+            for span in spans {
+                guard let first = span.first?.first, let end = span.last?.end,
+                      let meant = TranscriptWordEdit.shownText(of: segment, first: first, end: end) else { continue }
+                // What the recognizer wrote over the span: each edit's `heard`, with the text between them as it is
+                // (no space where the words had none).
+                var written = TranscriptWordEdit.cleaned(span[0].heard)
+                for (previous, next) in zip(span, span.dropFirst()) {
+                    // Shown extents meet but for the whitespace between them: none means the words had no space.
+                    let end = TranscriptWordEdit.extent(of: previous.first..<previous.end, words: words, utf16: utf16)
+                    let start = TranscriptWordEdit.extent(of: next.first..<next.end, words: words, utf16: utf16)
+                    let spaced = end.isEmpty || start.isEmpty || end.upperBound != start.lowerBound
+                    written += (spaced ? " " : "") + TranscriptWordEdit.cleaned(next.heard)
+                }
+                let heard = TranscriptWordEdit.cleaned(written)
                 let shown = TranscriptWordEdit.cleaned(meant)
                 guard heard != shown else { continue }
-                let before = fix.first > 0 && sameTurn(segment.id, fix.first, fix.first - 1)
-                    ? TranscriptWordEdit.shownText(of: segment, first: fix.first - 1, end: fix.first) : nil
-                let after = fix.end < words.count && sameTurn(segment.id, fix.end - 1, fix.end)
-                    ? TranscriptWordEdit.shownText(of: segment, first: fix.end, end: fix.end + 1) : nil
+                let before = first > 0 && sameTurn(segment.id, first, first - 1)
+                    ? TranscriptWordEdit.shownText(of: segment, first: first - 1, end: first) : nil
+                let after = end < words.count && sameTurn(segment.id, end - 1, end)
+                    ? TranscriptWordEdit.shownText(of: segment, first: end, end: end + 1) : nil
                 edits.append(ReviewWordEdit(heard: heard, meant: shown, before: before, after: after))
             }
         }

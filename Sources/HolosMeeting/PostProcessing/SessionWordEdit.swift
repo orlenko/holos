@@ -244,22 +244,15 @@ enum SessionWordEdit {
         return (current, snapshot)
     }
 
-    /// Test hook: while set (a task-local value), called right after a transcript is saved, as a failure after its
-    /// pointer was renamed into place (a directory sync) would throw.
-    @TaskLocal static var afterSave: (@Sendable () throws -> Void)?
-
-    /// Makes `transcript` current. A save that throws once the pointer already names it (the rename was done, a later
-    /// step failed) did publish it: that is `incomplete` (its head is still owed), never a refusal.
+    /// Makes `transcript` current (`TranscriptPointerSave`). A save that throws once the pointer already names it (the
+    /// rename was done, a later step failed) did publish it: that is `incomplete` (its head is still owed), never a
+    /// refusal.
     private static func save(_ transcript: Transcript, archive: SessionArchive, session: URL,
                              incomplete: IncompletePublication) async throws {
-        do {
-            try await archive.saveTranscript(transcript, writeLegacyExports: false)
-            try afterSave?()
-        } catch {
-            guard (try? SessionFiles.currentTranscript(session: session))?.id == transcript.id else { throw error }
+        try await TranscriptPointerSave.save(transcript, archive: archive, session: session) { error in
             var failure = incomplete
             failure.message += ", but saving it failed afterwards: " + error.localizedDescription
-            throw failure
+            return failure
         }
     }
 

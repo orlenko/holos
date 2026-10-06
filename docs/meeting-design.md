@@ -7857,7 +7857,9 @@ shown, Otter-style.
   and highlight mapping is rebuilt from the new segments. What the window keeps of a
   committed edit (its undo, its word move) is recorded as soon as the transcript is current,
   even when the labels cannot be reread then, or when saving the transcript failed after its
-  pointer was renamed into place (the head is then owed, as above). Split Turn is refused
+  pointer was renamed into place (the head is then owed, as above); an edit, its undo, and an
+  automatic fix's revert all save through `TranscriptPointerSave`, which reports such a save
+  as committed, never as a refusal. Split Turn is refused
   inside words edited together, so their edit and its Revert stay in one turn.
 - *Undo.* An edit is one entry of the window's undo, among speaker changes; it keeps the undo
   history (the retargeted run keeps every edit ID and batch). An automatic fix's Revert is not
@@ -7890,7 +7892,10 @@ shown, Otter-style.
   teaches only what is not there, so a correction you delete
   or change in Corrections is not taught again by the meeting:
   - the edits are every `reviewEdit` fix of the transcript as it is then; an edit undone or
-    reverted is not there, so it teaches nothing;
+    reverted is not there, so it teaches nothing. Edits side by side in one turn are one
+    phrase: "bull" → "pull" then "requested" → "request" teaches "bull requested" → "pull
+    request" (what the recognizer wrote, from each edit's `heard`), never "pull requested" or
+    "bull request", which would match nothing it wrote;
   - each is diffed as dictation's Learn does (`CorrectionList.learn`, the recognizer's words
     against the words' shown text, one shown word on each side as context so a lone
     dictionary word is learned only with its neighbour: "cloud now" and "cloud later" are two

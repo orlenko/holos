@@ -312,7 +312,7 @@ func aSaveThatFailsAfterTheTranscriptBecameCurrentIsAPublicationStillOwed() asyn
     struct DirectorySync: Error {}
     // The pointer was renamed into place, then syncing its folder failed.
     do {
-        _ = try await SessionWordEdit.$afterSave.withValue({ throw DirectorySync() }) {
+        _ = try await TranscriptPointerSave.$afterSave.withValue({ throw DirectorySync() }) {
             try await SessionWordEdit.run(
                 session: session,
                 request: TranscriptWordEdit.Request(segmentID: original.segments[0].id, first: 1, end: 2,
@@ -418,7 +418,7 @@ func anEditKeepsEveryWordsOwnerWhenRecognizerTimingsOverlapAcrossSpeakers() asyn
     let runID = try #require(try SessionSpeakerStore.readHead(session: session)?.runID)
     struct DirectorySync: Error {}
     await #expect(throws: SessionWordEdit.IncompletePublication.self) {
-        _ = try await SessionWordEdit.$afterSave.withValue({ throw DirectorySync() }) {
+        _ = try await TranscriptPointerSave.$afterSave.withValue({ throw DirectorySync() }) {
             try await SessionWordEdit.run(
                 session: session,
                 request: TranscriptWordEdit.Request(segmentID: segmentID, first: 2, end: 3, text: "yeah"),
@@ -739,6 +739,34 @@ func learningAgainAtTheNextCloseChangesNothingAndASecondOccurrenceIsAdded() asyn
 }
 
 @Test(.timeLimit(.minutes(1))) @MainActor
+func editsSideBySideAreLearnedAsOnePhraseFromWhatTheRecognizerWrote() async throws {
+    let temp = try TemporaryDirectory("review")
+    defer { temp.remove() }
+    let session = try await wordEditSession(in: temp, [
+        WordEditTurn(speaker: "system:S1", start: 0, words: ["we", "bull", "requested", "it"]),
+        WordEditTurn(speaker: "system:S1", start: 10, words: ["ask", "cloud", "and", "cloud", "later"]),
+    ])
+    let review = try await wordEditOpen(session)
+    let learner = WordEditLearner()
+    learner.attach(to: review)
+    // "bull" → "pull", then (Tab) "requested" → "request": two edits side by side.
+    try await review.editWords(wordEditRefs(review, "T1", [1]), to: "pull")
+    try await review.editWords(wordEditRefs(review, "T1", [2]), to: "request")
+    // One unedited word between two edits: each is learned on its own, beside the words as the recognizer wrote them.
+    try await review.editWords(wordEditRefs(review, "T2", [1]), to: "Claude")
+    try await review.editWords(wordEditRefs(review, "T2", [3]), to: "Claude")
+    await review.close()
+    #expect(learner.taughtBy == [
+        ReviewWordEdit(heard: "bull requested", meant: "pull request", before: "we", after: "it"),
+        ReviewWordEdit(heard: "cloud", meant: "Claude", before: "ask", after: "and"),
+        ReviewWordEdit(heard: "cloud", meant: "Claude", before: "and", after: "later"),
+    ])
+    #expect(learner.value("bull requested") == "pull request")
+    #expect(learner.value("pull requested") == nil && learner.value("bull request") == nil,
+            "Never a phrase half corrected.")
+}
+
+@Test(.timeLimit(.minutes(1))) @MainActor
 func learningTakesContextOnlyFromTheEditedWordsOwnTurnAsShown() async throws {
     let temp = try TemporaryDirectory("review")
     defer { temp.remove() }
@@ -803,7 +831,8 @@ func whatTheOpenFieldHoldsAtCloseIsSavedAndLearned() async throws {
     // The window closes with "Claude" typed in the field.
     await review.close(typed: (words: field, text: "Claude", seenMoves: seen))
     #expect(try wordEditCurrent(session).segments[0].text == "ask a lot more Claude now")
-    #expect(learner.value("cloud") == "Claude", "Learned at this close, with the edits before it.")
+    #expect(learner.value("more cloud") == "a lot more Claude",
+            "Learned at this close, with the edit beside it (one phrase).")
     #expect(learner.lessons == 1)
 }
 
@@ -954,6 +983,34 @@ func wordsCannotBeEditedWhileSpeakerChangesCannotAllBeRead() async throws {
     await #expect(throws: HolosError.self) { try await review.revertWordFix(words[2].ref) }
     #expect(try wordEditCurrent(session).segments[0].text == "ask more Claude now", "Nothing was written.")
     await review.close()
+}
+
+@Test(.timeLimit(.minutes(1)))
+func aRevertWhoseSaveFailsAfterItBecameCurrentIsAPublicationStillOwed() async throws {
+    let temp = try TemporaryDirectory("review")
+    defer { temp.remove() }
+    let session = try await wordEditFixedCloudSession(temp)
+    let fixed = try wordEditCurrent(session)
+    let runID = try #require(try SessionSpeakerStore.readHead(session: session)?.runID)
+    struct DirectorySync: Error {}
+    // The pointer was renamed into place, then syncing its folder failed.
+    do {
+        _ = try await TranscriptPointerSave.$afterSave.withValue({ throw DirectorySync() }) {
+            try await SessionWordFixRevert.run(session: session,
+                                               word: WordRef(segmentID: fixed.segments[0].id, word: 2),
+                                               expectedTranscriptID: fixed.id, expectedRunID: runID)
+        }
+        Issue.record("The save failure was not reported.")
+    } catch let incomplete as SessionWordFixRevert.IncompletePublication {
+        let outcome = try #require(incomplete.outcome, "What was published is kept: its word move is recorded.")
+        #expect(outcome.move == ReviewWordMove(segmentID: fixed.segments[0].id, replaced: 2..<3, replacement: 2..<3))
+        #expect(try wordEditCurrent(session).segments[0].text == "ask more cloud now")
+        #expect(try SessionSpeakerStore.readHead(session: session)?.runID == runID, "The head is still owed.")
+    }
+    try await SessionWordFixRevert.repairCurrentHead(session: session, expectedTranscriptID: fixed.id,
+                                                     expectedRunID: runID)
+    let snapshot = try SpeakerSessionSnapshot.load(session: session)
+    #expect(!snapshot.transcriptChanged && snapshot.transcript.segments[0].text == "ask more cloud now")
 }
 
 @Test(.timeLimit(.minutes(1))) @MainActor

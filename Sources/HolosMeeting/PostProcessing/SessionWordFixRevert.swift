@@ -119,7 +119,11 @@ enum SessionWordFixRevert {
                     "asked": "0",
                     "reverted": "1",
                 ])
-                try await archive.saveTranscript(reverted, writeLegacyExports: false)
+                // Committed once the pointer names it, even when the save throws after that.
+                try await TranscriptPointerSave.save(reverted, archive: archive, session: session) { error in
+                    IncompletePublication(message: "The word fix was reverted, but saving it failed afterwards: "
+                                          + error.localizedDescription, outcome: published)
+                }
                 do {
                     try SpeakerTranscriptRetarget.publishHead(plan, session: session, now: now)
                 } catch {
