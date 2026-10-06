@@ -4288,8 +4288,10 @@ recorder, `session diarize`, `recover`, `import`, the app's relabels):
    recorded transcript stand in for one (`fallback`). A transcript
    merged from languages named on the command line, or kept for them (step 2), is never
    replaced automatically: its last `languagesDetected` names other languages than
-   meeting.json's. `PostProcessingOptions.keepTranscript` (`session diarize
-   --keep-transcript`, which every relabel from the review window passes) skips the stage,
+   meeting.json's. A deep transcript (§4.16) of a meeting in several languages names them and
+   counts as merged, so it is never replaced automatically either.
+   `PostProcessingOptions.keepTranscript` (`session diarize --keep-transcript`, which every
+   relabel from the review window passes) skips the stage,
    so a speaker action there never transcribes the meeting again under the open review. A
    meeting in one language records no stage at all, so its `postprocess.json` is unchanged.
    A session with saved audio and no transcript (`record start --record-only`, `session
@@ -4682,9 +4684,10 @@ fallback avoided that loop on the same file, and the pass guards against both an
 target `HolosWhisper`, which only the command-line tool links; the app runs the pass through
 `voiceislocal`. Model `openai_whisper-large-v3-v20240930_turbo` from
 `argmaxinc/whisperkit-coreml` (about 1.6 GB). `DeepTranscriber` (HolosCore) is the seam:
-`engine` ("whisper:<model>"), `promptTokenCount`, `transcribe(samples, language, prompt)`;
-tests use scripted fakes and never download or load a model. `WhisperKitTranscriber` decodes
-with the meeting's language (Whisper's token: "en" for "en-CA", and Whisper's own spelling where
+`engine` ("whisper:<model>"), `promptTokenCount`, `transcribe(samples, language or languages,
+prompt)`; tests use scripted fakes and never download or load a model. `WhisperKitTranscriber`
+decodes with the meeting's language, or in a meeting in several languages each passage's (below)
+(Whisper's token: "en" for "en-CA", and Whisper's own spelling where
 it differs, "no" for Bokmål "nb", "tl" for Filipino "fil", "jw" for Javanese "jv"; a language
 Whisper does not know is detected instead, since WhisperKit would put the English token in its
 place), the prompt's tokens on every
@@ -4760,6 +4763,57 @@ recorded words that comes back empty is reported as unheard even when it is quie
 dBFS, for the same lost-speech rule. A chunking that hears nothing of the recorded speech
 therefore cannot make the pass publish without it.
 
+*Meetings in several languages* (`WhisperLanguagePick`, pure; `DeepTranscriptionRequest.
+languages`). The user's board meetings in Montreal are about 80 % French and 20 % English, and
+the first version skipped every meeting with more than one language. Whisper detects a language
+with one decoder step after `<|startoftranscript|>`, over all 99 of its languages; WhisperKit
+1.1.0's `detectLangauge(audioArray:)` (sic) runs that step on the first 30 s but returns only
+the sampled language's log-probability, and `DecodingOptions.detectLanguage` picks per window
+among all languages. So the transcriber runs the step itself from WhisperKit's public pieces
+(`padOrTrim`, `logMelSpectrogram`, `encodeFeatures`, `TextDecoding.detectLanguage`) with a token
+sampler that reads the logits of the meeting's language tokens before sampling as WhisperKit
+does, and turns them into probabilities among those languages alone (a softmax over their
+logits). A *passage* is a stretch of speech between pauses inside one of the chunks the pass
+decodes (at most 20 s):
+1. 100 ms frames are speech when within 20 dB of the chunk's loud frames (its 90th percentile)
+   and above −50 dBFS, so a quiet call or room does not matter; speech runs closer than 0.5 s
+   are one passage, cut from the next at the middle of the pause; one with less than 2 s of
+   speech ("Okay.", "Merci.") joins the neighbour it is closer to.
+2. Each passage takes the meeting's language the model scores highest (a tie: the one listed
+   first).
+3. One whose best language scores under 0.9 is halved at its longest pause leaving 2 s of
+   speech on each side (else its quietest frame) and each half chosen on its own, at most three
+   times over: two speakers with no clear pause between them scored 0.28–0.72 in the evaluation,
+   one language alone 0.95–1.
+4. Adjacent passages in one language are decoded together, with that language's token and the
+   same prompt (the 110-token budget is unchanged), each change of language cutting the chunk.
+No smoothing across passages: the languages stage's two-window rule (§4.14) would erase a lone
+English question between French turns, which the model scores at 0.99 or more.
+*Evaluation* (opt-in `WhisperLanguageEvaluationTests`; invented scripts rendered by the system
+voices to files, room noise at about −50 dBFS added, scored outside the suite against the
+script by plain word error rate after lowercasing and removing punctuation; numbers spelled out
+in the script and written in digits by Whisper count as errors, so only the differences matter;
+one run, Whisper's temperature fallback moves a forced decode by a few points between runs): a
+296 s board meeting (36 turns of three French and two English voices, 82 % French, 0.6–1.2 s
+between turns), its 112 s English counterpart (13 turns), and a harder 110 s one (25 turns with
+0.3 s between most of them, 1-word answers, a French voice speaking English and an English one
+speaking French; 74 % French). Choosing per passage: 6.9 % WER (French 8.2 %, English 0.7 %),
+36 of 36 passages right; the English control 9.4 %, 13 of 13, as forced English; the hard one
+7.1 %, 20 of 25 turns right (wrong: three answers of 0.5–1.3 s heard with the turn next to
+them, and two accented 3–5 s turns). Forced French: 17.5 % (English turns 44 %: Whisper
+translates them), 33 % on the English control, 6.5 % on the hard one. Forced English: 10.8 %,
+9.4 %, 19.9 %. WhisperKit's own detection, per 20 s chunk among all languages: the same as
+forced French on both bilingual files (French dominates every chunk). Decoding in each language
+and merging by the languages stage's rule (the forced decodes, words timed): 10.9 % (33 of 36:
+a fluent translation scores as its own language), 9.4 %, 6.5 % (18 of 25). Time on the test Mac
+(other work running alongside, so only roughly): 68 s for the 296 s meeting choosing per
+passage, 40–53 s forced in one language, 93 s for both and the merge; about twice a forced pass
+on the shorter ones. Apple's recognizer could not be compared: this Mac has no French (Canada)
+speech model, and the English one alone wrote 70 % WER on the bilingual meeting (11.4 % on the
+English control). Without a per-turn language override in Review (§4.14 follow-ups) nothing
+keeps the other language's decode; the recognizer's per-language transcriptions a merge kept
+(`languagePass`) stay as they were.
+
 **Model files** (`WhisperModels`). `<supportRoot>/Models/whisperkit/<model>/` (or
 `$HOLOS_WHISPER_MODELS_DIR/<model>/`), as WhisperKit's Hugging Face download lays it out,
 with the large-v3 tokenizer (`models/openai/whisper-large-v3/tokenizer.json`, fetched by the
@@ -4778,12 +4832,13 @@ skips it.
    that base is a deep transcript (`Transcript.engine` "whisper:…"), the recorded transcript
    it replaced is the one its `deepTranscribed` event names; otherwise the current transcript
    is the recorded one.
-2. *Skips.* A meeting with several languages in meeting.json, or a current transcript merged from
-   several (one made in a single language named with `session languages` has `languages` too
-   and is transcribed again, in that transcript's language):
-   `skipped`, "This meeting is in several languages; deep transcription handles meetings in
-   one language for now, so the transcript was kept." (WhisperKit can detect a language per
-   window but not limit detection to the meeting's languages, so v1 does not try.) A base this
+2. *Languages, and skips.* The meeting's languages are those of the transcript of step 1 (a
+   merge's, languages named with `session languages`, even one, or an earlier deep
+   transcript's), else meeting.json's. One: transcribed in it (a language Whisper does not
+   know is detected). Several: each passage in one of them ("Meetings in several languages"
+   above); several with one Whisper does not know: `skipped`, "Whisper large-v3 turbo does not
+   transcribe Zulu (South Africa), one of this meeting's languages, so the transcript was
+   kept." A base this
    model made already: `succeeded`, "The meeting was already transcribed with Whisper
    large-v3 turbo.", unless `force`. Edited speaker labels of the current transcript:
    `skipped` with "Speaker labels were edited, so the meeting was not transcribed again. …
@@ -4825,11 +4880,17 @@ skips it.
 6. *Segments.* Words are joined as Whisper spaced them (punctuation it wrote as a word of its
    own joins the word before), each a `TimedWord` with its UTF-16 offset, start, end and
    probability as confidence; a segment without word timings keeps its text untimed. New
-   segment IDs. Live hints reconcile by track, time and words, as for any new transcript.
-   Nothing recognized while the recorded transcript has words keeps the transcript.
+   segment IDs. When the languages were named (several, or a merge of one), the transcript
+   names them (`Transcript.languages`, the first as `locale`) and each segment its own
+   (`language`, the meeting's locale), as a merge of the languages stage does: exports name
+   each turn's language, summaries weigh them, and the languages stage takes it for done
+   (§4.14), so it never replaces it with a merge of the recognizer's transcriptions. Live hints
+   reconcile by track, time and words, as for any new transcript. Nothing recognized while the
+   recorded transcript has words keeps the transcript.
 7. *Publication*, as the languages stage: under the writer and speaker locks, the
    edited-labels check again, `deepTranscribed {transcriptID, base, engine, language, tracks,
-   seconds, segments, words, droppedSilent, droppedRepeats, promptTerms, promptTokens}`, then
+   seconds, segments, words, droppedSilent, droppedRepeats, promptTerms, promptTokens}` (with
+   several languages also `languages`, comma-separated, and `segments.<language>`), then
    `saveTranscript` (the recorded transcript stays as a revision). Cancellation publishes
    nothing; a cancelled or killed pass starts over next time (it is cheap enough).
 8. *Downstream.* Live text hints (1c), word fixes (1d, whose revisions keep `engine`),
@@ -4889,8 +4950,9 @@ carried over.
   installed). When doctor cannot run at all the row says the tool is missing.
 - *Queue* (`DeepTranscriptionQueue`, `DeepTranscriptionSchedule`, pure, in HolosMeeting). When
   the recorder reports a meeting finished (its own post-processing ran in the recorder), the
-  meeting is queued if the setting is on, the model installed, and neither meeting.json nor the
-  current transcript names more than one language (read off the main actor; when the read ends,
+  meeting is queued if the setting is on, the model installed, and the pass transcribes its
+  languages (`SessionDeepTranscribeCommand.languagesProblem`, read as the pass reads them: one,
+  or several Whisper knows; read off the main actor; when the read ends,
   the meeting is queued only if the setting did not change meanwhile and the user did not act
   on it: not in the queue, not considered, so a Run Now asked for and cancelled meanwhile stays
   cancelled). The queue is saved in UserDefaults
@@ -4899,7 +4961,8 @@ carried over.
   turned on, the meetings that finished while the app was closed (read off the main actor, and queued only if
   the setting is still on, with the same activation time, when the read ends) (a recorder saves and post-processes on its
   own after the app quits), started since the setting was turned on, finished (not recording,
-  processing, or interrupted), in one language, with no `deepTranscribed` event and never queued
+  processing, or interrupted), whose languages the pass transcribes, with no `deepTranscribed`
+  event and never queued
   before (`deepTranscriptionConsidered`, never capped: forgetting one could queue a meeting the
   user cancelled), are queued too; so are meetings that finished while the model was missing.
   The next pass runs when none is running, no meeting is starting, recording, or saving, the
@@ -4965,18 +5028,20 @@ carried over.
   (relabels speakers): it runs next, also on battery, with `--force`, so a transcript the model
   made before is made again and edited speaker labels are replaced (names carry over, edits of
   single turns do not), as asking for it by name means; refused with an alert without the model,
-  for a meeting that is not finished, or for one in several languages. A meeting queued
+  for a meeting that is not finished, or for one with a language Whisper does not know among
+  several (the alert gives the pass's reason). A meeting queued
   automatically offers it too (it upgrades the item, so it runs next whatever the power source).
   The request is reserved at once, before its languages are read off the main actor, and saved
   with the queue (`pending`; a quit meanwhile does not lose it: the languages are read again at
   the next launch): the meeting is not started meanwhile (a queued automatic item would run
   without `--force`), shows as queued, and is considered; a Cancel meanwhile ends the
-  reservation, and a refusal (several languages) leaves the meeting as it was.
+  reservation, and a refusal (a language Whisper does not know) leaves the meeting as it was.
   While a meeting is queued or the app's own pass runs on it, Cancel Final Transcript (SIGTERM: the command cancels and says whether the new
   transcript was already published).
 - *Tests.* `DeepTranscriptionQueueTests` (order and run-now upgrade, saving and damaged data,
   one at a time, AC/battery/no battery, busy meetings, meetings in use or in Review, run-now on
-  battery, the setting off, queuing only one-language meetings, the State column's texts,
+  battery, the setting off, queuing only meetings whose languages the pass transcribes, the State
+  column's texts,
   commands refused for another process, an earlier version's queue read without its process
   fields, a pass cut short running again with its flags, waiting for another process's pass,
   the failure text of Run Now, finished states, the launch check), `DeepTranscriptionLockTests`
@@ -4989,7 +5054,8 @@ carried over.
 
 **CLI.** `voiceislocal session deep-transcribe <session> [--force] [--json]`
 (`SessionDeepTranscribeCommand`): a precheck first (unfinished recording, deleted or missing
-audio, several languages, model not installed or still downloading) exits 1 with nothing
+audio, several languages one of which Whisper does not know, model not installed or still
+downloading) exits 1 with nothing
 changed (a session left `processing` by a recorder that died while saving counts as unfinished:
 Recover first); a run with nothing to do (the transcript is this model's, no `--force`) needs
 neither the model nor the audio (deleted since, it is not an error); then the post-processor with `deepTranscribe`: exit 0 done, 3 partial (exports
@@ -5003,9 +5069,10 @@ which a resumed run reads again, and is schema 2 with `backend` "whisper" (the m
 `meetingBackend`), which an older Voice is Local cannot read, so it never resumes the run with
 Apple's recognizer. A run resumed with `--run` keeps the language it began with, whatever the
 current transcript's is now. Without `--language`, a meeting whose meeting.json or current
-transcript names several languages is refused, as the pass refuses it (`--language` evaluates
-one of them). A current transcript that cannot be read is an error, never a run without a
-reference. An explicit `--language` Whisper has no token for is refused. Each track's render
+transcript names several languages is refused: an evaluation transcribes in one language
+(`--language` evaluates one of them), while the pass chooses one per passage. A current
+transcript that cannot be read is an error, never a run without a reference. An explicit
+`--language` Whisper has no token for is refused. Each track's render
 needs the same free space as the pass's (the render plus 1 GB), checked before it is written.
 
 **Tests.** `DeepTranscriptionTests` (prompt order and cap; quietest cut; time mapping through
@@ -5016,13 +5083,21 @@ keeping it and `--force` redoing it against the recorded transcript, edited labe
 then forced with names carried, labels edited while transcribing, word fixes and live
 corrections on the new text, call echo still dropped, a failed or empty pass, cancellation,
 the precheck's refusals, ordinary post-processing never running it, recovery bookkeeping, and
-`eval local --backend whisper`), `WhisperModelsTests` (status, staged install with a fake
-download and load check, resume after a failed load, removal, the prompt rows and the moved weights, the timestamp rules after a prompt, the plain-chunk rule). Opt-in:
+`eval local --backend whisper`; a meeting in several languages chosen among passage by passage,
+from a merge, from meeting.json alone, forced again, one named language winning over
+meeting.json's two, the locale mapping, a language Whisper does not know refused, and the
+queue's reading of them), `WhisperModelsTests` (status, staged install with a fake
+download and load check, resume after a failed load, removal, the prompt rows and the moved weights, the timestamp rules after a prompt, the plain-chunk rule), `WhisperLanguagePickTests` (speech frames against
+the stretch's own level, passages cut at long pauses, short ones joined to the closer
+neighbour, unsure ones halved at the longest pause or quietest frame, the restricted
+probabilities and ties, runs). Opt-in:
 `HOLOS_WHISPER_MODEL_TESTS=1 HOLOS_WHISPER_MODELS_DIR=<installed folder>` transcribes invented
 speech (rendered by the system synthesizer to a file, never played) in a session end to end;
-`HOLOS_DEEP_MEASURE_SESSION=<copy of a session>` prints the level measurements above, `HOLOS_DEEP_COMPARE_SESSION=<copy that deep-transcribe ran on>` the word-time agreement and uncovered stretches, and `HOLOS_DEEP_PROBE_SESSION=<copy>` (with `HOLOS_DEEP_PROBE_PROMPT`) the coverage of ten minutes of one track.
+`HOLOS_DEEP_MEASURE_SESSION=<copy of a session>` prints the level measurements above, `HOLOS_DEEP_COMPARE_SESSION=<copy that deep-transcribe ran on>` the word-time agreement and uncovered stretches, and `HOLOS_DEEP_PROBE_SESSION=<copy>` (with `HOLOS_DEEP_PROBE_PROMPT`) the coverage of ten minutes of one track, and `HOLOS_DEEP_LANGUAGE_EVAL=<folder of 16 kHz .wav files>` writes each file's transcription in each way of "Meetings in several languages" (with `HOLOS_DEEP_LANGUAGE_EVAL_APPLE=1`, also the recognizer's import and merge) for scoring outside the suite.
 
-**Follow-ups.** Meetings in several languages. A notification when a final transcript
+**Follow-ups.** In a meeting in several languages, a short passage the model is unsure of
+(about 2 s, or accented speech) could be decoded in each language and the better decode kept;
+`eval local --backend whisper` could choose per passage too. A notification when a final transcript
 is ready. Measuring the vocabulary terms the pass gets
 right against a cloud reference on more meetings (`eval local --backend whisper`, then `eval
 compare`), now that the prompt is checked chunk by chunk. Upstream reports for the three

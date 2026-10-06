@@ -45,9 +45,9 @@ public struct DeepTranscriptionQueue: Codable, Sendable, Equatable {
         pending.append(Item(sessionID: sessionID, path: path, queuedAt: date, runNow: true))
     }
 
-    /// Ends `sessionID`'s reservation: `accepted` (one language) queues it as Run Now (upgrading a queued item in
-    /// place); refused, the meeting stays as it was before the request. False when there was none (cancelled
-    /// meanwhile): nothing changes.
+    /// Ends `sessionID`'s reservation: `accepted` (languages the pass transcribes) queues it as Run Now (upgrading a
+    /// queued item in place); refused, the meeting stays as it was before the request. False when there was none
+    /// (cancelled meanwhile): nothing changes.
     @discardableResult
     public mutating func resolveRunNow(_ sessionID: String, accepted: Bool) -> Bool {
         guard let index = pending.firstIndex(where: { $0.sessionID == sessionID }) else { return false }
@@ -213,27 +213,27 @@ public enum DeepTranscriptionSchedule {
         public var createdAt: Date
         /// `isFinished`.
         public var finished: Bool
-        /// The most languages named by meeting.json or the current transcript.
-        public var languages: Int
+        /// The pass transcribes the meeting's languages (`SessionDeepTranscribeCommand.languagesProblem` is nil).
+        public var transcribable: Bool
         /// A deep transcription was journaled for it (`deepTranscribed`).
         public var hasDeepTranscript: Bool
 
-        public init(sessionID: String, path: String, createdAt: Date, finished: Bool, languages: Int,
+        public init(sessionID: String, path: String, createdAt: Date, finished: Bool, transcribable: Bool,
                     hasDeepTranscript: Bool) {
             self.sessionID = sessionID; self.path = path; self.createdAt = createdAt; self.finished = finished
-            self.languages = languages; self.hasDeepTranscript = hasDeepTranscript
+            self.transcribable = transcribable; self.hasDeepTranscript = hasDeepTranscript
         }
     }
 
     /// Meetings that finished while the app was closed (the recorder saves and post-processes them on its own): the
-    /// finished ones in one language, started after the setting was turned on (`enabledSince`), with no deep
-    /// transcript, not considered before (`considered`: queued once already, whatever came of it) and not queued, in
-    /// the order given (oldest first is the caller's).
+    /// finished ones whose languages the pass transcribes, started after the setting was turned on (`enabledSince`),
+    /// with no deep transcript, not considered before (`considered`: queued once already, whatever came of it) and
+    /// not queued, in the order given (oldest first is the caller's).
     public static func reconcile(_ candidates: [Candidate], enabledSince: Date?, considered: Set<String>,
                                  queue: DeepTranscriptionQueue) -> [Candidate] {
         guard let enabledSince else { return [] }
         return candidates.filter { candidate in
-            candidate.finished && candidate.languages <= 1 && !candidate.hasDeepTranscript
+            candidate.finished && candidate.transcribable && !candidate.hasDeepTranscript
                 && candidate.createdAt >= enabledSince && !considered.contains(candidate.sessionID)
                 && !queue.contains(candidate.sessionID)
         }
@@ -246,12 +246,12 @@ public enum DeepTranscriptionSchedule {
         item.runNow
     }
 
-    /// Whether a meeting that just finished saving is queued: the setting is on, the model installed, and the meeting
-    /// is in one language (several are not supported yet), and the user did not act on it while its languages were
-    /// read (`queued` now, or `considered`: asked for, maybe cancelled since).
-    public static func queuesAfterMeeting(enabled: Bool, modelInstalled: Bool, languages: Int, queued: Bool = false,
-                                          considered: Bool = false) -> Bool {
-        enabled && modelInstalled && languages <= 1 && !queued && !considered
+    /// Whether a meeting that just finished saving is queued: the setting is on, the model installed, the pass
+    /// transcribes the meeting's languages (`transcribable`: one, or several Whisper knows), and the user did not act
+    /// on it while its languages were read (`queued` now, or `considered`: asked for, maybe cancelled since).
+    public static func queuesAfterMeeting(enabled: Bool, modelInstalled: Bool, transcribable: Bool,
+                                          queued: Bool = false, considered: Bool = false) -> Bool {
+        enabled && modelInstalled && transcribable && !queued && !considered
     }
 
     /// Whether the app checks again for meetings that finished while it could not queue them: when the model becomes

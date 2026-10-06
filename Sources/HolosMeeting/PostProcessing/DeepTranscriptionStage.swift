@@ -46,11 +46,13 @@ public struct DeepTranscriptionDependencies: Sendable {
 /// current revision (`deepTranscribed`, then the save), keeping the recorded one. Live corrections, word fixes,
 /// speaker labels, and exports then run on it as after a recording.
 ///
-/// Like the languages stage it never replaces a transcript whose speaker labels were edited unless forced (names
-/// carry over when speakers are labelled again), and checks that again under the locks of the publication. A meeting
-/// in several languages is skipped: Whisper's language detection cannot be limited to the meeting's languages, so v1
-/// handles meetings in one language. A current transcript the same model made is kept unless forced. Cancellation
-/// publishes nothing; a run cancelled or killed starts over next time.
+/// A meeting in several languages (`languages`) has each passage transcribed in the one of them the model hears in it
+/// (`DeepTranscriptionRequest.languages`): the new transcript names them (`Transcript.languages`) and each segment its
+/// own, as a merge of the languages stage does, so that stage takes it for done. One with a language Whisper does not
+/// know is skipped. Like the languages stage it never replaces a transcript whose speaker labels were edited unless
+/// forced (names carry over when speakers are labelled again), and checks that again under the locks of the
+/// publication. A current transcript the same model made is kept unless forced. Cancellation publishes nothing; a run
+/// cancelled or killed starts over next time.
 enum DeepTranscriptionStage {
     private static let log = Logger(subsystem: "ca.orlenko.holos.app", category: "postprocess")
 
@@ -79,8 +81,12 @@ enum DeepTranscriptionStage {
 
     static let editedHead = "Speaker labels were edited, so the meeting was not transcribed again. To transcribe it "
         + "again and label speakers again (names carry over), run voiceislocal session deep-transcribe with --force."
-    static let severalLanguages = "This meeting is in several languages; deep transcription handles meetings in one "
-        + "language for now, so the transcript was kept."
+    /// Why a meeting in several languages, one of which Whisper does not know (`unknown`, locale identifiers), is not
+    /// transcribed again.
+    static func unknownLanguages(_ unknown: [String]) -> String {
+        "\(DeepTranscriptionModel.displayName) does not transcribe \(LanguageStage.names(unknown)), one of this "
+            + "meeting's languages, so the transcript was kept."
+    }
     static let audioDeleted = "The meeting's audio was deleted, so it cannot be transcribed again."
     static let noDiskSpace = "Not enough disk space to transcribe the meeting again. Free some space, then try again."
     static let kept = "Kept the transcript as it was."
@@ -114,11 +120,8 @@ enum DeepTranscriptionStage {
             return fail("\(keptText) \(error.localizedDescription)")
         }
         let base = current.map { recordedBase(of: $0, events: events, session: request.session) }
-        // A transcript of one language named with `session languages` has `languages` too: only several count.
-        if DictationLanguage.meetingLanguages(meeting.languages ?? []).count > 1
-            || DictationLanguage.meetingLanguages(base?.unfixed.languages ?? []).count > 1 {
-            return fail(severalLanguages, .skipped)
-        }
+        let languages = languages(meeting: meeting, transcript: base?.unfixed)
+        if let problem = languagesProblem(languages) { return fail(problem, .skipped) }
         if let base, base.unfixed.engine == dependencies.engine, !request.force {
             let message = "The meeting was already transcribed with \(DeepTranscriptionModel.displayName)."
             recorder.end(.deepTranscription, .succeeded, message, since: started)
@@ -166,13 +169,15 @@ enum DeepTranscriptionStage {
             if error is CancellationError || Task.isCancelled { throw CancellationError() }
             return fail("\(keptText) The vocabulary prompt could not be made: \(error.localizedDescription)")
         }
-        // The current transcript's language (a one-language merge's), else the meeting's.
-        let locale = base?.unfixed.locale ?? meeting.languages?.first ?? request.manifest.locale
+        // Several: the first. One: the current transcript's language (a one-language merge's), else the meeting's.
+        let several = languages.count > 1
+        let locale = several ? languages[0]
+            : base?.unfixed.locale ?? meeting.languages?.first ?? request.manifest.locale
+        let choice = several ? LanguageChoice(languages) : LanguageChoice(single: locale)
         let pass: Pass
         do {
             pass = try await transcribe(tracks: tracks, request: request, transcriber: transcriber,
-                                        reference: base?.reference,
-                                        language: DeepTranscriptionModel.whisperLanguage(locale),
+                                        reference: base?.reference, choice: choice,
                                         prompt: prompt.text, recorder: recorder)
         } catch let failure as StageFailure {
             return fail(failure.message, failure.result)
@@ -182,15 +187,21 @@ enum DeepTranscriptionStage {
         }
 
         // Without a recorded transcript, the silence guard has no words to look for: the audio level alone decides.
-        let (segments, guarded, lostSpeech) = Self.segments(pass.segments, reference: base?.reference)
+        var (segments, guarded, lostSpeech) = Self.segments(pass.segments, reference: base?.reference)
+        // A transcript made from languages named (several, or a merge of one) keeps naming them, and every segment its
+        // own (the preferred one when the model did not), as a merge does: the languages stage takes it for done.
+        let named = several || !(base?.unfixed.languages ?? []).isEmpty
+        if named {
+            for index in segments.indices where segments[index].language == nil { segments[index].language = locale }
+        }
         // Speech the model left out even decoded again in parts: never published as a complete transcript.
         guard lostSpeech.isEmpty else { return fail("\(keptText) \(Self.lostMessage(lostSpeech))") }
         guard LanguageStage.hasWords(segments) || !(current.map { LanguageStage.hasWords($0.segments) } ?? true) else {
             return fail("\(keptText) No words were recognized when the meeting was transcribed again.")
         }
         let deep = Transcript(source: request.session.path, locale: locale, backend: request.manifest.backend,
-                              segments: segments, engine: transcriber.engine)
-        let details = [
+                              segments: segments, languages: named ? languages : nil, engine: transcriber.engine)
+        var details = [
             "transcriptID": deep.id, "base": base?.reference?.id ?? "", "engine": transcriber.engine,
             "language": locale, "tracks": tracks.joined(separator: ","),
             "seconds": String(format: "%.1f", pass.seconds), "segments": String(segments.count),
@@ -198,6 +209,12 @@ enum DeepTranscriptionStage {
             "droppedSilent": String(guarded.droppedSilent), "droppedRepeats": String(guarded.droppedRepeats),
             "promptTerms": String(prompt.terms.count), "promptTokens": String(prompt.tokens),
         ]
+        if several {
+            details["languages"] = languages.joined(separator: ",")
+            for language in languages {
+                details["segments.\(language)"] = String(segments.count { $0.language == language })
+            }
+        }
         do {
             if let problem = try await publish(deep, details: details, request: request) {
                 return fail(problem, .skipped)
@@ -208,7 +225,8 @@ enum DeepTranscriptionStage {
         log.notice("Session \(request.manifest.id, privacy: .public): deep transcription made \(segments.count, privacy: .public) segments; dropped \(guarded.droppedSilent, privacy: .public) silent and \(guarded.droppedRepeats, privacy: .public) repeated")
         recorder.end(.deepTranscription, .succeeded,
                      summary(segments: segments.count, droppedSilent: guarded.droppedSilent,
-                             droppedRepeats: guarded.droppedRepeats, promptTerms: prompt.terms.count),
+                             droppedRepeats: guarded.droppedRepeats, promptTerms: prompt.terms.count,
+                             languages: several ? languages : []),
                      since: started)
         return Outcome(transcript: deep, note: note)
     }
@@ -217,9 +235,12 @@ enum DeepTranscriptionStage {
     static let note = "Transcribed again with \(DeepTranscriptionModel.displayName)."
 
     /// "Transcribed again with Whisper large-v3 turbo: 412 passages, with 18 words from the vocabulary in its prompt;
-    /// left out 3 passages over silence and 2 repeats."
-    static func summary(segments: Int, droppedSilent: Int, droppedRepeats: Int, promptTerms: Int) -> String {
-        var text = "Transcribed again with \(DeepTranscriptionModel.displayName): "
+    /// left out 3 passages over silence and 2 repeats." A meeting in several `languages` names them: "… turbo in
+    /// French (Canada) and English (Canada): 412 passages…".
+    static func summary(segments: Int, droppedSilent: Int, droppedRepeats: Int, promptTerms: Int,
+                        languages: [String] = []) -> String {
+        var text = "Transcribed again with \(DeepTranscriptionModel.displayName)"
+            + (languages.count > 1 ? " in \(LanguageStage.names(languages))" : "") + ": "
             + (segments == 1 ? "1 passage" : "\(segments) passages")
         if promptTerms > 0 {
             text += ", with \(promptTerms) vocabulary \(promptTerms == 1 ? "term" : "terms") in its prompt"
@@ -231,6 +252,46 @@ enum DeepTranscriptionStage {
         if droppedRepeats > 0 { dropped.append(droppedRepeats == 1 ? "1 repeat" : "\(droppedRepeats) repeats") }
         if !dropped.isEmpty { text += "; left out " + dropped.joined(separator: " and ") }
         return text + "."
+    }
+
+    // MARK: - Languages
+
+    /// The meeting's languages, the preferred one first (locale identifiers): those the transcript the pass stands
+    /// for was made from (`transcript`, the current one's `unfixed`: a merge's, languages named with `session
+    /// languages`, or an earlier deep transcript's), else meeting.json's. One (or none) is a meeting in one language.
+    static func languages(meeting: MeetingInfo, transcript: Transcript?) -> [String] {
+        let made = DictationLanguage.meetingLanguages(transcript?.languages ?? [])
+        return made.isEmpty ? DictationLanguage.meetingLanguages(meeting.languages ?? []) : made
+    }
+
+    /// Why a meeting in `languages` is not transcribed again: several, one of which Whisper does not know. Nil when it
+    /// can be (one language is transcribed whatever it is: one Whisper does not know is detected).
+    static func languagesProblem(_ languages: [String]) -> String? {
+        guard languages.count > 1 else { return nil }
+        let unknown = languages.filter { DeepTranscriptionModel.whisperLanguage($0) == nil }
+        return unknown.isEmpty ? nil : unknownLanguages(unknown)
+    }
+
+    /// The language a pass transcribes in: one (Whisper's name, nil to detect it), or several to choose from passage
+    /// by passage, with the meeting's locale for each of Whisper's names (the first listed of two Whisper names alike).
+    struct LanguageChoice: Equatable {
+        var language: String?
+        var languages: [String] = []
+        var locales: [String: String] = [:]
+
+        init(single locale: String) {
+            language = DeepTranscriptionModel.whisperLanguage(locale)
+        }
+
+        /// Several `locales` Whisper knows (`languagesProblem` is nil).
+        init(_ meetingLanguages: [String]) {
+            for locale in meetingLanguages {
+                guard let code = DeepTranscriptionModel.whisperLanguage(locale), locales[code] == nil else { continue }
+                languages.append(code)
+                locales[code] = locale
+            }
+            language = languages.first
+        }
     }
 
     // MARK: - Lineage
@@ -272,7 +333,8 @@ enum DeepTranscriptionStage {
     /// pieces of at most `DeepAudio.pieceSeconds` ending at a quiet moment, each piece transcribed and mapped back to
     /// session time.
     private static func transcribe(tracks: [String], request: Request, transcriber: any DeepTranscriber,
-                                   reference: Transcript?, language: String?, prompt: String, recorder: StageRecorder) async throws -> Pass {
+                                   reference: Transcript?, choice: LanguageChoice, prompt: String,
+                                   recorder: StageRecorder) async throws -> Pass {
         let manifest = request.manifest
         let total = max(1e-9, tracks.reduce(0) { $0 + TrackRenderer.renderedSeconds(manifest: manifest, track: $1) })
         let journal = recorder.journal
@@ -300,7 +362,7 @@ enum DeepTranscriptionStage {
                 segments += try await transcribeTrack(
                     track, session: request.session, manifest: manifest,
                     renderTo: SessionPaths.derived(request.session).appendingPathComponent("deep-\(track)-16k.caf"),
-                    transcriber: transcriber, language: language, prompt: prompt,
+                    transcriber: transcriber, choice: choice, prompt: prompt,
                     reference: reference) { trackSeconds in
                         journal.progress(PostProcessingProgress(stage: .deepTranscription, track: track,
                                                                 fraction: min(1, (base + trackSeconds) / total),
@@ -322,10 +384,11 @@ enum DeepTranscriptionStage {
 
     /// One track's saved audio transcribed by `transcriber`, in session time: rendered to `output` (16 kHz, long gaps
     /// shortened; deleted afterwards), read in pieces of at most `DeepAudio.pieceSeconds` that end at a quiet moment,
-    /// each piece transcribed and mapped back through the render's time map, with each segment's level. `progress`
-    /// gets the seconds of the render done. A render that fails throws `RenderFailure`.
+    /// each piece transcribed (in `choice`'s language, or each passage in one of its languages) and mapped back
+    /// through the render's time map, with each segment's level and meeting language. `progress` gets the seconds of
+    /// the render done. A render that fails throws `RenderFailure`.
     static func transcribeTrack(_ track: String, session: URL, manifest: SessionManifest, renderTo output: URL,
-                                transcriber: any DeepTranscriber, language: String?, prompt: String,
+                                transcriber: any DeepTranscriber, choice: LanguageChoice, prompt: String,
                                 reference: Transcript?,
                                 progress: @escaping @Sendable (Double) -> Void) async throws -> [DeepHeardSegment] {
         let rendered: RenderedTrack
@@ -356,15 +419,15 @@ enum DeepTranscriptionStage {
             let recordedWords = DeepAudio.recordedWords(reference, track: track, timeMap: rendered.timeMap,
                                                         pieceStart: pieceStart, pieceSeconds: pieceSeconds)
             let heard = try await transcriber.transcribe(
-                DeepTranscriptionRequest(samples: samples, language: language, prompt: prompt,
-                                         recordedWords: recordedWords),
+                DeepTranscriptionRequest(samples: samples, language: choice.language, languages: choice.languages,
+                                         prompt: prompt, recordedWords: recordedWords),
                 progress: { fraction in
                     let value = fraction.isFinite ? min(1, max(0, fraction)) : 0
                     progress(pieceStart + value * pieceSeconds)
                 })
             try Task.checkCancellation()
             segments += DeepAudio.sessionSegments(heard, piece: samples, pieceStart: pieceStart, track: track,
-                                                  timeMap: rendered.timeMap)
+                                                  timeMap: rendered.timeMap, locales: choice.locales)
             position += samples.count
             progress(Double(position) / Double(DeepAudio.sampleRate))
         }

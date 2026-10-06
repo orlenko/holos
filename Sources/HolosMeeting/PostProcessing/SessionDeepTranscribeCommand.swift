@@ -32,9 +32,10 @@ public enum SessionDeepTranscribeCommand {
     }
 
     /// Why the pass cannot run on `session` at all, thrown before anything is changed (the command exits 1): a
-    /// recording that was not finished properly, deleted or missing audio, a meeting in several languages, or the
-    /// model not installed. A run that has nothing to do (the current transcript is this model's, and not `force`)
-    /// needs neither the model nor the audio (it may have been deleted since): it keeps the transcript.
+    /// recording that was not finished properly, deleted or missing audio, a meeting in several languages one of which
+    /// Whisper does not know, or the model not installed. A run that has nothing to do (the current transcript is this
+    /// model's, and not `force`) needs neither the model nor the audio (it may have been deleted since): it keeps the
+    /// transcript.
     public static func precheck(session: URL, dependencies: DeepTranscriptionDependencies,
                                 force: Bool = false) throws {
         let manifest = try SessionArchive.readManifest(at: session)
@@ -48,18 +49,12 @@ public enum SessionDeepTranscribeCommand {
                 + "\(manifest.id) first, so all of its saved audio is transcribed.")
         }
         let meeting = try SessionFiles.meetingInfo(session: session, manifest: manifest)
-        // A transcript made in one language named with `session languages` has `languages` too; only several count.
-        let mergedLanguages = (try? SessionFiles.currentTranscript(session: session))??.languages ?? []
-        let merged = DictationLanguage.meetingLanguages(mergedLanguages).count > 1
-        if DictationLanguage.meetingLanguages(meeting.languages ?? []).count > 1 || merged {
-            throw HolosError.invalidInput(DeepTranscriptionStage.severalLanguages)
+        let unfixed = unfixedTranscript(session: session)
+        if let problem = DeepTranscriptionStage.languagesProblem(
+            DeepTranscriptionStage.languages(meeting: meeting, transcript: unfixed)) {
+            throw HolosError.invalidInput(problem)
         }
-        if !force, let current = try? SessionFiles.currentTranscript(session: session),
-           let events = try? SessionArchive.readEvents(at: session).events,
-           DeepTranscriptionStage.recordedBase(of: current, events: events, session: session).unfixed.engine
-            == dependencies.engine {
-            return
-        }
+        if !force, let unfixed, unfixed.engine == dependencies.engine { return }
         // Only a pass that transcribes needs the audio.
         if try SessionFiles.audioDeleted(session: session, sessionID: manifest.id) {
             throw HolosError.invalidInput(DeepTranscriptionStage.audioDeleted)
@@ -73,6 +68,25 @@ public enum SessionDeepTranscribeCommand {
         case .notInstalled:
             throw HolosError.unavailable(DeepTranscriptionModel.missingModelMessage)
         }
+    }
+
+    /// Why the pass would not transcribe `session` for its languages (several, one of which Whisper does not know),
+    /// read as the pass reads them: those of the transcript the current one stands for, else meeting.json's. Nil when
+    /// it would, and when they cannot be read (the pass then says why). Reads files only (the app asks it before it
+    /// queues a meeting).
+    public static func languagesProblem(session: URL) -> String? {
+        guard let manifest = try? SessionArchive.readManifest(at: session),
+              let meeting = try? SessionFiles.meetingInfo(session: session, manifest: manifest) else { return nil }
+        return DeepTranscriptionStage.languagesProblem(
+            DeepTranscriptionStage.languages(meeting: meeting, transcript: unfixedTranscript(session: session)))
+    }
+
+    /// The transcript the current one stands for (`DeepTranscriptionStage.recordedBase`'s `unfixed`); the current
+    /// one when the journal cannot be read; nil without one.
+    private static func unfixedTranscript(session: URL) -> Transcript? {
+        guard let current = try? SessionFiles.currentTranscript(session: session) else { return nil }
+        guard let events = try? SessionArchive.readEvents(at: session).events else { return current }
+        return DeepTranscriptionStage.recordedBase(of: current, events: events, session: session).unfixed
     }
 
     /// Runs `precheck`, then the post-processor. Throws, with nothing changed, when the precheck fails, the session is

@@ -100,11 +100,13 @@ public struct DeepHeardSegment: Sendable, Equatable {
     public var levelDB: Double
     /// Audible audio the model gave no words for (`DeepTranscribedSegment.unheard`).
     public var unheard: Bool
+    /// The meeting language it was transcribed in ("fr-CA"), in a meeting in several languages; nil otherwise.
+    public var language: String?
 
     public init(track: String, start: Double, end: Double, text: String, words: [DeepTranscribedWord] = [],
-                levelDB: Double, unheard: Bool = false) {
+                levelDB: Double, unheard: Bool = false, language: String? = nil) {
         self.track = track; self.start = start; self.end = end; self.text = text; self.words = words
-        self.levelDB = levelDB; self.unheard = unheard
+        self.levelDB = levelDB; self.unheard = unheard; self.language = language
     }
 }
 
@@ -190,9 +192,11 @@ public enum DeepAudio {
     /// dropped (by its middle), a segment whose words fall in several spans becomes one segment per span, one with no
     /// word left is dropped, and an untimed segment or an empty (`unheard`) stretch keeps its part in one span (an
     /// empty stretch, each part). Snapped to a span edge instead, a passage written over that silence would stretch
-    /// across the whole gap in session time and escape the silence guard.
+    /// across the whole gap in session time and escape the silence guard. Each keeps the language it was transcribed
+    /// in, named by `locales` (Whisper's name → the meeting's locale; one it does not name keeps Whisper's).
     public static func sessionSegments(_ segments: [DeepTranscribedSegment], piece: [Float], pieceStart: Double,
-                                       track: String, timeMap: [RenderSpan]) -> [DeepHeardSegment] {
+                                       track: String, timeMap: [RenderSpan],
+                                       locales: [String: String] = [:]) -> [DeepHeardSegment] {
         func session(_ time: Double) -> Double { RenderTimeMap.sessionTime(pieceStart + time, map: timeMap) }
         /// The span holding piece time `time` (0 for an empty map, which keeps everything).
         func span(at time: Double) -> Int? {
@@ -221,6 +225,7 @@ public enum DeepAudio {
                 }
                 continue
             }
+            let language = segment.language.map { locales[$0] ?? $0 }
             let words = segment.words.filter { $0.start.isFinite && $0.end.isFinite }
             if words.isEmpty {
                 guard !segment.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
@@ -228,7 +233,8 @@ public enum DeepAudio {
                           .max(by: { $0.end - $0.start < $1.end - $1.start }) else { continue }
                 let start = session(part.start)
                 out.append(DeepHeardSegment(track: track, start: start, end: max(start, session(part.end)),
-                                            text: segment.text, levelDB: levelDB(piece, from: part.start, to: part.end)))
+                                            text: segment.text, levelDB: levelDB(piece, from: part.start, to: part.end),
+                                            language: language))
                 continue
             }
             // Words grouped by the span their middle lies in, in order; words in inserted silence are dropped.
@@ -256,7 +262,8 @@ public enum DeepAudio {
                 let sessionStart = session(start)
                 out.append(DeepHeardSegment(track: track, start: sessionStart, end: max(sessionStart, session(end)),
                                             text: whole ? segment.text : group.words.map(\.text).joined(),
-                                            words: mapped, levelDB: levelDB(piece, from: start, to: end)))
+                                            words: mapped, levelDB: levelDB(piece, from: start, to: end),
+                                            language: language))
             }
         }
         return out
@@ -264,7 +271,7 @@ public enum DeepAudio {
 
     /// A transcript segment for `heard`: its words' texts joined as the model spaced them (punctuation the model
     /// wrote as a word of its own joins the word before it), each a `TimedWord` at its UTF-16 offset in the text; a
-    /// segment without word timings keeps its text, untimed. Nil when there is no text.
+    /// segment without word timings keeps its text, untimed. It keeps its `language`. Nil when there is no text.
     public static func transcriptSegment(_ heard: DeepHeardSegment) -> TranscriptSegment? {
         var text = ""
         var words: [TimedWord] = []
@@ -292,11 +299,12 @@ public enum DeepAudio {
         if words.isEmpty {
             let plain = heard.text.split(whereSeparator: \.isWhitespace).joined(separator: " ")
             guard !plain.isEmpty else { return nil }
-            return TranscriptSegment(start: heard.start, end: heard.end, text: plain, track: heard.track)
+            return TranscriptSegment(start: heard.start, end: heard.end, text: plain, track: heard.track,
+                                     language: heard.language)
         }
         return TranscriptSegment(start: words.first?.start ?? heard.start,
                                  end: max(words.last?.end ?? heard.end, words.first?.start ?? heard.start),
-                                 text: text, words: words, track: heard.track)
+                                 text: text, words: words, track: heard.track, language: heard.language)
     }
 
     private static func isPunctuation(_ scalar: Unicode.Scalar) -> Bool {

@@ -197,7 +197,7 @@ public enum EvalLocal {
     /// The language a `--backend whisper` run without `--language` transcribes in: the current transcript's (the one
     /// a deep transcript or word fixes were made from), as `DeepTranscriptionStage` chooses it; nil without a current
     /// transcript. Throws for a meeting whose meeting.json lists several languages, or a transcript merged from
-    /// several, which the pass does not transcribe.
+    /// several: an evaluation transcribes in one language (the pass chooses one per passage, §4.16).
     static func whisperLanguages(session: URL, manifest: SessionManifest) throws -> [String]? {
         let meeting = try SessionFiles.meetingInfo(session: session, manifest: manifest)
         if DictationLanguage.meetingLanguages(meeting.languages ?? []).count > 1 {
@@ -213,9 +213,9 @@ public enum EvalLocal {
     }
 
     /// Why a `--backend whisper` run without `--language` refuses a meeting in several languages (meeting.json's, or
-    /// the current transcript's merge), as the deep transcription pass does.
-    static let severalLanguages = "This meeting is in several languages; deep transcription handles meetings in one "
-        + "language for now. Pass --language with one of them to evaluate it in that language."
+    /// the current transcript's merge).
+    static let severalLanguages = "This meeting is in several languages; a Whisper evaluation handles one language "
+        + "for now. Pass --language with one of them to evaluate it in that language."
 
     /// The prompt candidates of a `--backend whisper` run, as the deep transcription pass orders them: the meeting's
     /// vocabulary.json first, then the rest of `wordList`, then `names`.
@@ -685,7 +685,7 @@ public enum EvalLocal {
             let heard = try await DeepTranscriptionStage.transcribeTrack(
                 track.track, session: session, manifest: manifest,
                 renderTo: EvalPaths.localRun(record.id, in: session).appendingPathComponent("deep-\(track.track)-16k.caf"),
-                transcriber: transcriber, language: DeepTranscriptionModel.whisperLanguage(language),
+                transcriber: transcriber, choice: DeepTranscriptionStage.LanguageChoice(single: language),
                 prompt: record.prompt ?? "", reference: reference) { seconds in
                     let next = step.withLock { value -> Int? in
                         let reached = Int(min(1, seconds / total) * 10)

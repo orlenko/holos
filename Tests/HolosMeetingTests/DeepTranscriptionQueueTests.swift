@@ -69,16 +69,15 @@ private func queue(_ ids: [String], runNow: Set<String> = []) -> DeepTranscripti
     #expect(DeepTranscriptionSchedule.next(items, running) == .idle)
 }
 
-@Test func onlyMeetingsInOneLanguageAreQueuedAfterRecording() {
-    #expect(DeepTranscriptionSchedule.queuesAfterMeeting(enabled: true, modelInstalled: true, languages: 1))
-    #expect(DeepTranscriptionSchedule.queuesAfterMeeting(enabled: true, modelInstalled: true, languages: 0))
-    #expect(!DeepTranscriptionSchedule.queuesAfterMeeting(enabled: true, modelInstalled: true, languages: 2))
-    #expect(!DeepTranscriptionSchedule.queuesAfterMeeting(enabled: false, modelInstalled: true, languages: 1))
-    #expect(!DeepTranscriptionSchedule.queuesAfterMeeting(enabled: true, modelInstalled: false, languages: 1))
+@Test func onlyMeetingsWhoseLanguagesThePassTranscribesAreQueuedAfterRecording() {
+    #expect(DeepTranscriptionSchedule.queuesAfterMeeting(enabled: true, modelInstalled: true, transcribable: true))
+    #expect(!DeepTranscriptionSchedule.queuesAfterMeeting(enabled: true, modelInstalled: true, transcribable: false))
+    #expect(!DeepTranscriptionSchedule.queuesAfterMeeting(enabled: false, modelInstalled: true, transcribable: true))
+    #expect(!DeepTranscriptionSchedule.queuesAfterMeeting(enabled: true, modelInstalled: false, transcribable: true))
     // The user acted on the meeting while its languages were read (Run Now, maybe cancelled since): left alone.
-    #expect(!DeepTranscriptionSchedule.queuesAfterMeeting(enabled: true, modelInstalled: true, languages: 1,
+    #expect(!DeepTranscriptionSchedule.queuesAfterMeeting(enabled: true, modelInstalled: true, transcribable: true,
                                                           queued: true))
-    #expect(!DeepTranscriptionSchedule.queuesAfterMeeting(enabled: true, modelInstalled: true, languages: 1,
+    #expect(!DeepTranscriptionSchedule.queuesAfterMeeting(enabled: true, modelInstalled: true, transcribable: true,
                                                           considered: true))
 }
 
@@ -140,14 +139,14 @@ private func queue(_ ids: [String], runNow: Set<String> = []) -> DeepTranscripti
 }
 
 @Test func meetingsThatFinishedWhileTheAppWasClosedAreQueuedOnce() {
-    func candidate(_ id: String, after seconds: Double, finished: Bool = true, languages: Int = 1,
+    func candidate(_ id: String, after seconds: Double, finished: Bool = true, transcribable: Bool = true,
                    deep: Bool = false) -> DeepTranscriptionSchedule.Candidate {
         .init(sessionID: id, path: "/m/\(id).holos", createdAt: date.addingTimeInterval(seconds), finished: finished,
-              languages: languages, hasDeepTranscript: deep)
+              transcribable: transcribable, hasDeepTranscript: deep)
     }
     let candidates = [
         candidate("before", after: -60), candidate("A", after: 60), candidate("live", after: 70, finished: false),
-        candidate("two", after: 80, languages: 2), candidate("done", after: 90, deep: true),
+        candidate("unknown", after: 80, transcribable: false), candidate("done", after: 90, deep: true),
         candidate("seen", after: 100), candidate("queued", after: 110), candidate("B", after: 120),
     ]
     let found = DeepTranscriptionSchedule.reconcile(candidates, enabledSince: date, considered: ["seen"],
@@ -229,7 +228,7 @@ private func queue(_ ids: [String], runNow: Set<String> = []) -> DeepTranscripti
     let wasPending = accepted.resolveRunNow("A", accepted: true)
     #expect(wasPending && !accepted.isPending("A") && accepted.items[0].runNow)
     #expect(DeepTranscriptionSchedule.next(accepted, situation) == .run("A"))
-    // Refused (several languages): A stays as it was, automatic.
+    // Refused (a language Whisper does not know): A stays as it was, automatic.
     let refusedA = reread.resolveRunNow("A", accepted: false)
     #expect(refusedA && !reread.isPending("A") && reread.items.map(\.sessionID) == ["A", "B"])
     #expect(!reread.items[0].runNow)

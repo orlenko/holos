@@ -1,3 +1,4 @@
+import CoreML
 import Foundation
 import HolosCore
 import os
@@ -7,7 +8,8 @@ import os
 /// with the decoding settings measured for meetings: the meeting's language when it has one, the vocabulary prompt on
 /// every chunk, voice-activity chunking, word timestamps, and WhisperKit's default temperature fallback and
 /// compression-ratio and log-probability thresholds (which kept it out of the repetition loops whisper.cpp fell into),
-/// but not its first-token log-probability check, which emptied whole chunks.
+/// but not its first-token log-probability check, which emptied whole chunks. A meeting in several languages has each
+/// passage transcribed in the one of them the model hears in it (`WhisperLanguagePick`).
 /// Loads only from the install folder; it never downloads. One transcription at a time: the stage calls it from one
 /// task (hence `@unchecked Sendable` around WhisperKit's non-Sendable pipeline).
 public final class WhisperKitTranscriber: DeepTranscriber, @unchecked Sendable {
@@ -56,8 +58,15 @@ public final class WhisperKitTranscriber: DeepTranscriber, @unchecked Sendable {
         try Task.checkCancellation()
         guard !request.samples.isEmpty else { return [] }
         let tokens = request.prompt.isEmpty ? nil : try promptTokens(request.prompt)
+        // The meeting's languages to choose from, passage by passage: those WhisperKit has a token for, each once.
+        var candidates: [String] = []
+        for language in request.languages where Self.supportedLanguages.contains(language) {
+            if !candidates.contains(language) { candidates.append(language) }
+        }
+        let chooses = candidates.count > 1
         // A language WhisperKit has no token for would be replaced by English: detected instead.
-        let language = request.language.flatMap { Self.supportedLanguages.contains($0) ? $0 : nil }
+        let language = chooses ? nil : (request.choosesLanguages ? candidates.first : request.language)
+            .flatMap { Self.supportedLanguages.contains($0) ? $0 : nil }
         let options = Self.decodingOptions(language: language, promptTokens: tokens)
         // WhisperKit's own VAD path drops a chunk whose decoding fails without a trace; chunked here instead (at most
         // `maxChunkSeconds` each), each chunk's result is seen, and a failed one is decoded again on its own.
@@ -68,44 +77,60 @@ public final class WhisperKitTranscriber: DeepTranscriber, @unchecked Sendable {
         let ranges = Self.plan(chunks: chunks.map { $0.seekOffsetIndex..<($0.seekOffsetIndex + $0.audioSamples.count) },
                                total: request.samples.count, recordedWords: request.recordedWords,
                                maxSamples: maxSamples)
-        var plainOptions: DecodingOptions?
-        if tokens != nil {
-            plainOptions = options
-            plainOptions?.promptTokens = nil
-        }
+        // Each stretch in its language: the request's, or, choosing, each passage's.
+        let stretches: [(range: Range<Int>, language: String?)] = chooses
+            ? try await languageRuns(ranges, samples: request.samples, languages: candidates)
+            : ranges.map { ($0, language) }
         let recordedSamples = request.recordedWords.map { Int(($0 * 16_000).rounded(.down)) }
-        let decoded = try await decodeChosen(ranges.map { range in
-            Span(offset: range.lowerBound, samples: Array(request.samples[range]),
-                 recordedWords: recordedSamples.filter { range.contains($0) }.count)
-        }, options: options, plain: plainOptions, depth: 0, recordedSamples: recordedSamples)
-        chunkCount += ranges.count
+        var decoded: [Decoded] = []
+        // Decoded language by language (the decoding settings name it), in the order the languages are listed.
+        var order: [String?] = []
+        for stretch in stretches where !order.contains(stretch.language) { order.append(stretch.language) }
+        for stretchLanguage in order {
+            let options = Self.decodingOptions(language: stretchLanguage, promptTokens: tokens)
+            var plainOptions: DecodingOptions?
+            if tokens != nil {
+                plainOptions = options
+                plainOptions?.promptTokens = nil
+            }
+            let spans = stretches.filter { $0.language == stretchLanguage }.map { stretch in
+                Span(offset: stretch.range.lowerBound, samples: Array(request.samples[stretch.range]),
+                     recordedWords: recordedSamples.filter { stretch.range.contains($0) }.count)
+            }
+            decoded += try await decodeChosen(spans, options: options, plain: plainOptions, depth: 0,
+                                              recordedSamples: recordedSamples).map { span in
+                var span = span
+                span.language = chooses ? stretchLanguage : nil
+                return span
+            }
+        }
+        decoded.sort { $0.offset < $1.offset }
+        chunkCount += stretches.count
         // Audible stretches the model gave no words for, even in halves: reported, for the pass to judge against the
         // recorded transcript (speech it would leave out, or music and noise).
         var segments: [DeepTranscribedSegment] = decoded.filter(\.unheard).map { span in
             DeepTranscribedSegment(text: "", start: Double(span.offset) / 16_000,
                                    end: Double(span.offset + span.count) / 16_000, unheard: true)
         }
-        let results: [TranscriptionResult] = decoded.flatMap { span -> [TranscriptionResult] in
-            let seconds = Float(span.offset) / Float(WhisperKit.sampleRate)
-            for result in span.results {
-                result.segments = result.segments.map {
-                    TranscriptionUtilities.updateSegmentTimings(segment: $0, seekTime: seconds)
-                }
-            }
-            return span.results
-        }
         guard let tokenizer = kit.tokenizer else { throw HolosError.unavailable("The model's tokenizer is not loaded.") }
         let special = tokenizer.specialTokens.specialTokenBegin
-        for result in results {
-            for segment in result.segments {
-                let words = (segment.words ?? []).compactMap { word -> DeepTranscribedWord? in
-                    guard word.tokens.contains(where: { $0 < special }), !Self.isSpecial(word.word) else { return nil }
-                    return DeepTranscribedWord(text: word.word, start: Double(word.start), end: Double(word.end),
-                                               probability: Double(word.probability))
+        for span in decoded {
+            let seconds = Float(span.offset) / Float(WhisperKit.sampleRate)
+            for result in span.results {
+                for segment in result.segments {
+                    let segment = TranscriptionUtilities.updateSegmentTimings(segment: segment, seekTime: seconds)
+                    let words = (segment.words ?? []).compactMap { word -> DeepTranscribedWord? in
+                        guard word.tokens.contains(where: { $0 < special }), !Self.isSpecial(word.word) else {
+                            return nil
+                        }
+                        return DeepTranscribedWord(text: word.word, start: Double(word.start), end: Double(word.end),
+                                                   probability: Double(word.probability))
+                    }
+                    let text = Self.withoutSpecialTokens(segment.text)
+                    segments.append(DeepTranscribedSegment(text: text, start: Double(segment.start),
+                                                           end: Double(segment.end), words: words,
+                                                           language: span.language))
                 }
-                let text = Self.withoutSpecialTokens(segment.text)
-                segments.append(DeepTranscribedSegment(text: text, start: Double(segment.start),
-                                                       end: Double(segment.end), words: words))
             }
         }
         progress(1)
@@ -130,6 +155,87 @@ public final class WhisperKitTranscriber: DeepTranscriber, @unchecked Sendable {
     }
 
     private(set) var chunkLog: [ChunkDecision] = []
+
+    /// Each passage whose language was chosen since the transcriber was loaded: where it starts in its piece, its
+    /// length, the probability of each of the meeting's languages, and the one chosen (for the opt-in evaluation).
+    struct LanguageDecision: Sendable, Equatable {
+        var start: Double
+        var seconds: Double
+        var probabilities: [String: Double]
+        var language: String
+    }
+
+    private(set) var languageLog: [LanguageDecision] = []
+    /// Passages halved because their language was unsure, since the transcriber was loaded.
+    private(set) var languageSplits = 0
+
+    /// The stretches to decode of a request in several `languages` (Whisper's names, the preferred one first): each of
+    /// `ranges` cut into passages at its pauses (`WhisperLanguagePick.passages`), each passage's language chosen among
+    /// `languages` by the model's language detection (an unsure one halved and each half chosen on its own), and
+    /// adjacent passages in one language joined again.
+    private func languageRuns(_ ranges: [Range<Int>], samples: [Float],
+                              languages: [String]) async throws -> [(range: Range<Int>, language: String?)] {
+        let frame = Int(WhisperLanguagePick.frameSeconds * 16_000)
+        var passages: [(range: Range<Int>, language: String)] = []
+        for range in ranges {
+            let stretch = Array(samples[range])
+            let levels = WhisperLanguagePick.levels(stretch, frameSamples: frame)
+            let activity = WhisperLanguagePick.activity(levels: levels)
+            // In time order; an unsure passage is replaced by its halves, which are chosen next.
+            var pending = WhisperLanguagePick.passages(activity: activity, frameSamples: frame, total: stretch.count)
+                .map { (passage: $0, depth: 0) }
+            while !pending.isEmpty {
+                try Task.checkCancellation()
+                let (passage, depth) = pending.removeFirst()
+                let probabilities = WhisperLanguagePick.probabilities(
+                    logits: try await languageLogits(Array(stretch[passage.range]), languages: languages))
+                let language = WhisperLanguagePick.choice(probabilities, languages: languages) ?? languages[0]
+                if (probabilities[language] ?? 0) < WhisperLanguagePick.confidentProbability,
+                   depth < WhisperLanguagePick.maximumSplitDepth,
+                   let halves = WhisperLanguagePick.halves(passage, activity: activity, levels: levels,
+                                                           frameSamples: frame) {
+                    languageSplits += 1
+                    pending.insert(contentsOf: [(halves.0, depth + 1), (halves.1, depth + 1)], at: 0)
+                    continue
+                }
+                let offset = range.lowerBound
+                languageLog.append(LanguageDecision(start: Double(offset + passage.range.lowerBound) / 16_000,
+                                                    seconds: Double(passage.range.count) / 16_000,
+                                                    probabilities: probabilities, language: language))
+                passages.append(((offset + passage.range.lowerBound)..<(offset + passage.range.upperBound), language))
+            }
+        }
+        return WhisperLanguagePick.runs(passages).map { ($0.range, $0.language) }
+    }
+
+    /// The model's language-detection logits for `samples` (its first 30 s), for each of `languages` (Whisper's
+    /// names): the start-of-transcript step WhisperKit's `detectLangauge` takes, whose result keeps only the language
+    /// it samples, read here for every language asked for.
+    private func languageLogits(_ samples: [Float], languages: [String]) async throws -> [String: Float] {
+        guard let tokenizer = kit.tokenizer else {
+            throw HolosError.unavailable("The model's tokenizer is not loaded.")
+        }
+        guard kit.textDecoder.isModelMultilingual else {
+            throw HolosError.unavailable("The deep transcription model cannot tell languages apart.")
+        }
+        var tokens: [String: Int] = [:]
+        for language in languages {
+            if let token = tokenizer.convertTokenToId("<|\(language)|>") { tokens[language] = token }
+        }
+        let window = kit.featureExtractor.windowSamples ?? Constants.defaultWindowSamples
+        guard let audio = kit.audioProcessor.padOrTrim(fromArray: samples.isEmpty ? [0] : samples, startAt: 0,
+                                                        toLength: window),
+              let mel = try await kit.featureExtractor.logMelSpectrogram(fromAudio: audio),
+              let encoded = try await kit.audioEncoder.encodeFeatures(mel) else {
+            throw HolosError.unavailable("The deep transcription model could not detect a passage's language.")
+        }
+        let inputs = try kit.textDecoder.prepareDecoderInputs(
+            withPrompt: [tokenizer.specialTokens.startOfTranscriptToken])
+        let reader = LanguageLogitsReader(tokens: tokens, eotToken: tokenizer.specialTokens.endToken)
+        _ = try await kit.textDecoder.detectLanguage(from: encoded, using: inputs, sampler: reader,
+                                                     options: DecodingOptions(verbose: false), temperature: 0)
+        return reader.logits
+    }
 
     /// The longest chunk given to the model. Whisper's window is 30 s, but WhisperKit's decoder holds 224 tokens in
     /// all, the prompt's included: a prompt of 110 tokens leaves room for about 80 words, which 30 s of fast speech
@@ -184,6 +290,8 @@ public final class WhisperKitTranscriber: DeepTranscriber, @unchecked Sendable {
         var count: Int
         var results: [TranscriptionResult]
         var unheard: Bool
+        /// The language it was decoded in, when chosen passage by passage.
+        var language: String?
     }
 
     /// A stretch of the request's samples, `offset` samples from its start, with how many recorded words start in it.
@@ -395,5 +503,31 @@ public final class WhisperKitTranscriber: DeepTranscriber, @unchecked Sendable {
     static func withoutSpecialTokens(_ text: String) -> String {
         text.replacingOccurrences(of: "<\\|[^|>]*\\|>", with: "", options: .regularExpression)
             .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+}
+
+/// A token sampler for WhisperKit's language-detection step that keeps the logits of the language tokens asked for,
+/// then samples as WhisperKit does (greedy).
+private final class LanguageLogitsReader: TokenSampling {
+    private let tokens: [String: Int]
+    private let greedy: GreedyTokenSampler
+    private(set) var logits: [String: Float] = [:]
+
+    init(tokens: [String: Int], eotToken: Int) {
+        self.tokens = tokens
+        greedy = GreedyTokenSampler(temperature: 0, eotToken: eotToken,
+                                    decodingOptions: DecodingOptions(verbose: false))
+    }
+
+    func update(tokens current: [Int], logits: MLMultiArray, logProbs: [Float]) async -> SamplingResult {
+        let size = logits.count
+        for (language, token) in tokens where token >= 0 && token < size {
+            self.logits[language] = logits[[0, 0, NSNumber(value: token)]].floatValue
+        }
+        return await greedy.update(tokens: current, logits: logits, logProbs: logProbs)
+    }
+
+    func finalize(tokens current: [Int], logProbs: [Float]) -> SamplingResult {
+        greedy.finalize(tokens: current, logProbs: logProbs)
     }
 }

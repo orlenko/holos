@@ -411,9 +411,15 @@ thumbnail timeline, and a larger local-model benchmark are follow-ups.
   recorded transcript has no words and repetition loops are left out. Three WhisperKit 1.1.0
   problems with prompts are worked around (word times read from the wrong decoder rows, timestamp
   rules switched off, speech left out of a chunk; each chunk is also decoded without the prompt
-  and keeps the plain result when the prompted one lost words). `eval local --backend whisper`
-  makes the same transcription as a candidate. In the app, Settings › Meetings downloads the model
-  and turns on "Deep transcription after meetings", which queues each saved one-language meeting
+  and keeps the plain result when the prompted one lost words). A meeting in several languages
+  has each passage (speech between pauses, an unsure one halved) transcribed in the language
+  Whisper's detection, limited to the meeting's languages, scores highest; the transcript names
+  each segment's language as a merge does. On invented bilingual board meetings (system voices,
+  82 % French) that made 6.9 % WER against 17.5 % forced in French, at about twice a one-language
+  pass's time. `eval local --backend whisper` makes the same transcription as a candidate (in
+  one language). In the app, Settings › Meetings downloads the model
+  and turns on "Deep transcription after meetings", which queues each saved meeting whose
+  languages Whisper knows
   and runs the pass on AC power, one at a time, resuming the queue after a quit; the Meetings list
   shows the pass's state and a meeting's right-click menu runs it now or cancels it (the queue
   policy is unit-tested; the Settings row, the menu and the power switch have not been seen on
@@ -737,8 +743,11 @@ Still requiring real-machine or user-data validation:
   not). `eval local` applies the same fixes to its candidate by default; `--no-word-fixes`
   keeps the recognizer's words for comparison. The model is asked one place at a time (at
   most 500 per run).
-- Deep transcription: meetings in several languages are not transcribed again yet; accuracy was
-  measured on one meeting; the app's queue, Settings row and menu have not been seen on screen.
+- Deep transcription: accuracy was measured on one meeting; a meeting in several languages has
+  each passage transcribed in the language Whisper hears among the meeting's, measured on
+  synthetic speech only (short answers of a word or two and accented speech can get the wrong
+  language), and one with a language Whisper does not know is not transcribed again; the app's
+  queue, Settings row and menu have not been seen on screen.
 - Live transcript: selecting a finalized phrase while recording can correct its text or name
   its speaker. The app saves a timed hint, carries text into the final/replayed transcript,
   learns safe correction pairs, keeps a shared pair until the last confirming live edit is

@@ -15,7 +15,7 @@ import Testing
 private final class ScriptedTranscriber: DeepTranscriber, Sendable {
     let engine: String
     let calls = SharedValue(0)
-    let requests = SharedValue<[(language: String?, prompt: String, seconds: Double)]>([])
+    let requests = SharedValue<[(language: String?, languages: [String], prompt: String, seconds: Double)]>([])
     let recordedWords = SharedValue<[[Double]]>([])
     let script: @Sendable (DeepTranscriptionRequest) throws -> [DeepTranscribedSegment]
 
@@ -30,7 +30,9 @@ private final class ScriptedTranscriber: DeepTranscriber, Sendable {
     func transcribe(_ request: DeepTranscriptionRequest,
                     progress: @escaping @Sendable (Double) -> Void) async throws -> [DeepTranscribedSegment] {
         calls.update { $0 += 1 }
-        requests.update { $0.append((request.language, request.prompt, Double(request.samples.count) / 16_000)) }
+        requests.update {
+            $0.append((request.language, request.languages, request.prompt, Double(request.samples.count) / 16_000))
+        }
         recordedWords.update { $0.append(request.recordedWords) }
         progress(1)
         return try script(request)
@@ -537,18 +539,20 @@ func theCommandRefusesWhatItCannotDo() async throws {
     #expect(try currentTranscript(session).id == recorded.id)
     #expect(try SessionArchive.readEvents(at: session).events.allSatisfy { $0.kind != MeetingEventKind.deepTranscribed })
 
-    // Several languages: not supported yet.
-    let (multilingual, _) = try await deepSession(in: temp.url, languages: ["en-CA", "fr-CA"])
+    // Several languages, one of which Whisper does not know (Zulu).
+    let (multilingual, _) = try await deepSession(in: temp.url, languages: ["en-CA", "zu-ZA"])
+    let unknown = DeepTranscriptionStage.unknownLanguages(["zu-ZA"])
+    #expect(unknown.contains("does not transcribe Zulu (South Africa)"))
     let several = await #expect(throws: HolosError.self) {
         _ = try await deepRun(multilingual, deepDependencies(transcriber))
     }
-    #expect(several?.localizedDescription == DeepTranscriptionStage.severalLanguages)
+    #expect(several?.localizedDescription == unknown)
     // Run by the post-processor directly, the stage says so and keeps the transcript.
-    let record = try await MeetingPostProcessor(voiceSamples: .none, 
+    let record = try await MeetingPostProcessor(voiceSamples: .none,
         diarizer: nil, options: PostProcessingOptions(deepTranscribe: true), freeSpace: FixedFreeSpace(.max),
         languages: noSpeech, deepTranscription: deepDependencies(transcriber)).run(session: multilingual, lease: nil)
     #expect(deepStage(record)?.result == .skipped)
-    #expect(deepStage(record)?.message == DeepTranscriptionStage.severalLanguages)
+    #expect(deepStage(record)?.message == unknown)
     #expect(record.state == .partial)
     #expect(transcriber.calls.value == 0)
 }
@@ -601,6 +605,126 @@ func aTranscriptMadeInOneNamedLanguageUsesThatLanguage() async throws {
     #expect(transcriber.requests.value.first?.language == "fr")
     let deep = try currentTranscript(session)
     #expect(deep.engine == "whisper:test" && deep.locale == "fr-CA")
+}
+
+/// What the scripted model hears when it chooses among French and English: the first two passages in French, the
+/// others in English (the text stays the scripted English; only the languages matter here).
+private func bilingualHearing(_ request: DeepTranscriptionRequest) -> [DeepTranscribedSegment] {
+    scriptedHearing(request).enumerated().map { index, segment in
+        var segment = segment
+        segment.language = request.choosesLanguages ? (index < 2 ? "fr" : "en") : nil
+        return segment
+    }
+}
+
+@Test(.timeLimit(.minutes(1)))
+func aMeetingInSeveralLanguagesIsTranscribedPassageByPassage() async throws {
+    let temp = try TemporaryDirectory("deep")
+    defer { temp.remove() }
+    let (session, recorded) = try await deepSession(in: temp.url, languages: ["fr-CA", "en-CA"])
+    // What the languages stage leaves: a merge of both, each segment in its language.
+    var merged = recorded
+    merged.id = UUID().uuidString
+    merged.locale = "fr-CA"
+    merged.languages = ["fr-CA", "en-CA"]
+    for index in merged.segments.indices { merged.segments[index].language = index < 2 ? "fr-CA" : "en-CA" }
+    try await SessionFixtures.saveTranscript(merged, in: session)
+    let transcriber = ScriptedTranscriber(script: bilingualHearing)
+    let outcome = try await deepRun(session, deepDependencies(transcriber))
+
+    #expect(outcome.exitCode == 0, "\(outcome.summary)")
+    let request = try #require(transcriber.requests.value.first)
+    #expect(request.languages == ["fr", "en"] && request.language == "fr", "Chosen among the meeting's languages.")
+    let deep = try currentTranscript(session)
+    #expect(deep.engine == "whisper:test" && deep.locale == "fr-CA" && deep.languages == ["fr-CA", "en-CA"])
+    #expect(deep.segments.map(\.language) == ["fr-CA", "fr-CA", "en-CA", "en-CA"])
+    let stage = try #require(deepStage(outcome.record))
+    #expect(stage.message?.hasPrefix("Transcribed again with Whisper large-v3 turbo in French (Canada) and English "
+        + "(Canada): 4 passages") == true)
+    let event = try #require(try deepEvents(session).last)
+    #expect(event.details["base"] == merged.id && event.details["languages"] == "fr-CA,en-CA")
+    #expect(event.details["segments.fr-CA"] == "2" && event.details["segments.en-CA"] == "2")
+    // The languages stage takes it for done: it is never replaced by a merge of the recognizer's transcriptions.
+    let manifest = try SessionArchive.readManifest(at: session)
+    #expect(LanguageStage.pendingLanguages(session: session, manifest: manifest, transcript: deep) == nil)
+
+    // Forced again, the same languages are chosen from (the deep transcript's own).
+    let again = try await deepRun(session, deepDependencies(transcriber), force: true)
+    #expect(again.exitCode == 0, "\(again.summary)")
+    #expect(transcriber.requests.value.last?.languages == ["fr", "en"])
+    #expect(try currentTranscript(session).languages == ["fr-CA", "en-CA"])
+}
+
+@Test(.timeLimit(.minutes(1)))
+func meetingJSONsLanguagesAreChosenAmongWithoutAMerge() async throws {
+    let temp = try TemporaryDirectory("deep")
+    defer { temp.remove() }
+    // meeting.json lists two languages, but the transcript was never merged (no speech model for English here).
+    let (session, _) = try await deepSession(in: temp.url, languages: ["en-CA", "fr-CA"])
+    let transcriber = ScriptedTranscriber(script: bilingualHearing)
+    let outcome = try await deepRun(session, deepDependencies(transcriber))
+    #expect(deepStage(outcome.record)?.result == .succeeded, "\(outcome.summary)")
+    #expect(transcriber.requests.value.first?.languages == ["en", "fr"])
+    let deep = try currentTranscript(session)
+    #expect(deep.locale == "en-CA" && deep.languages == ["en-CA", "fr-CA"])
+    #expect(deep.segments.map(\.language) == ["fr-CA", "fr-CA", "en-CA", "en-CA"])
+
+    // One language named with `session languages` wins over meeting.json's two: it is transcribed in that one.
+    let (named, recorded) = try await deepSession(in: temp.url, languages: ["en-CA", "fr-CA"])
+    var french = recorded
+    french.id = UUID().uuidString
+    french.locale = "fr-CA"
+    french.languages = ["fr-CA"]
+    try await SessionFixtures.saveTranscript(french, in: named)
+    let single = ScriptedTranscriber(script: bilingualHearing)
+    let outcome2 = try await deepRun(named, deepDependencies(single))
+    #expect(outcome2.exitCode == 0, "\(outcome2.summary)")
+    #expect(single.requests.value.first?.language == "fr" && single.requests.value.first?.languages == [])
+    let deep2 = try currentTranscript(named)
+    #expect(deep2.locale == "fr-CA" && deep2.languages == ["fr-CA"])
+    #expect(deep2.segments.allSatisfy { $0.language == "fr-CA" })
+    let manifest = try SessionArchive.readManifest(at: named)
+    #expect(LanguageStage.pendingLanguages(session: named, manifest: manifest, transcript: deep2) == nil,
+            "The languages stage keeps it, as it kept the merge of the one language named.")
+}
+
+@Test(.timeLimit(.minutes(1)))
+func theQueueReadsTheLanguagesThePassWouldChooseFrom() async throws {
+    let temp = try TemporaryDirectory("deep-queue")
+    defer { temp.remove() }
+    let session = try await SessionFixtures.makeSession(in: temp.url, mode: .inPerson,
+                                                        transcript: SessionFixtures.transcript([]))
+    let manifest = try SessionArchive.readManifest(at: session)
+    func list(_ languages: [String]?) throws {
+        try AtomicFile.writeJSON(MeetingInfo(sessionID: manifest.id, mode: .inPerson, othersInRoom: false,
+                                             createdAt: SessionFixtures.date, languages: languages),
+                                 to: SessionPaths.meetingInfo(session))
+    }
+    #expect(SessionDeepTranscribeCommand.languagesProblem(session: session) == nil, "One language.")
+    try list(["fr-CA", "en-CA"])
+    #expect(SessionDeepTranscribeCommand.languagesProblem(session: session) == nil, "Several Whisper knows.")
+    try list(["fr-CA", "zu-ZA"])
+    #expect(SessionDeepTranscribeCommand.languagesProblem(session: session)?.contains("Zulu") == true)
+    // A transcript merged from languages named with `session languages` is what the pass reads.
+    var merged = SessionFixtures.transcript([])
+    merged.id = UUID().uuidString
+    merged.locale = "fr-CA"
+    merged.languages = ["fr-CA", "en-CA"]
+    try await SessionFixtures.saveTranscript(merged, in: session)
+    #expect(SessionDeepTranscribeCommand.languagesProblem(session: session) == nil)
+    #expect(SessionDeepTranscribeCommand.languagesProblem(session: temp.url.appendingPathComponent("gone")) == nil,
+            "Unreadable: the pass says why.")
+}
+
+@Test func theLanguageChoiceMapsWhispersNamesToTheMeetingsLocales() {
+    let choice = DeepTranscriptionStage.LanguageChoice(["fr-CA", "en-CA", "zh-Hans", "zh-Hant"])
+    #expect(choice.languages == ["fr", "en", "zh"] && choice.language == "fr")
+    #expect(choice.locales == ["fr": "fr-CA", "en": "en-CA", "zh": "zh-Hans"], "The first of two alike is kept.")
+    #expect(DeepTranscriptionStage.LanguageChoice(single: "nb-NO").language == "no")
+    #expect(DeepTranscriptionStage.LanguageChoice(single: "zu-ZA").language == nil, "Detected.")
+    #expect(DeepTranscriptionStage.languagesProblem(["zu-ZA"]) == nil, "One language is transcribed whatever it is.")
+    #expect(DeepTranscriptionStage.languagesProblem(["fr-CA", "en-CA"]) == nil)
+    #expect(DeepTranscriptionStage.languagesProblem(["fr-CA", "zu-ZA"]) != nil)
 }
 
 @Test(.timeLimit(.minutes(1)))

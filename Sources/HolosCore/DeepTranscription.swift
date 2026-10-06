@@ -1,12 +1,19 @@
 import Foundation
 
 /// One stretch of a track for the deep transcriber (docs/meeting-design.md §4.16): 16 kHz mono Float32 samples, the
-/// language to transcribe them in, and the vocabulary prompt given to every chunk.
+/// language to transcribe them in (or the meeting's languages to choose from, passage by passage), and the vocabulary
+/// prompt given to every chunk.
 public struct DeepTranscriptionRequest: Sendable {
     /// 16 kHz mono samples, -1...1.
     public var samples: [Float]
-    /// The language as Whisper names it ("en", "fr"); nil lets the model detect it.
+    /// The language as Whisper names it ("en", "fr"); nil lets the model detect it. Ignored when `languages` has
+    /// several.
     public var language: String?
+    /// A meeting in several languages: their Whisper names, the preferred one first. With two or more, each passage
+    /// is transcribed in the one of them the model hears in it (its language detection limited to these, a tie going
+    /// to the one listed first), and every segment names it (`DeepTranscribedSegment.language`). Empty (or one)
+    /// otherwise.
+    public var languages: [String]
     /// The conditioning prompt (`DeepTranscriptionPrompt`); empty for none.
     public var prompt: String
     /// Where the recorded transcript has words in these samples: each word's start, in seconds from the samples'
@@ -18,9 +25,14 @@ public struct DeepTranscriptionRequest: Sendable {
     /// one voice-activity chunking leaves out is decoded anyway.
     public static let recordedSpeechWords = 3
 
-    public init(samples: [Float], language: String?, prompt: String, recordedWords: [Double] = []) {
-        self.samples = samples; self.language = language; self.prompt = prompt; self.recordedWords = recordedWords
+    public init(samples: [Float], language: String?, languages: [String] = [], prompt: String,
+                recordedWords: [Double] = []) {
+        self.samples = samples; self.language = language; self.languages = languages; self.prompt = prompt
+        self.recordedWords = recordedWords
     }
+
+    /// Whether each passage's language is chosen among `languages` (two or more).
+    public var choosesLanguages: Bool { languages.count > 1 }
 }
 
 /// One word the deep transcriber heard, in seconds from the start of the request's samples.
@@ -47,9 +59,14 @@ public struct DeepTranscribedSegment: Sendable, Equatable {
     /// Audible audio the model gave no words for, even decoded again in parts (`text` empty): the pass fails when the
     /// recorded transcript has words there, and accepts it where it has none (music, noise).
     public var unheard: Bool
+    /// The language it was transcribed in, as Whisper names it ("fr"), when the request chose it passage by passage
+    /// (`DeepTranscriptionRequest.languages`); nil otherwise.
+    public var language: String?
 
-    public init(text: String, start: Double, end: Double, words: [DeepTranscribedWord] = [], unheard: Bool = false) {
+    public init(text: String, start: Double, end: Double, words: [DeepTranscribedWord] = [], unheard: Bool = false,
+                language: String? = nil) {
         self.text = text; self.start = start; self.end = end; self.words = words; self.unheard = unheard
+        self.language = language
     }
 }
 
