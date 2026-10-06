@@ -5,6 +5,30 @@ import HolosSpeakers
 import HolosStorage
 import UniformTypeIdentifiers
 
+/// A review window as quitting closes it (`ReviewQuit`).
+@MainActor
+protocol ClosingReview: AnyObject {
+    /// Closes it without waiting; the edit its open field holds is queued to be saved at once.
+    func startClosing()
+    /// Waits until it is closed and its changes are saved.
+    func closeAndWait() async
+}
+
+/// Quitting with review windows open (docs/meeting-design.md §5.10, "Editing words").
+enum ReviewQuit {
+    /// Every review starts closing at once, so each queues the edit its open field holds before any slow close (a
+    /// voice sync of another review) is waited for; then they are awaited together, at most `limit`. True when all
+    /// closed in time.
+    @MainActor
+    static func closeAll(_ reviews: [any ClosingReview], limit: Duration) async -> Bool {
+        for review in reviews { review.startClosing() }
+        let closing = Task { @MainActor in
+            for review in reviews { await review.closeAndWait() }
+        }
+        return await waitAtMost(limit, for: closing)
+    }
+}
+
 /// The transcript review window (docs/meeting-design.md §5.10): name the speakers of a meeting, play their audio,
 /// reassign, merge, split, confirm suggestions in bulk, find more speakers, undo, and export. The model is
 /// `ReviewSession` (HolosMeeting); this file only arranges views and routes actions to it. Every change shows at once
@@ -20,7 +44,7 @@ import UniformTypeIdentifiers
 /// meeting plays, the turn list tints the turn and word playing and keeps them in view, except for a few seconds after
 /// the reader scrolls it (`ReviewFollow`).
 @MainActor
-final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate {
+final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, ClosingReview {
     let sessionID: String
     let review: ReviewSession
     /// Called once the window has closed and its changes are saved.
@@ -209,10 +233,15 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate {
 
     /// Closes the window and waits until its changes are saved (before the meeting is deleted).
     func closeAndWait() async {
+        startClosing()
+        await closeTask?.value
+    }
+
+    /// Closes the window without waiting: its open edit field's text is queued to be saved at once (`beginClosing`).
+    func startClosing() {
         // A minimized window is not visible but must be closed too, or it stays in the Dock.
         if window.isVisible || window.isMiniaturized { window.close() }
         if closeTask == nil { beginClosing() }
-        await closeTask?.value
     }
 
     // MARK: - Layout

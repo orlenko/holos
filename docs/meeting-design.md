@@ -7739,7 +7739,10 @@ shown, Otter-style.
   banner says so), since v1 edits one segment of one turn at a time. Return saves, ⌥Return
   saves and adds the new text to the word list, Tab saves and edits the next word, ⇧Tab
   the previous one, Esc cancels. Closing the window (or quitting) with the field open saves
-  what it holds, before the close learns from the edits. Space still plays and pauses outside the field; the
+  what it holds, before the close learns from the edits. Quitting starts every review
+  window's close at once (`ReviewQuit.closeAll`), so each queues its open field's edit before
+  any slow close (another window's voice sync) is waited for; when the closes cannot finish
+  within the quit's limit, an edit not saved yet is logged with what was typed. Space still plays and pauses outside the field; the
   timestamp buttons still play. Every word has a VoiceOver action "Edit “word”", which turns
   edit mode on and opens the field; it is offered only while words can be edited (not after
   the transcript changed under the labels), and reports failure when no field opened. An edited word is dotted-underlined like a fixed word
@@ -7895,7 +7898,9 @@ shown, Otter-style.
     reverted is not there, so it teaches nothing. Edits side by side in one turn are one
     phrase: "bull" → "pull" then "requested" → "request" teaches "bull requested" → "pull
     request" (what the recognizer wrote, from each edit's `heard`), never "pull requested" or
-    "bull request", which would match nothing it wrote;
+    "bull request", which would match nothing it wrote. Words edited together that a relabel
+    has since put in two turns are not learned (a correction would mix two speakers' words);
+    an edit beside them is learned on its own;
   - each is diffed as dictation's Learn does (`CorrectionList.learn`, the recognizer's words
     against the words' shown text, one shown word on each side as context so a lone
     dictionary word is learned only with its neighbour: "cloud now" and "cloud later" are two

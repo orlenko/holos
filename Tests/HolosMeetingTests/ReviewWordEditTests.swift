@@ -473,6 +473,8 @@ func wordsEditedTogetherThatARelabelPutInTwoTurnsAreNotRevertible() async throws
         WordEditTurn(speaker: "system:S1", start: 0, words: ["ask", "more", "cloud", "now"]),
     ])
     let review = try await wordEditOpen(session)
+    let learner = WordEditLearner()
+    learner.attach(to: review)
     try await review.editWords(wordEditRefs(review, "T1", [1, 2]), to: "much Claude")
     #expect(review.words(of: "T1").map(\.revertible) == [true, true, true, true])
     #expect(review.words(of: "T1")[1].fix?.kind == .reviewEdit)
@@ -505,6 +507,9 @@ func wordsEditedTogetherThatARelabelPutInTwoTurnsAreNotRevertible() async throws
     try await review.editWords(wordEditRefs(review, "T2", [1]), to: "today")
     #expect(try wordEditCurrent(session).segments[0].text == "ask much Claude today")
     await review.close()
+    // At close, the words edited together are not learned: they now mix two turns' words ("more cloud" → "much
+    // Claude" would teach one speaker's words with another's). The edit beside them, in one turn, is learned alone.
+    #expect(learner.taughtBy == [ReviewWordEdit(heard: "now", meant: "today", before: "Claude")])
 }
 
 @Test(.timeLimit(.minutes(1))) @MainActor
@@ -834,6 +839,32 @@ func whatTheOpenFieldHoldsAtCloseIsSavedAndLearned() async throws {
     #expect(learner.value("more cloud") == "a lot more Claude",
             "Learned at this close, with the edit beside it (one phrase).")
     #expect(learner.lessons == 1)
+}
+
+@Test(.timeLimit(.minutes(1))) @MainActor
+func whatWasTypedIsKnownUntilTheEditOpenAtCloseIsSaved() async throws {
+    let temp = try TemporaryDirectory("review")
+    defer { temp.remove() }
+    let session = try await wordEditSession(in: temp, [
+        WordEditTurn(speaker: "system:S1", start: 0, words: ["ask", "cloud", "now"]),
+    ])
+    let review = try await wordEditOpen(session)
+    let (stream, release) = AsyncStream<Void>.makeStream()
+    let entered = SharedValue(0)
+    review.beforeEdit = {
+        entered.update { $0 += 1 }
+        for await _ in stream {}
+    }
+    #expect(review.unsavedEditAtClose == nil)
+    let closing = Task { await review.close(typed: (words: wordEditRefs(review, "T1", [1]), text: "Claude",
+                                                    seenMoves: review.wordMoves.count)) }
+    // While the edit saves, quitting can still say what was typed (it logs it when it cannot wait).
+    #expect(await eventually { entered.value == 1 })
+    #expect(review.unsavedEditAtClose == "Claude")
+    release.finish()
+    await closing.value
+    #expect(review.unsavedEditAtClose == nil)
+    #expect(try wordEditCurrent(session).segments[0].text == "ask Claude now")
 }
 
 @Test(.timeLimit(.minutes(1))) @MainActor

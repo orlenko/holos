@@ -1126,11 +1126,14 @@ extension HolosAppDelegate: NSMenuDelegate {
     private func closeReviews(_ windows: [ReviewWindow], limit: Duration = .seconds(10)) async {
         guard !windows.isEmpty else { return }
         meeting.quitting = true
-        let closing = Task { @MainActor in
-            for window in windows { await window.closeAndWait() }
-        }
-        if !(await waitAtMost(limit, for: closing)) {
+        // All start closing at once: a slow close (a voice sync) never keeps another window's typed words unsaved.
+        if !(await ReviewQuit.closeAll(windows, limit: limit)) {
             Self.meetingLog.error("Quitting before \(windows.count, privacy: .public) review windows finished saving")
+            for window in windows {
+                if let typed = window.review.unsavedEditAtClose {
+                    Self.meetingLog.error("Quitting before a word edit was saved (what was typed: \(typed, privacy: .private))")
+                }
+            }
             // Their voice work stops now, so no child process outlives the app with a render of the audio.
             for window in windows { window.review.stopBackgroundWork() }
         }

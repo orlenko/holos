@@ -56,8 +56,11 @@ enum ReviewLearning {
         for segment in ordered {
             let words = WordTiming.effectiveWords(of: segment)
             let utf16 = Array(segment.text.utf16)
+            // Only words edited together that one shown turn still holds: a relabel may since have put them in two
+            // turns, and a correction learned from them would mix two speakers' words.
             let fixes = (segment.fixes ?? []).filter { fix in
                 fix.kind == .reviewEdit && fix.first >= 0 && fix.first < fix.end && fix.end <= words.count
+                    && (fix.first..<(fix.end - 1)).allSatisfy { sameTurn(segment.id, $0, $0 + 1) }
             }.sorted { $0.first < $1.first }
             // Edits side by side in one turn ("bull" → "pull", then "requested" → "request") are one span: learned
             // apart, each would take the other's corrected word as what was heard beside it ("pull requested"), and
