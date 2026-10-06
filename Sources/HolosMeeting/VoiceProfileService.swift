@@ -155,6 +155,19 @@ public enum VoiceProfileService {
         try await syncSamples(session: session, extractor: extractor, store: store, enroll: [])
     }
 
+    /// `refreshSamples` when somebody has a voice sample from this meeting, and nothing otherwise: no labels are read
+    /// and no extractor is made (`makeExtractor` is called only then). For passes that run it on every meeting
+    /// (§5.11), including one with no transcript or speaker labels yet, which can have no sample.
+    public static func refreshSamplesIfLearned(session: URL,
+                                               makeExtractor: @Sendable (URL) -> (any VoiceSampleExtractor)?,
+                                               store: SpeakerProfileStore) async throws {
+        let sessionID = try SessionArchive.readManifest(at: session).id
+        guard try store.load().profiles.contains(where: { $0.samples.contains { $0.sessionID == sessionID } }) else {
+            return
+        }
+        try await refreshSamples(session: session, extractor: makeExtractor(session), store: store)
+    }
+
     /// For an edit whose lines were saved but that then failed (`SpeakerEditor` or the caller's export rewrite threw
     /// `HolosError.incomplete`, so `needsSampleRefresh` may never have been seen): brings this meeting's samples in
     /// step as `refreshSamples` does, then throws `error`. When the refresh fails too, its reason is added to the

@@ -83,8 +83,8 @@ private enum CallAudio {
     }
 }
 
-/// A finished call whose tracks hold `audio` (16 kHz), with `transcript` saved as current.
-private func callSession(in root: URL, audio: [String: [Float]], transcript: Transcript, othersInRoom: Bool = false,
+/// A finished call whose tracks hold `audio` (16 kHz), with `transcript` saved as current (none: not transcribed).
+private func callSession(in root: URL, audio: [String: [Float]], transcript: Transcript?, othersInRoom: Bool = false,
                          mode: MeetingMode = .call) async throws -> URL {
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
     let archive = try SessionArchive.create(root: root, name: "Fixture call", source: .microphoneAndSystem,
@@ -98,7 +98,7 @@ private func callSession(in root: URL, audio: [String: [Float]], transcript: Tra
         try await writer.append(CapturedAudio(track: track, frame: frame))
     }
     try await writer.finish()
-    try await archive.saveTranscript(transcript, writeLegacyExports: false)
+    if let transcript { try await archive.saveTranscript(transcript, writeLegacyExports: false) }
     try await archive.finish(status: ArchiveStatus.complete)
     return archive.directory
 }
@@ -209,7 +209,7 @@ func headphonesCallShowsEveryMicrophoneWord() async throws {
     let stored = try #require(try EchoMaskStore.current(session: session, manifest: manifest))
     #expect(stored.record.verdict == .noEcho)
     #expect(stored.mask == nil)
-    #expect(!SessionFixtures.exists(EchoMaskStore.framesURL(session)))
+    #expect(EchoMaskStore.framesFiles(session).isEmpty)
     #expect(!EchoAnalysisStage.needed(session: session), "A saved no-echo verdict counts as done.")
     #expect(try shownMicSegments(session) == call.echoSegmentIDs.union(call.ownSegmentIDs))
 }
@@ -338,7 +338,8 @@ func aMaskOfOtherAudioOrAnOlderVersionIsNotUsedAndANewerOneIsKept() async throws
     #expect(try shownMicSegments(session) == call.echoSegmentIDs.union(call.ownSegmentIDs))
     // A frames file that is not the one the record names: damaged, so not used.
     try EchoMaskStore.write(record(audio: key), mask: mask, session: session)
-    try AtomicFile.write(Data([1, 1, 1, 0, 0, 0]), to: EchoMaskStore.framesURL(session))
+    let named = try #require(record(audio: key).frames?.sha256)
+    try AtomicFile.write(Data([1, 1, 1, 0, 0, 0]), to: try #require(EchoMaskStore.framesURL(session, sha256: named)))
     #expect(try EchoMaskStore.current(session: session, manifest: manifest) == nil)
     #expect(EchoMaskStore.usable(session: session, manifest: manifest) == nil)
     // A newer schema is refused too.
@@ -575,6 +576,95 @@ func aPassThatKeepsTheLabelsStillChecksTheEchoAndTheSamples() async throws {
     try expectSampleDropped(store)
 }
 
+@Test(.timeLimit(.minutes(2)))
+func anEditOnAViewShownWithAnotherMaskIsRefused() async throws {
+    // The review loaded its view before echo-analyze saved a mask: the turns it shows are not the ones shown now.
+    let temp = try TemporaryDirectory("echo")
+    defer { temp.remove() }
+    let (session, _, run) = try await labelledOldCall(in: temp.url)
+    let stale = try SessionFixtures.view(session)
+    #expect(stale.acousticEcho == nil)
+    _ = try await SessionEchoAnalyzeCommand.run(.init(session: session), voiceSamples: .none,
+                                                freeSpace: FixedFreeSpace(.max))
+    let systemTurn = try #require(run.turns.first { $0.track == "system" }).id
+    let edits = try SessionSpeakerStore.readEdits(session: session).edits
+    let refusal = #expect(throws: HolosError.self) {
+        _ = try SpeakerEditor.apply([.reassignTurns(turnIDs: [systemTurn], to: "system:S2")], view: stale,
+                                    session: session, source: "test")
+    }
+    #expect(refusal?.localizedDescription.contains(SpeakerEditor.changedMessage) == true)
+    #expect(try SessionSpeakerStore.readEdits(session: session).edits == edits, "Nothing was written.")
+    // A view loaded now is accepted.
+    let current = try SessionFixtures.view(session)
+    #expect(current.acousticEcho != nil)
+    _ = try SpeakerEditor.apply([.reassignTurns(turnIDs: [systemTurn], to: "system:S2")], view: current,
+                                session: session, source: "test")
+    #expect(try SessionSpeakerStore.readEdits(session: session).edits.count == edits.count + 1)
+}
+
+@Test(.timeLimit(.minutes(2)))
+func aCallWithNoTranscriptGetsItsAnalysisAndNoFailure() async throws {
+    // Recorded (or imported) without a transcript: echo-analyze saves the analysis and says there are no labels yet;
+    // Recover, with people who have voice samples from other meetings, does not fail on the sample check.
+    let temp = try TemporaryDirectory("echo")
+    defer { temp.remove() }
+    let session = try await callSession(in: temp.url, audio: CallAudio.tracks(echo: true), transcript: nil)
+    let store = SpeakerProfileStore(directory: temp.url.appendingPathComponent("Support/Speakers", isDirectory: true))
+    try store.update {
+        $0.rememberVoices = true
+        $0.profiles = [SpeakerProfile(id: "P1", displayName: "Person A", embeddingModel:
+                                        DiarizationEngineInfo.fake.embeddingModel, samples: [
+            VoiceprintSample(sessionID: UUID().uuidString, sessionName: "Other meeting", speakerIDs: ["mic:S1"],
+                             speechSeconds: 60, embedding: FloatVector([1, 0, 0]), condition: .room, weak: false),
+        ])]
+    }
+    let outcome = try await SessionEchoAnalyzeCommand.run(.init(session: session), voiceSamples: fixedVoice,
+                                                          profiles: store, freeSpace: FixedFreeSpace(.max))
+    #expect(outcome.verdict == .echo)
+    #expect(outcome.summary.contains("no speaker labels yet"))
+    #expect(outcome.microphoneTurnsAfter == nil)
+    #expect(!EchoAnalysisStage.needed(session: session))
+
+    let recovered = try await SessionRecoveryCommand.run(.init(session: session, transcribe: false),
+                                                         voiceSamples: fixedVoice, diarizer: systemDiarizer(),
+                                                         freeSpace: FixedFreeSpace(.max), profiles: store)
+    #expect(!recovered.warnings.contains { $0.contains("voice sample") })
+    #expect(try store.load().profiles.flatMap(\.samples).count == 1)
+}
+
+@Test(.timeLimit(.minutes(2)))
+func aNewMaskThatFailsBeforeItsRecordIsSwitchedLeavesTheOldOneInUse() async throws {
+    let temp = try TemporaryDirectory("echo")
+    defer { temp.remove() }
+    let session = try await callSession(in: temp.url, audio: CallAudio.tracks(echo: true),
+                                        transcript: CallTranscript().transcript)
+    let manifest = try SessionArchive.readManifest(at: session)
+    let old = try EchoAnalysisStage.analyzeSession(session: session, manifest: manifest,
+                                                   freeSpace: FixedFreeSpace(.max))
+    let oldMask = try #require(old.mask)
+    // Another mask (the first frame's class changed), with its record.
+    var bytes = oldMask.bytes
+    bytes[0] = bytes[0] == AcousticEchoMask.FrameClass.echo.rawValue
+        ? AcousticEchoMask.FrameClass.local.rawValue : AcousticEchoMask.FrameClass.echo.rawValue
+    let newMask = try #require(AcousticEchoMask(bytes: bytes, frameCount: oldMask.frameCount))
+    var record = old.record
+    record.frames?.sha256 = SessionExports.sha256(newMask.bytes)
+    struct Crash: Error {}
+    #expect(throws: Crash.self) {
+        try EchoMaskStore.$afterFramesWritten.withValue({ throw Crash() }) {
+            try EchoMaskStore.write(record, mask: newMask, session: session)
+        }
+    }
+    // The record still names the old frames, which are still there: the old mask loads.
+    #expect(EchoMaskStore.usable(session: session, manifest: manifest) == oldMask)
+    #expect(EchoMaskStore.framesFiles(session).count == 2)
+    // The next write switches to its own frames and removes every other file.
+    try EchoMaskStore.write(record, mask: newMask, session: session)
+    #expect(EchoMaskStore.usable(session: session, manifest: manifest) == newMask)
+    #expect(EchoMaskStore.framesFiles(session).map(\.lastPathComponent)
+        == ["frames-\(record.frames!.sha256.prefix(16)).bin"])
+}
+
 /// `FixedVoice` for every session.
 private let fixedVoice = VoiceSampleSource.make { _ in FixedVoice() }
 
@@ -650,7 +740,7 @@ func aCallLongerThanAMaskIsKeptForIsSavedAsTooLongAndCountsAsDone() async throws
                                                           freeSpace: FixedFreeSpace(.max))
         #expect(stored.record.verdict == .tooLong)
         #expect(stored.mask == nil)
-        #expect(!SessionFixtures.exists(EchoMaskStore.framesURL(session)))
+        #expect(EchoMaskStore.framesFiles(session).isEmpty)
         #expect(try EchoMaskStore.current(session: session, manifest: manifest)?.record.verdict == .tooLong)
         #expect(!EchoAnalysisStage.needed(session: session))
         #expect(EchoMaskStore.usable(session: session, manifest: manifest) == nil)

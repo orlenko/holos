@@ -55,8 +55,8 @@ public enum SessionEchoAnalyzeCommand {
         }
         if outcome.verdict != nil, let profiles, let makeExtractor = voiceSamples.extractor {
             do {
-                try await VoiceProfileService.refreshSamples(session: session, extractor: makeExtractor(session),
-                                                             store: profiles)
+                try await VoiceProfileService.refreshSamplesIfLearned(session: session, makeExtractor: makeExtractor,
+                                                                      store: profiles)
             } catch is CancellationError {
                 throw CancellationError()
             } catch {
@@ -98,11 +98,18 @@ public enum SessionEchoAnalyzeCommand {
         outcome.analysisSeconds = stored.record.seconds
         let found = EchoAnalysisStage.message(stored.record)
 
-        // What the labels now show: the same run and edits, with and without the echo hidden.
+        // What the labels now show: the same run and edits, with and without the echo hidden. A meeting with no labels
+        // (none made yet, or not even a transcript: recorded or imported without one) has nothing more to show; the
+        // analysis is saved all the same.
+        let noLabels = found + " The meeting has no speaker labels yet; once its speakers are labelled, they are "
+            + "shown without the echo."
+        guard try SessionSpeakerStore.readHead(session: session) != nil else {
+            outcome.summary = noLabels
+            return outcome
+        }
         let snapshot = try SpeakerSessionSnapshot.load(session: session)
         guard let run = snapshot.run, let view = snapshot.projection else {
-            outcome.summary = found + " The meeting has no speaker labels yet; once its speakers are labelled, they "
-                + "are shown without the echo."
+            outcome.summary = noLabels
             return outcome
         }
         let plain = SpeakerProjection.make(run: run, transcript: snapshot.transcript, edits: snapshot.journal.edits,

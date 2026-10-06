@@ -23,7 +23,7 @@ public struct EchoMaskRecord: Codable, Sendable, Equatable {
     public var createdAt: Date
     public var verdict: EchoAnalysis.Verdict
     public var delay: EchoAnalysis.DelayFit?
-    /// With verdict `echo`: the frames file, `echo/frames.bin` (`AcousticEchoMask.bytes`).
+    /// With verdict `echo`: the frames file, `echo/frames-<sha>.bin` (`AcousticEchoMask.bytes`).
     public var frames: Frames?
     /// Seconds the analysis took.
     public var seconds: Double?
@@ -32,7 +32,8 @@ public struct EchoMaskRecord: Codable, Sendable, Equatable {
         public var count: Int
         public var hopSeconds: Double
         public var firstCentreSeconds: Double
-        /// SHA-256 of frames.bin: a frames file left by another analysis is never read with this record.
+        /// SHA-256 of the frames file, which is named by it (`EchoMaskStore.framesURL(sha256:)`): a frames file left by
+        /// another analysis is never read with this record.
         public var sha256: String
         public var echo: Int
         public var local: Int
@@ -81,7 +82,25 @@ public enum EchoMaskStore {
 
     public static func directory(_ session: URL) -> URL { SessionPaths.echoDirectory(session) }
     public static func recordURL(_ session: URL) -> URL { SessionPaths.echoMask(session) }
-    public static func framesURL(_ session: URL) -> URL { SessionPaths.echoFrames(session) }
+
+    /// The frames file of a mask whose bytes have SHA-256 `sha256`: `echo/frames-<first 16 hex digits>.bin`. Named by
+    /// its content, so a new mask never overwrites the one the record still names (`write`). Nil for a value that is
+    /// not a SHA-256 in lowercase hex (a damaged record never names a path).
+    public static func framesURL(_ session: URL, sha256: String) -> URL? {
+        guard sha256.count == 64, sha256.allSatisfy({ $0.isHexDigit && !$0.isUppercase }) else { return nil }
+        return directory(session).appendingPathComponent("frames-\(sha256.prefix(16)).bin", isDirectory: false)
+    }
+
+    /// The frames files in `echo/` (the current one and any a write left behind).
+    public static func framesFiles(_ session: URL) -> [URL] {
+        let names = (try? FileManager.default.contentsOfDirectory(atPath: directory(session).path)) ?? []
+        return names.filter { $0.hasPrefix("frames") && $0.hasSuffix(".bin") }.sorted()
+            .map { directory(session).appendingPathComponent($0, isDirectory: false) }
+    }
+
+    /// Test hook: while set (a task-local value), called after a new frames file is written and before the record
+    /// that names it.
+    @TaskLocal static var afterFramesWritten: (@Sendable () throws -> Void)? = nil
 
     /// A record with its mask (nil unless the verdict is `echo`).
     public struct Stored: Sendable {
@@ -124,11 +143,11 @@ public enum EchoMaskStore {
         guard record.sessionID == manifest.id, record.analysisVersion == EchoAnalysis.version,
               record.audio == audioKey(manifest: manifest) else { return nil }
         guard record.verdict == .echo else { return Stored(record: record, mask: nil) }
-        guard let frames = record.frames,
-              let bytes = try AtomicFile.readIfPresent(framesURL(session), maxBytes: maximumFramesBytes),
+        guard let frames = record.frames, let url = framesURL(session, sha256: frames.sha256),
+              let bytes = try AtomicFile.readIfPresent(url, maxBytes: maximumFramesBytes),
               SessionExports.sha256(bytes) == frames.sha256,
               let mask = AcousticEchoMask(bytes: bytes, frameCount: frames.count) else {
-            log.error("Session \(manifest.id, privacy: .public): echo/frames.bin is missing or does not match echo/mask.json")
+            log.error("Session \(manifest.id, privacy: .public): the frames file echo/mask.json names is missing or does not match it")
             return nil
         }
         // The summary counts are the mask's own, never the file's (which may be anything).
@@ -167,19 +186,31 @@ public enum EchoMaskStore {
         usableWithIdentity(session: session, manifest: manifest).identity
     }
 
-    /// Writes the frames file (or removes a stale one), then the record, which names the frames by their hash.
-    /// Callers hold the session's processing lease and not the speaker lock: this takes it (§1.7 order: lease,
+    /// Writes the new frames file under its own name (`framesURL(sha256:)`), then switches the record to it, then
+    /// deletes every other frames file. A failure before the switch leaves the record naming the old file, which is
+    /// still there, so the old mask stays in use; a failure after it leaves only an unused file, removed by the next
+    /// write. Callers hold the session's processing lease and not the speaker lock: this takes it (§1.7 order: lease,
     /// speakers, profiles), because the mask changes what the labels show. A writer that checks the labels and the echo
     /// files under the speaker lock (a voice sample being published) then sees either both files before or both after.
     static func write(_ record: EchoMaskRecord, mask: AcousticEchoMask?, session: URL) throws {
+        var keep: URL?
+        if let mask {
+            guard let sha256 = record.frames?.sha256, sha256 == SessionExports.sha256(mask.bytes),
+                  let url = framesURL(session, sha256: sha256) else {
+                throw HolosError.invalidInput("The echo analysis record does not name its frames.")
+            }
+            keep = url
+        }
         try SessionArchive.withSpeakerLock(at: session) {
             try AtomicFile.ensurePrivateDirectory(directory(session))
-            if let mask {
-                try AtomicFile.write(mask.bytes, to: framesURL(session))
-            } else {
-                try AtomicFile.removeTree([folder, "frames.bin"], in: session)
+            if let mask, let keep {
+                try AtomicFile.write(mask.bytes, to: keep)
+                try afterFramesWritten?()
             }
             try AtomicFile.writeJSON(record, to: recordURL(session))
+            for url in framesFiles(session) where url.lastPathComponent != keep?.lastPathComponent {
+                try AtomicFile.removeTree([folder, url.lastPathComponent], in: session)
+            }
         }
     }
 }

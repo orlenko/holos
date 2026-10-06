@@ -50,10 +50,10 @@ public final class MeetingPeopleCache: Sendable {
             .joined(separator: "|")
     }
 
-    /// The acoustic echo analysis (`echo/mask.json` and `echo/frames.bin`, §5.11): the labels' view hides the echo it
-    /// finds, which can take a speaker, and so a person, out of the meeting.
+    /// The acoustic echo analysis (§5.11): the labels' view hides the echo it finds, which can take a speaker, and so a
+    /// person, out of the meeting. Its record alone: every save rewrites it, and it names its frames file by content.
     static func echoStamp(_ session: URL) -> String {
-        fileStamp(SessionPaths.echoMask(session)) + "," + fileStamp(SessionPaths.echoFrames(session))
+        fileStamp(SessionPaths.echoMask(session))
     }
 
     /// The recognition results (`speakers/recognition/<run>.json`, written after the head run): each file's name, size
@@ -96,7 +96,7 @@ public final class TranscriptFilesCache: Sendable {
         // The echo analysis too: a mask saved or replaced makes the files out of date (§5.11).
         let stamp = (SessionExports.formats.map { SessionPaths.export($0.rawValue, in: session) }
             + [SessionPaths.generatedExports(session), SessionPaths.transcriptPointer(session),
-               SessionPaths.echoMask(session), SessionPaths.echoFrames(session)])
+               SessionPaths.echoMask(session)])
             .map(MeetingPeopleCache.fileStamp).joined(separator: "|")
         // The title shown and the name transcript.json records.
         let title = summary.displayTitle + "\u{1F}" + summary.name

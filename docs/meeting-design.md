@@ -488,7 +488,7 @@ extension SessionArchive {
   exports/.generated.json                  PR7b                         SHA-256 of each generated file
   exports/edited-<YYYYMMDD-HHMMSS>.<ext>   PR7b                         a hand-edited export, moved aside before regeneration
   echo/mask.json                           §5.11 EchoMaskStore          EchoMaskRecord: a call's acoustic echo analysis, keyed to its audio
-  echo/frames.bin                          §5.11 EchoMaskStore          AcousticEchoMask bytes (2 per 16 ms frame); only when echo was found
+  echo/frames-<sha>.bin                    §5.11 EchoMaskStore          AcousticEchoMask bytes (2 per 16 ms frame); only when echo was found
   derived/<track>-16k.caf                  PR7b TrackRenderer           deletable cache; cleared at the start and end of post-processing
 ```
 
@@ -522,7 +522,7 @@ public enum SessionPaths {
     public static func generatedExports(_ session: URL) -> URL  // exports/.generated.json
     public static func echoDirectory(_ session: URL) -> URL     // echo/ (§5.11)
     public static func echoMask(_ session: URL) -> URL          // echo/mask.json
-    public static func echoFrames(_ session: URL) -> URL        // echo/frames.bin
+    // echo/frames-<first 16 hex digits of its SHA-256>.bin: EchoMaskStore.framesURL(session, sha256:)
     public static func derived(_ session: URL) -> URL           // derived/
     public static func render(track: String, in session: URL) -> URL // derived/<track>-16k.caf
 }
@@ -7892,7 +7892,7 @@ genuinely local (the user, or people in the room) stays even while the call play
      the last frame, without times, or with estimated times (a segment without word timing) is
      kept.
 - *Storage.* `echo/mask.json` (`EchoMaskRecord`, schema 1: verdict, delay fit, frame counts,
-  the SHA-256 of `echo/frames.bin`, analysis seconds) and `echo/frames.bin` (one class byte
+  the SHA-256 of the frames, analysis seconds) and `echo/frames-<sha>.bin` (one class byte
   per frame, then one byte per frame of predicted echo level in 0.5 dB steps; about 450 KB
   per hour). One limit sets the longest call: `EchoMaskStore.maximumSeconds` (12 hours, so
   `maximumFrames` is 2.7 million); the reader takes frames files up to it, and a longer call is not analysed
@@ -7902,7 +7902,11 @@ genuinely local (the user, or people in the room) stays even while the call play
   and analysed again, but one of a newer schema or a newer analysis version (checked before
   the record is decoded) is refused and left alone, never overwritten. It is in the
   meeting folder because `derived/` is deleted after every run; Delete Audio leaves it (it
-  holds no speech). The summary counts in it are recomputed from the frames when read.
+  holds no speech). The summary counts in it are recomputed from the frames when read. The
+  frames file is named by its content, so a new analysis writes its own file, then switches
+  the record to it, then deletes the others: a failure in between leaves the old mask in use.
+  A save takes the speaker lock, and an edit made on a view shown with another mask than the
+  one saved now is refused like one made on another run (`SpeakerEditor`).
 - *Where it applies: the view only.* Stored runs never hold acoustic echo: they keep the text
   filter's drops exactly as before, and nothing that writes runs or edits knows the mask.
   `SpeakerSessionSnapshot.load` reads the mask (`EchoMaskStore.usable`: none when it is

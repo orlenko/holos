@@ -321,8 +321,8 @@ public enum SessionRecoveryCommand {
         // is recomputed or removed, and one up to date is left alone, so this costs little when nothing changed.
         if request.postProcess, let profiles, let makeExtractor = voiceSamples.extractor {
             do {
-                try await VoiceProfileService.refreshSamples(session: session, extractor: makeExtractor(session),
-                                                             store: profiles)
+                try await VoiceProfileService.refreshSamplesIfLearned(session: session, makeExtractor: makeExtractor,
+                                                                      store: profiles)
             } catch let error where !(error is CancellationError) {
                 warnings.append("A voice sample learned from this meeting could not be updated: "
                                 + error.localizedDescription)
