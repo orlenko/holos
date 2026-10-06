@@ -205,7 +205,9 @@ public enum MeetingSummarySchedule {
     /// meeting is left alone, as its command would fail for good).
     static func keyChecked(session: URL, sessionID: String, transcriptID: String, profileNames: [String: String],
                            recognition: Bool, selfName: String) -> (key: MeetingSummaryKey?, newer: Bool) {
+        // The echo analysis too (§5.11): the view the summary is made from hides the echo it finds.
         let inputs = transcriptID + "|" + SessionSummarizeCommand.speakerRevision(session) + "|"
+            + MeetingPeopleCache.echoStamp(session) + "|"
             + voiceStamp(names: profileNames, recognition: recognition) + "|" + selfName
         if let cached = keyCache.withLock({ $0[sessionID] }), cached.inputs == inputs { return (cached.key, false) }
         do {

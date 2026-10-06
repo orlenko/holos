@@ -192,7 +192,25 @@ thumbnail timeline, and a larger local-model benchmark are follow-ups.
   60 % echo is not listed and its remaining words become unknown speaker. In-person
   meetings are unchanged. The filter runs only with speaker labels, so a call exported
   without the speaker models keeps the echo, and misheard echo shorter than 3 matching
-  words stays. Nothing warns when a call plays on the laptop speakers: the `echoRisk`
+  words stays. Acoustic echo (docs/meeting-design.md §5.11): post-processing also compares
+  a call's microphone with the system audio (stage `echo`): it measures the echo delay (about
+  46 ms on laptop speakers), predicts the microphone from the call audio, and marks each 16 ms
+  microphone frame as silence, echo, or local speech. The result is saved in the meeting's
+  `echo/` folder, keyed to its audio. The speaker labels are not changed by it: the review
+  window, the transcript files, summaries and voice learning show them with the microphone
+  words that are mostly echo hidden (a turn keeps its ID and speaker without them, and edits
+  work as before), while speech of your own or of people in the room stays, also over the call.
+  Transcript files written before the echo was found show as out of date (Update Transcript
+  Files, or Recover), and voice recognition leaves out a microphone cluster that is echo.
+  Headphones (no confident delay) and calls without system audio change nothing. On three real
+  calls it hid about 91 % of the leftover "Unknown" microphone words and cut the microphone
+  turns shown from about 600 to about 100 per meeting, hiding under 2.5 % of the user's own
+  words; it takes about 2 s per hour of audio (about 5 s with preparing both tracks). A
+  meeting whose analysis is missing (labelled before this version, or a pass that failed) gets
+  it from the next relabel or Recover, or at once with
+  `voiceislocal session echo-analyze <id>`; nothing stored besides `echo/` and the transcript
+  files changes. Muting the echo in review playback and joining fragments into paragraphs are
+  not done yet. Nothing warns when a call plays on the laptop speakers: the `echoRisk`
   warning, its output-route check, and the start panel's orange line were removed with
   the one meeting mode (below); the menu ignores an `echoRisk` left in `status.json` by an
   older recorder.
@@ -554,8 +572,9 @@ this remains a useful audio-only fallback if recognition is unavailable. After
 Ctrl-C saves audio, another Ctrl-C can terminate ongoing transcription while
 preserving the archive.
 When a meeting's speakers are labelled, the computer's audio heard again by the
-microphone (3 or more matching words) is removed from the transcript; acoustic echo
-cancellation is not implemented, and a meeting without speaker labels keeps the echo.
+microphone is removed from the transcript: 3 or more matching words, and words the
+acoustic echo analysis finds to be echo. The audio itself is not cancelled (review
+playback still plays the echo), and a meeting without speaker labels keeps the echo.
 
 ## Validation completed and pending
 

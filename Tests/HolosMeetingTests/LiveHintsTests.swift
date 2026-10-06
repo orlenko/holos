@@ -633,7 +633,7 @@ func liveTextCorrectionKeepsEditedLabelsOnUntimedWords() async throws {
     try LiveHintStore.append(hint(segment, words: 0..<3, action: .replaceText("share the doc")),
                              session: session)
 
-    let record = try await MeetingPostProcessor(
+    let record = try await MeetingPostProcessor(voiceSamples: .none, 
         diarizer: FakeDiarizer(outputs: [:], error: .unavailable("Speaker labelling must not run.")),
         freeSpace: FixedFreeSpace(.max)).run(session: session, lease: nil)
 
@@ -658,7 +658,7 @@ func aLaterPassRepairsLiveTextWhoseSpeakerHeadWasNotPublished() async throws {
     try LiveHintStore.append(hint(segment, words: 0..<segment.words.count,
                                   action: .replaceText("corrected words for this turn")),
                              session: fixture.session)
-    let processor = MeetingPostProcessor(
+    let processor = MeetingPostProcessor(voiceSamples: .none, 
         diarizer: FakeDiarizer(outputs: [:], error: .unavailable("Speaker labelling must not run.")),
         freeSpace: FixedFreeSpace(.max))
 
@@ -706,7 +706,7 @@ func aLaterPassRepairsLiveTextWhoseSpeakerHeadWasNotPublished() async throws {
             .init(heard: automaticHeard, meant: "automatic"),
         ]) },
         wordList: { WordList() }, model: { _ in .unavailable("off") })
-    let record = try await MeetingPostProcessor(diarizer: diarizer, freeSpace: FixedFreeSpace(.max),
+    let record = try await MeetingPostProcessor(voiceSamples: .none, diarizer: diarizer, freeSpace: FixedFreeSpace(.max),
                                                 wordFixes: wordFixes)
         .run(session: session, lease: nil)
 
@@ -734,7 +734,7 @@ func aLaterPassRepairsLiveTextWhoseSpeakerHeadWasNotPublished() async throws {
     let dependencies = WordFixDependencies(
         corrections: { CorrectionList(entries: [.init(heard: "wrong", meant: "right")]) },
         wordList: { WordList() }, model: { _ in .unavailable("off") })
-    let processor = MeetingPostProcessor(freeSpace: FixedFreeSpace(.max), wordFixes: dependencies)
+    let processor = MeetingPostProcessor(voiceSamples: .none, freeSpace: FixedFreeSpace(.max), wordFixes: dependencies)
 
     let first = try await processor.run(session: session, lease: nil)
     let fixedID = try #require(try SessionArchive.currentTranscriptID(at: session))
@@ -770,7 +770,7 @@ func aLaterPassRepairsLiveTextWhoseSpeakerHeadWasNotPublished() async throws {
     let dependencies = WordFixDependencies(
         corrections: { CorrectionList(entries: [.init(heard: "wrong", meant: "right")]) },
         wordList: { WordList() }, model: { _ in .unavailable("off") })
-    let firstProcessor = MeetingPostProcessor(freeSpace: FixedFreeSpace(.max), wordFixes: dependencies)
+    let firstProcessor = MeetingPostProcessor(voiceSamples: .none, freeSpace: FixedFreeSpace(.max), wordFixes: dependencies)
 
     _ = try await firstProcessor.run(session: session, lease: nil)
     let fixed = try SessionFiles.transcript(
@@ -786,7 +786,7 @@ func aLaterPassRepairsLiveTextWhoseSpeakerHeadWasNotPublished() async throws {
     let sessionID = try SessionArchive.readManifest(at: session).id
     try AtomicFile.writeJSON(LiveHintFile(sessionID: sessionID, hints: [live]),
                              to: SessionPaths.liveHints(session))
-    let second = try await MeetingPostProcessor(
+    let second = try await MeetingPostProcessor(voiceSamples: .none, 
         diarizer: FakeDiarizer(outputs: [:], error: .unavailable("Speaker labelling must not run.")),
         freeSpace: FixedFreeSpace(.max), wordFixes: dependencies).run(session: session, lease: nil)
     let final = try SessionFiles.transcript(
@@ -819,7 +819,7 @@ func aLaterPassRepairsLiveTextWhoseSpeakerHeadWasNotPublished() async throws {
         corrections: { CorrectionList() }, wordList: { termList },
         model: { _ in .available({ _, prompt in prompt.contains("]] now") ? "Claude" : "cloud" }) })
 
-    let first = try await MeetingPostProcessor(freeSpace: FixedFreeSpace(.max), wordFixes: accepted)
+    let first = try await MeetingPostProcessor(voiceSamples: .none, freeSpace: FixedFreeSpace(.max), wordFixes: accepted)
         .run(session: session, lease: nil)
     let fixedID = try #require(try SessionArchive.currentTranscriptID(at: session))
     let fixed = try SessionFiles.transcript(id: fixedID, session: session)
@@ -834,7 +834,7 @@ func aLaterPassRepairsLiveTextWhoseSpeakerHeadWasNotPublished() async throws {
     let unavailable = WordFixDependencies(
         corrections: { CorrectionList() }, wordList: { termList },
         model: { _ in .unavailable("the model is still downloading") })
-    let second = try await MeetingPostProcessor(freeSpace: FixedFreeSpace(.max), wordFixes: unavailable)
+    let second = try await MeetingPostProcessor(voiceSamples: .none, freeSpace: FixedFreeSpace(.max), wordFixes: unavailable)
         .run(session: session, lease: nil)
     let finalID = try #require(try SessionArchive.currentTranscriptID(at: session))
     let final = try SessionFiles.transcript(id: finalID, session: session)
@@ -848,7 +848,7 @@ func aLaterPassRepairsLiveTextWhoseSpeakerHeadWasNotPublished() async throws {
     let recovered = WordFixDependencies(
         corrections: { CorrectionList() }, wordList: { termList },
         model: { _ in .available({ _, _ in "Claude" }) })
-    _ = try await MeetingPostProcessor(freeSpace: FixedFreeSpace(.max), wordFixes: recovered)
+    _ = try await MeetingPostProcessor(voiceSamples: .none, freeSpace: FixedFreeSpace(.max), wordFixes: recovered)
         .run(session: session, lease: nil)
     let recomputed = try SessionFiles.transcript(
         id: try #require(try SessionArchive.currentTranscriptID(at: session)), session: session)
@@ -868,7 +868,7 @@ func aLaterPassRepairsLiveTextWhoseSpeakerHeadWasNotPublished() async throws {
             .init(heard: "bad", meant: "good"),
             .init(heard: "wrong", meant: "right"),
         ]) }, wordList: { WordList() }, model: { _ in .unavailable("off") })
-    let processor = MeetingPostProcessor(freeSpace: FixedFreeSpace(.max), wordFixes: dependencies)
+    let processor = MeetingPostProcessor(voiceSamples: .none, freeSpace: FixedFreeSpace(.max), wordFixes: dependencies)
 
     _ = try await processor.run(session: session, lease: nil)
     let fixed = try SessionFiles.transcript(

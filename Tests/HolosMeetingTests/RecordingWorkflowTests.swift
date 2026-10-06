@@ -727,7 +727,7 @@ func postProcessorWithoutTranscriptIsSkipped() async throws {
     let archive = try await finishedArchive(in: temp.url)
     let before = contents(of: archive.directory)
     let progressCalls = SharedValue(0)
-    let record = try await MeetingPostProcessor().run(session: archive.directory, lease: nil) { _ in
+    let record = try await MeetingPostProcessor(voiceSamples: .none).run(session: archive.directory, lease: nil) { _ in
         progressCalls.update { $0 += 1 }
     }
     #expect(record.state == .skipped)
@@ -741,7 +741,7 @@ func postProcessorWithoutTranscriptIsSkipped() async throws {
     #expect(try !SessionArchive.isProcessing(at: archive.directory), "A lease run acquired is released.")
     #expect(progressCalls.value >= 1)
 
-    let withDiarizer = MeetingPostProcessor(diarizer: FakeDiarizer(outputs: [:]),
+    let withDiarizer = MeetingPostProcessor(voiceSamples: .none, diarizer: FakeDiarizer(outputs: [:]),
                                             options: PostProcessingOptions(speakers: SpeakerCountHint(minimum: 2)),
                                             freeSpace: FixedFreeSpace(.max))
     #expect(try await withDiarizer.run(session: archive.directory, lease: nil).state == .skipped)
@@ -755,7 +755,7 @@ func postProcessorKeepsTheCallersLease() async throws {
     let archive = try await finishedArchive(in: temp.url)
     let lease = try SessionArchive.acquireProcessingLease(at: archive.directory)
     defer { lease.release() }
-    let record = try await MeetingPostProcessor().run(session: archive.directory, lease: lease)
+    let record = try await MeetingPostProcessor(voiceSamples: .none).run(session: archive.directory, lease: lease)
     #expect(record.state == .skipped)
     #expect(try SessionArchive.isProcessing(at: archive.directory), "The caller still owns its lease.")
     lease.release()
@@ -770,7 +770,7 @@ func postProcessorRefusesWhenItCannotStart() async throws {
     let recording = try SessionArchive.create(root: temp.url, name: "Live", source: .microphone,
                                               locale: "en-CA", backend: .speech)
     await #expect(throws: HolosError.self) {
-        try await MeetingPostProcessor().run(session: recording.directory, lease: nil)
+        try await MeetingPostProcessor(voiceSamples: .none).run(session: recording.directory, lease: nil)
     }
     try await recording.finish(status: ArchiveStatus.complete)
 
@@ -779,21 +779,21 @@ func postProcessorRefusesWhenItCannotStart() async throws {
     let foreign = try SessionArchive.acquireProcessingLease(at: other.directory)
     defer { foreign.release() }
     await #expect(throws: HolosError.self) {
-        try await MeetingPostProcessor().run(session: recording.directory, lease: foreign)
+        try await MeetingPostProcessor(voiceSamples: .none).run(session: recording.directory, lease: foreign)
     }
 
     // A lease that was already released.
     let released = try SessionArchive.acquireProcessingLease(at: recording.directory)
     released.release()
     await #expect(throws: HolosError.self) {
-        try await MeetingPostProcessor().run(session: recording.directory, lease: released)
+        try await MeetingPostProcessor(voiceSamples: .none).run(session: recording.directory, lease: released)
     }
 
     // The lease is held elsewhere (acquisition retries for 1 s, then gives up).
     let held = try SessionArchive.acquireProcessingLease(at: recording.directory)
     defer { held.release() }
     await #expect(throws: HolosError.self) {
-        try await MeetingPostProcessor().run(session: recording.directory, lease: nil)
+        try await MeetingPostProcessor(voiceSamples: .none).run(session: recording.directory, lease: nil)
     }
     #expect(!FileManager.default.fileExists(atPath: SessionPaths.postprocess(recording.directory).path))
 }

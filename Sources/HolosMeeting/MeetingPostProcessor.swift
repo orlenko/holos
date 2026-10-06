@@ -61,6 +61,23 @@ public struct PostProcessingOptions: Sendable, Equatable {
     }
 }
 
+/// Where a pass gets a voice sample extractor for a session, to bring the voice samples people have from it in step
+/// with what the labels show (`VoiceProfileService.refreshSamples`, docs/meeting-design.md §5.11). Every entry point
+/// that post-processes names one (no default), so a pass that leaves samples alone says so: `.none`.
+public struct VoiceSampleSource: Sendable {
+    /// Nil: the pass leaves samples to the next one. A function returning nil: no extractor can be made (speaker
+    /// models not verified), and the samples that need recomputing are removed, as after an edit.
+    public let extractor: (@Sendable (URL) -> (any VoiceSampleExtractor)?)?
+
+    /// Leaves voice samples alone (tests, and passes without people).
+    public static let none = VoiceSampleSource(extractor: nil)
+
+    /// Makes the extractor for each session with `make`.
+    public static func make(_ make: @escaping @Sendable (URL) -> (any VoiceSampleExtractor)?) -> VoiceSampleSource {
+        VoiceSampleSource(extractor: make)
+    }
+}
+
 /// Speaker labelling and exports for a finished session (docs/meeting-design.md §4.7).
 ///
 /// Stages, in order: 0 checks and `postprocess.json` `running`; 1 `transcript` (the current revision); 1b
@@ -71,7 +88,9 @@ public struct PostProcessingOptions: Sendable, Equatable {
 /// hints; 1d `wordFixes`: learned corrections and the word list's "often heard as" terms applied to that transcript,
 /// which becomes a new current revision (`WordFixStage`; nothing is recorded without corrections or such terms);
 /// 2 track policies; 3 the head decision (an edited head of this transcript is kept unless `force`); 4 `render` each
-/// diarized track to `derived/<track>-16k.caf`; 5 `diarize` them one at a time and map the times back to the
+/// diarized track to `derived/<track>-16k.caf`; 4b `echo`: a call's acoustic echo analysis when it is missing, saved
+/// in `echo/` (§5.11; the run never holds it, the labels' view hides the echo); 5 `diarize` them one at a time and
+/// map the times back to the
 /// session; 6 `align`: build and publish the run (no voice embeddings; `speakers/voice/` only with
 /// `forceVoiceData`) with names carried over; 7 `recognize` (PR10), then live speaker-name hints; 8 `export`; 9 delete `derived/` and write the
 /// final record.
@@ -86,6 +105,7 @@ public struct MeetingPostProcessor: Sendable {
     let wordFixes: WordFixDependencies
     let deepTranscription: DeepTranscriptionDependencies
     let screenOCR: MeetingScreenOCR.Recognizer
+    let voiceSamples: VoiceSampleSource
 
     /// `diarizer == nil` (speaker models not installed) gives speaker-less exports and the setup hint.
     /// `freeSpace` measures the volume before rendering. With `profiles` (PR10) whose "Remember voices" is on and
@@ -93,15 +113,18 @@ public struct MeetingPostProcessor: Sendable {
     /// exports show people's current names; without it nothing is recognized. `languages` transcribes and tells
     /// languages apart for a meeting in several (stage 1b); it is used only for such a meeting. `wordFixes` gives the
     /// corrections, word list and model of stage 1d; `.none` fixes nothing. `deepTranscription` gives the model and
-    /// prompt sources of the deep transcription pass, which runs only with `options.deepTranscribe`.
-    public init(diarizer: (any SpeakerDiarizer)? = nil, options: PostProcessingOptions = .init(),
+    /// prompt sources of the deep transcription pass, which runs only with `options.deepTranscribe`. With `profiles`,
+    /// `voiceSamples` brings the meeting's voice samples in step on every pass that ends with labels (§5.11); with
+    /// `.none` that is left to the next pass that has one, which finds it from the files.
+    public init(voiceSamples: VoiceSampleSource, diarizer: (any SpeakerDiarizer)? = nil,
+                options: PostProcessingOptions = .init(),
                 freeSpace: any FreeSpaceProvider = VolumeFreeSpace(), profiles: SpeakerProfileStore? = nil,
                 languages: LanguageDetectionDependencies = .live, wordFixes: WordFixDependencies = .none,
                 deepTranscription: DeepTranscriptionDependencies = .none,
                 screenOCR: @escaping MeetingScreenOCR.Recognizer = { try MeetingScreenOCR.recognize($0, languages: $1) }) {
         self.diarizer = diarizer; self.options = options; self.freeSpace = freeSpace; self.profiles = profiles
         self.languageDetection = languages; self.wordFixes = wordFixes; self.deepTranscription = deepTranscription
-        self.screenOCR = screenOCR
+        self.screenOCR = screenOCR; self.voiceSamples = voiceSamples
     }
 
     /// Runs every stage for one finished session under `lease` (nil: acquire one, retry 1 s) and returns the
@@ -305,7 +328,7 @@ public struct MeetingPostProcessor: Sendable {
         // Stages 2–7. Languages or word fixes asked for by name (`voiceislocal session languages`, `session
         // fix-words`) that left the transcript as it was also leave its speaker labels as they are, edited or not
         // (§4.14).
-        let speakers: SpeakerResult
+        var speakers: SpeakerResult
         let keepsExistingLabels = liveText.labelsPreserved || fixes.labelsPreserved
             || ((options.languages != nil || options.fixWords || options.deepTranscribe) && transcript.id == current?.id)
         if keepsExistingLabels,
@@ -321,6 +344,11 @@ public struct MeetingPostProcessor: Sendable {
         } else {
             speakers = try await labelSpeakers(session: session, manifest: manifest, transcript: transcript,
                                                recorder: recorder)
+        }
+        // Every path that ends with labels runs the echo check and the voice sample sync once, here when stage 4b did
+        // not (labels kept, or left as they were after a failure), before the exports are written (§5.11).
+        if !speakers.echoChecked {
+            speakers.echoChecked = try await checkEcho([], session: session, manifest: manifest, recorder: recorder)
         }
         // Once a new head is published, the exports are written from it before a cancellation is honoured, so the
         // head and the exports never disagree.
@@ -375,6 +403,8 @@ public struct MeetingPostProcessor: Sendable {
         var message: String?
         /// Stage 6 published a new head (`runID`).
         var published = false
+        /// `checkEcho` ran in this pass.
+        var echoChecked = false
     }
 
     /// Stages 2–7. Every failure is recorded as a stage outcome; only cancellation throws.
@@ -451,6 +481,9 @@ public struct MeetingPostProcessor: Sendable {
             recorder.skip([.render, .diarize, .align], SpeakerAnalysis.editedHead)
             result.runID = head.usableRunID
             result.problem = SpeakerAnalysis.editedHead
+            // The edited labels stay as they are; a call's echo analysis is still made when it is missing, and their
+            // view hides the echo from then on (§5.11).
+            result.echoChecked = try await checkEcho([], session: session, manifest: manifest, recorder: recorder)
             return result
         }
 
@@ -459,6 +492,7 @@ public struct MeetingPostProcessor: Sendable {
         var engine: DiarizationEngineInfo?
         if diarized.isEmpty {
             recorder.skip([.render, .diarize], SpeakerAnalysis.noTrackToLabel)
+            result.echoChecked = try await checkEcho([], session: session, manifest: manifest, recorder: recorder)
         } else if let diarizer {
             let audioDeleted: Bool
             do {
@@ -486,6 +520,7 @@ public struct MeetingPostProcessor: Sendable {
                 result.problem = failure.message
                 return result
             }
+            result.echoChecked = try await checkEcho(rendered, session: session, manifest: manifest, recorder: recorder)
             let hint = SpeakerAnalysis.speakerHint(options: options, meeting: meeting, diarizedTracks: diarized.count)
             switch try await diarize(rendered, diarizer: diarizer, hint: hint, recorder: recorder) {
             case .success(let diarization):
@@ -547,7 +582,9 @@ public struct MeetingPostProcessor: Sendable {
         // Stage 7: recognition on the in-memory voice data of the run just published (never persisted here).
         if result.published, let profiles {
             let started = recorder.begin(.recognize, message: "Comparing voices…")
-            switch RecognizeStage.run(built.run, voiceData: built.voiceData, session: session, store: profiles) {
+            let voices = RecognizeStage.withoutEcho(built.voiceData, run: built.run, transcript: transcript,
+                                                    mask: EchoMaskStore.usable(session: session, manifest: manifest))
+            switch RecognizeStage.run(built.run, voiceData: voices, session: session, store: profiles) {
             case .skipped(let message):
                 recorder.end(.recognize, .skipped, message, since: started)
             case .recognized(let recognition):
@@ -609,6 +646,77 @@ public struct MeetingPostProcessor: Sendable {
         }
         recorder.end(.render, .succeeded, since: started)
         return .success(rendered)
+    }
+
+    /// Stage 4b (calls, §5.11): the acoustic echo analysis, when the meeting still needs one
+    /// (`EchoAnalysisStage.needed`: worked out from its files) and the stop was not for low disk space. Stage 4's
+    /// renders are reused and a track it did not render is rendered here, so a track that cannot be rendered, or too
+    /// little disk space, costs only the analysis. The outcome is recorded for the user to read; nothing reads it
+    /// back: a failure saves nothing, so the analysis is still needed and the next pass tries again. The run is built
+    /// without it: the labels' view hides the echo (`SpeakerSessionSnapshot`). Only cancellation throws.
+    ///
+    /// Then, whether or not a mask was saved: the meeting's voice samples are brought in step with what the labels
+    /// show (`syncVoiceSamples`), with no lock held.
+    ///
+    /// The one hook every pass that ends with labels runs, once (`run` checks `SpeakerResult.echoChecked`): in stage
+    /// 4b before recognition, with the head the samples were learned from still current, or after labels that were
+    /// kept or could not be made. Returns true, for `echoChecked`.
+    private func checkEcho(_ rendered: [RenderedTrack], session: URL, manifest: SessionManifest,
+                           recorder: StageRecorder) async throws -> Bool {
+        guard options.stopReason != .diskLow, EchoAnalysisStage.needed(session: session) else {
+            _ = try await syncVoiceSamples(session: session, manifest: manifest)
+            return true
+        }
+        let message = "Finding microphone echo…"
+        let started = recorder.begin(.echo, track: "mic", message: message)
+        let journal = recorder.journal
+        do {
+            var tracks = Dictionary(rendered.map { ($0.track, $0) }, uniquingKeysWith: { first, _ in first })
+            for track in EchoAnalysisStage.renderTracks(manifest: manifest) where tracks[track] == nil {
+                let seconds = TrackRenderer.renderedSeconds(manifest: manifest, track: track)
+                if let free = try? freeSpace.availableBytes(at: SessionPaths.derived(session)),
+                   !SpeakerAnalysis.renderAllowed(freeBytes: free, renderSeconds: seconds) {
+                    throw HolosError.unavailable("Not enough disk space to prepare the audio for the echo check.")
+                }
+                tracks[track] = try TrackRenderer.render(session: session, manifest: manifest, track: track,
+                                                         to: SessionPaths.render(track: track, in: session))
+            }
+            let stored = try EchoAnalysisStage.analyze(
+                session: session, manifest: manifest, microphone: tracks["mic"], system: tracks["system"],
+                progress: { fraction in
+                    journal.progress(PostProcessingProgress(stage: .echo, track: "mic", fraction: fraction,
+                                                            message: message))
+                })
+            var outcome = EchoAnalysisStage.message(stored.record)
+            if let failure = try await syncVoiceSamples(session: session, manifest: manifest) {
+                outcome += " " + failure
+            }
+            recorder.end(.echo, .succeeded, outcome, since: started)
+        } catch let error where !(error is CancellationError) {
+            recorder.end(.echo, .failed, error.localizedDescription, since: started)
+            _ = try await syncVoiceSamples(session: session, manifest: manifest)
+        }
+        return true
+    }
+
+    /// Brings the voice samples people have from this meeting in step with what the labels show
+    /// (`VoiceProfileService.refreshSamples`, as after an edit; docs/meeting-design.md §5.11), with no lock held.
+    /// Freshness is worked out from the files (each sample's input digest), so this runs on every pass and a pass
+    /// whose sync failed is simply retried by the next; nothing records it as done. Skipped without people or a voice
+    /// sample source, and when nobody has a sample from this meeting. Returns why it failed (also logged), nil
+    /// otherwise; only cancellation throws.
+    private func syncVoiceSamples(session: URL, manifest: SessionManifest) async throws -> String? {
+        guard let profiles, let makeExtractor = voiceSamples.extractor else { return nil }
+        do {
+            try await VoiceProfileService.refreshSamplesIfLearned(session: session, makeExtractor: makeExtractor,
+                                                                  store: profiles)
+            return nil
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            Self.log.error("Session \(manifest.id, privacy: .public): voice samples not brought in step: \(error.localizedDescription, privacy: .private)")
+            return "A voice sample learned from this meeting could not be updated: \(error.localizedDescription)"
+        }
     }
 
     /// Stage 5, with the stage recorded: one track at a time, times mapped back to the session timeline.

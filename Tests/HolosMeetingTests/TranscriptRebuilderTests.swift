@@ -466,7 +466,7 @@ func recoverRebuildAndPostProcessUnderOneLease() async throws {
     let session = try await rebuilderDeadMeeting(in: temp.url)
     let probes = SharedValue<[RecoveryProbe]>([])
     let outcome = try await SessionRecoveryCommand.run(
-        SessionRecoveryCommand.Request(session: session), diarizer: rebuilderDiarizer(),
+        SessionRecoveryCommand.Request(session: session), voiceSamples: .none, diarizer: rebuilderDiarizer(),
         makeSpeech: FakeSpeechFactory().factory, freeSpace: FixedFreeSpace(.max),
         step: { step in
             // Another descriptor tries the lease after each step.
@@ -506,12 +506,12 @@ func recoverTwiceChangesNothing() async throws {
     defer { temp.remove() }
     let session = try await rebuilderDeadMeeting(in: temp.url)
     let request = SessionRecoveryCommand.Request(session: session)
-    let first = try await SessionRecoveryCommand.run(request, diarizer: rebuilderDiarizer(),
+    let first = try await SessionRecoveryCommand.run(request, voiceSamples: .none, diarizer: rebuilderDiarizer(),
                                                      makeSpeech: FakeSpeechFactory().factory,
                                                      freeSpace: FixedFreeSpace(.max))
     let files = SessionFixtures.files(in: session).filter { !$0.key.hasPrefix(".") && $0.key != "status.json" }
     let steps = SharedValue<[SessionRecoveryCommand.Step]>([])
-    let second = try await SessionRecoveryCommand.run(request, diarizer: rebuilderDiarizer(),
+    let second = try await SessionRecoveryCommand.run(request, voiceSamples: .none, diarizer: rebuilderDiarizer(),
                                                       makeSpeech: FakeSpeechFactory().factory,
                                                       freeSpace: FixedFreeSpace(.max),
                                                       step: { step in steps.update { $0.append(step) } })
@@ -531,7 +531,7 @@ func recoverRelabelsWhenTheSavedLabelsAreUnusable() async throws {
     defer { temp.remove() }
     let session = try await rebuilderDeadMeeting(in: temp.url)
     let request = SessionRecoveryCommand.Request(session: session)
-    let first = try await SessionRecoveryCommand.run(request, diarizer: rebuilderDiarizer(),
+    let first = try await SessionRecoveryCommand.run(request, voiceSamples: .none, diarizer: rebuilderDiarizer(),
                                                      makeSpeech: FakeSpeechFactory().factory,
                                                      freeSpace: FixedFreeSpace(.max))
     let transcriptID = try #require(first.rebuild?.transcriptID)
@@ -573,7 +573,7 @@ func recoverRelabelsWhenTheSavedLabelsAreUnusable() async throws {
     for (damage, apply) in damages {
         try apply()
         let steps = SharedValue<[SessionRecoveryCommand.Step]>([])
-        let outcome = try await SessionRecoveryCommand.run(request, diarizer: rebuilderDiarizer(),
+        let outcome = try await SessionRecoveryCommand.run(request, voiceSamples: .none, diarizer: rebuilderDiarizer(),
                                                            makeSpeech: FakeSpeechFactory().factory,
                                                            freeSpace: FixedFreeSpace(.max),
                                                            step: { step in steps.update { $0.append(step) } })
@@ -593,7 +593,7 @@ func recoverLeavesACompleteSessionAlone() async throws {
     defer { temp.remove() }
     let transcript = SessionFixtures.transcript(SessionFixtures.alternatingSegments(track: "mic"))
     let session = try await SessionFixtures.makeSession(in: temp.url, mode: .inPerson, transcript: transcript)
-    let outcome = try await SessionRecoveryCommand.run(SessionRecoveryCommand.Request(session: session),
+    let outcome = try await SessionRecoveryCommand.run(SessionRecoveryCommand.Request(session: session), voiceSamples: .none,
                                                        diarizer: rebuilderDiarizer(),
                                                        makeSpeech: FakeSpeechFactory().factory,
                                                        freeSpace: FixedFreeSpace(.max))
@@ -611,7 +611,7 @@ func recoverWithoutSpeakerModelsStillSucceeds() async throws {
     let temp = try TemporaryDirectory("rebuild")
     defer { temp.remove() }
     let session = try await rebuilderDeadMeeting(in: temp.url)
-    let outcome = try await SessionRecoveryCommand.run(SessionRecoveryCommand.Request(session: session, transcribe: false),
+    let outcome = try await SessionRecoveryCommand.run(SessionRecoveryCommand.Request(session: session, transcribe: false), voiceSamples: .none,
                                                        diarizer: nil, freeSpace: FixedFreeSpace(.max))
     #expect(outcome.exitCode == 0)
     #expect(outcome.rebuild?.replayedSeconds == ["mic": 0])
@@ -625,10 +625,10 @@ func recoverTwiceWithoutSpeakerModelsChangesNothing() async throws {
     defer { temp.remove() }
     let session = try await rebuilderDeadMeeting(in: temp.url)
     let request = SessionRecoveryCommand.Request(session: session, transcribe: false)
-    let first = try await SessionRecoveryCommand.run(request, diarizer: nil, freeSpace: FixedFreeSpace(.max))
+    let first = try await SessionRecoveryCommand.run(request, voiceSamples: .none, diarizer: nil, freeSpace: FixedFreeSpace(.max))
     #expect(first.postProcessing?.runID == nil)
     let files = SessionFixtures.files(in: session).filter { !$0.key.hasPrefix(".") && $0.key != "status.json" }
-    let second = try await SessionRecoveryCommand.run(request, diarizer: nil, freeSpace: FixedFreeSpace(.max))
+    let second = try await SessionRecoveryCommand.run(request, voiceSamples: .none, diarizer: nil, freeSpace: FixedFreeSpace(.max))
     #expect(second.exitCode == 0)
     #expect(second.postProcessing == nil, "Post-processing does not run again while nothing can label.")
     let message = try #require(first.postProcessing?.message)
@@ -637,7 +637,7 @@ func recoverTwiceWithoutSpeakerModelsChangesNothing() async throws {
     #expect(SessionFixtures.files(in: session).filter { !$0.key.hasPrefix(".") && $0.key != "status.json" } == files,
             "postprocess.json is not rewritten.")
     // With a diarizer the same meeting is labelled after all.
-    let third = try await SessionRecoveryCommand.run(request, diarizer: rebuilderDiarizer(),
+    let third = try await SessionRecoveryCommand.run(request, voiceSamples: .none, diarizer: rebuilderDiarizer(),
                                                      freeSpace: FixedFreeSpace(.max))
     #expect(third.postProcessing?.runID != nil)
 }
@@ -675,7 +675,7 @@ func recoverKeepsTheTranscriptSavedAtStop() async throws {
     let before = try rebuilderCurrent(session)
 
     let outcome = try await SessionRecoveryCommand.run(
-        SessionRecoveryCommand.Request(session: session, transcribe: false, postProcess: false), diarizer: nil)
+        SessionRecoveryCommand.Request(session: session, transcribe: false, postProcess: false), voiceSamples: .none, diarizer: nil)
     #expect(outcome.exitCode == 0)
     #expect(outcome.rebuild == nil)
     #expect(outcome.summary.contains("Nothing to rebuild: the meeting is transcriptionIncomplete and keeps the "
@@ -687,7 +687,7 @@ func recoverKeepsTheTranscriptSavedAtStop() async throws {
 
     // --force still rebuilds it from the saved phrases.
     let forced = try await SessionRecoveryCommand.run(
-        SessionRecoveryCommand.Request(session: session, transcribe: false, postProcess: false, force: true),
+        SessionRecoveryCommand.Request(session: session, transcribe: false, postProcess: false, force: true), voiceSamples: .none,
         diarizer: nil)
     #expect(forced.rebuild?.journalSegments == 2)
     #expect(try rebuilderCurrent(session).segments.map(\.text) == ["one two", "three"])
@@ -700,7 +700,7 @@ func recoverRebuildsATranscriptionIncompleteSessionWithoutATranscript() async th
     let journal = [SessionFixtures.segment(["one", "two"], track: "mic", start: 1)]
     let session = try await rebuilderTranscriptionIncomplete(in: temp.url, saved: nil, journal: journal)
     let outcome = try await SessionRecoveryCommand.run(
-        SessionRecoveryCommand.Request(session: session, transcribe: false, postProcess: false), diarizer: nil)
+        SessionRecoveryCommand.Request(session: session, transcribe: false, postProcess: false), voiceSamples: .none, diarizer: nil)
     #expect(outcome.rebuild?.journalSegments == 1)
     #expect(try rebuilderCurrent(session).segments.map(\.text) == ["one two"])
     #expect(outcome.status == ArchiveStatus.recovered)
@@ -743,7 +743,7 @@ func recoverKeepsTheTranscriptSavedBeforeFinish(transcribe: Bool) async throws {
     #expect(before.id == saved?.id)
     let request = SessionRecoveryCommand.Request(session: session, transcribe: transcribe, postProcess: false)
 
-    let outcome = try await SessionRecoveryCommand.run(request, diarizer: nil, makeSpeech: FakeSpeechFactory().factory)
+    let outcome = try await SessionRecoveryCommand.run(request, voiceSamples: .none, diarizer: nil, makeSpeech: FakeSpeechFactory().factory)
     #expect(outcome.exitCode == 0)
     #expect(outcome.rebuild == nil, "The transcript saved at stop is kept, not rebuilt from 2 saved phrases.")
     #expect(outcome.summary.contains("Nothing to rebuild: the recorder was interrupted after it stopped capturing "
@@ -755,13 +755,13 @@ func recoverKeepsTheTranscriptSavedBeforeFinish(transcribe: Bool) async throws {
     #expect(recovered.details["previousStatus"] == ArchiveStatus.processing)
 
     // Run again: the manifest now says interrupted, and the journal still says it was processing.
-    let again = try await SessionRecoveryCommand.run(request, diarizer: nil, makeSpeech: FakeSpeechFactory().factory)
+    let again = try await SessionRecoveryCommand.run(request, voiceSamples: .none, diarizer: nil, makeSpeech: FakeSpeechFactory().factory)
     #expect(again.rebuild == nil)
     #expect(try rebuilderCurrent(session) == before)
 
     // --force rebuilds it from the saved phrases.
     let forced = try await SessionRecoveryCommand.run(
-        SessionRecoveryCommand.Request(session: session, transcribe: transcribe, postProcess: false, force: true),
+        SessionRecoveryCommand.Request(session: session, transcribe: transcribe, postProcess: false, force: true), voiceSamples: .none,
         diarizer: nil, makeSpeech: FakeSpeechFactory().factory)
     #expect(forced.rebuild?.journalSegments == 2)
     #expect(try rebuilderCurrent(session).segments.count == 2)
@@ -776,7 +776,7 @@ func recoverLabelsTheTranscriptSavedBeforeFinish() async throws {
     let savedID = try #require(saved?.id)
     let steps = SharedValue<[SessionRecoveryCommand.Step]>([])
     let outcome = try await SessionRecoveryCommand.run(
-        SessionRecoveryCommand.Request(session: session), diarizer: rebuilderDiarizer(),
+        SessionRecoveryCommand.Request(session: session), voiceSamples: .none, diarizer: rebuilderDiarizer(),
         makeSpeech: FakeSpeechFactory().factory, freeSpace: FixedFreeSpace(.max),
         step: { step in steps.update { $0.append(step) } })
     #expect(outcome.exitCode == 0)
@@ -787,7 +787,7 @@ func recoverLabelsTheTranscriptSavedBeforeFinish() async throws {
     #expect(try SessionArchive.currentTranscriptID(at: session) == savedID)
 
     let second = try await SessionRecoveryCommand.run(
-        SessionRecoveryCommand.Request(session: session, transcribe: false), diarizer: rebuilderDiarizer(),
+        SessionRecoveryCommand.Request(session: session, transcribe: false), voiceSamples: .none, diarizer: rebuilderDiarizer(),
         freeSpace: FixedFreeSpace(.max))
     #expect(second.rebuild == nil && second.postProcessing == nil, "Labels of the same transcript are kept.")
     #expect(second.summary.hasSuffix("Speaker labels are up to date."))
@@ -799,7 +799,7 @@ func recoverRebuildsAProcessingSessionWithoutATranscript() async throws {
     defer { temp.remove() }
     let (session, _) = try await rebuilderDiedWhileProcessing(in: temp.url, saveAll: false)
     let outcome = try await SessionRecoveryCommand.run(
-        SessionRecoveryCommand.Request(session: session, transcribe: false, postProcess: false), diarizer: nil)
+        SessionRecoveryCommand.Request(session: session, transcribe: false, postProcess: false), voiceSamples: .none, diarizer: nil)
     #expect(outcome.rebuild?.journalSegments == 2)
     #expect(try rebuilderCurrent(session).segments.count == 2)
     #expect(outcome.status == ArchiveStatus.recovered)
@@ -883,7 +883,7 @@ func recoverFinishesRecordingARebuildOfAProcessingSession() async throws {
 
     // The rebuilt transcript is not taken for one the recorder saved at stop: recover finishes recording it.
     let request = SessionRecoveryCommand.Request(session: session, transcribe: false, postProcess: false)
-    let outcome = try await SessionRecoveryCommand.run(request, diarizer: nil)
+    let outcome = try await SessionRecoveryCommand.run(request, voiceSamples: .none, diarizer: nil)
     #expect(outcome.exitCode == 0)
     #expect(outcome.warnings.isEmpty)
     #expect(outcome.rebuild?.reused == true)
@@ -897,7 +897,7 @@ func recoverFinishesRecordingARebuildOfAProcessingSession() async throws {
 
     // Recorded now: recover again changes nothing.
     let files = SessionFixtures.files(in: session).filter { !$0.key.hasPrefix(".") && $0.key != "status.json" }
-    let again = try await SessionRecoveryCommand.run(request, diarizer: nil)
+    let again = try await SessionRecoveryCommand.run(request, voiceSamples: .none, diarizer: nil)
     #expect(again.rebuild?.reused == true && again.status == ArchiveStatus.recovered)
     #expect(SessionFixtures.files(in: session).filter { !$0.key.hasPrefix(".") && $0.key != "status.json" } == files)
 }
@@ -918,7 +918,7 @@ func recoverStillKeepsTheRecorderTranscriptAfterAnUnrecordedRebuildElsewhere() a
     lease.release()
 
     let outcome = try await SessionRecoveryCommand.run(
-        SessionRecoveryCommand.Request(session: session, transcribe: false, postProcess: false), diarizer: nil)
+        SessionRecoveryCommand.Request(session: session, transcribe: false, postProcess: false), voiceSamples: .none, diarizer: nil)
     #expect(outcome.rebuild == nil, "The transcript saved at stop is kept.")
     #expect(try SessionArchive.currentTranscriptID(at: session) == savedID)
     #expect(outcome.status == ArchiveStatus.interrupted)
@@ -932,7 +932,7 @@ func recoverRefusedWhileAnotherProcessHoldsTheLease() async throws {
     let lease = try SessionArchive.acquireProcessingLease(at: session)
     defer { lease.release() }
     #expect(isHolosError(await #expect(throws: HolosError.self) {
-        try await SessionRecoveryCommand.run(SessionRecoveryCommand.Request(session: session), diarizer: nil)
+        try await SessionRecoveryCommand.run(SessionRecoveryCommand.Request(session: session), voiceSamples: .none, diarizer: nil)
     }, "unavailable"))
     #expect(try SessionArchive.readManifest(at: session).status == ArchiveStatus.recording, "Nothing changed.")
 }
@@ -1000,11 +1000,11 @@ func recoverWithoutPostProcessingRepairsAnUnreadableRebuiltTranscript() async th
     defer { temp.remove() }
     let session = try await rebuilderDeadMeeting(in: temp.url)
     let request = SessionRecoveryCommand.Request(session: session, transcribe: false, postProcess: false)
-    let first = try await SessionRecoveryCommand.run(request, diarizer: nil)
+    let first = try await SessionRecoveryCommand.run(request, voiceSamples: .none, diarizer: nil)
     let firstID = try #require(first.rebuild?.transcriptID)
     try rebuilderDamage(session, transcriptID: firstID, "truncated")
 
-    let second = try await SessionRecoveryCommand.run(request, diarizer: nil)
+    let second = try await SessionRecoveryCommand.run(request, voiceSamples: .none, diarizer: nil)
     #expect(second.exitCode == 0)
     #expect(second.rebuild?.reused == false)
     #expect(second.rebuild?.transcriptID != firstID)
@@ -1059,7 +1059,7 @@ func recoverRefusesANewerPostProcessingRecord(force: Bool) async throws {
     defer { temp.remove() }
     let session = try await rebuilderDeadMeeting(in: temp.url)
     let first = try await SessionRecoveryCommand.run(
-        SessionRecoveryCommand.Request(session: session), diarizer: rebuilderDiarizer(),
+        SessionRecoveryCommand.Request(session: session), voiceSamples: .none, diarizer: rebuilderDiarizer(),
         makeSpeech: FakeSpeechFactory().factory, freeSpace: FixedFreeSpace(.max))
     #expect(first.postProcessing?.state == .succeeded)
     let newer = try rebuilderMakeNewer(SessionPaths.postprocess(session))
@@ -1069,7 +1069,7 @@ func recoverRefusesANewerPostProcessingRecord(force: Bool) async throws {
     let steps = SharedValue<[SessionRecoveryCommand.Step]>([])
     let error = await #expect(throws: HolosError.self) {
         try await SessionRecoveryCommand.run(
-            SessionRecoveryCommand.Request(session: session, force: force), diarizer: rebuilderDiarizer(),
+            SessionRecoveryCommand.Request(session: session, force: force), voiceSamples: .none, diarizer: rebuilderDiarizer(),
             makeSpeech: FakeSpeechFactory().factory, freeSpace: FixedFreeSpace(.max),
             step: { step in steps.update { $0.append(step) } })
     }
@@ -1088,7 +1088,7 @@ func recoverRefusesNewerSpeakerFilesBeforePostProcessing(file: String, record: S
     defer { temp.remove() }
     let session = try await rebuilderDeadMeeting(in: temp.url)
     let first = try await SessionRecoveryCommand.run(
-        SessionRecoveryCommand.Request(session: session), diarizer: rebuilderDiarizer(),
+        SessionRecoveryCommand.Request(session: session), voiceSamples: .none, diarizer: rebuilderDiarizer(),
         makeSpeech: FakeSpeechFactory().factory, freeSpace: FixedFreeSpace(.max))
     let runID = try #require(first.postProcessing?.runID)
     let transcriptID = try #require(first.rebuild?.transcriptID)
@@ -1119,7 +1119,7 @@ func recoverRefusesNewerSpeakerFilesBeforePostProcessing(file: String, record: S
     let steps = SharedValue<[SessionRecoveryCommand.Step]>([])
     let error = await #expect(throws: HolosError.self) {
         try await SessionRecoveryCommand.run(
-            SessionRecoveryCommand.Request(session: session), diarizer: rebuilderDiarizer(),
+            SessionRecoveryCommand.Request(session: session), voiceSamples: .none, diarizer: rebuilderDiarizer(),
             makeSpeech: FakeSpeechFactory().factory, freeSpace: FixedFreeSpace(.max),
             step: { step in steps.update { $0.append(step) } })
     }
@@ -1137,7 +1137,7 @@ func recoverAndCatalogAgreeWhenTheHeadIsMissing() async throws {
     defer { temp.remove() }
     let session = try await rebuilderDeadMeeting(in: temp.url)
     let request = SessionRecoveryCommand.Request(session: session)
-    let first = try await SessionRecoveryCommand.run(request, diarizer: rebuilderDiarizer(),
+    let first = try await SessionRecoveryCommand.run(request, voiceSamples: .none, diarizer: rebuilderDiarizer(),
                                                      makeSpeech: FakeSpeechFactory().factory,
                                                      freeSpace: FixedFreeSpace(.max))
     let transcriptID = try #require(first.rebuild?.transcriptID)
@@ -1149,7 +1149,7 @@ func recoverAndCatalogAgreeWhenTheHeadIsMissing() async throws {
     #expect(summary.speakerState == .unreadable)
     #expect(summary.labelMessage?.contains("speakers/head.json is missing") == true)
     #expect(try SessionRecoveryCommand.currentLabels(session, transcriptID: transcriptID, canLabel: true) == nil)
-    let again = try await SessionRecoveryCommand.run(request, diarizer: rebuilderDiarizer(),
+    let again = try await SessionRecoveryCommand.run(request, voiceSamples: .none, diarizer: rebuilderDiarizer(),
                                                      makeSpeech: FakeSpeechFactory().factory,
                                                      freeSpace: FixedFreeSpace(.max))
     #expect(again.postProcessing?.state == .succeeded)
@@ -1167,7 +1167,7 @@ func postProcessingRefusesANewerRecordAndReplacesADamagedOne() async throws {
                                                   state: .succeeded, pid: 1, startedAt: Date(), updatedAt: Date()),
                              to: url)
     let newer = try rebuilderMakeNewer(url)
-    let processor = MeetingPostProcessor(diarizer: rebuilderDiarizer(), freeSpace: FixedFreeSpace(.max))
+    let processor = MeetingPostProcessor(voiceSamples: .none, diarizer: rebuilderDiarizer(), freeSpace: FixedFreeSpace(.max))
     #expect(isHolosError(await #expect(throws: HolosError.self) {
         try await processor.run(session: session, lease: nil)
     }, "unavailable"))
@@ -1187,7 +1187,7 @@ func recoverRebuildsAnUnreadableTranscriptSavedBeforeFinish() async throws {
     let (session, saved) = try await rebuilderDiedWhileProcessing(in: temp.url)
     try rebuilderDamage(session, transcriptID: try #require(saved?.id), "garbage")
     let request = SessionRecoveryCommand.Request(session: session, transcribe: false, postProcess: false)
-    let outcome = try await SessionRecoveryCommand.run(request, diarizer: nil)
+    let outcome = try await SessionRecoveryCommand.run(request, voiceSamples: .none, diarizer: nil)
     #expect(outcome.rebuild?.reused == false, "A damaged transcript saved at stop is not kept.")
     #expect(outcome.rebuild?.journalSegments == 2)
     #expect(try rebuilderCurrent(session).segments.count == 2)
@@ -1199,7 +1199,7 @@ func recoverRebuildsAnUnreadableTranscriptSavedBeforeFinish() async throws {
     let pointer = try Data(contentsOf: SessionPaths.transcriptPointer(other))
     #expect(isHolosError(await #expect(throws: HolosError.self) {
         try await SessionRecoveryCommand.run(
-            SessionRecoveryCommand.Request(session: other, transcribe: false, postProcess: false), diarizer: nil)
+            SessionRecoveryCommand.Request(session: other, transcribe: false, postProcess: false), voiceSamples: .none, diarizer: nil)
     }, "unavailable"))
     #expect(try Data(contentsOf: revision) == newer)
     #expect(try Data(contentsOf: SessionPaths.transcriptPointer(other)) == pointer)
@@ -1214,7 +1214,7 @@ func recoverDoesNotReuseAPostProcessingRecordOfAnotherSession() async throws {
     defer { temp.remove() }
     let session = try await rebuilderDeadMeeting(in: temp.url)
     let request = SessionRecoveryCommand.Request(session: session, transcribe: false)
-    let first = try await SessionRecoveryCommand.run(request, diarizer: nil, freeSpace: FixedFreeSpace(.max))
+    let first = try await SessionRecoveryCommand.run(request, voiceSamples: .none, diarizer: nil, freeSpace: FixedFreeSpace(.max))
     let transcriptID = try #require(first.rebuild?.transcriptID)
     var foreign = try #require(first.postProcessing)
     #expect(foreign.runID == nil && foreign.transcriptID == transcriptID)
@@ -1227,7 +1227,7 @@ func recoverDoesNotReuseAPostProcessingRecordOfAnotherSession() async throws {
     #expect(SessionCatalog.summary(session: session).speakerState == .unreadable)
 
     let steps = SharedValue<[SessionRecoveryCommand.Step]>([])
-    let again = try await SessionRecoveryCommand.run(request, diarizer: nil, freeSpace: FixedFreeSpace(.max),
+    let again = try await SessionRecoveryCommand.run(request, voiceSamples: .none, diarizer: nil, freeSpace: FixedFreeSpace(.max),
                                                      step: { step in steps.update { $0.append(step) } })
     #expect(steps.value.contains(.postProcessed), "Post-processing replaces the foreign record.")
     #expect(!again.summary.contains("Foreign message."))
@@ -1280,7 +1280,7 @@ func postProcessingRefusesANewerAudioDeletionMarker() async throws {
     try AtomicFile.writeJSON(AudioDeletedRecord(sessionID: try SessionArchive.readManifest(at: session).id,
                                                 chunkCount: 1, seconds: 20), to: marker)
     let newer = try rebuilderMakeNewer(marker)
-    let processor = MeetingPostProcessor(diarizer: rebuilderDiarizer(), freeSpace: FixedFreeSpace(.max))
+    let processor = MeetingPostProcessor(voiceSamples: .none, diarizer: rebuilderDiarizer(), freeSpace: FixedFreeSpace(.max))
     #expect(isHolosError(await #expect(throws: HolosError.self) {
         try await processor.run(session: session, lease: nil)
     }, "unavailable"))

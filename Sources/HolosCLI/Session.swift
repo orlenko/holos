@@ -13,6 +13,7 @@ struct Session: AsyncParsableCommand {
             Recover.self,
             Retranscribe.self,
             Diarize.self,
+            EchoAnalyze.self,
             Import.self,
             Export.self,
             Score.self,
@@ -127,8 +128,9 @@ struct Session: AsyncParsableCommand {
                                                          postProcess: !noPostprocess, force: force,
                                                          vocabulary: vocabulary)
             let outcome = try await SessionRecoveryCommand.run(
-                request, diarizer: noPostprocess ? nil : makeDiarizer(engineOverrides: [:]),
-                profiles: SpeakerProfileStore(), wordFixes: makeWordFixDependencies(),
+                request, voiceSamples: cliVoiceSamples, diarizer: noPostprocess ? nil : makeDiarizer(engineOverrides: [:]),
+                profiles: SpeakerProfileStore(),
+                wordFixes: makeWordFixDependencies(),
                 progress: Self.progressPrinter())
             if json {
                 let recovery = outcome.recovery

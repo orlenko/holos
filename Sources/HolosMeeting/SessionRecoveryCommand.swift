@@ -143,7 +143,10 @@ public enum SessionRecoveryCommand {
     /// vocabulary.json, postprocess.json, the speaker head or run) throws `unavailable` (schema rule 3, §1.6), with
     /// the archive recovery kept. `profiles` is passed to the post-processor (voice suggestions, PR10), and
     /// `languages` (a meeting in several languages, §4.14) and `wordFixes` (docs/design.md "Meeting word fixes") too.
-    public static func run(_ request: Request, diarizer: (any SpeakerDiarizer)?, makeSpeech: LiveSpeechFactory? = nil,
+    /// With `profiles`, `voiceSamples` brings the voice samples from this meeting in step with what the labels show
+    /// (§5.11: an echo mask saved now or by an earlier pass changes which turns they may use).
+    public static func run(_ request: Request, voiceSamples: VoiceSampleSource, diarizer: (any SpeakerDiarizer)?,
+                           makeSpeech: LiveSpeechFactory? = nil,
                            freeSpace: any FreeSpaceProvider = VolumeFreeSpace(),
                            profiles: SpeakerProfileStore? = nil,
                            languages: LanguageDetectionDependencies = .live,
@@ -266,7 +269,7 @@ public enum SessionRecoveryCommand {
                     : "Speaker labels are up to date.")
             } else {
                 do {
-                    let processor = MeetingPostProcessor(diarizer: diarizer,
+                    let processor = MeetingPostProcessor(voiceSamples: voiceSamples, diarizer: diarizer,
                                                          options: PostProcessingOptions(
                                                              keepTranscript: keepTranscript,
                                                              reconcileLiveHints: keepTranscript),
@@ -287,6 +290,43 @@ public enum SessionRecoveryCommand {
                     warnings.append("Speaker labels were not updated: \(error.localizedDescription)")
                     exitCode = 3
                 }
+            }
+        }
+        // A call's acoustic echo analysis that is still missing (§5.11, worked out from the files: a pass that failed,
+        // or a meeting from before it existed) is made once per Recover, unless post-processing just tried it.
+        if request.postProcess, record?.stages.contains(where: { $0.stage == .echo }) != true,
+           EchoAnalysisStage.needed(session: session), let manifest = try? SessionArchive.readManifest(at: session) {
+            do {
+                let stored = try EchoAnalysisStage.analyzeSession(session: session, manifest: manifest,
+                                                                  freeSpace: freeSpace, progress: progress)
+                parts.append(EchoAnalysisStage.message(stored.record))
+            } catch let error where !(error is CancellationError) {
+                // Nothing was saved, so the next Recover (or echo-analyze, or relabel) tries again.
+                warnings.append("The microphone echo was not analysed: \(error.localizedDescription)")
+                exitCode = max(exitCode, 3)
+            }
+        }
+        // Transcript files written with another echo mask than the labels show now (one just saved, or one saved by a
+        // pass whose rewrite failed) are written again: worked out from the files, whatever ran this time.
+        if request.postProcess, !SessionExports.echoMaskIsCurrent(session: session) {
+            do {
+                try SessionExports.regenerate(session: session, people: profiles)
+            } catch let error where !(error is CancellationError) {
+                warnings.append("The transcript files were not rewritten: \(error.localizedDescription)")
+                exitCode = max(exitCode, 3)
+            }
+        }
+        // The voice samples from this meeting, brought in step as after an edit. Worked out from the files: a sample
+        // whose inputs (the turns the labels show, with the echo mask saved by this pass or an earlier one) changed
+        // is recomputed or removed, and one up to date is left alone, so this costs little when nothing changed.
+        if request.postProcess, let profiles, let makeExtractor = voiceSamples.extractor {
+            do {
+                try await VoiceProfileService.refreshSamplesIfLearned(session: session, makeExtractor: makeExtractor,
+                                                                      store: profiles)
+            } catch let error where !(error is CancellationError) {
+                warnings.append("A voice sample learned from this meeting could not be updated: "
+                                + error.localizedDescription)
+                exitCode = max(exitCode, 3)
             }
         }
         if recovery.needsAttention {
@@ -396,6 +436,10 @@ public enum SessionRecoveryCommand {
                 return outcome.result != .failed
             case .recognize:
                 return outcome.result != .failed
+            case .echo:
+                // Informational (§5.11): whether the analysis is still needed is read from the meeting's files, not
+                // from this record (`EchoAnalysisStage.needed`), and Recover makes it itself.
+                return true
             case .render, .diarize, .align:
                 return outcome.result == .succeeded
                     || (outcome.result == .skipped && outcome.message.map(unchangedSkips.contains) == true)

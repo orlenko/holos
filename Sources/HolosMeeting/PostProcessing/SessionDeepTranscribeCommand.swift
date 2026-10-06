@@ -77,7 +77,8 @@ public enum SessionDeepTranscribeCommand {
 
     /// Runs `precheck`, then the post-processor. Throws, with nothing changed, when the precheck fails, the session is
     /// still recording, or another process holds its processing lease.
-    public static func run(_ request: Request, diarizer: (any SpeakerDiarizer)?,
+    public static func run(_ request: Request, voiceSamples: VoiceSampleSource,
+                           diarizer: (any SpeakerDiarizer)?,
                            freeSpace: any FreeSpaceProvider = VolumeFreeSpace(),
                            profiles: SpeakerProfileStore? = nil,
                            languages: LanguageDetectionDependencies = .live,
@@ -87,7 +88,8 @@ public enum SessionDeepTranscribeCommand {
         async throws -> Outcome {
         try precheck(session: request.session, dependencies: deepTranscription, force: request.force)
         let options = PostProcessingOptions(force: request.force, deepTranscribe: true)
-        let processor = MeetingPostProcessor(diarizer: diarizer, options: options, freeSpace: freeSpace,
+        let processor = MeetingPostProcessor(voiceSamples: voiceSamples, diarizer: diarizer, options: options,
+                                             freeSpace: freeSpace,
                                              profiles: profiles, languages: languages, wordFixes: wordFixes,
                                              deepTranscription: deepTranscription)
         let record = try await processor.run(session: request.session, lease: nil, progress: progress)

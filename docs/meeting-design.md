@@ -487,6 +487,8 @@ extension SessionArchive {
   exports/transcript.{md,json,txt}         PR7b SessionExports          generated, mode 0400, never contain vectors
   exports/.generated.json                  PR7b                         SHA-256 of each generated file
   exports/edited-<YYYYMMDD-HHMMSS>.<ext>   PR7b                         a hand-edited export, moved aside before regeneration
+  echo/mask.json                           §5.11 EchoMaskStore          EchoMaskRecord: a call's acoustic echo analysis, keyed to its audio
+  echo/frames-<sha>.bin                    §5.11 EchoMaskStore          AcousticEchoMask bytes (2 per 16 ms frame); only when echo was found
   derived/<track>-16k.caf                  PR7b TrackRenderer           deletable cache; cleared at the start and end of post-processing
 ```
 
@@ -518,6 +520,9 @@ public enum SessionPaths {
     public static func exports(_ session: URL) -> URL           // exports/
     public static func export(_ fileExtension: String, in session: URL) -> URL // exports/transcript.<ext>
     public static func generatedExports(_ session: URL) -> URL  // exports/.generated.json
+    public static func echoDirectory(_ session: URL) -> URL     // echo/ (§5.11)
+    public static func echoMask(_ session: URL) -> URL          // echo/mask.json
+    // echo/frames-<first 16 hex digits of its SHA-256>.bin: EchoMaskStore.framesURL(session, sha256:)
     public static func derived(_ session: URL) -> URL           // derived/
     public static func render(track: String, in session: URL) -> URL // derived/<track>-16k.caf
 }
@@ -2867,6 +2872,7 @@ Stages (PR7b):
 | 2 | — | track policies from `meeting.json` (or `MeetingInfo.inferred`), with `options.othersInRoom` overriding: a track is `diarized` if it is `system`, or the mode is `inPerson`, or others are in the room; otherwise `channel("mic:me", "Me")`; tracks without words are `skipped` | — |
 | 3 | — | if a head run exists, was built from the current transcript, has applied edits, and `!force`: skip 4–7 with "Speaker labels were edited; relabel with --force (names carry over)". If the head was built from another transcript, relabel. | stages `skipped` |
 | 4 | `render` | skip with "Not enough disk space to label speakers. Free some space, then use Label Speakers." when `stopReason == .diskLow` or `DiskPolicy.renderCheck` fails. Otherwise `TrackRenderer.render` each diarized track to `derived/<track>-16k.caf`, compressing long gaps (below) | failed → skip 5–7 |
+| 4b | `echo` | when the analysis is needed (§5.11, `EchoAnalysisStage.needed`: a call with microphone and system audio and no saved analysis of that audio), whether or not a track is diarized, also for edited labels stage 3 keeps; not after a `diskLow` stop: renders the track stage 4 did not (the microphone of a call labelled as "Me"), then `EchoAnalysis` on the two renders, saved to `echo/` (`EchoMaskStore`). The run is built without it; the labels' view hides the echo | failed → recorded for reading only; nothing saved, so the next pass (or Recover) tries again |
 | 5 | `diarize` | `nil` diarizer → `skipped`, "Speaker models are not installed. Install them from Setup, or run holos setup --speakers." Otherwise `diarizer.diarize` each rendered track, **one track at a time**, then map times to the session timeline with the render's time map. Speaker hint: `options.speakers`, else `meeting.json` `expectedSpeakers` n as `minimum: n − 1, maximum: n + 1` (or the form PR7c found best) | failed → skip 6–7 |
 | 6 | `align` | `SpeakerRunBuilder.build` (PR5a, pure) → run (no embeddings) plus in-memory voice data. Under the speaker lock: `writeRun`; `writeHead`; `writeVoiceData` only with `forceVoiceData` (evaluation; never for normal meetings); append carry-over edits (§4.9) when the previous head had names, links, or rejections. Release the lock. | failed → skip 7 |
 | 7 | `recognize` | PR10: when "Remember voices" is on and some profile has samples: `SpeakerRecognizer.recognize` on the in-memory centroids → `writeRecognition` (distances only) | failed → continue |
@@ -7879,6 +7885,144 @@ cleaner transcript."
 | `echoHeavyMicClusterIsHidden` | mic cluster with 70 % of its words dropped as echo | cluster not listed; its remaining turns unknown speaker |
 | `inPersonSessionsDoNotFilter` | meeting mode inPerson | no spans |
 | `builtInSpeakersClassification` | ('bltn', 'ispk'), ('bltn', 'hdpn'), (USB, nil) | true, false, false |
+
+**Acoustic echo (added 2026-10).** The text filter only finds echo the recognizer heard as
+the same words. On laptop speakers it also hears garbled copies, which became most of a
+call's microphone turns (one 53-minute call: 571 of 883 turns were "Unknown" microphone
+fragments). The acoustic analysis compares the audio instead: where the microphone and the
+system audio say the same thing, only the system's words stay; microphone speech that is
+genuinely local (the user, or people in the room) stays even while the call plays.
+
+- `Sources/HolosSpeakers/EchoAnalysis.swift` (pure; Accelerate), on 16 kHz session-time
+  audio (`EchoAudioSource`; the post-processor reads the stage 4 renders through their time
+  maps, `RenderedEchoAudio`):
+  1. *Delay.* GCC-PHAT of 10 s windows every 30 s (every 10 s under 5 minutes) where the
+     system plays (RMS > 1e-4; a window may end at the last sample, so a 30 s call has three),
+     lags −0.3…1.5 s; a window is confident when its largest |correlation| (either sign: a
+     microphone of inverted polarity records the echo upside down) is over 20× the median
+     |correlation|. Two starts are refined by least squares three times on the windows within
+     3 ms, and the one more windows agree with wins: a robust (Theil–Sen) line, so an outlying
+     window cannot drag it away from the rest (its slopes from at most 512 windows spread
+     evenly, about 4 hours' worth, so memory stays bounded), and a constant delay at the median, for few
+     windows with an outlier at an end (the delay drifts a few ms per hour between the two
+     tracks' clocks).
+  2. *Gate.* Echo is present only when at least 3 windows, and at least 30 % of the windows
+     where the system plays, are confident and on the line, and the delay stays between 1 ms
+     and 1.5 s. Otherwise (headphones; no or silent system audio) nothing is masked. A zero
+     lag is one signal recorded twice, not the room.
+  3. *Model.* STFT, 1,024-sample Hann window, 256 hop (16 ms frames), bins 150–4,000 Hz. Per
+     5 s block and bin, an 8-tap complex filter (one frame after the delayed system frame to
+     six before, ≈ −16…+112 ms) predicts the microphone from the system spectrum: ridge
+     (1e-3 × mean diagonal) least squares on the frames where the system plays (power over
+     3× the block's 20th percentile), then two refits without frames whose residual keeps over
+     a quarter of the microphone power. Blocks run in parallel.
+  4. *Frames* (`AcousticEchoMask`). Floors: 15 s minimum of the 31-frame mean power. Silence:
+     microphone < floor + 10 dB. Local: residual within the threshold of the microphone level
+     and ≥ floor + 10 dB; the threshold is −8 dB, raised toward −3 dB per 30 s where the echo
+     is poorly cancelled (90th percentile of the residual ratio of echo-dominated frames + 1
+     dB); 5-frame (80 ms) majority smoothing. Echo: every other active frame.
+  5. *Words* (`AcousticEchoMask.isEcho`). A microphone word is echo when under 30 % of its
+     active frames are local; a word with no active frame is echo only when the predicted
+     echo explains its energy (median echo − microphone ≥ −5 dB; a frame with no microphone
+     sound or no predicted echo, such as a gap in the recording, explains nothing). A word past
+     the last frame, without times, or with estimated times (a segment without word timing) is
+     kept.
+- *Storage.* `echo/mask.json` (`EchoMaskRecord`, schema 1: verdict, delay fit, frame counts,
+  the SHA-256 of the frames, analysis seconds) and `echo/frames-<sha>.bin` (one class byte
+  per frame, then one byte per frame of predicted echo level in 0.5 dB steps; about 450 KB
+  per hour). One limit sets the longest call: `EchoMaskStore.maximumSeconds` (12 hours, so
+  `maximumFrames` is 2.7 million); the reader takes frames files up to it, and a longer call is not analysed
+  but saved with verdict `tooLong`, which hides nothing and counts as done. The record is
+  keyed to the audio (`EvalStore.audioFingerprint` of the mic and system chunk lists, which
+  include each chunk's SHA-256) and to `EchoAnalysis.version`; any other key is out of date
+  and analysed again, but one of a newer schema or a newer analysis version (checked before
+  the record is decoded) is refused and left alone, never overwritten. It is in the
+  meeting folder because `derived/` is deleted after every run; Delete Audio leaves it (it
+  holds no speech). The summary counts in it are recomputed from the frames when read. The
+  frames file is named by its content, so a new analysis writes its own file, then switches
+  the record to it, then deletes the others: a failure in between leaves the old mask in use.
+  A save takes the speaker lock, and an edit made on a view shown with another mask than the
+  one saved now is refused like one made on another run (`SpeakerEditor`).
+- *Where it applies: the view only.* Stored runs never hold acoustic echo: they keep the text
+  filter's drops exactly as before, and nothing that writes runs or edits knows the mask.
+  `SpeakerSessionSnapshot.load` reads the mask (`EchoMaskStore.usable`: none when it is
+  missing, out of date, damaged or from a newer build) and `SpeakerProjection.make(acousticEcho:)`
+  hides the microphone words it flags, after the edit journal is applied to the stored turns
+  (§4.9 step 6). Review, exports, summaries, search, live speaker hints and voice learning all
+  read that projection; voice learning and voice matching leave out turns cut by echo
+  (`ProjectedTurn.cutByEcho`), since a turn's voice data covers its echo. Not through it, on
+  purpose: relabel decisions and name carry-over (`SpeakerAnalysis.headState`, matched against
+  a new run that holds the echo too), forget clean-up (it must reach every word a person owns)
+  and evaluation scoring (diarization quality).
+- *Turns.* A turn keeps its ID and speaker and leaves out the words the mask flags; its start,
+  end and timing quality are those of the words left, and its talk time (sidebar, exports) is
+  the sum of its runs of shown words, without the echo between them. A turn that loses every word is not
+  shown, and a speaker with no turn shown is not listed. Edits work as without echo: the words a
+  split is chosen from are the words shown, each named by its place in its segment (`WordRef`),
+  so the split lands at that word of the stored turn; assign and undo name the turn. The
+  journal only ever names stored turns and words, so it does not depend on the mask shown.
+- *Out of date when the mask changes.* The transcript files record the mask they were written
+  with (`.generated.json` `echoMask`: the SHA-256 of the frames, none without a mask), and
+  `SessionExports.filesState` calls them out of date when it is not the one the labels show now,
+  so the app offers Update Transcript Files. Recover rewrites them whenever they are, whatever
+  else it did (`echoMaskIsCurrent`; a rewrite left pending counts as out of date). The people
+  cache and the summary schedule key on the echo files' stamps. The mask is saved under the
+  speaker lock (lease, then speakers, then profiles), and a voice sample is published only if
+  the echo files did not change while it was computed. A sample's freshness comes from the
+  files: its input digest covers the turns the masked view lets it use, so
+  `VoiceProfileService.refreshSamples` (as after an edit) recomputes or removes one whose turns
+  the mask changed and leaves the rest alone. Every post-processing pass that ends with labels
+  runs the echo check and this sync once (`MeetingPostProcessor.checkEcho`: in stage 4b before
+  recognition, with the head the sample was learned from, or after labels that were kept or
+  left as they were; no lock held), every entry point names its `VoiceSampleSource` (`.none`
+  only where samples are left to a later pass), every Recover
+  and every `echo-analyze` run it when they have a voice extractor, whether or not they saved a
+  mask, so a sync that failed is retried by the next pass and nothing records it as done. A
+  sample learned from an earlier run is kept when the new labels give none only while its own
+  turns, in that run seen through the mask, still give its digest; otherwise (or when that run
+  cannot be read) it is removed.
+- *Recognition.* Post-processing compares voices only for clusters the view lists with the mask
+  (`RecognizeStage.withoutEcho`): a microphone cluster that is echo sounds like the far end and
+  must not take a person's match from the system speaker. The mask exists by then (stage 4b).
+- *Echo clusters.* A diarized microphone cluster with at least `echoClusterShare` of the words
+  of its machine turns flagged is echo itself: turns still given to its speaker show unknown
+  speaker, and no turn names it among its overlaps, unless the user named or linked that
+  speaker. (The text filter's own cluster rule still runs when the run is built.)
+- *Analysis needed* is worked out from the files, never recorded as pending work: a call with
+  microphone and system audio, its audio kept, and no saved analysis of that audio and this
+  version (`EchoAnalysisStage.needed`); any saved verdict counts as done, and so does one a
+  newer build saved. Post-processing makes it in stage 4b when needed (also for edited labels
+  stage 3 keeps, and when no track is diarized); its `echo` stage outcome is for reading only.
+  A failure saves nothing, so the next pass tries again. Recover makes a missing analysis once
+  per run (unless its post-processing just tried). Transcript files are rewritten after a save
+  by `echo-analyze` and Recover with the speaker lock, then `profiles.lock`, held while people's
+  names are read (§1.7 order).
+- *Existing meetings.* `voiceislocal session echo-analyze <id|path> [--force] [--json]`
+  (`SessionEchoAnalyzeCommand`) saves the analysis and rewrites the transcript files through
+  the projection. Nothing else changes: speaker labels, edits, the transcript and its word
+  fixes stay as they are on disk.
+- *Playback (later).* `AcousticEchoMask.localSpeechIntervals()` gives the microphone's own
+  speech: local frames, gaps under 300 ms merged, padded 64 ms before and 200 ms after.
+
+Validation. Synthetic tests (`Tests/HolosSpeakersTests/AcousticEchoTests.swift`,
+`Tests/HolosMeetingTests/AcousticEchoMeetingTests.swift`): the delay to within 1 ms (also an
+inverted microphone, a 30 s call, outlying windows); echo-only frames echo, local bursts
+local, local speech over the call at echo level kept, gaps in the recording kept;
+headphones, missing or silent system audio, and one signal on both tracks are no-ops; the
+projection hides echo words from turns that keep their IDs, a split chosen among the words
+shown lands at that stored word (assign and undo too, through the review), hides echo
+clusters, keeps a named speaker whose turns are all echo with its name and assignments, and
+changes with the mask alone; a word fix across an echo boundary is judged once; stale,
+damaged and newer masks are ignored; exports equal the view, go out of date when the mask
+changes, and Recover rewrites them; recognition skips an echo cluster; post-processing, Recover and
+`echo-analyze` change no stored speaker file. On three real calls (copies), against the
+research reference: delay 46.1 / 46.3 / 46.4 ms (+5.1 / +4.3 / +4.3 ms/h); leftover
+"Unknown" microphone words hidden 1,356/1,489, 1,352/1,468, 1,479/1,645 (91 / 92 / 90 %);
+the user's own words hidden 11/638 and 11/441; words while the system was silent hidden
+2/364, 0/294, 1/4; microphone turns shown 571 → 94, 585 → 103, 714 → 110 (all turns
+883 → 406, 837 → 355, 996 → 392); all 8 edits of the edited meeting apply, and its stored
+labels are byte-identical. The analysis took 1.8–2.1 s per hour of audio on the development
+Mac, about 5 s per hour with both renders (release build).
 
 **Does not touch.** `Sources/HolosApp/Review/*`, `ReviewSession.swift`, `MeetingsWindow.swift`,
 `SpeakerProjection.swift`, `Package.swift`, README and `docs/status.md` (PR9 writes the

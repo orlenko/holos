@@ -166,7 +166,7 @@ func theInstalledModelTranscribesASessionAgain() async throws {
     let clock = ContinuousClock()
     let started = clock.now
     let outcome = try await SessionDeepTranscribeCommand.run(
-        SessionDeepTranscribeCommand.Request(session: session), diarizer: nil, freeSpace: FixedFreeSpace(.max),
+        SessionDeepTranscribeCommand.Request(session: session), voiceSamples: .none, diarizer: nil, freeSpace: FixedFreeSpace(.max),
         wordFixes: .none, deepTranscription: dependencies)
     let elapsed = started.duration(to: clock.now)
     #expect(outcome.exitCode == 0, "\(outcome.summary)")

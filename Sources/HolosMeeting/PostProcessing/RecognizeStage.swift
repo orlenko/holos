@@ -81,6 +81,20 @@ enum RecognizeStage {
         return .recognized(result)
     }
 
+    /// `voiceData` with only the centroids of clusters whose speaker the labels' view lists with the acoustic echo
+    /// `mask` hidden (docs/meeting-design.md §5.11): a microphone cluster that is mostly echo, or whose turns are all
+    /// echo, sounds like the far end and must not take a person's one-to-one match from the real system speaker.
+    /// Unchanged without a mask or voice data.
+    static func withoutEcho(_ voiceData: SessionVoiceData?, run: DiarizationRun, transcript: Transcript,
+                            mask: AcousticEchoMask?) -> SessionVoiceData? {
+        guard var voiceData, let mask else { return voiceData }
+        let view = SpeakerProjection.make(run: run, transcript: transcript, edits: [], recognition: nil,
+                                          profileNames: [:], acousticEcho: mask)
+        let shown = Set(view.speakers.flatMap(\.clusterIDs))
+        voiceData.centroids = voiceData.centroids.filter { shown.contains($0.key) }
+        return voiceData
+    }
+
     /// "1 name suggested." / "3 names suggested." / "No voices matched."
     static func message(_ result: RecognitionResult) -> String {
         let count = result.matches.count

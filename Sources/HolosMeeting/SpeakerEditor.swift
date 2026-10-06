@@ -376,10 +376,19 @@ public enum SpeakerEditor {
             log.notice("Refused a speaker edit made on run \(view.runID, privacy: .public); the head is now run \(head.runID, privacy: .public)")
             throw HolosError.unavailable(changedMessage)
         }
+        // The echo mask the labels show now (§5.11; a mask is saved under this lock): one saved, replaced or dropped
+        // since the view was loaded changes the turns it shows, so the view is out of date like one of another run.
+        let manifest = try SessionArchive.readManifest(at: session)
+        guard EchoMaskStore.usable(session: session, manifest: manifest) == view.acousticEcho else {
+            log.notice("Refused a speaker edit made on a view with another acoustic echo mask than the one saved now")
+            throw HolosError.unavailable(changedMessage)
+        }
         let files = try preloaded.get()
         let journal = try SessionSpeakerStore.readEdits(session: session)
+        // With the view's echo mask, so what a batch changes is compared on the turns the view shows.
         let projection = SpeakerProjection.make(run: files.run, transcript: files.transcript, edits: journal.edits,
-                                                recognition: nil, profileNames: profileNames)
+                                                recognition: nil, profileNames: profileNames,
+                                                acousticEcho: view.acousticEcho)
         return Base(run: files.run, journal: journal, projection: projection)
     }
 

@@ -438,7 +438,7 @@ extension HolosAppDelegate: NSMenuDelegate {
         let what = switch progress.stage {
         case .languages: "detecting languages"
         case .wordFixes: "fixing misheard words"
-        case .render, .diarize, .align, .recognize: "labelling speakers"
+        case .render, .echo, .diarize, .align, .recognize: "labelling speakers"
         case .export: "writing transcript files"
         default: "reading the transcript"
         }

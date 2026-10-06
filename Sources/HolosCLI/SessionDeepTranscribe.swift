@@ -55,7 +55,8 @@ extension Session {
             do {
                 outcome = try await EvalInterrupt.run { () async throws in
                     try await SessionDeepTranscribeCommand.run(
-                        request, diarizer: makeDiarizer(engineOverrides: [:]), profiles: SpeakerProfileStore(),
+                        request, voiceSamples: cliVoiceSamples, diarizer: makeDiarizer(engineOverrides: [:]),
+                        profiles: SpeakerProfileStore(),
                         wordFixes: makeWordFixDependencies(), deepTranscription: makeDeepTranscriptionDependencies(),
                         progress: Self.progressPrinter())
                 }

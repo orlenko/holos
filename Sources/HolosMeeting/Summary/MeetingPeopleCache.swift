@@ -46,8 +46,16 @@ public final class MeetingPeopleCache: Sendable {
         let names = profileNames.sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value)" }.joined(separator: "\u{1F}")
         return [summary.transcriptID ?? "-", summary.runID ?? "-", fileStamp(SessionPaths.head(summary.directory)),
                 fileStamp(SessionPaths.edits(summary.directory)), recognitionStamp(summary.directory),
-                applyRecognition ? "r" : "-", names]
+                echoStamp(summary.directory), applyRecognition ? "r" : "-", names]
             .joined(separator: "|")
+    }
+
+    /// The acoustic echo analysis (§5.11): the labels' view hides the echo it finds, which can take a speaker, and so a
+    /// person, out of the meeting. Its record and every frames file, each by name: a save rewrites the record, and a
+    /// frames file removed or damaged drops the mask (`EchoMaskStore.current`) without touching it.
+    static func echoStamp(_ session: URL) -> String {
+        ([SessionPaths.echoMask(session)] + EchoMaskStore.framesFiles(session))
+            .map { $0.lastPathComponent + "=" + fileStamp($0) }.joined(separator: ",")
     }
 
     /// The recognition results (`speakers/recognition/<run>.json`, written after the head run): each file's name, size
@@ -87,9 +95,10 @@ public final class TranscriptFilesCache: Sendable {
         // The manifest's copy of the name not updated after a rename: out of date whatever the files hold.
         if summary.nameCopyIsStale { return .stale }
         let session = summary.directory
+        // The echo analysis too: a mask saved or replaced makes the files out of date (§5.11).
         let stamp = (SessionExports.formats.map { SessionPaths.export($0.rawValue, in: session) }
             + [SessionPaths.generatedExports(session), SessionPaths.transcriptPointer(session)])
-            .map(MeetingPeopleCache.fileStamp).joined(separator: "|")
+            .map(MeetingPeopleCache.fileStamp).joined(separator: "|") + "|" + MeetingPeopleCache.echoStamp(session)
         // The title shown and the name transcript.json records.
         let title = summary.displayTitle + "\u{1F}" + summary.name
         if let entry = entries.withLock({ $0[summary.id] }), entry.stamp == stamp, entry.title == title {

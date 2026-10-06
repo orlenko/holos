@@ -311,6 +311,9 @@ public struct PostProcessingStage: OpenStringCode {
     /// revision before live corrections and word fixes (docs/meeting-design.md §4.16).
     public static let deepTranscription = PostProcessingStage("deepTranscription")
     public static let render = PostProcessingStage("render")
+    /// A call's microphone checked for acoustic echo of the system audio; the mask is kept in `echo/`
+    /// (docs/meeting-design.md §5.11).
+    public static let echo = PostProcessingStage("echo")
     public static let diarize = PostProcessingStage("diarize")
     public static let align = PostProcessingStage("align")
     public static let recognize = PostProcessingStage("recognize")

@@ -29,12 +29,13 @@ public enum VoiceEnrollment {
     public static let otherShare = 0.25
 
     /// The turns of `speakerIDs` that may contribute to a sample: not reassigned, not produced or trimmed by a split
-    /// (`modified`), not overlapped, at least 2 s long, and not excluded from enrollment. In projection order.
+    /// (`modified`), not cut by acoustic echo (the turn's voice covers its echo; a turn that is all echo is not
+    /// shown at all), not overlapped, at least 2 s long, and not excluded from enrollment. In projection order.
     public static func candidateTurns(for speakerIDs: [String], projection: SpeakerProjection) -> [ProjectedTurn] {
         let speakers = Set(speakerIDs)
         return projection.turns.filter { turn in
             guard let speakerID = turn.speakerID, speakers.contains(speakerID) else { return false }
-            return !turn.reassigned && !turn.modified && !turn.overlap && !turn.excludedFromEnrollment
+            return !turn.reassigned && !turn.modified && !turn.cutByEcho && !turn.overlap && !turn.excludedFromEnrollment
                 && turn.start.isFinite && turn.end.isFinite
                 && turn.end - turn.start >= minimumTurnSeconds - timeEpsilon
         }

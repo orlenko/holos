@@ -182,7 +182,7 @@ func catalogReportsNotLabelledWithMessage() async throws {
     defer { temp.remove() }
     let transcript = SessionFixtures.transcript(SessionFixtures.alternatingSegments(track: "mic"))
     let session = try await SessionFixtures.makeSession(in: temp.url, mode: .inPerson, transcript: transcript)
-    let record = try await MeetingPostProcessor(diarizer: nil, freeSpace: FixedFreeSpace(.max))
+    let record = try await MeetingPostProcessor(voiceSamples: .none, diarizer: nil, freeSpace: FixedFreeSpace(.max))
         .run(session: session, lease: nil)
     #expect(record.state == .succeeded)
     let summary = SessionCatalog.summary(session: session)

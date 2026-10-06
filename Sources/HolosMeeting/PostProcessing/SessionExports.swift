@@ -51,6 +51,23 @@ public enum SessionExports {
         }
     }
 
+    /// `regenerate` with people's names, "Remember voices" (`VoiceProfileService.recognitionAllowed`) and the user's own
+    /// name read from `store` while the speaker lock and then `profiles.lock` are held (the §1.7 order), so a forget or
+    /// a rename of a person lands either before the files are written, and shows in them, or after, and rewrites them
+    /// itself. Without a store: plain `regenerate`.
+    @discardableResult
+    public static func regenerate(session: URL, people store: SpeakerProfileStore?) throws -> ExportWriteResult {
+        guard let store else { return try regenerate(session: session) }
+        return try SessionArchive.withSpeakerLock(at: session) {
+            try store.withLockedDatabase { database in
+                try regenerateLocked(
+                    session: session, profileNames: VoiceProfileService.profileNames(in: database),
+                    applyRecognition: VoiceProfileService.recognitionAllowed(in: database, store: store),
+                    selfName: database.profiles.first(where: \.isSelf)?.displayName ?? VoiceProfileService.selfName)
+            }
+        }
+    }
+
     /// Caller holds the speaker lock.
     ///
     /// Every format is rendered before anything is written, so a render failure changes nothing. Then, per file:
@@ -175,9 +192,13 @@ public enum SessionExports {
         /// Set while a regeneration writes: file name → SHA-256 of the bytes it is writing, so a file it wrote before
         /// a crash still counts as generated.
         var pending: [String: String]?
+        /// The acoustic echo mask the labels were shown with when the files were written
+        /// (`EchoMaskStore.identity`; nil: none, as in records written before it existed).
+        var echoMask: String?
 
-        init(schemaVersion: Int = 1, files: [String: String], pending: [String: String]? = nil) {
-            self.schemaVersion = schemaVersion; self.files = files; self.pending = pending
+        init(schemaVersion: Int = 1, files: [String: String], pending: [String: String]? = nil,
+             echoMask: String? = nil) {
+            self.schemaVersion = schemaVersion; self.files = files; self.pending = pending; self.echoMask = echoMask
         }
 
         func isGenerated(_ name: String, digest: String) -> Bool {
@@ -219,7 +240,9 @@ public enum SessionExports {
             result.written.append(url)
         }
         try check()
-        try AtomicFile.writeJSON(GeneratedRecord(files: digestsByName(rendered)), to: SessionPaths.generatedExports(session))
+        // The mask the files were rendered with (the snapshot's), so one saved since makes them out of date.
+        try AtomicFile.writeJSON(GeneratedRecord(files: digestsByName(rendered), echoMask: snapshot.echoMaskIdentity),
+                                 to: SessionPaths.generatedExports(session))
         return result
     }
 
@@ -311,6 +334,26 @@ public enum SessionExports {
         }
     }
 
+    /// The identity of the acoustic echo mask the labels show now (`EchoMaskStore.identity`); nil without one.
+    static func echoMaskIdentity(session: URL) -> String? {
+        guard let manifest = try? SessionArchive.readManifest(at: session) else { return nil }
+        return EchoMaskStore.identity(session: session, manifest: manifest)
+    }
+
+    /// Whether the transcript files were written with the acoustic echo mask the labels show now (§5.11). False when
+    /// they were written with another (or with one that is gone), when their record cannot be read, and while a
+    /// rewrite that was interrupted is still recorded as pending (its record names no mask); true without transcript
+    /// files (nothing to bring up to date). For passes that only need to rewrite the files for the mask (Recover); the
+    /// full check is `filesState`.
+    public static func echoMaskIsCurrent(session: URL) -> Bool {
+        guard hasTranscriptFiles(session: session) else { return true }
+        guard let read = try? readRecordChecked(session: session), let record = read.record, !read.damaged,
+              record.pending == nil else {
+            return false
+        }
+        return record.echoMask == echoMaskIdentity(session: session)
+    }
+
     /// Whether a meeting's transcript files are what a finished rewrite left for the title it shows (§4.17).
     public enum FilesState: Sendable, Equatable {
         /// No transcript file and no transcript: nothing to bring up to date.
@@ -339,6 +382,9 @@ public enum SessionExports {
         }
         guard let read = try? readRecordChecked(session: session), let record = read.record, !read.damaged,
               record.pending == nil else { return .stale }
+        // Written with the acoustic echo mask the labels show now (§5.11): one saved, replaced or dropped since makes
+        // them out of date.
+        guard record.echoMask == echoMaskIdentity(session: session) else { return .stale }
         var markdown: Data?
         for format in formats {
             guard let data = try? AtomicFile.readIfPresent(SessionPaths.export(format.rawValue, in: session),

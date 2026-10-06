@@ -68,7 +68,7 @@ private func wordFixDependencies(corrections: CorrectionList = wordFixCorrection
 private func wordFixProcessor(_ dependencies: WordFixDependencies, options: PostProcessingOptions = .init(),
                               diarizer: (any SpeakerDiarizer)? = FakeDiarizer(
                                   outputs: ["mic": SessionFixtures.alternatingOutput()])) -> MeetingPostProcessor {
-    MeetingPostProcessor(diarizer: diarizer, options: options, freeSpace: FixedFreeSpace(.max),
+    MeetingPostProcessor(voiceSamples: .none, diarizer: diarizer, options: options, freeSpace: FixedFreeSpace(.max),
                          languages: LanguageDetectionDependencies(
                              makeSpeech: { _, _, _, _ in throw HolosError.unavailable("No speech in these tests.") },
                              modelStatus: { _, _ in "unsupported" }, makeScorer: { { _, _ in [:] } },
@@ -314,7 +314,7 @@ func fixWordsKeepsEditedSpeakerLabelsWithoutLabellingAgain() async throws {
     #expect(model.questions.value == 0, "An automatic run does no model work it cannot publish.")
     let before = try SessionFixtures.view(session)
     let unforced = try await SessionWordFixesCommand.run(
-        SessionWordFixesCommand.Request(session: session), diarizer: FakeDiarizer(outputs: [:],
+        SessionWordFixesCommand.Request(session: session), voiceSamples: .none, diarizer: FakeDiarizer(outputs: [:],
             error: .unavailable("Speaker labelling must not run.")), freeSpace: FixedFreeSpace(.max),
         wordFixes: dependencies)
     #expect(unforced.exitCode == 0)
@@ -333,7 +333,7 @@ func fixWordsKeepsEditedSpeakerLabelsWithoutLabellingAgain() async throws {
     var more = wordFixCorrections
     more.add(Correction(heard: "the parser", meant: "the lexer"))
     let forced = try await SessionWordFixesCommand.run(
-        SessionWordFixesCommand.Request(session: session, force: true), diarizer: FakeDiarizer(
+        SessionWordFixesCommand.Request(session: session, force: true), voiceSamples: .none, diarizer: FakeDiarizer(
             outputs: ["mic": SessionFixtures.alternatingOutput()]), freeSpace: FixedFreeSpace(.max),
         wordFixes: wordFixDependencies(corrections: more, model: .available(model.model)))
     #expect(forced.exitCode == 0)
@@ -359,7 +359,7 @@ func aFailedPreservedHeadStopsBeforeRelabelling() async throws {
         throw HolosError.io("head is read-only")
     }) {
         try await SessionWordFixesCommand.run(
-            SessionWordFixesCommand.Request(session: session),
+            SessionWordFixesCommand.Request(session: session), voiceSamples: .none,
             diarizer: FakeDiarizer(outputs: [:], error: .unavailable("Speaker labelling must not run.")),
             freeSpace: FixedFreeSpace(.max), wordFixes: dependencies)
     }
@@ -371,7 +371,7 @@ func aFailedPreservedHeadStopsBeforeRelabelling() async throws {
     #expect(outcome.record.stages.last { $0.stage == .export }?.result == .skipped)
 
     let repaired = try await SessionWordFixesCommand.run(
-        SessionWordFixesCommand.Request(session: session),
+        SessionWordFixesCommand.Request(session: session), voiceSamples: .none,
         diarizer: FakeDiarizer(outputs: [:], error: .unavailable("Speaker labelling must not run.")),
         freeSpace: FixedFreeSpace(.max), wordFixes: dependencies)
     #expect(repaired.exitCode == 0)
@@ -435,7 +435,7 @@ func cancellationAfterPreservingTheHeadStillRefreshesExports() async throws {
             withUnsafeCurrentTask { $0?.cancel() }
         }) {
             try await SessionWordFixesCommand.run(
-                SessionWordFixesCommand.Request(session: session), diarizer: nil,
+                SessionWordFixesCommand.Request(session: session), voiceSamples: .none, diarizer: nil,
                 freeSpace: FixedFreeSpace(.max), wordFixes: dependencies)
         }
     }
@@ -455,7 +455,7 @@ func fixWordsWithoutSpeakerModelsAndAgain() async throws {
     let (session, _) = try await wordFixSession(in: temp.url)
     let model = WordFixModel()
     let dependencies = wordFixDependencies(model: .available(model.model))
-    let first = try await SessionWordFixesCommand.run(SessionWordFixesCommand.Request(session: session),
+    let first = try await SessionWordFixesCommand.run(SessionWordFixesCommand.Request(session: session), voiceSamples: .none,
                                                       diarizer: nil, freeSpace: FixedFreeSpace(.max),
                                                       wordFixes: dependencies)
     #expect(first.exitCode == 0)
@@ -463,7 +463,7 @@ func fixWordsWithoutSpeakerModelsAndAgain() async throws {
     #expect(SessionFixtures.text(SessionPaths.export("md", in: session)).contains("asked Claude to refactor"))
 
     // Asked for by name with nothing new: the stage is recorded, and the transcript and labels stay.
-    let again = try await SessionWordFixesCommand.run(SessionWordFixesCommand.Request(session: session),
+    let again = try await SessionWordFixesCommand.run(SessionWordFixesCommand.Request(session: session), voiceSamples: .none,
                                                       diarizer: nil, freeSpace: FixedFreeSpace(.max),
                                                       wordFixes: dependencies)
     #expect(again.exitCode == 0)

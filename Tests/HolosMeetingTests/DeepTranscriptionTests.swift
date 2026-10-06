@@ -112,7 +112,7 @@ private func deepRun(_ session: URL, _ dependencies: DeepTranscriptionDependenci
                          outputs: ["mic": SessionFixtures.alternatingOutput()]))
     async throws -> SessionDeepTranscribeCommand.Outcome {
     try await SessionDeepTranscribeCommand.run(
-        SessionDeepTranscribeCommand.Request(session: session, force: force), diarizer: diarizer,
+        SessionDeepTranscribeCommand.Request(session: session, force: force), voiceSamples: .none, diarizer: diarizer,
         freeSpace: FixedFreeSpace(.max), languages: noSpeech, wordFixes: wordFixes,
         deepTranscription: dependencies)
 }
@@ -369,7 +369,7 @@ func deepEditedSpeakerLabelsAreKeptUnlessForced() async throws {
     let temp = try TemporaryDirectory("deep")
     defer { temp.remove() }
     let (session, recorded) = try await deepSession(in: temp.url)
-    _ = try await MeetingPostProcessor(diarizer: FakeDiarizer(outputs: ["mic": SessionFixtures.alternatingOutput()]),
+    _ = try await MeetingPostProcessor(voiceSamples: .none, diarizer: FakeDiarizer(outputs: ["mic": SessionFixtures.alternatingOutput()]),
                                        freeSpace: FixedFreeSpace(.max), languages: noSpeech)
         .run(session: session, lease: nil)
     try SessionFixtures.appendEdits([.rename(speakerID: "mic:S1", name: "Alice")], session: session)
@@ -396,7 +396,7 @@ func deepLabelsEditedWhileTranscribingAreKept() async throws {
     let temp = try TemporaryDirectory("deep")
     defer { temp.remove() }
     let (session, recorded) = try await deepSession(in: temp.url)
-    _ = try await MeetingPostProcessor(diarizer: FakeDiarizer(outputs: ["mic": SessionFixtures.alternatingOutput()]),
+    _ = try await MeetingPostProcessor(voiceSamples: .none, diarizer: FakeDiarizer(outputs: ["mic": SessionFixtures.alternatingOutput()]),
                                        freeSpace: FixedFreeSpace(.max), languages: noSpeech)
         .run(session: session, lease: nil)
     let transcriber = ScriptedTranscriber { request in
@@ -544,7 +544,7 @@ func theCommandRefusesWhatItCannotDo() async throws {
     }
     #expect(several?.localizedDescription == DeepTranscriptionStage.severalLanguages)
     // Run by the post-processor directly, the stage says so and keeps the transcript.
-    let record = try await MeetingPostProcessor(
+    let record = try await MeetingPostProcessor(voiceSamples: .none, 
         diarizer: nil, options: PostProcessingOptions(deepTranscribe: true), freeSpace: FixedFreeSpace(.max),
         languages: noSpeech, deepTranscription: deepDependencies(transcriber)).run(session: multilingual, lease: nil)
     #expect(deepStage(record)?.result == .skipped)
@@ -951,7 +951,7 @@ func ordinaryPostProcessingNeverRunsThePass() async throws {
     defer { temp.remove() }
     let (session, recorded) = try await deepSession(in: temp.url)
     let transcriber = ScriptedTranscriber(script: scriptedHearing)
-    let record = try await MeetingPostProcessor(
+    let record = try await MeetingPostProcessor(voiceSamples: .none, 
         diarizer: FakeDiarizer(outputs: ["mic": SessionFixtures.alternatingOutput()]), freeSpace: FixedFreeSpace(.max),
         languages: noSpeech, deepTranscription: deepDependencies(transcriber)).run(session: session, lease: nil)
     #expect(record.state == .succeeded && deepStage(record) == nil && transcriber.calls.value == 0)
@@ -960,7 +960,7 @@ func ordinaryPostProcessingNeverRunsThePass() async throws {
     // After the pass, a relabel keeps the deep transcript.
     _ = try await deepRun(session, deepDependencies(transcriber))
     let deep = try currentTranscript(session)
-    let relabel = try await MeetingPostProcessor(
+    let relabel = try await MeetingPostProcessor(voiceSamples: .none, 
         diarizer: FakeDiarizer(outputs: ["mic": SessionFixtures.alternatingOutput()]), freeSpace: FixedFreeSpace(.max),
         languages: noSpeech).run(session: session, lease: nil)
     #expect(relabel.state == .succeeded)

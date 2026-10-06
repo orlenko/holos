@@ -146,7 +146,7 @@ func reviewRevertsOneWordFixAndKeepsSpeakerEdits() async throws {
 
     let dependencies = WordFixDependencies(corrections: { corrections }, wordList: { WordList() },
                                            model: { _ in .unavailable("unused") })
-    let record = try await MeetingPostProcessor(diarizer: nil, freeSpace: FixedFreeSpace(.max),
+    let record = try await MeetingPostProcessor(voiceSamples: .none, diarizer: nil, freeSpace: FixedFreeSpace(.max),
                                                 wordFixes: dependencies).run(session: session, lease: nil)
     #expect(record.stages.last { $0.stage == .wordFixes }?.message == WordFixStage.reviewRevert)
     #expect(try SessionFiles.currentTranscript(session: session)?.id == reverted.id)

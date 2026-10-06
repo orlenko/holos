@@ -44,6 +44,11 @@ public enum SessionPaths {
     }
     public static func generatedExports(_ session: URL) -> URL { file(".generated.json", in: exports(session)) }
 
+    /// echo/: a call's acoustic echo analysis (`EchoMaskRecord` in mask.json, the per-frame mask in the
+    /// frames-<hash>.bin it names).
+    public static func echoDirectory(_ session: URL) -> URL { folder("echo", in: session) }
+    public static func echoMask(_ session: URL) -> URL { file("mask.json", in: echoDirectory(session)) }
+
     public static func derived(_ session: URL) -> URL { folder("derived", in: session) }
     public static func render(track: String, in session: URL) -> URL { file("\(track)-16k.caf", in: derived(session)) }
 
