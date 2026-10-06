@@ -15,6 +15,8 @@ struct WordEditTarget: Equatable {
     var words: [ReviewWord]
     /// Their text as shown, which the field started with.
     var shown: String
+    /// How many of the review's word moves (`ReviewSession.wordMoves`) `words` already follow.
+    var movesSeen: Int
 }
 
 /// The field over the words being edited: the turn text's font, a bezel, and no wrapping.
@@ -103,7 +105,7 @@ extension TurnListView: NSTextFieldDelegate {
         let shown = textView(row: row)?.shownText(from: range.lowerBound, through: range.upperBound)
             ?? all[range].map(\.text).joined(separator: " ")
         wordEdit = WordEditTarget(paragraphID: paragraph.id, range: range, anchor: anchor, words: Array(all[range]),
-                                  shown: shown)
+                                  shown: shown, movesSeen: wordMoves.count)
         editField.stringValue = shown
         if editField.superview !== table { table.addSubview(editField) }
         positionEditField(row: row, range: range)
@@ -118,7 +120,7 @@ extension TurnListView: NSTextFieldDelegate {
         let typed = editField.stringValue
         closeEditField()
         if TranscriptWordEdit.cleaned(typed) != TranscriptWordEdit.cleaned(target.shown) {
-            onEditWords?(target.words, typed, addTerm)
+            onEditWords?(target.words, typed, addTerm, target.movesSeen)
         }
         guard advance != .stay, let row = paragraphs.firstIndex(where: { $0.id == target.paragraphID }) else { return }
         let count = paragraphWords(paragraphs[row]).words.count
@@ -159,37 +161,61 @@ extension TurnListView: NSTextFieldDelegate {
         if hadFocus { window?.makeFirstResponder(table) }
     }
 
-    /// After the rows were updated: the open field follows its words (a saved edit earlier in the segment moves their
-    /// indices; they are found again by segment, time, and text), or closes when they are gone.
+    /// After the rows were updated: the open field follows its words through the review's word moves (an edit saved
+    /// earlier in the segment, say the one Tab left, moves their stored indices; a deletion merged into one of them
+    /// changes its time), and a word no move touched must still read the same. When they cannot be found the field
+    /// closes, and what was typed in it is shown in the banner rather than lost.
     func followWordEdit() {
         guard let target = wordEdit else { return }
         guard editingWords, editable, let row = paragraphs.firstIndex(where: { $0.id == target.paragraphID }) else {
-            cancelWordEdit()
+            loseWordEdit()
             return
         }
         let all = paragraphWords(paragraphs[row]).words
-        func same(_ old: ReviewWord, _ new: ReviewWord) -> Bool {
-            old.ref.segmentID == new.ref.segmentID && abs(old.start - new.start) < 1e-6 && old.text == new.text
-        }
-        guard let first = target.words.first,
-              let start = all.indices.first(where: { index in
-                  same(first, all[index]) && index + target.words.count <= all.count
-                      && zip(target.words, all[index...]).allSatisfy { same($0, $1) }
-              }) else {
-            cancelWordEdit()
-            onEditMessage?(Self.wordsChanged)
+        let followed = ReviewSession.follow(target.words.map(\.ref), through: wordMoves.dropFirst(target.movesSeen))
+        var refs: [WordRef] = []
+        for ref in followed.refs where refs.last != ref { refs.append(ref) }
+        guard let first = refs.first, let start = all.firstIndex(where: { $0.ref == first }),
+              start + refs.count <= all.count,
+              zip(refs, all[start...]).allSatisfy({ $0 == $1.ref }),
+              followed.replaced || zip(target.words, all[start...]).allSatisfy({ $0.text == $1.text }) else {
+            loseWordEdit()
             return
         }
+        let range = start...(start + refs.count - 1)
         let shift = start - target.range.lowerBound
-        wordEdit?.range = start...(start + target.words.count - 1)
-        wordEdit?.anchor = target.anchor + shift
-        wordEdit?.words = Array(all[start..<(start + target.words.count)])
-        positionEditField(row: row, range: start...(start + target.words.count - 1))
+        wordEdit?.range = range
+        wordEdit?.anchor = min(max(target.anchor + shift, range.lowerBound), range.upperBound)
+        wordEdit?.words = Array(all[range])
+        wordEdit?.movesSeen = wordMoves.count
+        positionEditField(row: row, range: range)
+    }
+
+    /// The open field's words are gone: it closes, keeping what was typed in the banner when it was changed.
+    private func loseWordEdit() {
+        guard let target = wordEdit else { return }
+        let typed = editField.stringValue
+        cancelWordEdit()
+        let changed = TranscriptWordEdit.cleaned(typed) != TranscriptWordEdit.cleaned(target.shown)
+        onEditMessage?(changed ? Self.wordsChanged + " What you typed: “\(TranscriptWordEdit.cleaned(typed))”."
+                               : Self.wordsChanged)
+    }
+
+    /// Puts the open field back over its words after the rows' widths or heights changed.
+    func repositionWordEdit() {
+        guard let target = wordEdit, let row = paragraphs.firstIndex(where: { $0.id == target.paragraphID }) else {
+            return
+        }
+        // The rows take the new column width before the words are measured.
+        table.tile()
+        positionEditField(row: row, range: target.range)
     }
 
     /// Puts the field over the words: from the first word, as wide as they are (at least a little wider, at most the
     /// rest of the line), one line high.
     private func positionEditField(row: Int, range: ClosedRange<Int>) {
+        // Row heights and widths noted since are laid out first.
+        table.layoutSubtreeIfNeeded()
         guard let text = textView(row: row), let first = text.rect(ofWord: range.lowerBound),
               let last = text.rect(ofWord: range.upperBound) else { return }
         let sameLine = abs(last.minY - first.minY) < 1
@@ -202,6 +228,10 @@ extension TurnListView: NSTextFieldDelegate {
     private func textView(row: Int) -> TurnTextView? {
         guard row < table.numberOfRows,
               let cell = table.view(atColumn: 0, row: row, makeIfNecessary: true) as? TurnCellView else { return nil }
+        // A column resized a moment ago may not have reached the row's view yet: measured at the size the table gives
+        // it, as the next layout will.
+        let size = table.frameOfCell(atColumn: 0, row: row).size
+        if size.width > 0, size.height > 0, cell.frame.size != size { cell.setFrameSize(size) }
         cell.layoutSubtreeIfNeeded()
         if let layout = cell.bodyText.layoutManager, let container = cell.bodyText.textContainer {
             layout.ensureLayout(for: container)

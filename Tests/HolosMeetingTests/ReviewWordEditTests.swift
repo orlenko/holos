@@ -193,6 +193,152 @@ func editsInARowAreUndoneOneAfterAnother() async throws {
 }
 
 @Test(.timeLimit(.minutes(1))) @MainActor
+func anEditAskedForWhileAnEarlierOneOfItsSegmentSavesFollowsItsWords() async throws {
+    let temp = try TemporaryDirectory("review")
+    defer { temp.remove() }
+    let session = try await wordEditSession(in: temp, [
+        WordEditTurn(speaker: "system:S1", start: 0, words: ["I", "um", "think", "so"]),
+    ])
+    let review = try await wordEditOpen(session)
+    let (stream, release) = AsyncStream<Void>.makeStream()
+    let entered = SharedValue(0)
+    review.beforeEdit = {
+        entered.update { $0 += 1 }
+        for await _ in stream {}
+    }
+    let words = review.words(of: "T1")
+    // "um" deleted (merged into "think"), and before that is saved, "think" and then "so" edited: Tab moves on
+    // before a save ends.
+    let first = Task { try await review.editWords([words[1].ref], to: "") }
+    #expect(await eventually { entered.value == 1 })
+    let second = Task { try await review.editWords([words[2].ref], to: "believe") }
+    let third = Task { try await review.editWords([words[3].ref], to: "so.") }
+    #expect(await eventually { review.queuedOperations == 3 }, "Both later edits wait behind the first.")
+    release.finish()
+    _ = try await first.value
+    _ = try await second.value
+    _ = try await third.value
+    #expect(try wordEditCurrent(session).segments[0].text == "I believe so.")
+    #expect(review.words(of: "T1").map(\.text) == ["I", "believe", "so."])
+    #expect(review.wordMoves.count == 3)
+    await review.close()
+}
+
+@Test(.timeLimit(.minutes(1))) @MainActor
+func anEditWhoseLabelsCannotBeRereadCanStillBeUndoneAndItsUndoUnlearns() async throws {
+    let temp = try TemporaryDirectory("review")
+    defer { temp.remove() }
+    let session = try await wordEditSession(in: temp, [
+        WordEditTurn(speaker: "system:S1", start: 0, words: ["ask", "cloud", "now"]),
+    ])
+    let original = try wordEditCurrent(session)
+    let review = try await wordEditOpen(session)
+    let token = ReviewLearnedCorrections(owned: [Correction(heard: "cloud now", meant: "Claude now")])
+    var unlearned: [ReviewLearnedCorrections] = []
+    review.learnCorrections = { _ in token }
+    review.unlearnCorrections = { unlearned.append($0) }
+    struct Unreadable: Error {}
+
+    // Committed, then the labels cannot be reread: the edit is kept, and undoable once they are.
+    review.beforeWordChangeReread = { throw Unreadable() }
+    await #expect(throws: HolosError.self) { try await review.editWords(wordEditRefs(review, "T1", [1]), to: "Claude") }
+    #expect(try wordEditCurrent(session).segments[0].text == "ask Claude now")
+    #expect(review.reloadProblem != nil && review.canUndo)
+    review.beforeWordChangeReread = nil
+    await review.reload()
+    #expect(review.reloadProblem == nil && review.canUndo, "The reread knows the edit's run keeps the turns.")
+    #expect(review.words(of: "T1").map(\.text) == ["ask", "Claude", "now"])
+
+    // The undo is committed, then its reread fails: what the edit taught is taken back all the same.
+    review.beforeWordChangeReread = { throw Unreadable() }
+    await #expect(throws: HolosError.self) { try await review.undo() }
+    #expect(unlearned == [token])
+    #expect(try wordEditCurrent(session).segments == original.segments)
+    review.beforeWordChangeReread = nil
+    await review.reload()
+    #expect(review.words(of: "T1").map(\.text) == ["ask", "cloud", "now"])
+    await review.close()
+}
+
+@Test(.timeLimit(.minutes(1))) @MainActor
+func anEditAndItsUndoKeepTheTurnsForParagraphBreaks() async throws {
+    let temp = try TemporaryDirectory("review")
+    defer { temp.remove() }
+    let session = try await wordEditSession(in: temp, [
+        WordEditTurn(speaker: "system:S1", start: 0, words: ["first", "part"]),
+        WordEditTurn(speaker: "system:S1", start: 3, words: ["second", "part"]),
+    ])
+    let review = try await wordEditOpen(session)
+    var breaks = ReviewParagraphBreaks()
+    let second = try #require(review.turn("T2"))
+    breaks.insert(before: second, runID: review.projection.runID)
+    let original = review.projection.runID
+    try await review.editWords(wordEditRefs(review, "T1", [1]), to: "bit")
+    try await review.undo()
+    let now = review.projection.runID
+    #expect(now != original && review.keepsTurns(of: original, in: now))
+    #expect(breaks.active(in: review.projection.turns, runID: now,
+                          keepsTurnsOf: { review.keepsTurns(of: $0, in: now) }) == ["T2"],
+            "A break made before the edit stays after its undo.")
+    #expect(!review.keepsTurns(of: now, in: original))
+    await review.close()
+}
+
+@Test(.timeLimit(.minutes(1))) @MainActor
+func wordsEditedTogetherAreNeverSplitApart() async throws {
+    let temp = try TemporaryDirectory("review")
+    defer { temp.remove() }
+    let session = try await wordEditSession(in: temp, [
+        WordEditTurn(speaker: "system:S1", start: 0, words: ["we", "knew", "work", "here"]),
+    ])
+    let review = try await wordEditOpen(session)
+    try await review.editWords(wordEditRefs(review, "T1", [1, 2]), to: "New York")
+    let words = review.words(of: "T1")
+    // Inside "New York": refused, so its Revert always has one turn to edit.
+    await #expect(throws: HolosError.self) { try await review.split(turnID: "T1", at: words[2].ref) }
+    try await review.split(turnID: "T1", at: words[1].ref)
+    #expect(review.projection.turns.count == 2)
+    try await review.revertWordFix(words[1].ref)
+    #expect(try wordEditCurrent(session).segments[0].text == "we knew work here")
+    await review.close()
+}
+
+@Test(.timeLimit(.minutes(1))) @MainActor
+func postProcessingFinishesAnEditWhoseSpeakerHeadWasNeverPublished() async throws {
+    let temp = try TemporaryDirectory("review")
+    defer { temp.remove() }
+    let session = try await wordEditSession(in: temp, [
+        WordEditTurn(speaker: "system:S1", start: 0, words: ["ask", "cloud", "now", "please"]),
+        WordEditTurn(speaker: "system:S2", start: 10, words: ["we", "will", "see"]),
+    ])
+    let original = try wordEditCurrent(session)
+    try SessionFixtures.appendEdits([.reassignTurns(turnIDs: ["T2"], to: "system:S1")], session: session)
+    let runID = try #require(try SessionSpeakerStore.readHead(session: session)?.runID)
+    let segment = try #require(original.segments.first { $0.text.hasPrefix("ask") })
+    // The app quits between the transcript and the speaker head.
+    await #expect(throws: SessionWordEdit.IncompletePublication.self) {
+        try await SpeakerTranscriptRetarget.$beforePublishHead.withValue({ throw HolosError.io("quit") }) {
+            _ = try await SessionWordEdit.run(
+                session: session,
+                request: TranscriptWordEdit.Request(segmentID: segment.id, first: 1, end: 2, text: "Claude"),
+                expectedTranscriptID: original.id, expectedRunID: runID)
+        }
+    }
+    #expect(try SpeakerSessionSnapshot.load(session: session).transcriptChanged)
+
+    // Post-processing (a relabel would carry the names only) publishes the edit's head first.
+    _ = try await MeetingPostProcessor(voiceSamples: .none,
+                                       diarizer: FakeDiarizer(outputs: ["system": SessionFixtures.alternatingOutput()]),
+                                       freeSpace: FixedFreeSpace(.max)).run(session: session, lease: nil)
+    let snapshot = try SpeakerSessionSnapshot.load(session: session)
+    let current = try wordEditCurrent(session)
+    #expect(current.segments.contains { $0.text == "ask Claude now please" })
+    #expect(!snapshot.transcriptChanged && snapshot.transcript.id == current.id)
+    #expect(snapshot.projection?.turns.first { $0.id == "T2" }?.speakerID == "system:S1",
+            "The reassignment made before the edit is kept.")
+}
+
+@Test(.timeLimit(.minutes(1))) @MainActor
 func editsAcrossTurnsSegmentsOrHiddenWordsAreRefused() async throws {
     let temp = try TemporaryDirectory("review")
     defer { temp.remove() }

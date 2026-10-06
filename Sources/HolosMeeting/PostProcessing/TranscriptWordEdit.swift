@@ -2,6 +2,35 @@ import Foundation
 import HolosCore
 import HolosSpeakers
 
+/// How a word edit (or its undo) moved a segment's words: `replaced`, word indices before it, became `replacement`;
+/// words after them shift by the difference, words before stay. The review's edit field follows its words through
+/// these, since a merged or untimed word's time and text may change (docs/meeting-design.md §5.10, "Editing words").
+public struct ReviewWordMove: Sendable, Equatable {
+    public var segmentID: String
+    public var replaced: Range<Int>
+    public var replacement: Range<Int>
+
+    public init(segmentID: String, replaced: Range<Int>, replacement: Range<Int>) {
+        self.segmentID = segmentID; self.replaced = replaced; self.replacement = replacement
+    }
+
+    /// The move undone.
+    public var inverse: ReviewWordMove {
+        ReviewWordMove(segmentID: segmentID, replaced: replacement, replacement: replaced)
+    }
+
+    /// Where `ref` is after the move, and whether it was one of the words replaced (whose text may have changed). A
+    /// replaced word goes to the replacement word at the same offset, or its last one.
+    public func map(_ ref: WordRef) -> (ref: WordRef, replaced: Bool) {
+        guard ref.segmentID == segmentID, ref.word >= replaced.lowerBound else { return (ref, false) }
+        if ref.word >= replaced.upperBound {
+            return (WordRef(segmentID: segmentID, word: ref.word + replacement.count - replaced.count), false)
+        }
+        let offset = min(ref.word - replaced.lowerBound, max(0, replacement.count - 1))
+        return (WordRef(segmentID: segmentID, word: replacement.lowerBound + offset), true)
+    }
+}
+
 /// The pure part of editing words in Review (docs/meeting-design.md §5.10, "Editing words"): a run of words of one
 /// segment replaced by any text, made both in the current transcript and in the unfixed base it was fixed from, so
 /// automatic word fixes made again later keep it. The edit is a word fix of kind `reviewEdit`, whose `heard` is what
@@ -37,6 +66,8 @@ public enum TranscriptWordEdit {
         /// The shown words just before and after the span in its segment (learning context), when there are some.
         public var before: String?
         public var after: String?
+        /// Where the words moved: the span's word indices in the segment before and after the edit.
+        public var move: ReviewWordMove
     }
 
     /// Whether `transcript` holds words edited in Review.
@@ -152,6 +183,9 @@ public enum TranscriptWordEdit {
         result.id = UUID().uuidString
         result.createdAt = now
         result.segments[index] = WordFixes.finished(edited, segment: segment)
+        let newCount = WordTiming.effectiveWords(of: result.segments[index]).count - (words.count - (upper - lower))
+        let move = ReviewWordMove(segmentID: segment.id, replaced: lower..<upper,
+                                  replacement: lower..<(lower + max(1, newCount)))
         var newBase: Transcript?
         if let baseID = current.fixedFrom {
             guard let base, base.id == baseID else {
@@ -167,7 +201,7 @@ public enum TranscriptWordEdit {
         }
         return Result(transcript: result, base: newBase, heard: heard, meant: meant, shown: shown, deletion: deletion,
                       before: lower > 0 && editable(lower - 1) ? words[lower - 1].text : nil,
-                      after: upper < words.count && editable(upper) ? words[upper].text : nil)
+                      after: upper < words.count && editable(upper) ? words[upper].text : nil, move: move)
     }
 
     /// A copy of `previous` to make current again (undoing an edit): the same segments, words, and fixes, a new ID. A

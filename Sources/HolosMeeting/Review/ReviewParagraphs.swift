@@ -78,15 +78,19 @@ public struct ReviewParagraphBreaks: Sendable, Equatable {
     }
 
     /// The turns of `turns` (of run `runID`) to break before (`ReviewParagraphs.group`). A new run that is not carried
-    /// over drops every break; otherwise a break stays while a turn with its ID and track does.
-    public mutating func active(in turns: [ProjectedTurn], runID: String?) -> Set<String> {
+    /// over drops every break; otherwise a break stays while a turn with its ID and track does. `keepsTurnsOf` says
+    /// whether `runID` replaced a given earlier run keeping its turns (a word edit in Review, or its undo,
+    /// `ReviewSession.keepsTurns`): the breaks of that run are carried over too.
+    public mutating func active(in turns: [ProjectedTurn], runID: String?,
+                                keepsTurnsOf: (String) -> Bool = { _ in false }) -> Set<String> {
         guard !tracks.isEmpty else {
             self.runID = runID
             return []
         }
         if runID != self.runID {
+            let kept = self.runID.map(keepsTurnsOf) ?? false
             self.runID = runID
-            guard carryOvers > 0 else {
+            guard carryOvers > 0 || kept else {
                 tracks = [:]
                 return []
             }

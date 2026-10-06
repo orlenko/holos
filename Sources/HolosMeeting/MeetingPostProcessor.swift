@@ -259,6 +259,20 @@ public struct MeetingPostProcessor: Sendable {
                          since: started)
         }
 
+        // A word edit made in Review whose speaker head was never published (the app quit in between) is finished
+        // first: the old head is the only copy of the speaker edits, so no stage below may replace the transcript or
+        // relabel over it (docs/meeting-design.md §5.10, "Editing words").
+        if let current {
+            do {
+                _ = try await SessionWordEdit.repairPendingHead(session: session, transcript: current, lease: lease)
+            } catch let error where !(error is CancellationError) {
+                let problem = "Words edited in Review were saved, but their speaker labels could not be published: "
+                    + error.localizedDescription
+                recorder.skip([.render, .diarize, .align, .export], problem)
+                return recorder.finalRecord(state: .partial, message: problem)
+            }
+        }
+
         // Stage 1b: a meeting in several languages (§4.14), before the speakers, so they are labelled on the final text.
         // Not run for a relabel that keeps the transcript (`keepTranscript`).
         // Without a transcript the deep pass (asked for by name) makes the first one from the saved audio.

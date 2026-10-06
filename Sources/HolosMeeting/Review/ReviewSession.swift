@@ -152,6 +152,9 @@ public struct ReviewWord: Sendable, Equatable {
 
     /// Test seam: awaited off the main actor before each change is written, so a test can hold a save back.
     var beforeEdit: (@Sendable () async -> Void)?
+    /// Test seam: called once a word edit or its undo is committed, before the labels are reread; throwing makes the
+    /// reread fail.
+    var beforeWordChangeReread: (() throws -> Void)?
 
     /// Learns the corrections a saved word edit teaches (the app: `TranscriptEditLearning` into corrections.json);
     /// what it returns is handed to `unlearnCorrections` when the edit is undone. Not called for a deletion.
@@ -185,6 +188,11 @@ public struct ReviewWord: Sendable, Equatable {
     private var editIDMap: [String: String] = [:]
     /// A transcript a word edit was made on → the copy of it its undo made current (`currentStandIn`).
     private var restoredCopies: [String: String] = [:]
+    /// Head runs this window's word edits and undos published, each → the run it replaced keeping its turns.
+    private var turnKeepingRuns: [String: String] = [:]
+    /// How this window's saved word edits and undos moved words, oldest first: an edit waiting in the queue, and the
+    /// window's open edit field, follow their words through them.
+    public private(set) var wordMoves: [ReviewWordMove] = []
     /// Applied optimistic edit IDs → the queued change that made them, for counting changes.
     private var optimisticOwner: [String: ObjectIdentifier] = [:]
     private var exportTimer: Task<Void, Never>?
@@ -294,6 +302,9 @@ public struct ReviewWord: Sendable, Equatable {
 
     /// Something is queued or saving.
     public var isWorking: Bool { !queue.isEmpty }
+
+    /// Changes and tasks queued or saving (tests).
+    var queuedOperations: Int { queue.count }
 
     public var canUndo: Bool { !undoStack.isEmpty || queue.contains { $0.isUndoable && !$0.undone } }
 
@@ -639,8 +650,14 @@ public struct ReviewWord: Sendable, Equatable {
         }
     }
 
-    /// Splits a turn before `word` (a word of the turn other than its first).
+    /// Splits a turn before `word` (a word of the turn other than its first). Never inside words edited together here
+    /// (a `reviewEdit` mark): their edit, and its Revert, belong to one turn.
     public func split(turnID: String, at word: WordRef) async throws {
+        if let segment = segments[word.segmentID], (segment.fixes ?? []).contains(where: {
+            $0.kind == .reviewEdit && $0.first < word.word && word.word < $0.end
+        }) {
+            throw HolosError.invalidInput("That word is part of words you edited together; split before or after them.")
+        }
         try await apply([.splitTurn(turnID: resolvedTurnID(turnID), at: word)])
     }
 
@@ -671,9 +688,20 @@ public struct ReviewWord: Sendable, Equatable {
     /// over; one undo takes it back. Once saved, the corrections it teaches are learned (`learnCorrections`). Returns
     /// what was edited, nil when the text would not change. Throws `invalidInput` with a message for the person when
     /// the words cannot be edited together.
+    ///
+    /// `seenMoves`: how many of `wordMoves` the caller's `words` already follow (an edit field opened before an earlier
+    /// edit of the segment was saved); they are moved through the rest first.
     @discardableResult
-    public func editWords(_ words: [WordRef], to text: String) async throws -> ReviewWordEdit? {
+    public func editWords(_ words: [WordRef], to text: String, seenMoves: Int? = nil) async throws -> ReviewWordEdit? {
         try requireEditable()
+        var words = words
+        if let seenMoves, seenMoves < wordMoves.count {
+            let followed = Self.follow(words, through: wordMoves.dropFirst(seenMoves))
+            guard !followed.replaced else {
+                throw HolosError.invalidInput("Those words changed while you edited them; edit them again.")
+            }
+            words = followed.refs
+        }
         guard let first = words.first else { return nil }
         guard words.allSatisfy({ $0.segmentID == first.segmentID }) else {
             throw HolosError.invalidInput("Words of two segments cannot be edited together yet; edit each part on its "
@@ -953,6 +981,8 @@ public struct ReviewWord: Sendable, Equatable {
         let edited: String
         /// The segment it edited (a split waiting in the queue there is refused once it is undone).
         let segmentID: String
+        /// How it moved the segment's words (undone by its inverse).
+        let move: ReviewWordMove
         /// What the app learned from it, handed back when it is undone.
         var learned: ReviewLearnedCorrections?
     }
@@ -1006,6 +1036,8 @@ public struct ReviewWord: Sendable, Equatable {
         /// A word edit it saved: how to undo it, and what was edited.
         var wordEdit: WordEditUndo?
         var wordEditResult: ReviewWordEdit?
+        /// `wordMoves.count` when it was queued: a word edit follows its words through the moves saved since.
+        var movesSeen = 0
         var continuation: CheckedContinuation<Void, any Error>?
 
         init(kind: Kind, basis: Int, runID: String?, optimistic: [SpeakerEditAction]) {
@@ -1037,6 +1069,7 @@ public struct ReviewWord: Sendable, Equatable {
     @discardableResult
     private func enqueue(_ kind: Operation.Kind, optimistic: [SpeakerEditAction]) async throws -> Operation {
         let op = Operation(kind: kind, basis: savedVersion, runID: snapshot.run?.id, optimistic: optimistic)
+        op.movesSeen = wordMoves.count
         // A newer change: voice samples wait for it (`holdSampleSync`); exports alone change no label.
         if case .exports = kind {} else { holdSampleSync() }
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, any Error>) in
@@ -1191,7 +1224,7 @@ public struct ReviewWord: Sendable, Equatable {
             }
         case .editWords(let request, let asked):
             try requireBasis(op)
-            try await saveWordEdit(request, asked: asked, op: op)
+            try await saveWordEdit(request, segment: asked, op: op)
         case .revertWordFix(let word):
             try requireBasis(op)
             guard let runID = snapshot.run?.id else {
@@ -1290,13 +1323,32 @@ public struct ReviewWord: Sendable, Equatable {
     }
 
     /// Saves a word edit (`SessionWordEdit.run`) on the transcript and labels shown, then adopts the retargeted labels
-    /// as this window's own change. The edit's undo and what it was are kept on `op`; its corrections are learned
-    /// (`learnCorrections`). Refused when the segment changed since the edit was asked for (an earlier edit of it
-    /// saved meanwhile moves its words).
-    private func saveWordEdit(_ request: TranscriptWordEdit.Request, asked: TranscriptSegment,
+    /// as this window's own change. As soon as it is committed, the edit's undo and what it was are kept on `op`, its
+    /// word move is recorded (`wordMoves`), and its corrections are learned (`learnCorrections`), even when the labels
+    /// cannot be reread afterwards. An earlier edit of the same segment saved since this one was asked for (Tab moves
+    /// on before a save ends) moves its words: it is made on them where they now are. Refused when its own words were
+    /// replaced meanwhile, or the segment changed otherwise.
+    private func saveWordEdit(_ asked: TranscriptWordEdit.Request, segment: TranscriptSegment,
                               op: Operation) async throws {
-        guard segments[request.segmentID] == asked else {
-            throw HolosError.invalidInput("Those words changed while the edit waited to be saved; edit them again.")
+        let changed = HolosError.invalidInput("Those words changed while the edit waited to be saved; edit them again.")
+        var request = asked
+        let moves = wordMoves.dropFirst(op.movesSeen).filter { $0.segmentID == asked.segmentID }
+        if moves.isEmpty {
+            guard segments[asked.segmentID] == segment else { throw changed }
+        } else {
+            // Moved, the words must still read as they did (a deleted word merged into one of them leaves its text).
+            let span = [WordRef(segmentID: asked.segmentID, word: asked.first),
+                        WordRef(segmentID: asked.segmentID, word: asked.end - 1)]
+            let moved = Self.follow(span, through: moves[...]).refs
+            let before = WordTiming.effectiveWords(of: segment)
+            let now = segments[asked.segmentID].map(WordTiming.effectiveWords(of:)) ?? []
+            guard moved[1].word - moved[0].word == asked.end - 1 - asked.first, moved[0].word >= 0,
+                  moved[1].word < now.count, asked.end <= before.count,
+                  now[moved[0].word...moved[1].word].map(\.text) == before[asked.first..<asked.end].map(\.text) else {
+                throw changed
+            }
+            request.first = moved[0].word
+            request.end = moved[1].word + 1
         }
         guard let runID = snapshot.run?.id else {
             throw HolosError.invalidInput("The speaker labels cannot be kept on the edited words.")
@@ -1304,27 +1356,38 @@ public struct ReviewWord: Sendable, Equatable {
         let session = self.session
         let transcriptID = snapshot.transcript.id
         let hook = beforeEdit
-        let published = try await publishWordChange(what: "The words were edited", transcriptID: transcriptID,
-                                                    runID: runID, recover: { $0.outcome }) {
+        let sent = request
+        let published = try await publishWordChange(
+            what: "The words were edited", transcriptID: transcriptID, runID: runID,
+            recover: { (incomplete: SessionWordEdit.IncompletePublication) -> SessionWordEdit.Outcome?? in
+                incomplete.outcome.map { .some($0) }
+            },
+            committed: { [weak self] (published: SessionWordEdit.Outcome??) in
+                guard let self, let saved = published ?? nil else { return }
+                self.turnKeepingRuns[saved.runID] = runID
+                self.wordMoves.append(saved.move)
+                let edit = ReviewWordEdit(heard: saved.heard, meant: saved.meant, deletion: saved.deletion,
+                                          before: saved.before, after: saved.after)
+                op.wordEditResult = edit
+                op.wordEdit = WordEditUndo(previous: transcriptID, edited: saved.transcriptID,
+                                           segmentID: sent.segmentID, move: saved.move,
+                                           learned: edit.deletion ? nil : self.learnCorrections?(edit))
+                self.refuseQueuedSplits(in: sent.segmentID)
+            }) {
             if let hook { await hook() }
-            return try await SessionWordEdit.run(session: session, request: request,
+            return try await SessionWordEdit.run(session: session, request: sent,
                                                  expectedTranscriptID: transcriptID, expectedRunID: runID)
         }
-        guard let saved = published.flatMap({ $0 }) else {
+        if published.flatMap({ $0 }) == nil {
             Self.log.info("Session \(self.sessionID, privacy: .public): a word edit would leave the words as they are; not saved")
-            return
+        } else {
+            Self.log.info("Session \(self.sessionID, privacy: .public): words edited in review")
         }
-        let edit = ReviewWordEdit(heard: saved.heard, meant: saved.meant, deletion: saved.deletion,
-                                  before: saved.before, after: saved.after)
-        op.wordEditResult = edit
-        op.wordEdit = WordEditUndo(previous: transcriptID, edited: saved.transcriptID, segmentID: request.segmentID,
-                                   learned: edit.deletion ? nil : learnCorrections?(edit))
-        refuseQueuedSplits(in: request.segmentID)
-        Self.log.info("Session \(self.sessionID, privacy: .public): words edited in review")
     }
 
-    /// Takes back a saved word edit (`SessionWordEdit.restore`) while its transcript is still current, and gives back
-    /// what it taught.
+    /// Takes back a saved word edit (`SessionWordEdit.restore`) while its transcript is still current. As soon as the
+    /// restored words are committed (before the labels are reread), what the edit taught is given back and its word
+    /// move undone.
     private func undoWordEdit(_ edit: WordEditUndo) async throws {
         guard snapshot.transcript.id == currentStandIn(for: edit.edited) else {
             throw HolosError.invalidInput("The transcript changed after that edit, so it cannot be undone.")
@@ -1335,16 +1398,41 @@ public struct ReviewWord: Sendable, Equatable {
         let session = self.session
         let hook = beforeEdit
         let current = snapshot.transcript.id
-        let restored = try await publishWordChange(what: "The edit was undone", transcriptID: current, runID: runID,
-                                                   recover: { $0.restored }) {
+        _ = try await publishWordChange(
+            what: "The edit was undone", transcriptID: current, runID: runID,
+            recover: { $0.restored },
+            committed: { [weak self] restored in
+                guard let self else { return }
+                if let restored {
+                    // The copy now stands for the transcript the edit was made on, which an earlier edit's undo
+                    // expects.
+                    self.restoredCopies[edit.previous] = restored.transcriptID
+                    self.turnKeepingRuns[restored.runID] = runID
+                }
+                self.wordMoves.append(edit.move.inverse)
+                if let learned = edit.learned { self.unlearnCorrections?(learned) }
+                self.refuseQueuedSplits(in: edit.segmentID)
+            }) {
             if let hook { await hook() }
             return try await SessionWordEdit.restore(session: session, previousTranscriptID: edit.previous,
                                                      expectedTranscriptID: current, expectedRunID: runID)
         }
-        // The copy now stands for the transcript the edit was made on, which an earlier edit's undo expects.
-        if let restored = restored.flatMap({ $0 }) { restoredCopies[edit.previous] = restored }
-        if let learned = edit.learned { unlearnCorrections?(learned) }
-        refuseQueuedSplits(in: edit.segmentID)
+    }
+
+    /// `refs` where `moves` took them, and whether one of them was among the words a move replaced (its text may have
+    /// changed under it).
+    public nonisolated static func follow(_ refs: [WordRef], through moves: ArraySlice<ReviewWordMove>)
+        -> (refs: [WordRef], replaced: Bool) {
+        var result = refs
+        var replaced = false
+        for move in moves {
+            for index in result.indices {
+                let moved = move.map(result[index])
+                result[index] = moved.ref
+                replaced = replaced || moved.replaced
+            }
+        }
+        return (result, replaced)
     }
 
     /// The transcript that stands for `transcriptID` now: an undone edit makes a copy of the transcript it was made on
@@ -1356,31 +1444,51 @@ public struct ReviewWord: Sendable, Equatable {
         return id
     }
 
-    /// Runs one publication of the transcript (a word edit or its undo) off the main actor, then adopts the labels it
-    /// left as this window's own change (`adopt(retargeted:)`): the turns and edit IDs are the same, so the undo
-    /// history stays. A head that could not be published is repaired from the old one, as a word-fix revert's is
-    /// (`recover` then gives what was published). Any other failure rereads the labels and throws.
+    /// Whether head run `runID` replaced `oldRunID` (directly or through others) keeping its turns: a word edit or its
+    /// undo published it from this window. Paragraph breaks made on `oldRunID` stay on such a run.
+    public func keepsTurns(of oldRunID: String, in runID: String) -> Bool {
+        var id = runID
+        var seen: Set<String> = [id]
+        while let previous = turnKeepingRuns[id], seen.insert(previous).inserted {
+            if previous == oldRunID { return true }
+            id = previous
+        }
+        return false
+    }
+
+    /// Runs one publication of the transcript (a word edit or its undo) off the main actor. Once it is committed (the
+    /// transcript current), `committed` records it, whatever happens next; then the labels it left are adopted as this
+    /// window's own change (`adopt(retargeted:)`): the turns and edit IDs are the same, so the undo history stays. A head
+    /// that could not be published is repaired from the old one, as a word-fix revert's is (`recover` gives what was
+    /// committed). Labels that cannot be reread make the review read-only until they are (a reread then still knows the
+    /// new run keeps the turns). Any other failure rereads the labels and throws.
     private func publishWordChange<T: Sendable>(
         what: String, transcriptID: String, runID: String,
         recover: @escaping (SessionWordEdit.IncompletePublication) -> T?,
+        committed: (T?) -> Void,
         _ body: @escaping @Sendable () async throws -> T
     ) async throws -> T? {
         let session = self.session
         switch await Self.detachedResult(body) {
         case .success(let value):
+            committed(value)
+            changesSaved(exportsWritten: false)
             do {
+                try beforeWordChangeReread?()
                 adopt(try await loadSnapshot(), op: nil, matching: nil, retargeted: true)
             } catch {
                 holdUnreread(matching: nil, problem: "\(what), but the window could not reread the speaker labels: "
                              + error.localizedDescription)
-                changesSaved(exportsWritten: false)
                 throw HolosError.incomplete("\(what), but the review could not be refreshed.")
             }
-            changesSaved(exportsWritten: false)
             return value
         case .failure(let error):
             if error is CancellationError { throw error }
             if let incomplete = error as? SessionWordEdit.IncompletePublication {
+                // The transcript is current: what it did is kept, whether or not its head can be finished now.
+                let value = recover(incomplete)
+                committed(value)
+                changesSaved(exportsWritten: false)
                 let repair = await Self.detachedResult {
                     try await SessionWordEdit.repairCurrentHead(session: session, expectedTranscriptID: transcriptID,
                                                                 expectedRunID: runID)
@@ -1391,14 +1499,13 @@ public struct ReviewWord: Sendable, Equatable {
                     guard fresh.projection != nil, !fresh.transcriptChanged else {
                         throw HolosError.unavailable("The new speaker head is incomplete.")
                     }
+                    if let newRun = fresh.run?.id { turnKeepingRuns[newRun] = runID }
                     adopt(fresh, op: nil, matching: nil, retargeted: true)
-                    changesSaved(exportsWritten: false)
-                    return recover(incomplete)
+                    return value
                 } catch let reread {
                     holdUnreread(matching: nil, problem: "\(what), but the window could not reread the speaker "
                                  + "labels: \(reread.localizedDescription)")
                 }
-                changesSaved(exportsWritten: false)
                 throw HolosError.incomplete(incomplete.message)
             }
             do {
@@ -2036,6 +2143,9 @@ public struct ReviewWord: Sendable, Equatable {
         let windowLines = claimed.reduce(0) { $0 + groups[$1].count }
         if let running = queue.first, running.started { running.superseded = true }
         let previousRunID = snapshot.run?.id
+        // Also a reread after one of this window's word edits whose labels could not be reread at once.
+        let keptFrom = fresh.run.flatMap { turnKeepingRuns[$0.id] }
+        let retargeted = retargeted || (keptFrom != nil && keptFrom == previousRunID)
         let headChanged = fresh.run?.id != previousRunID && !retargeted
         let external = forced || headChanged || added.count > windowLines
         let transcriptChanged = fresh.transcript.id != snapshot.transcript.id

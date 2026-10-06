@@ -441,8 +441,10 @@ final class TurnListView: NSView, NSTableViewDataSource, NSTableViewDelegate {
     /// The reader scrolled the turns themselves.
     var onUserScroll: (() -> Void)?
     /// Edit mode: `words` (shown words of one segment of one turn, in order) are to become `text`; `addTerm`: ⌥Return
-    /// asked for the new text in the word list too.
-    var onEditWords: ((_ words: [ReviewWord], _ text: String, _ addTerm: Bool) -> Void)?
+    /// asked for the new text in the word list too; `movesSeen`: how many of the review's word moves `words` follow.
+    var onEditWords: ((_ words: [ReviewWord], _ text: String, _ addTerm: Bool, _ movesSeen: Int) -> Void)?
+    /// The review's word moves (`ReviewSession.wordMoves`) as of the last update: the open field follows them.
+    private(set) var wordMoves: [ReviewWordMove] = []
     /// What the edit mode banner says for a moment (a selection stopped at a turn's end), nil for its usual text.
     var onEditMessage: ((String?) -> Void)?
     /// VoiceOver asked to edit a word while edit mode is off: the window turns it on (`editingWords`).
@@ -537,7 +539,9 @@ final class TurnListView: NSView, NSTableViewDataSource, NSTableViewDelegate {
     func update(paragraphs newParagraphs: [ReviewParagraph], speakers newSpeakers: [ProjectedSpeaker],
                 people newPeople: [SpeakerProfile], editable newEditable: Bool,
                 hints newHints: [String: MeetingTurnHint] = [:], text: @escaping (ProjectedTurn) -> String,
-                words: @escaping (ProjectedTurn) -> [ReviewWord], resolve: (String) -> String) {
+                words: @escaping (ProjectedTurn) -> [ReviewWord], resolve: (String) -> String,
+                wordMoves newWordMoves: [ReviewWordMove] = []) {
+        wordMoves = newWordMoves
         let selected = selectedTurnIDs.map(resolve)
         let oldParagraphs = paragraphs
         let oldLabels = labels
@@ -786,11 +790,14 @@ final class TurnListView: NSView, NSTableViewDataSource, NSTableViewDelegate {
         } else {
             refreshHeights()
         }
+        // The text rewraps at once: an open edit field follows its words.
+        repositionWordEdit()
     }
 
     override func viewDidEndLiveResize() {
         super.viewDidEndLiveResize()
         if heightsStale { refreshHeights() }
+        repositionWordEdit()
     }
 
     private func refreshHeights() {

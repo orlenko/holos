@@ -41,6 +41,16 @@ private func isWord(_ word: String) -> Bool { dictionary.contains(word.lowercase
     #expect(TranscriptEditLearning.corrections(heard: "ask  now", meant: "ask now", isDictionaryWord: isWord).isEmpty)
 }
 
+@Test func splittingOrJoiningWordsIsLearned() {
+    // Only the spaces differ, which is no punctuation-only or case-only change.
+    #expect(TranscriptEditLearning.corrections(heard: "everyday", meant: "every day", isDictionaryWord: { _ in false })
+        == [Correction(heard: "everyday", meant: "every day")])
+    #expect(TranscriptEditLearning.corrections(heard: "grand mother", meant: "grandmother",
+                                               isDictionaryWord: { _ in false })
+        == [Correction(heard: "grand mother", meant: "grandmother")])
+    #expect(TranscriptEditLearning.key("Every, day.") == "every day" && TranscriptEditLearning.key("everyday") == "everyday")
+}
+
 @Test func aCaseChangeToAProperNounIsLearned() {
     #expect(TranscriptEditLearning.corrections(heard: "github", meant: "GitHub", before: "we", after: "use",
                                                isDictionaryWord: isWord)

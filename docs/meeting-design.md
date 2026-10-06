@@ -7740,7 +7740,16 @@ shown, Otter-style.
   timestamp buttons still play. Every word has a VoiceOver action "Edit “word”", which turns
   edit mode on and opens the field. An edited word is dotted-underlined like a fixed word
   ("You changed “heard”"), and its Revert ("Revert to “heard”") is another edit back to what
-  the recognizer wrote.
+  the recognizer wrote. ⌘E turns the mode on only while the review is editable (not while a
+  command holds it read-only); it always turns it off.
+- *The open field* follows its words. Tab opens the next word's field before the save of the
+  last one ends; every saved edit and undo records how it moved its segment's words
+  (`ReviewWordMove`: the replaced word indices and their replacement, the rest shifted), the
+  field maps its words through the moves since it opened (a word merged by a deletion, whose
+  time changed, is found all the same), and so does a queued edit when it runs. A word no move
+  touched must still read the same. When the words cannot be found, the field closes and the
+  banner shows what was typed. After the column width or the row heights change, the field is
+  put back over its words.
 - *What an edit is.* `ReviewSession.editWords(refs, to: text)`: shown words (stored
   `WordRef`s, so a word the echo mask hides is never named, §5.11) of one segment, in a row,
   replaced by any text: more or fewer words, or nothing (a deletion). The refs must be
@@ -7779,20 +7788,28 @@ shown, Otter-style.
   `transcriptEdited` event (`transcriptID`, `base`, `segment`), then `C′`'s
   `transcriptEdited` event, then `C′` becomes current, then the new head. `unfixedID` follows
   `transcriptEdited` like `wordsFixed`. A head that could not be published is repaired from
-  the old head as a revert's is. Exports are regenerated `exportDelay` later; the summary is
-  no longer current (its key holds the transcript ID). Speaker labels, speaker edits, and
-  the window's paragraph breaks (carried over as for a revert) survive; the playback and
-  highlight mapping is rebuilt from the new segments.
+  the old head as a revert's is; when the app quits in between, post-processing repairs it
+  first (`SessionWordEdit.repairPendingHead`, before any stage may replace the transcript or
+  relabel over the old head, the only copy of the turn edits). Exports are regenerated
+  `exportDelay` later; the summary is no longer current (its key holds the transcript ID).
+  Speaker labels, speaker edits, and the window's paragraph breaks survive (a run an edit or
+  its undo published is known to keep the turns, `ReviewSession.keepsTurns`); the playback
+  and highlight mapping is rebuilt from the new segments. What the window keeps of a
+  committed edit (its undo, its word move, what it taught) is recorded as soon as the
+  transcript is current, even when the labels cannot be reread then. Split Turn is refused
+  inside words edited together, so their edit and its Revert stay in one turn.
 - *Undo.* An edit is one entry of the window's undo, among speaker changes; unlike a revert,
   it keeps the undo history (the retargeted run keeps every edit ID and batch). Undoing it
   publishes a copy of `C` (new ID; `fixedFrom` still names `B`, so `B′` is left unused) with
   the head retargeted again: the text, words, timing, and fixes are exactly `C`'s, and speaker
   edits made since carry over. It is refused when the current transcript is no longer the
-  edit's `C′`. A speaker split waiting in the queue whose word is in the edited segment is
-  refused (its word index may have moved).
-- *Echo.* Words under a `reviewEdit` mark are never hidden as echo (`SpeakerProjection`
-  excludes them like dropped words): the person read and confirmed them, and new words that
-  share a span's time could otherwise be judged echo one by one.
+  edit's `C′` (or the copy an undo made of it). A speaker split waiting in the queue whose
+  word is in the edited segment is refused (its word index may have moved). What the edit
+  taught is taken back as soon as the undo is committed.
+- *Echo.* Words under a `reviewEdit` mark are never echo (`EchoFilter.reviewEditedWords`):
+  the acoustic mask never hides them, and the text filter of a new run (Find More Speakers,
+  Label Again) neither drops them nor counts them in a run, so correcting "write" to "right"
+  beside the call's "that sounds right" hides nothing. The person read and confirmed them.
 - *Learning* (`TranscriptEditLearning`, HolosCore; the app's learner):
   - every edit is diffed as dictation's Learn does (`CorrectionList.learn`, the recognizer's
     words against the new text, one shown word on each side as context so a lone dictionary
@@ -7800,7 +7817,8 @@ shown, Otter-style.
     list Corrections (⌘2) shows; a pair the list already gives is skipped;
   - nothing is learned from a deletion, a punctuation-only change, or a case-only change,
     unless the case change makes a proper noun (a word whose lowercase is not a dictionary
-    word: "github" → "GitHub");
+    word: "github" → "GitHub"); words split or joined ("everyday" → "every day") are a real
+    change;
   - when the new text looks like a name or term (a word that is not a dictionary word, has a
     capital inside it, or a content word the edit capitalized), the window offers "Add
     “Claude” to the word list, often heard as “cloud”?" (Add / Not Now); ⌥Return adds it

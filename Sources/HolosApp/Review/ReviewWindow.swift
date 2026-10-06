@@ -417,9 +417,14 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate {
         }
         turnList.onPlay = { [weak self] seconds in self?.play(from: seconds) }
         turnList.onRevertFix = { [weak self] word in self?.revertFix(word) }
-        turnList.onEditWords = { [weak self] words, text, addTerm in self?.editWords(words, to: text, addTerm: addTerm) }
+        turnList.onEditWords = { [weak self] words, text, addTerm, movesSeen in
+            self?.editWords(words, to: text, addTerm: addTerm, movesSeen: movesSeen)
+        }
         turnList.onEditMessage = { [weak self] message in self?.editBanner.show(message: message) }
-        turnList.onRequestEditing = { [weak self] in self?.setEditMode(true) }
+        turnList.onRequestEditing = { [weak self] in
+            guard let self, self.review.isEditable else { return }
+            self.setEditMode(true)
+        }
         turnList.onUserScroll = { [weak self] in
             self?.follow.userScrolled(at: ProcessInfo.processInfo.systemUptime)
         }
@@ -450,8 +455,13 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate {
 
     private func refresh() {
         let projection = review.projection
+        // A run a word edit or its undo published keeps the turns, and with them the window's paragraph breaks.
+        let runID = projection.runID
         var paragraphs = ReviewParagraphs.group(
-            projection.turns, breaks: paragraphBreaks.active(in: projection.turns, runID: projection.runID))
+            projection.turns, breaks: paragraphBreaks.active(in: projection.turns, runID: runID,
+                                                             keepsTurnsOf: { [review] old in
+                                                                 review.keepsTurns(of: old, in: runID)
+                                                             }))
         // A search shows the paragraphs with a matching turn, whole.
         if !query.isEmpty {
             let matching = Set(review.turns(matching: query).map(\.id))
@@ -463,7 +473,7 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate {
                         hints: review.profiles == nil ? [:] : review.voiceMatches.turnHints,
                         text: { [review] turn in review.text(of: turn) },
                         words: { [review] turn in review.words(of: turn) },
-                        resolve: { [review] id in review.resolvedTurnID(id) })
+                        resolve: { [review] id in review.resolvedTurnID(id) }, wordMoves: review.wordMoves)
         sidebar.update(rows: sidebarRows(), people: people, editable: review.isEditable,
                        suggestions: review.suggestionCount)
         refreshToolbar()
@@ -938,9 +948,21 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate {
 
     // MARK: - Editing words
 
-    /// Edit Words (the toolbar toggle, ⌘E).
+    /// Edit Words (the toolbar toggle, ⌘E): on only while the review is editable (not while a command holds it
+    /// read-only); off always.
     @objc private func toggleEditMode() {
-        setEditMode(!turnList.editingWords)
+        let next = Self.editModeAfterToggle(on: turnList.editingWords, editable: review.isEditable)
+        if next == turnList.editingWords {
+            NSSound.beep()
+            editButton.state = next ? .on : .off
+            return
+        }
+        setEditMode(next)
+    }
+
+    /// Edit mode after a toggle from `on`: it turns off whenever asked, and on only while `editable`.
+    static func editModeAfterToggle(on: Bool, editable: Bool) -> Bool {
+        on ? false : editable
     }
 
     /// Turns edit mode on or off: the toggle, the banner, and the turn list (an open field closes unsaved when it
@@ -969,15 +991,15 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate {
     /// Edit mode is on.
     var isEditingWords: Bool { turnList.editingWords }
 
-    /// Saves an edit made in the turn list. Its new run keeps the turns (their estimated starts may move), so the
-    /// window's paragraph breaks are carried over by turn as for a revert. Once saved, a new text that looks like a
-    /// name or term is offered for the word list (with ⌥Return it is added at once).
-    private func editWords(_ words: [ReviewWord], to text: String, addTerm: Bool) {
+    /// Saves an edit made in the turn list. Its new run keeps the turns, as does its undo's (`ReviewSession.keepsTurns`),
+    /// so the window's paragraph breaks stay (`refresh`). Once saved, a new text that looks like a name or term is
+    /// offered for the word list (with ⌥Return it is added at once).
+    private func editWords(_ words: [ReviewWord], to text: String, addTerm: Bool, movesSeen: Int) {
         offeredTerm = nil
-        paragraphBreaks.beginCarryOver()
         perform { [weak self] review in
-            defer { self?.endBreakCarryOver() }
-            guard let edit = try await review.editWords(words.map(\.ref), to: text) else { return }
+            guard let edit = try await review.editWords(words.map(\.ref), to: text, seenMoves: movesSeen) else {
+                return
+            }
             self?.offerTerm(after: edit, add: addTerm)
         }
     }

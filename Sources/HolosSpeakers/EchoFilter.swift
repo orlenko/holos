@@ -50,7 +50,11 @@ public enum EchoFilter {
         let minimumRun = max(1, parameters.echoMinRunWords)
         let mic = words(transcript.segments, track: microphoneTrack)
         let system = words(transcript.segments, track: systemTrack)
-        let micMatchable = mic.indices.filter { mic[$0].isMatchable }
+        // Words the person edited in Review were read and confirmed: never echo, and never part of an echo run, so
+        // an edit never hides the words around it either (correcting "write" to "right" beside the call's "that sounds
+        // right" leaves the microphone's words as they were judged before).
+        let edited = reviewEditedWords(in: transcript)
+        let micMatchable = mic.indices.filter { mic[$0].isMatchable && !edited.contains(mic[$0].ref) }
         let systemMatchable = system.indices.filter { system[$0].isMatchable }
         guard !micMatchable.isEmpty, !systemMatchable.isEmpty else { return [] }
 
@@ -143,7 +147,7 @@ public enum EchoFilter {
         }
 
         var spans: [WordSpan] = []
-        for index in mic.indices where dropped[index] {
+        for index in mic.indices where dropped[index] && !edited.contains(mic[index].ref) {
             let ref = mic[index].ref
             if let lastSpan = spans.last, lastSpan.segmentID == ref.segmentID, lastSpan.end == ref.word {
                 spans[spans.count - 1].end += 1
@@ -152,6 +156,18 @@ public enum EchoFilter {
             }
         }
         return spans
+    }
+
+    /// The words under a `reviewEdit` fix (edited in Review, docs/meeting-design.md §5.10): neither echo filter drops
+    /// or hides them.
+    public static func reviewEditedWords(in transcript: Transcript) -> Set<WordRef> {
+        var refs = Set<WordRef>()
+        for segment in transcript.segments {
+            for fix in segment.fixes ?? [] where fix.kind == .reviewEdit && fix.first >= 0 && fix.first < fix.end {
+                for word in fix.first..<fix.end { refs.insert(WordRef(segmentID: segment.id, word: word)) }
+            }
+        }
+        return refs
     }
 
     /// Microphone spans the acoustic echo mask flags (`SpeakerProjection` hides them; stored runs never list them):

@@ -240,6 +240,45 @@ private let editEchoMask: AcousticEchoMask = {
                                                                        kind: .reviewEdit)])
 }
 
+@Test func anEditThatMatchesTheCallIsNotDroppedAsTextEchoWhenSpeakersAreLabelledAgain() throws {
+    func segment(_ id: String, _ words: [String], track: String, start: Double) -> TranscriptSegment {
+        var text = ""
+        var timed: [TimedWord] = []
+        for (index, word) in words.enumerated() {
+            if !text.isEmpty { text += " " }
+            timed.append(TimedWord(text: word, start: start + Double(index) * 0.4, end: start + Double(index) * 0.4 + 0.3,
+                                   utf16Offset: text.utf16.count, utf16Length: word.utf16.count))
+            text += word
+        }
+        return TranscriptSegment(id: id, start: start, end: start + Double(words.count) * 0.4, text: text,
+                                 words: timed, track: track)
+    }
+    // The call says "that sounds right"; the microphone heard its echo as "that sounds write", 0.3 s later.
+    let heard = Transcript(id: "T", createdAt: Date(timeIntervalSince1970: 0), source: "fixture", locale: "en-CA",
+                           backend: .speech, segments: [segment("S", ["that", "sounds", "right"], track: "system", start: 10),
+                                                        segment("M", ["that", "sounds", "write"], track: "mic",
+                                                                start: 10.3)])
+    var parameters = AlignmentParameters.v1
+    parameters.echoWindowSeconds = 1.0
+    #expect(EchoFilter.echoSpans(transcript: heard, parameters: parameters).isEmpty, "Two words in a row are kept.")
+    let edited = try #require(try TranscriptWordEdit.editing(editRequest(2, 3, "right", segment: "M"), in: heard,
+                                                              base: nil)).transcript
+    // The edited word is never echo, nor part of a run that would hide the words around it.
+    #expect(EchoFilter.echoSpans(transcript: edited, parameters: parameters).isEmpty)
+    var unedited = heard
+    unedited.segments[1] = segment("M", ["that", "sounds", "right"], track: "mic", start: 10.3)
+    #expect(EchoFilter.echoSpans(transcript: unedited, parameters: parameters)
+        == [WordSpan(segmentID: "M", first: 0, end: 3)], "The same words as recognized are the call's echo.")
+    let tracks = [SpeakerRunBuilder.TrackInput(track: "mic", policy: .channel(speakerID: "mic:me", displayName: "Me")),
+                  SpeakerRunBuilder.TrackInput(track: "system", policy: .channel(speakerID: "system:all",
+                                                                                 displayName: "Others"))]
+    let run = SpeakerRunBuilder.build(sessionID: "SESSION", transcript: edited, tracks: tracks, engine: nil,
+                                      parameters: parameters).run
+    let micWords = run.turns.filter { $0.track == "mic" }.flatMap(\.spans).flatMap { Array($0.first..<$0.end) }
+    #expect(micWords == [0, 1, 2], "The corrected words stay in the labels and the exports.")
+    #expect(run.droppedWords.isEmpty)
+}
+
 @Test func anEditedWordIsNeverHiddenAsEcho() throws {
     let (transcript, run) = editCall()
     // Word 2 is echo by the mask; once the person edited it (here without the review, which would not show it), the

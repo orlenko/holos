@@ -195,6 +195,27 @@ private func paragraphWords(_ paragraph: ReviewParagraph, counts: [Int]) -> [[Re
     #expect(breaks.active(in: [t1, t2], runID: "R2").isEmpty)
 }
 
+@Test func aBreakStaysOnARunThatKeptItsTurns() {
+    let turns = [paragraphTurn("T1", "S1", 0, 2), paragraphTurn("T2", "S1", 2.5, 4)]
+    var breaks = ReviewParagraphBreaks()
+    breaks.insert(before: turns[1], runID: "R1")
+    // A word edit published R2 from R1, and its undo R3 from R2, with no carry-over bracket around either.
+    let lineage = ["R2": "R1", "R3": "R2"]
+    func keeps(_ runID: String) -> (String) -> Bool {
+        { old in
+            var id = runID
+            while let previous = lineage[id] {
+                if previous == old { return true }
+                id = previous
+            }
+            return false
+        }
+    }
+    #expect(breaks.active(in: turns, runID: "R3", keepsTurnsOf: keeps("R3")) == ["T2"])
+    // A run that did not keep them (a relabel) still drops it.
+    #expect(breaks.active(in: turns, runID: "R4", keepsTurnsOf: keeps("R4")).isEmpty)
+}
+
 @Test func aBreakIsCarriedOverByTurnWhileWordFixesAreReverted() {
     var breaks = ReviewParagraphBreaks()
     breaks.insert(before: paragraphTurn("T2", "S1", 2.4, 6), runID: "R1")

@@ -65,9 +65,13 @@ public enum TranscriptEditLearning {
         text.split(whereSeparator: \.isWhitespace).joined(separator: " ")
     }
 
-    /// Letters and digits, lowercased: what a punctuation-only or case-only change leaves equal.
-    private static func key(_ text: String) -> String {
-        String(text.lowercased().filter { $0.isLetter || $0.isNumber })
+    /// Each word's letters and digits, lowercased, words kept apart: what a punctuation-only or case-only change leaves
+    /// equal. Splitting or joining words ("everyday" → "every day") changes it.
+    static func key(_ text: String) -> String {
+        text.split(whereSeparator: \.isWhitespace)
+            .map { String($0.lowercased().filter { $0.isLetter || $0.isNumber }) }
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
     }
 
     /// A case change that capitalizes a word that is not a dictionary word: every word whose letters changed case
