@@ -7646,6 +7646,38 @@ public enum SessionAudioComposition {
   (wrapping; a plain click on a word selects the turn and plays from that word, with the
   pointing hand over the text; ⇧/⌘ clicks, double clicks, and drags only select).
   Multi-select with ⇧/⌘.
+- Paragraphs (`ReviewParagraphs`, HolosMeeting; pure): the transcript reads like a
+  document, so a row is a paragraph of consecutive turns rather than one turn. A turn
+  joins the row before it when it has the same speaker and starts less than
+  `gapSeconds` (3 s) after the latest end of the row's turns; a different speaker in
+  between ends the row. A named speaker's microphone and system-audio turns join;
+  unknown-speaker turns join only on the same track (as in the exports), so an unknown
+  microphone turn never joins a named or unknown system-audio one. The second part of a
+  split ("T5/…") and a turn without a known start begin a row. A row shows its first
+  turn's time, one speaker pop-up, its turns' texts joined with spaces, and ⚠ when any
+  of its turns is uncertain ("overlap" when one of those overlaps); "⚠ Jim?" names the
+  row's first turn that sounds like Jim and gives that turn alone (that turn's own warning
+  gives way to it; a warning of the row's other turns shows under it). Rows are only how
+  turns are shown: edits still name turns, and the journal and exports are unchanged
+  (Markdown and text already merge a speaker's consecutive turns into blocks, §4.11).
+  Everything per word works across a row's turns: clicking a word, the word playing and
+  following it, word-fix underlines, tooltips and Revert, VoiceOver's per-word actions.
+  Assigning a row (its pop-up, Assign to…, 1–9, New Speaker…) gives every turn of the
+  selected rows in one change, so one Undo restores them. Search shows the rows with a
+  matching turn, whole; Next Uncertain goes to the row of the next uncertain turn after
+  the selected rows' last turn and plays from that turn. Split Turn on a row offers its
+  words: a word inside a turn splits that turn there (a `splitTurn` edit, undone as any
+  other; its second part starts a row), and a word that already starts a turn only
+  breaks the row before that turn, in this window (nothing is saved, so Undo has nothing
+  to take back; the break belongs to the run it was made on and goes with its turn; a new
+  run drops it (the speakers labelled again; turn IDs then name other turns), except the
+  runs published while the window reverts word fixes, which keep the turns and their
+  breaks; the window closed drops it too). After any
+  change, a row stays selected only if every turn of it was selected: a turn that joins a
+  selected row's paragraph clears that selection rather than widening it.
+  While playing, the row of the turn being spoken is tinted, and a pause inside
+  a row keeps it tinted with the last word spoken, so the tint and the scroll move a row
+  at a time rather than every turn.
 - Playback bar (above the footer): Play/Pause, position / length, a scrubber, the speed
   (1×, 1.25×, 1.5×, 2×; remembered, pitch kept), and who is speaking. Playing goes on
   through the meeting until paused (only a speaker's samples stop by themselves); Play
@@ -7771,6 +7803,10 @@ whose review is open or still opening):
 | `compositionDoesNotTrimAfterAMissingOrShortChunk` | files as above | next chunk placed whole at 10 s |
 | `compositionLeavesUnreadableChunksSilent` | garbage and truncated chunks between good ones | only their time silent |
 | `trackerReportsEveryPlaybackStateTransition` | loading → off → other reason → ready | every change reported |
+| `ReviewParagraphsTests` | synthetic turns | rows by speaker, 3 s gap, unknown by track, split parts and breaks; Split Turn on a row: split or break; the word playing |
+| `reviewAssigningAParagraphMovesEveryTurnOfItAndUndoRestoresIt` | assign a two-turn row; undo | one `reassignTurns` of both turns; rows join; undo restores turns and rows |
+| `reviewSplittingInsideAParagraphStartsOneThatUndoJoinsAgain` | split inside a row's first turn; undo | the second part starts a row with the next turn; undo joins them |
+| `TurnListViewTests` (HolosAppTests) | the list laid out offscreen | rows joined, word click, fixes and VoiceOver, selection, pop-up and hint, tint through a pause |
 
 **Manual.** H14 and H20 in §7.
 

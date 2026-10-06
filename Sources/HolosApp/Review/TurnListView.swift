@@ -358,10 +358,11 @@ final class TurnScrollView: NSScrollView {
     }
 }
 
-/// The right pane of the review window (docs/meeting-design.md §5.10): one row per turn with a timestamp button that
-/// plays from there, the speaker pop-up, a warning for uncertain turns, and the wrapping text, whose words play from
-/// where they are clicked. While the meeting plays, the playing turn and word are tinted. Several turns can be
-/// selected with ⇧ and ⌘.
+/// The right pane of the review window (docs/meeting-design.md §5.10): one row per paragraph (consecutive turns of one
+/// speaker, `ReviewParagraphs`) with a timestamp button that plays from there, the speaker pop-up, a warning when a
+/// turn of it is uncertain, and the wrapping text, whose words play from where they are clicked. While the meeting
+/// plays, the paragraph and word playing are tinted. Several rows can be selected with ⇧ and ⌘; whatever acts on rows
+/// (assigning a speaker, the selection's turns) acts on every turn of them.
 @MainActor
 final class TurnListView: NSView, NSTableViewDataSource, NSTableViewDelegate {
     /// A timestamp or a word was clicked: play from this session time.
@@ -370,15 +371,15 @@ final class TurnListView: NSView, NSTableViewDataSource, NSTableViewDelegate {
     var onAssign: (([String], ReviewAssignTarget) -> Void)?
     var onNewSpeaker: (([String]) -> Void)?
     var onSelectionChange: (() -> Void)?
-    /// "⚠ Jim?" clicked: give the turn to the named speaker it sounds like.
+    /// "⚠ Jim?" clicked: give that turn (its ID) to the named speaker it sounds like.
     var onAcceptHint: ((String) -> Void)?
     /// The reader scrolled the turns themselves.
     var onUserScroll: (() -> Void)?
 
     let table = TurnTableView()
     private let scroll = TurnScrollView()
-    private(set) var turns: [ProjectedTurn] = []
-    /// Row of each shown turn, by ID.
+    private(set) var paragraphs: [ReviewParagraph] = []
+    /// Row of each shown turn, by turn ID.
     private var rowOf: [String: Int] = [:]
     private var labels: [String: String] = [:]
     /// Turns that sound like a person named in the meeting (`ReviewSession.voiceMatches`), by turn ID.
@@ -388,11 +389,12 @@ final class TurnListView: NSView, NSTableViewDataSource, NSTableViewDelegate {
     private var editable = true
     private var text: (ProjectedTurn) -> String = { _ in "" }
     private var words: (ProjectedTurn) -> [ReviewWord] = { _ in [] }
-    /// The turn playing (its ID) and the word of it playing, tinted while shown.
-    private(set) var playingTurnID: String?
+    /// The paragraph playing (its ID) and the word of it playing, tinted while shown.
+    private(set) var playingParagraphID: String?
     private var playingWord: Int?
-    /// Row heights by turn ID (with the words they were measured for), for `heightWidth`.
-    private var heights: [String: (spans: [WordSpan], height: CGFloat)] = [:]
+    /// Row heights by paragraph ID (with the words they were measured for, and whether a hint and a warning are
+    /// stacked), for `heightWidth`.
+    private var heights: [String: (spans: [WordSpan], stacked: Bool, height: CGFloat)] = [:]
     private var heightWidth: CGFloat = 0
     private var heightsStale = false
 
@@ -439,21 +441,25 @@ final class TurnListView: NSView, NSTableViewDataSource, NSTableViewDelegate {
 
     // MARK: - Data
 
-    /// Shows `turns`, keeping the selected turns selected (by ID, after `resolve`) and reloading only what changed
-    /// when the rows are the same turns.
-    func update(turns newTurns: [ProjectedTurn], speakers newSpeakers: [ProjectedSpeaker], people newPeople: [SpeakerProfile],
-                editable newEditable: Bool, hints newHints: [String: MeetingTurnHint] = [:],
-                text: @escaping (ProjectedTurn) -> String,
+    /// Shows `paragraphs`, keeping the selected turns' rows selected (by turn ID, after `resolve`; never a row that
+    /// took in turns that were not selected) and reloading only what changed when the rows are the same paragraphs.
+    func update(paragraphs newParagraphs: [ReviewParagraph], speakers newSpeakers: [ProjectedSpeaker],
+                people newPeople: [SpeakerProfile], editable newEditable: Bool,
+                hints newHints: [String: MeetingTurnHint] = [:], text: @escaping (ProjectedTurn) -> String,
                 words: @escaping (ProjectedTurn) -> [ReviewWord], resolve: (String) -> String) {
         let selected = selectedTurnIDs.map(resolve)
-        let oldTurns = turns
+        let oldParagraphs = paragraphs
         let oldLabels = labels
         let oldHints = hints
         hints = newHints
         let menusChanged = newSpeakers != speakers || newPeople.map(\.id) != people.map(\.id)
             || newPeople.map(\.displayName) != people.map(\.displayName) || newEditable != editable
-        turns = newTurns
-        rowOf = Dictionary(newTurns.enumerated().map { ($1.id, $0) }, uniquingKeysWith: { first, _ in first })
+        paragraphs = newParagraphs
+        var rows: [String: Int] = [:]
+        for (row, paragraph) in newParagraphs.enumerated() {
+            for id in paragraph.turnIDs where rows[id] == nil { rows[id] = row }
+        }
+        rowOf = rows
         speakers = newSpeakers
         people = newPeople
         editable = newEditable
@@ -461,67 +467,108 @@ final class TurnListView: NSView, NSTableViewDataSource, NSTableViewDelegate {
         self.words = words
         labels = Dictionary(newSpeakers.map { ($0.id, $0.label) }, uniquingKeysWith: { first, _ in first })
 
-        guard oldTurns.map(\.id) == newTurns.map(\.id) else {
+        guard oldParagraphs.map(\.id) == newParagraphs.map(\.id) else {
             table.reloadData()
-            select(selected, scroll: false)
+            restoreSelection(selected)
             return
         }
         var changed = IndexSet()
         var resized = IndexSet()
-        for (index, turn) in newTurns.enumerated() {
-            let old = oldTurns[index]
-            if old != turn || oldLabels[turn.speakerID ?? ""] != labels[turn.speakerID ?? ""]
-                || oldHints[turn.id] != hints[turn.id] {
+        for (index, paragraph) in newParagraphs.enumerated() {
+            let old = oldParagraphs[index]
+            if old != paragraph || oldLabels[paragraph.speakerID ?? ""] != labels[paragraph.speakerID ?? ""]
+                || Self.hint(of: old, in: oldHints) != Self.hint(of: paragraph, in: hints) {
                 changed.insert(index)
             }
-            if old.spans != turn.spans { resized.insert(index) }
+            if old.spans != paragraph.spans
+                || TurnCellView.stacksWarning(old, hint: Self.hint(of: old, in: oldHints))
+                != TurnCellView.stacksWarning(paragraph, hint: Self.hint(of: paragraph, in: hints)) {
+                resized.insert(index)
+            }
         }
         if menusChanged, let visible = Range(table.rows(in: table.visibleRect)) {
             changed.formUnion(IndexSet(integersIn: visible))
         }
-        guard !changed.isEmpty else { return }
-        table.reloadData(forRowIndexes: changed, columnIndexes: IndexSet(integer: 0))
-        if !resized.isEmpty { table.noteHeightOfRows(withIndexesChanged: resized) }
+        // Rows that took in or gave up turns keep their IDs: the selection follows the turns, not the rows.
+        if !changed.isEmpty {
+            table.reloadData(forRowIndexes: changed, columnIndexes: IndexSet(integer: 0))
+            if !resized.isEmpty { table.noteHeightOfRows(withIndexesChanged: resized) }
+        }
+        restoreSelection(selected)
     }
 
-    var selectedTurnIDs: [String] {
-        table.selectedRowIndexes.compactMap { $0 < turns.count ? turns[$0].id : nil }
+    /// Selects again the rows of the turns selected before an update, only rows all of whose turns were selected: a
+    /// row that took in other turns (a turn given to the speaker before it joins that paragraph) is not selected, so
+    /// the selection never grows to turns the reader did not choose.
+    private func restoreSelection(_ selected: [String]) {
+        let wanted = Set(selected)
+        let rows = IndexSet(Set(selected.compactMap { rowOf[$0] }).filter { row in
+            paragraphs[row].turnIDs.allSatisfy(wanted.contains)
+        })
+        guard rows != table.selectedRowIndexes else { return }
+        table.selectRowIndexes(rows, byExtendingSelection: false)
     }
 
-    var selectedTurns: [ProjectedTurn] {
-        table.selectedRowIndexes.compactMap { $0 < turns.count ? turns[$0] : nil }
+    /// Every turn of the selected rows, in row order.
+    var selectedTurnIDs: [String] { selectedParagraphs.flatMap(\.turnIDs) }
+
+    /// Every turn of the selected rows, in row order.
+    var selectedTurns: [ProjectedTurn] { selectedParagraphs.flatMap(\.turns) }
+
+    var selectedParagraphs: [ReviewParagraph] {
+        table.selectedRowIndexes.compactMap { $0 < paragraphs.count ? paragraphs[$0] : nil }
     }
 
+    /// Selects the rows holding `turnIDs`.
     func select(_ turnIDs: [String], scroll: Bool) {
-        let wanted = Set(turnIDs)
-        let rows = IndexSet(turns.indices.filter { wanted.contains(turns[$0].id) })
+        let rows = IndexSet(turnIDs.compactMap { rowOf[$0] })
         table.selectRowIndexes(rows, byExtendingSelection: false)
         if scroll, let first = rows.first { table.scrollRowToVisible(first) }
     }
 
+    /// The turn is in a row shown now (search shows only rows with a match).
+    func shows(turnID: String) -> Bool { rowOf[turnID] != nil }
+
+    /// The hint a paragraph shows: its first turn that sounds like someone named in the meeting.
+    private static func hint(of paragraph: ReviewParagraph, in hints: [String: MeetingTurnHint]) -> MeetingTurnHint? {
+        guard !hints.isEmpty else { return nil }
+        return paragraph.turnIDs.lazy.compactMap { hints[$0] }.first
+    }
+
+    /// The text a paragraph shows: its turns' texts joined with spaces.
+    private func text(of paragraph: ReviewParagraph) -> String {
+        paragraph.turns.map(text).filter { !$0.isEmpty }.joined(separator: " ")
+    }
+
     // MARK: - Table
 
-    func numberOfRows(in tableView: NSTableView) -> Int { turns.count }
+    func numberOfRows(in tableView: NSTableView) -> Int { paragraphs.count }
 
     func tableView(_ tableView: NSTableView, heightOfRow row: Int) -> CGFloat {
-        guard row < turns.count else { return 28 }
+        guard row < paragraphs.count else { return 28 }
         let width = textWidth
         if width != heightWidth {
             heights.removeAll()
             heightWidth = width
         }
-        let turn = turns[row]
-        // Keyed by ID and checked against the words: a split changes a turn's words and keeps its ID.
-        if let cached = heights[turn.id], cached.spans == turn.spans { return cached.height }
+        let paragraph = paragraphs[row]
+        let spans = paragraph.spans
+        let stacked = TurnCellView.stacksWarning(paragraph, hint: Self.hint(of: paragraph, in: hints))
+        // Keyed by ID and checked against the words: a split, or a turn joining or leaving, changes a paragraph's
+        // words and keeps its ID.
+        if let cached = heights[paragraph.id], cached.spans == spans, cached.stacked == stacked {
+            return cached.height
+        }
         // Measured as the row's text view lays it out (`TurnCellView.layout`).
-        let measured = TurnTextView.height(of: text(turn), width: TurnCellView.textViewWidth(forTextWidth: width))
-        let height = max(28, ceil(measured) + 10)
-        heights[turn.id] = (turn.spans, height)
+        let measured = TurnTextView.height(of: text(of: paragraph),
+                                           width: TurnCellView.textViewWidth(forTextWidth: width))
+        let height = max(stacked ? TurnCellView.stackedHeight : 28, ceil(measured) + 10)
+        heights[paragraph.id] = (spans, stacked, height)
         return height
     }
 
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
-        guard row < turns.count else { return nil }
+        guard row < paragraphs.count else { return nil }
         let identifier = NSUserInterfaceItemIdentifier("turnCell")
         let cell = tableView.makeView(withIdentifier: identifier, owner: self) as? TurnCellView ?? {
             let cell = TurnCellView()
@@ -536,45 +583,60 @@ final class TurnListView: NSView, NSTableViewDataSource, NSTableViewDelegate {
             cell.bodyText.onRevertFix = { [weak self] word in self?.onRevertFix?(word) }
             return cell
         }()
-        let turn = turns[row]
-        cell.configure(turn: turn, text: text(turn), words: words(turn),
+        let paragraph = paragraphs[row]
+        cell.configure(paragraph: paragraph, text: text(of: paragraph), words: paragraph.turns.flatMap(words),
                        menu: AssignMenu.items(speakers: speakers, people: people), editable: editable,
-                       hint: hints[turn.id])
-        let playing = turn.id == playingTurnID
+                       hint: Self.hint(of: paragraph, in: hints))
+        let playing = paragraph.id == playingParagraphID
         cell.setPlaying(playing, word: playing ? playingWord : nil)
         return cell
     }
 
     @objc private func hintClicked(_ sender: NSButton) {
         let row = table.row(for: sender)
-        guard row >= 0, row < turns.count else { return }
-        onAcceptHint?(turns[row].id)
+        guard row >= 0, row < paragraphs.count, let hint = Self.hint(of: paragraphs[row], in: hints) else { return }
+        onAcceptHint?(hint.turnID)
     }
 
     // MARK: - Playback
 
-    /// Tints the turn playing (`turnID`, nil: none) and its word being spoken at `time`.
-    func showPlaying(turnID: String?, at time: Double) {
-        if turnID != playingTurnID {
-            if let old = playingTurnID { cell(forTurn: old)?.setPlaying(false, word: nil) }
-            playingTurnID = turnID
+    /// Tints the paragraph playing and its word being spoken at `time`: the paragraph of `turnID` (the turn being
+    /// spoken; none when it is not shown), or in a pause, the paragraph whose span holds `time` (so a pause inside a
+    /// paragraph does not untint it). Nothing in silence between paragraphs. True when the paragraph or the word
+    /// shown playing changed (a seek within a paragraph taller than the list moves only the word).
+    @discardableResult
+    func showPlaying(turnID: String?, at time: Double) -> Bool {
+        // A turn spoken that is not shown (search left it out) tints no row, not one it overlaps.
+        let row = turnID.map { rowOf[$0] } ?? ReviewParagraphs.index(at: time, in: paragraphs)
+        let paragraphID = row.map { paragraphs[$0].id }
+        let changed = paragraphID != playingParagraphID
+        let previousWord = playingWord
+        if changed {
+            if let old = playingParagraphID, let oldRow = rowOf[old] { cell(forRow: oldRow)?.setPlaying(false, word: nil) }
+            playingParagraphID = paragraphID
             playingWord = nil
         }
-        guard let turnID, let cell = cell(forTurn: turnID) else {
-            // Not on screen: its word is found when its row is made.
-            if let turnID, let row = rowOf[turnID] {
-                playingWord = ReviewTimeline.wordIndex(at: time, starts: words(turns[row]).map(\.start))
-            }
-            return
-        }
-        playingWord = cell.bodyText.wordIndex(at: time)
-        cell.setPlaying(true, word: playingWord)
+        guard let row else { return changed }
+        let paragraph = paragraphs[row]
+        playingWord = ReviewParagraphs.playingWord(in: paragraph, turnID: turnID, at: time,
+                                                   starts: paragraph.turns.map { words($0).map(\.start) })
+        // Not on screen: its word is shown when its row is made.
+        cell(forRow: row)?.setPlaying(true, word: playingWord)
+        return changed || playingWord != previousWord
     }
 
-    /// Scrolls the playing turn into view (with a little room around it); within a turn taller than the list, its
-    /// playing word. Nothing when it is already in view or not shown.
+    /// Nothing is tinted (playback has not started, or is off).
+    func clearPlaying() {
+        guard let old = playingParagraphID else { return }
+        if let row = rowOf[old] { cell(forRow: row)?.setPlaying(false, word: nil) }
+        playingParagraphID = nil
+        playingWord = nil
+    }
+
+    /// Scrolls the paragraph playing into view (with a little room around it); within a paragraph taller than the
+    /// list, its playing word. Nothing when it is already in view or not shown.
     func scrollToPlaying() {
-        guard let turnID = playingTurnID, let row = rowOf[turnID] else { return }
+        guard let paragraphID = playingParagraphID, let row = rowOf[paragraphID] else { return }
         let visible = table.visibleRect
         var target = table.rect(ofRow: row)
         if target.height > visible.height - 24 {
@@ -597,8 +659,8 @@ final class TurnListView: NSView, NSTableViewDataSource, NSTableViewDelegate {
         table.scrollToVisible(target)
     }
 
-    private func cell(forTurn turnID: String) -> TurnCellView? {
-        guard let row = rowOf[turnID], row < table.numberOfRows else { return nil }
+    private func cell(forRow row: Int) -> TurnCellView? {
+        guard row < table.numberOfRows else { return nil }
         return table.view(atColumn: 0, row: row, makeIfNecessary: false) as? TurnCellView
     }
 
@@ -625,8 +687,8 @@ final class TurnListView: NSView, NSTableViewDataSource, NSTableViewDelegate {
 
     private func refreshHeights() {
         heightsStale = false
-        guard textWidth != heightWidth, !turns.isEmpty else { return }
-        table.noteHeightOfRows(withIndexesChanged: IndexSet(integersIn: 0..<turns.count))
+        guard textWidth != heightWidth, !paragraphs.isEmpty else { return }
+        table.noteHeightOfRows(withIndexesChanged: IndexSet(integersIn: 0..<paragraphs.count))
     }
 
     private var textWidth: CGFloat {
@@ -637,29 +699,28 @@ final class TurnListView: NSView, NSTableViewDataSource, NSTableViewDelegate {
 
     @objc private func timeClicked(_ sender: NSButton) {
         let row = table.row(for: sender)
-        guard row >= 0, row < turns.count else { return }
-        onPlay?(turns[row].start)
+        guard row >= 0, row < paragraphs.count else { return }
+        onPlay?(paragraphs[row].start)
     }
 
     @objc private func speakerChosen(_ sender: NSPopUpButton) {
         let row = table.row(for: sender)
-        guard row >= 0, row < turns.count, let choice = sender.selectedItem?.representedObject as? AssignChoice else {
-            return
-        }
-        // The chosen speaker applies to the whole selection when the row is part of it.
-        let ids = table.selectedRowIndexes.contains(row) ? selectedTurnIDs : [turns[row].id]
+        guard row >= 0, row < paragraphs.count, let choice = sender.selectedItem?.representedObject as? AssignChoice
+        else { return }
+        // The chosen speaker applies to every turn of the row, and to the whole selection when the row is part of it.
+        let ids = table.selectedRowIndexes.contains(row) ? selectedTurnIDs : paragraphs[row].turnIDs
         switch choice.kind {
         case .target(let target): onAssign?(ids, target)
         case .newSpeaker: onNewSpeaker?(ids)
         }
-        // Until the labels come back, show the turn's current speaker again rather than a menu command.
+        // Until the labels come back, show the row's current speaker again rather than a menu command.
         if case .newSpeaker = choice.kind { table.reloadData(forRowIndexes: [row], columnIndexes: [0]) }
     }
 }
 
-/// One turn row: timestamp button, speaker pop-up, uncertainty warning, and text. Laid out by hand (fixed columns,
-/// wrapping text), matching `TurnListView`'s row heights. The turn playing has a tinted background and an accent bar
-/// on its leading edge.
+/// One paragraph row: timestamp button, speaker pop-up, uncertainty warning, and text. Laid out by hand (fixed
+/// columns, wrapping text), matching `TurnListView`'s row heights. The paragraph playing has a tinted background and
+/// an accent bar on its leading edge.
 @MainActor
 final class TurnCellView: NSTableCellView {
     static let timeWidth: CGFloat = 72
@@ -673,12 +734,16 @@ final class TurnCellView: NSTableCellView {
     let timeButton = NSButton(title: "", target: nil, action: nil)
     let speakerPopUp = NSPopUpButton(frame: .zero, pullsDown: false)
     let warningLabel = NSTextField(labelWithString: "")
-    /// "⚠ Jim?": the turn sounds like a person named in the meeting; a click gives it to them. Shown instead of the
-    /// warning.
+    /// "⚠ Jim?": a turn of the paragraph sounds like a person named in the meeting; a click gives that turn to them.
+    /// Shown instead of that turn's warning; the warning of the paragraph's other turns shows under it.
     let hintButton = NSButton(title: "", target: nil, action: nil)
     let bodyText = TurnTextView.make()
     private var menuSignature: [String] = []
     private var isPlayingTurn = false
+    /// The hint and a warning of other turns both show: the warning goes under the hint.
+    private var stacked = false
+    /// The least height of a row whose hint and warning are stacked.
+    static let stackedHeight: CGFloat = 46
 
     override var isFlipped: Bool { true }
 
@@ -715,7 +780,7 @@ final class TurnCellView: NSTableCellView {
         backgroundStyle == .emphasized ? .alternateSelectedControlTextColor : .labelColor
     }
 
-    /// Tints this row as the turn playing, with `word` (nil: none) as the word being spoken.
+    /// Tints this row as the paragraph playing, with `word` (nil: none) as the word being spoken.
     func setPlaying(_ playing: Bool, word: Int?) {
         if playing != isPlayingTurn {
             isPlayingTurn = playing
@@ -733,9 +798,9 @@ final class TurnCellView: NSTableCellView {
         NSRect(x: 0, y: 0, width: 3, height: bounds.height).fill()
     }
 
-    func configure(turn: ProjectedTurn, text: String, words: [ReviewWord], menu items: [NSMenuItem], editable: Bool,
-                   hint: MeetingTurnHint? = nil) {
-        timeButton.title = TimeFormat.clock(turn.start)
+    func configure(paragraph: ReviewParagraph, text: String, words: [ReviewWord], menu items: [NSMenuItem],
+                   editable: Bool, hint: MeetingTurnHint? = nil) {
+        timeButton.title = TimeFormat.clock(paragraph.start)
         // The menu is replaced only when its items changed, so an update never swaps a menu that is open.
         let signature = items.map { item in
             item.isSeparatorItem ? "-" : item.title + "\u{1f}" + String(describing: (item.representedObject as? AssignChoice)?.kind)
@@ -747,7 +812,7 @@ final class TurnCellView: NSTableCellView {
             speakerPopUp.menu = menu
             menuSignature = signature
         }
-        let current: ReviewAssignTarget = turn.speakerID.map { .speaker($0) } ?? .unknown
+        let current: ReviewAssignTarget = paragraph.speakerID.map { .speaker($0) } ?? .unknown
         if let index = speakerPopUp.itemArray.firstIndex(where: {
             ($0.representedObject as? AssignChoice)?.kind == .target(current)
         }) {
@@ -755,17 +820,22 @@ final class TurnCellView: NSTableCellView {
         }
         speakerPopUp.isEnabled = editable
         bodyText.canRevertFix = editable
-        warningLabel.stringValue = Self.warning(turn)
-        warningLabel.toolTip = Self.warningHelp(turn)
+        // The hinted turn's own warning gives way to the hint; the other turns' warning stays.
+        warningLabel.stringValue = Self.warning(paragraph, excluding: hint?.turnID)
+        warningLabel.toolTip = Self.warningHelp(paragraph, excluding: hint?.turnID)
         if let hint {
             hintButton.title = "⚠ \(hint.name)?"
-            hintButton.toolTip = "This turn sounds like \(hint.name), whom you named in this meeting. Click to give "
+            // In a paragraph of several turns, the hint names the turn it is about by its start.
+            let turn = paragraph.turns.count > 1 ? paragraph.turns.first { $0.id == hint.turnID } : nil
+            let what = turn.map { "The part from \(TimeFormat.clock($0.start))" } ?? "This turn"
+            hintButton.toolTip = "\(what) sounds like \(hint.name), whom you named in this meeting. Click to give "
                 + "it to \(hint.name)."
-            hintButton.setAccessibilityLabel("Sounds like \(hint.name). Give this turn to \(hint.name).")
+            hintButton.setAccessibilityLabel("\(what) sounds like \(hint.name). Give it to \(hint.name).")
             hintButton.isEnabled = editable
         }
         hintButton.isHidden = hint == nil
-        warningLabel.isHidden = hint != nil
+        warningLabel.isHidden = warningLabel.stringValue.isEmpty
+        stacked = Self.stacksWarning(paragraph, hint: hint)
         bodyText.show(text: text, words: words, color: textColor)
         needsLayout = true
     }
@@ -775,8 +845,8 @@ final class TurnCellView: NSTableCellView {
         let height = bounds.height
         timeButton.frame = NSRect(x: 4, y: 4, width: Self.timeWidth, height: 20)
         speakerPopUp.frame = NSRect(x: 4 + Self.timeWidth + Self.gap, y: 2, width: Self.popUpWidth, height: 22)
-        warningLabel.frame = NSRect(x: 4 + Self.timeWidth + Self.gap + Self.popUpWidth + Self.gap, y: 6,
-                                    width: Self.warningWidth, height: 16)
+        warningLabel.frame = NSRect(x: 4 + Self.timeWidth + Self.gap + Self.popUpWidth + Self.gap,
+                                    y: stacked ? 25 : 6, width: Self.warningWidth, height: 16)
         hintButton.frame = NSRect(x: warningLabel.frame.minX, y: 3, width: Self.warningWidth, height: 20)
         // The row is `measured + 10` tall (`TurnListView.tableView(_:heightOfRow:)`): 5 above the text, 5 below.
         let width = Self.textViewWidth(forTextWidth: bounds.width - Self.textX - 4)
@@ -786,18 +856,27 @@ final class TurnCellView: NSTableCellView {
         bodyText.window?.invalidateCursorRects(for: bodyText)
     }
 
-    /// "⚠ overlap", "⚠ unknown", "⚠ unsure", or nothing.
-    static func warning(_ turn: ProjectedTurn) -> String {
-        guard turn.uncertain else { return "" }
-        if turn.overlap { return "⚠ overlap" }
-        if turn.speakerID == nil { return "⚠ unknown" }
+    /// A hint shows and so does a warning of the paragraph's other turns.
+    static func stacksWarning(_ paragraph: ReviewParagraph, hint: MeetingTurnHint?) -> Bool {
+        guard let hint else { return false }
+        return !warning(paragraph, excluding: hint.turnID).isEmpty
+    }
+
+    /// "⚠ overlap", "⚠ unknown", "⚠ unsure", or nothing: a paragraph warns when any of its turns (but `excluded`) is
+    /// uncertain, of an overlap when one of those overlaps.
+    static func warning(_ paragraph: ReviewParagraph, excluding excluded: String? = nil) -> String {
+        let uncertain = paragraph.turns.filter { $0.uncertain && $0.id != excluded }
+        guard !uncertain.isEmpty else { return "" }
+        if uncertain.contains(where: \.overlap) { return "⚠ overlap" }
+        if paragraph.speakerID == nil { return "⚠ unknown" }
         return "⚠ unsure"
     }
 
-    static func warningHelp(_ turn: ProjectedTurn) -> String? {
-        guard turn.uncertain else { return nil }
-        if turn.overlap { return "Someone else spoke at the same time." }
-        if turn.speakerID == nil { return "No speaker was found for this turn." }
+    static func warningHelp(_ paragraph: ReviewParagraph, excluding excluded: String? = nil) -> String? {
+        let uncertain = paragraph.turns.filter { $0.uncertain && $0.id != excluded }
+        guard !uncertain.isEmpty else { return nil }
+        if uncertain.contains(where: \.overlap) { return "Someone else spoke at the same time." }
+        if paragraph.speakerID == nil { return "No speaker was found for this text." }
         return "The speaker is uncertain here."
     }
 }

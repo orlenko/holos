@@ -1246,3 +1246,67 @@ func recognitionIsShownOnlyWhenRecognitionIsAllowed() async throws {
     #expect(review.speaker("system:S1")?.name == "Jim")
     #expect(String(decoding: try await review.render(.md), as: UTF8.self).contains("Jim"))
 }
+
+// MARK: - Paragraphs
+
+/// The rows the window shows (`ReviewParagraphs`), as turn IDs.
+@MainActor
+private func reviewParagraphs(_ review: ReviewSession) -> [[String]] {
+    ReviewParagraphs.group(review.projection.turns).map(\.turnIDs)
+}
+
+@Test(.timeLimit(.minutes(1))) @MainActor
+func reviewAssigningAParagraphMovesEveryTurnOfItAndUndoRestoresIt() async throws {
+    let temp = try TemporaryDirectory("review")
+    defer { temp.remove() }
+    let (session, _) = try await reviewCustomSession(in: temp, turns: [
+        ReviewTurnSpec(speaker: "system:S1", start: 0, seconds: 2, words: reviewWords(2, prefix: "a")),
+        ReviewTurnSpec(speaker: "system:S1", start: 3, seconds: 2, words: reviewWords(2, prefix: "b")),
+        ReviewTurnSpec(speaker: "system:S2", start: 6, seconds: 2, words: reviewWords(2, prefix: "c")),
+        ReviewTurnSpec(speaker: "system:S1", start: 9, seconds: 2, words: reviewWords(2, prefix: "d")),
+    ])
+    let review = try await reviewOpen(session)
+    let before = review.projection.turns
+    #expect(reviewParagraphs(review) == [["T1", "T2"], ["T3"], ["T4"]])
+
+    // The row's speaker pop-up gives every turn of the row to the speaker chosen, as one change.
+    try await review.assign(ReviewParagraphs.group(before)[0].turnIDs, to: .speaker("system:S2"))
+    #expect(try reviewJournal(session).map(\.action) == [.reassignTurns(turnIDs: ["T1", "T2"], to: "system:S2")])
+    #expect(reviewParagraphs(review) == [["T1", "T2", "T3"], ["T4"]])
+
+    try await review.undo()
+    #expect(review.projection.turns == before)
+    #expect(reviewParagraphs(review) == [["T1", "T2"], ["T3"], ["T4"]])
+}
+
+@Test(.timeLimit(.minutes(1))) @MainActor
+func reviewSplittingInsideAParagraphStartsOneThatUndoJoinsAgain() async throws {
+    let temp = try TemporaryDirectory("review")
+    defer { temp.remove() }
+    let (session, _) = try await reviewCustomSession(in: temp, turns: [
+        ReviewTurnSpec(speaker: "system:S1", start: 0, seconds: 4, words: reviewWords(4, prefix: "a")),
+        ReviewTurnSpec(speaker: "system:S1", start: 5, seconds: 2, words: reviewWords(2, prefix: "b")),
+    ])
+    let review = try await reviewOpen(session)
+    let before = review.projection.turns
+    let paragraph = try #require(ReviewParagraphs.group(before).first)
+    #expect(paragraph.turnIDs == ["T1", "T2"])
+    let words = paragraph.turns.map { review.words(of: $0) }
+
+    // The paragraph's third word is inside T1: T1 is split there, and its second part starts a row joined by T2.
+    let split = ReviewParagraphs.split(paragraph, words: words, at: 2)
+    #expect(split == .splitTurn(turnID: "T1", at: words[0][2].ref))
+    guard case .splitTurn(let turnID, let word)? = split else { return }
+    try await review.split(turnID: turnID, at: word)
+    let rows = ReviewParagraphs.group(review.projection.turns)
+    #expect(rows.count == 2)
+    #expect(rows.first?.turnIDs == ["T1"])
+    #expect(rows.last?.turnIDs.first?.hasPrefix("T1/") == true && rows.last?.turnIDs.last == "T2")
+    #expect(rows.map { $0.turns.reduce(0) { $0 + review.words(of: $1).count } } == [2, 4])
+    // At T2's first word there is no turn to split: only the window's paragraph breaks there.
+    #expect(ReviewParagraphs.split(paragraph, words: words, at: 4) == .breakBefore(turnID: "T2"))
+
+    try await review.undo()
+    #expect(review.projection.turns == before)
+    #expect(reviewParagraphs(review) == [["T1", "T2"]])
+}
