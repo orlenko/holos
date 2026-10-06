@@ -1115,8 +1115,11 @@ transcript files get the summary, key points and action items (Markdown and JSON
 method, files and measurements.
 
 Every action stays: double-click or Return opens (the live transcript, Review, or the
-transcript preview), ⌫ is Delete Meeting…, the buttons below the list, and the row's menu, which
-now has Open, Live Transcript, Review…, Open Transcript, Show in Finder, Save Transcript As…,
+transcript preview), ⌫ is Delete Meeting…, the buttons below the list, and the row's menu. The menu
+starts with the item double-click and Return use, named for what it opens (Open Live Transcript,
+Open Review, or Open Transcript; no Return key equivalent, which would fire from other fields), then Review… and Show Transcript File (the preview)
+unless that first item already does the same (`MeetingOpenPolicy.menuItems`), so no two items do
+one thing. After them come Show in Finder, Save Transcript As…,
 Rename… and Use Generated Title, Summarize (Again), Make Final Transcript Now / Cancel Final Transcript, Recover…, Label
 Speakers, Delete Audio… and Delete Meeting…, each enabled as its button is. Right-clicking a
 row selects it.
