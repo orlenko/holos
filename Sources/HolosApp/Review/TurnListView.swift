@@ -157,7 +157,7 @@ final class TurnTableView: NSTableView {
         guard row >= 0, let cell = view(atColumn: 0, row: row, makeIfNecessary: false) as? TurnCellView,
               cell.bodyText.canRevertFix,
               let word = cell.bodyText.word(at: cell.bodyText.convert(point, from: self)),
-              let fix = word.fix else { return super.menu(for: event) }
+              let fix = word.fix, word.revertible else { return super.menu(for: event) }
         let menu = NSMenu()
         let item = NSMenuItem(title: "Revert to “\(fix.heard)”", action: #selector(revertFix(_:)), keyEquivalent: "")
         item.target = self
@@ -183,6 +183,8 @@ final class TurnTextView: NSTextView {
     private var wordRefs: [WordRef] = []
     /// What the meeting's word fixes changed, per word (nil for a word as recognized).
     private var wordFixes: [TranscriptWordFix?] = []
+    /// Whether each word's fix can be reverted here (`ReviewWord.revertible`).
+    private var wordRevertible: [Bool] = []
     private var playingWord: Int?
     /// Plays from a session time: VoiceOver's "Play from …" actions, one per word (clicks go through the table).
     var onPlay: ((Double) -> Void)?
@@ -264,6 +266,7 @@ final class TurnTextView: NSTextView {
         wordTexts = words.map(\.text)
         wordRefs = words.map(\.ref)
         wordFixes = words.map(\.fix)
+        wordRevertible = words.map(\.revertible)
         // Words the meeting's word fixes changed: a dotted underline, and what was heard there in the tooltip.
         if let storage = textStorage {
             for (index, fix) in wordFixes.enumerated() {
@@ -271,7 +274,7 @@ final class TurnTextView: NSTextView {
                       NSMaxRange(range) <= storage.length else { continue }
                 storage.addAttributes([
                     .underlineStyle: NSUnderlineStyle.single.rawValue | NSUnderlineStyle.patternDot.rawValue,
-                    .toolTip: TurnTextView.fixDescription(fix),
+                    .toolTip: TurnTextView.fixDescription(fix, revertible: wordRevertible[index]),
                 ], range: range)
             }
         }
@@ -280,10 +283,15 @@ final class TurnTextView: NSTextView {
     }
 
     /// "Heard as “cloud”; a word-list term" — for a fixed word's tooltip and VoiceOver.
-    static func fixDescription(_ fix: TranscriptWordFix) -> String {
+    /// With `revertible` false (words edited together, now in two turns), it says how to change them instead.
+    static func fixDescription(_ fix: TranscriptWordFix, revertible: Bool = true) -> String {
         "Heard as “\(fix.heard)”; " + (fix.kind == .term ? "a word-list term Apple Intelligence chose"
             : fix.kind == .reviewEdit ? "you edited it" : "fixed by a learned correction")
+            + (revertible ? "" : " (" + notRevertible + ")")
     }
+
+    static let notRevertible = "edited together and now in two speaker turns, so it can be neither reverted nor "
+        + "edited here; the other words of each turn can"
 
     /// The keyboard and VoiceOver way to a word (VO-⌘-Space lists them): "Play from “budget” (00:12:03)". Made
     /// when asked for, never announced.
@@ -292,19 +300,21 @@ final class TurnTextView: NSTextView {
         var offeredFixes = Set<String>()
         for (index, start) in wordStarts.enumerated() {
             let word = index < wordTexts.count ? wordTexts[index].trimmingCharacters(in: .whitespacesAndNewlines) : ""
-            let fix = index < wordFixes.count ? wordFixes[index].map { ", " + TurnTextView.fixDescription($0) } : nil
+            let revertible = index < wordRevertible.count ? wordRevertible[index] : true
+            let fix = index < wordFixes.count
+                ? wordFixes[index].map { ", " + TurnTextView.fixDescription($0, revertible: revertible) } : nil
             let name = "Play from “\(word)” (\(TimeFormat.clock(start))\(fix ?? ""))"
             actions.append(NSAccessibilityCustomAction(name: name) { [weak self] in
                 guard let onPlay = self?.onPlay else { return false }
                 onPlay(start)
                 return true
             })
-            if canRevertFix, canEditWord?() ?? false {
+            if canRevertFix, revertible, canEditWord?() ?? false {
                 actions.append(NSAccessibilityCustomAction(name: "Edit “\(word)”") { [weak self] in
                     self?.onEditWord?(index) ?? false
                 })
             }
-            if canRevertFix, index < wordRefs.count, index < wordFixes.count, let fixed = wordFixes[index] {
+            if canRevertFix, revertible, index < wordRefs.count, index < wordFixes.count, let fixed = wordFixes[index] {
                 let ref = wordRefs[index]
                 let key = "\(ref.segmentID)\u{1f}\(fixed.first)\u{1f}\(fixed.end)"
                 if offeredFixes.insert(key).inserted {
@@ -364,7 +374,8 @@ final class TurnTextView: NSTextView {
     func reviewWord(at index: Int) -> ReviewWord? {
         guard index >= 0, index < wordRefs.count, index < wordTexts.count, index < wordStarts.count else { return nil }
         return ReviewWord(ref: wordRefs[index], text: wordTexts[index], start: wordStarts[index],
-                          fix: index < wordFixes.count ? wordFixes[index] : nil)
+                          fix: index < wordFixes.count ? wordFixes[index] : nil,
+                          revertible: index < wordRevertible.count ? wordRevertible[index] : true)
     }
 
     /// How many words the text has.

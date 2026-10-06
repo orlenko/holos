@@ -42,9 +42,13 @@ public struct ReviewWord: Sendable, Equatable {
     /// For a word the meeting word-fix stage changed or the person edited here (`TranscriptSegment.fixes`): what the
     /// recognizer wrote there, and what made the change. Nil for every other word.
     public let fix: TranscriptWordFix?
+    /// `fix` can be reverted (and the word edited) here. False for words edited together that a relabel (Find More
+    /// Speakers, Label Speakers on My Microphone) has since put in two turns: their Revert, and any edit of them (it
+    /// takes in the whole mark), would be an edit across turns and refused. The other words of each turn can be edited.
+    public let revertible: Bool
 
-    public init(ref: WordRef, text: String, start: Double, fix: TranscriptWordFix? = nil) {
-        self.ref = ref; self.text = text; self.start = start; self.fix = fix
+    public init(ref: WordRef, text: String, start: Double, fix: TranscriptWordFix? = nil, revertible: Bool = true) {
+        self.ref = ref; self.text = text; self.start = start; self.fix = fix; self.revertible = revertible
     }
 }
 
@@ -457,9 +461,15 @@ public struct ReviewWord: Sendable, Equatable {
             }
             for index in span.first..<span.end {
                 let word = effective[index]
+                let fix = fixes.first { $0.first <= index && index < $0.end }
+                // Words edited together are reverted together, by one edit: only while this turn shows them all.
+                let revertible = fix.map { fix in
+                    fix.kind != .reviewEdit || (fix.first..<fix.end).allSatisfy { word in
+                        turn.spans.contains { $0.segmentID == span.segmentID && $0.first <= word && word < $0.end }
+                    }
+                } ?? true
                 words.append(ReviewWord(ref: WordRef(segmentID: span.segmentID, word: index), text: word.text,
-                                        start: word.start,
-                                        fix: fixes.first { $0.first <= index && index < $0.end }))
+                                        start: word.start, fix: fix, revertible: revertible))
             }
         }
         wordCache[turn.id] = (turn.spans, words)

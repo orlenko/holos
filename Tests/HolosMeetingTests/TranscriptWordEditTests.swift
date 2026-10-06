@@ -214,6 +214,45 @@ private func editRanged(_ text: String, _ ranges: [(Int, Int)], id: String = "S1
     #expect(reverted.base?.segments[0].text == "ask cloud.")
 }
 
+@Test func whatWasHeardKeepsTheRecognizersTextExactlySoARevertRestoresIt() async throws {
+    // No space between the words: "你好世界" timed as "你好" and "世界".
+    let chinese = editTranscript([editRanged("你好世界", [(0, 2), (2, 2)])])
+    let edited = try #require(try TranscriptWordEdit.editing(editRequest(0, 2, "你好地球"), in: chinese, base: nil))
+    #expect(edited.transcript.segments[0].text == "你好地球")
+    #expect(edited.heard == "你好世界")
+    #expect(edited.transcript.segments[0].fixes == [TranscriptWordFix(first: 0, end: 1, heard: "你好世界",
+                                                                      kind: .reviewEdit, heardWords: 2)])
+    let back = try #require(try TranscriptWordEdit.editing(editRequest(0, 1, edited.heard), in: edited.transcript,
+                                                            base: nil))
+    #expect(back.transcript.segments[0].text == "你好世界")
+    #expect(back.transcript.segments[0].fixes?.first?.heardWords == 2, "Still two recognizer words.")
+
+    // Punctuation of its own: "hello — there" timed as "hello" and "there".
+    let dash = editTranscript([editRanged("hello — there", [(0, 5), (8, 5)])])
+    let hi = try #require(try TranscriptWordEdit.editing(editRequest(0, 2, "hi — there"), in: dash, base: nil))
+    #expect(hi.heard == "hello — there")
+    #expect(hi.transcript.segments[0].fixes?.first?.heardWords == 2)
+    let restored = try #require(try TranscriptWordEdit.editing(editRequest(0, 3, hi.heard), in: hi.transcript,
+                                                                base: nil))
+    #expect(restored.transcript.segments[0].text == "hello — there")
+
+    // Through a fixed revision and its base: made again from the new base, the word-fix stage gives the same words.
+    let base = editTranscript([editRanged("hello — there please", [(0, 5), (8, 5), (14, 6)])])
+    let corrections = [Correction(heard: "please", meant: "pls")]
+    let fixed = try await editFixed(base, corrections)
+    #expect(fixed.segments[0].text == "hello — there pls")
+    let both = try #require(try TranscriptWordEdit.editing(editRequest(0, 2, "hi — there"), in: fixed, base: base))
+    #expect(both.heard == "hello — there")
+    #expect(both.base?.segments[0].text == "hi — there please")
+    #expect(both.base?.segments[0].fixes?.first?.heardWords == 2)
+    let again = try await editFixed(try #require(both.base), corrections)
+    #expect(again.segments == both.transcript.segments)
+    let reverted = try #require(try TranscriptWordEdit.editing(editRequest(0, 3, both.heard), in: both.transcript,
+                                                                base: both.base))
+    #expect(reverted.transcript.segments[0].text == "hello — there pls")
+    #expect(reverted.base?.segments[0].text == "hello — there please")
+}
+
 @Test func anUntimedSegmentKeepsEstimatedTiming() throws {
     let untimed = TranscriptSegment(id: "S1", start: 0, end: 3, text: "one two three", track: "system")
     let current = editTranscript([untimed])

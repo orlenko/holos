@@ -7,6 +7,11 @@ import HolosSpeakers
 /// replaced, its new words share that span evenly, and every other word keeps its time; the segment keeps its ID,
 /// start and end, so speaker turns and exports find it as before. Each change is marked (`TranscriptSegment.fixes`)
 /// with what the recognizer wrote there, so the review can show it.
+extension TranscriptWordFix {
+    /// How many recognizer words `heard` stands for: `heardWords` when recorded, else its whitespace-separated tokens.
+    var heardWordCount: Int { heardWords ?? WordFixes.tokens(of: Array(heard.utf16)).count }
+}
+
 public enum WordFixes {
     /// One replacement in a segment's text.
     public struct Replacement: Sendable, Equatable {
@@ -18,9 +23,12 @@ public enum WordFixes {
         /// Provenance to record instead of the text currently in `range`. Live edit chains use this to collapse
         /// A→B→C into one A→C mark even when recovery starts from the intermediate B.
         public var heard: String?
+        /// `TranscriptWordFix.heardWords` for the mark.
+        public var heardWords: Int?
 
-        public init(range: Range<Int>, text: String, kind: TranscriptWordFixKind, heard: String? = nil) {
-            self.range = range; self.text = text; self.kind = kind; self.heard = heard
+        public init(range: Range<Int>, text: String, kind: TranscriptWordFixKind, heard: String? = nil,
+                    heardWords: Int? = nil) {
+            self.range = range; self.text = text; self.kind = kind; self.heard = heard; self.heardWords = heardWords
         }
     }
 
@@ -37,6 +45,8 @@ public enum WordFixes {
             /// What the recognizer wrote there.
             public var heard: String
             public var kind: TranscriptWordFixKind
+            /// `TranscriptWordFix.heardWords`.
+            public var heardWords: Int? = nil
         }
 
         public init(text: String, words: [TimedWord], marks: [Mark] = []) {
@@ -63,7 +73,7 @@ public enum WordFixes {
                                                                textLength: segment.text.utf16.count) else {
                         return nil
                     }
-                    marks.append(Mark(range: range, heard: fix.heard, kind: fix.kind))
+                    marks.append(Mark(range: range, heard: fix.heard, kind: fix.kind, heardWords: fix.heardWords))
                 }
             }
         }
@@ -136,7 +146,7 @@ public enum WordFixes {
             }
             while let mark = existing.first, mark.range.lowerBound < end {
                 marks.append(Working.Mark(range: (mark.range.lowerBound + shift)..<(mark.range.upperBound + shift),
-                                          heard: mark.heard, kind: mark.kind))
+                                          heard: mark.heard, kind: mark.kind, heardWords: mark.heardWords))
                 existing = existing.dropFirst()
             }
             cursor = end
@@ -153,7 +163,7 @@ public enum WordFixes {
             let markStart = start + leading.count
             if !replacement.text.isEmpty {
                 marks.append(Working.Mark(range: markStart..<(markStart + replacement.text.utf16.count), heard: heard,
-                                          kind: replacement.kind))
+                                          kind: replacement.kind, heardWords: replacement.heardWords))
             }
             if timed {
                 let replaced = working.words[region.words]
@@ -193,7 +203,8 @@ public enum WordFixes {
                 (effective[$0].utf16Offset..<(effective[$0].utf16Offset + effective[$0].utf16Length)).overlaps(mark.range)
             }
             guard let first = touched.first, let last = touched.last else { return nil }
-            return TranscriptWordFix(first: first, end: last + 1, heard: mark.heard, kind: mark.kind)
+            return TranscriptWordFix(first: first, end: last + 1, heard: mark.heard, kind: mark.kind,
+                                     heardWords: mark.heardWords)
         }
         fixed.fixes = fixes.isEmpty ? nil : fixes
         return fixed
@@ -232,7 +243,7 @@ public enum WordFixes {
             guard index != targetIndex,
                   let range = characterRange(of: fix, words: currentWords,
                                              textLength: segment.text.utf16.count) else { return nil }
-            return Working.Mark(range: range, heard: fix.heard, kind: fix.kind)
+            return Working.Mark(range: range, heard: fix.heard, kind: fix.kind, heardWords: fix.heardWords)
         }
         working = applying([Replacement(range: currentRange, text: heard, kind: .reviewRevert)], to: working)
 
@@ -292,7 +303,7 @@ public enum WordFixes {
             // in `heard`.
             let count = fix.kind == .reviewRevert || fix.kind == .liveCorrection || fix.kind == .reviewEdit
                 ? fix.end - fix.first
-                : tokens(of: Array(fix.heard.utf16)).count
+                : fix.heardWordCount
             guard count > 0, original + count <= originalWords.count else { return [] }
             result[index] = original..<(original + count)
             current = fix.end

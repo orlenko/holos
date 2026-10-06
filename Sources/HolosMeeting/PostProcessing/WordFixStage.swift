@@ -674,7 +674,7 @@ enum WordFixStage {
             let originalCount: Int
             switch fix.kind {
             case .correction, .term, .liveCorrection, .reviewEdit:
-                originalCount = WordFixes.tokens(of: Array(fix.heard.utf16)).count
+                originalCount = fix.heardWordCount
             case .reviewRevert:
                 originalCount = replacementCount
             default:

@@ -154,13 +154,11 @@ public enum TranscriptWordEdit {
         let shown = string(span)
         guard meant != cleaned(shown), !meant.isEmpty else { return nil }
 
-        // What the recognizer wrote: unmarked words as they are, an automatic fix or an earlier edit its `heard`, and
-        // a Review revert its own words (the recognizer's, restored).
-        func recognized(_ range: Range<Int>) -> String {
-            let text = string(characters(words, range))
-            return WordFixes.tokens(of: Array(text.utf16)).count == range.count
-                ? text : words[range].map(\.text).joined(separator: " ")
-        }
+        // What the recognizer wrote, as the text had it (a Revert writes it back): unmarked words and a Review revert's
+        // words (the recognizer's, restored) as shown, an automatic fix the recognizer's words it replaced, an earlier
+        // edit its `heard`, and between them the text that is there. How many recognizer words that is goes with it
+        // (`heardWords`): text with no space between words ("你好世界") or with punctuation of its own ("—") does not
+        // say.
         // An automatic fix's `heard` is only the phrase it matched: the recognizer's words around it in the base
         // (their punctuation, "cloud." for "Claude.") are what it wrote there.
         let baseSegment = base.flatMap { base in
@@ -168,39 +166,52 @@ public enum TranscriptWordEdit {
         }
         let baseWords = baseSegment.map(WordTiming.effectiveWords(of:))
         let bounds = baseWords.flatMap { baseBounds(fixes: fixes, current: words, base: $0) }
-        func automatic(_ fix: TranscriptWordFix) -> String {
+        func automatic(_ fix: TranscriptWordFix) -> (text: String, words: Int) {
             guard let baseSegment, let baseWords, let bounds, bounds[fix.first] >= 0, bounds[fix.end] >= 0 else {
-                return fix.heard
+                return (fix.heard, fix.heardWordCount)
             }
             let range = extent(of: bounds[fix.first]..<bounds[fix.end], words: baseWords,
                                utf16: Array(baseSegment.text.utf16))
-            let text = String(decoding: Array(baseSegment.text.utf16)[range], as: UTF16.self)
-            return WordFixes.tokens(of: Array(text.utf16)).count == WordFixes.tokens(of: Array(fix.heard.utf16)).count
-                ? text : fix.heard
+            guard !range.isEmpty else { return (fix.heard, fix.heardWordCount) }
+            return (String(decoding: Array(baseSegment.text.utf16)[range], as: UTF16.self),
+                    bounds[fix.end] - bounds[fix.first])
         }
-        var pieces: [String] = []
+        var written = ""
+        var heardWords = 0
+        var previousEnd: Int?
         var word = lower
         while word < upper {
+            let piece: Range<Int>
+            let recognized: (text: String, words: Int)
             if let fix = touched.first(where: { $0.first == word }) {
+                piece = fix.first..<fix.end
                 switch fix.kind {
-                case .reviewRevert: pieces.append(recognized(fix.first..<fix.end))
-                case .correction, .term: pieces.append(automatic(fix))
-                default: pieces.append(fix.heard)
+                case .reviewRevert: recognized = (string(characters(words, piece)), piece.count)
+                case .correction, .term: recognized = automatic(fix)
+                default: recognized = (fix.heard, fix.heardWordCount)
                 }
-                word = fix.end
             } else {
-                let next = touched.map(\.first).filter { $0 > word }.min() ?? upper
-                pieces.append(recognized(word..<next))
-                word = next
+                piece = word..<(touched.map(\.first).filter { $0 > word }.min() ?? upper)
+                recognized = (string(characters(words, piece)), piece.count)
             }
+            let extent = characters(words, piece)
+            if let previousEnd {
+                written += previousEnd <= extent.lowerBound ? string(previousEnd..<extent.lowerBound) : " "
+            }
+            written += recognized.text
+            heardWords += recognized.words
+            previousEnd = extent.upperBound
+            word = piece.upperBound
         }
-        let heard = cleaned(pieces.joined(separator: " "))
-        guard !heard.isEmpty else {
+        let heard = cleaned(written)
+        guard !heard.isEmpty, heardWords > 0 else {
             throw HolosError.invalidInput("That segment's word positions cannot be edited safely.")
         }
+        let recordedWords = heardWords == WordFixes.tokens(of: Array(heard.utf16)).count ? nil : heardWords
 
         working.marks.removeAll { $0.range.overlaps(span) }
-        let edited = WordFixes.applying([.init(range: span, text: meant, kind: .reviewEdit, heard: heard)], to: working)
+        let edited = WordFixes.applying([.init(range: span, text: meant, kind: .reviewEdit, heard: heard,
+                                               heardWords: recordedWords)], to: working)
         guard edited.text != working.text || edited.marks != working.marks else { return nil }
 
         var result = current
@@ -229,7 +240,7 @@ public enum TranscriptWordEdit {
                 throw HolosError.invalidInput("The transcript the words were fixed from cannot be read.")
             }
             let edited = try editingBase(base, segment: segment, words: words, span: lower..<upper, meant: meant,
-                                         heard: heard, now: now)
+                                         heard: heard, heardWords: recordedWords, now: now)
             newBase = edited
             result.fixedFrom = edited.id
             result.liveCorrectedFrom = edited.liveCorrectedFrom
@@ -292,7 +303,8 @@ public enum TranscriptWordEdit {
 
     /// `base` with the same edit, made on the words the current segment's span stands for there.
     private static func editingBase(_ base: Transcript, segment: TranscriptSegment, words: [EffectiveWord],
-                                    span: Range<Int>, meant: String, heard: String, now: Date) throws -> Transcript {
+                                    span: Range<Int>, meant: String, heard: String, heardWords: Int?,
+                                    now: Date) throws -> Transcript {
         guard let index = base.segments.firstIndex(where: { $0.id == segment.id }),
               let bounds = baseBounds(fixes: segment.fixes ?? [], current: words,
                                       base: WordTiming.effectiveWords(of: base.segments[index])) else {
@@ -312,8 +324,8 @@ public enum TranscriptWordEdit {
             throw HolosError.invalidInput("These words cannot be matched to the transcript they were fixed from.")
         }
         working.marks.removeAll { $0.range.overlaps(range) }
-        let edited = WordFixes.applying([.init(range: range, text: meant, kind: .reviewEdit, heard: heard)],
-                                        to: working)
+        let edited = WordFixes.applying([.init(range: range, text: meant, kind: .reviewEdit, heard: heard,
+                                               heardWords: heardWords)], to: working)
         var result = base
         result.id = UUID().uuidString
         result.createdAt = now
@@ -346,7 +358,7 @@ public enum TranscriptWordEdit {
             bounds[fix.first] = baseWord
             let count: Int
             switch fix.kind {
-            case .correction, .term: count = WordFixes.tokens(of: Array(fix.heard.utf16)).count
+            case .correction, .term: count = fix.heardWordCount
             case .reviewRevert, .liveCorrection, .reviewEdit: count = fix.end - fix.first
             default: return nil
             }

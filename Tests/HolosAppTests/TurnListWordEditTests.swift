@@ -182,6 +182,46 @@ struct TurnListWordEditTests {
                     words: { words[$0.id] ?? [] }, resolve: { $0 }, wordMoves: moves)
     }
 
+    /// Words edited together that a relabel put in two turns: no Revert (it would be refused), and the tooltip says
+    /// to edit each turn's words directly. Another fixed word keeps its Revert.
+    @Test func wordsEditedTogetherNowInTwoTurnsOfferNoRevert() throws {
+        let (list, _) = editingList()
+        let split = TranscriptWordFix(first: 1, end: 3, heard: "bet a", kind: .reviewEdit)
+        let fixed = TranscriptWordFix(first: 1, end: 2, heard: "delt", kind: .correction)
+        func word(_ turn: String, _ index: Int, _ text: String, _ start: Double, fix: TranscriptWordFix? = nil,
+                  revertible: Bool = true) -> ReviewWord {
+            ReviewWord(ref: WordRef(segmentID: turn, word: index), text: text, start: start, fix: fix,
+                       revertible: revertible)
+        }
+        update(list, words: [
+            // The edited text ("Beta"): a changed text reloads the row, as the relabel's new turns do.
+            "T1": [word("T1", 0, "alpha", 0), word("T1", 1, "Beta", 1, fix: split, revertible: false)],
+            "T2": [word("T2", 0, "gamma", 3), word("T2", 1, "delta", 4, fix: fixed)],
+            "T3": [word("T3", 0, "epsilon", 6), word("T3", 1, "zeta", 7)],
+        ], moves: [])
+        let text = try TurnListViewTests.cell(list, row: 0).bodyText
+        let names = (text.accessibilityCustomActions() ?? []).map(\.name)
+        #expect(!names.contains("Revert to “bet a”"))
+        #expect(names.contains("Revert to “delt”"))
+        #expect(!names.contains("Edit “Beta”") && names.contains("Edit “alpha”"))
+        #expect(text.reviewWord(at: 1)?.revertible == false, "The context menu offers no Revert either.")
+        #expect(text.reviewWord(at: 3)?.revertible == true)
+        let storage = try #require(text.textStorage)
+        let beta = (storage.string as NSString).range(of: "Beta")
+        let tip = try #require(storage.attribute(.toolTip, at: beta.location, effectiveRange: nil) as? String)
+        #expect(tip.hasSuffix("(" + TurnTextView.notRevertible + ")"))
+        // An edit of them would be refused too (it takes in all the words edited together): no field opens, and the
+        // banner says why. The turn's other words open as usual.
+        var messages: [String?] = []
+        list.onEditMessage = { messages.append($0) }
+        list.editingWords = true
+        list.table.handleWordClick(row: 0, word: 1, through: 1, extend: false)
+        #expect(list.wordEdit == nil && messages.last == TurnListView.editedAcrossTurns)
+        list.table.handleWordClick(row: 0, word: 0, through: 1, extend: false)
+        #expect(list.wordEdit?.words.map(\.text) == ["alpha"], "A selection stops before them.")
+        #expect(messages.last == TurnListView.selectionStopped)
+    }
+
     @Test func theFieldFollowsItsWordsWhenAnEditEarlierInTheSegmentSaves() throws {
         let (list, saved) = editingList()
         var messages: [String?] = []

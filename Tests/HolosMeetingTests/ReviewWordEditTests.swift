@@ -465,6 +465,48 @@ func aRelabelSavedBeforeAnEditsRereadIsAChangeMadeElsewhere() async throws {
 }
 
 @Test(.timeLimit(.minutes(1))) @MainActor
+func wordsEditedTogetherThatARelabelPutInTwoTurnsAreNotRevertible() async throws {
+    let temp = try TemporaryDirectory("review")
+    defer { temp.remove() }
+    let session = try await wordEditSession(in: temp, [
+        WordEditTurn(speaker: "system:S1", start: 0, words: ["ask", "more", "cloud", "now"]),
+    ])
+    let review = try await wordEditOpen(session)
+    try await review.editWords(wordEditRefs(review, "T1", [1, 2]), to: "much Claude")
+    #expect(review.words(of: "T1").map(\.revertible) == [true, true, true, true])
+    #expect(review.words(of: "T1")[1].fix?.kind == .reviewEdit)
+
+    // A relabel (as Find More Speakers makes) puts a turn boundary inside the edited words.
+    let head = try #require(try SessionSpeakerStore.readHead(session: session)?.runID)
+    var run = try SessionSpeakerStore.readRun(id: head, session: session)
+    let segmentID = try #require(run.turns.first?.spans.first?.segmentID)
+    var first = run.turns[0]
+    var second = first
+    first.spans = [WordSpan(segmentID: segmentID, first: 0, end: 2)]
+    first.end = 2
+    second.id = "T2"
+    second.spans = [WordSpan(segmentID: segmentID, first: 2, end: 4)]
+    second.start = 2
+    run.turns = [first, second]
+    run.id = UUID().uuidString
+    try SessionArchive.withSpeakerLock(at: session) {
+        try SessionSpeakerStore.writeRun(run, session: session)
+        try SessionSpeakerStore.writeHead(SpeakerHead(runID: run.id), session: session)
+    }
+    await review.reload()
+    #expect(review.words(of: "T1").map(\.revertible) == [true, false])
+    #expect(review.words(of: "T2").map(\.revertible) == [false, true])
+    #expect(review.words(of: "T1")[1].fix?.kind == .reviewEdit, "Still shown as edited.")
+    // Revert would be refused, as would an edit of them (it takes in the words edited together, in both turns); the
+    // other words of each turn can still be edited.
+    await #expect(throws: HolosError.self) { try await review.revertWordFix(wordEditRefs(review, "T1", [1])[0]) }
+    await #expect(throws: HolosError.self) { try await review.editWords(wordEditRefs(review, "T2", [0]), to: "x") }
+    try await review.editWords(wordEditRefs(review, "T2", [1]), to: "today")
+    #expect(try wordEditCurrent(session).segments[0].text == "ask much Claude today")
+    await review.close()
+}
+
+@Test(.timeLimit(.minutes(1))) @MainActor
 func anEditWhoseLabelsCannotBeRereadCanStillBeUndone() async throws {
     let temp = try TemporaryDirectory("review")
     defer { temp.remove() }

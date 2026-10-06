@@ -58,6 +58,8 @@ extension TurnListView: NSTextFieldDelegate {
     static let selectionStopped = "A selection stays within one segment of one speaker turn for now, so it stops "
         + "there. Edit the rest on its own."
     static let wordsChanged = "The words being edited changed meanwhile; click them again."
+    static let editedAcrossTurns = "These words were edited together and are now in two speaker turns, so they can be "
+        + "neither edited nor reverted here; the other words of each turn can."
 
     /// A word as the transcript shows it (`editText`: with untimed punctuation, without a recognizer's leading space),
     /// else its text without the whitespace around it.
@@ -100,11 +102,17 @@ extension TurnListView: NSTextFieldDelegate {
             commitWordEdit(addTerm: false, advance: .stay)
         }
         extendingWordEdit = false
+        // Words edited together that a relabel put in two turns (`ReviewWord.revertible`): an edit takes in all of
+        // them, across the turns, and would be refused.
+        guard all[anchor].revertible else {
+            onEditMessage?(Self.editedAcrossTurns)
+            return
+        }
         var lower = anchor
         var upper = anchor
         func joins(_ index: Int, _ neighbour: Int) -> Bool {
             turns[index] == turns[anchor] && all[index].ref.segmentID == all[anchor].ref.segmentID
-                && abs(all[index].ref.word - all[neighbour].ref.word) == 1
+                && abs(all[index].ref.word - all[neighbour].ref.word) == 1 && all[index].revertible
         }
         while upper < through, joins(upper + 1, upper) { upper += 1 }
         while lower > through, joins(lower - 1, lower) { lower -= 1 }

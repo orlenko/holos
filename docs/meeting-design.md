@@ -7743,7 +7743,12 @@ shown, Otter-style.
   edit mode on and opens the field; it is offered only while words can be edited (not after
   the transcript changed under the labels), and reports failure when no field opened. An edited word is dotted-underlined like a fixed word
   ("You changed “heard”"), and its Revert ("Revert to “heard”") is another edit back to what
-  the recognizer wrote. ⌘E turns the mode on only while words can be edited: the review is
+  the recognizer wrote. Words edited together that a relabel (Find More Speakers, Label
+  Speakers on My Microphone) has since put in two turns offer no Revert (menu or VoiceOver)
+  and open no field (an edit takes in the whole mark, across the turns, and would be
+  refused; a selection stops before them); their tooltip and the banner say so, and that the
+  other words of each turn can be edited (`ReviewWord.revertible`). Relabels are not stopped
+  from splitting them. ⌘E turns the mode on only while words can be edited: the review is
   editable (no command holds it read-only) and its labels were made on the current transcript
   (after the transcript changed, the banner says to use Label Again first, and no field
   opens); it always turns it off.
@@ -7779,14 +7784,17 @@ shown, Otter-style.
   whose live hint would no longer match), are refused in v1. Whitespace in the new text
   collapses to single spaces; an edit that changes nothing saves nothing.
 - *Revisions* (`TranscriptWordEdit`, pure; `SessionWordEdit`, published). The edit is a fix
-  of a new kind, `reviewEdit`, whose `heard` is what the recognizer wrote over the whole span
-  (an automatic fix it absorbed gives the recognizer's words it stands for in the base, the
+  of a new kind, `reviewEdit`, whose `heard` is what the recognizer wrote over the whole span,
+  exactly as the text had it, so a Revert writes it back unchanged ("你好世界" stays without a
+  space, "hello — there" keeps its dash): unmarked words as shown, the text between pieces as
+  it is, an automatic fix it absorbed the recognizer's words it stands for in the base (the
   punctuation outside the phrase it matched included, so "Claude." edited and reverted is
-  "cloud." again; a Review revert's restored words are
-  the recognizer's), so `heard` stays in the unfixed word space every provenance map uses
-  (`WordFixStage.wordOrigins`, `SpeakerTranscriptRetarget.origins`: like a live correction,
-  its original word count is `tokens(heard)`; `WordFixes.originalWordRanges`: like a live
-  correction, the base already holds it). The edit is made in both layers:
+  "cloud." again), a Review revert's restored words as shown. How many recognizer words that
+  is goes beside it (`TranscriptWordFix.heardWords`, recorded only when it is not the count of
+  whitespace-separated tokens of `heard`), so `heard` stays in the unfixed word space every
+  provenance map uses (`WordFixStage.wordOrigins`, `SpeakerTranscriptRetarget.origins`: its
+  original word count is `heardWords`, else `tokens(heard)`; `WordFixes.originalWordRanges`:
+  like a live correction, the base already holds it). The edit is made in both layers:
   - the unfixed base `B` (`current.fixedFrom`, or the current transcript when it has none)
     gets a new revision `B′` with the edit marked `reviewEdit`, `fixedFrom` nil and
     `liveCorrectedFrom` = `B.liveCorrectedFrom ?? B.id` (the stable word space retargeting
