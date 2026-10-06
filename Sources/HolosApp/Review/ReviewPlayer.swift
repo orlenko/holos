@@ -8,7 +8,8 @@ import os
 /// timestamp, a word), play/pause, seeking, a speed, and a speaker's sample clips one after the other. Playing from a
 /// time goes on through the meeting until paused or the audio ends; only sample clips stop by themselves. The audio
 /// is a `SessionAudioComposition` of the chunk files, built off the main actor when the window opens; nothing is
-/// copied.
+/// copied. When the meeting's echo analysis found echo, the microphone plays only where it has speech of its own
+/// (`ReviewMicVolume`, an audio mix on the player item), so the call is not heard twice.
 @MainActor
 final class ReviewPlayer {
     enum State: Equatable {
@@ -44,7 +45,15 @@ final class ReviewPlayer {
     /// goes away), sometimes after the last periodic time.
     private var statusObservation: NSKeyValueObservation?
     /// Builds the composition; done (and empty) once it delivered, failed or not, so `load` can try again.
-    private let loader = LatestLoad<AVMutableComposition>()
+    private let loader = LatestLoad<SessionAudioComposition.Playback>()
+    /// The composition track of the microphone and the volume it plays at (nil: as recorded).
+    private var micTrackID: CMPersistentTrackID?
+    private(set) var micVolume: ReviewMicVolume?
+    /// Where the system track's audio is in the playback; nil without a system track (the echo is never muted then).
+    private(set) var systemPlaced: [Range<Double>]?
+    /// Bumped by each microphone-volume refresh, each new player, and `invalidate`: a refresh applies its result
+    /// only while it is the newest and its item still plays.
+    private var micRefreshGeneration = 0
     /// Clips still to play after the current one, and where the current one stops.
     private var pendingClips: [ClosedRange<Double>] = []
     private var stopAt: Double?
@@ -64,14 +73,14 @@ final class ReviewPlayer {
         }
         state = .loading
         onChange?()
-        let make: @Sendable () async throws -> sending AVMutableComposition = {
-            try await SessionAudioComposition.make(session: session, manifest: manifest)
+        let make: @Sendable () async throws -> sending SessionAudioComposition.Playback = {
+            try await SessionAudioComposition.makePlayback(session: session, manifest: manifest)
         }
         loader.start(make) { [weak self] result in
             guard let self else { return }
             switch result {
-            case .success(let composition):
-                self.install(composition)
+            case .success(let playback):
+                self.install(playback)
             case .failure(let error):
                 if error is CancellationError { return }
                 Self.log.error("Playback unavailable: \(ProcessSpawner.logCategory(error), privacy: .public)")
@@ -156,15 +165,49 @@ final class ReviewPlayer {
         seeking = false
         isPlaying = false
         duration = 0
+        micTrackID = nil
+        micVolume = nil
+        systemPlaced = nil
+        micRefreshGeneration += 1
         if state == .ready { state = .loading }
+    }
+
+    /// The mix on the player item now (nil: every track as recorded).
+    var audioMix: AVAudioMix? { player?.currentItem?.audioMix }
+
+    /// Plays the microphone at `volume` from now on (nil: as recorded), on the current item without rebuilding it,
+    /// so playing goes on where it is: the echo analysis changed while the window was open.
+    func setMicVolume(_ volume: ReviewMicVolume?) {
+        guard volume != micVolume, let item = player?.currentItem, let micTrackID else { return }
+        micVolume = volume
+        item.audioMix = volume?.audioMix(track: micTrackID)
+    }
+
+    /// Reads the microphone's volume again (`read`, off the main actor) and sets it with `setMicVolume`, unless a
+    /// newer refresh began, or the player was rebuilt or let go, while it read: an older read finishing last never
+    /// puts back a mix a newer one replaced.
+    func refreshMicVolume(_ read: @escaping @Sendable () async -> ReviewMicVolume?) async {
+        micRefreshGeneration += 1
+        let generation = micRefreshGeneration
+        guard let item = player?.currentItem else { return }
+        let volume = await read()
+        guard generation == micRefreshGeneration, player?.currentItem === item else { return }
+        setMicVolume(volume)
     }
 
     // MARK: - Private
 
-    private func install(_ composition: AVMutableComposition) {
+    /// Makes the player for a built playback (internal for tests, which install one without building it).
+    func install(_ playback: SessionAudioComposition.Playback) {
+        let composition = playback.composition
         let item = AVPlayerItem(asset: composition)
         // Faster speeds keep the voices' pitch.
         item.audioTimePitchAlgorithm = .spectral
+        micTrackID = playback.micTrackID
+        micVolume = playback.micVolume
+        systemPlaced = playback.systemPlaced
+        micRefreshGeneration += 1
+        item.audioMix = playback.audioMix
         let player = AVPlayer(playerItem: item)
         player.actionAtItemEnd = .pause
         player.defaultRate = Float(rate)

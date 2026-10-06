@@ -40,7 +40,59 @@ public enum SessionAudioComposition {
     /// - `async` because AVFoundation loads a file's tracks asynchronously (the synchronous accessors are deprecated);
     ///   it runs off the caller's actor and checks for cancellation per chunk.
     public static func make(session: URL, manifest: SessionManifest) async throws -> sending AVMutableComposition {
+        try await build(session: session, manifest: manifest).composition
+    }
+
+    /// The review window's playback: the composition (`make`) and, when the session's echo analysis found echo
+    /// (`ReviewEchoMute.micVolume`), the microphone's volume over it, which keeps the microphone only where it has
+    /// speech of its own. The system track and every other track play as they are.
+    public struct Playback {
+        public let composition: AVMutableComposition
+        /// The composition track of the microphone, when it has audio.
+        public let micTrackID: CMPersistentTrackID?
+        /// Nil: the microphone plays as recorded.
+        public let micVolume: ReviewMicVolume?
+        /// Where the system track's audio is in the playback (session time, in order); nil without a system track.
+        public let systemPlaced: [Range<Double>]?
+
+        public init(composition: AVMutableComposition, micTrackID: CMPersistentTrackID?, micVolume: ReviewMicVolume?,
+                    systemPlaced: [Range<Double>]? = nil) {
+            self.composition = composition; self.micTrackID = micTrackID; self.micVolume = micVolume
+            self.systemPlaced = systemPlaced
+        }
+
+        /// The mix for the player item: nil without a microphone volume.
+        public var audioMix: AVAudioMix? {
+            guard let micTrackID, let micVolume else { return nil }
+            return micVolume.audioMix(track: micTrackID)
+        }
+    }
+
+    /// `make`, with the microphone's volume from the session's current echo mask. The echo is muted only where the
+    /// system track plays: without system audio in the playback (its chunks missing or unplayable) the microphone
+    /// plays as recorded, and where the system track is silent for lack of audio it plays at full volume, since
+    /// nothing else carries the call there.
+    public static func makePlayback(session: URL, manifest: SessionManifest) async throws -> sending Playback {
+        let (composition, tracks, placed) = try await build(session: session, manifest: manifest)
+        let micTrackID = tracks["mic"]
+        let duration = composition.duration.seconds
+        var micVolume: ReviewMicVolume?
+        if micTrackID != nil, tracks["system"] != nil {
+            micVolume = ReviewEchoMute.micVolume(session: session, manifest: manifest, duration: duration,
+                                                 systemPlaced: placed["system"] ?? [])
+        }
+        return Playback(composition: composition, micTrackID: micTrackID, micVolume: micVolume,
+                        systemPlaced: tracks["system"] == nil ? nil : placed["system"] ?? [])
+    }
+
+    /// `make`'s composition, the composition track of each session track that has audio in it, and where on the
+    /// session timeline each track's audio was placed (in time order).
+    private static func build(session: URL, manifest: SessionManifest) async throws
+        -> sending (composition: AVMutableComposition, tracks: [String: CMPersistentTrackID],
+                    placed: [String: [Range<Double>]]) {
         let composition = AVMutableComposition()
+        var trackIDs: [String: CMPersistentTrackID] = [:]
+        var placedRanges: [String: [Range<Double>]] = [:]
         var placed = 0
         for (track, chunks) in order(manifest) {
             guard let compositionTrack = composition.addMutableTrack(
@@ -76,18 +128,20 @@ public enum SessionAudioComposition {
                     compositionTrack.insertEmptyTimeRange(CMTimeRange(start: end, end: at))
                 }
                 end = at + range.duration
+                if at.seconds < end.seconds { placedRanges[track, default: []].append(at.seconds..<end.seconds) }
                 placement.placed(piece)
                 inserted += 1
             }
             if inserted == 0 {
                 composition.removeTrack(compositionTrack)
             } else {
+                trackIDs[track] = compositionTrack.trackID
                 placed += inserted
                 log.info("Playback track \(track, privacy: .public): \(inserted, privacy: .public) of \(chunks.count, privacy: .public) chunks")
             }
         }
         guard placed > 0 else { throw HolosError.unavailable("This meeting has no saved audio to play.") }
-        return composition
+        return (composition, trackIDs, placedRanges)
     }
 
     /// Where a track's chunks go, one chunk at a time. Pure: a chunk is placed from what its file actually holds
@@ -227,7 +281,7 @@ public enum SessionAudioComposition {
         return CMTime(seconds: Double(frames) / rate, preferredTimescale: timescale)
     }
 
-    private static func sessionTime(_ seconds: Double) -> CMTime {
+    static func sessionTime(_ seconds: Double) -> CMTime {
         CMTime(value: CMTimeValue((max(0, seconds) * Double(timescale)).rounded()), timescale: timescale)
     }
 }

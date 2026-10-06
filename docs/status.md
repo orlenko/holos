@@ -210,8 +210,10 @@ thumbnail timeline, and a larger local-model benchmark are follow-ups.
   meeting whose analysis is missing (labelled before this version, or a pass that failed) gets
   it from the next relabel or Recover, or at once with
   `voiceislocal session echo-analyze <id>`; nothing stored besides `echo/` and the transcript
-  files changes. Muting the echo in review playback and joining fragments into paragraphs are
-  not done yet. Nothing warns when a call plays on the laptop speakers: the `echoRisk`
+  files changes. Review playback mutes the echo: with an echo verdict, the microphone plays
+  only where it has speech of its own (25 ms fades), and as recorded otherwise
+  (headphones, no analysis); the review shows a speaker's consecutive turns as paragraphs.
+  Nothing warns when a call plays on the laptop speakers: the `echoRisk`
   warning, its output-route check, and the start panel's orange line were removed with
   the one meeting mode (below); the menu ignores an `echoRisk` left in `status.json` by an
   older recorder.
