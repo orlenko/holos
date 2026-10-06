@@ -73,6 +73,19 @@ private func isWord(_ word: String) -> Bool { dictionary.contains(word.lowercase
         == [Correction(heard: "github", meant: "GitHub")])
 }
 
+@Test func aTypedTermLosesOnlyTheSentencesPunctuation() {
+    #expect(WordList.typedTerm("C#") == "C#")
+    #expect(WordList.typedTerm("C++,") == "C++")
+    #expect(WordList.typedTerm(".NET") == ".NET")
+    #expect(WordList.typedTerm("Node.js") == "Node.js")
+    #expect(WordList.typedTerm("GitHub,") == "GitHub")
+    #expect(WordList.typedTerm("Claude.") == "Claude")
+    #expect(WordList.typedTerm("(Jean-Luc!)") == "Jean-Luc")
+    #expect(WordList.typedTerm("e.g.") == "e.g.", "A dot is the word's when it has others.")
+    #expect(WordList.typedTerm(" New York, ") == "New York")
+    #expect(WordList.typedTerm("“…”") == nil)
+}
+
 @Test func aNameOrTermIsOfferedForTheWordList() {
     // Not a dictionary word.
     #expect(TranscriptEditLearning.term(heard: "cloud", meant: "Claude", isDictionaryWord: isWord) == "Claude")

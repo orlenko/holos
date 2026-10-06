@@ -101,7 +101,7 @@ enum ReviewLearning {
                 // A deletion's `heard` holds the deleted words too: beside an edit, it would teach dropping them.
                 if fix.deleted == true { return nil }
                 // A damaged fix (its words out of the segment's) has nothing that can be read.
-                guard fix.first >= 0, fix.first < fix.end, fix.end <= words.count else { return nil }
+                guard TranscriptWordEdit.isSound(fix, wordCount: words.count) else { return nil }
                 if fix.kind == .correction || fix.kind == .term, let baseSegment, let baseWords, let bounds,
                    fix.end < bounds.count,
                    bounds[fix.first] >= 0, bounds[fix.end] >= 0 {
@@ -126,8 +126,8 @@ enum ReviewLearning {
             // learning it would make dictation drop them everywhere ("um cloud" → "Claude"). It is left out before
             // edits side by side are joined, so an edit beside it is learned on its own.
             let fixes = (segment.fixes ?? []).filter { fix in
-                fix.kind == .reviewEdit && fix.deleted != true && fix.first >= 0 && fix.first < fix.end
-                    && fix.end <= words.count && turn(holding: fix.first..<fix.end) != nil
+                fix.kind == .reviewEdit && fix.deleted != true && TranscriptWordEdit.isSound(fix, wordCount: words.count)
+                    && turn(holding: fix.first..<fix.end) != nil
             }.sorted { $0.first < $1.first }
             // Edits side by side in one turn ("bull" → "pull", then "requested" → "request") are one span: learned
             // apart, each would take the other's corrected word as what was heard beside it ("pull requested"), and
@@ -181,7 +181,7 @@ enum ReviewLearning {
         if let fix = (segment.fixes ?? []).first(where: { $0.first <= index && index < $0.end }),
            fix.kind != .reviewRevert {
             // A damaged fix (its words out of the segment's) gives no context.
-            guard fix.first >= 0, fix.end <= words.count, (fix.first..<fix.end).allSatisfy(inTurn),
+            guard TranscriptWordEdit.isSound(fix, wordCount: words.count), (fix.first..<fix.end).allSatisfy(inTurn),
                   let whole = TranscriptWordEdit.shownText(of: segment, first: fix.first, end: fix.end),
                   let written = recognized(fix, whole) else {
                 return nil

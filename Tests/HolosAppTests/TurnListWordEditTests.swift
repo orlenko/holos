@@ -149,6 +149,20 @@ struct TurnListWordEditTests {
         #expect(term?.term == "Claude" && term?.heardAs == "cloud")
     }
 
+    /// A term keeps the punctuation that belongs to it, and loses the sentence's, the same way when ⌥Return adds it as
+    /// when it is offered.
+    @Test func theTermKeepsItsOwnPunctuation() {
+        let cases = [("C#", "C#"), ("C++", "C++"), (".NET", ".NET"), ("Node.js", "Node.js"), ("GitHub,", "GitHub"),
+                     ("Claude.", "Claude"), ("“C#,”", "C#")]
+        for (typed, expected) in cases {
+            let edit = ReviewWordEdit(heard: "see sharp", meant: typed, typed: typed, typedHeard: "see sharp")
+            for add in [true, false] {
+                let term = ReviewWindow.wordListTerm(after: edit, add: add, isDictionaryWord: { _ in false })
+                #expect(term?.term == expected, "\(typed), add: \(add)")
+            }
+        }
+    }
+
     @Test func tabSavesAndEditsTheNextWordAcrossRowsAndShiftTabGoesBack() {
         let (list, saved) = editingList()
         list.editingWords = true

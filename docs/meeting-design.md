@@ -7783,8 +7783,10 @@ shown, Otter-style.
   refreshed after it. ⌘E turns the mode on only while words can be edited
   (`ReviewSession.canEditWords`): the review is editable (no command holds it read-only), its
   labels were made on the current transcript (after the transcript changed, the banner says
-  to use Label Again first), and every speaker change can be read (a damaged or newer line in
-  the journal: each edit carries them all over, so it would be refused). The Edit Words
+  to use Label Again first), every speaker change can be read (a damaged or newer line in
+  the journal: each edit carries them all over, so it would be refused), and the revision the
+  transcript was fixed from (`fixedFrom`) can be read (every edit and revert reads what the
+  recognizer wrote there; checked once per labels read, `baseUnreadable`). The Edit Words
   button's tooltip, and the banner in edit mode, say which; no field opens. It always turns
   it off.
 - *The words' text.* An edit replaces, and the field starts with, the text the words show
@@ -7947,8 +7949,11 @@ shown, Otter-style.
     its `heard` only if its shown text is just its words, else no context. A fix the edit's
     turn holds only part of gives no context on that side (corrected text never stands for
     what was heard: "as New" beside "newark" made "New York" would match nothing), nor does a
-    damaged one (its words out of the segment's; it is never read, and an edit taking in a
-    damaged mark is refused). The
+    damaged one (its words out of the segment's, `TranscriptWordEdit.isSound`, the one check
+    every walk over a fix's words makes first; it is never read). A segment with a damaged
+    mark shows no marks and none of its words is edited or reverted: the refusal comes before
+    a field opens (`wordEditRefusal`, with the reason in the banner), before any range is
+    walked. The
     turns are the labels on the transcript as it is then: labels the window could not reread
     after an edit are read again at close; when that fails, or the labels read are still on
     another transcript (a speaker head owed, or the transcript changed under them), nothing
@@ -7975,8 +7980,9 @@ shown, Otter-style.
     lessons are *confirmed*. The app takes the list again afterwards;
   - `review-learned.json` holds two states. *Confirmed*: the meeting's own (a close put them
     in the list); one deleted or changed in Corrections stays so, and a later edit of the
-    meeting may replace it. *Pending*: being written; at the next close one the list holds is
-    confirmed, one it does not hold is dropped and taught again as new. So a failure between
+    meeting may replace it. *Pending*: being written; at the next close (also one with
+    nothing to teach, the edit since undone) one the list holds is confirmed, one it does not
+    hold is dropped, taught again only when an edit still teaches it. So a failure between
     the writes is repaired, never leaves a correction no record owns, nor one wrongly owned;
   - nothing is learned from a deletion, a punctuation-only change, or a case-only change
     (decided on the edited words alone: a context word's own fix never makes "Hello" →
@@ -7986,7 +7992,10 @@ shown, Otter-style.
   - when the new text looks like a name or term (a word that is not a dictionary word, has a
     capital inside it, or a content word the edit capitalized), the window offers "Add
     “Claude” to the word list, often heard as “cloud”?" (Add / Not Now); ⌥Return adds it
-    without asking. The term is what was typed, never words the edit took in around it
+    without asking. Both keep the punctuation that belongs to the term and drop the
+    sentence's (`WordList.typedTerm`): "C#", "C++", ".NET", "Node.js" stay; "GitHub," and
+    "Claude." lose the comma and period (a final period only when the rest of the word is
+    plain, so "e.g." keeps it). The term is what was typed, never words the edit took in around it
     ("Yorkshire", not "New Yorkshire", when only "York" of an automatic "New York" was
     edited), and "often heard as" is given only when the recognizer's text for exactly those
     words is known. "Often heard as" is the recognizer's text unless it is the term itself in

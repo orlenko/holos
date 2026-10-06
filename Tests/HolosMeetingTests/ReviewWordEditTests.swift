@@ -21,9 +21,11 @@ private struct WordEditTurn {
 /// With `apple`, every word but a segment's first carries the space before it in its range and text (" cloud"), as
 /// Apple's speech recognition reports words.
 private func wordEditSession(in temp: TemporaryDirectory, _ specs: [WordEditTurn],
-                             apple: Bool = false) async throws -> URL {
-    let segments = specs.map { spec -> TranscriptSegment in
+                             apple: Bool = false, fixes: [TranscriptWordFix]? = nil) async throws -> URL {
+    let segments = specs.enumerated().map { index, spec -> TranscriptSegment in
         var segment = SessionFixtures.segment(spec.words, track: "system", start: spec.start, wordSeconds: 1)
+        // `fixes`: the first segment's marks.
+        if index == 0 { segment.fixes = fixes }
         if apple {
             segment.words = segment.words.enumerated().map { index, word in
                 guard index > 0 else { return word }
@@ -914,6 +916,35 @@ func learningAgainAtTheNextCloseChangesNothingAndASecondOccurrenceIsAdded() asyn
     }
 }
 
+@Test(.timeLimit(.minutes(1))) @MainActor
+func aSegmentWithADamagedMarkIsRefusedBeforeAnyFieldOpens() async throws {
+    let temp = try TemporaryDirectory("review")
+    defer { temp.remove() }
+    // A damaged but decodable transcript: a mark from word 0 to Int.max. Walking it (taking it in, listing its words)
+    // would never end.
+    let damaged = TranscriptWordFix(first: 0, end: Int.max, heard: "as", kind: .correction, heardWords: 1)
+    let session = try await wordEditSession(in: temp, [
+        WordEditTurn(speaker: "system:S1", start: 0, words: ["ask", "cloud", "now"]),
+        WordEditTurn(speaker: "system:S2", start: 5, words: ["we", "knew", "here"]),
+    ], fixes: [damaged])
+    let review = try await wordEditOpen(session)
+    // Its words are shown without marks (no Revert offered); every check refuses them up front, with the reason.
+    let words = review.words(of: "T1")
+    #expect(words.map(\.text) == ["ask", "cloud", "now"] && words.allSatisfy { $0.fix == nil })
+    let reason = TranscriptWordEdit.damagedMarks.localizedDescription
+    #expect(review.wordEditRefusal([words[1].ref]) == reason)
+    #expect(review.wordEditRefusal(words.map(\.ref)) == reason)
+    let edit = await #expect(throws: HolosError.self) { try await review.editWords([words[1].ref], to: "Claude") }
+    #expect(edit?.localizedDescription == reason)
+    let revert = await #expect(throws: HolosError.self) { try await review.revertWordFix(words[0].ref) }
+    #expect(revert?.localizedDescription == reason)
+    #expect(try wordEditCurrent(session).segments[0].text == "ask cloud now", "Nothing was written.")
+    // Another segment's words are edited as usual.
+    try await review.editWords([review.words(of: "T2")[1].ref], to: "new")
+    #expect(try wordEditCurrent(session).segments[1].text == "we new here")
+    await review.close()
+}
+
 @Test func aFixTheTurnHoldsOnlyPartOfGivesNoContext() {
     // "as newark": "newark" fixed automatically to "New York", then "as" edited to "ask"; the labels split the fix,
     // "as New" in one turn and "York" in the next.
@@ -1350,6 +1381,35 @@ private func wordEditFixedCloudSession(_ temp: TemporaryDirectory,
 }
 
 @Test(.timeLimit(.minutes(1))) @MainActor
+func wordsAreReadOnlyWhileTheRevisionTheTranscriptWasFixedFromCannotBeRead() async throws {
+    let temp = try TemporaryDirectory("review")
+    defer { temp.remove() }
+    let session = try await wordEditFixedCloudSession(temp)
+    let fixed = try wordEditCurrent(session)
+    let baseID = try #require(fixed.fixedFrom)
+    let baseFile = SessionPaths.transcript(baseID, in: session)
+    let kept = temp.url.appendingPathComponent("base.json")
+    try FileManager.default.moveItem(at: baseFile, to: kept)
+    let review = try await wordEditOpen(session)
+    // Known before anything is typed: no field opens, no Revert is offered, and the banner says why.
+    #expect(review.isEditable && !review.canEditWords)
+    #expect(review.wordEditingBlocked == ReviewSession.baseUnreadable.localizedDescription)
+    let edit = await #expect(throws: HolosError.self) {
+        try await review.editWords(wordEditRefs(review, "T1", [0]), to: "Ask")
+    }
+    #expect(edit?.localizedDescription == ReviewSession.baseUnreadable.localizedDescription)
+    await #expect(throws: HolosError.self) { try await review.revertWordFix(wordEditRefs(review, "T1", [2])[0]) }
+    #expect(try wordEditCurrent(session).id == fixed.id, "Nothing was written.")
+    // Back, and the labels read again: words can be edited.
+    try FileManager.default.moveItem(at: kept, to: baseFile)
+    await review.reload()
+    #expect(review.canEditWords)
+    try await review.editWords(wordEditRefs(review, "T1", [0]), to: "Ask")
+    #expect(try wordEditCurrent(session).segments[0].text == "Ask more Claude now")
+    await review.close()
+}
+
+@Test(.timeLimit(.minutes(1))) @MainActor
 func aWordCorrectedWhileRecordingIsKnownNotEditableBeforeAFieldOpens() async throws {
     let temp = try TemporaryDirectory("review")
     defer { temp.remove() }
@@ -1623,6 +1683,38 @@ func aCloseInterruptedBetweenItsWritesIsRepairedByTheNext() async throws {
         learner.attach(to: reopened)
         await reopened.close()
         #expect(learner.value("cloud") == nil)
+    }
+}
+
+@Test(.timeLimit(.minutes(1))) @MainActor
+func aPendingLessonIsSettledByACloseThatTeachesNothing() async throws {
+    let claude = Correction(heard: "cloud", meant: "Claude")
+    for written in [true, false] {
+        let temp = try TemporaryDirectory("review")
+        defer { temp.remove() }
+        let session = try await wordEditCloudSession(temp)
+        // A close recorded the lesson as pending, then stopped: after writing the list (`written`), or before. The
+        // edit was then undone, so this close has nothing to teach.
+        try ReviewLearning.writeRecord(ReviewLearning.Taught(version: 1, corrections: [], pending: [claude]),
+                                       session: session)
+        let review = try await wordEditOpen(session)
+        try await review.editWords(wordEditRefs(review, "T1", [0]), to: "Claude")
+        try await review.undo()
+        let learner = WordEditLearner(CorrectionList(entries: written ? [claude] : []))
+        learner.attach(to: review)
+        await review.close()
+        // Settled all the same: the meeting's where the list holds it, else dropped; the list is not touched.
+        #expect(try ReviewLearning.record(session: session)
+            == ReviewLearning.Taught(version: 1, corrections: written ? [claude] : []))
+        #expect(learner.value("cloud") == (written ? "Claude" : nil))
+        // Deleted in Corrections, then the same edit again: taught again only where it was dropped (a current edit
+        // teaches it); once confirmed, the deletion stands.
+        learner.list = CorrectionList()
+        let reopened = try await wordEditOpen(session)
+        try await reopened.editWords(wordEditRefs(reopened, "T1", [0]), to: "Claude")
+        learner.attach(to: reopened)
+        await reopened.close()
+        #expect(learner.value("cloud") == (written ? nil : "Claude"))
     }
 }
 

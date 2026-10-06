@@ -36,9 +36,9 @@ public enum TranscriptEditLearning {
     /// `WordList.maximumLength` characters. Nil otherwise, and for a deletion.
     public static func term(heard: String, meant: String, isDictionaryWord: (String) -> Bool,
                             isContentWord: (String) -> Bool = { SpokenWords.isContent($0) }) -> String? {
-        let tokens = meant.split(whereSeparator: \.isWhitespace).map {
-            String($0).trimmingCharacters(in: .punctuationCharacters.union(.symbols))
-        }.filter { !$0.isEmpty }
+        // Each word as the word list keeps it ("C#", ".NET"; "GitHub," → "GitHub"), as ⌥Return adds it.
+        let tokens = meant.split(whereSeparator: \.isWhitespace).map { WordList.termWord(String($0)) }
+            .filter { !$0.isEmpty }
         guard (1...4).contains(tokens.count), tokens.contains(where: { $0.contains(where: \.isLetter) }) else {
             return nil
         }

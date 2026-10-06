@@ -100,8 +100,10 @@ public enum TranscriptWordEdit {
             throw HolosError.invalidInput("Those words are no longer in the transcript; reload and try again.")
         }
         guard (request.first..<request.end).allSatisfy(editable) else { throw notShown }
+        // A damaged mark (empty, backwards, or past the segment's words) is never walked: the segment is not edited.
+        if hasDamagedMark(segment) { throw damagedMarks }
         guard var working = WordFixes.Working(segment, preservingExistingFixes: true) else {
-            throw HolosError.invalidInput("That segment's word positions cannot be edited safely.")
+            throw damagedMarks
         }
         let fixes = segment.fixes ?? []
         var lower = request.first
@@ -145,11 +147,6 @@ public enum TranscriptWordEdit {
         guard touched.allSatisfy({ [.correction, .term, .reviewRevert, .reviewEdit].contains($0.kind) }) else {
             throw HolosError.invalidInput("These words were changed by a newer Voice is Local and cannot be edited here.")
         }
-        // A damaged mark (empty, backwards, or past the segment's words) is never read: the words it touches are not
-        // edited.
-        guard touched.allSatisfy({ $0.first >= 0 && $0.first < $0.end && $0.end <= words.count }) else {
-            throw HolosError.invalidInput("That segment's word positions cannot be edited safely.")
-        }
 
         let utf16 = Array(segment.text.utf16)
         func characters(_ words: [EffectiveWord], _ range: Range<Int>) -> Range<Int> {
@@ -160,7 +157,7 @@ public enum TranscriptWordEdit {
         let selected = characters(words, request.first..<request.end)
         guard span.lowerBound >= 0, span.upperBound <= utf16.count, span.lowerBound <= selected.lowerBound,
               selected.upperBound <= span.upperBound else {
-            throw HolosError.invalidInput("That segment's word positions cannot be edited safely.")
+            throw damagedMarks
         }
         let meant = cleaned(string(span.lowerBound..<selected.lowerBound) + (deletion ? " " : text)
             + string(selected.upperBound..<span.upperBound))
@@ -218,7 +215,7 @@ public enum TranscriptWordEdit {
         }
         let heard = cleaned(written)
         guard !heard.isEmpty, heardWords > 0 else {
-            throw HolosError.invalidInput("That segment's word positions cannot be edited safely.")
+            throw damagedMarks
         }
 
         // A deletion teaches nothing (its `heard` holds the deleted words with the neighbour they merged into), nor
@@ -312,6 +309,23 @@ public enum TranscriptWordEdit {
         if copy.fixedFrom == nil, copy.liveCorrectedFrom == nil { copy.liveCorrectedFrom = previous.id }
         return copy
     }
+
+    /// Whether `fix` covers words a segment of `wordCount` effective words has (0 ≤ first < end ≤ wordCount). The one
+    /// check every walk over a fix's words makes first: a damaged but decodable transcript can hold any numbers.
+    public static func isSound(_ fix: TranscriptWordFix, wordCount: Int) -> Bool {
+        fix.first >= 0 && fix.first < fix.end && fix.end <= wordCount
+    }
+
+    /// Whether `segment` has a fix mark that is not sound (`isSound`): none of its words is edited, and none of its fixes
+    /// reverted (`damagedMarks`), since every edit takes in the marks it touches.
+    public static func hasDamagedMark(_ segment: TranscriptSegment) -> Bool {
+        guard let fixes = segment.fixes, !fixes.isEmpty else { return false }
+        let count = WordTiming.effectiveWords(of: segment).count
+        return fixes.contains { !isSound($0, wordCount: count) }
+    }
+
+    /// An edit refused because its segment's word positions or fix marks are damaged.
+    public static let damagedMarks = HolosError.invalidInput("That segment's word positions cannot be edited safely.")
 
     /// `segment` has an automatic fix saved by an earlier version (without `heardWords`) that cannot be counted against
     /// its unfixed `base`: every edit in it is refused (`olderFix`).

@@ -302,7 +302,7 @@ public enum WordFixes {
 
     static func characterRange(of fix: TranscriptWordFix, words: [EffectiveWord], textLength: Int)
         -> Range<Int>? {
-        guard fix.first >= 0, fix.first < fix.end, fix.end <= words.count else { return nil }
+        guard TranscriptWordEdit.isSound(fix, wordCount: words.count) else { return nil }
         let first = words[fix.first]
         let last = words[fix.end - 1]
         let lower = first.utf16Offset
@@ -316,7 +316,7 @@ public enum WordFixes {
                                       segment: TranscriptSegment) -> Range<Int>? {
         guard fixes.indices.contains(target) else { return nil }
         let fix = fixes[target]
-        guard fix.first >= 0, fix.first < fix.end, fix.end <= currentWords.count else { return nil }
+        guard TranscriptWordEdit.isSound(fix, wordCount: currentWords.count) else { return nil }
         let words = WordTiming.effectiveWords(of: segment)
         let ranges = originalWordRanges(fixes: fixes, currentWords: currentWords, originalWords: words)
         guard ranges.indices.contains(target), let wordRange = ranges[target],

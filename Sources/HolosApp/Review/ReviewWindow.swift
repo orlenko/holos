@@ -650,8 +650,8 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, Clo
         // button's tooltip says so before edit mode is entered, and in edit mode (no field opens) the banner does.
         editButton.toolTip = review.wordEditingBlocked ?? Self.editWordsHelp
         turnList.canEditWords = review.canEditWords
-        let blockedMessages = [ReviewSession.labelAgainFirst, ReviewSession.speakerChangesUnreadable]
-            .map(\.localizedDescription)
+        let blockedMessages = [ReviewSession.labelAgainFirst, ReviewSession.speakerChangesUnreadable,
+                               ReviewSession.baseUnreadable].map(\.localizedDescription)
         if turnList.editingWords, let blocked = review.wordEditingBlocked {
             editBanner.show(message: blocked)
         } else if turnList.editingWords, blockedMessages.contains(editBanner.label.stringValue) {
@@ -1109,7 +1109,7 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, Clo
         let typed = edit.typed ?? edit.meant
         let heard = edit.typed == nil ? edit.heard : edit.typedHeard
         let term = add
-            ? WordList.cleaned(typed.trimmingCharacters(in: .punctuationCharacters.union(.whitespaces)))
+            ? WordList.typedTerm(typed)
             : TranscriptEditLearning.term(heard: heard ?? "", meant: typed, isDictionaryWord: isDictionaryWord)
         guard let term, !term.isEmpty else { return nil }
         return (term, heard.flatMap { TranscriptEditLearning.heardAs(heard: $0, term: term) })
