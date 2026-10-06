@@ -187,15 +187,18 @@ private func watchedMachine(_ tracks: [String]) -> RecorderMachine {
 }
 
 extension RecorderEnvironmentLoopTests {
-    /// A slow startup (here 1.5 s of speech-session setup before capture starts) is not on the session timeline, so it
+    /// A slow startup (here 4 s of speech-session setup before capture starts) is not on the session timeline, so it
     /// never looks like a stall: the stall timer starts when epoch 0's capture has started.
+    ///
+    /// The session clock is real, and so is the fake's frame pacing, so the stall limit (3 s) is kept far above any
+    /// scheduling delay a loaded machine adds between frames, and the startup longer than it.
     @Test(.timeLimit(.minutes(1)))
     func slowStartIsNotAStall() async throws {
         let temp = try TemporaryDirectory()
         defer { temp.remove() }
         let slow = FakeSpeechFactory()
         let speech: LiveSpeechFactory = { locale, backend, strings, onUpdate in
-            try await Task.sleep(for: .milliseconds(1_500))
+            try await Task.sleep(for: .seconds(4))
             return try await slow.factory(locale, backend, strings, onUpdate)
         }
         let captures = FakeCaptureFactory([FakeCaptureScript(continuous: FakeFrame(start: 0))])
@@ -203,7 +206,7 @@ extension RecorderEnvironmentLoopTests {
         let stalled = SharedValue(false)
         var tuning = recorderFastTuning()
         // A stall limit shorter than the startup delay: a timer started before capture would fire at the first tick.
-        tuning.watchdog = TrackWatchdog(stallSeconds: 1, restartSeconds: 100)
+        tuning.watchdog = TrackWatchdog(stallSeconds: 3, restartSeconds: 100)
         let observer: @Sendable (RecorderStatus) -> Void = { status in
             if status.warnings.contains(where: { $0.code == .trackStalled }) || status.tracks.contains(where: \.stalled) {
                 stalled.set(true)

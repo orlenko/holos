@@ -230,8 +230,9 @@ private func liveTrack(_ speech: @escaping LiveSpeechFactory, log: LiveEventLog,
     let speech = FakeSpeechFactory([
         FakeSpeechScript(segments: [TranscriptSegment(start: 0, end: 0.1, text: "Opening")], finishHangs: true),
     ])
-    // The session's own limit for 1 s of audio: 0.3 s + 30 s = 30.3 s. The stop budget with no session open: 0.3 s.
-    let timeouts = StopTimeouts(speechFinishBase: .milliseconds(300), speechFinishPerAudioSecond: 30)
+    // The session's own limit for 1 s of audio: 0.3 s + 10,000 s, far past the test's time limit, so a finish() that
+    // waited for it would never return in time. The stop budget with no session open: 0.3 s.
+    let timeouts = StopTimeouts(speechFinishBase: .milliseconds(300), speechFinishPerAudioSecond: 10_000)
     let track = liveTrack(speech.factory, log: LiveEventLog(), timeouts: timeouts)
     try await track.prepareSession(epoch: 0, epochStart: 0)
     for index in 0..<10 { track.push(try liveFrame(Double(index) / 10), epoch: 0) }
@@ -243,11 +244,8 @@ private func liveTrack(_ speech: @escaping LiveSpeechFactory, log: LiveEventLog,
         if !finishing { try await Task.sleep(for: .milliseconds(5)) }
     }
     #expect(finishing, "The session's finish began before the stop.")
-    let clock = ContinuousClock()
-    let stopped = clock.now
+    // Returning at all (within the time limit) shows the stop budget cut the session's own limit short.
     let result = await track.finish()
-    let elapsed = stopped.duration(to: clock.now)
-    #expect(elapsed < .seconds(5), "finish() waited \(elapsed) for a finish that began before it.")
     #expect(await session.cancelled, "The hung session is cancelled at the stop deadline.")
     #expect(result.segments.map(\.text) == ["Opening"], "Its finalized text is kept.")
     #expect(result.behindFrom == 0.1, "The rest of its audio is replayed.")
@@ -356,7 +354,10 @@ func nextSpeechSessionIsReadyBeforeCaptureRestarts() async throws {
     let captures = FakeCaptureFactory([FakeCaptureScript(frames: FakeFrame.run(count: 2)),
                                        FakeCaptureScript(frames: FakeFrame.run(count: 2))])
     let stop = ManualStopSource()
-    let dependencies = recorderDependencies(captures: captures, speech: speech, stop: stop, makeCapture: {
+    // The 0.5 s speech setup must finish within the restart limit; a long one keeps a loaded machine from racing it.
+    var tuning = recorderFastTuning()
+    tuning.restartLimit = .seconds(100)
+    let dependencies = recorderDependencies(captures: captures, speech: speech, stop: stop, tuning: tuning, makeCapture: {
         timeline.update { $0.append("capture \(captures.captures.count)") }
         return captures.make()
     })

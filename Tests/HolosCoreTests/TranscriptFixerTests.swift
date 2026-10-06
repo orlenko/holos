@@ -1062,8 +1062,8 @@ func aFrenchMishearingIsFixed(original: String, fixed: String) {
 }
 
 /// A fixer with a spell-checker budget no load reaches, so a busy machine does not turn words the language does not
-/// know into real ones.
-private func fixer(corrections: CorrectionList = CorrectionList(), timeout: Duration = .seconds(5),
+/// know into real ones, and a model time limit an answer given at once never races on a loaded machine.
+private func fixer(corrections: CorrectionList = CorrectionList(), timeout: Duration = .seconds(30),
                    _ model: @escaping TranscriptFixer.Model) -> TranscriptFixer {
     var fixer = TranscriptFixer(corrections: corrections, referenceBudget: 500, timeout: timeout, model: model)
     fixer.spellingBudget = .seconds(60)

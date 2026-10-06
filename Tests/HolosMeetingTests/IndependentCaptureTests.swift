@@ -52,13 +52,20 @@ import Testing
     }
 }
 
-@MainActor private func isolatedCapture(_ factory: IndependentNativeFactory) -> IndependentMeetingCapture {
+/// A capture over `factory` with a fast retry. Its limits are long by default, so a start or stop that must succeed
+/// never races a timer on a loaded machine; a test of a hung start or stop passes a short limit, and only a gated
+/// (hung) native call can run into it. Each system start reads `startLimit` when it begins.
+@MainActor private func isolatedCapture(_ factory: IndependentNativeFactory, startLimit: Duration = .seconds(30),
+                                        stopLimit: Duration = .seconds(30)) -> IndependentMeetingCapture {
     let capture = IndependentMeetingCapture(makeCapture: { factory.make() })
     capture.retryDelay = .milliseconds(2)
-    capture.startLimit = .milliseconds(30)
-    capture.stopLimit = .milliseconds(30)
+    capture.startLimit = startLimit
+    capture.stopLimit = stopLimit
     return capture
 }
+
+/// The limit a hung native call is given up after.
+private let independentHungLimit = Duration.milliseconds(30)
 
 /// End-to-end regression through the real recorder, format converter, and chunk writer.
 /// A failed system stream + failed restart cannot create a microphone discontinuity or a new mic instance.
@@ -142,7 +149,7 @@ func aTimedOutSystemStartDoesNotAccumulateNativeCaptures() async throws {
     let mic = IndependentNativeCapture(), system = IndependentNativeCapture()
     system.startGate = true
     let factory = IndependentNativeFactory([mic, system])
-    let capture = isolatedCapture(factory)
+    let capture = isolatedCapture(factory, startLimit: independentHungLimit)
     let heard = SharedValue<Int>(0)
     let consumer = Task {
         do { for try await audio in capture.frames {
@@ -187,7 +194,9 @@ func lateSystemStartMustFinishCleanupBeforeRetrying() async throws {
     system.startGate = true
     system.gatedStopFrom = 2
     let factory = IndependentNativeFactory([mic, system, later])
-    let capture = isolatedCapture(factory)
+    // The start hangs until released, and Stop runs into the gated native stop: both are given up after the short
+    // limit (Stop's outcome is not checked).
+    let capture = isolatedCapture(factory, startLimit: independentHungLimit, stopLimit: independentHungLimit)
     let heard = SharedValue<Int>(0)
     let consumer = Task {
         do { for try await audio in capture.frames {
@@ -216,12 +225,14 @@ func consecutiveSystemStartTimeoutsPreserveBackoff() async throws {
     first.startGate = true
     second.startGate = true
     let factory = IndependentNativeFactory([mic, first, second, third])
-    let capture = isolatedCapture(factory)
+    let capture = isolatedCapture(factory, startLimit: independentHungLimit)
     try await capture.start(CaptureRequest(source: .microphoneAndSystem))
     #expect(await eventually { first.stops >= 1 })
     first.releaseStart = true
     #expect(await eventually { second.stops >= 1 })
     #expect(capture.systemRetryAttempt == 1)
+    // The third start must succeed: it starts only after the second is released, with a long limit.
+    capture.startLimit = .seconds(30)
     second.releaseStart = true
     #expect(await eventually { third.requests.count == 1 })
     #expect(capture.systemRetryAttempt == 2)

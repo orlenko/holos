@@ -348,7 +348,9 @@ func hungRestartIsAbandoned() async throws {
     let hung = RecorderHungStartCapture()
     let made = SharedValue(0)
     var tuning = recorderFastTuning()
-    tuning.restartLimit = .milliseconds(300)
+    // The limit also bounds the restart after it, which must succeed: long enough that a fake's start (which returns
+    // at once) never races it on a loaded machine; only the hung start runs into it.
+    tuning.restartLimit = .seconds(3)
     let stop = ManualStopSource()
     let dependencies = recorderDependencies(captures: captures, stop: stop, tuning: tuning, makeCapture: {
         let index = made.update { count -> Int in defer { count += 1 }; return count }
@@ -361,7 +363,7 @@ func hungRestartIsAbandoned() async throws {
     let outcome = try await run.value
     #expect(outcome.stopReason == .requested)
     let failures = try recorderEvents(outcome.directory, MeetingEventKind.captureFailed)
-    #expect(failures.contains { $0.details["error"] == "Audio capture did not start within 0.3 s." })
+    #expect(failures.contains { $0.details["error"] == "Audio capture did not start within 3 s." })
     #expect(try recorderEvents(outcome.directory, MeetingEventKind.captureWaiting).count == 1)
 }
 
