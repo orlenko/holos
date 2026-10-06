@@ -50,11 +50,12 @@ public enum EchoFilter {
         let minimumRun = max(1, parameters.echoMinRunWords)
         let mic = words(transcript.segments, track: microphoneTrack)
         let system = words(transcript.segments, track: systemTrack)
-        // Words the person edited in Review were read and confirmed: never echo, and never part of an echo run, so
-        // an edit never hides the words around it either (correcting "write" to "right" beside the call's "that sounds
-        // right" leaves the microphone's words as they were judged before).
+        // Words the person edited in Review were read and confirmed: never echo, and they break an echo run as a word
+        // the call did not say would (they stay in the sequence, matching nothing), so an edit never hides the words
+        // around it either: correcting "write" to "right" beside the call's "that sounds right", or "rarely" to
+        // "really" in "I rarely think so" beside its "I think so", leaves the microphone's words as judged before.
         let edited = reviewEditedWords(in: transcript)
-        let micMatchable = mic.indices.filter { mic[$0].isMatchable && !edited.contains(mic[$0].ref) }
+        let micMatchable = mic.indices.filter { mic[$0].isMatchable }
         let systemMatchable = system.indices.filter { system[$0].isMatchable }
         guard !micMatchable.isEmpty, !systemMatchable.isEmpty else { return [] }
 
@@ -70,7 +71,7 @@ public enum EchoFilter {
         // For each matchable microphone word: the system positions it may echo.
         let candidates: [[Int]] = micMatchable.map { index in
             let word = mic[index]
-            guard let list = byText[word.key] else { return [] }
+            guard !edited.contains(word.ref), let list = byText[word.key] else { return [] }
             let low = word.start - window - timeEpsilon
             let high = word.start + min(window, echoLeadToleranceSeconds) + timeEpsilon
             var first = 0

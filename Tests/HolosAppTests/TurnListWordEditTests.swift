@@ -185,12 +185,28 @@ struct TurnListWordEditTests {
         // Saved: "alpha" merged into "beta", which starts where "alpha" did and is word 0 now.
         var words = TurnListViewTests.words
         words["T1"] = [TurnListViewTests.word("T1", 0, "beta", 0)]
-        update(list, words: words, moves: [ReviewWordMove(segmentID: "T1", replaced: 0..<2, replacement: 0..<1)])
+        update(list, words: words, moves: [ReviewWordMove(segmentID: "T1", replaced: 0..<1, replacement: 0..<0)])
         #expect(list.wordEdit?.words.first?.ref == WordRef(segmentID: "T1", word: 0))
         #expect(list.editField.stringValue == "Beta", "What was typed stays.")
         press(list, #selector(NSResponder.insertNewline(_:)))
         #expect(seen == [0, 1], "The second edit names the words as they are after the first was saved.")
         #expect(saved().isEmpty)
+    }
+
+    @Test func aFieldOnAWordAnEditReplacedClosesKeepingWhatWasTyped() {
+        let (list, saved) = editingList()
+        var messages: [String?] = []
+        list.onEditMessage = { messages.append($0) }
+        list.editingWords = true
+        list.table.handleWordClick(row: 0, word: 1, through: 1, extend: false)
+        list.editField.stringValue = "Beta."
+        // An edit of "alpha beta" into "alpha beta gamma" saved meanwhile: word 1 is still "beta", but it was
+        // replaced, so the field is not moved onto whatever is there now.
+        var words = TurnListViewTests.words
+        words["T1"] = ["alpha", "beta", "gamma"].enumerated().map { TurnListViewTests.word("T1", $0, $1, Double($0)) }
+        update(list, words: words, moves: [ReviewWordMove(segmentID: "T1", replaced: 0..<2, replacement: 0..<3)])
+        #expect(list.wordEdit == nil && saved().isEmpty)
+        #expect(messages.last == TurnListView.wordsChanged + " What you typed: “Beta.”.")
     }
 
     @Test func theFieldFollowsItsWordsWhenTheTextRewraps() throws {

@@ -7744,12 +7744,15 @@ shown, Otter-style.
   command holds it read-only); it always turns it off.
 - *The open field* follows its words. Tab opens the next word's field before the save of the
   last one ends; every saved edit and undo records how it moved its segment's words
-  (`ReviewWordMove`: the replaced word indices and their replacement, the rest shifted), the
-  field maps its words through the moves since it opened (a word merged by a deletion, whose
-  time changed, is found all the same), and so does a queued edit when it runs. A word no move
-  touched must still read the same. When the words cannot be found, the field closes and the
-  banner shows what was typed. After the column width or the row heights change, the field is
-  put back over its words.
+  (`ReviewWordMove`: the selected word indices and what replaced them, the rest shifted; the
+  words a span took in around the selection, the rest of a fix or a deletion's neighbour, keep
+  their own place), the field maps its words through the moves since it opened (a word merged
+  by a deletion, whose time changed, is found all the same), and so does a queued edit when it
+  runs. The words must still read the same, and a word a move replaced is never followed onto
+  another word: the field closes and the banner shows what was typed (a queued edit is refused
+  saying it). A queued word edit waits while the labels could not be reread after an earlier
+  edit, and runs after the reread. After the column width or the row heights change, the field
+  is put back over its words.
 - *What an edit is.* `ReviewSession.editWords(refs, to: text)`: shown words (stored
   `WordRef`s, so a word the echo mask hides is never named, §5.11) of one segment, in a row,
   replaced by any text: more or fewer words, or nothing (a deletion). The refs must be
@@ -7808,8 +7811,10 @@ shown, Otter-style.
   taught is taken back as soon as the undo is committed.
 - *Echo.* Words under a `reviewEdit` mark are never echo (`EchoFilter.reviewEditedWords`):
   the acoustic mask never hides them, and the text filter of a new run (Find More Speakers,
-  Label Again) neither drops them nor counts them in a run, so correcting "write" to "right"
-  beside the call's "that sounds right" hides nothing. The person read and confirmed them.
+  Label Again) neither drops them nor lets a run pass through them (they stay in the sequence,
+  matching nothing), so correcting "write" to "right" beside the call's "that sounds right", or
+  "rarely" to "really" in "I rarely think so" beside its "I think so", hides nothing. The person
+  read and confirmed them.
 - *Learning* (`TranscriptEditLearning`, HolosCore; the app's learner):
   - every edit is diffed as dictation's Learn does (`CorrectionList.learn`, the recognizer's
     words against the new text, one shown word on each side as context so a lone dictionary
@@ -7825,7 +7830,10 @@ shown, Otter-style.
     without asking. "Often heard as" is the recognizer's text unless it is the term itself in
     another case;
   - undoing the edit takes back the corrections it introduced and restores any it displaced
-    (`CorrectionList.reconcileLearned`); a word-list term added stays.
+    (`CorrectionList.reconcileLearned`); a word-list term added stays. A Revert of the edited
+    words (any edit back to what the recognizer wrote) gives back what this window's earlier
+    edits of them taught, and undoing the Revert learns it again. An edit made in an earlier
+    review is not remembered, so its correction stays until removed in Corrections.
 - *Not in v1.* Editing while the meeting records (Review opens after it), spanning segments
   or turns, deleting a whole segment, editing over a live correction, redo, and showing the
   edit before it is saved (the field closes and the row updates once saved).

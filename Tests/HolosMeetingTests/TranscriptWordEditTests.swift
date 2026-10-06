@@ -127,6 +127,24 @@ private func editRequest(_ first: Int, _ end: Int, _ text: String, segment: Stri
     #expect(twice.base?.segments[0].text == "we Newark here")
 }
 
+@Test func aMoveReplacesOnlyTheSelectedWordsNotTheRestOfTheFixTheyTookIn() async throws {
+    let base = editTranscript([editSegment(["we", "knew", "work", "here"])])
+    let fixed = try await editFixed(base, [Correction(heard: "knew work", meant: "New York")])
+    // "New" of "New York" becomes "Greater New": "York" keeps its own place.
+    let result = try #require(try TranscriptWordEdit.editing(editRequest(1, 2, "Greater New"), in: fixed, base: base))
+    #expect(result.transcript.segments[0].text == "we Greater New York here")
+    #expect(result.move == ReviewWordMove(segmentID: "S1", replaced: 1..<2, replacement: 1..<3))
+    let york = result.move.map(WordRef(segmentID: "S1", word: 2))
+    #expect(york.ref.word == 3 && !york.replaced, "A field on “York” follows it to “York”, never onto “New”.")
+    #expect(result.move.map(WordRef(segmentID: "S1", word: 1)).replaced)
+    // A deletion: the neighbour it merged into keeps its place, not replaced.
+    let plain = editTranscript([editSegment(["I", "um", "think"])])
+    let deleted = try #require(try TranscriptWordEdit.editing(editRequest(1, 2, ""), in: plain, base: nil))
+    #expect(deleted.move == ReviewWordMove(segmentID: "S1", replaced: 1..<2, replacement: 1..<1))
+    let think = deleted.move.map(WordRef(segmentID: "S1", word: 2))
+    #expect(think.ref.word == 1 && !think.replaced)
+}
+
 @Test func anUntimedSegmentKeepsEstimatedTiming() throws {
     let untimed = TranscriptSegment(id: "S1", start: 0, end: 3, text: "one two three", track: "system")
     let current = editTranscript([untimed])
@@ -269,6 +287,16 @@ private let editEchoMask: AcousticEchoMask = {
     unedited.segments[1] = segment("M", ["that", "sounds", "right"], track: "mic", start: 10.3)
     #expect(EchoFilter.echoSpans(transcript: unedited, parameters: parameters)
         == [WordSpan(segmentID: "M", first: 0, end: 3)], "The same words as recognized are the call's echo.")
+    // An edited word breaks a run as a word the call did not say: its neighbours do not join into one around it.
+    let rarely = Transcript(id: "T", createdAt: Date(timeIntervalSince1970: 0), source: "fixture", locale: "en-CA",
+                            backend: .speech, segments: [segment("S", ["I", "think", "so"], track: "system", start: 10),
+                                                         segment("M", ["I", "rarely", "think", "so"], track: "mic",
+                                                                 start: 10.3)])
+    #expect(EchoFilter.echoSpans(transcript: rarely, parameters: parameters).isEmpty)
+    let really = try #require(try TranscriptWordEdit.editing(editRequest(1, 2, "really", segment: "M"), in: rarely,
+                                                              base: nil)).transcript
+    #expect(EchoFilter.echoSpans(transcript: really, parameters: parameters).isEmpty,
+            "“I think so” around the edited word is not one echo run.")
     let tracks = [SpeakerRunBuilder.TrackInput(track: "mic", policy: .channel(speakerID: "mic:me", displayName: "Me")),
                   SpeakerRunBuilder.TrackInput(track: "system", policy: .channel(speakerID: "system:all",
                                                                                  displayName: "Others"))]

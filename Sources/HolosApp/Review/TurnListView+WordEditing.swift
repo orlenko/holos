@@ -163,8 +163,8 @@ extension TurnListView: NSTextFieldDelegate {
 
     /// After the rows were updated: the open field follows its words through the review's word moves (an edit saved
     /// earlier in the segment, say the one Tab left, moves their stored indices; a deletion merged into one of them
-    /// changes its time), and a word no move touched must still read the same. When they cannot be found the field
-    /// closes, and what was typed in it is shown in the banner rather than lost.
+    /// changes its time), and must still read the same. A word an edit replaced, and words that cannot be found,
+    /// close the field, and what was typed in it is shown in the banner rather than lost.
     func followWordEdit() {
         guard let target = wordEdit else { return }
         guard editingWords, editable, let row = paragraphs.firstIndex(where: { $0.id == target.paragraphID }) else {
@@ -175,10 +175,11 @@ extension TurnListView: NSTextFieldDelegate {
         let followed = ReviewSession.follow(target.words.map(\.ref), through: wordMoves.dropFirst(target.movesSeen))
         var refs: [WordRef] = []
         for ref in followed.refs where refs.last != ref { refs.append(ref) }
-        guard let first = refs.first, let start = all.firstIndex(where: { $0.ref == first }),
+        // A word an edit replaced is never followed onto another word: the field closes, keeping what was typed.
+        guard !followed.replaced, let first = refs.first, let start = all.firstIndex(where: { $0.ref == first }),
               start + refs.count <= all.count,
               zip(refs, all[start...]).allSatisfy({ $0 == $1.ref }),
-              followed.replaced || zip(target.words, all[start...]).allSatisfy({ $0.text == $1.text }) else {
+              zip(target.words, all[start...]).allSatisfy({ $0.text == $1.text }) else {
             loseWordEdit()
             return
         }

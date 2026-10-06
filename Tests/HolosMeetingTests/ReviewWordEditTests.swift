@@ -261,6 +261,76 @@ func anEditWhoseLabelsCannotBeRereadCanStillBeUndoneAndItsUndoUnlearns() async t
 }
 
 @Test(.timeLimit(.minutes(1))) @MainActor
+func aQueuedEditWaitsForTheRereadAnEarlierEditsFailureNeeds() async throws {
+    let temp = try TemporaryDirectory("review")
+    defer { temp.remove() }
+    let session = try await wordEditSession(in: temp, [
+        WordEditTurn(speaker: "system:S1", start: 0, words: ["I", "um", "think", "so"]),
+    ])
+    let review = try await wordEditOpen(session)
+    let (stream, release) = AsyncStream<Void>.makeStream()
+    let entered = SharedValue(0)
+    review.beforeEdit = {
+        entered.update { $0 += 1 }
+        for await _ in stream {}
+    }
+    struct Unreadable: Error {}
+    var failures = 1
+    review.beforeWordChangeReread = {
+        guard failures > 0 else { return }
+        failures -= 1
+        throw Unreadable()
+    }
+    let words = review.words(of: "T1")
+    let first = Task { try await review.editWords([words[1].ref], to: "") }
+    #expect(await eventually { entered.value == 1 })
+    let second = Task { try await review.editWords([words[3].ref], to: "so.") }
+    #expect(await eventually { review.queuedOperations == 2 })
+    release.finish()
+    // The first is saved, its labels cannot be reread: the second waits, still queued, rather than being refused.
+    await #expect(throws: HolosError.self) { _ = try await first.value }
+    #expect(review.reloadProblem != nil)
+    #expect(review.queuedOperations == 1)
+    await review.reload()
+    _ = try await second.value
+    #expect(try wordEditCurrent(session).segments[0].text == "I think so.")
+    #expect(review.reloadProblem == nil && review.queuedOperations == 0)
+    await review.close()
+}
+
+@Test(.timeLimit(.minutes(1))) @MainActor
+func revertingAnEditGivesBackWhatItTaughtAndItsUndoLearnsItAgain() async throws {
+    let temp = try TemporaryDirectory("review")
+    defer { temp.remove() }
+    let session = try await wordEditSession(in: temp, [
+        WordEditTurn(speaker: "system:S1", start: 0, words: ["ask", "cloud", "now"]),
+    ])
+    let review = try await wordEditOpen(session)
+    var learned: [ReviewWordEdit] = []
+    var unlearned: [ReviewLearnedCorrections] = []
+    review.learnCorrections = { edit in
+        learned.append(edit)
+        guard edit.heard != edit.meant else { return nil }
+        return ReviewLearnedCorrections(owned: [Correction(heard: edit.heard, meant: edit.meant + "#\(learned.count)")])
+    }
+    review.unlearnCorrections = { unlearned.append($0) }
+    try await review.editWords(wordEditRefs(review, "T1", [1]), to: "Claude")
+    let taught = ReviewLearnedCorrections(owned: [Correction(heard: "cloud", meant: "Claude#1")])
+    // "Revert to “cloud”": the correction the edit taught is given back.
+    try await review.revertWordFix(wordEditRefs(review, "T1", [1])[0])
+    #expect(try wordEditCurrent(session).segments[0].text == "ask cloud now")
+    #expect(unlearned == [taught])
+    // Undoing the Revert learns it again; undoing the edit then gives that back.
+    try await review.undo()
+    #expect(try wordEditCurrent(session).segments[0].text == "ask Claude now")
+    #expect(learned.last == ReviewWordEdit(heard: "cloud", meant: "Claude", before: "ask", after: "now"))
+    try await review.undo()
+    #expect(unlearned.count == 2 && unlearned.last?.owned.first?.meant.hasPrefix("Claude#") == true)
+    #expect(unlearned.last != taught, "The correction learned again is the one taken back.")
+    await review.close()
+}
+
+@Test(.timeLimit(.minutes(1))) @MainActor
 func anEditAndItsUndoKeepTheTurnsForParagraphBreaks() async throws {
     let temp = try TemporaryDirectory("review")
     defer { temp.remove() }

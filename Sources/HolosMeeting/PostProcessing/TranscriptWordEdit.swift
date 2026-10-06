@@ -183,9 +183,21 @@ public enum TranscriptWordEdit {
         result.id = UUID().uuidString
         result.createdAt = now
         result.segments[index] = WordFixes.finished(edited, segment: segment)
+        // How the words moved. The words the span took in around the selection (the rest of a fix, a deletion's
+        // neighbour) are written again as they were, so only the selected words count as replaced; the others keep
+        // their own place (in "New York", "York" stays "York" when "New" becomes "Greater New").
         let newCount = WordTiming.effectiveWords(of: result.segments[index]).count - (words.count - (upper - lower))
-        let move = ReviewWordMove(segmentID: segment.id, replaced: lower..<upper,
-                                  replacement: lower..<(lower + max(1, newCount)))
+        let prefix = request.first - lower
+        let suffix = upper - request.end
+        let selectedCount = newCount - prefix - suffix
+        let keptAround = selectedCount >= 0
+            && WordFixes.tokens(of: Array(string(span.lowerBound..<selected.lowerBound).utf16)).count == prefix
+            && WordFixes.tokens(of: Array(string(selected.upperBound..<span.upperBound).utf16)).count == suffix
+        let move = keptAround
+            ? ReviewWordMove(segmentID: segment.id, replaced: request.first..<request.end,
+                             replacement: request.first..<(request.first + selectedCount))
+            : ReviewWordMove(segmentID: segment.id, replaced: lower..<upper,
+                             replacement: lower..<(lower + max(0, newCount)))
         var newBase: Transcript?
         if let baseID = current.fixedFrom {
             guard let base, base.id == baseID else {
