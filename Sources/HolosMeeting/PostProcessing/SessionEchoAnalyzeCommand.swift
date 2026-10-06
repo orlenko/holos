@@ -32,6 +32,9 @@ public enum SessionEchoAnalyzeCommand {
         public var hiddenWords: Int?
         /// One paragraph for the terminal; names no people and quotes no transcript text.
         public var summary: String
+        /// 0, or 3 when the analysis was saved but the transcript files or a voice sample could not be brought in
+        /// step (the summary says which; as Recover's warnings).
+        public var exitCode: Int32 = 0
     }
 
     /// Runs under the session's processing lease. Throws, with nothing changed, when the meeting is still recording,
@@ -55,13 +58,14 @@ public enum SessionEchoAnalyzeCommand {
         }
         if outcome.verdict != nil, let profiles, let makeExtractor = voiceSamples.extractor {
             do {
-                try await VoiceProfileService.refreshSamples(session: session, extractor: makeExtractor(session),
-                                                             store: profiles)
+                try await VoiceProfileService.refreshSamplesIfLearned(session: session, makeExtractor: makeExtractor,
+                                                                      store: profiles)
             } catch is CancellationError {
                 throw CancellationError()
             } catch {
                 outcome.summary += " A voice sample learned from this meeting could not be updated ("
                     + "\(error.localizedDescription)); run the command again."
+                outcome.exitCode = 3
             }
         }
         return outcome
@@ -98,30 +102,39 @@ public enum SessionEchoAnalyzeCommand {
         outcome.analysisSeconds = stored.record.seconds
         let found = EchoAnalysisStage.message(stored.record)
 
-        // What the labels now show: the same run and edits, with and without the echo hidden.
-        let snapshot = try SpeakerSessionSnapshot.load(session: session)
-        guard let run = snapshot.run, let view = snapshot.projection else {
-            outcome.summary = found + " The meeting has no speaker labels yet; once its speakers are labelled, they "
-                + "are shown without the echo."
+        // A meeting recorded or imported without a transcript has nothing more to show or write; the analysis is
+        // saved all the same.
+        let noLabels = found + " The meeting has no speaker labels yet; once its speakers are labelled, they are "
+            + "shown without the echo."
+        guard try SessionArchive.currentTranscriptID(at: session) != nil else {
+            outcome.summary = noLabels
             return outcome
         }
-        let plain = SpeakerProjection.make(run: run, transcript: snapshot.transcript, edits: snapshot.journal.edits,
-                                           recognition: nil, profileNames: [:])
-        outcome.microphoneTurnsBefore = plain.turns.filter { $0.track == EchoFilter.microphoneTrack }.count
-        outcome.microphoneTurnsAfter = view.turns.filter { $0.track == EchoFilter.microphoneTrack }.count
-        outcome.hiddenWords = words(plain) - words(view)
+        // What the labels now show: the same run and edits, with and without the echo hidden. Without labels (none
+        // made yet, as after post-processing without speaker models) the summary says so.
+        let snapshot = try SpeakerSessionSnapshot.load(session: session)
+        if let run = snapshot.run, let view = snapshot.projection {
+            let plain = SpeakerProjection.make(run: run, transcript: snapshot.transcript,
+                                               edits: snapshot.journal.edits, recognition: nil, profileNames: [:])
+            outcome.microphoneTurnsBefore = plain.turns.filter { $0.track == EchoFilter.microphoneTrack }.count
+            outcome.microphoneTurnsAfter = view.turns.filter { $0.track == EchoFilter.microphoneTrack }.count
+            outcome.hiddenWords = words(plain) - words(view)
+            outcome.summary = found + " The labels show \(outcome.microphoneTurnsBefore ?? 0) → "
+                + "\(outcome.microphoneTurnsAfter ?? 0) microphone turns, \(outcome.hiddenWords ?? 0) microphone "
+                + "words hidden as echo."
+        } else {
+            outcome.summary = noLabels
+        }
 
+        // The transcript files, with or without labels, record the mask they were written with (§5.11).
         progress("Writing transcript files…")
-        var exportsNote = ""
         do {
             try SessionExports.regenerate(session: session, people: profiles)
         } catch {
-            exportsNote = " The transcript files could not be rewritten (\(error.localizedDescription)); run the "
-                + "command again, or use Update Transcript Files in the app."
+            outcome.summary += " The transcript files could not be rewritten (\(error.localizedDescription)); run "
+                + "the command again, or use Update Transcript Files in the app."
+            outcome.exitCode = 3
         }
-        outcome.summary = found + " The labels show \(outcome.microphoneTurnsBefore ?? 0) → "
-            + "\(outcome.microphoneTurnsAfter ?? 0) microphone turns, \(outcome.hiddenWords ?? 0) microphone words "
-            + "hidden as echo." + exportsNote
         return outcome
     }
 

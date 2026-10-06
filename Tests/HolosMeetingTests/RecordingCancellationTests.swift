@@ -13,12 +13,15 @@ import Testing
 /// Waits for conditions under load: far longer than any of them takes, well inside the tests' time limits.
 private let patience: Duration = .seconds(60)
 
-/// How long the fakes below hang when nothing cancels them, and the speech time limit of the tests that use them:
-/// longer than `promptly`, so a run that waited for either instead of cancelling fails that bound.
-private let hang: Duration = .seconds(120)
+/// How long the fakes below hang when nothing cancels them: well inside the tests' 3-minute time limits, so a run
+/// that does not cancel them still ends (the time limit cannot end the unstructured task the run is in), and the
+/// checks after it report the regression (a session never cancelled, a hook that never saw the cancel), not a stalled
+/// test process.
+private let hang: Duration = .seconds(90)
 
-/// A cancelled run returns within this, however loaded the machine (10x what an idle one needs).
-private let promptly: Duration = .seconds(50)
+/// The run's own time limits in these tests (speech finish, capture stop, lease retry): never reached, so only the
+/// cancellation ends the waits they bound (no wall-clock bound needed).
+private let neverReached: Duration = .seconds(86_400)
 
 /// A speech session whose `finish()` ignores task cancellation: it returns only after `cancel()` (then throws
 /// `CancellationError`), or after `limit` with no segments.
@@ -172,7 +175,7 @@ func cancelWhileCaptureStopsPublishesNoTranscript() async throws {
             gated.set(capture)
             return capture
         }, makeSpeech: FakeSpeechFactory().factory, stop: stop, reporter: CollectingReporter(), postProcess: nil,
-        timeouts: StopTimeouts(captureStop: hang))
+        timeouts: StopTimeouts(captureStop: neverReached))
     let run = Task { try await RecordingWorkflow.run(.testing(root: temp.url), dependencies: dependencies) }
     #expect(await eventually(timeout: patience) { (captures.captures.first?.consumedFrames ?? 0) >= 3 })
     stop.requestStop()
@@ -227,7 +230,8 @@ func cancelledRestartStopsTheRunAsCancelled() async throws {
 // MARK: - While transcribing
 
 /// Cancelled while the live speech session finishes, with a session that ignores task cancellation. Neither the
-/// session nor the speech time limit ends the wait before `promptly`: only the cancellation can.
+/// session (whose own fallback would leave it uncancelled) nor the speech time limit ends the wait: only the
+/// cancellation can.
 @Test(.timeLimit(.minutes(3))) @MainActor
 func cancelWhileLiveSpeechFinishesCancelsTheSession() async throws {
     let temp = try TemporaryDirectory()
@@ -243,16 +247,14 @@ func cancelWhileLiveSpeechFinishesCancelsTheSession() async throws {
     let stop = ManualStopSource()
     let dependencies = RecordingDependencies(makeCapture: { captures.make() }, makeSpeech: speech, stop: stop,
                                              reporter: CollectingReporter(), postProcess: nil,
-                                             timeouts: StopTimeouts(speechFinishBase: hang))
+                                             timeouts: StopTimeouts(speechFinishBase: neverReached))
     let run = Task { try await RecordingWorkflow.run(.testing(root: temp.url), dependencies: dependencies) }
     #expect(await eventually(timeout: patience) { (captures.captures.first?.consumedFrames ?? 0) >= 3 })
     stop.requestStop()
     #expect(await eventually(timeout: patience) { finishStarted.value })
-    let clock = ContinuousClock()
-    let cancelledAt = clock.now
     run.cancel()
     await expectCancellation(run)
-    #expect(cancelledAt.duration(to: clock.now) < promptly, "The cancel must not wait for the speech session.")
+    // Cancelled, not ended by its own fallback: the cancel did not wait for the speech session.
     #expect(sessionCancelled.value)
     #expect(calls.value == 1, "A cancelled run replays nothing.")
     let directory = try #require(sessionFolders(in: temp.url).first)
@@ -262,7 +264,8 @@ func cancelWhileLiveSpeechFinishesCancelsTheSession() async throws {
 }
 
 /// Cancelled while replaying saved audio (live speech was unavailable), with a session that ignores task
-/// cancellation. Neither the session nor the speech time limit ends the wait before `promptly`.
+/// cancellation. Neither the session (whose own fallback would leave it uncancelled) nor the speech time limit ends the
+/// wait: only the cancellation can.
 @Test(.timeLimit(.minutes(3))) @MainActor
 func cancelWhileReplayFinishesCancelsTheSession() async throws {
     let temp = try TemporaryDirectory()
@@ -279,16 +282,14 @@ func cancelWhileReplayFinishesCancelsTheSession() async throws {
     let stop = ManualStopSource()
     let dependencies = RecordingDependencies(makeCapture: { captures.make() }, makeSpeech: speech, stop: stop,
                                              reporter: CollectingReporter(), postProcess: nil,
-                                             timeouts: StopTimeouts(speechFinishBase: hang))
+                                             timeouts: StopTimeouts(speechFinishBase: neverReached))
     let run = Task { try await RecordingWorkflow.run(.testing(root: temp.url), dependencies: dependencies) }
     #expect(await eventually(timeout: patience) { (captures.captures.first?.consumedFrames ?? 0) >= 3 })
     stop.requestStop()
     #expect(await eventually(timeout: patience) { finishStarted.value })
-    let clock = ContinuousClock()
-    let cancelledAt = clock.now
     run.cancel()
     await expectCancellation(run)
-    #expect(cancelledAt.duration(to: clock.now) < promptly, "The cancel must not wait for the replay session.")
+    // Cancelled, not ended by its own fallback: the cancel did not wait for the replay session.
     #expect(sessionCancelled.value)
     let directory = try #require(sessionFolders(in: temp.url).first)
     #expect(try SessionArchive.readManifest(at: directory).status == ArchiveStatus.transcriptionIncomplete)
@@ -332,7 +333,7 @@ func cancelWhileTakingTheLeaseSkipsTheHook() async throws {
     let stop = ManualStopSource()
     var dependencies = RecordingDependencies.testing(captures: captures, postProcess: hook, stop: stop)
     // The run keeps retrying the lease until the test lets it go, so the cancellation lands while it waits.
-    dependencies.tuning.leaseRetry = hang
+    dependencies.tuning.leaseRetry = neverReached
     let run = Task {
         try await RecordingWorkflow.run(.testing(root: temp.url, recordOnly: true), dependencies: dependencies)
     }
@@ -341,7 +342,7 @@ func cancelWhileTakingTheLeaseSkipsTheHook() async throws {
     // Held here so the run waits for it, then released once the run is cancelled.
     let other = try SessionArchive.acquireProcessingLease(at: directory)
     stop.requestStop()
-    // The run journals captureStopped right before it asks for the lease, then waits for it until `hang`: the pause
+    // The run journals captureStopped right before it asks for the lease, then waits for it until the cancel: the pause
     // only makes it likelier that the cancellation finds it waiting rather than about to ask, and cannot be too long.
     #expect(await eventually(timeout: patience) {
         ((try? events(directory)) ?? []).contains { $0.kind == MeetingEventKind.captureStopped }

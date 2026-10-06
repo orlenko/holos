@@ -103,16 +103,22 @@ private func launcherMode(_ url: URL) -> mode_t? {
     #expect(!MeetingScreenPreference.enabled(in: declined))
 }
 
-@Test @MainActor func childWatcherRetriesWhenTheExitEventComesBeforeTheChildIsWaitable() async throws {
-    // The exit event can be posted before the child can be waited for: the first reaps after it find nothing.
-    let pid = try ProcessSpawner.spawn(executable: URL(fileURLWithPath: "/bin/sleep"), arguments: ["0.3"],
-                                       standardOutput: .null, standardError: .null)
+@Test(.timeLimit(.minutes(1))) @MainActor func childWatcherRetriesWhenTheExitEventComesBeforeTheChildIsWaitable()
+    async throws {
+    let temp = try TemporaryDirectory("launcher")
+    defer { temp.remove() }
+    // The exit event can be posted before the child can be waited for: the first reaps after it find nothing. The
+    // child exits only once the watcher is set up (the gate opens), however late that is.
+    let gate = temp.url.appendingPathComponent("gate")
+    let child = try launcherScript("while [ ! -e '\(gate.path)' ] && [ -d '\(temp.url.path)' ]; do sleep 0.01; done", in: temp.url)
+    let pid = try ProcessSpawner.spawn(executable: child, arguments: [], standardOutput: .null, standardError: .null)
     let probe = ReaperProbe()
     let watcher = ChildWatcher(pid: pid, reaper: { pid in
         probe.calls += 1
         // The check at set-up (the child is still running) and the first check after the exit event.
         return probe.calls <= 2 ? nil : ProcessSpawner.reapIfExited(pid)
     }, retryInterval: .milliseconds(10)) { probe.code = $0 }
+    try Data().write(to: gate)
     #expect(await eventually(timeout: .seconds(30)) { probe.code != nil })
     #expect(probe.code == 0)
     #expect(probe.calls >= 3)
@@ -146,28 +152,44 @@ private final class ReaperProbe {
     #expect(acquired, "The sleeping child must not hold the speaker lock.")
 }
 
-@Test @MainActor func inProcessLeaseHandoffHasNoGap() async throws {
+@Test(.timeLimit(.minutes(1))) @MainActor func inProcessLeaseHandoffHasNoGap() async throws {
     let temp = try TemporaryDirectory("launcher")
     defer { temp.remove() }
     let session = try await launcherSession(in: temp.url)
     let lease = try SessionArchive.acquireProcessingLease(at: session)
-    // Polls the lease from before the hand-off until well after the child started; the child holds it for 1 s.
-    let probe = Task.detached { () -> (samples: Int, free: Int) in
-        let clock = ContinuousClock()
-        let end = clock.now.advanced(by: .milliseconds(600))
+    // The child marks that it runs, then holds the lease until the probe opens the gate. The probe polls the lease
+    // from before the hand-off until it has seen the child running for 50 samples, however slowly it is scheduled;
+    // it also stops once the hand-off has returned (a child that failed to start or exited early), so such a failure
+    // is reported rather than left spinning.
+    let started = temp.url.appendingPathComponent("started")
+    let gate = temp.url.appendingPathComponent("gate")
+    defer { try? Data().write(to: gate) }
+    let child = try launcherScript(
+        "touch '\(started.path)'\nwhile [ ! -e '\(gate.path)' ] && [ -d '\(temp.url.path)' ]; do sleep 0.01; done", in: temp.url)
+    let probing = SharedValue(false)
+    let handedOff = SharedValue(false)
+    let probe = Task.detached { () -> (samples: Int, free: Int, whileRunning: Int) in
         var samples = 0
         var free = 0
-        while clock.now < end {
+        var afterStart = 0
+        while afterStart < 50, !handedOff.value, !Task.isCancelled {
             samples += 1
             if (try? SessionArchive.isProcessing(at: session)) != true { free += 1 }
+            probing.set(true)
+            if FileManager.default.fileExists(atPath: started.path) { afterStart += 1 }
+            // Lets the hand-off run on a pool of one worker; sampling still runs between its steps.
+            await Task.yield()
         }
-        return (samples, free)
+        try? Data().write(to: gate)
+        return (samples, free, afterStart)
     }
+    #expect(await eventually { probing.value })
     let record = await InProcessLauncher.handOffPostProcessing(
-        session: session, lease: lease, executable: URL(fileURLWithPath: "/bin/sleep"), arguments: ["1"], log: nil,
+        session: session, lease: lease, executable: child, arguments: [], log: nil,
         progress: { _ in }, pollInterval: .milliseconds(20))
+    handedOff.set(true)
     let seen = await probe.value
-    #expect(seen.samples > 10)
+    #expect(seen.whileRunning >= 50, "The child ran while the probe watched the lease.")
     #expect(seen.free == 0, "The processing lease was free during the hand-off.")
     #expect(try !SessionArchive.isProcessing(at: session), "The child's exit ends the lease.")
     // /bin/sleep printed no record: the hook reports that labelling stopped.
@@ -222,10 +244,10 @@ private final class ReaperProbe {
 func quitLeavesLabellingToTheChildAndEndsTheRecording() async throws {
     let temp = try TemporaryDirectory("launcher")
     defer { temp.remove() }
-    // The labelling child runs until the test opens the gate (10 s at most).
+    // The labelling child runs until the test opens the gate (the defer opens it however the test ends), or until the
+    // test's folder is gone (a test that timed out removes it in teardown, and the time limit does not kill children).
     let gate = temp.url.appendingPathComponent("gate")
-    let script = try launcherScript(
-        "i=0\nwhile [ ! -e '\(gate.path)' ] && [ $i -lt 200 ]; do sleep 0.05; i=$((i+1)); done", in: temp.url)
+    let script = try launcherScript("while [ ! -e '\(gate.path)' ] && [ -d '\(temp.url.path)' ]; do sleep 0.05; done", in: temp.url)
     defer { try? Data().write(to: gate) }
     let captures = FakeCaptureFactory([FakeCaptureScript(frames: FakeFrame.run(count: 2))])
     let launcher = InProcessLauncher(executable: script,
@@ -243,7 +265,7 @@ func quitLeavesLabellingToTheChildAndEndsTheRecording() async throws {
     #expect(!launcher.leaveLabellingToItsChild(), "A recording that has not reached labelling is left alone.")
     #expect(launcher.terminate(sessionID: id))
     #expect(await eventually { launcher.leaveLabellingToItsChild() })
-    #expect(await eventually(timeout: .seconds(5)) { !launcher.isRecording },
+    #expect(await eventually { !launcher.isRecording },
             "The recording ends without waiting for the labelling child.")
     #expect(!exists(gate), "The child was still labelling.")
     let status = try #require(try RecorderChannel.readStatus(session: session))
@@ -253,7 +275,7 @@ func quitLeavesLabellingToTheChildAndEndsTheRecording() async throws {
     #expect(exits.value == 1)
     #expect(try SessionArchive.isProcessing(at: session), "The labelling child keeps the lease.")
     try Data().write(to: gate)
-    #expect(await eventually(timeout: .seconds(10)) { (try? SessionArchive.isProcessing(at: session)) == false })
+    #expect(await eventually { (try? SessionArchive.isProcessing(at: session)) == false })
 }
 
 /// A waiting quit goes ahead in child mode once capture stopped; in-process only once the recording here has ended,

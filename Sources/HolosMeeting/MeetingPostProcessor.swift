@@ -708,10 +708,8 @@ public struct MeetingPostProcessor: Sendable {
     private func syncVoiceSamples(session: URL, manifest: SessionManifest) async throws -> String? {
         guard let profiles, let makeExtractor = voiceSamples.extractor else { return nil }
         do {
-            guard try profiles.load().profiles.contains(where: { $0.samples.contains { $0.sessionID == manifest.id } })
-            else { return nil }
-            try await VoiceProfileService.refreshSamples(session: session, extractor: makeExtractor(session),
-                                                         store: profiles)
+            try await VoiceProfileService.refreshSamplesIfLearned(session: session, makeExtractor: makeExtractor,
+                                                                  store: profiles)
             return nil
         } catch is CancellationError {
             throw CancellationError()

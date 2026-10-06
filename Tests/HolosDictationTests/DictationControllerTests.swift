@@ -100,9 +100,11 @@ private final class Harness {
     func emit(_ update: TranscriptUpdate) { self.update?(update) }
 }
 
+/// Polls `condition` every 10 ms, at least 30 s in all: long enough for actor hops and main-actor work on a loaded
+/// machine (the count, not the clock, ends it, so a stalled poll does not use up the budget).
 @MainActor
 private func eventually(_ condition: () -> Bool) async -> Bool {
-    for _ in 0..<100 {
+    for _ in 0..<3_000 {
         if condition() { return true }
         try? await Task.sleep(for: .milliseconds(10))
     }

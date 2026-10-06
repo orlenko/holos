@@ -488,7 +488,7 @@ extension SessionArchive {
   exports/.generated.json                  PR7b                         SHA-256 of each generated file
   exports/edited-<YYYYMMDD-HHMMSS>.<ext>   PR7b                         a hand-edited export, moved aside before regeneration
   echo/mask.json                           §5.11 EchoMaskStore          EchoMaskRecord: a call's acoustic echo analysis, keyed to its audio
-  echo/frames.bin                          §5.11 EchoMaskStore          AcousticEchoMask bytes (2 per 16 ms frame); only when echo was found
+  echo/frames-<sha>.bin                    §5.11 EchoMaskStore          AcousticEchoMask bytes (2 per 16 ms frame); only when echo was found
   derived/<track>-16k.caf                  PR7b TrackRenderer           deletable cache; cleared at the start and end of post-processing
 ```
 
@@ -522,7 +522,7 @@ public enum SessionPaths {
     public static func generatedExports(_ session: URL) -> URL  // exports/.generated.json
     public static func echoDirectory(_ session: URL) -> URL     // echo/ (§5.11)
     public static func echoMask(_ session: URL) -> URL          // echo/mask.json
-    public static func echoFrames(_ session: URL) -> URL        // echo/frames.bin
+    // echo/frames-<first 16 hex digits of its SHA-256>.bin: EchoMaskStore.framesURL(session, sha256:)
     public static func derived(_ session: URL) -> URL           // derived/
     public static func render(track: String, in session: URL) -> URL // derived/<track>-16k.caf
 }
@@ -7652,6 +7652,38 @@ public enum SessionAudioComposition {
   (wrapping; a plain click on a word selects the turn and plays from that word, with the
   pointing hand over the text; ⇧/⌘ clicks, double clicks, and drags only select).
   Multi-select with ⇧/⌘.
+- Paragraphs (`ReviewParagraphs`, HolosMeeting; pure): the transcript reads like a
+  document, so a row is a paragraph of consecutive turns rather than one turn. A turn
+  joins the row before it when it has the same speaker and starts less than
+  `gapSeconds` (3 s) after the latest end of the row's turns; a different speaker in
+  between ends the row. A named speaker's microphone and system-audio turns join;
+  unknown-speaker turns join only on the same track (as in the exports), so an unknown
+  microphone turn never joins a named or unknown system-audio one. The second part of a
+  split ("T5/…") and a turn without a known start begin a row. A row shows its first
+  turn's time, one speaker pop-up, its turns' texts joined with spaces, and ⚠ when any
+  of its turns is uncertain ("overlap" when one of those overlaps); "⚠ Jim?" names the
+  row's first turn that sounds like Jim and gives that turn alone (that turn's own warning
+  gives way to it; a warning of the row's other turns shows under it). Rows are only how
+  turns are shown: edits still name turns, and the journal and exports are unchanged
+  (Markdown and text already merge a speaker's consecutive turns into blocks, §4.11).
+  Everything per word works across a row's turns: clicking a word, the word playing and
+  following it, word-fix underlines, tooltips and Revert, VoiceOver's per-word actions.
+  Assigning a row (its pop-up, Assign to…, 1–9, New Speaker…) gives every turn of the
+  selected rows in one change, so one Undo restores them. Search shows the rows with a
+  matching turn, whole; Next Uncertain goes to the row of the next uncertain turn after
+  the selected rows' last turn and plays from that turn. Split Turn on a row offers its
+  words: a word inside a turn splits that turn there (a `splitTurn` edit, undone as any
+  other; its second part starts a row), and a word that already starts a turn only
+  breaks the row before that turn, in this window (nothing is saved, so Undo has nothing
+  to take back; the break belongs to the run it was made on and goes with its turn; a new
+  run drops it (the speakers labelled again; turn IDs then name other turns), except the
+  runs published while the window reverts word fixes, which keep the turns and their
+  breaks; the window closed drops it too). After any
+  change, a row stays selected only if every turn of it was selected: a turn that joins a
+  selected row's paragraph clears that selection rather than widening it.
+  While playing, the row of the turn being spoken is tinted, and a pause inside
+  a row keeps it tinted with the last word spoken, so the tint and the scroll move a row
+  at a time rather than every turn.
 - Playback bar (above the footer): Play/Pause, position / length, a scrubber, the speed
   (1×, 1.25×, 1.5×, 2×; remembered, pitch kept), and who is speaking. Playing goes on
   through the meeting until paused (only a speaker's samples stop by themselves); Play
@@ -7794,6 +7826,10 @@ whose review is open or still opening):
 | `compositionDoesNotTrimAfterAMissingOrShortChunk` | files as above | next chunk placed whole at 10 s |
 | `compositionLeavesUnreadableChunksSilent` | garbage and truncated chunks between good ones | only their time silent |
 | `trackerReportsEveryPlaybackStateTransition` | loading → off → other reason → ready | every change reported |
+| `ReviewParagraphsTests` | synthetic turns | rows by speaker, 3 s gap, unknown by track, split parts and breaks; Split Turn on a row: split or break; the word playing |
+| `reviewAssigningAParagraphMovesEveryTurnOfItAndUndoRestoresIt` | assign a two-turn row; undo | one `reassignTurns` of both turns; rows join; undo restores turns and rows |
+| `reviewSplittingInsideAParagraphStartsOneThatUndoJoinsAgain` | split inside a row's first turn; undo | the second part starts a row with the next turn; undo joins them |
+| `TurnListViewTests` (HolosAppTests) | the list laid out offscreen | rows joined, word click, fixes and VoiceOver, selection, pop-up and hint, tint through a pause |
 | `ReviewEchoMuteTests` | local-speech intervals (edges, joins, from 0, past the end, none) | the volume schedule; a mix on the microphone track only, read back as scheduled |
 | `playbackKeepsTheMicrophoneOnlyWhereItHasLocalSpeechWhenThereIsEcho` | a call with an echo mask, then `noEcho`, then other audio | a mix on the microphone track only with an echo mask; none otherwise |
 | `ReviewPlayerTests` (HolosAppTests) | a playback with and without a volume; a changed volume | the item's mix follows it, replaced in place |
@@ -7912,7 +7948,7 @@ genuinely local (the user, or people in the room) stays even while the call play
      the last frame, without times, or with estimated times (a segment without word timing) is
      kept.
 - *Storage.* `echo/mask.json` (`EchoMaskRecord`, schema 1: verdict, delay fit, frame counts,
-  the SHA-256 of `echo/frames.bin`, analysis seconds) and `echo/frames.bin` (one class byte
+  the SHA-256 of the frames, analysis seconds) and `echo/frames-<sha>.bin` (one class byte
   per frame, then one byte per frame of predicted echo level in 0.5 dB steps; about 450 KB
   per hour). One limit sets the longest call: `EchoMaskStore.maximumSeconds` (12 hours, so
   `maximumFrames` is 2.7 million); the reader takes frames files up to it, and a longer call is not analysed
@@ -7922,7 +7958,11 @@ genuinely local (the user, or people in the room) stays even while the call play
   and analysed again, but one of a newer schema or a newer analysis version (checked before
   the record is decoded) is refused and left alone, never overwritten. It is in the
   meeting folder because `derived/` is deleted after every run; Delete Audio leaves it (it
-  holds no speech). The summary counts in it are recomputed from the frames when read.
+  holds no speech). The summary counts in it are recomputed from the frames when read. The
+  frames file is named by its content, so a new analysis writes its own file, then switches
+  the record to it, then deletes the others: a failure in between leaves the old mask in use.
+  A save takes the speaker lock, and an edit made on a view shown with another mask than the
+  one saved now is refused like one made on another run (`SpeakerEditor`).
 - *Where it applies: the view only.* Stored runs never hold acoustic echo: they keep the text
   filter's drops exactly as before, and nothing that writes runs or edits knows the mask.
   `SpeakerSessionSnapshot.load` reads the mask (`EchoMaskStore.usable`: none when it is

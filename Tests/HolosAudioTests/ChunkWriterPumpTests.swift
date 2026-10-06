@@ -19,11 +19,11 @@ private func pumpArchive(_ source: AudioSource = .microphone) throws -> (Session
     return (try SessionArchive.create(root: root, name: "Pump", source: source, locale: "en-CA", backend: .speech), root)
 }
 
-/// Polls `condition` every 5 ms for up to `timeout`.
-private func pumpEventually(timeout: Duration = .seconds(10), _ condition: () -> Bool) async -> Bool {
-    let clock = ContinuousClock()
-    let deadline = clock.now.advanced(by: timeout)
-    while clock.now < deadline {
+/// Polls `condition` every 5 ms, `polls` times (at least 30 s in all by default). The count, not the clock, ends it,
+/// so time the machine spends elsewhere (a slow disk writing queued audio) does not use up the budget; the tests'
+/// time limits end a wait that never succeeds.
+private func pumpEventually(polls: Int = 6_000, _ condition: () -> Bool) async -> Bool {
+    for _ in 0..<polls {
         if condition() { return true }
         try? await Task.sleep(for: .milliseconds(5))
     }

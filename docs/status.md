@@ -277,9 +277,12 @@ thumbnail timeline, and a larger local-model benchmark are follow-ups.
   name links that person), talk time, the start of the speaker's two longest turns, Play
   samples (three clips from the longest turns without overlap), This is me, Merge into…,
   and "Maybe Maria" suggestions to confirm or reject one by one or all at once; a turn
-  list with a play-from-here time button, a speaker pop-up (speakers, known people,
-  Unknown, New Speaker…), and ⚠ for uncertain turns; Next Uncertain (⌘'), 1–9 to assign
-  the selection, Split Turn, search, Find More Speakers (a relabel with a minimum of one
+  list that reads like a document (consecutive turns of one speaker less than 3 s apart
+  are one paragraph row; its speaker pop-up and 1–9 act on every turn of it) with a
+  play-from-here time button, a speaker pop-up (speakers, known people, Unknown, New
+  Speaker…), and ⚠ when a turn of the row is uncertain; Next Uncertain (⌘'), 1–9 to
+  assign the selection, Split Turn (inside a turn it splits that turn; where a turn
+  already starts it only breaks the paragraph, in the window), search, Find More Speakers (a relabel with a minimum of one
   more speaker than found; names carry over, turn-level changes do not), Label Speakers on
   My Microphone for calls, Label Again after the transcript changed, Undo (⌘Z, the
   window's own changes, newest first), and Export (Save As… Markdown, text, JSON; Copy as
@@ -618,7 +621,8 @@ shown before they are saved, saved in order, refused and reloaded when the label
 elsewhere, including changes queued behind a refused one; undo of saved, saving, and
 queued changes; turns made by a pending split; Confirm All as one undo; exports rewritten
 after a delay and at close; search, next uncertain turn, sample clips, previews, and the
-name field's link-or-create rule) and its playback composition (chunks at their session
+name field's link-or-create rule; paragraphs: grouping, Split Turn on a paragraph, assigning
+and splitting one and undoing it, and the turn list laid out offscreen) and its playback composition (chunks at their session
 times, overlapping chunks trimmed, missing chunks skipped), and the speaker algorithms
 (alignment, edit projection, carry-over, exporters, scoring) on synthetic data; run them with
 `./scripts/test.sh`, which keeps `HOLOS_DATA_DIR` and `HOLOS_SUPPORT_DIR` in a

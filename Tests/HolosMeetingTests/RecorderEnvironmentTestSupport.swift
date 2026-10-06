@@ -135,3 +135,54 @@ func recorderRecordOnly(_ root: URL, source: AudioSource = .microphone,
                                         dependencies: dependencies)
     }
 }
+
+/// Opens once. `wait()` returns once it is open, and cancelling the waiting task does not end the wait: a platform
+/// call that hangs whatever its caller does.
+final class RecorderStopHold: Sendable {
+    private let state = Mutex<(open: Bool, waiters: [CheckedContinuation<Void, Never>])>((false, []))
+
+    var isOpen: Bool { state.withLock { $0.open } }
+
+    func open() {
+        let waiters = state.withLock { state in
+            state.open = true
+            defer { state.waiters = [] }
+            return state.waiters
+        }
+        for waiter in waiters { waiter.resume() }
+    }
+
+    func wait() async {
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            let open = state.withLock { state in
+                if !state.open { state.waiters.append(continuation) }
+                return state.open
+            }
+            if open { continuation.resume() }
+        }
+    }
+}
+
+/// The `FakeCapture` it wraps, but `stop()` hangs until `hold` opens, even once the recorder has given up on it.
+@MainActor
+final class RecorderHangingStopCapture: MeetingCapture {
+    nonisolated let frames: AsyncThrowingStream<CapturedAudio, Error>
+    let inner: FakeCapture
+    private let hold: RecorderStopHold
+    private(set) var stopCalls = 0
+
+    init(_ inner: FakeCapture, hold: RecorderStopHold) {
+        self.inner = inner; self.hold = hold
+        frames = inner.frames
+    }
+
+    var hostTimeOrigin: Double { inner.hostTimeOrigin }
+
+    func start(_ request: CaptureRequest) async throws { try await inner.start(request) }
+
+    func stop() async throws {
+        stopCalls += 1
+        await hold.wait()
+        try await inner.stop()
+    }
+}

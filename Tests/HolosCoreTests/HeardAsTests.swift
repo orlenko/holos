@@ -281,7 +281,9 @@ private let claudePairs = ["cloud", "clot"].map { Correction(heard: $0, meant: "
         try await Task.sleep(for: .seconds(3600))
         return "Claude"
     }
-    fixer.questionTimeout = .milliseconds(50)
+    // One limit for both questions: the hung one runs into it, and the one answered at once must never race it on a
+    // loaded machine.
+    fixer.questionTimeout = .seconds(2)
     fixer.spellingBudget = .seconds(60)
     let result = await fixer.fix("Then cloud and clot fixed the parcer.", isFinal: true)
     #expect(result.outcome == .fixed && result.text == "Then Claude and clot fixed the parser.")
