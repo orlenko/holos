@@ -7750,8 +7750,9 @@ shown, Otter-style.
   by a deletion, whose time changed, is found all the same), and so does a queued edit when it
   runs. The words must still read the same, and a word a move replaced is never followed onto
   another word: the field closes and the banner shows what was typed (a queued edit is refused
-  saying it). A queued word edit waits while the labels could not be reread after an earlier
-  edit, and runs after the reread. After the column width or the row heights change, the field
+  saying it). While the labels could not be reread after a change, every queued change (a word
+  edit, a rename, an assignment, an undo) waits; only what rereads them (a reload, a relabel)
+  and the transcript files run, and the changes run after the reread. After the column width or the row heights change, the field
   is put back over its words.
 - *What an edit is.* `ReviewSession.editWords(refs, to: text)`: shown words (stored
   `WordRef`s, so a word the echo mask hides is never named, §5.11) of one segment, in a row,
@@ -7830,10 +7831,16 @@ shown, Otter-style.
     without asking. "Often heard as" is the recognizer's text unless it is the term itself in
     another case;
   - undoing the edit takes back the corrections it introduced and restores any it displaced
-    (`CorrectionList.reconcileLearned`); a word-list term added stays. A Revert of the edited
-    words (any edit back to what the recognizer wrote) gives back what this window's earlier
-    edits of them taught, and undoing the Revert learns it again. An edit made in an earlier
-    review is not remembered, so its correction stays until removed in Corrections.
+    (`CorrectionList.reconcileLearned`); a word-list term added stays. The window keeps a
+    learning stack: each learned edit, the stored word range it came from (kept up to date
+    through every word move), and what learning it introduced and displaced. A Revert of
+    edited words (any edit back to what the recognizer wrote) gives back the entries of those
+    very words, newest first, so each restores what it displaced and a chain "cloud" →
+    "Claude" → "Claudia" leaves nothing; another occurrence of the same heard words keeps its
+    own. An entry given back from the middle hands what it displaced on to the later entries
+    that displaced its rules. Undoing the Revert learns them again, oldest first. An edit made
+    in an earlier review is not remembered, so its correction stays until removed in
+    Corrections.
 - *Not in v1.* Editing while the meeting records (Review opens after it), spanning segments
   or turns, deleting a whole segment, editing over a live correction, redo, and showing the
   edit before it is saved (the field closes and the row updates once saved).

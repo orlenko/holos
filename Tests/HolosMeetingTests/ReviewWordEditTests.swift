@@ -298,6 +298,114 @@ func aQueuedEditWaitsForTheRereadAnEarlierEditsFailureNeeds() async throws {
     await review.close()
 }
 
+/// A corrections list in memory that learns and gives back as the app does (`CorrectionList.reconcileLearned`).
+@MainActor
+private final class WordEditLearner {
+    var list = CorrectionList()
+
+    func attach(to review: ReviewSession) {
+        review.learnCorrections = { [self] edit in
+            guard edit.heard != edit.meant else { return nil }
+            let done = list.reconcileLearned([], with: [Correction(heard: edit.heard, meant: edit.meant)])
+            return ReviewLearnedCorrections(owned: done.owned, displaced: done.displaced)
+        }
+        review.unlearnCorrections = { [self] learned in
+            list.reconcileLearned(learned.owned, preserving: learned.displaced, with: [])
+        }
+    }
+}
+
+@Test(.timeLimit(.minutes(1))) @MainActor
+func revertingAChainOfEditsGivesBackItsLearningNewestFirst() async throws {
+    let temp = try TemporaryDirectory("review")
+    defer { temp.remove() }
+    let session = try await wordEditSession(in: temp, [
+        WordEditTurn(speaker: "system:S1", start: 0, words: ["ask", "cloud", "now"]),
+    ])
+    let review = try await wordEditOpen(session)
+    let learner = WordEditLearner()
+    learner.attach(to: review)
+    try await review.editWords(wordEditRefs(review, "T1", [1]), to: "Claude")
+    try await review.editWords(wordEditRefs(review, "T1", [1]), to: "Claudia")
+    #expect(learner.list.entries == [Correction(heard: "cloud", meant: "Claudia")])
+    // "Revert to “cloud”": "cloud → Claudia" is given back first, which brings back "cloud → Claude" it displaced,
+    // then that one: nothing is left.
+    try await review.revertWordFix(wordEditRefs(review, "T1", [1])[0])
+    #expect(try wordEditCurrent(session).segments[0].text == "ask cloud now")
+    #expect(learner.list.entries.isEmpty)
+    // Undone, the chain is learned again in its order; then each undo gives back its own step.
+    try await review.undo()
+    #expect(learner.list.entries == [Correction(heard: "cloud", meant: "Claudia")])
+    try await review.undo()
+    #expect(learner.list.entries == [Correction(heard: "cloud", meant: "Claude")])
+    try await review.undo()
+    #expect(learner.list.entries.isEmpty)
+    await review.close()
+}
+
+@Test(.timeLimit(.minutes(1))) @MainActor
+func revertingOneOccurrenceGivesBackOnlyWhatItsOwnEditTaught() async throws {
+    let temp = try TemporaryDirectory("review")
+    defer { temp.remove() }
+    let session = try await wordEditSession(in: temp, [
+        WordEditTurn(speaker: "system:S1", start: 0, words: ["cloud", "and", "cloud", "now"]),
+    ])
+    let review = try await wordEditOpen(session)
+    let learner = WordEditLearner()
+    learner.attach(to: review)
+    try await review.editWords(wordEditRefs(review, "T1", [0]), to: "Claude")
+    try await review.editWords(wordEditRefs(review, "T1", [2]), to: "Klaud")
+    #expect(learner.list.entries == [Correction(heard: "cloud", meant: "Klaud")])
+    // The first "cloud" back: the second occurrence's correction stays.
+    try await review.revertWordFix(wordEditRefs(review, "T1", [0])[0])
+    #expect(try wordEditCurrent(session).segments[0].text == "cloud and Klaud now")
+    #expect(learner.list.entries == [Correction(heard: "cloud", meant: "Klaud")])
+    // A word edit earlier in the segment moves the second occurrence; its Revert still finds what it taught.
+    try await review.editWords(wordEditRefs(review, "T1", [1]), to: "and then")
+    try await review.revertWordFix(wordEditRefs(review, "T1", [3])[0])
+    #expect(try wordEditCurrent(session).segments[0].text == "cloud and then cloud now")
+    // Neither "cloud" correction is left: the first one, given back out of order, is not brought back by the second.
+    #expect(!learner.list.entries.contains { $0.heard == "cloud" })
+    await review.close()
+}
+
+@Test(.timeLimit(.minutes(1))) @MainActor
+func aSpeakerChangeQueuedBehindAnEditWhoseRereadFailedWaitsForTheReread() async throws {
+    let temp = try TemporaryDirectory("review")
+    defer { temp.remove() }
+    let session = try await wordEditSession(in: temp, [
+        WordEditTurn(speaker: "system:S1", start: 0, words: ["ask", "cloud", "now"]),
+    ])
+    let review = try await wordEditOpen(session)
+    let (stream, release) = AsyncStream<Void>.makeStream()
+    let entered = SharedValue(0)
+    review.beforeEdit = {
+        entered.update { $0 += 1 }
+        for await _ in stream {}
+    }
+    struct Unreadable: Error {}
+    var failures = 1
+    review.beforeWordChangeReread = {
+        guard failures > 0 else { return }
+        failures -= 1
+        throw Unreadable()
+    }
+    let edit = Task { try await review.editWords(wordEditRefs(review, "T1", [1]), to: "Claude") }
+    #expect(await eventually { entered.value == 1 })
+    let rename = Task { try await review.apply([.rename(speakerID: "system:S1", name: "Ann")]) }
+    #expect(await eventually { review.queuedOperations == 2 })
+    release.finish()
+    await #expect(throws: HolosError.self) { _ = try await edit.value }
+    #expect(review.reloadProblem != nil && review.queuedOperations == 1, "The rename waits, still queued.")
+    await review.reload()
+    try await rename.value
+    #expect(review.speaker("system:S1")?.name == "Ann")
+    #expect(try SessionSpeakerStore.readEdits(session: session).edits.contains {
+        $0.action == .rename(speakerID: "system:S1", name: "Ann")
+    })
+    await review.close()
+}
+
 @Test(.timeLimit(.minutes(1))) @MainActor
 func revertingAnEditGivesBackWhatItTaughtAndItsUndoLearnsItAgain() async throws {
     let temp = try TemporaryDirectory("review")
