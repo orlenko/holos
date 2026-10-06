@@ -72,6 +72,10 @@ public enum TranscriptWordEdit {
         /// rest of a mark): every one of them is in the edited turn and its replacement is never empty, so the speaker
         /// labels map by it, and by its inverse when the edit is undone (`SpeakerTranscriptRetarget.plan`).
         public var labelsMove: ReviewWordMove
+        /// `heard` holds deleted words (this edit is a deletion, or it took in an earlier one: "um cloud" for a word
+        /// "um" was merged into): it is not what the recognizer wrote for the new text, so it is never offered as
+        /// "often heard as".
+        public var holdsDeleted = false
     }
 
     /// Whether `transcript` holds words edited in Review.
@@ -267,7 +271,7 @@ public enum TranscriptWordEdit {
         return Result(transcript: result, base: newBase, heard: heard, meant: meant, shown: shown, deletion: deletion,
                       before: lower > 0 && editable(lower - 1) ? words[lower - 1].text : nil,
                       after: upper < words.count && editable(upper) ? words[upper].text : nil, move: move,
-                      labelsMove: labelsMove)
+                      labelsMove: labelsMove, holdsDeleted: deleted == true)
     }
 
     /// The text words `range` of a segment show, as the review and the exports show it (`TranscriptText`): from the

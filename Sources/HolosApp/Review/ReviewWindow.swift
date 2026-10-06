@@ -1060,8 +1060,9 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, Clo
             do {
                 // Once saved, also when the labels could not be refreshed after it (the edit stands, and ⌥Return's
                 // term is still added).
+                // The words as the field showed them: never saved over words changed elsewhere since.
                 _ = try await review.editWords(words.map(\.ref), to: text, seenMoves: movesSeen,
-                                               whileUnread: whileUnread) { edit in
+                                               whileUnread: whileUnread, expecting: words.map(\.text)) { edit in
                     saved = true
                     self?.offerTerm(after: edit, add: addTerm)
                 }

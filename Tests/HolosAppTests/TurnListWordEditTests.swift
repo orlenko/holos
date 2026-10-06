@@ -210,6 +210,32 @@ struct TurnListWordEditTests {
         #expect(messages.last == .some(nil))
     }
 
+    /// The field over "alpha" is at least 90 pt wide, so it lies over "beta": a ⇧-click there reaches the table (which
+    /// extends the selection to "beta"); a plain click there, and any click on "alpha", edits the field's text.
+    @Test func aShiftClickOnTheFieldOverTheNextWordReachesTheTable() throws {
+        let (list, _) = editingList()
+        list.editingWords = true
+        list.table.handleWordClick(row: 0, word: 0, through: 0, extend: false)
+        let text = try TurnListViewTests.cell(list, row: 0).bodyText
+        let field = list.editField
+        func hit(onWord index: Int, shift: Bool) throws -> NSView? {
+            let rect = try #require(text.rect(ofWord: index))
+            let point = list.table.convert(NSPoint(x: rect.midX, y: rect.midY), from: text)
+            if index == 1 { #expect(field.frame.contains(point), "The field lies over “beta”.") }
+            field.extendsSelection = { shift }
+            let container = try #require(list.table.superview)
+            return container.hitTest(container.convert(point, from: list.table))
+        }
+        func inField(_ view: NSView?) -> Bool { view.map { $0 === field || $0.isDescendant(of: field) } ?? false }
+        let shiftOnBeta = try hit(onWord: 1, shift: true)
+        #expect(!inField(shiftOnBeta) && shiftOnBeta.map { $0 === list.table || $0.isDescendant(of: list.table) } == true)
+        #expect(inField(try hit(onWord: 1, shift: false)), "A plain click places the caret in the field.")
+        #expect(inField(try hit(onWord: 0, shift: true)), "On the edited words, the field keeps it.")
+        // The table's handler then takes "beta" in.
+        list.table.handleWordClick(row: 0, word: 1, through: 1, extend: true)
+        #expect(list.wordEdit?.words.map(\.text) == ["alpha", "beta"])
+    }
+
     /// Only Esc drops what was typed: turning edit mode off saves it.
     @Test func turningEditModeOffSavesTheFieldAndEscDropsIt() {
         let (list, saved) = editingList()

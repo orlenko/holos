@@ -543,10 +543,10 @@ func aRelabelSavedBeforeAnEditsRereadIsAChangeMadeElsewhere() async throws {
     let relabel = try #require(relabelled)
     #expect(review.snapshot.run?.id == relabel)
     #expect(!review.keepsTurns(of: original, in: relabel), "The relabel is not the edit's run.")
-    // The labels changed elsewhere: the rename's undo, made on the old labels, is gone; the edit's own stays.
-    try await review.undo()
-    #expect(try wordEditCurrent(session).segments[0].text == "ask cloud now")
+    // The labels changed elsewhere: the rename's undo, made on the old labels, is gone, and so is the edit's (its own
+    // head is no longer the current one: `Operation.overtaken`).
     #expect(!review.canUndo)
+    #expect(try wordEditCurrent(session).segments[0].text == "ask Claude now")
     await review.close()
 }
 
@@ -716,6 +716,96 @@ func anEditWhoseLabelsCannotBeRereadCanStillBeUndone() async throws {
     review.beforeWordChangeReread = nil
     await review.reload()
     #expect(review.words(of: "T1").map(\.text) == ["ask", "cloud", "now"])
+    await review.close()
+}
+
+@Test(.timeLimit(.minutes(1))) @MainActor
+func anEditIsNeverSavedOverAWordChangedElsewhereInItsPlace() async throws {
+    let temp = try TemporaryDirectory("review")
+    defer { temp.remove() }
+    let session = try await wordEditSession(in: temp, [
+        WordEditTurn(speaker: "system:S1", start: 0, words: ["ask", "cloud", "now"]),
+    ])
+    let review = try await wordEditOpen(session)
+    // The field opens on "cloud"; meanwhile another process changes it to "crowd" (same segment, same place) and
+    // relabels, and the window reads it.
+    let seen = review.words(of: "T1")[1]
+    var changed = try wordEditCurrent(session)
+    changed.id = UUID().uuidString
+    changed.segments[0].text = "ask crowd now"
+    changed.segments[0].words[1].text = "crowd"
+    try await SessionFixtures.saveTranscript(changed, in: session)
+    var run = try SessionSpeakerStore.readRun(id: try #require(try SessionSpeakerStore.readHead(session: session)?.runID),
+                                              session: session)
+    run.id = UUID().uuidString
+    run.transcriptID = changed.id
+    try SessionArchive.withSpeakerLock(at: session) {
+        try SessionSpeakerStore.writeRun(run, session: session)
+        try SessionSpeakerStore.writeHead(SpeakerHead(runID: run.id), session: session)
+    }
+    await review.reload()
+    #expect(review.words(of: "T1")[1].text == "crowd" && review.canEditWords)
+    // The field's edit, queued with the words as it showed them: refused, saying what was typed; nothing written.
+    let refused = await #expect(throws: HolosError.self) {
+        try await review.editWords([seen.ref], to: "Claude", seenMoves: review.wordMoves.count,
+                                   expecting: [seen.text])
+    }
+    #expect(refused?.localizedDescription.contains("what you typed: “Claude”") == true)
+    #expect(try wordEditCurrent(session).segments[0].text == "ask crowd now")
+    // Words as they are now are edited as usual.
+    try await review.editWords([seen.ref], to: "Claude", expecting: ["crowd"])
+    #expect(try wordEditCurrent(session).segments[0].text == "ask Claude now")
+    await review.close()
+}
+
+@Test(.timeLimit(.minutes(1))) @MainActor
+func anEditTakingInAnEarlierDeletionOffersNoHeardAs() async throws {
+    let temp = try TemporaryDirectory("review")
+    defer { temp.remove() }
+    let session = try await wordEditSession(in: temp, [
+        WordEditTurn(speaker: "system:S1", start: 0, words: ["um", "cloud", "now"]),
+    ])
+    let review = try await wordEditOpen(session)
+    // "um" deleted: it merges into "cloud", whose mark now holds "um cloud".
+    try await review.editWords(wordEditRefs(review, "T1", [0]), to: "")
+    #expect(review.words(of: "T1").map(\.text) == ["cloud", "now"])
+    // Then "cloud" edited to "Clyde": what was heard there holds the deleted "um", so it is no "often heard as" (the
+    // term itself may still be offered).
+    var saved: [ReviewWordEdit] = []
+    try await review.editWords(wordEditRefs(review, "T1", [0]), to: "Clyde") { saved.append($0) }
+    #expect(try wordEditCurrent(session).segments[0].text == "Clyde now")
+    let edit = try #require(saved.first)
+    #expect(edit.heard == "um cloud" && edit.typed == "Clyde" && edit.typedHeard == nil)
+    // An edit holding no deletion keeps it.
+    saved.removeAll()
+    try await review.editWords(wordEditRefs(review, "T1", [1]), to: "later") { saved.append($0) }
+    #expect(saved.first?.typedHeard == "now")
+    await review.close()
+}
+
+@Test(.timeLimit(.minutes(1))) @MainActor
+func anEditWhoseHeadIsReplacedBeforeItsRereadGetsNoUndo() async throws {
+    let temp = try TemporaryDirectory("review")
+    defer { temp.remove() }
+    let session = try await wordEditSession(in: temp, [
+        WordEditTurn(speaker: "system:S1", start: 0, words: ["ask", "cloud", "now"]),
+    ])
+    let review = try await wordEditOpen(session)
+    // Saved; then, before the window rereads the labels, another process replaces the head (a relabel elsewhere).
+    review.beforeWordChangeReread = {
+        review.beforeWordChangeReread = nil
+        var run = try SessionSpeakerStore.readRun(
+            id: try #require(try SessionSpeakerStore.readHead(session: session)?.runID), session: session)
+        run.id = UUID().uuidString
+        try SessionArchive.withSpeakerLock(at: session) {
+            try SessionSpeakerStore.writeRun(run, session: session)
+            try SessionSpeakerStore.writeHead(SpeakerHead(runID: run.id), session: session)
+        }
+    }
+    try await review.editWords(wordEditRefs(review, "T1", [1]), to: "Claude")
+    #expect(try wordEditCurrent(session).segments[0].text == "ask Claude now")
+    // The head it published is no longer current: its undo would act on another head, so there is none.
+    #expect(!review.canUndo)
     await review.close()
 }
 
@@ -1690,6 +1780,30 @@ func aCloseInterruptedBetweenItsWritesIsRepairedByTheNext() async throws {
         learner.attach(to: reopened)
         await reopened.close()
         #expect(learner.value("cloud") == nil)
+    }
+}
+
+@Test(.timeLimit(.minutes(1))) @MainActor
+func aCloseStoppedAfterItsListWriteNeverAddsBackARuleDeletedSince() async throws {
+    let claude = Correction(heard: "cloud", meant: "Claude")
+    for afterListWrite in [false, true] {
+        let temp = try TemporaryDirectory("review")
+        defer { temp.remove() }
+        let session = try await wordEditCloudSession(temp)
+        let review = try await wordEditOpen(session)
+        try await review.editWords(wordEditRefs(review, "T1", [0]), to: "Claude")
+        // A close stopped before confirming its lesson: before writing the list (`pending`), or after it (`written`).
+        // Either way the list lacks the rule now: never written, or deleted in Corrections since.
+        let record = afterListWrite
+            ? ReviewLearning.Taught(version: 1, corrections: [], written: [claude])
+            : ReviewLearning.Taught(version: 1, corrections: [], pending: [claude])
+        try ReviewLearning.writeRecord(record, session: session)
+        let learner = WordEditLearner()
+        learner.attach(to: review)
+        await review.close()
+        // Never written: taught now (the edit still teaches it). Written, then deleted: the deletion stands.
+        #expect(learner.value("cloud") == (afterListWrite ? nil : "Claude"))
+        #expect(try ReviewLearning.record(session: session) == ReviewLearning.Taught(version: 1, corrections: [claude]))
     }
 }
 

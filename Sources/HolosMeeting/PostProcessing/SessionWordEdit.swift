@@ -31,6 +31,8 @@ enum SessionWordEdit {
         /// The move the speaker labels were mapped by (`TranscriptWordEdit.Result.labelsMove`); its undo maps them back
         /// by its inverse.
         var labelsMove: ReviewWordMove
+        /// `heard` holds words deleted earlier (`TranscriptWordEdit.Result.holdsDeleted`).
+        var holdsDeleted = false
     }
 
     /// A published undo.
@@ -88,7 +90,8 @@ enum SessionWordEdit {
             ].merging(details(of: result.labelsMove), uniquingKeysWith: { first, _ in first }))
             let outcome = Outcome(transcriptID: result.transcript.id, runID: plan.run.id, heard: result.heard,
                                   meant: result.meant, deletion: result.deletion, before: result.before,
-                                  after: result.after, move: result.move, labelsMove: result.labelsMove)
+                                  after: result.after, move: result.move, labelsMove: result.labelsMove,
+                                  holdsDeleted: result.holdsDeleted)
             try await save(result.transcript, archive: archive, session: session,
                            incomplete: IncompletePublication(message: "The words were edited", outcome: outcome))
             try publishHead(plan, session: session, now: now,

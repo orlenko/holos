@@ -7761,7 +7761,14 @@ shown, Otter-style.
   was typed. However else the field closes (edit mode turned off, a search filtering its row
   away, its words moved or gone, the review turned read-only), its text is queued as an edit
   (`TurnListView.keepWordEdit`), and the review's queue keeps it, saves it, or refuses it
-  saying what was typed. An automatic fix's Revert is offered (context menu, VoiceOver) only
+  saying what was typed. A queued field edit carries its words' text as the field showed them
+  (`editWords(expecting:)`): a change made elsewhere and read since that kept a word's place
+  but changed it refuses the edit, saying what was typed, never writing over it. The field is
+  at least 90 pt wide, so it can lie over the next words: a ⇧-click there passes through it to
+  the table (`WordEditField.hitTest`, outside `wordsFrame`), which extends the selection; a
+  plain click there edits the field's text. A head made elsewhere that lands between an
+  edit's save and its reread empties the undo stack and gives that edit no undo entry either
+  (`Operation.overtaken`). An automatic fix's Revert is offered (context menu, VoiceOver) only
   where its segment allows it (`ReviewSession.revertRefusal`: no damaged mark, no older fix
   that cannot be counted), and refused before it is queued otherwise. Space still plays and pauses outside the field; the
   timestamp buttons still play. Every word has a VoiceOver action "Edit “word”", which turns
@@ -7990,9 +7997,13 @@ shown, Otter-style.
     lessons are *confirmed*. The app takes the list again afterwards;
   - `review-learned.json` holds two states. *Confirmed*: the meeting's own (a close put them
     in the list); one deleted or changed in Corrections stays so, and a later edit of the
-    meeting may replace it. *Pending*: being written; at the next close (also one with
-    nothing to teach, the edit since undone) one the list holds is confirmed, one it does not
-    hold is dropped, taught again only when an edit still teaches it. So a failure between
+    meeting may replace it. Then the two phases of a close, settled by the next close (also
+    one with nothing to teach, the edit since undone) as what happened says. *Pending*:
+    recorded before the list is written; one the list holds is confirmed, one it does not
+    hold was never written, so it is dropped, taught again only when an edit still teaches it.
+    *Written*: recorded as soon as the list write succeeded, before the confirmation; each is
+    confirmed whether or not the list holds it (one it lacks was deleted in Corrections since,
+    and is never added back). So a failure between
     the writes is repaired, never leaves a correction no record owns, nor one wrongly owned;
   - nothing is learned from a deletion, a punctuation-only change, or a case-only change
     (decided on the edited words alone: a context word's own fix never makes "Hello" →
@@ -8007,7 +8018,9 @@ shown, Otter-style.
     "Claude." lose the comma and period (a final period only when the rest of the word is
     plain, so "e.g." keeps it). What was heard is cleaned the same way before it is compared
     with the term, so a case-only change ("c#" → "C#") gives no "often heard as", never the
-    broader "c". The term is what was typed, never words the edit took in around it
+    broader "c". Nor is what was heard over words holding a deletion ("Clyde" edited over a
+    word "um" was merged into would give "um cloud"): the term may still be offered, with no
+    "often heard as" (`Result.holdsDeleted`). The term is what was typed, never words the edit took in around it
     ("Yorkshire", not "New Yorkshire", when only "York" of an automatic "New York" was
     edited), and "often heard as" is given only when the recognizer's text for exactly those
     words is known. "Often heard as" is the recognizer's text unless it is the term itself in

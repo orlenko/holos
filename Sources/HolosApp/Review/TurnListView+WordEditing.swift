@@ -46,6 +46,23 @@ final class WordEditField: NSTextField {
     convenience init() { self.init(frame: .zero) }
 
     required init?(coder: NSCoder) { nil }
+
+    /// The words being edited, in the table's coordinates (the field's own superview). The field is wider (at least
+    /// 90 pt, with room to type), so it can lie over the next words.
+    var wordsFrame: NSRect = .zero
+
+    /// Whether the mouse-down being handled extends the selection (⇧ alone, as the table reads it).
+    var extendsSelection: () -> Bool = {
+        guard let event = NSApplication.shared.currentEvent, event.type == .leftMouseDown else { return false }
+        return event.modifierFlags.intersection([.shift, .command, .control, .option]) == [.shift]
+    }
+
+    /// A ⇧-click on the field but beyond its words (on a word it lies over) goes to the table, which extends the
+    /// selection to the word under it (`TurnTableView.mouseDown`); every other click edits the text in the field.
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        if frame.contains(point), !wordsFrame.contains(point), extendsSelection() { return nil }
+        return super.hitTest(point)
+    }
 }
 
 /// Edit mode of the turn list: a click on a word opens a field over it, prefilled and selected; ⇧-click or a drag in
@@ -295,6 +312,9 @@ extension TurnListView: NSTextFieldDelegate {
         let width = min(max(wordsWidth + 28, 90), max(90, text.bounds.width - first.minX + 8))
         let origin = table.convert(NSPoint(x: first.minX, y: first.minY), from: text)
         editField.frame = NSRect(x: origin.x - 4, y: origin.y - 3, width: width, height: first.height + 6)
+        // The words' own extent (on their first line): a ⇧-click beyond it reaches the word under it.
+        editField.wordsFrame = NSRect(x: origin.x - 4, y: origin.y - 3, width: wordsWidth + 4,
+                                      height: first.height + 6)
     }
 
     private func textView(row: Int) -> TurnTextView? {

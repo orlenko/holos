@@ -880,9 +880,15 @@ public struct ReviewWord: Sendable, Equatable {
     /// `whileUnread`: the edit of a field open when the review turned read-only because its labels could not be reread
     /// (`reloadProblem`): queued all the same, it waits for the reread as the changes queued before it do, so what
     /// was typed is never dropped.
+    ///
+    /// `expecting`: each of `words`' text as the caller showed it (the edit field's words): a change made elsewhere
+    /// and read since may have kept a word's place but changed it, and an edit is never made over words other than
+    /// those the person saw. Refused then, saying what was typed.
     public func editWords(_ words: [WordRef], to text: String, seenMoves: Int? = nil, whileUnread: Bool = false,
+                          expecting: [String]? = nil,
                           committed: ((ReviewWordEdit) -> Void)? = nil) async throws -> ReviewWordEdit? {
-        guard let op = try queuedWordEdit(words, to: text, seenMoves: seenMoves, whileUnread: whileUnread) else {
+        guard let op = try queuedWordEdit(words, to: text, seenMoves: seenMoves, whileUnread: whileUnread,
+                                          expecting: expecting) else {
             return nil
         }
         do {
@@ -897,7 +903,7 @@ public struct ReviewWord: Sendable, Equatable {
 
     /// `editWords` up to its change being queued (no wait); nil when there is nothing to edit.
     private func queuedWordEdit(_ words: [WordRef], to text: String, seenMoves: Int?,
-                                whileUnread: Bool = false) throws -> Operation? {
+                                whileUnread: Bool = false, expecting: [String]? = nil) throws -> Operation? {
         try requireEditable(whileUnread: whileUnread)
         guard !snapshot.transcriptChanged else { throw Self.labelAgainFirst }
         guard snapshot.journal.isComplete else { throw Self.speakerChangesUnreadable }
@@ -932,6 +938,16 @@ public struct ReviewWord: Sendable, Equatable {
         }
         // Before any fix's words are walked (`takingInMarks`).
         if TranscriptWordEdit.hasDamagedMark(segment) { throw TranscriptWordEdit.damagedMarks }
+        // The words still read as the person saw them (a change made elsewhere may keep a word's place and change it).
+        if let expecting {
+            let effective = WordTiming.effectiveWords(of: segment)
+            guard expecting.count == words.count, zip(words, expecting).allSatisfy({ word, text in
+                word.word >= 0 && word.word < effective.count && effective[word.word].text == text
+            }) else {
+                throw HolosError.invalidInput("Those words were changed elsewhere while you edited them; edit them "
+                                              + "again (what you typed: “\(TranscriptWordEdit.cleaned(text))”).")
+            }
+        }
         func holds(_ turn: ProjectedTurn, _ index: Int) -> Bool {
             turn.spans.contains { $0.segmentID == first.segmentID && $0.first <= index && index < $0.end }
         }
@@ -1306,6 +1322,10 @@ public struct ReviewWord: Sendable, Equatable {
         /// Labels were adopted while it ran (its own result, or a reload after a refusal): the saved labels now
         /// show whatever it did, so its optimistic actions are no longer shown.
         var superseded = false
+        /// The labels reread while it ran have a head made elsewhere (a relabel or a replacement landed between its
+        /// save and the reread): the undo stack was emptied for it, and it gets no undo entry either, since its own
+        /// head is no longer the current one.
+        var overtaken = false
         var finished = false
         /// Batches it saved.
         var batches: [String] = []
@@ -1412,7 +1432,7 @@ public struct ReviewWord: Sendable, Equatable {
             if op.savedUnreloaded {
                 // Still shown; its undo entry is made once labels read from disk show what it saved (`adopt`).
                 unreloaded.append(op)
-            } else if op.isUndoable, !op.undone, op.savedUndoable {
+            } else if op.isUndoable, !op.undone, !op.overtaken, op.savedUndoable {
                 pushUndo(op.batches, wordEdit: op.wordEdit)
             }
             if case .failure(let error) = result { restoreUndo(after: op, error: error) }
@@ -1722,8 +1742,9 @@ public struct ReviewWord: Sendable, Equatable {
             committed: { [weak self] (published: SessionWordEdit.Outcome??) in
                 guard let self, let saved = published ?? nil else { return }
                 self.turnKeepingRuns[saved.runID] = runID
-                // The span is exactly the selection unless it took in words around it (its move then differs).
-                let exact = saved.move == saved.labelsMove
+                // The span is exactly the selection unless it took in words around it (its move then differs). What
+                // was heard holding deleted words (an earlier deletion taken in) is no "often heard as" either.
+                let exact = saved.move == saved.labelsMove && !saved.holdsDeleted
                 let edit = ReviewWordEdit(heard: saved.heard, meant: saved.meant, deletion: saved.deletion,
                                           before: saved.before, after: saved.after,
                                           typed: TranscriptWordEdit.cleaned(sent.text),
@@ -1827,7 +1848,7 @@ public struct ReviewWord: Sendable, Equatable {
             // Nothing to teach (the edit was undone or reverted, say): an earlier close's pending lessons are still
             // settled below (confirmed where the list holds them, else dropped), or one would stay pending for good.
             let record = await Self.detachedResult { try ReviewLearning.record(session: session) }
-            guard case .success(let record) = record, !(record.pending ?? []).isEmpty else { return }
+            guard case .success(let record) = record, record.unsettled else { return }
         }
         guard let update = writer() else {
             Self.log.error("Session \(self.sessionID, privacy: .public): the corrections list cannot be written now; the next review's close learns from the edits")
@@ -1853,19 +1874,22 @@ public struct ReviewWord: Sendable, Equatable {
                 let pending = before.pending ?? []
                 // Only what this meeting has not taught yet: a correction deleted or changed in Corrections since stays
                 // so (once confirmed).
-                guard !pending.isEmpty || !ReviewLearning.untaught(corrections, taught: before.corrections).isEmpty else {
+                guard before.unsettled || !ReviewLearning.untaught(corrections, taught: before.corrections).isEmpty else {
                     return .learned(applied: 0, of: 0)
                 }
+                // Written to the list by an earlier close that stopped before confirming them: the meeting's, whether
+                // or not the list still holds them (one it lacks was deleted in Corrections since: never added back).
+                let confirmed = ReviewLearning.merged(before.corrections, before.written ?? [])
                 var record = before
                 var applied: [Correction] = []
                 var asked = 0
                 do {
                     try update { list in
-                        // An earlier close's pending lessons: the meeting's where the list holds them; else dropped,
-                        // and taught again as new.
+                        // An earlier close's lessons recorded before its list write: the meeting's where the list
+                        // holds them; else never written, so dropped (taught again when an edit still teaches them).
                         let held = pending.filter { list.entry(forKey: CorrectionList.key($0.heard))?.meant == $0.meant }
                         record = ReviewLearning.Taught(version: 1,
-                                                       corrections: ReviewLearning.merged(before.corrections, held))
+                                                       corrections: ReviewLearning.merged(confirmed, held))
                         let toTeach = ReviewLearning.untaught(corrections, taught: record.corrections)
                         asked = toTeach.count
                         guard !toTeach.isEmpty else { return }
@@ -1881,6 +1905,17 @@ public struct ReviewWord: Sendable, Equatable {
                     }
                 } catch {
                     return .notWritten(ProcessSpawner.logCategory(error))
+                }
+                // The list is written: noted at once (`written`), so a confirmation that fails next never has the next
+                // close take a rule deleted in Corrections meanwhile for one never written, and add it back.
+                if !applied.isEmpty {
+                    do {
+                        try ReviewLearning.writeRecord(
+                            ReviewLearning.Taught(version: 1, corrections: record.corrections, written: applied),
+                            session: session)
+                    } catch {
+                        return .notRecorded(applied: applied.count, ProcessSpawner.logCategory(error))
+                    }
                 }
                 record.corrections = ReviewLearning.merged(record.corrections, applied)
                 if record != before {
@@ -2696,6 +2731,9 @@ public struct ReviewWord: Sendable, Equatable {
         let keptFrom = fresh.run.flatMap { turnKeepingRuns[$0.id] }
         let retargeted = keptFrom != nil && keptFrom == previousRunID
         let headChanged = fresh.run?.id != previousRunID && !retargeted
+        // A head made elsewhere: the change running (whose own head it replaced) gets no undo entry once it ends,
+        // as the entries before it go below.
+        if headChanged, let running = queue.first, running.started { running.overtaken = true }
         let external = forced || headChanged || added.count > windowLines
         let transcriptChanged = fresh.transcript.id != snapshot.transcript.id
         var voicesMoved = false

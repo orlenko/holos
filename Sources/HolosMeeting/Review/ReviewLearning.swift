@@ -10,13 +10,21 @@ import HolosStorage
 /// Corrections is not taught again, and one whose write failed is taught at the next close.
 enum ReviewLearning {
     /// review-learned.json, what this meeting's review closes taught. `corrections`: confirmed, the meeting's own (a
-    /// close wrote them into the list); one deleted or changed in Corrections since stays so. `pending`: being written
-    /// by a close (recorded before the list, so a failure is repaired by the next close: one the list holds is then
-    /// confirmed, one it does not is dropped and taught again as new). Older records have no `pending`.
+    /// close wrote them into the list); one deleted or changed in Corrections since stays so. Then two phases of a
+    /// close, so one that stopped part way is settled by the next close as what happened says:
+    /// - `pending`: recorded before the list is written. One the list holds is confirmed; one it does not was never
+    ///   written, so it is dropped (taught again when an edit still teaches it).
+    /// - `written`: recorded once the list was written, before the confirmation. Each is confirmed whether or not the
+    ///   list still holds it: one it lacks was deleted in Corrections since, and stays deleted.
+    /// Older records have neither.
     struct Taught: Codable, Equatable {
         var version: Int
         var corrections: [Correction]
         var pending: [Correction]? = nil
+        var written: [Correction]? = nil
+
+        /// An earlier close's lessons not settled yet.
+        var unsettled: Bool { !(pending ?? []).isEmpty || !(written ?? []).isEmpty }
     }
 
     /// The record; empty when nothing was taught. Throws when it cannot be read (damaged, or written by a newer Voice
