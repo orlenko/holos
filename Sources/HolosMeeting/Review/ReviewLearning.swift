@@ -100,7 +100,10 @@ enum ReviewLearning {
             func recognized(_ fix: TranscriptWordFix, shown: String) -> String? {
                 // A deletion's `heard` holds the deleted words too: beside an edit, it would teach dropping them.
                 if fix.deleted == true { return nil }
+                // A damaged fix (its words out of the segment's) has nothing that can be read.
+                guard fix.first >= 0, fix.first < fix.end, fix.end <= words.count else { return nil }
                 if fix.kind == .correction || fix.kind == .term, let baseSegment, let baseWords, let bounds,
+                   fix.end < bounds.count,
                    bounds[fix.first] >= 0, bounds[fix.end] >= 0 {
                     let baseText = Array(baseSegment.text.utf16)
                     let range = TranscriptWordEdit.extent(of: bounds[fix.first]..<bounds[fix.end], words: baseWords,
@@ -177,7 +180,8 @@ enum ReviewLearning {
         guard index >= 0, index < words.count, inTurn(index) else { return nil }
         if let fix = (segment.fixes ?? []).first(where: { $0.first <= index && index < $0.end }),
            fix.kind != .reviewRevert {
-            guard (fix.first..<fix.end).allSatisfy(inTurn),
+            // A damaged fix (its words out of the segment's) gives no context.
+            guard fix.first >= 0, fix.end <= words.count, (fix.first..<fix.end).allSatisfy(inTurn),
                   let whole = TranscriptWordEdit.shownText(of: segment, first: fix.first, end: fix.end),
                   let written = recognized(fix, whole) else {
                 return nil

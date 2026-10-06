@@ -474,6 +474,9 @@ final class TurnListView: NSView, NSTableViewDataSource, NSTableViewDelegate {
     var editText: (([ReviewWord]) -> String?)?
     /// Why `words` cannot be edited, known before a field opens (`ReviewSession.wordEditRefusal`); nil when they can.
     var editRefusal: (([ReviewWord]) -> String?)?
+    /// The open field's edit when the review turned read-only while it was open (words, what was typed, the word moves
+    /// it follows): the window queues it, so it waits for the review rather than being lost.
+    var onKeepWordEdit: (([ReviewWord], String, Int) -> Void)?
     /// Words can be edited now (`ReviewSession.canEditWords`); edit mode shows, but a click opens no field, otherwise.
     var canEditWords = true {
         didSet { if !canEditWords { loseWordEdit() } }

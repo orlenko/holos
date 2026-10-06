@@ -446,6 +446,28 @@ struct TurnListWordEditTests {
         #expect(list.wordEdit == nil && played.isEmpty)
     }
 
+    /// Tab saved one edit and opened the next field; the first edit's labels could not be reread, so the review turned
+    /// read-only: the open field's text is handed over to be queued (it waits for the reread), never only shown.
+    @Test func aFieldOpenWhenTheReviewTurnsReadOnlyIsKeptAsAnEdit() {
+        let (list, saved) = editingList()
+        var messages: [String?] = []
+        list.onEditMessage = { messages.append($0) }
+        var kept: [([String], String)] = []
+        list.onKeepWordEdit = { words, text, _ in kept.append((words.map(\.text), text)) }
+        list.editingWords = true
+        list.table.handleWordClick(row: 0, word: 1, through: 1, extend: false)
+        list.editField.stringValue = "Beta"
+        list.canEditWords = false
+        #expect(list.wordEdit == nil && saved().isEmpty)
+        #expect(kept.count == 1 && kept.first?.0 == ["beta"] && kept.first?.1 == "Beta")
+        #expect(messages.allSatisfy { $0 == nil }, "Nothing is left only in the banner.")
+        // A field holding nothing new is closed with nothing to keep.
+        list.canEditWords = true
+        list.table.handleWordClick(row: 0, word: 0, through: 0, extend: false)
+        list.canEditWords = false
+        #expect(list.wordEdit == nil && kept.count == 1)
+    }
+
     @Test func editModeTurnsOnOnlyWhileTheReviewIsEditable() {
         #expect(ReviewWindow.editModeAfterToggle(on: false, editable: true))
         #expect(!ReviewWindow.editModeAfterToggle(on: false, editable: false), "Read-only: ⌘E does not turn it on.")

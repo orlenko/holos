@@ -3776,7 +3776,10 @@ public struct SpeakerProfileDatabase: Codable, Sendable, Equatable {
     run is retargeted): what the cache holds for turns at the same times stays; when it moved
     a turn worth a voice (an untimed segment spreads its words again), the voices are worked
     out again on the new run, a pass running replaced (what it would store is at the old
-    times, never served). The app passes the spans on the
+    times, never served). Whenever the labels shown change once a pass has ended (an undo puts
+    back a turn a split cut while the pass ran), the voices are those the cache holds for the
+    turns at their times now; a saved turn worth a voice that no pass covered at its times
+    sends a new pass. The app passes the spans on the
     child's stdin, one per line (`speakers embed --turns - …`), from a 0600 temporary file it
     unlinks before the child starts: a 3-hour meeting has thousands of turns, and one argv
     entry holding them all could pass `ARG_MAX`. The other helper commands the app runs take
@@ -7749,7 +7752,12 @@ shown, Otter-style.
   within the quit's limit, an edit not saved yet is logged with what was typed. A maintenance
   command that makes the review read-only does the same: the open field's edit is queued
   before the pause and waited for; when it is refused, the footer says why, with what was
-  typed (`ReviewSession.pause(typed:)`). Space still plays and pauses outside the field; the
+  typed (`ReviewSession.pause(typed:)`). So does any other turn to read-only with the field
+  open (Tab saved an edit whose labels could not be reread, `reloadProblem`): the field's edit
+  is queued (`editWords(whileUnread:)`) and waits for the reread as the changes before it do;
+  it is checked against the words shown when it was asked for (the transcript read before the
+  unreread change), following that change's word move. When it is refused, the field opens
+  again with what was typed, or the banner says it. Space still plays and pauses outside the field; the
   timestamp buttons still play. Every word has a VoiceOver action "Edit “word”", which turns
   edit mode on and opens the field; it is offered only while words can be edited (not after
   the transcript changed under the labels), and reports failure when no field opened. An edited word is dotted-underlined like a fixed word
@@ -7938,7 +7946,9 @@ shown, Otter-style.
     extent shown ("cloud." beside "Claude.", the period untimed); when that cannot be read,
     its `heard` only if its shown text is just its words, else no context. A fix the edit's
     turn holds only part of gives no context on that side (corrected text never stands for
-    what was heard: "as New" beside "newark" made "New York" would match nothing). The
+    what was heard: "as New" beside "newark" made "New York" would match nothing), nor does a
+    damaged one (its words out of the segment's; it is never read, and an edit taking in a
+    damaged mark is refused). The
     turns are the labels on the transcript as it is then: labels the window could not reread
     after an edit are read again at close; when that fails, or the labels read are still on
     another transcript (a speaker head owed, or the transcript changed under them), nothing

@@ -718,6 +718,37 @@ func anEditWhoseLabelsCannotBeRereadCanStillBeUndone() async throws {
 }
 
 @Test(.timeLimit(.minutes(1))) @MainActor
+func aFieldKeptWhenTheRereadFailedIsQueuedAndSavedAtTheReread() async throws {
+    let temp = try TemporaryDirectory("review")
+    defer { temp.remove() }
+    let session = try await wordEditSession(in: temp, [
+        WordEditTurn(speaker: "system:S1", start: 0, words: ["ask", "cloud", "now"]),
+    ])
+    let review = try await wordEditOpen(session)
+    struct Unreadable: Error {}
+    var failures = 1
+    review.beforeWordChangeReread = {
+        guard failures > 0 else { return }
+        failures -= 1
+        throw Unreadable()
+    }
+    // Tab: the first edit is saved, its labels cannot be reread; the review turns read-only with the next field open.
+    let words = review.words(of: "T1")
+    await #expect(throws: HolosError.self) { try await review.editWords([words[1].ref], to: "Claude") }
+    #expect(review.reloadProblem != nil && !review.canEditWords)
+    // A new edit is refused; the open field's, kept (`whileUnread`), waits, still queued, for the reread.
+    await #expect(throws: HolosError.self) { try await review.editWords([words[2].ref], to: "later") }
+    let kept = Task { try await review.editWords([words[2].ref], to: "today", seenMoves: 0, whileUnread: true) }
+    #expect(await eventually { review.queuedOperations == 1 })
+    #expect(try wordEditCurrent(session).segments[0].text == "ask Claude now")
+    await review.reload()
+    _ = try await kept.value
+    #expect(try wordEditCurrent(session).segments[0].text == "ask Claude today")
+    #expect(review.reloadProblem == nil && review.queuedOperations == 0)
+    await review.close()
+}
+
+@Test(.timeLimit(.minutes(1))) @MainActor
 func aQueuedEditWaitsForTheRereadAnEarlierEditsFailureNeeds() async throws {
     let temp = try TemporaryDirectory("review")
     defer { temp.remove() }
@@ -863,6 +894,24 @@ func learningAgainAtTheNextCloseChangesNothingAndASecondOccurrenceIsAdded() asyn
     // Words 0–2 are each in a turn, word by word, but no one turn holds them all: not learned. "cloud" is in both;
     // the first turn holding it (A) gives its context: "ask" before it, nothing after (B's "now" is not A's).
     #expect(edits == [ReviewWordEdit(heard: "cloud", meant: "Claude", before: "ask")])
+}
+
+@Test func aDamagedFixBesideAnEditGivesNoContext() {
+    // A damaged but decodable transcript: "now" is under an automatic fix whose words run past the segment's, beside
+    // a valid edit ("as" → "ask"). A turn's span damaged the same way holds it too.
+    var segment = SessionFixtures.segment(["ask", "now"], track: "system", start: 0, wordSeconds: 1, id: "S1")
+    segment.fixes = [TranscriptWordFix(first: 0, end: 1, heard: "as", kind: .reviewEdit, heardWords: 1),
+                     TranscriptWordFix(first: 1, end: 9, heard: "know", kind: .correction, heardWords: 1)]
+    var fixed = SessionFixtures.transcript([segment])
+    var baseSegment = SessionFixtures.segment(["ask", "know"], track: "system", start: 0, wordSeconds: 1, id: "S1")
+    baseSegment.fixes = [segment.fixes![0]]
+    let base = SessionFixtures.transcript([baseSegment])
+    fixed.fixedFrom = base.id
+    for turns in [[[WordSpan(segmentID: "S1", first: 0, end: 2)]], [[WordSpan(segmentID: "S1", first: 0, end: 9)]]] {
+        // Learned without that side's context, and nothing read past the words.
+        #expect(ReviewLearning.edits(in: fixed, turns: turns, base: base) == [ReviewWordEdit(heard: "as", meant: "ask")])
+        #expect(ReviewLearning.edits(in: fixed, turns: turns) == [ReviewWordEdit(heard: "as", meant: "ask")])
+    }
 }
 
 @Test func aFixTheTurnHoldsOnlyPartOfGivesNoContext() {

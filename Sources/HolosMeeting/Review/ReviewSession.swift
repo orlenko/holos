@@ -232,6 +232,10 @@ public struct ReviewWord: Sendable, Equatable {
     /// How this window's saved word edits and undos moved words, oldest first: an edit waiting in the queue, and the
     /// window's open edit field, follow their words through them.
     public private(set) var wordMoves: [ReviewWordMove] = []
+    /// How many of `wordMoves` the words shown (`segments`) are after: a word change saved but not reread yet (its
+    /// labels could not be, `reloadProblem`) moved words the transcript shown does not have. A word edit is checked
+    /// against the words shown when it was asked for, from there.
+    private var movesRead = 0
     /// Applied optimistic edit IDs → the queued change that made them, for counting changes.
     private var optimisticOwner: [String: ObjectIdentifier] = [:]
     private var exportTimer: Task<Void, Never>?
@@ -246,7 +250,7 @@ public struct ReviewWord: Sendable, Equatable {
     private var voiceTask: Task<Void, Never>?
     private var voiceEpoch = 0
     private var voiceRunID: String?
-    private var voiceEmbeddings: [String: TurnEmbedding] = [:]
+    private(set) var voiceEmbeddings: [String: TurnEmbedding] = [:]
     /// What `voiceMatches` was last worked out from.
     private var voiceMatchKey: VoiceMatchKey?
     /// A pass a maintenance pause stopped, until its child has exited.
@@ -834,9 +838,15 @@ public struct ReviewWord: Sendable, Equatable {
     /// `committed`: called with what was edited once the edit is saved, also when it then throws because the labels
     /// could not be refreshed after it (the edit stands: what follows from it, such as adding its word-list term, still
     /// applies).
-    public func editWords(_ words: [WordRef], to text: String, seenMoves: Int? = nil,
+    ///
+    /// `whileUnread`: the edit of a field open when the review turned read-only because its labels could not be reread
+    /// (`reloadProblem`): queued all the same, it waits for the reread as the changes queued before it do, so what
+    /// was typed is never dropped.
+    public func editWords(_ words: [WordRef], to text: String, seenMoves: Int? = nil, whileUnread: Bool = false,
                           committed: ((ReviewWordEdit) -> Void)? = nil) async throws -> ReviewWordEdit? {
-        guard let op = try queuedWordEdit(words, to: text, seenMoves: seenMoves) else { return nil }
+        guard let op = try queuedWordEdit(words, to: text, seenMoves: seenMoves, whileUnread: whileUnread) else {
+            return nil
+        }
         do {
             try await wait(for: op)
         } catch {
@@ -848,13 +858,21 @@ public struct ReviewWord: Sendable, Equatable {
     }
 
     /// `editWords` up to its change being queued (no wait); nil when there is nothing to edit.
-    private func queuedWordEdit(_ words: [WordRef], to text: String, seenMoves: Int?) throws -> Operation? {
-        try requireEditable()
+    private func queuedWordEdit(_ words: [WordRef], to text: String, seenMoves: Int?,
+                                whileUnread: Bool = false) throws -> Operation? {
+        try requireEditable(whileUnread: whileUnread)
         guard !snapshot.transcriptChanged else { throw Self.labelAgainFirst }
         guard snapshot.journal.isComplete else { throw Self.speakerChangesUnreadable }
+        // The words as the transcript shown has them (`segments`, after `movesRead` moves; without `seenMoves`, the
+        // words were taken from it): a word change saved but not reread moved words it does not show yet, so words
+        // that followed that move are taken back through it. Checked against these words when it is saved, from
+        // there (`saveWordEdit`).
         var words = words
-        if let seenMoves, seenMoves < wordMoves.count {
-            let followed = Self.follow(words, through: wordMoves.dropFirst(seenMoves))
+        let seen = seenMoves ?? movesRead
+        if seen != movesRead {
+            let moves = seen < movesRead ? wordMoves[seen..<movesRead]
+                : ArraySlice(wordMoves[movesRead..<min(seen, wordMoves.count)].reversed().map(\.inverse))
+            let followed = Self.follow(words, through: moves)
             guard !followed.replaced else {
                 throw HolosError.invalidInput("Those words changed while you edited them; edit them again (what you "
                                               + "typed: “\(TranscriptWordEdit.cleaned(text))”).")
@@ -890,7 +908,10 @@ public struct ReviewWord: Sendable, Equatable {
         }
         let request = TranscriptWordEdit.Request(segmentID: first.segmentID, first: lowest, end: highest + 1,
                                                  text: text)
-        return queued(.editWords(request, segment: segment), optimistic: [])
+        let op = queued(.editWords(request, segment: segment), optimistic: [])
+        // Its words are those of `segment`: it follows every move since (it runs later, never before this returns).
+        op.movesSeen = movesRead
+        return op
     }
 
     /// Moves every turn of `speakerID` to `target`; `speakerID` disappears. `target` keeps its name.
@@ -2335,11 +2356,10 @@ public struct ReviewWord: Sendable, Equatable {
         guard analyseVoices, !closed, !backgroundStopped, pauses.isEmpty, !isRelabelling, let base = baseExtractor,
               let run = snapshot.run,
               let projection = snapshot.projection, !snapshot.audioDeleted else { return }
-        let diarized = Set(run.tracks.filter { $0.policy == .diarized }.map(\.track))
         var parts: [(track: String, turns: [TurnRef])] = []
-        for track in diarized.sorted() where track == "mic" || track == "system" {
-            let turns = projection.turns.filter { $0.track == track && Self.analysable($0) }.map(TurnRef.init)
-            if !turns.isEmpty { parts.append((track, turns)) }
+        let asked = Self.voicePassTurns(projection, run: run)
+        for track in Set(asked.map(\.track)).sorted() {
+            parts.append((track, asked.filter { $0.track == track }.map(TurnRef.init)))
         }
         guard !parts.isEmpty else { return }
         let epoch = voiceCache.begin(session: session, runID: projection.runID)
@@ -2430,6 +2450,15 @@ public struct ReviewWord: Sendable, Equatable {
         // Closing: what the pass stored serves the last sample sync (`close` drops it afterwards); no new pass.
         guard !closed, voiceRunID != snapshot.run?.id || voiceAnalysis == .off else { return }
         startVoiceAnalysis()
+    }
+
+    /// The turns a voice pass asks about: those worth a voice (`analysable`) on a microphone or system track split into
+    /// speakers.
+    nonisolated static func voicePassTurns(_ projection: SpeakerProjection, run: DiarizationRun) -> [ProjectedTurn] {
+        let diarized = Set(run.tracks.filter { $0.policy == .diarized }.map(\.track))
+        return projection.turns.filter { turn in
+            (turn.track == "mic" || turn.track == "system") && diarized.contains(turn.track) && analysable(turn)
+        }
     }
 
     /// Whether a turn is worth a voice: long enough to learn from, and not cut by a split (its times are its own).
@@ -2655,6 +2684,8 @@ public struct ReviewWord: Sendable, Equatable {
         }
         if transcriptChanged {
             segments = Self.segmentIndex(fresh.transcript)
+            // Read after every word change saved so far: their moves are in it.
+            movesRead = wordMoves.count
             textCache.removeAll()
             wordCache.removeAll()
         }
@@ -2864,7 +2895,25 @@ public struct ReviewWord: Sendable, Equatable {
         }
         projection = display
         optimisticOwner = owners
+        refreshVoicesForProjection()
         refreshVoiceMatches()
+    }
+
+    /// The labels shown changed (an undo puts back a turn a split had cut, say): the voices are those of the turns as
+    /// they are now (`MeetingVoiceCache.embeddings` checks their times); a turn worth a voice that no pass covered at
+    /// these times sends a new pass, as a turn a word edit moved does.
+    private func refreshVoicesForProjection() {
+        guard voiceAnalysis == .ready, let runID = voiceRunID, runID == projection.runID, !closed,
+              let run = snapshot.run, let saved = snapshot.projection else { return }
+        // The saved labels' turns a pass asks about (never a change still waiting to save, which no pass can cover).
+        if Self.voicePassTurns(saved, run: run).contains(where: { !voiceCache.covers(runID: runID, turn: TurnRef($0)) }) {
+            startVoiceAnalysis()
+            return
+        }
+        let current = voiceCache.embeddings(runID: runID, turns: projection.turns.map(TurnRef.init))
+        guard Set(current.keys) != Set(voiceEmbeddings.keys) else { return }
+        voiceEmbeddings = current
+        voiceMatchKey = nil
     }
 
     /// What a queued change shows: its actions (with turn IDs of saved splits resolved), nothing once undone, and for
@@ -2978,12 +3027,14 @@ public struct ReviewWord: Sendable, Equatable {
         }
     }
 
-    private func requireEditable() throws {
+    /// `whileUnread`: the change may also be queued while the labels could not be reread (`reloadProblem`): it then
+    /// waits, still queued, for the reread, as changes queued before it do.
+    private func requireEditable(whileUnread: Bool = false) throws {
         guard !closed else { throw Self.closedError }
         guard snapshot.projection != nil else {
             throw HolosError.unavailable(snapshot.runProblem ?? "This meeting's speaker labels cannot be used.")
         }
-        if let reloadProblem { throw HolosError.unavailable(reloadProblem) }
+        if let reloadProblem, !whileUnread { throw HolosError.unavailable(reloadProblem) }
         guard !isRelabelling else {
             throw HolosError.unavailable("Voice is Local is labelling this meeting's speakers again; wait until it finishes.")
         }

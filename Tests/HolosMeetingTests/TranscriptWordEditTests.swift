@@ -543,3 +543,16 @@ private let editEchoMask: AcousticEchoMask = {
     let turn = try #require(view.turns.first { $0.track == "mic" })
     #expect(turn.spans.flatMap { Array($0.first..<$0.end) } == [0, 1, 2, 4, 5, 6, 7, 8, 9])
 }
+
+@Test func anEditOverADamagedMarkIsRefusedNeverRead() throws {
+    // A damaged but decodable transcript: a mark with no words, and one running backwards, among the edited words.
+    for damaged in [TranscriptWordFix(first: 1, end: 1, heard: "cloud", kind: .correction, heardWords: 1),
+                    TranscriptWordFix(first: 2, end: 1, heard: "cloud", kind: .reviewEdit, heardWords: 1)] {
+        var segment = editSegment(["ask", "cloud", "now"])
+        segment.fixes = [damaged]
+        #expect(throws: HolosError.self) {
+            try TranscriptWordEdit.editing(editRequest(0, 3, "ask Claude now"), in: editTranscript([segment]),
+                                           base: nil)
+        }
+    }
+}

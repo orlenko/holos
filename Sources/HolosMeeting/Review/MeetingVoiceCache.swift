@@ -114,6 +114,14 @@ public final class MeetingVoiceCache: Sendable {
         abs(entry.start - turn.start) < 1e-6 && abs(entry.end - turn.end) < 1e-6
     }
 
+    /// Whether `turn` of `runID` is covered at its times (with an embedding or with none): a pass asked about it as it is.
+    public func covers(runID: String, turn: TurnRef) -> Bool {
+        storage.withLock { storage in
+            guard storage.runID == runID, let entry = storage.entries[turn.id] else { return false }
+            return Self.sameTimes(entry, turn)
+        }
+    }
+
     /// Whether a pass is running.
     public var isComputing: Bool { storage.withLock { $0.computing } }
 

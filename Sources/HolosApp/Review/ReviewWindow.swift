@@ -457,6 +457,11 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, Clo
             self?.editWords(words, to: text, addTerm: addTerm, movesSeen: movesSeen)
         }
         turnList.onEditMessage = { [weak self] message in self?.editBanner.show(message: message) }
+        // The review turned read-only with a field open (an earlier edit's labels could not be reread, say): its edit
+        // is queued all the same, and waits for the reread as the changes before it do.
+        turnList.onKeepWordEdit = { [weak self] words, text, movesSeen in
+            self?.editWords(words, to: text, addTerm: false, movesSeen: movesSeen, whileUnread: true)
+        }
         turnList.onRequestEditing = { [weak self] in
             guard let self, self.review.canEditWords else { return }
             self.setEditMode(true)
@@ -1046,14 +1051,16 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, Clo
     /// Saves an edit made in the turn list. Its new run keeps the turns, as does its undo's (`ReviewSession.keepsTurns`),
     /// so the window's paragraph breaks stay (`refresh`). Once saved, a new text that looks like a name or term is
     /// offered for the word list (with ⌥Return it is added at once).
-    private func editWords(_ words: [ReviewWord], to text: String, addTerm: Bool, movesSeen: Int) {
+    private func editWords(_ words: [ReviewWord], to text: String, addTerm: Bool, movesSeen: Int,
+                           whileUnread: Bool = false) {
         offeredTerm = nil
         perform { [weak self] review in
             var saved = false
             do {
                 // Once saved, also when the labels could not be refreshed after it (the edit stands, and ⌥Return's
                 // term is still added).
-                _ = try await review.editWords(words.map(\.ref), to: text, seenMoves: movesSeen) { edit in
+                _ = try await review.editWords(words.map(\.ref), to: text, seenMoves: movesSeen,
+                                               whileUnread: whileUnread) { edit in
                     saved = true
                     self?.offerTerm(after: edit, add: addTerm)
                 }

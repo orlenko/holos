@@ -263,6 +263,12 @@ extension TurnListView: NSTextFieldDelegate {
     /// The open field's words are gone: it closes, keeping what was typed in the banner when it was changed.
     func loseWordEdit() {
         guard let target = wordEdit else { return }
+        // The review turned read-only (words cannot be edited now): what was typed is handed over to be queued
+        // (`onKeepWordEdit`: it waits for the review, as changes queued before it do), never only shown.
+        if !editable || !canEditWords, let keep = onKeepWordEdit {
+            if let open = takeOpenWordEdit() { keep(open.words, open.text, open.movesSeen) }
+            return
+        }
         let typed = editField.stringValue
         cancelWordEdit()
         let changed = TranscriptWordEdit.cleaned(typed) != TranscriptWordEdit.cleaned(target.shown)

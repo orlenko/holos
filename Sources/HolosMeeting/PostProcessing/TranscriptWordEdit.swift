@@ -145,6 +145,11 @@ public enum TranscriptWordEdit {
         guard touched.allSatisfy({ [.correction, .term, .reviewRevert, .reviewEdit].contains($0.kind) }) else {
             throw HolosError.invalidInput("These words were changed by a newer Voice is Local and cannot be edited here.")
         }
+        // A damaged mark (empty, backwards, or past the segment's words) is never read: the words it touches are not
+        // edited.
+        guard touched.allSatisfy({ $0.first >= 0 && $0.first < $0.end && $0.end <= words.count }) else {
+            throw HolosError.invalidInput("That segment's word positions cannot be edited safely.")
+        }
 
         let utf16 = Array(segment.text.utf16)
         func characters(_ words: [EffectiveWord], _ range: Range<Int>) -> Range<Int> {
