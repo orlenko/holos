@@ -152,7 +152,7 @@ JSON; Copy as Markdown) complete it. Changes save as you make them and the trans
 follow a moment later; a change made from an outdated view (another window or a command)
 is refused and the window shows the current labels. The footer box "Learn voices of people
 I name in this meeting" decides whether naming a person also learns their voice; it starts
-checked while Remember voices is on, which is the default. Delete
+checked while Remember voices is on (on for new installs). Delete
 Meeting can also forget the voice samples learned from that meeting. See the
 [meeting validation guide](docs/meeting-validation.md) for the manual checks.
 
@@ -505,8 +505,8 @@ once `session summarize` made them. No export contains voice data.
 People and voices: `voiceislocal speakers link <session> <speaker> <person|new:NAME>` links a
 speaker to a person (`voiceislocal speakers me` to you), which also names the speaker, so the
 name carries across meetings; `voiceislocal speakers reject` says a speaker is not someone in
-that meeting. Names never need a voiceprint. Remembering voices is on by default, and
-turning it off is kept (`voiceislocal people remember on|off|status`, or the People window): with it on,
+that meeting. Names never need a voiceprint. Remembering voices is on for new
+installs; an existing setting is kept (`voiceislocal people remember on|off|status`, or the People window): with it on,
 `link --learn-voice` learns the person's voice from that speaker's clear turns (only do
 this for people who agreed; voiceprints are biometric data), and later meetings suggest
 them as "Maybe Jim" in `voiceislocal speakers list` and the review window. Suggestions are never

@@ -208,7 +208,7 @@ public enum VoiceProfileService {
             log.notice("Remember voices turned off")
             return removed
         }
-        try store.update { $0.chooseRememberVoices(on) }
+        try store.update { $0.rememberVoices = on }
         log.notice("Remember voices turned \(on ? "on" : "off", privacy: .public)")
         return 0
     }
@@ -1299,7 +1299,7 @@ public enum VoiceProfileService {
             var found: String?
             removed = try store.update { database -> Int in
                 let before = database.sampleCount
-                if record.turnRememberOff == true { database.chooseRememberVoices(false) }
+                if record.turnRememberOff == true { database.rememberVoices = false }
                 if kind == .profile, let profileID = record.profileID {
                     database.profiles.removeAll { $0.id == profileID }
                 }

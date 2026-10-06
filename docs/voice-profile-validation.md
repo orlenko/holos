@@ -12,7 +12,7 @@ Where a step says `<session>`, use the session ID or `.holos` path that `voiceis
 
 ## H15: A confirmed voice is suggested in a later meeting
 
-1. Make sure **Remember voices** is on (the default unless you turned it off): `voiceislocal people
+1. Make sure **Remember voices** is on (on for new installs; an earlier setting is kept): `voiceislocal people
    list` says `Remember voices: on`. If not, run `voiceislocal people remember on`, or check "Remember
    voices of people I name" in **People…** (menu bar).
 2. Meeting A: record a short meeting with the willing person (or import one with

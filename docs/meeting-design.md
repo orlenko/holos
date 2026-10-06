@@ -26,7 +26,7 @@ stops and reports it; it does not edit a file owned by another PR.
 | # | Decision | Where it shows up |
 |---|---|---|
 | 1 | FluidAudio 0.17.1, pinned, checksummed, credited | §4.8, PR7a, `THIRD_PARTY_NOTICES.md`, About panel (PR4) |
-| 2 | Remember voices: only from confirmed labels, with forget and export; on by default since 2026-10-06 ("if I label words with names, that's the whole point"), and a choice to turn it off is kept | §4.10, PR10. Voice embeddings are stored only as profile samples of people the user confirmed with voice learning on, extracted on demand (§4.10); post-processing never persists them; names are not voiceprints and are always kept |
+| 2 | Remember voices: only from confirmed labels, with forget and export; on for new installs since 2026-10-06 ("if I label words with names, that's the whole point"); an existing setting is kept | §4.10, PR10. Voice embeddings are stored only as profile samples of people the user confirmed with voice learning on, extracted on demand (§4.10); post-processing never persists them; names are not voiceprints and are always kept |
 | 3 | Int16 audio now; AAC compaction later | PR2a (`AudioChunkWriter`); system audio is also recorded mono (§4.5) |
 | 4 | Recorder = bundled `holos` CLI child of the app; in-process fallback allowed | §4.1, §4.6, PR4 (`RecorderLauncher` with both implementations) |
 | 5 | Sleep < 15 min resumes, else finalize at the sleep point | §4.4, PR2b. Refinement to confirm: sleep that starts while *paused* keeps the meeting paused (§9 Q1) |
@@ -3366,10 +3366,9 @@ public struct SpeakerProfile: Codable, Sendable, Equatable, Identifiable {
 
 public struct SpeakerProfileDatabase: Codable, Sendable, Equatable {
     public var schemaVersion: Int                // 1
-    /// On by default. Governs voice samples, per-session voice data, and recognition. Never names.
+    /// On in a new store; an existing store keeps its value. Governs voice samples, per-session voice data, and
+    /// recognition. Never names.
     public var rememberVoices: Bool
-    /// True once the user chose the setting (People window, `people remember`, a forget that turns it off).
-    public var rememberVoicesChosen: Bool?
     /// Set by `holos people calibrate --apply`; `likely` exists only when this is set, and only for runs of
     /// `calibratedModel`.
     public var calibratedThresholds: RecognitionThresholds?
@@ -3384,19 +3383,9 @@ public struct SpeakerProfileDatabase: Codable, Sendable, Equatable {
 - **Store.** `SpeakerProfileStore` (HolosStorage) at `HolosPaths.speakerProfiles`
   (`<support>/Speakers/`, 0700, excluded from Time Machine with
   `URLResourceValues.isExcludedFromBackup`; `profiles.json` 0600). `load()` returns an
-  empty database (`rememberVoices: true`, no choice recorded) when the file is missing.
-- **Remember voices default (2026-10-06).** On by default. Every change the user makes
-  (the People window's box, `people remember on|off`, and the store write of a forget
-  that turns it off) goes through `chooseRememberVoices`, which also sets
-  `rememberVoicesChosen: true`. Stores written before this had no such marker, so
-  `load()` applies `applyRememberDefault`: without the marker, an off setting is read as
-  never chosen and turns on, unless the store holds voice samples (learned only while
-  the setting was on, so off with samples kept was the user's own choice: the marker is
-  set instead). The result is in memory; the next write of the store saves it. The
-  marker is an optional field within schema version 1 (§1.6 rule 2): an earlier build
-  reads the store and ignores it, but drops it when it rewrites the store, so a store an
-  earlier build wrote after the user turned the setting off, without samples, reads as
-  on again in this build.
+  empty database (`rememberVoices: true`, the default for new installs since
+  2026-10-06) when the file is missing; an existing `profiles.json` keeps the value it
+  has, so a store saved off, by the user or under the earlier off default, stays off.
   `update(_ body: (inout SpeakerProfileDatabase) throws -> T)` takes `profiles.lock`
   (2 s), reads, mutates, validates (unique IDs, one sample per session per profile,
   one `isSelf`, finite sample values, and calibrated thresholds that are finite, in
@@ -7560,13 +7549,10 @@ setting.
 | `forgetPersonRemovesSamplesAndVoiceEntries` | forget Jim | samples gone; Jim's entries removed from contributing voice files; sessions keep the name; exports regenerated |
 | `forgetAllRemovesVoiceFilesKeepsNames` | forgetAll | every `speakers/voice/` gone; profiles remain with 0 samples |
 | `forgetSessionRemovesItsSamples` | forget(sessionID:) | only that meeting's samples gone |
-| `rememberOffWithForget` | `setRemember(false, forgetExisting: true)`, then `forgetAll` | samples and voice files gone; names remain; off with the choice recorded, still off after Forget All |
-| `rememberSettingRecordsTheUsersChoice` | fresh store; `setRemember(false)`, an unrelated write, `setRemember(true)` | on by default with no choice; off and on each recorded and kept |
-| `missingStoreLoadsEmptyWithRememberOn` | no `profiles.json` | on, no choice recorded; the first write saves `rememberVoices: true` |
-| `legacyStoreThatNeverChoseTurnsRememberOn` | `{"rememberVoices": false}` without the marker | loads on; the next write saves it |
-| `storeWhoseUserChoseOffStaysOff` | off with `rememberVoicesChosen: true` | stays off |
-| `legacyStoreOffWithSamplesKeepsItsChoice` | off, no marker, a sample | stays off; the marker is saved with the next write and outlives the samples |
-| `learnVoicesStartsOnWithTheRememberDefault` | review window on a fresh store and on a legacy off store | footer box starts on |
+| `rememberOffWithForget` | `setRemember(false, forgetExisting: true)` | samples and voice files gone; names remain |
+| `missingStoreLoadsEmptyWithRememberOn` | no `profiles.json` | on; the first write saves `rememberVoices: true` |
+| `existingStoreKeepsItsRememberSetting` | a store saved off, and one saved on | each keeps its value through reads and writes |
+| `learnVoicesFollowsTheRememberSetting` | review window on a fresh store, then on a store saved off | footer box starts on, then off |
 | `profileStoreIsPrivateLockedAndNotBackedUp` | two concurrent updates | both applied; 0600 / 0700; `isExcludedFromBackup` |
 | `peopleExportOmitsEmbeddingsByDefault` | export | no `embedding` keys |
 | `calibrationNeedsThreeMeetings` | 2 meetings with links | `--apply` refused |

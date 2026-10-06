@@ -138,7 +138,7 @@ func rememberOffMeansNoVoiceDataAndNoRecognition() async throws {
     let store = profileStore(temp)
     try store.update {
         $0.profiles = [profilePerson("JIM", "Jim", vector: profileAxis(0))]
-        $0.chooseRememberVoices(false)
+        $0.rememberVoices = false
     }
     let (session, record) = try await profileProcessedSession(in: temp, store: store)
     #expect(record.state == .succeeded)
@@ -279,7 +279,7 @@ func linkWithoutRememberKeepsTheName() async throws {
     let temp = try TemporaryDirectory("profiles")
     defer { temp.remove() }
     let store = profileStore(temp)
-    try store.update { $0.chooseRememberVoices(false) }
+    try store.update { $0.rememberVoices = false }
     let (session, run) = try await profileSession(in: temp)
     let extractor = ProfileFakeExtractor()
     _ = try await VoiceProfileService.link(
@@ -673,7 +673,7 @@ func sampleFromAnEarlierRunIsKeptWhenItCannotBeRelearned() async throws {
     old.inputDigest = "old"
     try store.update {
         $0.profiles = [SpeakerProfile(id: "JIM", displayName: "Jim", embeddingModel: profileModel, samples: [old])]
-        $0.chooseRememberVoices(false)
+        $0.rememberVoices = false
     }
     let extractor = ProfileFakeExtractor()
     try await VoiceProfileService.refreshSamples(session: session, extractor: extractor, store: store)
@@ -874,49 +874,9 @@ func rememberOffWithForget() async throws {
     try VoiceProfileService.setRemember(false, forgetExisting: true, store: store, sessionsRoot: temp.url)
     let database = try store.load()
     #expect(!database.rememberVoices)
-    #expect(database.rememberVoicesChosen == true, "The tombstone's store write records the choice.")
     #expect(database.sampleCount == 0)
     #expect(database.profiles.map(\.displayName) == ["Jim"])
     #expect(!SessionFixtures.exists(SessionPaths.voiceDirectory(session)))
-
-    // With no samples left, only the recorded choice keeps it off: the default does not turn it back on, and
-    // neither does a later Forget All Voices.
-    try VoiceProfileService.forgetAll(store: store, sessionsRoot: temp.url)
-    let after = try store.load()
-    #expect(!after.rememberVoices)
-    #expect(after.rememberVoicesChosen == true)
-}
-
-/// The People window's "Remember voices" box and `voiceislocal people remember on|off` both go through
-/// `setRemember`, which records that the user chose.
-@Test func rememberSettingRecordsTheUsersChoice() throws {
-    let temp = try TemporaryDirectory("profiles")
-    defer { temp.remove() }
-    let store = profileStore(temp)
-    let fresh = try store.load()
-    #expect(fresh.rememberVoices, "On by default.")
-    #expect(fresh.rememberVoicesChosen == nil)
-
-    try VoiceProfileService.setRemember(false, forgetExisting: false, store: store, sessionsRoot: temp.url)
-    var database = try store.load()
-    #expect(!database.rememberVoices, "A choice to turn it off survives the next read.")
-    #expect(database.rememberVoicesChosen == true)
-
-    // A change of something else keeps the choice.
-    try store.update { $0.profiles.append(SpeakerProfile(displayName: "Maria")) }
-    database = try store.load()
-    #expect(!database.rememberVoices)
-    #expect(database.rememberVoicesChosen == true)
-
-    try VoiceProfileService.setRemember(true, forgetExisting: false, store: store, sessionsRoot: temp.url)
-    database = try store.load()
-    #expect(database.rememberVoices)
-    #expect(database.rememberVoicesChosen == true)
-
-    // Turning it on explicitly over the default records the choice too.
-    let other = SpeakerProfileStore(directory: temp.url.appendingPathComponent("Other/Speakers", isDirectory: true))
-    try VoiceProfileService.setRemember(true, forgetExisting: false, store: other, sessionsRoot: temp.url)
-    #expect(try other.load().rememberVoicesChosen == true)
 }
 
 /// Replaces `url` with bytes that are not JSON.
@@ -974,7 +934,6 @@ func rememberOffWithForgetTurnsOffInTheSameWrite() async throws {
     }
     // The setting and the samples changed together, and the tombstone is there to finish the rest.
     #expect(try !store.load().rememberVoices)
-    #expect(try store.load().rememberVoicesChosen == true)
     #expect(try store.load().sampleCount == 0)
     #expect(try store.pendingForgets().count == 1)
 
@@ -1048,7 +1007,6 @@ func rememberOffForgetsSamplesLearnedAfterTheyWereListed() async throws {
     try store.appendForgetRecord(stale)
     try VoiceProfileService.perform(stale, store: store, sessionsRoot: temp.url)
     #expect(try !store.load().rememberVoices)
-    #expect(try store.load().rememberVoicesChosen == true)
     #expect(try store.load().sampleCount == 0)
     #expect(try store.pendingForgets().isEmpty)
 
@@ -1789,7 +1747,6 @@ func aForgetThatCrashedBeforeItsStoreWriteStillTurnsRememberingOff() async throw
     try VoiceProfileService.resumePendingForgets(store: store, sessionsRoot: temp.url)
 
     #expect(try !store.load().rememberVoices, "Turning the setting off is part of the store phase the crash skipped.")
-    #expect(try store.load().rememberVoicesChosen == true, "The resumed tombstone records the choice too.")
     #expect(try store.load().sampleCount == 0, "So is the sweep of everything the scope covers.")
     #expect(!FileManager.default.fileExists(atPath: leftover.path), "A forget clears atomic-write leftovers.")
     #expect(try store.pendingForgets().isEmpty)

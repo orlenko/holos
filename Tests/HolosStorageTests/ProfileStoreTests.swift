@@ -33,97 +33,29 @@ private func profileSample(session: String = UUID().uuidString) -> VoiceprintSam
     let store = SpeakerProfileStore(directory: root.appendingPathComponent("Speakers"))
     let database = try store.load()
     #expect(database == SpeakerProfileDatabase())
-    #expect(database.rememberVoices)
-    #expect(database.rememberVoicesChosen == nil, "The default is not a choice.")
+    #expect(database.rememberVoices, "On for new installs.")
     #expect(!FileManager.default.fileExists(atPath: store.directory.path), "Loading creates nothing.")
 
-    // The first write of a fresh store saves the default as it is.
+    // The first write of a fresh store saves the default.
     try store.update { $0.profiles = [SpeakerProfile(displayName: "Jim")] }
     let saved = try JSONSerialization.jsonObject(with: Data(contentsOf: store.databaseURL)) as? [String: Any]
     #expect(saved?["rememberVoices"] as? Bool == true)
-    #expect(saved?["rememberVoicesChosen"] == nil)
 }
 
-/// A store written before Remember voices was on by default: `rememberVoices` and no `rememberVoicesChosen`.
-private func legacyStore(remember: Bool, chosen: Bool? = nil, samples: Bool = false) throws
-    -> (store: SpeakerProfileStore, root: URL) {
+/// A store an earlier build saved (when the default was off) keeps the setting it has, through reads and writes.
+@Test(arguments: [false, true])
+func existingStoreKeepsItsRememberSetting(_ remember: Bool) throws {
     let root = try profileRoot()
-    let store = SpeakerProfileStore(directory: root.appendingPathComponent("Speakers"))
-    var database = SpeakerProfileDatabase(rememberVoices: remember, rememberVoicesChosen: chosen)
-    if samples {
-        database.profiles = [SpeakerProfile(id: "JIM", displayName: "Jim", createdAt: profileDate,
-                                            embeddingModel: profileModel, samples: [profileSample()])]
-    }
-    try store.update { _ in }  // creates the private folder
-    try AtomicFile.writeJSON(database, to: store.databaseURL)
-    return (store, root)
-}
-
-@Test func legacyStoreThatNeverChoseTurnsRememberOn() throws {
-    let (store, root) = try legacyStore(remember: false)
     defer { try? FileManager.default.removeItem(at: root) }
-    let raw = try JSONSerialization.jsonObject(with: Data(contentsOf: store.databaseURL)) as? [String: Any]
-    #expect(raw?["rememberVoices"] as? Bool == false)
-    #expect(raw?["rememberVoicesChosen"] == nil, "The fixture is a store from before the marker.")
-
-    let loaded = try store.load()
-    #expect(loaded.rememberVoices, "Off without a recorded choice was the old default, not a choice.")
-    #expect(loaded.rememberVoicesChosen == nil)
-    // The next write saves it.
+    let store = SpeakerProfileStore(directory: root.appendingPathComponent("Speakers"))
+    try store.update { _ in }  // creates the private folder
+    let legacy = Data(#"{"schemaVersion": 1, "rememberVoices": \#(remember), "profiles": []}"#.utf8)
+    try AtomicFile.write(legacy, to: store.databaseURL)
+    #expect(try store.load().rememberVoices == remember)
     try store.update { $0.profiles = [SpeakerProfile(displayName: "Maria")] }
     let saved = try JSONSerialization.jsonObject(with: Data(contentsOf: store.databaseURL)) as? [String: Any]
-    #expect(saved?["rememberVoices"] as? Bool == true)
-    #expect(try store.load().rememberVoices)
-}
-
-@Test func storeWhoseUserChoseOffStaysOff() throws {
-    let (store, root) = try legacyStore(remember: false, chosen: true)
-    defer { try? FileManager.default.removeItem(at: root) }
-    #expect(try !store.load().rememberVoices)
-    try store.update { $0.profiles = [SpeakerProfile(displayName: "Maria")] }
-    let loaded = try store.load()
-    #expect(!loaded.rememberVoices)
-    #expect(loaded.rememberVoicesChosen == true)
-}
-
-@Test func legacyStoreOffWithSamplesKeepsItsChoice() throws {
-    // Samples are learned only while the setting is on, so off with samples kept was turned off by the user.
-    let (store, root) = try legacyStore(remember: false, samples: true)
-    defer { try? FileManager.default.removeItem(at: root) }
-    let loaded = try store.load()
-    #expect(!loaded.rememberVoices)
-    #expect(loaded.rememberVoicesChosen == true)
-    // The choice is saved with the next write, so it outlives the samples.
-    try store.update { database in
-        for index in database.profiles.indices {
-            database.profiles[index].samples = []
-            database.profiles[index].embeddingModel = nil
-        }
-    }
-    let after = try store.load()
-    #expect(after.sampleCount == 0)
-    #expect(!after.rememberVoices)
-    #expect(after.rememberVoicesChosen == true)
-}
-
-@Test func legacyStoreOnStaysOnWithoutAChoice() throws {
-    let (store, root) = try legacyStore(remember: true)
-    defer { try? FileManager.default.removeItem(at: root) }
-    let loaded = try store.load()
-    #expect(loaded.rememberVoices)
-    #expect(loaded.rememberVoicesChosen == nil)
-}
-
-@Test func choosingRememberRecordsTheChoice() {
-    var database = SpeakerProfileDatabase()
-    database.chooseRememberVoices(false)
-    #expect(!database.rememberVoices)
-    #expect(database.rememberVoicesChosen == true)
-    database.applyRememberDefault()
-    #expect(!database.rememberVoices, "A recorded choice is never overridden by the default.")
-    database.chooseRememberVoices(true)
-    #expect(database.rememberVoices)
-    #expect(database.rememberVoicesChosen == true)
+    #expect(saved?["rememberVoices"] as? Bool == remember)
+    #expect(try store.load().rememberVoices == remember)
 }
 
 @Test(.timeLimit(.minutes(1)))
