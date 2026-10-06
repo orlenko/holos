@@ -209,7 +209,9 @@ thumbnail timeline, and a larger local-model benchmark are follow-ups.
   words; it takes about 2 s per hour of audio (about 5 s with preparing both tracks). A
   meeting whose analysis is missing (labelled before this version, or a pass that failed) gets
   it in the background from the app, newest first, one meeting at a time between the other
-  background jobs ("Removing echo…" in Meetings; a failure is tried again at the next launch),
+  background jobs ("Removing echo…" in Meetings; a failure is tried again at the next launch;
+  a run going when a meeting starts is stopped and runs again after it; the command holds the
+  background job lock, so a run left going over an app relaunch holds the others back),
   or from the next relabel or Recover, or at once with
   `voiceislocal session echo-analyze <id>`; nothing stored besides `echo/` and the transcript
   files changes. Review playback mutes the echo: with an echo verdict, the microphone plays

@@ -270,19 +270,21 @@ public enum SessionCatalog {
             manifestName: manifest.name)
     }
 
-    /// What the background-job lock says runs on meeting `sessionID`: a summary or a final transcript of it, in any
-    /// process (one started in Terminal holds the lock without holding the meeting until it saves). Nil otherwise.
+    /// What the background-job lock says runs on meeting `sessionID`: a summary, a final transcript or an echo analysis
+    /// of it, in any process (one started in Terminal holds the lock without holding the meeting until it saves). Nil
+    /// otherwise.
     ///
     /// A lock held by a job that has not written who it is yet (`held(nil)`) holds every meeting, as the rename command
     /// counts it.
     static func jobInProgress(_ state: DeepTranscriptionLock.State, sessionID: String) -> String? {
         guard case .held(let named) = state else { return nil }
         guard let holder = named else {
-            return "A background job (a summary or final transcript) is starting."
+            return "A background job (a summary, final transcript or echo removal) is starting."
         }
         guard holder.sessionID.caseInsensitiveCompare(sessionID) == .orderedSame else { return nil }
-        return holder.isSummary ? "A summary of this meeting is being written."
-            : "A final transcript of this meeting is being made."
+        if holder.isSummary { return "A summary of this meeting is being written." }
+        if holder.isEcho { return "The call's echo is being removed from this meeting." }
+        return "A final transcript of this meeting is being made."
     }
 
     /// `summaries` with `LanguageWork.ready` set where a run would detect a language now

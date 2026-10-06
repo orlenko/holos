@@ -323,8 +323,8 @@ extension HolosAppDelegate {
         }
         guard let controller = meeting.controller, let maintenance = meeting.maintenance else { return }
         // Another process's pass holds the lock: wait for it (checked again every 30 s). One at a time on this Mac.
-        // A meeting summary shares the lock (§4.17), this app's own while it starts too: wait for it, without saying
-        // another final transcript runs. So does this app's echo analysis (§5.11), which takes no lock.
+        // A meeting summary and an echo analysis share the lock (§4.17, §5.11), this app's own while it starts too
+        // (before the command takes it): wait for them, without saying another final transcript runs.
         if meeting.deep.running == nil {
             let lock = DeepTranscriptionLock.state()
             let other = lock.isDeepPass
@@ -566,7 +566,7 @@ extension HolosAppDelegate {
         let own = meeting.controller?.sessionsInUse[sessionID] == Self.deepRunningText
             && meeting.deep.running?.sessionID == sessionID
         var other = false
-        if !own, case .held(let holder?) = DeepTranscriptionLock.state(), !holder.isSummary {
+        if !own, case .held(let holder?) = DeepTranscriptionLock.state(), holder.isDeepPass {
             other = holder.sessionID == sessionID
         }
         guard own || other else { return false }

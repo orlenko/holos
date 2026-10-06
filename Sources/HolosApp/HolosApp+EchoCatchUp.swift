@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 import HolosCore
 import HolosMeeting
@@ -13,8 +14,13 @@ import os
 final class EchoCatchUpAppState {
     /// The meetings found needing the analysis, newest first; each leaves it when its run ends.
     var queue: [EchoCatchUpSchedule.Candidate] = []
-    /// The meeting analysed now (this app's own child; the app never signals it).
+    /// The meeting analysed now (this app's own child).
     var running: String?
+    /// The running child's pid (0 while it starts), which no other process can have until the app reaps it: signalled
+    /// only when a meeting starts.
+    var pid: Int32 = 0
+    /// The run was stopped because a meeting started: it stays queued and runs again once the meeting is saved.
+    var preempted: String?
     var scanning = false
     /// The first scan of this launch ended: until then the queue is not known yet, and automatic final transcripts
     /// and summaries wait for it (they would be made from labels a call's echo analysis is about to change).
@@ -123,7 +129,8 @@ extension HolosAppDelegate {
 
     /// Starts the next run when `EchoCatchUpSchedule` says so. One job at a time on this Mac: not while a meeting
     /// starts, records or saves, while this app makes a final transcript or a summary, or while any process holds the
-    /// background job lock; a final transcript or summary the user asked for goes first.
+    /// background job lock (the command holds it too, so a run left going from before a relaunch holds the queue
+    /// back); a final transcript or summary the user asked for goes first.
     func scheduleEchoCatchUp() {
         guard let controller = meeting.controller, meeting.maintenance != nil, meeting.echo.running == nil,
               !meeting.echo.queue.isEmpty else { return }
@@ -180,10 +187,11 @@ extension HolosAppDelegate {
         let output = Self.temporaryFile("echo")
         let errors = Self.temporaryFile("echo-err")
         do {
-            try maintenance.run(["session", "echo-analyze", path, "--json"], standardOutput: output,
-                                standardError: errors) { [weak self] code in
+            let pid = try maintenance.run(["session", "echo-analyze", path, "--json"], standardOutput: output,
+                                          standardError: errors) { [weak self] code in
                 self?.echoAnalyzeExited(sessionID, code: code, output: output, errors: errors)
             }
+            meeting.echo.pid = pid
             Self.echoLog.notice("Echo analysis of \(sessionID, privacy: .public) started")
         } catch {
             // Kept queued: the scheduler tries again in a minute.
@@ -193,6 +201,19 @@ extension HolosAppDelegate {
             Self.echoLog.error("Cannot start the echo analysis: \(error.localizedDescription, privacy: .private)")
             echoCatchUpEnded(sessionID, end: nil)
         }
+    }
+
+    /// A meeting is starting, recording, or saving: this app's echo analysis running now is stopped (SIGTERM; the
+    /// command stops before or while the voice samples are recomputed, which can take minutes, and leaves what it did
+    /// not finish for the next run) and stays queued, so the meeting has the Mac to itself; it runs again once the
+    /// meeting is saved. A run another process started is left alone: it is the user's own (or one from before a
+    /// relaunch).
+    func echoCatchUpMeetingStateChanged() {
+        guard let controller = meeting.controller, meetingIsBusy(controller.state),
+              let running = meeting.echo.running, meeting.echo.pid > 0, meeting.echo.preempted == nil,
+              kill(meeting.echo.pid, SIGTERM) == 0 else { return }
+        meeting.echo.preempted = running
+        Self.echoLog.notice("Echo analysis of \(running, privacy: .public) stopped for a meeting")
     }
 
     /// The part of `voiceislocal session echo-analyze --json` the app reads.
@@ -209,14 +230,16 @@ extension HolosAppDelegate {
         }
         Self.removeFile(output)
         Self.removeFile(errors)
+        let preempted = meeting.echo.preempted == sessionID
         Self.echoLog.notice("Echo analysis of \(sessionID, privacy: .public) ended with \(code, privacy: .public)")
-        echoCatchUpEnded(sessionID, end: EchoCatchUpSchedule.runEnded(code: code, summary: outcome?.summary,
-                                                                      errors: errorText))
+        echoCatchUpEnded(sessionID, end: EchoCatchUpSchedule.runEnded(code: code, preempted: preempted,
+                                                                      summary: outcome?.summary, errors: errorText))
     }
 
-    /// The run on the meeting ended (`end`), or did not start (nil: it stays queued as it was). The meeting is let go
-    /// of: a review opened meanwhile rereads it, so its labels and playback follow the new mask, and the next job is
-    /// looked for (summaries first, so a Summarize Again goes before the next automatic job).
+    /// The run on the meeting ended (`end`), or did not start (nil: it stays queued as it was, as does one stopped for
+    /// a meeting). The meeting is let go of: a review opened meanwhile rereads it, so its labels and playback follow
+    /// the new mask, and the next job is looked for (summaries first, so a Summarize Again goes before the next
+    /// automatic job).
     private func echoCatchUpEnded(_ sessionID: String, end: EchoCatchUpSchedule.RunEnd?, keepsProblem: Bool = false) {
         switch end {
         case .retryLater?:
@@ -228,13 +251,15 @@ extension HolosAppDelegate {
             // Failed: the list says why, and it is not tried again in this launch. Partial: the list says what was
             // not brought in step.
             if !keepsProblem { meeting.echo.problems[sessionID] = end == .done ? nil : end }
-        case nil:
+        case .stopped?, nil:
             break
         }
         if case .failed? = end {
             Self.echoLog.error("Echo analysis of \(sessionID, privacy: .public) failed; tried again at the next launch")
         }
         meeting.echo.running = nil
+        meeting.echo.pid = 0
+        meeting.echo.preempted = nil
         maintenanceFinished(sessionID)
         meeting.meetingsPane?.refresh()
         updateEchoStates()
@@ -243,7 +268,8 @@ extension HolosAppDelegate {
         scheduleDeepTranscription()
     }
 
-    /// Another process held the meeting (or it records again): it waits, longer each time in a row.
+    /// Another process held the meeting or the background job lock (or it records again): it waits, longer each time
+    /// in a row.
     private func echoTurnedDown(_ sessionID: String) {
         let attempts = (meeting.echo.turnedDown[sessionID]?.attempts ?? 0) + 1
         meeting.echo.turnedDown[sessionID] = (attempts, Date().addingTimeInterval(
