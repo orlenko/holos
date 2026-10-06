@@ -737,8 +737,19 @@ Still requiring real-machine or user-data validation:
   not). `eval local` applies the same fixes to its candidate by default; `--no-word-fixes`
   keeps the recognizer's words for comparison. The model is asked one place at a time (at
   most 500 per run).
-- Deep transcription: meetings in several languages are not transcribed again yet; accuracy was
-  measured on one meeting; the app's queue, Settings row and menu have not been seen on screen.
+- Deep transcription: English meetings only. A meeting in another language keeps Apple's
+  transcript unless `voiceislocal session deep-transcribe --any-language`, and meetings in several
+  languages are not transcribed again. Measured on a real 3.7 h board meeting, about 80 %
+  French and 20 % English, against a reference transcript:
+  - the Apple French and English merge: 37.3 % WER, 86.5 % of turns in the right language;
+  - Apple French only: 46.4 %;
+  - Whisper forced to French: 49.1 %;
+  - Whisper choosing French or English passage by passage (a closed attempt): 48.8 %, 77 % of
+    turns in the right language (75 of 331 French turns written in English).
+  On the French turns kept in French, Whisper scored 39.0 % against Apple's 29.1 %. Synthetic
+  speech had predicted the opposite, so other languages wait for validation on real
+  recordings. English accuracy was measured on one meeting. The app's queue, Settings row and
+  menu have not been seen on screen.
 - Live transcript: selecting a finalized phrase while recording can correct its text or name
   its speaker. The app saves a timed hint, carries text into the final/replayed transcript,
   learns safe correction pairs, keeps a shared pair until the last confirming live edit is

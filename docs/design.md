@@ -1047,12 +1047,14 @@ Face) uses the network.
   speaker labels are respected as the other text-changing stages respect them: the pass
   is skipped with the standard message unless `--force`. A transcript the model already
   made is kept unless `--force`.
-- *Languages.* Meetings in several languages are not transcribed again yet: Whisper's
-  language detection cannot be limited to the meeting's languages, so the pass says so and
-  keeps the merged transcript.
+- *Languages.* English meetings only, for now: a meeting in another language keeps Apple's
+  transcript unless `--any-language`, and meetings in several languages are not transcribed again
+  (Whisper's language detection cannot be limited to the meeting's languages). Tried on a real
+  French and English meeting, Whisper did worse than Apple's speech recognition, in French
+  above all (status.md).
 - *In the app.* Settings › Meetings offers the model's download (1.6 GB) and "Deep
-  transcription after meetings", off until the model is installed. When on, each meeting in
-  one language is queued once it is saved and transcribed again on AC power, one at a time
+  transcription after meetings", off until the model is installed. When on, each English
+  meeting is queued once it is saved and transcribed again on AC power, one at a time
   (on battery it waits for the power adapter); the queue survives a quit or crash, and an
   interrupted pass starts over. The Meetings list shows "Final transcript queued", "… waits
   for power" or "… in progress…"; a meeting's right-click menu offers Make Final Transcript

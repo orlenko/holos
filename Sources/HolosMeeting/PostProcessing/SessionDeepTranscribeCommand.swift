@@ -15,9 +15,11 @@ public enum SessionDeepTranscribeCommand {
         /// Transcribe again even when the current transcript was made by this model, and replace a transcript whose
         /// speaker labels were edited (names carry over).
         public var force: Bool
+        /// Transcribe a meeting in one language other than English too (`--any-language`).
+        public var anyLanguage: Bool
 
-        public init(session: URL, force: Bool = false) {
-            self.session = session; self.force = force
+        public init(session: URL, force: Bool = false, anyLanguage: Bool = false) {
+            self.session = session; self.force = force; self.anyLanguage = anyLanguage
         }
     }
 
@@ -36,7 +38,7 @@ public enum SessionDeepTranscribeCommand {
     /// model not installed. A run that has nothing to do (the current transcript is this model's, and not `force`)
     /// needs neither the model nor the audio (it may have been deleted since): it keeps the transcript.
     public static func precheck(session: URL, dependencies: DeepTranscriptionDependencies,
-                                force: Bool = false) throws {
+                                force: Bool = false, anyLanguage: Bool = false) throws {
         let manifest = try SessionArchive.readManifest(at: session)
         // `processing` with no writer is a recorder that died while saving: recovery finishes it.
         if [ArchiveStatus.recording, ArchiveStatus.interrupted, ArchiveStatus.processing].contains(manifest.status) {
@@ -48,17 +50,17 @@ public enum SessionDeepTranscribeCommand {
                 + "\(manifest.id) first, so all of its saved audio is transcribed.")
         }
         let meeting = try SessionFiles.meetingInfo(session: session, manifest: manifest)
-        // A transcript made in one language named with `session languages` has `languages` too; only several count.
-        let mergedLanguages = (try? SessionFiles.currentTranscript(session: session))??.languages ?? []
-        let merged = DictationLanguage.meetingLanguages(mergedLanguages).count > 1
-        if DictationLanguage.meetingLanguages(meeting.languages ?? []).count > 1 || merged {
-            throw HolosError.invalidInput(DeepTranscriptionStage.severalLanguages)
-        }
-        if !force, let current = try? SessionFiles.currentTranscript(session: session),
-           let events = try? SessionArchive.readEvents(at: session).events,
+        let current = (try? SessionFiles.currentTranscript(session: session)) ?? nil
+        // A transcript this model already made is kept, whatever its language (one made with --any-language, or by an
+        // earlier version): nothing to do, as the pass would find.
+        if !force, let current, let events = try? SessionArchive.readEvents(at: session).events,
            DeepTranscriptionStage.recordedBase(of: current, events: events, session: session).unfixed.engine
             == dependencies.engine {
             return
+        }
+        if let problem = DeepTranscriptionStage.languageProblem(meeting: meeting, transcript: current,
+                                                                manifest: manifest, anyLanguage: anyLanguage) {
+            throw HolosError.invalidInput(problem)
         }
         // Only a pass that transcribes needs the audio.
         if try SessionFiles.audioDeleted(session: session, sessionID: manifest.id) {
@@ -86,8 +88,10 @@ public enum SessionDeepTranscribeCommand {
                            deepTranscription: DeepTranscriptionDependencies,
                            progress: @escaping @Sendable (PostProcessingProgress) -> Void = { _ in })
         async throws -> Outcome {
-        try precheck(session: request.session, dependencies: deepTranscription, force: request.force)
-        let options = PostProcessingOptions(force: request.force, deepTranscribe: true)
+        try precheck(session: request.session, dependencies: deepTranscription, force: request.force,
+                     anyLanguage: request.anyLanguage)
+        let options = PostProcessingOptions(force: request.force, deepTranscribe: true,
+                                            deepAnyLanguage: request.anyLanguage)
         let processor = MeetingPostProcessor(voiceSamples: voiceSamples, diarizer: diarizer, options: options,
                                              freeSpace: freeSpace,
                                              profiles: profiles, languages: languages, wordFixes: wordFixes,
@@ -100,6 +104,17 @@ public enum SessionDeepTranscribeCommand {
     /// What a cancelled run says, from the current transcript's ID before the run and after it: a cancellation can
     /// come after the new transcript was published, while live corrections, word fixes, speakers, or the exports were
     /// still being made, and then nothing was rolled back.
+    /// Why the pass would not transcribe `session` for its language without `--any-language` (several languages, or one
+    /// other than English), read as the pass reads it; nil when it would, and when it cannot be read (the pass then says
+    /// why). Reads files only: the app asks it before it queues a meeting.
+    public static func languageProblem(session: URL) -> String? {
+        guard let manifest = try? SessionArchive.readManifest(at: session),
+              let meeting = try? SessionFiles.meetingInfo(session: session, manifest: manifest) else { return nil }
+        let current = (try? SessionFiles.currentTranscript(session: session)) ?? nil
+        return DeepTranscriptionStage.languageProblem(meeting: meeting, transcript: current, manifest: manifest,
+                                                      anyLanguage: false)
+    }
+
     public static func cancellationMessage(before: String?, after: String?) -> String {
         if before == after {
             return before == nil ? "Cancelled. No transcript was made." : "Cancelled. The transcript was kept as it was."

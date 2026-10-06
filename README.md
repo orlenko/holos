@@ -305,12 +305,20 @@ prompted with the meeting's name, your word list and the names of the people you
 real 53-minute call it halved the word error rate of the live transcript (20.9 % to 11–14 %
 against a cloud reference; 14.6 % as built) and got about twice as many word-list terms right
 (63 of 82 against 31); it takes about 8–11 minutes per hour of audio on an M4 Pro. Nothing leaves the Mac; the model itself is a
-one-time download of about 1.6 GB:
+one-time download of about 1.6 GB.
+
+It is for English meetings only, for now. On a real 3.7-hour board meeting in French and
+English, Whisper did worse than Apple's speech recognition (48.8 % word error rate against
+37.3 % for the merge of Apple's French and English transcriptions, and 49.1 % against 46.4 %
+in French alone), so a meeting in another language keeps Apple's transcript, and meetings in
+several languages are not transcribed again. `--any-language` tries a meeting in another
+language anyway, as an experiment:
 
 ```sh
 voiceislocal setup --whisper                       # download and check the model (resumes if interrupted)
 voiceislocal session deep-transcribe <session>     # transcribe a finished meeting again
 voiceislocal session deep-transcribe <session> --force   # again, or over edited speaker labels
+voiceislocal session deep-transcribe <session> --any-language   # a meeting in another language (experimental)
 voiceislocal eval local <session> --backend whisper      # the same, as a candidate for eval compare
 ```
 
@@ -320,15 +328,17 @@ version of the transcript (the one before is kept); live corrections, word fixes
 labels (names carry over) and the transcript files follow as after a recording. It exits 0
 when done, 3 when the files were written but the meeting was not transcribed again (edited
 speaker labels without `--force`, a failure) or speaker labelling was skipped, and 1 when
-nothing could be done (no model, deleted audio, or a meeting in several languages, which is
-not supported yet).
+nothing could be done (no model, deleted audio, a meeting in another language without
+`--any-language`, or one in several languages, which is not supported).
 
 In the app, Settings › Meetings downloads the model and turns on "Deep transcription after
-meetings": each saved meeting is then transcribed again on AC power, one at a time (on
-battery it waits for the power adapter). The Meetings list shows "Final transcript queued" or
+meetings": each saved English meeting is then transcribed again on AC power, one at a time (on
+battery it waits for the power adapter); a meeting in another language keeps Apple's
+transcript. The Meetings list shows "Final transcript queued" or
 "… in progress…"; right-click a meeting for Make Final Transcript Now (which also labels
-speakers again; names carry over) or Cancel Final Transcript. Meetings saved while the app is
-closed are queued the next time it opens.
+speakers again; names carry over; for an English meeting only, checked again when it runs) or
+Cancel Final Transcript. Meetings saved while the app is closed are queued the next time it
+opens.
 
 ### Meeting titles and summaries
 

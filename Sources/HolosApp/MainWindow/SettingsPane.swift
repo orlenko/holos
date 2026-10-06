@@ -463,7 +463,8 @@ final class SettingsPane: NSViewController, MainSectionContent, NSSearchFieldDel
             After a meeting is saved, its audio is transcribed again with a larger model, prompted with your word \
             list and people's names, and the result replaces the transcript (the one before is kept). It runs on AC \
             power, one meeting at a time; on battery it waits for the power adapter. Right-click a meeting for Make \
-            Final Transcript Now or Cancel. Meetings in several languages keep their transcript.
+            Final Transcript Now or Cancel. It is tuned for English meetings; meetings in other languages, or in \
+            several, keep their transcript.
             """)
         meetingSummariesToggle.target = self
         meetingSummariesToggle.action = #selector(buttonPressed(_:))

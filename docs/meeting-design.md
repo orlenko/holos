@@ -4785,7 +4785,18 @@ skips it.
    one language for now, so the transcript was kept." (WhisperKit can detect a language per
    window but not limit detection to the meeting's languages, so v1 does not try.) A base this
    model made already: `succeeded`, "The meeting was already transcribed with Whisper
-   large-v3 turbo.", unless `force`. Edited speaker labels of the current transcript:
+   large-v3 turbo.", unless `force` (checked first: a deep transcript in another language,
+   made with `--any-language` or by an earlier version, is kept). A meeting in one language
+   other than English (the language of the transcript of step 1, else meeting.json's first,
+   else the recording's): `skipped`, "Deep transcription is tuned for English meetings; this
+   meeting keeps Apple's transcript.", unless `PostProcessingOptions.deepAnyLanguage`
+   (`session deep-transcribe --any-language`, to try it). `force` never lifts it, so the
+   app's Make Final Transcript Now (which passes `--force`) is checked again when it runs, and
+   the app never passes `--any-language`. On a real 3.7 h meeting in French and
+   English, Whisper's French was worse than Apple's (status.md), so other languages wait for
+   validation on real recordings; `DeepTranscriptionStage.languageProblem` holds both rules,
+   and the command, the app's queue and Make Final Transcript Now ask it
+   (`SessionDeepTranscribeCommand.languageProblem`). Edited speaker labels of the current transcript:
    `skipped` with "Speaker labels were edited, so the meeting was not transcribed again. …
    run voiceislocal session deep-transcribe with --force." (checked again under the
    publication's locks). Deleted audio, no audio, the model not installed, an unreadable
@@ -4965,13 +4976,16 @@ carried over.
   (relabels speakers): it runs next, also on battery, with `--force`, so a transcript the model
   made before is made again and edited speaker labels are replaced (names carry over, edits of
   single turns do not), as asking for it by name means; refused with an alert without the model,
-  for a meeting that is not finished, or for one in several languages. A meeting queued
+  for a meeting that is not finished, or for one the pass does not transcribe (several
+  languages, or one other than English: Make Final Transcript Now passes `--force`, so the app
+  checks first, and the pass checks again when it runs). A meeting queued
   automatically offers it too (it upgrades the item, so it runs next whatever the power source).
   The request is reserved at once, before its languages are read off the main actor, and saved
   with the queue (`pending`; a quit meanwhile does not lose it: the languages are read again at
   the next launch): the meeting is not started meanwhile (a queued automatic item would run
   without `--force`), shows as queued, and is considered; a Cancel meanwhile ends the
-  reservation, and a refusal (several languages) leaves the meeting as it was.
+  reservation, and a refusal (its language) leaves the meeting as it was. The automatic queue
+  takes only meetings the pass transcribes (`transcribable`).
   While a meeting is queued or the app's own pass runs on it, Cancel Final Transcript (SIGTERM: the command cancels and says whether the new
   transcript was already published).
 - *Tests.* `DeepTranscriptionQueueTests` (order and run-now upgrade, saving and damaged data,
@@ -5022,7 +5036,7 @@ download and load check, resume after a failed load, removal, the prompt rows an
 speech (rendered by the system synthesizer to a file, never played) in a session end to end;
 `HOLOS_DEEP_MEASURE_SESSION=<copy of a session>` prints the level measurements above, `HOLOS_DEEP_COMPARE_SESSION=<copy that deep-transcribe ran on>` the word-time agreement and uncovered stretches, and `HOLOS_DEEP_PROBE_SESSION=<copy>` (with `HOLOS_DEEP_PROBE_PROMPT`) the coverage of ten minutes of one track.
 
-**Follow-ups.** Meetings in several languages. A notification when a final transcript
+**Follow-ups.** Languages other than English, once validated on real recordings; meetings in several languages. A notification when a final transcript
 is ready. Measuring the vocabulary terms the pass gets
 right against a cloud reference on more meetings (`eval local --backend whisper`, then `eval
 compare`), now that the prompt is checked chunk by chunk. Upstream reports for the three

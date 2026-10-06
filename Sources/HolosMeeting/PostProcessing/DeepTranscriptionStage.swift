@@ -65,6 +65,8 @@ enum DeepTranscriptionStage {
         var requested: Bool
         /// Transcribe again even when the current transcript is this model's, and replace edited speaker labels.
         var force: Bool
+        /// Transcribe a meeting in one language other than English too (`--any-language`; never `force`).
+        var anyLanguage = false
         var freeSpace: any FreeSpaceProvider
     }
 
@@ -79,11 +81,36 @@ enum DeepTranscriptionStage {
 
     static let editedHead = "Speaker labels were edited, so the meeting was not transcribed again. To transcribe it "
         + "again and label speakers again (names carry over), run voiceislocal session deep-transcribe with --force."
+    /// Deep transcription runs on English meetings only until other languages are validated on real recordings: on a
+    /// real bilingual meeting, Whisper's French was worse than Apple's (docs/status.md).
+    static let notEnglish = "Deep transcription is tuned for English meetings; this meeting keeps Apple's transcript."
     static let severalLanguages = "This meeting is in several languages; deep transcription handles meetings in one "
         + "language for now, so the transcript was kept."
     static let audioDeleted = "The meeting's audio was deleted, so it cannot be transcribed again."
     static let noDiskSpace = "Not enough disk space to transcribe the meeting again. Free some space, then try again."
     static let kept = "Kept the transcript as it was."
+
+    /// The meeting's language for the pass: the transcript's (the one the current one stands for), else meeting.json's
+    /// first, else the recording's.
+    static func locale(meeting: MeetingInfo, transcript: Transcript?, manifest: SessionManifest) -> String {
+        transcript?.locale ?? meeting.languages?.first ?? manifest.locale
+    }
+
+    /// Why the pass does not transcribe a meeting: several languages (meeting.json's or a merge's; a transcript of one
+    /// language named with `session languages` has `languages` too, so only several count), never; one other than
+    /// English (`notEnglish`), unless `anyLanguage` (`--any-language`, to try it; `--force` and the app's Make Final
+    /// Transcript Now never lift it, so a meeting whose language changed while queued is checked when it runs). Nil
+    /// when it does.
+    static func languageProblem(meeting: MeetingInfo, transcript: Transcript?, manifest: SessionManifest,
+                                anyLanguage: Bool) -> String? {
+        if DictationLanguage.meetingLanguages(meeting.languages ?? []).count > 1
+            || DictationLanguage.meetingLanguages(transcript?.languages ?? []).count > 1 {
+            return severalLanguages
+        }
+        let language = locale(meeting: meeting, transcript: transcript, manifest: manifest)
+        if !anyLanguage, DeepTranscriptionModel.whisperLanguage(language) != "en" { return notEnglish }
+        return nil
+    }
 
     /// Test hook: while set (a task-local value), called with the writer and speaker locks held, after the last
     /// edited-labels check and before the new transcript is journaled and saved.
@@ -114,15 +141,16 @@ enum DeepTranscriptionStage {
             return fail("\(keptText) \(error.localizedDescription)")
         }
         let base = current.map { recordedBase(of: $0, events: events, session: request.session) }
-        // A transcript of one language named with `session languages` has `languages` too: only several count.
-        if DictationLanguage.meetingLanguages(meeting.languages ?? []).count > 1
-            || DictationLanguage.meetingLanguages(base?.unfixed.languages ?? []).count > 1 {
-            return fail(severalLanguages, .skipped)
-        }
+        // A transcript this model already made is kept, whatever its language (made with --any-language, or by an
+        // earlier version), before the language is judged.
         if let base, base.unfixed.engine == dependencies.engine, !request.force {
             let message = "The meeting was already transcribed with \(DeepTranscriptionModel.displayName)."
             recorder.end(.deepTranscription, .succeeded, message, since: started)
             return Outcome(transcript: current, note: message)
+        }
+        if let problem = languageProblem(meeting: meeting, transcript: base?.unfixed, manifest: request.manifest,
+                                         anyLanguage: request.anyLanguage) {
+            return fail(problem, .skipped)
         }
         if let problem = editedHeadProblem(request) { return fail(problem, .skipped) }
         do {
@@ -167,7 +195,7 @@ enum DeepTranscriptionStage {
             return fail("\(keptText) The vocabulary prompt could not be made: \(error.localizedDescription)")
         }
         // The current transcript's language (a one-language merge's), else the meeting's.
-        let locale = base?.unfixed.locale ?? meeting.languages?.first ?? request.manifest.locale
+        let locale = Self.locale(meeting: meeting, transcript: base?.unfixed, manifest: request.manifest)
         let pass: Pass
         do {
             pass = try await transcribe(tracks: tracks, request: request, transcriber: transcriber,
