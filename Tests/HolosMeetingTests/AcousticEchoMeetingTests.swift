@@ -633,6 +633,90 @@ func aCallWithNoTranscriptGetsItsAnalysisAndNoFailure() async throws {
 }
 
 @Test(.timeLimit(.minutes(2)))
+func echoAnalyzeRewritesSpeakerlessTranscriptFiles() async throws {
+    // A transcript and its files, but no speaker labels (post-processed without speaker models): the files are
+    // rewritten with the mask recorded, so they are not left out of date.
+    let temp = try TemporaryDirectory("echo")
+    defer { temp.remove() }
+    let session = try await callSession(in: temp.url, audio: CallAudio.tracks(echo: true),
+                                        transcript: CallTranscript().transcript)
+    try SessionExports.regenerate(session: session)
+    #expect(try SessionSpeakerStore.readHead(session: session) == nil)
+    let outcome = try await SessionEchoAnalyzeCommand.run(.init(session: session), voiceSamples: .none,
+                                                          freeSpace: FixedFreeSpace(.max))
+    #expect(outcome.verdict == .echo)
+    #expect(outcome.summary.contains("no speaker labels yet"))
+    #expect(outcome.exitCode == 0)
+    #expect(SessionExports.echoMaskIsCurrent(session: session))
+    let title = SessionCatalog.summary(session: session, jobState: .free).displayTitle
+    #expect(SessionExports.filesState(session: session, title: title) == .current)
+}
+
+@Test(.timeLimit(.minutes(2)))
+func echoAnalyzeExitsThreeWhenTheTranscriptFilesCannotBeRewritten() async throws {
+    let temp = try TemporaryDirectory("echo")
+    defer { temp.remove() }
+    let (session, _, _) = try await labelledOldCall(in: temp.url)
+    // exports/ cannot be written: a file stands where the folder goes.
+    try FileManager.default.removeItem(at: SessionPaths.exports(session))
+    try Data("not a folder".utf8).write(to: SessionPaths.exports(session))
+    let outcome = try await SessionEchoAnalyzeCommand.run(.init(session: session), voiceSamples: .none,
+                                                          freeSpace: FixedFreeSpace(.max))
+    #expect(outcome.verdict == .echo)
+    #expect(outcome.summary.contains("could not be rewritten"))
+    #expect(outcome.exitCode == 3)
+}
+
+@Test(.timeLimit(.minutes(2)))
+func aMissingOrDamagedFramesFileMakesTheCachedStatesOutOfDate() async throws {
+    let temp = try TemporaryDirectory("echo")
+    defer { temp.remove() }
+    let (session, _, _) = try await labelledOldCall(in: temp.url)
+    _ = try await SessionEchoAnalyzeCommand.run(.init(session: session), voiceSamples: .none,
+                                                freeSpace: FixedFreeSpace(.max))
+    let cache = TranscriptFilesCache()
+    let summary = SessionCatalog.summary(session: session, jobState: .free)
+    #expect(cache.state(of: summary) == .current)
+    let stamp = MeetingPeopleCache.echoStamp(session)
+    // The record is untouched; the frames it names are damaged, so the mask is dropped.
+    let frames = try #require(EchoMaskStore.framesFiles(session).first)
+    try Data([0, 1]).write(to: frames)
+    #expect(EchoMaskStore.usable(session: session, manifest: try SessionArchive.readManifest(at: session)) == nil)
+    #expect(MeetingPeopleCache.echoStamp(session) != stamp)
+    #expect(cache.state(of: summary) == .stale)
+    // And when it is removed.
+    try FileManager.default.removeItem(at: frames)
+    #expect(!MeetingPeopleCache.echoStamp(session).contains(frames.lastPathComponent))
+    #expect(cache.state(of: summary) == .stale)
+}
+
+@Test(.timeLimit(.minutes(2)))
+func anOldFramesFileThatCannotBeDeletedDoesNotFailTheSave() async throws {
+    let temp = try TemporaryDirectory("echo")
+    defer { temp.remove() }
+    let session = try await callSession(in: temp.url, audio: CallAudio.tracks(echo: true),
+                                        transcript: CallTranscript().transcript)
+    let manifest = try SessionArchive.readManifest(at: session)
+    let old = try EchoAnalysisStage.analyzeSession(session: session, manifest: manifest,
+                                                   freeSpace: FixedFreeSpace(.max))
+    let oldMask = try #require(old.mask)
+    var bytes = oldMask.bytes
+    bytes[0] = bytes[0] == AcousticEchoMask.FrameClass.echo.rawValue
+        ? AcousticEchoMask.FrameClass.local.rawValue : AcousticEchoMask.FrameClass.echo.rawValue
+    let newMask = try #require(AcousticEchoMask(bytes: bytes, frameCount: oldMask.frameCount))
+    var record = old.record
+    record.frames?.sha256 = SessionExports.sha256(newMask.bytes)
+    struct Busy: Error {}
+    try EchoMaskStore.$removeFrames.withValue({ _ in throw Busy() }) {
+        try EchoMaskStore.write(record, mask: newMask, session: session)
+    }
+    #expect(EchoMaskStore.usable(session: session, manifest: manifest) == newMask)
+    #expect(EchoMaskStore.framesFiles(session).count == 2, "The old file is left for the next save.")
+    try EchoMaskStore.write(record, mask: newMask, session: session)
+    #expect(EchoMaskStore.framesFiles(session).count == 1)
+}
+
+@Test(.timeLimit(.minutes(2)))
 func aNewMaskThatFailsBeforeItsRecordIsSwitchedLeavesTheOldOneInUse() async throws {
     let temp = try TemporaryDirectory("echo")
     defer { temp.remove() }

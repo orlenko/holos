@@ -102,6 +102,9 @@ public enum EchoMaskStore {
     /// that names it.
     @TaskLocal static var afterFramesWritten: (@Sendable () throws -> Void)? = nil
 
+    /// Test hook: while set (a task-local value), called before each old frames file is deleted.
+    @TaskLocal static var removeFrames: (@Sendable (URL) throws -> Void)? = nil
+
     /// A record with its mask (nil unless the verdict is `echo`).
     public struct Stored: Sendable {
         public var record: EchoMaskRecord
@@ -208,8 +211,15 @@ public enum EchoMaskStore {
                 try afterFramesWritten?()
             }
             try AtomicFile.writeJSON(record, to: recordURL(session))
+            // The save is done: a file left over is never read (the record names another) and the next save removes
+            // it, so a failure here is only logged.
             for url in framesFiles(session) where url.lastPathComponent != keep?.lastPathComponent {
-                try AtomicFile.removeTree([folder, url.lastPathComponent], in: session)
+                do {
+                    try removeFrames?(url)
+                    try AtomicFile.removeTree([folder, url.lastPathComponent], in: session)
+                } catch {
+                    log.error("Cannot delete an old echo frames file: \(error.localizedDescription, privacy: .private)")
+                }
             }
         }
     }

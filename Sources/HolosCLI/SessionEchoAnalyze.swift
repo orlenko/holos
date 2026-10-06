@@ -17,7 +17,8 @@ extension Session {
                 echo in the meeting's echo/ folder; the speaker labels, the review window and the transcript files \
                 then leave those microphone words out. Nothing else changes: the speaker labels, their edits, the \
                 transcript and its word fixes stay as they are. Meetings post-processed after this version get it \
-                on their own. Exits 0 when done, also when there is nothing to change.
+                on their own. Exits 0 when done, also when there is nothing to change; 3 when the analysis was saved \
+                but the transcript files or a voice sample could not be updated.
                 """)
 
         @Argument(help: "Path to a finished .holos folder, or a session ID.") var path: String
@@ -43,6 +44,7 @@ extension Session {
             } else {
                 Console.output(outcome.summary)
             }
+            if outcome.exitCode != 0 { throw ExitCode(outcome.exitCode) }
         }
     }
 }
