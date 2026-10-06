@@ -64,10 +64,6 @@ import Testing
     return capture
 }
 
-/// Time limits: swift-testing applies a parameterized test's limit to all of its cases together, and a test past it
-/// is cancelled, which ends every `eventually` at once with a misleading failure (seen on a loaded machine: a case
-/// "gave up" after 26 s of a 30 s wait). Parameterized tests here get minutes per case.
-///
 /// The limit a hung native call is given up after.
 private let independentHungLimit = Duration.milliseconds(30)
 
@@ -304,7 +300,7 @@ func failedSystemCleanupRetriesTheSameHandleBeforeStartingAnother() async throws
     await consumer.value
 }
 
-@Test(.timeLimit(.minutes(5)), arguments: ["stop", "pause", "sleep"]) @MainActor
+@Test(.timeLimit(.minutes(1)), arguments: ["stop", "pause", "sleep"]) @MainActor
 func neverHeardSystemTailIsSavedWithoutAnOutageWarning(action: String) async throws {
     let temp = try TemporaryDirectory()
     defer { temp.remove() }
@@ -342,7 +338,7 @@ func neverHeardSystemTailIsSavedWithoutAnOutageWarning(action: String) async thr
     #expect(!statuses.value.contains { $0.warnings.contains { $0.code.rawValue == "systemAudioUnavailable" } })
 }
 
-@Test(.timeLimit(.minutes(5)), arguments: [true, false], [true, false]) @MainActor
+@Test(.timeLimit(.minutes(1)), arguments: [true, false], [true, false]) @MainActor
 func knownSystemOutageDoesNotHideMicrophoneStallsOrSuggestSilence(micStalled: Bool, stallBeforeOutage: Bool) async throws {
     let temp = try TemporaryDirectory()
     defer { temp.remove() }
@@ -473,7 +469,7 @@ func successfulDelayedSystemStartRecordsItsLeadingGapWithoutAWarning() async thr
 
 private enum MissingSystemStop: CaseIterable, Sendable { case pause, sleep, pauseAndResume }
 
-@Test(.timeLimit(.minutes(10)), arguments: [GapReason.paused, .sleep, .captureRestarted, .deviceChanged], [true, false])
+@Test(.timeLimit(.minutes(1)), arguments: [GapReason.paused, .sleep, .captureRestarted, .deviceChanged], [true, false])
 @MainActor
 func resumedSystemPreservesOutageStateAndRecorderBoundary(reason: GapReason, unavailable: Bool) async throws {
     let temp = try TemporaryDirectory()
@@ -552,7 +548,7 @@ func resumedSystemPreservesOutageStateAndRecorderBoundary(reason: GapReason, una
     #expect(recovered.count == (unavailable ? 1 : 0))
 }
 
-@Test(.timeLimit(.minutes(5)), arguments: MissingSystemStop.allCases) @MainActor
+@Test(.timeLimit(.minutes(1)), arguments: MissingSystemStop.allCases) @MainActor
 private func missingSystemTailSurvivesPauseOrSleep(action: MissingSystemStop) async throws {
     let temp = try TemporaryDirectory()
     defer { temp.remove() }
@@ -617,7 +613,7 @@ private func missingSystemTailSurvivesPauseOrSleep(action: MissingSystemStop) as
     }
 }
 
-@Test(.timeLimit(.minutes(5)), arguments: [true, false]) @MainActor
+@Test(.timeLimit(.minutes(1)), arguments: [true, false]) @MainActor
 func initialSystemFailureMarksOnlyTheMissingSystemInterval(recovers: Bool) async throws {
     let temp = try TemporaryDirectory()
     defer { temp.remove() }

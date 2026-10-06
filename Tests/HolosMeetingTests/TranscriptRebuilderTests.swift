@@ -734,7 +734,7 @@ private func rebuilderDiedWhileProcessing(in root: URL, saveAll: Bool = true) as
     // The archive is released here, which lets its writer lock go without finishing it.
 }
 
-@Test(.timeLimit(.minutes(10)), arguments: [true, false])
+@Test(.timeLimit(.minutes(1)), arguments: [true, false])
 func recoverKeepsTheTranscriptSavedBeforeFinish(transcribe: Bool) async throws {
     let temp = try TemporaryDirectory("rebuild")
     defer { temp.remove() }
@@ -1053,7 +1053,7 @@ func rebuildRefusesANewerCurrentTranscript(file: String, force: Bool) async thro
     #expect(try await !rebuilderRun(session, transcribe: false).reused)
 }
 
-@Test(.timeLimit(.minutes(10)), arguments: [false, true])
+@Test(.timeLimit(.minutes(1)), arguments: [false, true])
 func recoverRefusesANewerPostProcessingRecord(force: Bool) async throws {
     let temp = try TemporaryDirectory("rebuild")
     defer { temp.remove() }
@@ -1082,7 +1082,7 @@ func recoverRefusesANewerPostProcessingRecord(force: Bool) async throws {
     #expect(try !SessionArchive.isProcessing(at: session), "The lease is released.")
 }
 
-@Test(.timeLimit(.minutes(10)), arguments: ["head", "run"], ["absent", "failed", "damaged", "noModels"])
+@Test(.timeLimit(.minutes(1)), arguments: ["head", "run"], ["absent", "failed", "damaged", "noModels"])
 func recoverRefusesNewerSpeakerFilesBeforePostProcessing(file: String, record: String) async throws {
     let temp = try TemporaryDirectory("rebuild")
     defer { temp.remove() }

@@ -224,7 +224,7 @@ func termsTheModelChoseAreKeptWhileItIsUnavailable() async throws {
     #expect(try wordFixCurrent(session).id == fixed.id)
 }
 
-@Test(.timeLimit(.minutes(10)), arguments: [false, true])
+@Test(.timeLimit(.minutes(1)), arguments: [false, true])
 func termsTheModelChoseAreKeptWhenARerunFailsOrTimesOut(timesOut: Bool) async throws {
     let temp = try TemporaryDirectory("word-fixes")
     defer { temp.remove() }

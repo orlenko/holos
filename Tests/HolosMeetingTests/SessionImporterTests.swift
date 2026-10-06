@@ -456,7 +456,7 @@ func importNeverWritesIntoAFolderRenamedInAtTheStagingName() async throws {
 /// path, receives nothing (no meeting.json, manifest, journal, chunk, lock, or transcript). Without transcription the
 /// import finishes from the folder it made; with it, the replay reads its chunks by path, finds none, and the import
 /// fails and removes what it made. Either way the replacement is left exactly as the other program made it.
-@Test(.timeLimit(.minutes(10)), arguments: [false, true])
+@Test(.timeLimit(.minutes(1)), arguments: [false, true])
 func importWritesNothingIntoAStagingFolderSwappedInAfterTheSessionIsMade(transcribe: Bool) async throws {
     let temp = try TemporaryDirectory("import")
     defer { temp.remove() }

@@ -142,7 +142,7 @@ private func exitedWriteFailing(_ failing: SharedValue<Int>, failures: SharedVal
 /// A recorder that cannot write `exited` keeps the session's last lock (the writer lock, or the processing lease
 /// with post-processing) while the exited status is not written, so liveness never reads it as dead while it shuts
 /// down.
-@Test(.timeLimit(.minutes(10)), arguments: [false, true]) @MainActor
+@Test(.timeLimit(.minutes(1)), arguments: [false, true]) @MainActor
 func recorderKeepsItsLastLockWhenExitCannotBeWritten(postProcess: Bool) async throws {
     let temp = try TemporaryDirectory()
     defer { temp.remove() }
@@ -175,7 +175,7 @@ func recorderKeepsItsLastLockWhenExitCannotBeWritten(postProcess: Bool) async th
 /// An in-process recorder runs inside the app, which does not exit after the meeting: once the exited status can be
 /// written again, it is written in the background, requests are cleaned up, and the held locks are released, so the
 /// meeting does not stay busy until Holos quits.
-@Test(.timeLimit(.minutes(10)), arguments: [false, true]) @MainActor
+@Test(.timeLimit(.minutes(1)), arguments: [false, true]) @MainActor
 func recorderReleasesItsLocksOnceALaterExitWriteLands(postProcess: Bool) async throws {
     let temp = try TemporaryDirectory()
     defer { temp.remove() }
@@ -215,7 +215,7 @@ func recorderReleasesItsLocksOnceALaterExitWriteLands(postProcess: Bool) async t
 /// app. The launcher keeps it running (so a quit waits for it) and reports its exit only once status.json says
 /// exited, so the controller finishes it from that status. When the session folder disappears instead, the exit is
 /// reported as a failure.
-@Test(.timeLimit(.minutes(10)), arguments: [false, true]) @MainActor
+@Test(.timeLimit(.minutes(1)), arguments: [false, true]) @MainActor
 func inProcessRecordingEndsOnlyOnceItsExitedStatusIsWritten(folderRemoved: Bool) async throws {
     let temp = try TemporaryDirectory()
     defer { temp.remove() }
