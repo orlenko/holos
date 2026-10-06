@@ -58,8 +58,19 @@ public enum EchoMaskStore {
     private static let log = Logger(subsystem: "ca.orlenko.holos.app", category: "postprocess")
     static let folder = "echo"
     static let recordName = "echo/mask.json"
-    /// 2 bytes a frame, 62.5 frames a second: about 450 KB an hour.
-    static let maximumFramesBytes = 64 << 20
+    /// The longest mask kept, in frames: 2^25 frames of 16 ms, about 149 hours. The one limit on a call's length for
+    /// the analysis: the reader reads frames files up to this size (2 bytes a frame, about 450 KB an hour), and a
+    /// longer call is not analysed but saved as `tooLong`, which counts as done (`EchoAnalysisStage.analyze`). A
+    /// task-local value so tests can make it small.
+    @TaskLocal static var maximumFrames = 1 << 25
+
+    /// The bytes of a frames file of `maximumFrames`.
+    static var maximumFramesBytes: Int { 2 * maximumFrames }
+
+    /// The longest audio the analysis takes, in samples: `maximumFrames` hops.
+    static var maximumSamples: Int {
+        maximumFrames * Int((AcousticEchoMask.hopSeconds * Double(EchoAnalysis.sampleRate)).rounded())
+    }
 
     public static func directory(_ session: URL) -> URL { SessionPaths.echoDirectory(session) }
     public static func recordURL(_ session: URL) -> URL { SessionPaths.echoMask(session) }
@@ -260,13 +271,22 @@ enum EchoAnalysisStage {
                         progress: (@Sendable (Double) -> Void)? = nil) throws -> EchoMaskStore.Stored {
         let clock = ContinuousClock()
         let started = clock.now
-        let result: EchoAnalysis.Result
+        var result: EchoAnalysis.Result
         if let system {
             guard let microphone else {
                 throw HolosError.invalidInput("The microphone audio was not prepared for the echo analysis.")
             }
-            result = try EchoAnalysis.analyze(microphone: RenderedEchoAudio(microphone),
-                                              system: RenderedEchoAudio(system), progress: progress)
+            let microphoneAudio = try RenderedEchoAudio(microphone)
+            let systemAudio = try RenderedEchoAudio(system)
+            // Longer than a mask is kept for: saved as too long (done), never a frames file no read accepts.
+            if max(microphoneAudio.sampleCount, systemAudio.sampleCount) > EchoMaskStore.maximumSamples {
+                result = EchoAnalysis.Result(verdict: .tooLong)
+            } else {
+                result = try EchoAnalysis.analyze(microphone: microphoneAudio, system: systemAudio, progress: progress)
+            }
+            if let mask = result.mask, mask.frameCount > EchoMaskStore.maximumFrames {
+                result = EchoAnalysis.Result(verdict: .tooLong)
+            }
         } else {
             result = EchoAnalysis.Result(verdict: .noSystemAudio)
         }
@@ -304,6 +324,9 @@ enum EchoAnalysisStage {
             return "The microphone did not pick up the call (headphones?), so nothing is hidden as echo."
         case .noSystemAudio:
             return "The meeting has no system audio, so the microphone has no echo of it."
+        case .tooLong:
+            let hours = Int(Double(EchoMaskStore.maximumSamples) / Double(EchoAnalysis.sampleRate) / 3600)
+            return "The call is longer than the echo check handles (\(hours) hours), so nothing is hidden as echo."
         }
     }
 }
@@ -362,7 +385,7 @@ final class RenderedEchoAudio: EchoAudioSource, @unchecked Sendable {
         var count = 0
         for span in spans {
             let (end, overflow) = span.session.addingReportingOverflow(span.count)
-            guard !overflow, end <= Self.maxSamples else {
+            guard !overflow, end <= Self.representable else {
                 AudioFileClose(opened)
                 throw HolosError.invalidInput("The prepared \(rendered.track) audio's timing is out of range, so its "
                                               + "echo cannot be analysed.")
@@ -375,13 +398,15 @@ final class RenderedEchoAudio: EchoAudioSource, @unchecked Sendable {
         sampleCount = count
     }
 
-    /// No meeting runs a month: a session time past this is damage, not audio.
-    static let maxSamples = 31 * 86_400 * EchoAnalysis.sampleRate
+    /// The largest sample index taken (2^53, where a Double still counts every sample): times past it are damage, and
+    /// would trap when made an `Int`. How long a call the analysis takes is `EchoMaskStore.maximumSamples`, checked
+    /// on `sampleCount` (`EchoAnalysisStage.analyze`).
+    static let representable = 1 << 53
 
-    /// `seconds × rate` rounded, as a sample index; nil when it is not finite or not within ±`maxSamples`.
+    /// `seconds × rate` rounded, as a sample index; nil when it is not finite or not within ±`representable`.
     static func sampleIndex(_ seconds: Double, rate: Double) -> Int? {
         let value = (seconds * rate).rounded()
-        guard value.isFinite, abs(value) <= Double(maxSamples) else { return nil }
+        guard value.isFinite, abs(value) <= Double(representable) else { return nil }
         return Int(value)
     }
 

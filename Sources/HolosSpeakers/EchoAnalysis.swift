@@ -127,6 +127,9 @@ public enum EchoAnalysis {
         case noEcho
         /// The system track is missing or silent.
         case noSystemAudio
+        /// The call is longer than a mask can be kept for (`EchoMaskStore.maximumFrames` in HolosMeeting): not
+        /// analysed, and nothing is hidden.
+        case tooLong
     }
 
     /// The measured echo delay of the microphone behind the system audio.

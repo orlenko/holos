@@ -29,7 +29,7 @@ extension Session {
             let last = Mutex<String?>(nil)
             let outcome = try await SessionEchoAnalyzeCommand.run(
                 SessionEchoAnalyzeCommand.Request(session: session, force: force), profiles: SpeakerProfileStore(),
-                extractor: makeVoiceSampleExtractor(session: session),
+                voiceSamples: { makeVoiceSampleExtractor(session: $0) },
                 progress: { message in
                     let isNew = last.withLock { previous in
                         guard previous != message else { return false }

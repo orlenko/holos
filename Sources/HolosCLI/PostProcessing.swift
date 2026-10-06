@@ -12,7 +12,8 @@ import HolosStorage
 /// (`SpeakerProfileStore()`) lets stage 7 suggest known people when "Remember voices" is on (PR10).
 func makeMeetingPostProcessor(options: PostProcessingOptions = .init()) -> MeetingPostProcessor {
     MeetingPostProcessor(diarizer: makeDiarizer(engineOverrides: options.engineOverrides), options: options,
-                         profiles: SpeakerProfileStore(), wordFixes: makeWordFixDependencies())
+                         profiles: SpeakerProfileStore(), wordFixes: makeWordFixDependencies(),
+                         voiceSamples: { makeVoiceSampleExtractor(session: $0) })
 }
 
 /// The meeting word-fix stage's inputs (docs/design.md "Meeting word fixes"): the user's corrections.json and

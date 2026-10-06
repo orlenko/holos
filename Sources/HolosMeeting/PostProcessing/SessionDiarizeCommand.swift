@@ -48,6 +48,7 @@ public enum SessionDiarizeCommand {
                            profiles: SpeakerProfileStore? = nil,
                            languages: LanguageDetectionDependencies = .live,
                            wordFixes: WordFixDependencies = .none,
+                           voiceSamples: MeetingPostProcessor.VoiceSampleSource? = nil,
                            progress: @escaping @Sendable (PostProcessingProgress) -> Void = { _ in })
         async throws -> Outcome {
         let session = request.session
@@ -66,7 +67,8 @@ public enum SessionDiarizeCommand {
             lease = try SessionArchive.acquireProcessingLease(at: session)
         }
         let processor = MeetingPostProcessor(diarizer: diarizer, options: request.options, freeSpace: freeSpace,
-                                             profiles: profiles, languages: languages, wordFixes: wordFixes)
+                                             profiles: profiles, languages: languages, wordFixes: wordFixes,
+                                             voiceSamples: voiceSamples)
         let record = try await processor.run(session: session, lease: lease, progress: progress)
         return Outcome(record: record, exitCode: exitCode(record.state),
                        summary: summary(record, session: session))

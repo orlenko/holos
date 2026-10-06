@@ -465,12 +465,11 @@ private struct FixedVoice: VoiceSampleExtractor {
     }
 }
 
-@Test(.timeLimit(.minutes(2)))
-func aSavedMaskBringsTheMeetingsVoiceSamplesInStep() async throws {
-    // The user's microphone turn runs through the far end's echo. Its voice was learned before the echo was found;
-    // once it is, the turn's voice data covers echo, so the sample learned from it is not kept.
-    let temp = try TemporaryDirectory("echo")
-    defer { temp.remove() }
+
+/// An older call whose microphone turn ("Me", 8–17.6 s) runs through the far end's echo (10–16 s), labelled before
+/// the echo was found (its microphone audio could not be read then), whose voice the user then linked and learned:
+/// the people store holds one sample from it.
+private func learnedBeforeTheEcho(in temp: TemporaryDirectory) async throws -> (URL, SpeakerProfileStore) {
     let store = SpeakerProfileStore(directory: temp.url.appendingPathComponent("Support/Speakers", isDirectory: true))
     try store.update { $0.rememberVoices = true }
     let call = CallTranscript()
@@ -486,12 +485,104 @@ func aSavedMaskBringsTheMeetingsVoiceSamplesInStep() async throws {
     _ = try await VoiceProfileService.link(session: session, speakerID: me, to: .new(name: "Person A"), view: view,
                                            learnVoice: true, extractor: FixedVoice(), store: store)
     #expect(try store.load().profiles.flatMap(\.samples).count == 1)
+    return (session, store)
+}
 
-    let outcome = try await SessionEchoAnalyzeCommand.run(.init(session: session), profiles: store,
-                                                          extractor: FixedVoice(), freeSpace: FixedFreeSpace(.max))
-    #expect(outcome.verdict == .echo)
+/// Once the echo is found, the turn's voice data covers echo, so the sample learned from it is not kept; the person
+/// stays.
+private func expectSampleDropped(_ store: SpeakerProfileStore) throws {
     #expect(try store.load().profiles.flatMap(\.samples).isEmpty)
-    #expect(try store.load().profiles.map(\.displayName) == ["Person A"], "The person stays; only the sample goes.")
+    #expect(try store.load().profiles.map(\.displayName) == ["Person A"])
+}
+
+@Test(.timeLimit(.minutes(2)))
+func echoAnalyzeBringsTheMeetingsVoiceSamplesInStep() async throws {
+    let temp = try TemporaryDirectory("echo")
+    defer { temp.remove() }
+    let (session, store) = try await learnedBeforeTheEcho(in: temp)
+    let outcome = try await SessionEchoAnalyzeCommand.run(.init(session: session), profiles: store,
+                                                          voiceSamples: { _ in FixedVoice() },
+                                                          freeSpace: FixedFreeSpace(.max))
+    #expect(outcome.verdict == .echo)
+    try expectSampleDropped(store)
+}
+
+@Test(.timeLimit(.minutes(2)))
+func postProcessingThatSavesAMaskForEditedLabelsBringsTheSamplesInStep() async throws {
+    // `session diarize --keep-transcript` without --force: the edited labels are kept, the mask is saved, and the
+    // sample is brought in step before anything else.
+    let temp = try TemporaryDirectory("echo")
+    defer { temp.remove() }
+    let (session, store) = try await learnedBeforeTheEcho(in: temp)
+    let headBefore = try SessionSpeakerStore.readHead(session: session)?.runID
+    let outcome = try await SessionDiarizeCommand.run(
+        .init(session: session, options: PostProcessingOptions(keepTranscript: true)), diarizer: systemDiarizer(),
+        freeSpace: FixedFreeSpace(.max), profiles: store, voiceSamples: { _ in FixedVoice() })
+    #expect(outcome.record.stages.contains { $0.stage == .echo && $0.result == .succeeded })
+    #expect(try SessionSpeakerStore.readHead(session: session)?.runID == headBefore, "The edited labels were kept.")
+    try expectSampleDropped(store)
+}
+
+@Test(.timeLimit(.minutes(2)))
+func aMaskSavedWithoutUpdatingSamplesIsCaughtUpByTheNextPass() async throws {
+    // A pass saved the mask but did not bring the samples in step (no voice extractor). Freshness comes from the
+    // files: a plain echo-analyze, which has no analysis to make, still catches the sample up, and so does Recover.
+    let temp = try TemporaryDirectory("echo")
+    defer { temp.remove() }
+    let (session, store) = try await learnedBeforeTheEcho(in: temp)
+    _ = try await SessionDiarizeCommand.run(
+        .init(session: session, options: PostProcessingOptions(keepTranscript: true)), diarizer: systemDiarizer(),
+        freeSpace: FixedFreeSpace(.max), profiles: store)
+    #expect(!EchoAnalysisStage.needed(session: session))
+    #expect(try store.load().profiles.flatMap(\.samples).count == 1)
+    let outcome = try await SessionEchoAnalyzeCommand.run(.init(session: session), profiles: store,
+                                                          voiceSamples: { _ in FixedVoice() },
+                                                          freeSpace: FixedFreeSpace(.max))
+    #expect(!outcome.analysed)
+    try expectSampleDropped(store)
+
+    let second = try TemporaryDirectory("echo")
+    defer { second.remove() }
+    let (other, otherStore) = try await learnedBeforeTheEcho(in: second)
+    _ = try await SessionDiarizeCommand.run(
+        .init(session: other, options: PostProcessingOptions(keepTranscript: true)), diarizer: systemDiarizer(),
+        freeSpace: FixedFreeSpace(.max), profiles: otherStore)
+    let recovered = try await SessionRecoveryCommand.run(.init(session: other), diarizer: systemDiarizer(),
+                                                         freeSpace: FixedFreeSpace(.max), profiles: otherStore,
+                                                         voiceSamples: { _ in FixedVoice() })
+    #expect(recovered.warnings.isEmpty)
+    try expectSampleDropped(otherStore)
+}
+
+@Test(.timeLimit(.minutes(2)))
+func aCallLongerThanAMaskIsKeptForIsSavedAsTooLongAndCountsAsDone() async throws {
+    // One limit, made tiny here (100 frames, 1.6 s): the analysis does not write a frames file the reader would refuse
+    // (and analyse again every pass); it saves `tooLong`, which hides nothing and is not analysed again.
+    let temp = try TemporaryDirectory("echo")
+    defer { temp.remove() }
+    let call = CallTranscript()
+    let session = try await callSession(in: temp.url, audio: CallAudio.tracks(echo: true), transcript: call.transcript)
+    let manifest = try SessionArchive.readManifest(at: session)
+    try EchoMaskStore.$maximumFrames.withValue(100) {
+        let stored = try EchoAnalysisStage.analyzeSession(session: session, manifest: manifest,
+                                                          freeSpace: FixedFreeSpace(.max))
+        #expect(stored.record.verdict == .tooLong)
+        #expect(stored.mask == nil)
+        #expect(!SessionFixtures.exists(EchoMaskStore.framesURL(session)))
+        #expect(try EchoMaskStore.current(session: session, manifest: manifest)?.record.verdict == .tooLong)
+        #expect(!EchoAnalysisStage.needed(session: session))
+        #expect(EchoMaskStore.usable(session: session, manifest: manifest) == nil)
+        #expect(EchoAnalysisStage.message(stored.record).contains("longer than"))
+    }
+    // With the usual limit the same call is analysed, and its mask is one the reader takes.
+    let stored = try EchoAnalysisStage.analyzeSession(session: session, manifest: manifest,
+                                                      freeSpace: FixedFreeSpace(.max))
+    #expect(stored.record.verdict == .echo)
+    #expect(EchoMaskStore.usable(session: session, manifest: manifest) != nil)
+    // A frames file past the limit is never read.
+    EchoMaskStore.$maximumFrames.withValue(100) {
+        #expect(EchoMaskStore.usable(session: session, manifest: manifest) == nil)
+    }
 }
 
 @Test(.timeLimit(.minutes(2)))
@@ -506,7 +597,7 @@ func renderTimesFarOutsideAMeetingThrowInsteadOfTrapping() async throws {
     var sane = rendered
     sane.timeMap = [RenderSpan(renderStart: 0, sessionStart: 5, duration: 1)]
     #expect(try RenderedEchoAudio(sane).sampleCount == 6 * EchoAnalysis.sampleRate)
-    let edge = Double(RenderedEchoAudio.maxSamples) / Double(EchoAnalysis.sampleRate)
+    let edge = Double(RenderedEchoAudio.representable) / Double(EchoAnalysis.sampleRate) * 1.01
     for start in [1e15, -1e15, .infinity, .nan, edge] {
         var damaged = rendered
         damaged.timeMap = [RenderSpan(renderStart: 0, sessionStart: start, duration: 1)]

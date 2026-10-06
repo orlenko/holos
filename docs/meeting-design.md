@@ -7893,7 +7893,9 @@ genuinely local (the user, or people in the room) stays even while the call play
 - *Storage.* `echo/mask.json` (`EchoMaskRecord`, schema 1: verdict, delay fit, frame counts,
   the SHA-256 of `echo/frames.bin`, analysis seconds) and `echo/frames.bin` (one class byte
   per frame, then one byte per frame of predicted echo level in 0.5 dB steps; about 450 KB
-  per hour). The record is
+  per hour). One limit sets the longest call: `EchoMaskStore.maximumFrames` (2^25 frames,
+  about 149 hours); the reader takes frames files up to it, and a longer call is not analysed
+  but saved with verdict `tooLong`, which hides nothing and counts as done. The record is
   keyed to the audio (`EvalStore.audioFingerprint` of the mic and system chunk lists, which
   include each chunk's SHA-256) and to `EchoAnalysis.version`; any other key is out of date
   and analysed again, but one of a newer schema or a newer analysis version (checked before
@@ -7925,9 +7927,12 @@ genuinely local (the user, or people in the room) stays even while the call play
   else it did (`echoMaskIsCurrent`; a rewrite left pending counts as out of date). The people
   cache and the summary schedule key on the echo files' stamps. The mask is saved under the
   speaker lock (lease, then speakers, then profiles), and a voice sample is published only if
-  the echo files did not change while it was computed; after `echo-analyze` or a Recover saves
-  a mask, the meeting's voice samples are brought in step as after an edit
-  (`VoiceProfileService.refreshSamples`).
+  the echo files did not change while it was computed. A sample's freshness comes from the
+  files: its input digest covers the turns the masked view lets it use, so
+  `VoiceProfileService.refreshSamples` (as after an edit) recomputes or removes one whose turns
+  the mask changed and leaves the rest alone. Post-processing runs it right after saving a mask
+  (before recognition, with the head the sample was learned from, no lock held), and every
+  `echo-analyze` and Recover run it, so a pass that saved a mask without it is caught up.
 - *Recognition.* Post-processing compares voices only for clusters the view lists with the mask
   (`RecognizeStage.withoutEcho`): a microphone cluster that is echo sounds like the far end and
   must not take a person's match from the system speaker. The mask exists by then (stage 4b).

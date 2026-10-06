@@ -37,10 +37,11 @@ public enum SessionEchoAnalyzeCommand {
     /// Runs under the session's processing lease. Throws, with nothing changed, when the meeting is still recording,
     /// another process holds the lease, the audio was deleted, a saved analysis was written by a newer Voice is Local,
     /// or the audio cannot be prepared (the next run tries again). `profiles` gives people's names to the exports, and
-    /// after a new analysis is saved, the voice samples people have from this meeting are brought in step with what
-    /// the labels now show (`VoiceProfileService.refreshSamples`, as after an edit; `extractor` recomputes them).
+    /// with `voiceSamples` the voice samples people have from this meeting are brought in step with what the labels
+    /// now show (`VoiceProfileService.refreshSamples`, as after an edit): worked out from the files, so a mask an
+    /// earlier pass saved without doing so is caught up too, and up-to-date samples cost nothing.
     public static func run(_ request: Request, profiles: SpeakerProfileStore? = nil,
-                           extractor: (any VoiceSampleExtractor)? = nil,
+                           voiceSamples: MeetingPostProcessor.VoiceSampleSource? = nil,
                            freeSpace: any FreeSpaceProvider = VolumeFreeSpace(),
                            progress: @escaping @Sendable (String) -> Void = { _ in }) async throws -> Outcome {
         let session = request.session
@@ -52,14 +53,15 @@ public enum SessionEchoAnalyzeCommand {
         var outcome = try await lease.withUse(for: session) {
             try analyze(request, profiles: profiles, freeSpace: freeSpace, progress: progress)
         }
-        if outcome.analysed, let profiles {
+        if outcome.verdict != nil, let profiles, let voiceSamples {
             do {
-                try await VoiceProfileService.refreshSamples(session: session, extractor: extractor, store: profiles)
+                try await VoiceProfileService.refreshSamples(session: session, extractor: voiceSamples(session),
+                                                             store: profiles)
             } catch is CancellationError {
                 throw CancellationError()
             } catch {
                 outcome.summary += " A voice sample learned from this meeting could not be updated ("
-                    + "\(error.localizedDescription)); run the command again with --force."
+                    + "\(error.localizedDescription)); run the command again."
             }
         }
         return outcome
