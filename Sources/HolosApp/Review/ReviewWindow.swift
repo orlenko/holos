@@ -1006,10 +1006,11 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate {
     private func editWords(_ words: [ReviewWord], to text: String, addTerm: Bool, movesSeen: Int) {
         offeredTerm = nil
         perform { [weak self] review in
-            guard let edit = try await review.editWords(words.map(\.ref), to: text, seenMoves: movesSeen) else {
-                return
+            // Once saved, also when the labels could not be refreshed after it (the edit stands, and ⌥Return's term
+            // is still added).
+            _ = try await review.editWords(words.map(\.ref), to: text, seenMoves: movesSeen) { edit in
+                self?.offerTerm(after: edit, add: addTerm)
             }
-            self?.offerTerm(after: edit, add: addTerm)
         }
     }
 

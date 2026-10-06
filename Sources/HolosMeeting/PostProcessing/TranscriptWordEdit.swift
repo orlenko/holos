@@ -165,10 +165,7 @@ public enum TranscriptWordEdit {
             base.id == current.fixedFrom ? base.segments.first { $0.id == segment.id } : nil
         }
         let baseWords = baseSegment.map(WordTiming.effectiveWords(of:))
-        let bounds = baseSegment.flatMap { baseSegment in
-            baseWords.flatMap { baseBounds(fixes: fixes, current: words, base: $0,
-                                           baseText: Array(baseSegment.text.utf16)) }
-        }
+        let bounds = baseWords.flatMap { baseBounds(fixes: fixes, current: words, base: $0) }
         func automatic(_ fix: TranscriptWordFix) -> (text: String, words: Int) {
             guard let baseSegment, let baseWords, let bounds, bounds[fix.first] >= 0, bounds[fix.end] >= 0 else {
                 return (fix.heard, fix.heardWordCount)
@@ -210,11 +207,10 @@ public enum TranscriptWordEdit {
         guard !heard.isEmpty, heardWords > 0 else {
             throw HolosError.invalidInput("That segment's word positions cannot be edited safely.")
         }
-        let recordedWords = heardWords == WordFixes.tokens(of: Array(heard.utf16)).count ? nil : heardWords
 
         working.marks.removeAll { $0.range.overlaps(span) }
         let edited = WordFixes.applying([.init(range: span, text: meant, kind: .reviewEdit, heard: heard,
-                                               heardWords: recordedWords)], to: working)
+                                               heardWords: heardWords)], to: working)
         guard edited.text != working.text || edited.marks != working.marks else { return nil }
 
         var result = current
@@ -243,7 +239,7 @@ public enum TranscriptWordEdit {
                 throw HolosError.invalidInput("The transcript the words were fixed from cannot be read.")
             }
             let edited = try editingBase(base, segment: segment, words: words, span: lower..<upper, meant: meant,
-                                         heard: heard, heardWords: recordedWords, now: now)
+                                         heard: heard, heardWords: heardWords, now: now)
             newBase = edited
             result.fixedFrom = edited.id
             result.liveCorrectedFrom = edited.liveCorrectedFrom
@@ -301,6 +297,12 @@ public enum TranscriptWordEdit {
         return copy
     }
 
+    /// An edit refused because its segment has an automatic word fix saved by an earlier version whose replaced words
+    /// cannot be told (docs/meeting-design.md §5.10, "Editing words").
+    static let olderFix = HolosError.invalidInput(
+        "This segment has a word fix made by an earlier version of Voice is Local, which edits cannot work around yet. "
+            + "Its words were not changed.")
+
     private static let notShown = HolosError.invalidInput(
         "Only words shown in one turn can be edited together; some of these are hidden (echo) or in another turn.")
 
@@ -310,9 +312,14 @@ public enum TranscriptWordEdit {
                                     now: Date) throws -> Transcript {
         guard let index = base.segments.firstIndex(where: { $0.id == segment.id }),
               let bounds = baseBounds(fixes: segment.fixes ?? [], current: words,
-                                      base: WordTiming.effectiveWords(of: base.segments[index]),
-                                      baseText: Array(base.segments[index].text.utf16)) else {
-            throw HolosError.invalidInput("These words cannot be matched to the transcript they were fixed from.")
+                                      base: WordTiming.effectiveWords(of: base.segments[index])) else {
+            // An automatic fix saved by an earlier version, without the count of words it replaced, is counted by the
+            // spaces in what was heard: wrong for text without spaces between its words ("你好世界").
+            let older = (segment.fixes ?? []).contains {
+                ($0.kind == .correction || $0.kind == .term) && $0.heardWords == nil
+            }
+            throw older ? olderFix
+                : HolosError.invalidInput("These words cannot be matched to the transcript they were fixed from.")
         }
         let baseSegment = base.segments[index]
         let baseWords = WordTiming.effectiveWords(of: baseSegment)
@@ -340,11 +347,9 @@ public enum TranscriptWordEdit {
     }
 
     /// For each word boundary `0...current.count` of a fixed segment, the boundary in its unfixed `base` segment; -1
-    /// inside a mark. An automatic fix took the base words its `heard` covers there (`WordFixes.replacedWords`, from
-    /// `baseText`); a Review revert, a live correction, and a Review edit occupy their own words in the base too. Nil
-    /// when the unmarked words do not match.
-    static func baseBounds(fixes: [TranscriptWordFix], current: [EffectiveWord], base: [EffectiveWord],
-                           baseText: [UInt16]) -> [Int]? {
+    /// inside a mark. An automatic fix took `heardWordCount` base words; a Review revert, a live correction, and a
+    /// Review edit occupy their own words in the base too. Nil when the unmarked words do not match.
+    static func baseBounds(fixes: [TranscriptWordFix], current: [EffectiveWord], base: [EffectiveWord]) -> [Int]? {
         var bounds = Array(repeating: -1, count: current.count + 1)
         var word = 0
         var baseWord = 0
@@ -364,8 +369,7 @@ public enum TranscriptWordEdit {
             bounds[fix.first] = baseWord
             let count: Int
             switch fix.kind {
-            case .correction, .term:
-                count = WordFixes.replacedWords(by: fix, from: baseWord, in: base, text: baseText) ?? fix.heardWordCount
+            case .correction, .term: count = fix.heardWordCount
             case .reviewRevert, .liveCorrection, .reviewEdit: count = fix.end - fix.first
             default: return nil
             }

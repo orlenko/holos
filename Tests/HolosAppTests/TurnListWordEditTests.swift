@@ -222,6 +222,29 @@ struct TurnListWordEditTests {
         #expect(messages.last == TurnListView.selectionStopped)
     }
 
+    /// After the transcript changed under the labels (`canEditWords` off), an edit made here cannot be reverted (its
+    /// Revert is another edit, which would be refused): neither VoiceOver nor the context menu offers it. An automatic
+    /// fix's Revert stays.
+    @Test func anEditsRevertIsOfferedOnlyWhileWordsCanBeEdited() throws {
+        let (list, _) = editingList()
+        let edited = TranscriptWordFix(first: 1, end: 2, heard: "bet", kind: .reviewEdit, heardWords: 1)
+        let fixed = TranscriptWordFix(first: 1, end: 2, heard: "delt", kind: .correction, heardWords: 1)
+        update(list, words: [
+            "T1": [ReviewWord(ref: WordRef(segmentID: "T1", word: 0), text: "alpha", start: 0),
+                   ReviewWord(ref: WordRef(segmentID: "T1", word: 1), text: "Beta", start: 1, fix: edited)],
+            "T2": [ReviewWord(ref: WordRef(segmentID: "T2", word: 0), text: "gamma", start: 3),
+                   ReviewWord(ref: WordRef(segmentID: "T2", word: 1), text: "delta", start: 4, fix: fixed)],
+            "T3": [ReviewWord(ref: WordRef(segmentID: "T3", word: 0), text: "epsilon", start: 6),
+                   ReviewWord(ref: WordRef(segmentID: "T3", word: 1), text: "zeta", start: 7)],
+        ], moves: [])
+        let text = try TurnListViewTests.cell(list, row: 0).bodyText
+        func names() -> [String] { (text.accessibilityCustomActions() ?? []).map(\.name) }
+        #expect(names().contains("Revert to “bet”") && names().contains("Revert to “delt”"))
+        list.canEditWords = false
+        #expect(!names().contains("Revert to “bet”") && names().contains("Revert to “delt”"))
+        #expect(!text.canRevert(edited) && text.canRevert(fixed), "The context menu follows the same rule.")
+    }
+
     @Test func theFieldFollowsItsWordsWhenAnEditEarlierInTheSegmentSaves() throws {
         let (list, saved) = editingList()
         var messages: [String?] = []

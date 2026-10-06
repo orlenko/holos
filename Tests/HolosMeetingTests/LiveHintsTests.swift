@@ -410,7 +410,7 @@ private func hint(_ segment: TranscriptSegment, words: Range<Int>, action: LiveH
     #expect(preserved.segments[0].text == "one two three four right")
     #expect(preserved.segments[0].fixes == [
         .init(first: 0, end: 4, heard: "alpha", kind: .liveCorrection),
-        .init(first: 4, end: 5, heard: "wrong", kind: .correction),
+        .init(first: 4, end: 5, heard: "wrong", kind: .correction, heardWords: 1),
     ])
 }
 
@@ -427,7 +427,7 @@ private func hint(_ segment: TranscriptSegment, words: Range<Int>, action: LiveH
 
     #expect(preserved.segments[0].text == "one two three four Claude")
     #expect(preserved.segments[0].fixes?.last ==
-        .init(first: 4, end: 5, heard: "cloud", kind: .term))
+        .init(first: 4, end: 5, heard: "cloud", kind: .term, heardWords: 1))
 }
 
 @Test func anUntimedReviewRevertFollowsAPrecedingLiveWordInsertion() {

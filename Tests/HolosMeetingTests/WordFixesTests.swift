@@ -42,7 +42,7 @@ private func pairs(_ entries: [(String, String)]) -> CorrectionList {
         #expect(String(decoding: utf16[word.utf16Offset..<(word.utf16Offset + word.utf16Length)], as: UTF16.self)
             == word.text)
     }
-    #expect(fixed.fixes == [TranscriptWordFix(first: 1, end: 2, heard: "a bundu", kind: .correction)])
+    #expect(fixed.fixes == [TranscriptWordFix(first: 1, end: 2, heard: "a bundu", kind: .correction, heardWords: 2)])
     #expect(fixed.id == segment.id && fixed.start == segment.start && fixed.end == segment.end)
 }
 
@@ -56,7 +56,7 @@ private func pairs(_ entries: [(String, String)]) -> CorrectionList {
     #expect(abs(fixed.words[2].end - (old.start + old.end) / 2) < 1e-9 && fixed.words[3].start == fixed.words[2].end)
     #expect(fixed.words[4] == TimedWord(text: "here", start: segment.words[3].start, end: segment.words[3].end,
                                         utf16Offset: 17, utf16Length: 4))
-    #expect(fixed.fixes == [TranscriptWordFix(first: 2, end: 4, heard: "onobunto", kind: .correction)])
+    #expect(fixed.fixes == [TranscriptWordFix(first: 2, end: 4, heard: "onobunto", kind: .correction, heardWords: 1)])
 }
 
 @Test func marksAroundAWordStayAndCaseFollowsTheSentence() throws {
@@ -74,7 +74,8 @@ private func pairs(_ entries: [(String, String)]) -> CorrectionList {
     let fixed = try corrected(segment, pairs([("a bundu", "on Ubuntu")]))
     #expect(fixed.text == "ask on Ubuntu box now" && fixed.words.isEmpty)
     // Marks are effective words: the text's whitespace-separated tokens.
-    #expect(fixed.fixes == [TranscriptWordFix(first: 1, end: 3, heard: "a  bundu", kind: .correction)])
+    #expect(fixed.fixes == [TranscriptWordFix(first: 1, end: 3, heard: "a  bundu", kind: .correction,
+                                              heardWords: 2)])
     #expect(WordTiming.effectiveWords(of: fixed).count == 5)
 }
 
@@ -101,7 +102,8 @@ private func pairs(_ entries: [(String, String)]) -> CorrectionList {
     let again = WordFixes.applying([WordFixes.Replacement(range: 4..<10, text: "Clod", kind: .term)], to: working)
     #expect(again == working)
     let fixed = WordFixes.finished(working, segment: segment)
-    #expect(fixed.fixes == [TranscriptWordFix(first: 1, end: 3, heard: "cloud code", kind: .correction)])
+    #expect(fixed.fixes == [TranscriptWordFix(first: 1, end: 3, heard: "cloud code", kind: .correction,
+                                              heardWords: 2)])
     #expect(WordFixes.finished(try #require(WordFixes.Working(segment)), segment: segment) == segment,
             "A segment with nothing fixed stays as it was.")
 }
@@ -132,7 +134,7 @@ private func pairs(_ entries: [(String, String)]) -> CorrectionList {
     #expect(reverted.segments[0].words.map(\.text) == ["ask", "cloud,", "then", "ubuntu", "now"])
     #expect(reverted.segments[0].fixes
         == [TranscriptWordFix(first: 1, end: 2, heard: "Claude,", kind: .reviewRevert),
-            TranscriptWordFix(first: 3, end: 4, heard: "a bundu", kind: .correction)])
+            TranscriptWordFix(first: 3, end: 4, heard: "a bundu", kind: .correction, heardWords: 2)])
     #expect(try WordFixes.reverting(WordRef(segmentID: baseSegment.id, word: 3), in: reverted, to: base)
         .segments[0].text == baseSegment.text)
 }

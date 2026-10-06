@@ -120,10 +120,13 @@ func misheardWordsAreFixedInANewRevisionBeforeSpeakersAreLabelled() async throws
         "Claude wrote the commit message",
     ])
     #expect(fixed.segments.map(\.id) == recorded.segments.map(\.id))
-    #expect(fixed.segments[0].fixes == [TranscriptWordFix(first: 3, end: 4, heard: "cloud", kind: .term)])
+    #expect(fixed.segments[0].fixes == [TranscriptWordFix(first: 3, end: 4, heard: "cloud", kind: .term,
+                                                          heardWords: 1)])
     #expect(fixed.segments[1].fixes == nil)
-    #expect(fixed.segments[2].fixes == [TranscriptWordFix(first: 1, end: 2, heard: "a bundu", kind: .correction)])
-    #expect(fixed.segments[3].fixes == [TranscriptWordFix(first: 0, end: 1, heard: "Cloud", kind: .term)])
+    #expect(fixed.segments[2].fixes == [TranscriptWordFix(first: 1, end: 2, heard: "a bundu", kind: .correction,
+                                                          heardWords: 2)])
+    #expect(fixed.segments[3].fixes == [TranscriptWordFix(first: 0, end: 1, heard: "Cloud", kind: .term,
+                                                          heardWords: 1)])
     // "ubuntu" took the time of "a bundu".
     #expect(fixed.segments[2].words[1].start == recorded.segments[2].words[1].start)
     #expect(fixed.segments[2].words[1].end == recorded.segments[2].words[2].end)

@@ -150,7 +150,8 @@ func anEditIsSavedLearnedAndUndoneExactlyWithSpeakerEditsAround() async throws {
     #expect(edited.id != original.id)
     #expect(edited.segments.map(\.text) == ["ask Claude now", "we will see"])
     #expect(review.words(of: "T1").map(\.text) == ["ask", "Claude", "now"])
-    #expect(review.words(of: "T1")[1].fix == TranscriptWordFix(first: 1, end: 2, heard: "cloud", kind: .reviewEdit))
+    #expect(review.words(of: "T1")[1].fix == TranscriptWordFix(first: 1, end: 2, heard: "cloud", kind: .reviewEdit,
+                                                                heardWords: 1))
     #expect(review.text(of: try #require(review.turn("T1"))) == "ask Claude now")
     #expect(review.projection.runID != runBefore && review.projection.turns.map(\.id) == ["T1", "T2"])
     #expect(review.speaker("system:S1")?.name == "Alice", "Speaker edits carry over to the edited words.")
@@ -548,6 +549,55 @@ func aHeadThatCouldNotBePublishedHoldsTheReviewUntilAReloadRepairsIt() async thr
 }
 
 @Test(.timeLimit(.minutes(1))) @MainActor
+func anEditSavedBeforeItsRereadFailedStillReachesTheCallerAndIsLearnedWithContextAtClose() async throws {
+    let temp = try TemporaryDirectory("review")
+    defer { temp.remove() }
+    let session = try await wordEditSession(in: temp, [
+        WordEditTurn(speaker: "system:S1", start: 0, words: ["I", "right", "now"]),
+    ])
+    let review = try await wordEditOpen(session)
+    let learner = WordEditLearner(contextual: true)
+    learner.attach(to: review)
+    struct Unreadable: Error {}
+    review.beforeWordChangeReread = { throw Unreadable() }
+    var committed: [ReviewWordEdit] = []
+    await #expect(throws: HolosError.self) {
+        try await review.editWords(wordEditRefs(review, "T1", [1]), to: "write") { committed.append($0) }
+    }
+    // Saved: what follows from it (⌥Return's word-list term) still has the edit.
+    #expect(committed.map(\.meant) == ["write"])
+    #expect(review.reloadProblem != nil)
+    // Closed without a Reload: the labels are read again, so the lone dictionary word is learned with its neighbour.
+    await review.close()
+    #expect(learner.taughtBy == [ReviewWordEdit(heard: "right", meant: "write", before: "I", after: "now")])
+    #expect(learner.list.entries.contains { $0.meant.contains("write") })
+}
+
+@Test(.timeLimit(.minutes(1))) @MainActor
+func anEditsUndoGoesOnceAnotherProcessReplacedTheTranscriptAndUndoReachesTheChangeBefore() async throws {
+    let temp = try TemporaryDirectory("review")
+    defer { temp.remove() }
+    let session = try await wordEditSession(in: temp, [
+        WordEditTurn(speaker: "system:S1", start: 0, words: ["ask", "cloud", "now"]),
+    ])
+    let review = try await wordEditOpen(session)
+    try await review.apply([.rename(speakerID: "system:S1", name: "Ann")])
+    try await review.editWords(wordEditRefs(review, "T1", [1]), to: "Claude")
+    // Another process makes a new current transcript; the labels stay on the edit's.
+    var replaced = try wordEditCurrent(session)
+    replaced.id = UUID().uuidString
+    try await SessionFixtures.saveTranscript(replaced, in: session)
+    await review.reload()
+    #expect(review.snapshot.transcriptChanged)
+    // The edit's undo can never be made now: undo takes back the rename instead.
+    #expect(review.canUndo)
+    try await review.undo()
+    #expect(review.speaker("system:S1")?.name != "Ann")
+    #expect(try wordEditCurrent(session).id == replaced.id, "The words were not touched.")
+    await review.close()
+}
+
+@Test(.timeLimit(.minutes(1))) @MainActor
 func anEditWhoseLabelsCannotBeRereadCanStillBeUndone() async throws {
     let temp = try TemporaryDirectory("review")
     defer { temp.remove() }
@@ -782,6 +832,53 @@ func anExistingCorrectionIsKeptAndAFailedWriteIsMadeAtTheNextClose() async throw
 }
 
 @Test(.timeLimit(.minutes(1))) @MainActor
+func anEditBesideAnOlderUnspacedFixIsRefusedSayingWhy() async throws {
+    let temp = try TemporaryDirectory("review")
+    defer { temp.remove() }
+    // "你好世界 再见", timed as "你好", "世界", "再见".
+    var segment = SessionFixtures.segment(["你好", "世界", "再见"], track: "system", start: 0, wordSeconds: 1)
+    segment.text = "你好世界 再见"
+    segment.words[1].utf16Offset = 2
+    segment.words[2].utf16Offset = 5
+    let base = SessionFixtures.transcript([segment])
+    let session = try await SessionFixtures.makeSession(in: temp.url, source: .system, audioSeconds: ["system": 4],
+                                                        mode: .call, transcript: base)
+    // A correction saved by an earlier version, without the count of words it replaced.
+    var fixed = try await WordFixStage.fix(base, title: "",
+                                           corrections: CorrectionList(entries: [Correction(heard: "你好世界",
+                                                                                            meant: "你好地球")]),
+                                           terms: CorrectionList(), dependencies: .none).transcript
+    #expect(fixed.segments[0].text == "你好地球 再见")
+    fixed.segments[0].fixes = [TranscriptWordFix(first: 0, end: 1, heard: "你好世界", kind: .correction)]
+    try await SessionFixtures.saveTranscript(fixed, in: session)
+    let manifest = try SessionArchive.readManifest(at: session)
+    let speaker = SessionSpeaker(id: "system:S1", ordinal: 1, provenance: .diarizer, clusterIDs: ["system:S1"])
+    let run = DiarizationRun(
+        sessionID: manifest.id, transcriptID: fixed.id, engine: .fake,
+        alignment: AlignmentInfo(version: 1, parameters: .v1),
+        tracks: [TrackDiarization(track: "system", policy: .diarized,
+                                  clusters: [ClusterSummary(clusterID: speaker.id, track: "system", speechSeconds: 3)])],
+        speakers: [speaker],
+        turns: [SpeakerTurn(id: "T1", track: "system", start: 0, end: 3, speakerID: speaker.id, clusterID: speaker.id,
+                            spans: [WordSpan(segmentID: segment.id, first: 0, end: 2)], overlap: false,
+                            otherClusters: [], assignmentScore: 1, timing: .measured)])
+    try SessionArchive.withSpeakerLock(at: session) {
+        try SessionSpeakerStore.writeRun(run, session: session)
+        try SessionSpeakerStore.writeHead(SpeakerHead(runID: run.id), session: session)
+    }
+    let review = try await wordEditOpen(session)
+    #expect(review.words(of: "T1").map(\.text) == ["你好地球", "再见"])
+    // What the window's banner shows.
+    let refusal = await #expect(throws: HolosError.self) {
+        try await review.editWords(wordEditRefs(review, "T1", [1]), to: "拜拜")
+    }
+    #expect(refusal?.localizedDescription == TranscriptWordEdit.olderFix.localizedDescription)
+    #expect(try wordEditCurrent(session).id == fixed.id, "Nothing was written.")
+    #expect(review.reloadProblem == nil && review.canEditWords, "The review goes on.")
+    await review.close()
+}
+
+@Test(.timeLimit(.minutes(1))) @MainActor
 func aQueuedRevertOfAnAutomaticFixFollowsAnEditBeforeIt() async throws {
     let temp = try TemporaryDirectory("review")
     defer { temp.remove() }
@@ -984,7 +1081,7 @@ func editsAcrossTurnsSegmentsOrHiddenWordsAreRefused() async throws {
     try await review.editWords([shown[2].ref], to: "drei")
     let segment = try wordEditCurrent(session).segments[0]
     #expect(segment.text == "one two echo drei")
-    #expect(segment.fixes == [TranscriptWordFix(first: 3, end: 4, heard: "three", kind: .reviewEdit)])
+    #expect(segment.fixes == [TranscriptWordFix(first: 3, end: 4, heard: "three", kind: .reviewEdit, heardWords: 1)])
     #expect(review.words(of: "T1").map(\.text) == ["one", "two", "drei"])
     await review.close()
 }

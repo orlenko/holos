@@ -7748,7 +7748,10 @@ shown, Otter-style.
   and open no field (an edit takes in the whole mark, across the turns, and would be
   refused; a selection stops before them); their tooltip and the banner say so, and that the
   other words of each turn can be edited (`ReviewWord.revertible`). Relabels are not stopped
-  from splitting them. ⌘E turns the mode on only while words can be edited: the review is
+  from splitting them. An edit's Revert is offered only while words can be edited (after the
+  transcript changed under the labels it would be refused); an automatic fix's Revert stays.
+  ⌥Return's word-list term is added once the edit is saved, also when the labels could not be
+  refreshed after it. ⌘E turns the mode on only while words can be edited: the review is
   editable (no command holds it read-only) and its labels were made on the current transcript
   (after the transcript changed, the banner says to use Label Again first, and no field
   opens); it always turns it off.
@@ -7794,11 +7797,15 @@ shown, Otter-style.
   whitespace-separated tokens of `heard`), so `heard` stays in the unfixed word space every
   provenance map uses (`WordFixStage.wordOrigins`, `SpeakerTranscriptRetarget.origins`: its
   original word count is `heardWords`, else `tokens(heard)`; `WordFixes.originalWordRanges`:
-  like a live correction, the base already holds it). An automatic fix records `heardWords`
-  too when it replaced a number of words its `heard` does not show ("你好世界" over two timed
-  words); where the base segment is at hand (`baseBounds`, `originalWordRanges`), an older
-  fix without it is counted by the base's own words its `heard` covers
-  (`WordFixes.replacedWords`), so such a segment stays editable and revertible. The edit is made in both layers:
+  like a live correction, the base already holds it). Every Review edit and every automatic
+  fix (correction, term) written from this version on records `heardWords` (for an automatic
+  fix, the words it touched: "你好世界" over two timed words, "type c" in "“type c”" over two),
+  the one source of truth. An older fix without it is counted by the whitespace-separated
+  tokens of its `heard`, as before. *Limit:* an older automatic fix over text without spaces
+  between its words (Chinese, Japanese) is then counted wrong, and an edit in its segment is
+  refused with "This segment has a word fix made by an earlier version of Voice is Local,
+  which edits cannot work around yet" (`TranscriptWordEdit.olderFix`); its Revert fails as it
+  did before this version. The edit is made in both layers:
   - the unfixed base `B` (`current.fixedFrom`, or the current transcript when it has none)
     gets a new revision `B′` with the edit marked `reviewEdit`, `fixedFrom` nil and
     `liveCorrectedFrom` = `B.liveCorrectedFrom ?? B.id` (the stable word space retargeting
@@ -7846,7 +7853,9 @@ shown, Otter-style.
   publishes a copy of `C` (new ID; `fixedFrom` still names `B`, so `B′` is left unused) with
   the head retargeted again by the inverse move: the text, words, timing, and fixes are
   exactly `C`'s, every word is back with its owner, and speaker edits made since carry over. It is refused when the current transcript is no longer the
-  edit's `C′` (or the copy an undo made of it). A speaker split waiting in the queue whose
+  edit's `C′` (or the copy an undo made of it); once a reread finds the labels on a
+  transcript that is no longer current (another process replaced it), the word edits' undo
+  entries are dropped, so undo reaches the speaker changes before them. A speaker split waiting in the queue whose
   word is in the edited segment is refused (its word index may have moved).
 - *Echo.* Words under a `reviewEdit` mark are never echo (`EchoFilter.reviewEditedWords`):
   the acoustic mask never hides them, and the text filter of a new run (Find More Speakers,
@@ -7866,7 +7875,10 @@ shown, Otter-style.
     dictionary word is learned only with its neighbour: "cloud now" and "cloud later" are two
     phrases). A neighbour is context only when it is shown in the edited word's own turn, as
     an edit itself may take in: never the next speaker's word at a turn boundary, nor a word
-    hidden as echo; without such a neighbour the rule learns as it does without context;
+    hidden as echo; without such a neighbour the rule learns as it does without context. The
+    turns are the labels on the transcript as it is then: labels the window could not reread
+    after an edit are read again at close, and when that fails nothing is learned at this
+    close (logged; the next close learns the same edits);
   - the pairs go to `corrections.json`, the list Corrections (⌘2) shows
     (`CorrectionList.learnKeepingExisting`): a phrase the list lacks is added; one it has
     keeps its correction (an earlier or an external choice wins; within one close, the first

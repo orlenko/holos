@@ -34,7 +34,7 @@ private func editRequest(_ first: Int, _ end: Int, _ text: String, segment: Stri
     #expect(segment.text == "ask Claude now")
     #expect(segment.words.map(\.text) == ["ask", "Claude", "now"])
     #expect(segment.words[1].start == 1 && segment.words[1].end == 1.8)
-    #expect(segment.fixes == [TranscriptWordFix(first: 1, end: 2, heard: "cloud", kind: .reviewEdit)])
+    #expect(segment.fixes == [TranscriptWordFix(first: 1, end: 2, heard: "cloud", kind: .reviewEdit, heardWords: 1)])
     #expect(result.transcript.id != current.id && result.transcript.fixedFrom == nil)
     #expect(result.transcript.liveCorrectedFrom == current.id, "An unfixed transcript stays its own word space.")
     #expect(result.base == nil)
@@ -108,7 +108,8 @@ private func editRanged(_ text: String, _ ranges: [(Int, Int)], id: String = "S1
     #expect(abs(words[1].start - 1) < 1e-9 && abs(words[1].end - 1.4) < 1e-9)
     #expect(abs(words[2].start - 1.4) < 1e-9 && abs(words[2].end - 1.8) < 1e-9)
     #expect(words[3].start == 2, "Words after the span keep their times.")
-    #expect(more.transcript.segments[0].fixes == [TranscriptWordFix(first: 1, end: 3, heard: "cloud", kind: .reviewEdit)])
+    #expect(more.transcript.segments[0].fixes == [TranscriptWordFix(first: 1, end: 3, heard: "cloud", kind: .reviewEdit,
+                                                                    heardWords: 1)])
 
     let fewer = try #require(try TranscriptWordEdit.editing(editRequest(0, 2, "Ask"), in: current, base: nil))
     #expect(fewer.transcript.segments[0].text == "Ask now")
@@ -123,19 +124,20 @@ private func editRanged(_ text: String, _ ranges: [(Int, Int)], id: String = "S1
     #expect(segment.text == "I think")
     #expect(segment.words.map(\.text) == ["I", "think"])
     #expect(segment.words[1].start == 1 && segment.words[1].end == 2.8, "The deleted word's time goes to its neighbour.")
-    #expect(segment.fixes == [TranscriptWordFix(first: 1, end: 2, heard: "um think", kind: .reviewEdit)])
+    #expect(segment.fixes == [TranscriptWordFix(first: 1, end: 2, heard: "um think", kind: .reviewEdit,
+                                                heardWords: 2)])
     #expect(next.deletion && next.heard == "um think" && next.meant == "think")
 
     let last = try #require(try TranscriptWordEdit.editing(editRequest(2, 3, " "), in: current, base: nil))
     #expect(last.transcript.segments[0].text == "I um")
     #expect(last.transcript.segments[0].fixes == [TranscriptWordFix(first: 1, end: 2, heard: "um think",
-                                                                    kind: .reviewEdit)])
+                                                                    kind: .reviewEdit, heardWords: 2)])
     // Not past a word another turn shows: the previous word is taken instead.
     let fenced = try #require(try TranscriptWordEdit.editing(editRequest(1, 2, ""), in: current, base: nil,
                                                               editable: { $0 < 2 }))
     #expect(fenced.transcript.segments[0].text == "I think")
     #expect(fenced.transcript.segments[0].fixes == [TranscriptWordFix(first: 0, end: 1, heard: "I um",
-                                                                      kind: .reviewEdit)])
+                                                                      kind: .reviewEdit, heardWords: 2)])
     // A segment never loses all its words.
     let lone = editTranscript([editSegment(["um"])])
     #expect(throws: HolosError.self) { try TranscriptWordEdit.editing(editRequest(0, 1, ""), in: lone, base: nil) }
@@ -150,12 +152,13 @@ private func editRanged(_ text: String, _ ranges: [(Int, Int)], id: String = "S1
     let result = try #require(try TranscriptWordEdit.editing(editRequest(1, 2, "Claudia"), in: fixed, base: base))
     let newBase = try #require(result.base)
     #expect(newBase.segments[0].text == "ask Claudia now please")
-    #expect(newBase.segments[0].fixes == [TranscriptWordFix(first: 1, end: 2, heard: "cloud", kind: .reviewEdit)])
+    #expect(newBase.segments[0].fixes == [TranscriptWordFix(first: 1, end: 2, heard: "cloud", kind: .reviewEdit,
+                                                            heardWords: 1)])
     #expect(newBase.fixedFrom == nil && newBase.liveCorrectedFrom == base.id)
     #expect(result.transcript.segments[0].text == "ask Claudia now pls")
     #expect(result.transcript.segments[0].fixes == [
-        TranscriptWordFix(first: 1, end: 2, heard: "cloud", kind: .reviewEdit),
-        TranscriptWordFix(first: 3, end: 4, heard: "please", kind: .correction),
+        TranscriptWordFix(first: 1, end: 2, heard: "cloud", kind: .reviewEdit, heardWords: 1),
+        TranscriptWordFix(first: 3, end: 4, heard: "please", kind: .correction, heardWords: 1),
     ])
     #expect(result.transcript.fixedFrom == newBase.id && result.transcript.liveCorrectedFrom == base.id)
     #expect(result.heard == "cloud" && result.shown == "Claude")
@@ -171,14 +174,14 @@ private func editRanged(_ text: String, _ ranges: [(Int, Int)], id: String = "S1
     let result = try #require(try TranscriptWordEdit.editing(editRequest(2, 3, "Yorkshire"), in: fixed, base: base))
     #expect(result.transcript.segments[0].text == "we New Yorkshire here")
     #expect(result.transcript.segments[0].fixes == [TranscriptWordFix(first: 1, end: 3, heard: "knew work",
-                                                                      kind: .reviewEdit)])
+                                                                      kind: .reviewEdit, heardWords: 2)])
     #expect(result.base?.segments[0].text == "we New Yorkshire here")
     #expect(result.shown == "New York" && result.meant == "New Yorkshire" && result.heard == "knew work")
     // Edited again: still what the recognizer wrote, not the first edit's text.
     let twice = try #require(try TranscriptWordEdit.editing(editRequest(1, 3, "Newark"), in: result.transcript,
                                                              base: result.base))
     #expect(twice.transcript.segments[0].fixes == [TranscriptWordFix(first: 1, end: 2, heard: "knew work",
-                                                                     kind: .reviewEdit)])
+                                                                     kind: .reviewEdit, heardWords: 2)])
     #expect(twice.base?.segments[0].text == "we Newark here")
 }
 
@@ -253,26 +256,55 @@ private func editRanged(_ text: String, _ ranges: [(Int, Int)], id: String = "S1
     #expect(reverted.base?.segments[0].text == "hello — there please")
 }
 
-@Test func anAutomaticFixOverWordsWithoutSpacesLeavesTheSegmentEditable() async throws {
-    // "你好世界" timed as "你好" and "世界"; a correction makes it "你好地球".
-    let base = editTranscript([editRanged("你好世界 再见", [(0, 2), (2, 2), (5, 2)])])
-    let fixed = try await editFixed(base, [Correction(heard: "你好世界", meant: "你好地球")])
+@Test func everyAutomaticFixRecordsTheWordsItReplacedSoItsSegmentStaysEditable() async throws {
+    // Punctuation attached to the words: "type c" in "“type c”" replaced two timed words.
+    let quoted = editTranscript([editSegment(["we", "use", "“type", "c”", "here"])])
+    let typeC = try await editFixed(quoted, [Correction(heard: "type c", meant: "Type-C")])
+    #expect(typeC.segments[0].text == "we use “Type-C” here")
+    #expect(typeC.segments[0].fixes?.first?.heardWords == 2)
+    let here = try #require(try TranscriptWordEdit.editing(editRequest(3, 4, "there"), in: typeC, base: quoted))
+    #expect(here.transcript.segments[0].text == "we use “Type-C” there")
+    #expect(here.base?.segments[0].text == "we use “type c” there")
+    let typeCRevert = try WordFixes.reverting(WordRef(segmentID: "S1", word: 2), in: typeC, to: quoted)
+    #expect(typeCRevert.segments[0].text == "we use “type c” here")
+
+    // No spaces between the words: "你好世界" timed as "你好" and "世界", made "你好地球".
+    let chinese = editTranscript([editRanged("你好世界 再见", [(0, 2), (2, 2), (5, 2)])])
+    let fixed = try await editFixed(chinese, [Correction(heard: "你好世界", meant: "你好地球")])
     #expect(fixed.segments[0].text == "你好地球 再见")
     #expect(fixed.segments[0].fixes == [TranscriptWordFix(first: 0, end: 1, heard: "你好世界", kind: .correction,
                                                           heardWords: 2)], "It replaced two words.")
-    // The same fix as an earlier version saved it, without the count: told from the base's words.
-    var legacy = fixed
-    legacy.segments[0].fixes = [TranscriptWordFix(first: 0, end: 1, heard: "你好世界", kind: .correction)]
-    for current in [fixed, legacy] {
-        let other = try #require(try TranscriptWordEdit.editing(editRequest(1, 2, "拜拜"), in: current, base: base))
-        #expect(other.transcript.segments[0].text == "你好地球 拜拜")
-        #expect(other.base?.segments[0].text == "你好世界 拜拜")
-        let fix = try #require(try TranscriptWordEdit.editing(editRequest(0, 1, "你好朋友"), in: current, base: base))
-        #expect(fix.heard == "你好世界" && fix.transcript.segments[0].fixes?.first?.heardWords == 2)
-        #expect(fix.base?.segments[0].text == "你好朋友 再见")
-        let reverted = try WordFixes.reverting(WordRef(segmentID: "S1", word: 0), in: current, to: base)
-        #expect(reverted.segments[0].text == "你好世界 再见")
+    let other = try #require(try TranscriptWordEdit.editing(editRequest(1, 2, "拜拜"), in: fixed, base: chinese))
+    #expect(other.transcript.segments[0].text == "你好地球 拜拜")
+    #expect(other.base?.segments[0].text == "你好世界 拜拜")
+    let edit = try #require(try TranscriptWordEdit.editing(editRequest(0, 1, "你好朋友"), in: fixed, base: chinese))
+    #expect(edit.heard == "你好世界" && edit.transcript.segments[0].fixes?.first?.heardWords == 2)
+    #expect(edit.base?.segments[0].text == "你好朋友 再见")
+    let reverted = try WordFixes.reverting(WordRef(segmentID: "S1", word: 0), in: fixed, to: chinese)
+    #expect(reverted.segments[0].text == "你好世界 再见")
+}
+
+@Test func anOlderAutomaticFixWithoutItsCountIsCountedByItsSpaces() async throws {
+    // Saved by an earlier version: no `heardWords`. With spaces between the words, the spaces count them.
+    let base = editTranscript([editSegment(["ask", "cloud", "now", "please"])])
+    var fixed = try await editFixed(base, [Correction(heard: "cloud now", meant: "Claude Now")])
+    fixed.segments[0].fixes = fixed.segments[0].fixes?.map { fix in
+        TranscriptWordFix(first: fix.first, end: fix.end, heard: fix.heard, kind: fix.kind)
     }
+    let edited = try #require(try TranscriptWordEdit.editing(editRequest(3, 4, "pls"), in: fixed, base: base))
+    #expect(edited.transcript.segments[0].text == "ask Claude Now pls")
+    #expect(edited.base?.segments[0].text == "ask cloud now pls")
+    let reverted = try WordFixes.reverting(WordRef(segmentID: "S1", word: 1), in: fixed, to: base)
+    #expect(reverted.segments[0].text == "ask cloud now please")
+
+    // Without spaces between its words, it cannot be counted: an edit in its segment is refused, saying why.
+    let chinese = editTranscript([editRanged("你好世界 再见", [(0, 2), (2, 2), (5, 2)])])
+    var legacy = try await editFixed(chinese, [Correction(heard: "你好世界", meant: "你好地球")])
+    legacy.segments[0].fixes = [TranscriptWordFix(first: 0, end: 1, heard: "你好世界", kind: .correction)]
+    let refusal = #expect(throws: HolosError.self) {
+        try TranscriptWordEdit.editing(editRequest(1, 2, "拜拜"), in: legacy, base: chinese)
+    }
+    #expect(refusal?.localizedDescription == TranscriptWordEdit.olderFix.localizedDescription)
 }
 
 @Test func anUntimedSegmentKeepsEstimatedTiming() throws {
@@ -283,7 +315,7 @@ private func editRanged(_ text: String, _ ranges: [(Int, Int)], id: String = "S1
     let segment = result.transcript.segments[0]
     #expect(segment.words.isEmpty && segment.text == "one 2 and a half three")
     #expect(segment.start == 0 && segment.end == 3)
-    #expect(segment.fixes == [TranscriptWordFix(first: 1, end: 5, heard: "two", kind: .reviewEdit)])
+    #expect(segment.fixes == [TranscriptWordFix(first: 1, end: 5, heard: "two", kind: .reviewEdit, heardWords: 1)])
     let estimated = WordTiming.effectiveWords(of: segment).allSatisfy { $0.estimated }
     #expect(estimated)
 }
@@ -375,7 +407,8 @@ private let editEchoMask: AcousticEchoMask = {
     let result = try #require(try TranscriptWordEdit.editing(
         editRequest(third.word, third.word + 1, "fixed", segment: "M"), in: transcript, base: nil, editable: editable))
     #expect(result.transcript.segments[0].text.split(separator: " ")[4] == "fixed")
-    #expect(result.transcript.segments[0].fixes == [TranscriptWordFix(first: 4, end: 5, heard: "Mw4", kind: .reviewEdit)])
+    #expect(result.transcript.segments[0].fixes == [TranscriptWordFix(first: 4, end: 5, heard: "Mw4", kind: .reviewEdit,
+                                                                      heardWords: 1)])
     // Shown words 2 and 3 of the list are stored words 1 and 4, with the hidden echo between: never one edit.
     #expect(throws: HolosError.self) {
         try TranscriptWordEdit.editing(editRequest(1, 5, "x", segment: "M"), in: transcript, base: nil,
@@ -385,7 +418,7 @@ private let editEchoMask: AcousticEchoMask = {
     let deleted = try #require(try TranscriptWordEdit.editing(editRequest(1, 2, "", segment: "M"), in: transcript,
                                                                base: nil, editable: editable))
     #expect(deleted.transcript.segments[0].fixes == [TranscriptWordFix(first: 0, end: 1, heard: "Mw0 Mw1",
-                                                                       kind: .reviewEdit)])
+                                                                       kind: .reviewEdit, heardWords: 2)])
 }
 
 @Test func anEditThatMatchesTheCallIsNotDroppedAsTextEchoWhenSpeakersAreLabelledAgain() throws {

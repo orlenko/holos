@@ -8,7 +8,9 @@ import HolosSpeakers
 /// start and end, so speaker turns and exports find it as before. Each change is marked (`TranscriptSegment.fixes`)
 /// with what the recognizer wrote there, so the review can show it.
 extension TranscriptWordFix {
-    /// How many recognizer words `heard` stands for: `heardWords` when recorded, else its whitespace-separated tokens.
+    /// How many recognizer words `heard` stands for: `heardWords`, recorded on every fix written from this version on;
+    /// for an older fix without it, `heard`'s whitespace-separated tokens (wrong for text without spaces between its
+    /// words, "你好世界" over two timed words: such a fix cannot be edited around, `TranscriptWordEdit.olderFix`).
     var heardWordCount: Int { heardWords ?? WordFixes.tokens(of: Array(heard.utf16)).count }
 }
 
@@ -161,11 +163,10 @@ public enum WordFixes {
             text += new
             let heard = replacement.heard ?? String(decoding: utf16[replacement.range], as: UTF16.self)
             let markStart = start + leading.count
-            // An automatic fix replaced the words it touches: their count is recorded when the spaces in `heard` do
-            // not say it ("你好世界" over two timed words).
+            // An automatic fix replaced the words it touches: their count is recorded, whatever the spaces in `heard`
+            // say ("你好世界" over two timed words, "“type c”" over two).
             var heardWords = replacement.heardWords
-            if heardWords == nil, replacement.kind == .correction || replacement.kind == .term,
-               region.words.count != tokens(of: Array(heard.utf16)).count {
+            if heardWords == nil, replacement.kind == .correction || replacement.kind == .term {
                 heardWords = region.words.count
             }
             if !replacement.text.isEmpty {
@@ -279,8 +280,7 @@ public enum WordFixes {
         let fix = fixes[target]
         guard fix.first >= 0, fix.first < fix.end, fix.end <= currentWords.count else { return nil }
         let words = WordTiming.effectiveWords(of: segment)
-        let ranges = originalWordRanges(fixes: fixes, currentWords: currentWords, originalWords: words,
-                                        originalText: Array(segment.text.utf16))
+        let ranges = originalWordRanges(fixes: fixes, currentWords: currentWords, originalWords: words)
         guard ranges.indices.contains(target), let wordRange = ranges[target],
               let first = wordRange.first, let last = wordRange.last else { return nil }
         return characterRange(of: TranscriptWordFix(first: first, end: last + 1, heard: fix.heard, kind: fix.kind),
@@ -291,7 +291,7 @@ public enum WordFixes {
     /// covers; all words between marks are unchanged. That makes the correspondence stable even when an untimed
     /// segment redistributes its estimated times, and avoids guessing among repeated substrings.
     static func originalWordRanges(fixes: [TranscriptWordFix], currentWords: [EffectiveWord],
-                                   originalWords: [EffectiveWord], originalText: [UInt16]) -> [Range<Int>?] {
+                                   originalWords: [EffectiveWord]) -> [Range<Int>?] {
         let ordered = fixes.indices.sorted { (fixes[$0].first, fixes[$0].end) < (fixes[$1].first, fixes[$1].end) }
         var result = Array<Range<Int>?>(repeating: nil, count: fixes.count)
         var current = 0
@@ -311,7 +311,7 @@ public enum WordFixes {
             // in `heard`.
             let count = fix.kind == .reviewRevert || fix.kind == .liveCorrection || fix.kind == .reviewEdit
                 ? fix.end - fix.first
-                : replacedWords(by: fix, from: original, in: originalWords, text: originalText) ?? fix.heardWordCount
+                : fix.heardWordCount
             guard count > 0, original + count <= originalWords.count else { return [] }
             result[index] = original..<(original + count)
             current = fix.end
@@ -323,25 +323,6 @@ public enum WordFixes {
             return []
         }
         return result
-    }
-
-    /// How many words of the unfixed segment, from word `first`, an automatic fix replaced: `heardWords` when it
-    /// recorded it, else as many as its `heard` takes there, counted without whitespace from the first word's start
-    /// (a correction matches whole words, in any case and spacing), so text with no spaces between its words
-    /// ("你好世界" over two timed words) is counted by the words, not its spaces. Nil when that cannot be told.
-    static func replacedWords(by fix: TranscriptWordFix, from first: Int, in words: [EffectiveWord],
-                              text utf16: [UInt16]) -> Int? {
-        if let recorded = fix.heardWords { return recorded }
-        let needed = fix.heard.filter { !$0.isWhitespace }.count
-        guard needed > 0, first >= 0, first < words.count else { return nil }
-        let start = words[first].utf16Offset
-        for last in first..<words.count {
-            let end = words[last].utf16Offset + words[last].utf16Length
-            guard start >= 0, start <= end, end <= utf16.count else { return nil }
-            let taken = String(decoding: utf16[start..<end], as: UTF16.self).filter { !$0.isWhitespace }.count
-            if taken >= needed { return last - first + 1 }
-        }
-        return nil
     }
 
     /// Runs of non-whitespace UTF-16 units, as `WordTiming` splits an untimed segment's text.

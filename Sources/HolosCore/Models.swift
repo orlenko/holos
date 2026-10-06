@@ -86,9 +86,10 @@ public struct TranscriptWordFix: Codable, Sendable, Equatable {
     /// The text the recognizer wrote there. For `reviewRevert`, the automatic replacement the person rejected.
     public var heard: String
     public var kind: TranscriptWordFixKind
-    /// How many recognizer words `heard` stands for, when that is not its count of whitespace-separated tokens: a
-    /// Review edit keeps the recognizer's text exactly ("你好世界" for two timed words, "hello — there" for two). Nil
-    /// otherwise, so other fixes encode as before.
+    /// How many recognizer words `heard` stands for ("你好世界" for two timed words, "hello — there" for two, "type c"
+    /// in "“type c”" for two). Recorded on every Review edit and automatic fix written from this version on; nil on
+    /// older fixes (and on reverts and live corrections, which occupy their own words), whose count is `heard`'s
+    /// whitespace-separated tokens.
     public var heardWords: Int?
 
     public init(first: Int, end: Int, heard: String, kind: TranscriptWordFixKind, heardWords: Int? = nil) {

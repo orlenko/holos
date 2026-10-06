@@ -157,7 +157,8 @@ final class TurnTableView: NSTableView {
         guard row >= 0, let cell = view(atColumn: 0, row: row, makeIfNecessary: false) as? TurnCellView,
               cell.bodyText.canRevertFix,
               let word = cell.bodyText.word(at: cell.bodyText.convert(point, from: self)),
-              let fix = word.fix, word.revertible else { return super.menu(for: event) }
+              let fix = word.fix, word.revertible,
+              cell.bodyText.canRevert(fix) else { return super.menu(for: event) }
         let menu = NSMenu()
         let item = NSMenuItem(title: "Revert to “\(fix.heard)”", action: #selector(revertFix(_:)), keyEquivalent: "")
         item.target = self
@@ -283,6 +284,12 @@ final class TurnTextView: NSTextView {
     }
 
     /// "Heard as “cloud”; a word-list term" — for a fixed word's tooltip and VoiceOver.
+    /// `fix` can be reverted now: an edit made here goes back by another edit, so only while words can be edited
+    /// (`canEditWord`: not after the transcript changed under the labels); an automatic fix whenever reverts are.
+    func canRevert(_ fix: TranscriptWordFix) -> Bool {
+        fix.kind != .reviewEdit || (canEditWord?() ?? false)
+    }
+
     /// With `revertible` false (words edited together, now in two turns), it says how to change them instead.
     static func fixDescription(_ fix: TranscriptWordFix, revertible: Bool = true) -> String {
         "Heard as “\(fix.heard)”; " + (fix.kind == .term ? "a word-list term Apple Intelligence chose"
@@ -314,7 +321,8 @@ final class TurnTextView: NSTextView {
                     self?.onEditWord?(index) ?? false
                 })
             }
-            if canRevertFix, revertible, index < wordRefs.count, index < wordFixes.count, let fixed = wordFixes[index] {
+            if canRevertFix, revertible, index < wordRefs.count, index < wordFixes.count, let fixed = wordFixes[index],
+               canRevert(fixed) {
                 let ref = wordRefs[index]
                 let key = "\(ref.segmentID)\u{1f}\(fixed.first)\u{1f}\(fixed.end)"
                 if offeredFixes.insert(key).inserted {

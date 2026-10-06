@@ -728,9 +728,20 @@ public struct ReviewWord: Sendable, Equatable {
     /// `seenMoves`: how many of `wordMoves` the caller's `words` already follow (an edit field opened before an earlier
     /// edit of the segment was saved); they are moved through the rest first.
     @discardableResult
-    public func editWords(_ words: [WordRef], to text: String, seenMoves: Int? = nil) async throws -> ReviewWordEdit? {
+    ///
+    /// `committed`: called with what was edited once the edit is saved, also when it then throws because the labels
+    /// could not be refreshed after it (the edit stands: what follows from it, such as adding its word-list term, still
+    /// applies).
+    public func editWords(_ words: [WordRef], to text: String, seenMoves: Int? = nil,
+                          committed: ((ReviewWordEdit) -> Void)? = nil) async throws -> ReviewWordEdit? {
         guard let op = try queuedWordEdit(words, to: text, seenMoves: seenMoves) else { return nil }
-        try await wait(for: op)
+        do {
+            try await wait(for: op)
+        } catch {
+            if let edit = op.wordEditResult { committed?(edit) }
+            throw error
+        }
+        if let edit = op.wordEditResult { committed?(edit) }
         return op.wordEditResult
     }
 
@@ -1557,8 +1568,19 @@ public struct ReviewWord: Sendable, Equatable {
             return
         }
         // Context only from the edited word's own turn as shown (never another speaker's word, nor hidden echo): the
-        // labels on this very transcript say which; without them, no context.
-        let turns = snapshot.transcript.id == current.id ? snapshot.projection?.turns ?? [] : []
+        // labels on this very transcript say which; without them, no context. Labels shown on another transcript
+        // (they could not be reread after an edit) are read again; when that fails, nothing is learned now: the
+        // edits are still in the transcript, and the next review's close learns them.
+        var labels = snapshot
+        if labels.transcript.id != current.id || reloadProblem != nil {
+            do {
+                labels = try await loadSnapshot()
+            } catch {
+                Self.log.error("Session \(self.sessionID, privacy: .public): the speaker labels could not be reread to learn from the edits; the next review's close learns them")
+                return
+            }
+        }
+        let turns = labels.transcript.id == current.id ? labels.projection?.turns ?? [] : []
         let sameTurn = { (segmentID: String, word: Int, neighbour: Int) -> Bool in
             turns.contains { turn in
                 [word, neighbour].allSatisfy { index in
@@ -2365,6 +2387,10 @@ public struct ReviewWord: Sendable, Equatable {
             textCache.removeAll()
             wordCache.removeAll()
         }
+        // The current transcript is no longer the one the labels are on (another process replaced it): a word edit's
+        // undo, which needs its own transcript current, can never be made, so it goes; undo reaches the speaker
+        // changes before it.
+        if fresh.transcriptChanged { undoStack.removeAll { $0.wordEdit != nil } }
         noteMovedAside(Self.editedExports(session: session))
         if external {
             externalVersion = savedVersion
