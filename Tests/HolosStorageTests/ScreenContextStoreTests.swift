@@ -82,3 +82,57 @@ private func screenStoreFixture() async throws -> (URL, SessionArchive) {
     }
     #expect(result.record == record && result.known == nil)
 }
+
+@Test(.timeLimit(.minutes(1)))
+func aContextSavedBeforeDisplaysWereNamedReadsAsTheMainDisplay() async throws {
+    let (root, archive) = try await screenStoreFixture()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let id = UUID().uuidString
+    let legacy = """
+        {"schemaVersion":1,"sessionID":"\(archive.id)","imageBytes":12,
+         "frames":[{"id":"\(id)","start":1,"end":4,"lines":[]}]}
+        """
+    try AtomicFile.ensurePrivateDirectory(ScreenContextStore.directory(archive.directory))
+    try AtomicFile.create(Data(legacy.utf8), at: ScreenContextStore.manifest(archive.directory))
+    let record = try #require(try ScreenContextStore.read(session: archive.directory, sessionID: archive.id))
+    let frame = try #require(record.frames.first)
+    #expect(frame.display == nil && frame.source.isMain && frame.source.number == 1)
+    #expect(record.displays.count == 1 && record.displayLabel(frame) == nil, "one display: nothing extra in Review")
+}
+
+@Test(.timeLimit(.minutes(1)))
+func displaysOverlapInTimeButEachDisplaysKeyframesFollowOneAnother() async throws {
+    let (root, archive) = try await screenStoreFixture()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let main = ScreenDisplay(id: 4, number: 1, isMain: true), side = ScreenDisplay(id: 7, number: 2, isMain: false)
+    let overlapping = ScreenContextRecord(sessionID: archive.id, frames: [
+        ScreenKeyframe(start: 1, end: 10, display: main), ScreenKeyframe(start: 2, end: 5, display: side),
+        ScreenKeyframe(start: 6, end: 8, display: side), ScreenKeyframe(start: 10, end: 12, display: main),
+    ])
+    try ScreenContextStore.write(overlapping, session: archive.directory)
+    let read = try #require(try ScreenContextStore.read(session: archive.directory, sessionID: archive.id))
+    #expect(read == overlapping)
+    #expect(read.displays == [main, side])
+    #expect(read.frames.map { read.displayLabel($0) } == ["Main display", "Display 2", "Display 2", "Main display"])
+    #expect(read.frames.filter { $0.start <= 3 && $0.end >= 3 }.count == 2)
+    #expect(read.insertionIndex(start: 6) == 3 && read.insertionIndex(start: 0) == 0 && read.insertionIndex(start: 99) == 4)
+
+    // One display's own keyframes may not overlap, and a display number stays within bounds.
+    for frames in [[ScreenKeyframe(start: 1, end: 5, display: side), ScreenKeyframe(start: 4, end: 6, display: side)],
+                   [ScreenKeyframe(start: 1, end: 5, display: ScreenDisplay(id: 9, number: 0, isMain: false))],
+                   [ScreenKeyframe(start: 1, end: 5, display: ScreenDisplay(id: 9, number: 65, isMain: false))]] {
+        try ScreenContextStore.write(ScreenContextRecord(sessionID: archive.id, frames: frames), session: archive.directory)
+        #expect(throws: (any Error).self) { try ScreenContextStore.read(session: archive.directory, sessionID: archive.id) }
+    }
+}
+
+@Test func reviewLabelsTellTwoMainDisplaysApart() {
+    let first = ScreenDisplay(id: 1, number: 1, isMain: true), second = ScreenDisplay(id: 2, number: 2, isMain: true)
+    let record = ScreenContextRecord(sessionID: "id", frames: [ScreenKeyframe(start: 0, end: 1, display: first),
+                                                               ScreenKeyframe(start: 0, end: 1, display: second)])
+    #expect(record.frames.map { record.displayLabel($0) } == ["Display 1, main", "Display 2, main"])
+    #expect(record.displayLabels == ["Display 1, main", "Display 2, main"])
+    let single = ScreenContextRecord(sessionID: "id", frames: [ScreenKeyframe(start: 0, end: 1, display: second),
+                                                               ScreenKeyframe(start: 2, end: 3, display: second)])
+    #expect(single.frames.map { single.displayLabel($0) } == [nil, nil] && single.displayLabels == [nil, nil])
+}

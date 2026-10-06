@@ -25,9 +25,11 @@ import HolosStorage
         window.delegate = self
         frames.target = self; frames.action = #selector(chosen)
         frames.setAccessibilityLabel("Saved screen snapshot time")
-        for frame in record.frames {
-            frames.addItem(withTitle: "\(Self.time(frame.start))–\(Self.time(frame.end))")
+        // Through the menu: `addItem(withTitle:)` would drop an earlier snapshot with the same title.
+        for title in Self.titles(record) {
+            frames.menu?.addItem(NSMenuItem(title: title, action: nil, keyEquivalent: ""))
         }
+        if frames.numberOfItems > 0 { frames.selectItem(at: 0) }
         let note = NSTextField(wrappingLabelWithString: "OCR is supporting evidence, not what was spoken. "
             + "Candidates below are not added automatically; review them in Corrections › Word List. "
             + "Choosing a snapshot seeks without starting playback.")
@@ -64,6 +66,16 @@ import HolosStorage
         updateProgress()
     }
 
+    /// "0:12–0:40", with "· Display 2" or "· Main display" after it when the meeting captured more than one display.
+    static func titles(_ record: ScreenContextRecord) -> [String] {
+        zip(record.frames, record.displayLabels).map { frame, display in
+            "\(time(frame.start))–\(time(frame.end))" + (display.map { " · \($0)" } ?? "")
+        }
+    }
+
+    /// The pop-up's snapshot titles (tests).
+    var snapshotTitles: [String] { frames.itemTitles }
+
     private static func time(_ seconds: Double) -> String {
         let seconds = Int(max(0, seconds))
         return String(format: "%d:%02d", seconds / 60, seconds % 60)
@@ -75,7 +87,8 @@ import HolosStorage
         let frame = record.frames[index]
         let candidates = known.map { ScreenContextRecord(sessionID: record.sessionID, frames: [frame])
             .candidates(excluding: $0, from: frame.start, to: frame.end) }
-        text.string = "Recognized lines\n\n" + (frame.lines?.map(\.text).joined(separator: "\n") ?? "OCR is not available for this frame.")
+        let display = record.displayLabel(frame).map { " on \($0)" } ?? ""
+        text.string = "Recognized lines\(display)\n\n" + (frame.lines?.map(\.text).joined(separator: "\n") ?? "OCR is not available for this frame.")
             + "\n\nCandidates not in the word list (unverified)\n\n"
             + (candidates?.joined(separator: ", ") ?? "Candidates unavailable: the word list could not be read. Saved OCR is unaffected.")
         if seek { onSeek(frame.start) }

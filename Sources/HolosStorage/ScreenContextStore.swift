@@ -17,14 +17,45 @@ public struct ScreenTextLine: Codable, Sendable, Equatable {
     }
 }
 
+/// The display a keyframe came from, as the meeting knows it (docs/meeting-design.md §4.15). The same physical display
+/// keeps its number for the whole meeting, across a disconnect and a recorder restart.
+public struct ScreenDisplay: Codable, Sendable, Equatable, Hashable {
+    /// The `CGDirectDisplayID`: stable for one physical display while it stays connected, and usually across a
+    /// reconnect.
+    public var id: UInt32
+    /// 1 and up, for this meeting: the displays connected when capture began are numbered by their arrangement (left
+    /// to right, then top to bottom); one connected later takes the next number.
+    public var number: Int
+    /// The main display (the one with the menu bar) when its capture began.
+    public var isMain: Bool
+
+    public init(id: UInt32, number: Int, isMain: Bool) {
+        self.id = id; self.number = number; self.isMain = isMain
+    }
+
+    /// "Main display", or "Display 2". With more than one main display in a meeting (the main one changed), "Display
+    /// 2, main" keeps them apart.
+    public func label(severalMain: Bool = false) -> String {
+        guard isMain else { return "Display \(number)" }
+        return severalMain ? "Display \(number), main" : "Main display"
+    }
+}
+
 public struct ScreenKeyframe: Codable, Sendable, Equatable {
     public var id: String
     public var start: Double
     public var end: Double
     public var lines: [ScreenTextLine]?
-    public init(id: String = UUID().uuidString, start: Double, end: Double, lines: [ScreenTextLine]? = nil) {
-        self.id = id; self.start = start; self.end = end; self.lines = lines
+    /// Where the snapshot came from; nil in a meeting captured before all displays were (only the main display was
+    /// then), which `source` reads as the main display.
+    public var display: ScreenDisplay?
+    public init(id: String = UUID().uuidString, start: Double, end: Double, lines: [ScreenTextLine]? = nil,
+                display: ScreenDisplay? = nil) {
+        self.id = id; self.start = start; self.end = end; self.lines = lines; self.display = display
     }
+
+    /// The display the snapshot came from; the main display for a keyframe saved before keyframes said.
+    public var source: ScreenDisplay { display ?? ScreenDisplay(id: 0, number: 1, isMain: true) }
 }
 
 public struct ScreenContextRecord: Codable, Sendable, Equatable {
@@ -57,6 +88,35 @@ public struct ScreenContextRecord: Codable, Sendable, Equatable {
         return result
     }
 
+    /// The displays the keyframes came from, by first appearance; one for a meeting captured on one display (or
+    /// before keyframes named their display).
+    public var displays: [ScreenDisplay] {
+        var seen: Set<UInt32> = [], result: [ScreenDisplay] = []
+        for frame in frames where seen.insert(frame.display?.id ?? 0).inserted { result.append(frame.source) }
+        return result
+    }
+
+    /// Which display a keyframe came from, for Review: nil when the meeting has one display, so nothing extra shows.
+    public func displayLabel(_ frame: ScreenKeyframe) -> String? {
+        let displays = self.displays
+        guard displays.count > 1 else { return nil }
+        return frame.source.label(severalMain: displays.filter(\.isMain).count > 1)
+    }
+
+    /// `displayLabel` of every keyframe, in order, working out the displays once.
+    public var displayLabels: [String?] {
+        let displays = self.displays
+        guard displays.count > 1 else { return frames.map { _ in nil } }
+        let severalMain = displays.filter(\.isMain).count > 1
+        return frames.map { $0.source.label(severalMain: severalMain) }
+    }
+
+    /// Where a new keyframe starting at `start` goes: after every keyframe that starts no later, so the shared
+    /// timeline stays in start order while displays' intervals overlap.
+    public func insertionIndex(start: Double) -> Int {
+        (frames.lastIndex { $0.start <= start }).map { $0 + 1 } ?? 0
+    }
+
     /// Suggestions for user review; this API does not add anything to the word list.
     public func candidates(excluding known: [String], from start: Double, to end: Double) -> [String] {
         let known = Set(known.map { $0.lowercased() })
@@ -70,6 +130,8 @@ public enum ScreenContextStore {
     public static let maximumFrames = 1_000
     public static let maximumImageBytes = 1 << 20
     public static let maximumTotalImageBytes = 256 << 20
+    /// The highest display number a keyframe may carry: far more displays than one Mac drives, still bounded on read.
+    public static let maximumDisplays = 64
     /// Snapshots are of the whole display, downscaled so neither side exceeds this: about point resolution on a 5K
     /// display, so slide text stays legible to OCR.
     public static let maximumImageDimension = 2560
@@ -89,11 +151,15 @@ public enum ScreenContextStore {
               record.imageBytes >= 0, record.imageBytes <= maximumTotalImageBytes else {
             throw HolosError.invalidInput("Screen context belongs to another session or has too many frames.")
         }
-        var lastEnd = 0.0, ids: Set<String> = []
+        // Each display's keyframes follow one another without overlapping; different displays' overlap in time. A
+        // keyframe without a display (saved before keyframes said) is the main display's.
+        var lastEnd: [UInt32?: Double] = [:], ids: Set<String> = []
         for frame in record.frames {
             _ = try image(frame.id, session: session)
+            let display = frame.display?.id
             guard ids.insert(frame.id).inserted, frame.start.isFinite, frame.end.isFinite,
-                  frame.start >= lastEnd, frame.end >= frame.start,
+                  frame.start >= lastEnd[display, default: 0], frame.end >= frame.start,
+                  (frame.display?.number).map({ (1...maximumDisplays).contains($0) }) ?? true,
                   (frame.lines?.count ?? 0) <= 256 else {
                 throw HolosError.invalidInput("Screen context has invalid times or text.")
             }
@@ -103,7 +169,7 @@ public enum ScreenContextStore {
                     throw HolosError.invalidInput("Screen context has invalid text bounds.")
                 }
             }
-            lastEnd = frame.end
+            lastEnd[display] = frame.end
         }
         return record
     }

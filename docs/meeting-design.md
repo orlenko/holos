@@ -4545,7 +4545,9 @@ panel. After trying it, the user (2026-10-03): the window-only design "does not 
 in practice. Full screen is the practical way - we are doing it to help with the
 dictation, not to steal data", and the per-meeting window list "is impractical. Full
 screen recording is the real deal". Nothing leaves the Mac: there is no online model.
-The capture is now of the whole main display; the window picker is gone.
+The capture is now of the whole display; the window picker is gone. It began with the
+main display only; the user often has the call or the slides on a second monitor, so every
+display is now captured (option A, "all displays", approved 2026-10-06).
 
 *Setting and start panel.* Settings › Meetings has one checkbox, "Capture the screen
 during meetings (slides, shared screens) to improve transcripts" (UserDefaults
@@ -4558,27 +4560,53 @@ once the setting is saved (`MeetingScreenPreference`). The start panel's Screen 
 one checkbox, "Capture screen", checked as Settings says, for this meeting only; the
 last meeting's choice is not remembered. Without the permission the box is unchecked
 and dimmed and says what is missing; Start is never blocked by it. The app passes
-`--screen display` to the recorder; `voiceislocal record start --screen display|off`
-(default off) is the CLI form. A saved `screenWindow` from PR #71 decodes as no capture.
+`--screen display` (every display) to the recorder; `voiceislocal record start --screen
+display|main|off` (default off) is the CLI form, where `main` is the main display alone (what
+`display` meant before all displays were captured). A saved `screenWindow` from PR #71
+decodes as no capture. The Settings caption and the start panel's note say "all displays".
 
-*What is captured.* One ScreenCaptureKit display filter on the main display
-(`CGMainDisplayID`, the one with the menu bar; the first listed display if the main one
-is missing), `excludingApplications` Voice is Local itself: `ca.orlenko.holos.app`,
+*What is captured.* One ScreenCaptureKit stream per display, each with a display filter
+`excludingApplications` Voice is Local itself: `ca.orlenko.holos.app`,
 `ca.orlenko.holos.cli`, the current process, and the current bundle identifier
-(`ScreenCapturePlan.excluded`), so the live transcript, Review, and the menu are never
-read back into the meeting's context. App exclusion covers windows opened later. Other
-displays are not captured: a filter covers one display, and several would need one
-stream and one retained-frame state per display writing one timeline, which is not
-cheap; "All displays" is a follow-up. If the app is not running (a CLI-only
+(`ScreenCapturePlan.excluded`, applied to every display's filter), so the live transcript,
+Review, and the menu are never read back into the meeting's context, whichever display
+they are on. App exclusion covers windows opened later. A display that mirrors another
+(`CGDisplayMirrorsDisplay`) is left out, since its snapshots would repeat. With
+`--screen main` there is one stream, on the main display (`CGMainDisplayID`, the one
+with the menu bar; the first listed display if the main one is missing; if the main
+display changes, the stream follows it). If the app is not running (a CLI-only
 recording), there is nothing of it to exclude. Desktop notifications and everything
-else on the main display are captured. Permission must already be granted;
-capture failures are optional-evidence failures and never invalidate saved audio.
+else on the displays are captured. Permission must already be granted; capture failures
+are optional-evidence failures and never invalidate saved audio.
 
-One serial utility queue samples at most 0.5 fps, with no cursor or audio. The stream
-delivers the display's pixels scaled so neither side exceeds 2560
-(`ScreenContextStore.maximumImageDimension`; 5K → 2560×1440, about point resolution, so
-slide text stays legible to OCR). Each sample is copied through one software CIContext
-per capture. A 160×90 grayscale fingerprint (drawn with high interpolation quality)
+*Displays.* Every display has its own retained frame and pending change
+(`ScreenFrameReceiver`), so one display's video never settles or breaks another's
+slide; all of them write one timeline, kept in start order, in `screen/context.json`.
+Each keyframe records its display (`ScreenDisplay`): the `CGDirectDisplayID`, a number
+for the meeting, and whether it was the main display when its stream began. The
+displays connected at the start are numbered by arrangement (left to right, then top to
+bottom); one connected later takes the next number, and a display that comes back
+keeps its number, also across a recorder restart (numbers are read back from the saved
+keyframes). Hot-plug (`ScreenDisplayRoster`, pure): every two seconds the capture
+compares the connected display IDs (`CGGetActiveDisplayList`, a cheap call) with the
+last ones, and only when they differ, or a stream stops with an error, asks
+ScreenCaptureKit again and starts or stops streams. This was chosen over the
+display-reconfiguration callback because the recorder is a command-line process without
+an AppKit run loop, and polling a list of IDs needs nothing from the window server
+beyond the call. A disconnected display's stream ends; its last keyframe's interval
+already ends at its last observed sample and a change that had not settled is dropped,
+so nothing claims it was seen while gone. A stream that fails while its display stays
+connected is not restarted (no loop); once that display is seen gone, it was a
+disconnect after all and is captured again if it returns. The capture as a whole fails
+("captureFailed", as with one display) only when no display captures and one is
+connected but failing, or none could be started at all; every display gone (the lid
+closed on the last one) waits for one to return.
+
+One serial utility queue, shared by every display's stream, samples each display at
+most 0.5 fps, with no cursor or audio. Each stream delivers its display's pixels
+scaled so neither side exceeds 2560 (`ScreenContextStore.maximumImageDimension`; 5K →
+2560×1440, about point resolution, so slide text stays legible to OCR). Each sample is
+copied through one software CIContext per capture, shared by the displays. A 160×90 grayscale fingerprint (drawn with high interpolation quality)
 has 16×9 tiles. At least 6 pixels changing by 20/255 within a tile makes it changed.
 A sample becomes a keyframe when at least 10% of the tiles (15) both differ from the
 last retained frame and are unchanged since the previous sample (`settledChange`): a
@@ -4601,11 +4629,25 @@ JPEG quality is 0.65; a frame above 1 MiB is encoded again at 0.5 and 0.35, then
 half the size, before the per-frame cap can end the capture (`ScreenFrameEncoding`).
 
 Private `screen/context.json` records UUID keyframes, observed session-time intervals,
-JPEG byte totals, and optional OCR lines with normalized bottom-left boxes and
-confidence. `screen/<UUID>.jpg` is owner-only. Caps are 1000 keyframes, 1 MiB per
-JPEG, and 256 MiB total JPEGs. Metadata is bounded on read. Atomic no-follow reads and
-safe tree deletion protect against planted links. Capture generations fence old
-callbacks before image creation; metadata changes use the existing speaker lock off
+their display, JPEG byte totals, and optional OCR lines with normalized bottom-left boxes
+and confidence. The display (`display`: `id`, `number`, `isMain`) is an additive field
+and `schemaVersion` stays 1: a keyframe without it, saved before all displays were
+captured, reads as the main display. Each display's keyframes follow one another without
+overlapping; different displays' overlap in time, so a build from before this change
+refuses a multi-display record as invalid times (it never shows a wrong timeline).
+`screen/<UUID>.jpg` is owner-only. Caps are 1000 keyframes, 1 MiB per JPEG, and 256 MiB
+total JPEGs, shared by all displays (`ScreenStoragePolicy`, pure): each display beyond
+the first holds back a tenth of either cap (at most three tenths) for the others. Once
+the meeting has used the rest (90% with two displays; 80% then 90% with three), the
+busiest display stops: the one that saved the most keyframes (the most bytes when the
+byte cap is the nearer), so a call's video or a scrolled document stops before the
+quieter slides; on a tie the main display stays. The last display runs to the cap
+itself, which ends the capture and says so ("Screen capture stopped: storage limit"),
+as with one display. A display stopped for the caps is not started again in that
+capture; after a recorder restart it would be stopped again at its next keyframe.
+Metadata is bounded on read. Atomic no-follow reads and safe tree deletion protect
+against planted links. Capture generations (one for all displays) fence old callbacks
+before image creation; metadata changes use the existing speaker lock off
 the main actor. Delete Audio holds that same lock for the tombstone and removal of
 `screen/`, so abandoned callbacks cannot recreate deleted evidence.
 
@@ -4628,8 +4670,12 @@ characters. OCR is quoted as untrusted data, never instructions or spoken eviden
 Unknown OCR tokens are read-only user-review candidates, not automatic vocabulary
 or transcript edits. No Foundation Models or other LLM call is added during recording.
 Review's Screen Text sheet selects timestamped OCR and seeks without starting
-playback. An unreadable word list disables candidate filtering, not saved OCR display.
-A thumbnail timeline is an explicit follow-up.
+playback; when the meeting captured more than one display, each snapshot says which
+("0:12–0:40 · Display 2", "Main display"; "Display 2, main" if the main display changed),
+and a single-display meeting shows nothing extra. OCR and the word-list questions work
+per keyframe, so they need nothing per display: OCR lines near a word come from
+whichever displays were observed then. An unreadable word list disables candidate
+filtering, not saved OCR display. A thumbnail timeline is an explicit follow-up.
 
 Default tests use invented pixels, fake OCR/model responses, and temporary archives;
 no permission, screen, microphone, private data, network, or installed speech models.
@@ -4651,14 +4697,27 @@ re-encoding (`denseFramesAreReencodedSmallerInsteadOfEndingTheCapture`), and a 5
 is stored at 2560×1440 within the caps (`fiveKFramesAreStoredWithinTheDimensionAndByteBounds`).
 At ~250 KiB per frame the 256 MiB total allows about a thousand keyframes, the frame
 cap; a meeting that reaches either stops screen capture and says so, and audio goes on.
+`screenTwoDisplayPipelineBenchmark` (same switch) feeds synthetic 2560×1440 frames
+through pixel buffers, the software CIContext copy, the per-display state, JPEG encoding
+and a temporary archive, without any stream. On Koza (M5, 16 GB), debug build, three
+runs: one busy display (a new slide every other sample) 20–21 ms process CPU per
+two-second round (about 1% of one core), +28 MiB peak footprint; a busy display beside
+a still one (idle samples) 22–24 ms, +28–29 MiB; two busy displays 43–47 ms (about 2.2%
+of one core), +42–43 MiB, at about 307 KiB per JPEG. Unverified: ScreenCaptureKit's and
+the window server's own work and buffer pools for each extra stream (outside this
+process's CPU and footprint), and real multi-display capture, hot-plug and
+display-reconfiguration behaviour, which no test runs.
 `scripts/preview-screen-choice.swift` renders the Settings row and the start panel's
 Screen row (checked, unchecked, no permission) offscreen in light and dark appearances
 without launching Holos. Manual checks still required: granted/denied permission, that
 Voice is Local's own windows (live transcript, Review, menu) are absent from saved
 snapshots, desktop notifications, a video call next to a shared slide, scrolling,
-pause/restart, audio-only survival of capture failure, deletion, a second display
-(not captured), and the full start, Settings, recording indicator, and Review UI in
-both appearances. These checks must not be run by agents against the user's running
+pause/restart, audio-only survival of capture failure, deletion, two displays (both
+captured, Voice is Local's windows absent from each, Screen Text labels), connecting and
+disconnecting a display during a meeting (and reconnecting it), mirroring, closing the
+lid on a laptop with an external display, `--screen main`, the shared caps on a long
+meeting, and the full start, Settings, recording indicator, and Review UI in both
+appearances. These checks must not be run by agents against the user's running
 app or real meeting content.
 
 ### 4.16 Deep transcription after meetings
@@ -6195,7 +6254,7 @@ public struct StopTimeouts: Sendable, Equatable {
 holos record start [--name N] [--source mic|system|mic+system] [--app BUNDLE] [--duration S]
                    [--record-only] [--no-postprocess] [--directory D] [--locale L] [--backend B]
                    [--session-id UUID] [--no-live-text] [--others-in-room] [--expected-speakers N]
-                   [--vocabulary-file FILE] [--screen display|off]
+                   [--vocabulary-file FILE] [--screen display|main|off]
 holos record status [--directory D] [--json]
 holos record stop <session-id> [--directory D] [--no-wait]
 holos record pause <session-id> [--directory D] [--no-wait]
