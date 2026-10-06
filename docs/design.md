@@ -1053,8 +1053,8 @@ Face) uses the network.
   French and English meeting, Whisper did worse than Apple's speech recognition, in French
   above all (status.md).
 - *In the app.* Settings › Meetings offers the model's download (1.6 GB) and "Deep
-  transcription after meetings", off until the model is installed. When on, each meeting in
-  one language is queued once it is saved and transcribed again on AC power, one at a time
+  transcription after meetings", off until the model is installed. When on, each English
+  meeting is queued once it is saved and transcribed again on AC power, one at a time
   (on battery it waits for the power adapter); the queue survives a quit or crash, and an
   interrupted pass starts over. The Meetings list shows "Final transcript queued", "… waits
   for power" or "… in progress…"; a meeting's right-click menu offers Make Final Transcript
