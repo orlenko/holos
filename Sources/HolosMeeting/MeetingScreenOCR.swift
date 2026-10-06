@@ -13,6 +13,9 @@ public enum MeetingScreenOCR {
     /// Synthetic tests release a stalled recognizer and trigger the deadline by event, not elapsed-time assertions.
     @TaskLocal static var deadlineForTesting: SharedDeadline? = nil
     @TaskLocal static var didEndForTesting: (@Sendable () -> Void)? = nil
+    /// Synthetic tests that run a bounded batch through a caller with its own limit (the post-processor) give every
+    /// batch this limit instead, one no load reaches, so recognition that must finish never races a real 5 s timer.
+    @TaskLocal static var batchTimeoutForTesting: Duration? = nil
 
     public static func recognize(_ image: CGImage, languages: [String]) throws -> [ScreenTextLine] {
         let request = VNRecognizeTextRequest()
@@ -52,7 +55,7 @@ public enum MeetingScreenOCR {
         timeout: Duration = batchTimeout, maximumFrames: Int = batchFrames,
         recognizer: @escaping Recognizer = { try recognize($0, languages: $1) }) async throws -> Bool {
         let generation = UUID().uuidString
-        let result = await awaitWithTimeout(timeout, deadline: deadlineForTesting) {
+        let result = await awaitWithTimeout(batchTimeoutForTesting ?? timeout, deadline: deadlineForTesting) {
             try await perform(session: session, sessionID: sessionID, languages: languages, generation: generation,
                               maximumFrames: max(0, maximumFrames), recognizer: recognizer)
         }

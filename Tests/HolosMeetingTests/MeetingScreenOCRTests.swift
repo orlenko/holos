@@ -84,15 +84,24 @@ func screenOCRDeadlineAbandonsHungRecognitionAndFencesLateResults() async throws
     #expect(!ended.value, "The bounded caller returns while a native recognizer is still blocked.")
     let partial = try #require(try ScreenContextStore.read(session: archive.directory, sessionID: archive.id))
     #expect(partial.frames[0].lines == nil && partial.ocrID == nil)
+    // The successor must finish: a limit no load reaches (the default 5 s could cut it short on a loaded machine).
     _ = try await MeetingScreenOCR.processBounded(session: archive.directory, sessionID: archive.id,
-        languages: ["en-CA"], recognizer: { _, _ in screenOCRLine("NewResult") })
+        languages: ["en-CA"], timeout: .seconds(60), recognizer: { _, _ in screenOCRLine("NewResult") })
     release.signal()
     #expect(await eventually { ended.value })
     let result = try #require(try ScreenContextStore.read(session: archive.directory, sessionID: archive.id))
     #expect(result.frames[0].lines == screenOCRLine("NewResult") && result.ocrID == nil)
 }
 
-@Test func screenOCRRecoveryRunsWithoutWordFixPairsOrEvenATranscript() async throws {
+@Test(.timeLimit(.minutes(1))) func screenOCRRecoveryRunsWithoutWordFixPairsOrEvenATranscript() async throws {
+    // The post-processor's OCR batch has a real 5 s limit; here recognition must finish, so the batches get a limit
+    // no load reaches (the test's time limit ends a hang).
+    try await MeetingScreenOCR.$batchTimeoutForTesting.withValue(.seconds(60)) {
+        try await screenOCRRecoveryRuns()
+    }
+}
+
+private func screenOCRRecoveryRuns() async throws {
     let (temp, archive) = try await screenOCRBatchFixture(1)
     defer { temp.remove() }
     let calls = SharedValue(0)
