@@ -110,7 +110,7 @@ private func launcherMode(_ url: URL) -> mode_t? {
     // The exit event can be posted before the child can be waited for: the first reaps after it find nothing. The
     // child exits only once the watcher is set up (the gate opens), however late that is.
     let gate = temp.url.appendingPathComponent("gate")
-    let child = try launcherScript("while [ ! -e '\(gate.path)' ]; do sleep 0.01; done", in: temp.url)
+    let child = try launcherScript("while [ ! -e '\(gate.path)' ] && [ -d '\(temp.url.path)' ]; do sleep 0.01; done", in: temp.url)
     let pid = try ProcessSpawner.spawn(executable: child, arguments: [], standardOutput: .null, standardError: .null)
     let probe = ReaperProbe()
     let watcher = ChildWatcher(pid: pid, reaper: { pid in
@@ -165,7 +165,7 @@ private final class ReaperProbe {
     let gate = temp.url.appendingPathComponent("gate")
     defer { try? Data().write(to: gate) }
     let child = try launcherScript(
-        "touch '\(started.path)'\nwhile [ ! -e '\(gate.path)' ]; do sleep 0.01; done", in: temp.url)
+        "touch '\(started.path)'\nwhile [ ! -e '\(gate.path)' ] && [ -d '\(temp.url.path)' ]; do sleep 0.01; done", in: temp.url)
     let probing = SharedValue(false)
     let handedOff = SharedValue(false)
     let probe = Task.detached { () -> (samples: Int, free: Int, whileRunning: Int) in
@@ -242,9 +242,10 @@ private final class ReaperProbe {
 func quitLeavesLabellingToTheChildAndEndsTheRecording() async throws {
     let temp = try TemporaryDirectory("launcher")
     defer { temp.remove() }
-    // The labelling child runs until the test opens the gate (the defer opens it however the test ends).
+    // The labelling child runs until the test opens the gate (the defer opens it however the test ends), or until the
+    // test's folder is gone (a test that timed out removes it in teardown, and the time limit does not kill children).
     let gate = temp.url.appendingPathComponent("gate")
-    let script = try launcherScript("while [ ! -e '\(gate.path)' ]; do sleep 0.05; done", in: temp.url)
+    let script = try launcherScript("while [ ! -e '\(gate.path)' ] && [ -d '\(temp.url.path)' ]; do sleep 0.05; done", in: temp.url)
     defer { try? Data().write(to: gate) }
     let captures = FakeCaptureFactory([FakeCaptureScript(frames: FakeFrame.run(count: 2))])
     let launcher = InProcessLauncher(executable: script,

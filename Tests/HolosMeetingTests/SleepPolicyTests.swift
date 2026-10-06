@@ -286,7 +286,8 @@ extension RecorderEnvironmentLoopTests {
     ///
     /// Told by order, not by the wall clock: when the sleep is allowed, the abandoned stop is already journaled (the loop
     /// waited out the capture-stop limit) and the chunk is closed, while the platform stop still hangs (the loop did not
-    /// wait for it). The sleep margin is long so a loaded machine never cuts the chunk close short.
+    /// wait for it). Closing the chunks is bounded by the capture-stop limit as well as by the sleep margin, so both
+    /// are long (5 s, 60 s): a loaded machine never cuts the chunk close short. The hung stop costs the 5 s.
     @Test(.timeLimit(.minutes(1)))
     func loopAcknowledgesAfterClosingChunks() async throws {
         let temp = try TemporaryDirectory()
@@ -316,7 +317,7 @@ extension RecorderEnvironmentLoopTests {
         tuning.sleepMargin = .seconds(60)
         var dependencies = recorderDependencies(captures: FakeCaptureFactory([]), stop: stop,
                                                 clock: ManualSessionClock(0),
-                                                timeouts: StopTimeouts(captureStop: .milliseconds(300)), tuning: tuning,
+                                                timeouts: StopTimeouts(captureStop: .seconds(5)), tuning: tuning,
                                                 makeCapture: {
                                                     made.update { $0 += 1 }
                                                     return made.value == 1 ? hanging : FakeCapture()

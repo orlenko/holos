@@ -1046,10 +1046,11 @@ func automaticRelabelThatLabelsOffersNamingOnce(code: Int32) async throws {
     try AtomicFile.writeJSON(PostProcessingRecord(sessionID: manifest.id, state: .running, pid: Int32.max,
                                                   startedAt: Date(), updatedAt: Date()),
                              to: SessionPaths.postprocess(session))
-    // A labelling that runs until the test opens the gate (the defer below opens it however the test ends).
+    // A labelling that runs until the test opens the gate (the defer below opens it however the test ends) or its
+    // folder is gone (teardown of a test that timed out; the time limit does not kill children).
     let gate = temp.url.appendingPathComponent("gate")
     let script = temp.url.appendingPathComponent("fake-holos.sh")
-    try Data("#!/bin/sh\nwhile [ ! -e '\(gate.path)' ]; do sleep 0.05; done\n".utf8)
+    try Data("#!/bin/sh\nwhile [ ! -e '\(gate.path)' ] && [ -d '\(temp.url.path)' ]; do sleep 0.05; done\n".utf8)
         .write(to: script)
     #expect(chmod(script.path, 0o700) == 0)
     let probe = ControllerProbe()
