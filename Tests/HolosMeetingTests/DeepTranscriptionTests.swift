@@ -691,6 +691,17 @@ func meetingJSONsLanguagesAreChosenAmongWithoutAMerge() async throws {
     let deep = try currentTranscript(session)
     #expect(deep.locale == "en-CA" && deep.languages == ["en-CA", "fr-CA"])
     #expect(deep.segments.map(\.language) == ["fr-CA", "fr-CA", "en-CA", "en-CA"])
+    // The languages stage could not merge them (no speech models here), but the deep transcript answers both: the
+    // result is complete, not partial.
+    #expect(outcome.exitCode == 0 && outcome.record.state == .succeeded, "\(outcome.summary)")
+
+    // When the deep pass fails, the languages stage's problem still stands: partial.
+    let (failing, _) = try await deepSession(in: temp.url, languages: ["en-CA", "fr-CA"])
+    struct Unavailable: Error {}
+    let broken = ScriptedTranscriber(script: { _ in throw Unavailable() })
+    let failed = try await deepRun(failing, deepDependencies(broken))
+    #expect(failed.exitCode == 3 && failed.record.state == .partial, "\(failed.summary)")
+    #expect(deepStage(failed.record)?.result == .failed)
 
     // One language named with `session languages` wins over meeting.json's two: it is transcribed in that one.
     let (named, recorded) = try await deepSession(in: temp.url, languages: ["en-CA", "fr-CA"])

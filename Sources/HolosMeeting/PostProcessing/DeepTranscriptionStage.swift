@@ -77,6 +77,10 @@ enum DeepTranscriptionStage {
         var note: String?
         /// Why the stage did not do what it was asked; makes the post-processing partial.
         var problem: String?
+        /// It published a transcript in the languages the meeting was asked in (several, or named): the languages
+        /// stage's problem with them (a language without a speech model) no longer stands, as this transcript answers
+        /// them.
+        var answersLanguages = false
     }
 
     static let editedHead = "Speaker labels were edited, so the meeting was not transcribed again. To transcribe it "
@@ -235,7 +239,7 @@ enum DeepTranscriptionStage {
                              droppedRepeats: guarded.droppedRepeats, promptTerms: prompt.terms.count,
                              languages: several ? languages : []),
                      since: started)
-        return Outcome(transcript: deep, note: note)
+        return Outcome(transcript: deep, note: note, answersLanguages: named)
     }
 
     /// The final record's note.

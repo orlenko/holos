@@ -377,8 +377,10 @@ public struct MeetingPostProcessor: Sendable {
         }
         try Task.checkCancellation()
         // A language that could not be detected, like a speaker stage that failed, makes the result partial; the
-        // speakers' own message follows a language problem when they were labelled.
-        let problems = [languages.problem, deep.problem, fixes.problem, liveText.problem, speakers.problem,
+        // speakers' own message follows a language problem when they were labelled. A deep transcript published in
+        // the meeting's languages answers them, so the languages stage's problem with them no longer stands.
+        let languageProblem = deep.answersLanguages ? nil : languages.problem
+        let problems = [languageProblem, deep.problem, fixes.problem, liveText.problem, speakers.problem,
                         liveSpeakers.problem].compactMap { $0 }
         if !problems.isEmpty {
             let message = (problems + (speakers.problem == nil ? [speakers.message].compactMap { $0 } : []))
