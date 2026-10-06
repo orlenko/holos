@@ -7733,7 +7733,8 @@ shown, Otter-style.
   mode on: a tinted banner says "Editing — click a word to change it…" and the turn list
   is tinted. Off, a word click plays from it as before. On, a word click does not seek: it
   opens a field over the word, prefilled with it and selected. ⇧-click or a drag in the
-  same row extends the selection; it stops at the end of the word's turn and segment (the
+  same row extends the selection, keeping what was typed in the field; it stops at the end of
+  the word's turn and segment (the
   banner says so), since v1 edits one segment of one turn at a time. Return saves, ⌥Return
   saves and adds the new text to the word list, Tab saves and edits the next word, ⇧Tab
   the previous one, Esc cancels. Space still plays and pauses outside the field; the
@@ -7756,7 +7757,9 @@ shown, Otter-style.
   words a span took in around the selection, the rest of a fix or a deletion's neighbour, keep
   their own place), the field maps its words through the moves since it opened (a word merged
   by a deletion, whose time changed, is found all the same), and so does a queued edit when it
-  runs. The words must still read the same, and a word a move replaced is never followed onto
+  runs. The words must still read the same as shown (a neighbour a deletion merged into loses
+  the space Apple put at the front of its range, and is the same word), and a word a move
+  replaced is never followed onto
   another word: the field closes and the banner shows what was typed (a queued edit is refused
   saying it). While the labels could not be reread after a change, every queued change (a word
   edit, a rename, an assignment, an undo) waits; only what rereads them (a reload, a relabel)
@@ -7807,8 +7810,9 @@ shown, Otter-style.
   Speaker labels, speaker edits, and the window's paragraph breaks survive (a run an edit or
   its undo published is known to keep the turns, `ReviewSession.keepsTurns`); the playback
   and highlight mapping is rebuilt from the new segments. What the window keeps of a
-  committed edit (its undo, its word move, what it taught) is recorded as soon as the
-  transcript is current, even when the labels cannot be reread then. Split Turn is refused
+  committed edit (its undo, its word move) is recorded as soon as the transcript is current,
+  even when the labels cannot be reread then, or when saving the transcript failed after its
+  pointer was renamed into place (the head is then owed, as above). Split Turn is refused
   inside words edited together, so their edit and its Revert stay in one turn.
 - *Undo.* An edit is one entry of the window's undo, among speaker changes; unlike a revert,
   it keeps the undo history (the retargeted run keeps every edit ID and batch). Undoing it
@@ -7816,19 +7820,30 @@ shown, Otter-style.
   the head retargeted again: the text, words, timing, and fixes are exactly `C`'s, and speaker
   edits made since carry over. It is refused when the current transcript is no longer the
   edit's `C′` (or the copy an undo made of it). A speaker split waiting in the queue whose
-  word is in the edited segment is refused (its word index may have moved). What the edit
-  taught is taken back as soon as the undo is committed.
+  word is in the edited segment is refused (its word index may have moved).
 - *Echo.* Words under a `reviewEdit` mark are never echo (`EchoFilter.reviewEditedWords`):
   the acoustic mask never hides them, and the text filter of a new run (Find More Speakers,
   Label Again) neither drops them nor lets a run pass through them (they stay in the sequence,
-  matching nothing), so correcting "write" to "right" beside the call's "that sounds right", or
-  "rarely" to "really" in "I rarely think so" beside its "I think so", hides nothing. The person
-  read and confirmed them.
-- *Learning* (`TranscriptEditLearning`, HolosCore; the app's learner):
-  - every edit is diffed as dictation's Learn does (`CorrectionList.learn`, the recognizer's
-    words against the new text, one shown word on each side as context so a lone dictionary
-    word is learned only with its neighbour), and the pairs go to `corrections.json`, the
-    list Corrections (⌘2) shows; a pair the list already gives is skipped;
+  matching nothing, even an edit with no letters such as "…"), so correcting "write" to "right"
+  beside the call's "that sounds right", or "rarely" to "really" in "I rarely think so" beside
+  its "I think so", hides nothing. The person read and confirmed them. Their ranges are read
+  only within their segment's words.
+- *Learning* (`ReviewLearning`, `TranscriptEditLearning`; the app's learner). Corrections are
+  learned when the review window closes (also when the app quits, which closes its reviews),
+  once, from the transcript the window leaves, never while editing, so nothing is ever
+  taken back:
+  - the edits are the `reviewEdit` fixes of the final transcript that the transcript the
+    window opened on did not have; an edit undone or reverted before closing is not there, so
+    it teaches nothing;
+  - each is diffed as dictation's Learn does (`CorrectionList.learn`, the recognizer's words
+    against the words' shown text, one shown word on each side as context so a lone
+    dictionary word is learned only with its neighbour). Of two edits teaching the same heard
+    phrase differently (two occurrences spelled differently), the later one in the meeting
+    wins;
+  - the pairs are added to `corrections.json`, the list Corrections (⌘2) shows, adding or
+    updating those heard phrases only and removing nothing
+    (`CorrectionList.learn(_:keepingChangesSince:)`): a phrase whose correction changed
+    elsewhere since the window opened keeps that value, and every other phrase is untouched;
   - nothing is learned from a deletion, a punctuation-only change, or a case-only change,
     unless the case change makes a proper noun (a word whose lowercase is not a dictionary
     word: "github" → "GitHub"); words split or joined ("everyday" → "every day") are a real
@@ -7838,22 +7853,8 @@ shown, Otter-style.
     “Claude” to the word list, often heard as “cloud”?" (Add / Not Now); ⌥Return adds it
     without asking. "Often heard as" is the recognizer's text unless it is the term itself in
     another case;
-  - undoing the edit takes back what it taught, and the list is again as the window's other
-    edits, or the list before them, say; a word-list term added stays. corrections.json holds
-    one correction per heard phrase
-    (its key), while several edits of one window may teach the same key, so nothing is pushed
-    or popped: `ReviewLearning` works the wanted state out again after every edit, undo,
-    Revert, and undo of a Revert. It keeps every edit that taught something in the order the
-    edits were made, with the stored word range it came from (kept up to date through every
-    word move) and whether it is in effect (an undo removes it; a Revert of its very words, any
-    edit back to what the recognizer wrote, makes it inactive; the Revert's undo makes it
-    active again), and each touched key's value from before the window first changed it. A
-    key's wanted value is that of the most recent active edit teaching it, else that baseline.
-    The app writes the wanted values under the list's lock (`ReviewSession.syncCorrections`,
-    reading the baselines of new keys in the same write); a write that fails stays owed, is
-    tried again with the next learning change and when the window closes, and the footer says
-    so meanwhile. An edit made in an earlier review is not remembered, so its correction stays
-    until removed in Corrections.
+  - a word-list term added from the offer stays (an explicit action). A correction learned
+    when an earlier review closed stays until removed in Corrections.
 - *Not in v1.* Editing while the meeting records (Review opens after it), spanning segments
   or turns, deleting a whole segment, editing over a live correction, redo, and showing the
   edit before it is saved (the field closes and the row updates once saved).

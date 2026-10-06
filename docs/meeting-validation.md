@@ -247,8 +247,10 @@ the mode is on; a click on a word then opens a field over it instead of playing 
 drag takes in more words of the same turn). Return saves, ⌥Return saves and adds the new text
 to the word list, Tab saves and goes to the next word, Esc cancels; Space still plays. An
 edited word is dotted-underlined ("Heard as …; you edited it") and Undo takes the edit back.
-Each edit is learned as a correction (Corrections, ⌘2) unless it only changed punctuation or
-case; a name or term is offered for the word list ("often heard as" what was heard). To check
+When the window closes, the edits still in the transcript are learned as corrections
+(Corrections, ⌘2), unless one only changed punctuation or case; an edit undone or reverted
+before then teaches nothing. A name or term is offered for the word list at once ("often heard
+as" what was heard). To check
 on screen: edit a word in a turn you named, then reassign that turn and undo twice; the words,
 names, playback from the edited word, and the transcript files all follow.
 

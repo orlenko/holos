@@ -73,10 +73,11 @@ enum SessionWordEdit {
             try await archive.recordEvent(kind: MeetingEventKind.transcriptEdited, details: [
                 "transcriptID": result.transcript.id, "base": current.id, "segment": request.segmentID,
             ])
-            try await archive.saveTranscript(result.transcript, writeLegacyExports: false)
             let outcome = Outcome(transcriptID: result.transcript.id, runID: plan.run.id, heard: result.heard,
                                   meant: result.meant, deletion: result.deletion, before: result.before,
                                   after: result.after, move: result.move)
+            try await save(result.transcript, archive: archive, session: session,
+                           incomplete: IncompletePublication(message: "The words were edited", outcome: outcome))
             try publishHead(plan, session: session, now: now,
                             incomplete: IncompletePublication(message: "The words were edited", outcome: outcome))
             return outcome
@@ -102,8 +103,9 @@ enum SessionWordEdit {
             try await archive.recordEvent(kind: MeetingEventKind.transcriptEdited, details: [
                 "transcriptID": restored.id, "base": current.id, "undo": "1",
             ])
-            try await archive.saveTranscript(restored, writeLegacyExports: false)
             let published = Restored(transcriptID: restored.id, runID: plan.run.id)
+            try await save(restored, archive: archive, session: session,
+                           incomplete: IncompletePublication(message: "The edit was undone", restored: published))
             try publishHead(plan, session: session, now: now,
                             incomplete: IncompletePublication(message: "The edit was undone", restored: published))
             return published
@@ -215,6 +217,25 @@ enum SessionWordEdit {
             throw HolosError.invalidInput("The speaker labels changed outside this window; reload and try again.")
         }
         return (current, snapshot)
+    }
+
+    /// Test hook: while set (a task-local value), called right after a transcript is saved, as a failure after its
+    /// pointer was renamed into place (a directory sync) would throw.
+    @TaskLocal static var afterSave: (@Sendable () throws -> Void)?
+
+    /// Makes `transcript` current. A save that throws once the pointer already names it (the rename was done, a later
+    /// step failed) did publish it: that is `incomplete` (its head is still owed), never a refusal.
+    private static func save(_ transcript: Transcript, archive: SessionArchive, session: URL,
+                             incomplete: IncompletePublication) async throws {
+        do {
+            try await archive.saveTranscript(transcript, writeLegacyExports: false)
+            try afterSave?()
+        } catch {
+            guard (try? SessionFiles.currentTranscript(session: session))?.id == transcript.id else { throw error }
+            var failure = incomplete
+            failure.message += ", but saving it failed afterwards: " + error.localizedDescription
+            throw failure
+        }
     }
 
     /// Publishes the head; on failure throws `incomplete`, whose message is what was done.

@@ -145,15 +145,14 @@ public struct ReviewWord: Sendable, Equatable {
     /// reread fail.
     var beforeWordChangeReread: (() throws -> Void)?
 
-    /// The corrections a saved word edit teaches (the app: `TranscriptEditLearning`). Not asked for a deletion.
+    /// The corrections one word edit teaches (the app: `TranscriptEditLearning`).
     public var correctionsToLearn: ((ReviewWordEdit) -> [Correction])?
-    /// Brings corrections.json in step with what this window's edits teach (`ReviewLearning.wanted`): each key gets
-    /// its value (nil: no correction for it). Returns the values the keys of the second argument had just before the
-    /// change (read under the same lock), nil when the list could not be changed; the change is then tried again with
-    /// the next edit, undo, or Revert, and when the window closes.
-    public var syncCorrections: ((_ values: [String: Correction?], _ capture: Set<String>) -> [String: Correction?]?)?
-    /// Why what the window's edits teach is not in corrections.json now, until a write works.
-    public private(set) var learningProblem: String?
+    /// Learns `corrections` (the app: into corrections.json, adding or updating those heard phrases only, and keeping a
+    /// value changed elsewhere since the window opened). Called once, when the window closes, with what the edits left
+    /// in the transcript teach (`ReviewLearning`).
+    public var learnCorrections: (([Correction]) -> Void)?
+    /// The transcript the window opened on: what its edits are told apart from when it closes.
+    private let openedTranscript: Transcript
 
     private var savedProjection: SpeakerProjection
     private var people: [SpeakerProfile]
@@ -184,8 +183,6 @@ public struct ReviewWord: Sendable, Equatable {
     private var restoredCopies: [String: String] = [:]
     /// Head runs this window's word edits and undos published, each → the run it replaced keeping its turns.
     private var turnKeepingRuns: [String: String] = [:]
-    /// What this window's saved edits teach, and what corrections.json should hold for it.
-    private var learning = ReviewLearning()
     /// How this window's saved word edits and undos moved words, oldest first: an edit waiting in the queue, and the
     /// window's open edit field, follow their words through them.
     public private(set) var wordMoves: [ReviewWordMove] = []
@@ -259,6 +256,7 @@ public struct ReviewWord: Sendable, Equatable {
         self.analyseVoices = analyseVoices
         self.pendingVoices = pendingVoices
         snapshot = loaded.snapshot
+        openedTranscript = loaded.snapshot.transcript
         self.projection = projection
         savedProjection = projection
         people = loaded.people
@@ -707,7 +705,7 @@ public struct ReviewWord: Sendable, Equatable {
     /// Replaces shown words with `text` (docs/meeting-design.md §5.10, "Editing words"): `words` are consecutive words
     /// of one segment, all shown in one turn (never a word the echo mask hides); `text` may have more or fewer words,
     /// or none (a deletion). Publishes new transcript revisions and a speaker head with every speaker edit carried
-    /// over; one undo takes it back. Once saved, the corrections it teaches are learned (`learnCorrections`). Returns
+    /// over; one undo takes it back. What it teaches is learned when the window closes, if it is still there. Returns
     /// what was edited, nil when the text would not change. Throws `invalidInput` with a message for the person when
     /// the words cannot be edited together.
     ///
@@ -943,8 +941,6 @@ public struct ReviewWord: Sendable, Equatable {
         } catch {
             Self.log.error("Session \(self.sessionID, privacy: .public): exports not rewritten at close (\(ProcessSpawner.logCategory(error), privacy: .public))")
         }
-        // What the window's edits teach and could not be written yet: once more.
-        syncLearnedCorrections()
         // Changes still waiting for labels that were never reread (`drain`) end here; a word edit says what it held.
         let held = queue.filter { !$0.started && !$0.runsWhileUnread }
         queue.removeAll { op in held.contains { $0 === op } }
@@ -957,6 +953,7 @@ public struct ReviewWord: Sendable, Equatable {
             op.finish(.failure(HolosError.unavailable(message)))
         }
         recomputeProjection()
+        await learnFromEdits()
         // A voice pass still running stops; a sample sync still owed runs now (from what the pass stored, or with a
         // pass of its own), and then the meeting's voices are dropped from memory.
         let pass = voiceTask
@@ -1021,11 +1018,6 @@ public struct ReviewWord: Sendable, Equatable {
         let segmentID: String
         /// How it moved the segment's words (undone by its inverse).
         let move: ReviewWordMove
-        /// Its entry in `learning`, removed when it is undone.
-        var learnedID: UUID?
-        /// For an edit back to what the recognizer wrote (a Revert): the entries of those very words it made
-        /// inactive, active again when it is undone.
-        var deactivated: [UUID] = []
     }
 
     /// One queued change or task.
@@ -1377,8 +1369,7 @@ public struct ReviewWord: Sendable, Equatable {
 
     /// Saves a word edit (`SessionWordEdit.run`) on the transcript and labels shown, then adopts the retargeted labels
     /// as this window's own change. As soon as it is committed, the edit's undo and what it was are kept on `op`, its
-    /// word move is recorded (`wordMoves`), and its corrections are learned (`learnCorrections`), even when the labels
-    /// cannot be reread afterwards. An earlier edit of the same segment saved since this one was asked for (Tab moves
+    /// word move is recorded (`wordMoves`), even when the labels cannot be reread afterwards. An earlier edit of the same segment saved since this one was asked for (Tab moves
     /// on before a save ends) moves its words: it is made on them where they now are. Refused when its own words were
     /// replaced meanwhile, or the segment changed otherwise.
     private func saveWordEdit(_ asked: TranscriptWordEdit.Request, segment: TranscriptSegment,
@@ -1397,11 +1388,12 @@ public struct ReviewWord: Sendable, Equatable {
                         WordRef(segmentID: asked.segmentID, word: asked.end - 1)]
             let followed = Self.follow(span, through: moves[...])
             let moved = followed.refs
-            let before = WordTiming.effectiveWords(of: segment)
-            let now = segments[asked.segmentID].map(WordTiming.effectiveWords(of:)) ?? []
-            guard !followed.replaced, moved[1].word - moved[0].word == asked.end - 1 - asked.first, moved[0].word >= 0,
-                  moved[1].word < now.count, asked.end <= before.count,
-                  now[moved[0].word...moved[1].word].map(\.text) == before[asked.first..<asked.end].map(\.text) else {
+            // Compared as shown: a neighbour a deletion merged into keeps its text, not the space Apple's recognizer
+            // put at the front of its range.
+            guard let current = segments[asked.segmentID], !followed.replaced,
+                  moved[1].word - moved[0].word == asked.end - 1 - asked.first, moved[0].word >= 0,
+                  Self.shownWords(of: current, moved[0].word..<(moved[1].word + 1))
+                    == Self.shownWords(of: segment, asked.first..<asked.end) else {
                 throw changed
             }
             request.first = moved[0].word
@@ -1425,20 +1417,9 @@ public struct ReviewWord: Sendable, Equatable {
                 let edit = ReviewWordEdit(heard: saved.heard, meant: saved.meant, deletion: saved.deletion,
                                           before: saved.before, after: saved.after)
                 op.wordEditResult = edit
-                var undo = WordEditUndo(previous: transcriptID, edited: saved.transcriptID,
-                                        segmentID: sent.segmentID, move: saved.move)
-                // Back to what the recognizer wrote (a Revert, or the same typed by hand): what earlier edits of
-                // these very words taught no longer counts.
-                if TranscriptWordEdit.cleaned(edit.meant) == TranscriptWordEdit.cleaned(edit.heard) {
-                    undo.deactivated = self.learning.deactivate(saved.move.replaced, in: sent.segmentID)
-                }
-                self.recordMove(saved.move)
-                if !edit.deletion, let corrections = self.correctionsToLearn?(edit) {
-                    undo.learnedID = self.learning.add(corrections, segmentID: sent.segmentID,
-                                                       words: saved.move.replacement)
-                }
-                self.syncLearnedCorrections()
-                op.wordEdit = undo
+                op.wordEdit = WordEditUndo(previous: transcriptID, edited: saved.transcriptID,
+                                           segmentID: sent.segmentID, move: saved.move)
+                self.wordMoves.append(saved.move)
                 self.refuseQueuedSplits(in: sent.segmentID)
             }) {
             if let hook { await hook() }
@@ -1453,7 +1434,7 @@ public struct ReviewWord: Sendable, Equatable {
     }
 
     /// Takes back a saved word edit (`SessionWordEdit.restore`) while its transcript is still current. As soon as the
-    /// restored words are committed (before the labels are reread), what the edit taught is given back and its word
+    /// restored words are committed (before the labels are reread), its word
     /// move undone.
     private func undoWordEdit(_ edit: WordEditUndo) async throws {
         guard snapshot.transcript.id == currentStandIn(for: edit.edited) else {
@@ -1476,11 +1457,7 @@ public struct ReviewWord: Sendable, Equatable {
                     self.restoredCopies[edit.previous] = restored.transcriptID
                     self.turnKeepingRuns[restored.runID] = runID
                 }
-                // What it taught goes; an undone Revert makes what it made inactive active again.
-                if let id = edit.learnedID { self.learning.remove(id) }
-                self.recordMove(edit.move.inverse)
-                self.learning.activate(edit.deactivated)
-                self.syncLearnedCorrections()
+                self.wordMoves.append(edit.move.inverse)
                 self.refuseQueuedSplits(in: edit.segmentID)
             }) {
             if let hook { await hook() }
@@ -1489,30 +1466,26 @@ public struct ReviewWord: Sendable, Equatable {
         }
     }
 
-    /// Records a saved word move: the open field and queued edits follow it (`wordMoves`), and so do the words of
-    /// `learning`.
-    private func recordMove(_ move: ReviewWordMove) {
-        wordMoves.append(move)
-        learning.move(move)
+    /// Each of words `range` of `segment` as shown (`TranscriptWordEdit.shownText`); nil for one that is not there.
+    nonisolated static func shownWords(of segment: TranscriptSegment, _ range: Range<Int>) -> [String?] {
+        range.map { TranscriptWordEdit.shownText(of: segment, first: $0, end: $0 + 1) }
     }
 
-    /// Brings corrections.json in step with what the window's edits teach (`ReviewLearning.wanted`), when that is owed.
-    /// A write that fails stays owed: tried again with the next learning change and at `close`, and said in
-    /// `learningProblem` meanwhile.
-    private func syncLearnedCorrections() {
-        guard learning.needsSync, let sync = syncCorrections else { return }
-        if let before = sync(learning.wanted, learning.uncaptured) {
-            learning.synced(capturing: before)
-            if learningProblem != nil {
-                learningProblem = nil
-                notify()
-            }
-        } else {
-            learningProblem = "The corrections your edits teach could not be saved to the corrections list; Voice is "
-                + "Local tries again with your next edit and when the window closes."
-            Self.log.error("Session \(self.sessionID, privacy: .public): learned corrections not saved; owed")
-            notify()
+    /// At close: learns what the window's word edits left in the transcript teach (`ReviewLearning`), once. Edits undone
+    /// or reverted are not in it, so they teach nothing.
+    private func learnFromEdits() async {
+        guard let learn = learnCorrections, let teach = correctionsToLearn else { return }
+        let session = self.session
+        let read = await Self.detachedResult { try SessionFiles.currentTranscript(session: session) }
+        guard case .success(let current?) = read else {
+            Self.log.error("Session \(self.sessionID, privacy: .public): the transcript could not be read to learn from its edits")
+            return
         }
+        let corrections = ReviewLearning.corrections(ReviewLearning.netEdits(opened: openedTranscript, final: current),
+                                                     teach: teach)
+        guard !corrections.isEmpty else { return }
+        learn(corrections)
+        Self.log.info("Session \(self.sessionID, privacy: .public): learned \(corrections.count, privacy: .public) corrections from review edits")
     }
 
     /// `refs` where `moves` took them, and whether one of them was among the words a move replaced (its text may have
@@ -2020,7 +1993,7 @@ public struct ReviewWord: Sendable, Equatable {
             voiceAnalysis = .failed(failure.localizedDescription)
             Self.log.error("Session \(self.sessionID, privacy: .public): voices not worked out (\(ProcessSpawner.logCategory(failure), privacy: .public))")
         } else {
-            voiceEmbeddings = voiceCache.embeddings(runID: runID)
+            voiceEmbeddings = voiceCache.embeddings(runID: runID, turns: projection.turns.map(TurnRef.init))
             voiceAnalysis = .ready
             Self.log.info("Session \(self.sessionID, privacy: .public): voices worked out for \(self.voiceEmbeddings.count, privacy: .public) of \(self.voiceCache.coveredTurns, privacy: .public) turns")
         }
@@ -2245,11 +2218,17 @@ public struct ReviewWord: Sendable, Equatable {
         let headChanged = fresh.run?.id != previousRunID && !retargeted
         let external = forced || headChanged || added.count > windowLines
         let transcriptChanged = fresh.transcript.id != snapshot.transcript.id
-        if retargeted, let previousRunID, let newRunID = fresh.run?.id, voiceRunID == previousRunID,
-           voiceCache.moveRun(from: previousRunID, to: newRunID) {
-            // Same turns at the same times: the voices worked out for them still hold.
-            voiceRunID = newRunID
-            voiceMatchKey = nil
+        if retargeted, let previousRunID, let newRunID = fresh.run?.id, voiceRunID == previousRunID {
+            // The same turns: the voices worked out for those still at the same times hold; the others are dropped
+            // (and not worked out again until the next pass).
+            let turns = (fresh.projection?.turns ?? []).map(TurnRef.init)
+            if voiceCache.moveRun(from: previousRunID, to: newRunID, turns: turns) {
+                voiceRunID = newRunID
+                voiceMatchKey = nil
+                if !voiceEmbeddings.isEmpty {
+                    voiceEmbeddings = voiceCache.embeddings(runID: newRunID, turns: turns)
+                }
+            }
         }
         snapshot = fresh
         if let projection = fresh.projection { savedProjection = projection }

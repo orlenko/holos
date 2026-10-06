@@ -171,10 +171,10 @@ func theCacheServesCoveredTurnsOfTheHeadRunAndFallsBackOtherwise() async throws 
     cache.finish(epoch: other)
     _ = try await extractor.turnEmbeddings(session: fixture.session, track: "system", turns: [turns[0]])
     #expect(fallback.callCount == 4)
-    #expect(cache.embeddings(runID: fixture.run.id).isEmpty)
+    #expect(cache.embeddings(runID: fixture.run.id, turns: turns).isEmpty)
 
     cache.clear()
-    #expect(cache.coveredTurns == 0 && cache.embeddings(runID: "ANOTHER-RUN").isEmpty)
+    #expect(cache.coveredTurns == 0 && cache.embeddings(runID: "ANOTHER-RUN", turns: turns).isEmpty)
 }
 
 @Test(.timeLimit(.minutes(1)))
@@ -188,7 +188,27 @@ func aLateStoreOfAnEarlierPassIsIgnored() {
     #expect(cache.coveredTurns == 0)
     cache.store([TurnEmbedding(turnID: "T1", speechSeconds: 5, vector: FloatVector(voiceJim))],
                 asked: [TurnRef(id: "T1", start: 0, end: 5)], track: "system", epoch: second)
-    #expect(cache.embeddings(runID: "RUN").keys.sorted() == ["T1"])
+    #expect(cache.embeddings(runID: "RUN", turns: [TurnRef(id: "T1", start: 0, end: 5)]).keys.sorted() == ["T1"])
+}
+
+@Test(.timeLimit(.minutes(1)))
+func aRunAWordEditRetargetedKeepsOnlyTheVoicesOfTurnsAtTheSameTimes() {
+    let cache = MeetingVoiceCache()
+    let session = URL(fileURLWithPath: "/tmp/voice-cache.holos")
+    let epoch = cache.begin(session: session, runID: "RUN")
+    let before = [TurnRef(id: "T1", start: 0, end: 5), TurnRef(id: "T2", start: 6, end: 9)]
+    cache.store([TurnEmbedding(turnID: "T1", speechSeconds: 5, vector: FloatVector(voiceJim)),
+                 TurnEmbedding(turnID: "T2", speechSeconds: 3, vector: FloatVector(voiceJim))],
+                asked: before, track: "system", epoch: epoch)
+    cache.finish(epoch: epoch)
+    // T2's untimed words were spread again: it starts later now.
+    let after = [TurnRef(id: "T1", start: 0, end: 5), TurnRef(id: "T2", start: 6.4, end: 9)]
+    #expect(cache.embeddings(runID: "RUN", turns: after).keys.sorted() == ["T1"], "Read for other times: not served.")
+    #expect(cache.moveRun(from: "RUN", to: "EDITED", turns: after))
+    #expect(cache.embeddings(runID: "EDITED", turns: after).keys.sorted() == ["T1"])
+    #expect(cache.coveredTurns == 1, "T2's entry is dropped.")
+    #expect(cache.serve(session: session, track: "system", turns: [after[1]], headRunID: "EDITED") == nil)
+    #expect(cache.serve(session: session, track: "system", turns: [after[0]], headRunID: "EDITED")?.count == 1)
 }
 
 @Test(.timeLimit(.minutes(1)))

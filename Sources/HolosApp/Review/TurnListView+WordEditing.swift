@@ -17,6 +17,8 @@ struct WordEditTarget: Equatable {
     var shown: String
     /// How many of the review's word moves (`ReviewSession.wordMoves`) `words` already follow.
     var movesSeen: Int
+    /// Each word as shown (`TurnListView.shownText(of:)`), which it must still read as when it is followed.
+    var wordTexts: [String] = []
 }
 
 /// The field over the words being edited: the turn text's font, a bezel, and no wrapping.
@@ -57,6 +59,12 @@ extension TurnListView: NSTextFieldDelegate {
         + "there. Edit the rest on its own."
     static let wordsChanged = "The words being edited changed meanwhile; click them again."
 
+    /// A word as the transcript shows it (`editText`: with untimed punctuation, without a recognizer's leading space),
+    /// else its text without the whitespace around it.
+    func shownText(of word: ReviewWord) -> String {
+        editText?([word]) ?? word.text.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
     /// The paragraph's words (every turn's, in order) and the index of the turn each belongs to.
     func paragraphWords(_ paragraph: ReviewParagraph) -> (words: [ReviewWord], turns: [Int]) {
         var all: [ReviewWord] = []
@@ -78,9 +86,14 @@ extension TurnListView: NSTextFieldDelegate {
         let (all, turns) = paragraphWords(paragraph)
         guard from >= 0, through >= 0, from < all.count, through < all.count else { return }
         var anchor = from
+        /// What was typed before a ⇧-click grew the selection: it stays in the field.
+        var typed: String?
         if extend, let open = wordEdit, open.paragraphID == paragraph.id {
-            // The selection grows from where it began; the field starts again with the words it now covers.
+            // The selection grows from where it began; the field starts again with the words it now covers, unless
+            // something was typed in it.
             anchor = open.anchor
+            let text = editField.stringValue
+            if TranscriptWordEdit.cleaned(text) != TranscriptWordEdit.cleaned(open.shown) { typed = text }
             closeEditField()
         } else if wordEdit != nil {
             // Clicking elsewhere while the field is open saves what it holds first.
@@ -98,6 +111,10 @@ extension TurnListView: NSTextFieldDelegate {
         let stopped = through > upper || through < lower
         onEditMessage?(stopped ? Self.selectionStopped : nil)
         openField(row: row, paragraph: paragraph, words: all, range: lower...upper, anchor: anchor)
+        if let typed {
+            editField.stringValue = typed
+            editField.currentEditor()?.selectedRange = NSRange(location: (typed as NSString).length, length: 0)
+        }
     }
 
     private func openField(row: Int, paragraph: ReviewParagraph, words all: [ReviewWord], range: ClosedRange<Int>,
@@ -108,7 +125,7 @@ extension TurnListView: NSTextFieldDelegate {
                 .trimmingCharacters(in: .whitespacesAndNewlines)
             ?? all[range].map(\.text).joined(separator: " ")
         wordEdit = WordEditTarget(paragraphID: paragraph.id, range: range, anchor: anchor, words: Array(all[range]),
-                                  shown: shown, movesSeen: wordMoves.count)
+                                  shown: shown, movesSeen: wordMoves.count, wordTexts: all[range].map(shownText(of:)))
         editField.stringValue = shown
         if editField.superview !== table { table.addSubview(editField) }
         positionEditField(row: row, range: range)
@@ -183,7 +200,7 @@ extension TurnListView: NSTextFieldDelegate {
         guard !followed.replaced, let first = refs.first, let start = all.firstIndex(where: { $0.ref == first }),
               start + refs.count <= all.count,
               zip(refs, all[start...]).allSatisfy({ $0 == $1.ref }),
-              zip(target.words, all[start...]).allSatisfy({ $0.text == $1.text }) else {
+              zip(target.wordTexts, all[start...]).allSatisfy({ $0 == shownText(of: $1) }) else {
             loseWordEdit()
             return
         }
@@ -192,6 +209,7 @@ extension TurnListView: NSTextFieldDelegate {
         wordEdit?.range = range
         wordEdit?.anchor = min(max(target.anchor + shift, range.lowerBound), range.upperBound)
         wordEdit?.words = Array(all[range])
+        wordEdit?.wordTexts = all[range].map(shownText(of:))
         wordEdit?.movesSeen = wordMoves.count
         positionEditField(row: row, range: range)
     }

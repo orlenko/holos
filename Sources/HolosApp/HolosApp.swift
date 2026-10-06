@@ -1278,16 +1278,10 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
                                                   after: edit.after, isDictionaryWord: dictionaryWord)
     }
 
-    /// Brings the list Corrections shows in step with what a Review window's edits teach (`ReviewSession`
-    /// `.syncCorrections`): each key gets its value; the values of `capture` keys just before are returned. Nil, and
-    /// no alert (the review's footer says so and tries again), when the list cannot be changed.
-    func syncReviewCorrections(_ values: [String: Correction?], capture: Set<String>) -> [String: Correction?]? {
-        var before: [String: Correction?] = [:]
-        guard changeCorrections(alerting: false, { list in
-            for key in capture { before[key] = .some(list.entry(forKey: key)) }
-            for (key, value) in values { list.set(value, forKey: key) }
-        }) else { return nil }
-        return before
+    /// Learns what a closed Review window's edits taught into the list Corrections shows (`ReviewSession`
+    /// `.learnCorrections`), keeping any heard phrase whose correction changed since the window opened (`opened`).
+    func learnReviewCorrections(_ learned: [Correction], openedWith opened: CorrectionList) {
+        changeCorrections { $0.learn(learned, keepingChangesSince: opened) }
     }
 
     /// A manual Add; one that resolves a declined swap also keeps the edit that swap came from, as Learn
@@ -1320,17 +1314,16 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
     @discardableResult
     /// The change is made to the list as saved now, under its lock (`CorrectionList.update`), so corrections another
     /// process added since it was loaded (`voiceislocal eval apply`) are kept, never saved over.
-    /// `alerting: false`: a failure is only returned (the caller says it its own way).
-    private func changeCorrections(alerting: Bool = true, _ change: (inout CorrectionList) -> Void) -> Bool {
+    private func changeCorrections(_ change: (inout CorrectionList) -> Void) -> Bool {
         guard correctionsWritable else {
-            if alerting { show("Could not read corrections.json; fix or remove it, then relaunch Voice is Local.") }
+            show("Could not read corrections.json; fix or remove it, then relaunch Voice is Local.")
             return false
         }
         do {
             adoptCorrections(try CorrectionList.update(at: CorrectionList.defaultURL) { change(&$0) }.list)
             return true
         } catch {
-            if alerting { show("Could not save corrections: \(error.localizedDescription)") }
+            show("Could not save corrections: \(error.localizedDescription)")
             return false
         }
     }

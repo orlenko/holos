@@ -1008,9 +1008,11 @@ extension HolosAppDelegate: NSMenuDelegate {
         }
         window.onRelabel = { [weak self] running in self?.reviewRelabelChanged(sessionID, running: running) }
         // Word edits in Review teach corrections and offer word-list terms (docs/meeting-design.md §5.10).
+        // Learned when the window closes, keeping what changed in the list meanwhile.
+        let opened = (try? CorrectionList.load(from: CorrectionList.defaultURL)) ?? corrections
         window.review.correctionsToLearn = { [weak self] edit in self?.reviewEditCorrections(edit) ?? [] }
-        window.review.syncCorrections = { [weak self] values, capture in
-            self?.syncReviewCorrections(values, capture: capture)
+        window.review.learnCorrections = { [weak self] learned in
+            self?.learnReviewCorrections(learned, openedWith: opened)
         }
         window.wordListHeardAs = { [weak self] term in self?.wordListHeardAs(term) }
         window.addWordListTerm = { [weak self] term, heardAs in

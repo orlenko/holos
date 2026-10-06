@@ -650,9 +650,6 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate {
         }
         if let problem { lines.append(Notice(text: "⚠ " + problem, color: .systemRed)) }
         if let notice { lines.append(Notice(text: notice)) }
-        if let learningProblem = review.learningProblem {
-            lines.append(Notice(text: "⚠ " + learningProblem, color: .systemOrange))
-        }
         if let offered = offeredTerm {
             let heard = offered.heardAs.map { ", often heard as “\($0)”" } ?? ""
             lines.append(Notice(text: "Add “\(offered.term)” to the word list\(heard)? Voice is Local then expects it "

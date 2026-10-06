@@ -93,16 +93,25 @@ public final class MeetingVoiceCache: Sendable {
         for waiter in waiters { waiter.resume() }
     }
 
-    /// The head run `old` was replaced by `new` with the same turns (a word edit in Review retargets the run): what
-    /// is stored now belongs to `new`, and a running pass goes on storing into it. A turn whose times moved is still not
-    /// served (`serve` compares them). False, changing nothing, when the cache holds another run's.
+    /// The head run `old` was replaced by `new` with the same turn IDs (a word edit in Review retargets the run), whose
+    /// shown turns are `turns`: what is stored for a turn at the same times now belongs to `new`; a turn whose times
+    /// moved (an untimed segment spreads its words again) or that is gone is dropped. A running pass goes on storing
+    /// into it. False, changing nothing, when the cache holds another run's.
     @discardableResult
-    public func moveRun(from old: String, to new: String) -> Bool {
+    public func moveRun(from old: String, to new: String, turns: [TurnRef]) -> Bool {
         storage.withLock { storage in
             guard storage.runID == old else { return false }
             storage.runID = new
+            let byID = Dictionary(turns.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+            storage.entries = storage.entries.filter { id, entry in
+                byID[id].map { Self.sameTimes(entry, $0) } ?? false
+            }
             return true
         }
+    }
+
+    private static func sameTimes(_ entry: Entry, _ turn: TurnRef) -> Bool {
+        abs(entry.start - turn.start) < 1e-6 && abs(entry.end - turn.end) < 1e-6
     }
 
     /// Whether a pass is running.
@@ -111,12 +120,17 @@ public final class MeetingVoiceCache: Sendable {
     /// Turns covered so far (with or without an embedding).
     public var coveredTurns: Int { storage.withLock { $0.entries.count } }
 
-    /// The stored embeddings of `runID` by turn ID; empty when the cache holds another run's.
-    public func embeddings(runID: String) -> [String: TurnEmbedding] {
+    /// The stored embeddings of `runID` by turn ID, for the turns of `turns` at the times they were worked out at (as
+    /// `serve` checks); empty when the cache holds another run's.
+    public func embeddings(runID: String, turns: [TurnRef]) -> [String: TurnEmbedding] {
         storage.withLock { storage in
             guard storage.runID == runID else { return [:] }
             var result: [String: TurnEmbedding] = [:]
-            for (id, entry) in storage.entries { if let embedding = entry.embedding { result[id] = embedding } }
+            for turn in turns {
+                guard let entry = storage.entries[turn.id], Self.sameTimes(entry, turn),
+                      let embedding = entry.embedding else { continue }
+                result[turn.id] = embedding
+            }
             return result
         }
     }

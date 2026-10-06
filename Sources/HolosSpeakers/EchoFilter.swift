@@ -55,7 +55,10 @@ public enum EchoFilter {
         // around it either: correcting "write" to "right" beside the call's "that sounds right", or "rarely" to
         // "really" in "I rarely think so" beside its "I think so", leaves the microphone's words as judged before.
         let edited = reviewEditedWords(in: transcript)
-        let micMatchable = mic.indices.filter { mic[$0].isMatchable }
+        // An edited word breaks runs even when it has no letters or digits ("…"), which other words do not.
+        let micMatchable = mic.indices.filter {
+            mic[$0].isMatchable || (edited.contains(mic[$0].ref) && mic[$0].start.isFinite)
+        }
         let systemMatchable = system.indices.filter { system[$0].isMatchable }
         guard !micMatchable.isEmpty, !systemMatchable.isEmpty else { return [] }
 

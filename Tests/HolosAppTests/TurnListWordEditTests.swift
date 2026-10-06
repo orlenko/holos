@@ -232,6 +232,43 @@ struct TurnListWordEditTests {
         #expect(abs(list.editField.frame.minX - (origin.x - 4)) < 0.5 && abs(list.editField.frame.minY - (origin.y - 3)) < 0.5)
     }
 
+    @Test func growingTheSelectionKeepsWhatWasTyped() {
+        let (list, saved) = editingList()
+        list.editingWords = true
+        list.table.handleWordClick(row: 0, word: 0, through: 0, extend: false)
+        list.editField.stringValue = "Alpha Beta"
+        list.editClickBegan(extend: true)
+        list.table.handleWordClick(row: 0, word: 1, through: 1, extend: true)
+        list.editClickEnded()
+        #expect(list.wordEdit?.range == 0...1 && list.editField.stringValue == "Alpha Beta")
+        press(list, #selector(NSResponder.insertNewline(_:)))
+        #expect(saved() == [Saved(words: ["alpha", "beta"], text: "Alpha Beta", addTerm: false)])
+        // Nothing typed: the field starts again with the words it now covers.
+        list.table.handleWordClick(row: 1, word: 0, through: 0, extend: false)
+        list.table.handleWordClick(row: 1, word: 1, through: 1, extend: true)
+        #expect(list.editField.stringValue == "epsilon zeta")
+    }
+
+    @Test func aMergedWordFromAnAppleTranscriptIsFollowedByWhatItShows() {
+        let (list, saved) = editingList()
+        var words = TurnListViewTests.words
+        // Apple's ranges: " beta" carries the space before it.
+        words["T1"] = [TurnListViewTests.word("T1", 0, "alpha", 0), TurnListViewTests.word("T1", 1, " beta", 1)]
+        update(list, words: words, moves: [])
+        list.editingWords = true
+        list.table.handleWordClick(row: 0, word: 0, through: 0, extend: false)
+        list.editField.stringValue = ""
+        press(list, #selector(NSResponder.insertTab(_:)))
+        #expect(list.wordEdit?.words.map(\.text) == [" beta"] && list.editField.stringValue == "beta")
+        list.editField.stringValue = "Beta"
+        // Saved: "alpha" merged into "beta", whose range no longer starts with a space.
+        words["T1"] = [TurnListViewTests.word("T1", 0, "beta", 0)]
+        update(list, words: words, moves: [ReviewWordMove(segmentID: "T1", replaced: 0..<1, replacement: 0..<0)])
+        #expect(list.wordEdit?.words.first?.ref == WordRef(segmentID: "T1", word: 0))
+        #expect(list.editField.stringValue == "Beta")
+        #expect(saved().count == 1)
+    }
+
     @Test func theFieldStartsWithTheWordsTextAsTheTranscriptHasIt() {
         let (list, _) = editingList()
         // The review gives a word's text with the punctuation the recognizer did not time.

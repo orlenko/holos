@@ -352,6 +352,10 @@ private let editEchoMask: AcousticEchoMask = {
                                                               base: nil)).transcript
     #expect(EchoFilter.echoSpans(transcript: really, parameters: parameters).isEmpty,
             "“I think so” around the edited word is not one echo run.")
+    // Edited into a word with no letters or digits ("…"): still a break.
+    let ellipsis = try #require(try TranscriptWordEdit.editing(editRequest(1, 2, "…", segment: "M"), in: rarely,
+                                                                base: nil)).transcript
+    #expect(EchoFilter.echoSpans(transcript: ellipsis, parameters: parameters).isEmpty)
     let tracks = [SpeakerRunBuilder.TrackInput(track: "mic", policy: .channel(speakerID: "mic:me", displayName: "Me")),
                   SpeakerRunBuilder.TrackInput(track: "system", policy: .channel(speakerID: "system:all",
                                                                                  displayName: "Others"))]
