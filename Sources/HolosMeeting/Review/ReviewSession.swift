@@ -27,9 +27,16 @@ public struct ReviewWordEdit: Sendable, Equatable {
     /// The shown words just before and after the span in its segment, when there are some.
     public let before: String?
     public let after: String?
+    /// What the recognizer wrote for `before` and `after`, when a fix changed them (an automatic correction made
+    /// "cloud" "Claude"): the heard side of a learned correction is the recognizer's text throughout ("as cloud" →
+    /// "ask Claude"), as corrections are matched against it. Nil: as shown.
+    public let heardBefore: String?
+    public let heardAfter: String?
 
-    public init(heard: String, meant: String, deletion: Bool = false, before: String? = nil, after: String? = nil) {
+    public init(heard: String, meant: String, deletion: Bool = false, before: String? = nil, after: String? = nil,
+                heardBefore: String? = nil, heardAfter: String? = nil) {
         self.heard = heard; self.meant = meant; self.deletion = deletion; self.before = before; self.after = after
+        self.heardBefore = heardBefore; self.heardAfter = heardAfter
     }
 }
 
@@ -169,11 +176,13 @@ public struct ReviewWord: Sendable, Equatable {
 
     /// The corrections one word edit teaches (the app: `TranscriptEditLearning`).
     public var correctionsToLearn: ((ReviewWordEdit) -> [Correction])?
-    /// Learns `corrections` (the app: into corrections.json, adding a heard phrase it lacks and keeping one it has,
-    /// removing nothing); returns whether the list could be written. Called when the window closes, with what every
-    /// word edited in the meeting teaches (`ReviewLearning`); a write that fails is made again by the next review's
-    /// close, since the edits stay in the transcript.
-    public var learnCorrections: (([Correction]) -> Bool)?
+    /// Learns `learned` (the app: into corrections.json, `CorrectionList.learnReplacingTaught`: a heard phrase the list
+    /// lacks is added; one still holding what this meeting taught it before, `taught`, takes the new value; any other
+    /// is kept; nothing is removed); returns what the list now holds of `learned`, recorded as taught, or nil when the
+    /// list could not be written. Called when the window closes, with what the meeting's word edits teach and it has
+    /// not taught yet (`ReviewLearning`); a write that fails is made again by the next review's close, since the edits
+    /// stay in the transcript.
+    public var learnCorrections: ((_ learned: [Correction], _ taught: [Correction]) -> [Correction]?)?
 
     private var savedProjection: SpeakerProjection
     private var people: [SpeakerProfile]
@@ -1038,7 +1047,8 @@ public struct ReviewWord: Sendable, Equatable {
             Self.log.error("Session \(self.sessionID, privacy: .public): exports not rewritten at close (\(ProcessSpawner.logCategory(error), privacy: .public))")
         }
         // Changes still waiting for labels that were never reread (`drain`) end here; a word edit says what it held.
-        let held = queue.filter { !$0.started && !$0.runsWhileUnread }
+        // (A relabel waiting behind them goes too: it runs only after them.)
+        let held = queue.filter { !$0.started && !runsAhead($0) }
         queue.removeAll { op in held.contains { $0 === op } }
         for op in held {
             var message = "The review closed before the speaker labels could be reread, so a change was not saved."
@@ -1248,10 +1258,11 @@ public struct ReviewWord: Sendable, Equatable {
 
     /// Runs the queue in order. While the labels shown may not be the saved ones (`reloadProblem`, after a change
     /// whose labels could not be reread), every change waits, still queued: run now it would be refused as made on
-    /// other labels, and lost. Only what rereads the labels runs (a reload, a relabel), and the transcript files; the
+    /// other labels, and lost. Only the reread runs ahead (a reload), and the transcript files; a relabel runs only
+    /// once the changes queued before it have run (its labels would make them stale, and they would be refused); the
     /// reread that ends that state lets the rest run, a word edit on the words where the earlier edit moved them.
     private func drain() async {
-        while let op = queue.first(where: { reloadProblem == nil || $0.runsWhileUnread }) {
+        while let op = queue.first(where: { reloadProblem == nil || runsAhead($0) }) {
             op.started = true
             activity = activityText(op)
             notify()
@@ -1279,6 +1290,16 @@ public struct ReviewWord: Sendable, Equatable {
         updateVoiceAnalysis()
         scheduleSampleSync()
         considerAutoMerge()
+    }
+
+    /// `op` may run while the labels could not be reread (`drain`): the reread (a reload) and the transcript files
+    /// always; a relabel only with no change waiting before it, so the queue stays in order for every change.
+    private func runsAhead(_ op: Operation) -> Bool {
+        switch op.kind {
+        case .reload, .exports: true
+        case .relabel: !queue.prefix(while: { $0 !== op }).contains { !$0.runsWhileUnread }
+        default: false
+        }
     }
 
     private func pushUndo(_ batches: [String], wordEdit: WordEditUndo? = nil) {
@@ -1665,12 +1686,14 @@ public struct ReviewWord: Sendable, Equatable {
         }
         let toTeach = ReviewLearning.untaught(corrections, taught: taught)
         guard !toTeach.isEmpty else { return }
-        guard learn(toTeach) else {
+        guard let applied = learn(toTeach, taught) else {
             Self.log.error("Session \(self.sessionID, privacy: .public): corrections from review edits not saved; the next review's close tries again")
             return
         }
-        Self.log.info("Session \(self.sessionID, privacy: .public): learned from \(toTeach.count, privacy: .public) corrections of review edits")
-        let recorded = await Self.detachedResult { try ReviewLearning.recordTaught(adding: toTeach, session: session) }
+        Self.log.info("Session \(self.sessionID, privacy: .public): learned \(applied.count, privacy: .public) of \(toTeach.count, privacy: .public) corrections of review edits")
+        // Only what the list now holds is taught: a phrase kept with a value set elsewhere is not this meeting's.
+        guard !applied.isEmpty else { return }
+        let recorded = await Self.detachedResult { try ReviewLearning.recordTaught(adding: applied, session: session) }
         if case .failure(let error) = recorded {
             Self.log.error("Session \(self.sessionID, privacy: .public): what this meeting taught was not recorded (\(ProcessSpawner.logCategory(error), privacy: .public)); a later close may teach it again")
         }

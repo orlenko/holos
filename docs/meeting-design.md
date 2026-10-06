@@ -7784,8 +7784,9 @@ shown, Otter-style.
   replaced is never followed onto
   another word: the field closes and the banner shows what was typed (a queued edit is refused
   saying it). While the labels could not be reread after a change, every queued change (a word
-  edit, a rename, an assignment, an undo) waits; only what rereads them (a reload, a relabel)
-  and the transcript files run, and the changes run after the reread. After the column width or the row heights change, the field
+  edit, a rename, an assignment, an undo) waits; only the reread (a reload) and the transcript
+  files run ahead; a relabel runs only once the changes queued before it have (its labels
+  would make them stale), and the changes run after the reread. After the column width or the row heights change, the field
   is put back over its words.
 - *What an edit is.* `ReviewSession.editWords(refs, to: text)`: shown words (stored
   `WordRef`s, so a word the echo mask hides is never named, §5.11) of one segment, in a row,
@@ -7915,15 +7916,20 @@ shown, Otter-style.
     dictionary word is learned only with its neighbour: "cloud now" and "cloud later" are two
     phrases). A neighbour is context only when it is shown in the edited word's own turn, as
     an edit itself may take in: never the next speaker's word at a turn boundary, nor a word
-    hidden as echo; without such a neighbour the rule learns as it does without context. The
+    hidden as echo; without such a neighbour the rule learns as it does without context. A
+    neighbour under a fix (automatic, live) stands with its whole fix, and the heard side
+    takes what the recognizer wrote there: beside "cloud" fixed to "Claude", "as" → "ask"
+    teaches "as cloud" → "ask Claude", which matches the recognizer's text. The
     turns are the labels on the transcript as it is then: labels the window could not reread
     after an edit are read again at close; when that fails, or the labels read are still on
     another transcript (a speaker head owed, or the transcript changed under them), nothing
     is learned at this close (logged; a later close learns the same edits);
   - the pairs go to `corrections.json`, the list Corrections (⌘2) shows
-    (`CorrectionList.learnKeepingExisting`): a phrase the list lacks is added; one it has
-    keeps its correction (an earlier or an external choice wins; within one close, the first
-    in the meeting); nothing is removed. A write that fails (logged) is not recorded, so the
+    (`CorrectionList.learnReplacingTaught`): a phrase the list lacks is added; one still
+    holding the value this meeting taught it takes the new one (the word re-edited from
+    "Claude" to "Claudia"); one holding anything else keeps it (an external or another
+    meeting's choice wins; within one close, the first in the meeting); nothing is removed.
+    Only what the list then holds is recorded as taught, one value per phrase. A write that fails (logged) is not recorded, so the
     meeting's next review close makes it again, since the edits stay in the transcript; a
     record that cannot be read (damaged, or newer) teaches nothing rather than teach again
     what was deleted;

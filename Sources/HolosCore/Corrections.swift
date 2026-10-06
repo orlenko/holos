@@ -140,6 +140,29 @@ public struct CorrectionList: Codable, Sendable, Equatable {
         return added
     }
 
+    /// Learns what a meeting's word edits teach as `learnKeepingExisting` does, except that a phrase still holding the
+    /// value this meeting taught it before (`taught`: its earlier lessons) takes the new one: the meeting's later edit
+    /// wins over its own earlier one ("Claude", re-edited to "Claudia"), never over a value set elsewhere. Returns what
+    /// the list now holds of `learned` (added, replaced, or already so); a phrase kept with another value is left out.
+    @discardableResult
+    public mutating func learnReplacingTaught(_ learned: [Correction], taught: [Correction]) -> [Correction] {
+        var applied: [Correction] = []
+        for correction in learned {
+            let key = Self.key(correction.heard)
+            guard !key.isEmpty else { continue }
+            if let existing = entry(forKey: key), existing.meant != correction.meant {
+                guard taught.contains(where: { Self.key($0.heard) == key && $0.meant == existing.meant }) else {
+                    continue
+                }
+                set(correction, forKey: key)
+            } else if entry(forKey: key) == nil {
+                add(correction)
+            }
+            if entry(forKey: key)?.meant == correction.meant { applied.append(correction) }
+        }
+        return applied
+    }
+
     /// Reconciles rules introduced by live editing with the rules its latest edits still confirm. `managed` is every
     /// exact rule a live edit has introduced; removing those first lets the desired rules be rebuilt in edit order.
     /// `preexisting` remembers desired rules known to have been present before live editing, including one temporarily

@@ -9,12 +9,16 @@ public enum TranscriptEditLearning {
     /// dictionary word is learned only with a neighbour. Nothing for a deletion (an empty `meant`), a punctuation-only
     /// change, or a case-only change, unless the case change makes a proper noun (a word whose lowercase is not a
     /// dictionary word: "github" → "GitHub").
+    /// `heardBefore`/`heardAfter`: what the recognizer wrote for the context words, when a fix changed them (nil: as
+    /// shown); the heard side is the recognizer's text throughout, since corrections are matched against it.
     public static func corrections(heard: String, meant: String, before: String? = nil, after: String? = nil,
+                                   heardBefore: String? = nil, heardAfter: String? = nil,
                                    isDictionaryWord: (String) -> Bool) -> [Correction] {
         let heard = words(heard), meant = words(meant)
         guard !heard.isEmpty, !meant.isEmpty, heard != meant else { return [] }
-        let context = { (text: String) in [before, text, after].compactMap { $0 }.joined(separator: " ") }
-        return CorrectionList.learn(original: context(heard), corrected: context(meant),
+        let original = [heardBefore ?? before, heard, heardAfter ?? after].compactMap { $0 }.joined(separator: " ")
+        let corrected = [before, meant, after].compactMap { $0 }.joined(separator: " ")
+        return CorrectionList.learn(original: original, corrected: corrected,
                                     isDictionaryWord: isDictionaryWord).filter { correction in
             guard key(correction.heard) == key(correction.meant) else { return true }
             return makesProperNoun(from: correction.heard, to: correction.meant, isDictionaryWord: isDictionaryWord)

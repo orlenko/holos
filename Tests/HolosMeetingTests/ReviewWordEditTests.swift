@@ -114,13 +114,13 @@ private final class WordEditLearner {
             taughtBy.append(edit)
             guard contextual else { return [Correction(heard: edit.heard, meant: edit.meant)] }
             return TranscriptEditLearning.corrections(heard: edit.heard, meant: edit.meant, before: edit.before,
-                                                      after: edit.after, isDictionaryWord: { _ in true })
+                                                      after: edit.after, heardBefore: edit.heardBefore,
+                                                      heardAfter: edit.heardAfter, isDictionaryWord: { _ in true })
         }
-        review.learnCorrections = { [self] learned in
+        review.learnCorrections = { [self] learned, taught in
             lessons += 1
-            guard !failing else { return false }
-            list.learnKeepingExisting(learned)
-            return true
+            guard !failing else { return nil }
+            return list.learnReplacingTaught(learned, taught: taught)
         }
     }
 
@@ -743,6 +743,119 @@ func learningAgainAtTheNextCloseChangesNothingAndASecondOccurrenceIsAdded() asyn
                                      Correction(heard: "cloud later", meant: "Klaud later")])
 }
 
+@Test func contextBesideAFixedWordIsWhatTheRecognizerWroteThere() {
+    // "as cloud now": "cloud" fixed automatically to "Claude", then "as" edited to "ask". And "we new here", with
+    // "new" edited to "knew" beside words no fix changed.
+    var fixed = SessionFixtures.segment(["ask", "Claude", "now"], track: "system", start: 0, wordSeconds: 1, id: "S1")
+    fixed.fixes = [TranscriptWordFix(first: 0, end: 1, heard: "as", kind: .reviewEdit, heardWords: 1),
+                   TranscriptWordFix(first: 1, end: 2, heard: "cloud", kind: .correction, heardWords: 1)]
+    var plain = SessionFixtures.segment(["we", "knew", "here"], track: "system", start: 10, wordSeconds: 1, id: "S2")
+    plain.fixes = [TranscriptWordFix(first: 1, end: 2, heard: "new", kind: .reviewEdit, heardWords: 1)]
+    let edits = ReviewLearning.edits(in: SessionFixtures.transcript([fixed, plain]), sameTurn: { _, _, _ in true })
+    #expect(edits == [
+        ReviewWordEdit(heard: "as", meant: "ask", after: "Claude", heardAfter: "cloud"),
+        ReviewWordEdit(heard: "new", meant: "knew", before: "we", after: "here"),
+    ])
+    // The heard side is the recognizer's text throughout, so the correction matches it: "as cloud" → "ask Claude".
+    let learned = TranscriptEditLearning.corrections(heard: "as", meant: "ask", after: "Claude", heardAfter: "cloud",
+                                                     isDictionaryWord: { _ in true })
+    #expect(learned.map(\.heard) == ["as cloud"] && learned.map(\.meant) == ["ask Claude"])
+}
+
+@Test(.timeLimit(.minutes(1))) @MainActor
+func aWordBesideAnAutomaticFixIsLearnedAgainstWhatTheRecognizerWrote() async throws {
+    let temp = try TemporaryDirectory("review")
+    defer { temp.remove() }
+    let session = try await wordEditFixedCloudSession(temp, words: ["as", "cloud", "now"])
+    let review = try await wordEditOpen(session)
+    let learner = WordEditLearner(contextual: true)
+    learner.attach(to: review)
+    #expect(review.words(of: "T1").map(\.text) == ["as", "Claude", "now"])
+    try await review.editWords(wordEditRefs(review, "T1", [0]), to: "ask")
+    await review.close()
+    #expect(learner.value("as cloud") == "ask Claude", "Matches the recognizer's “as cloud” next time.")
+    #expect(learner.value("as Claude") == nil)
+}
+
+@Test(.timeLimit(.minutes(1))) @MainActor
+func aRelabelWaitsBehindChangesQueuedBeforeItWhileTheLabelsAreUnread() async throws {
+    let temp = try TemporaryDirectory("review")
+    defer { temp.remove() }
+    let session = try await wordEditSession(in: temp, [
+        WordEditTurn(speaker: "system:S1", start: 0, words: ["ask", "cloud", "now"]),
+    ])
+    // `voiceislocal session diarize` that notes whether the rename was saved when it ran, and changes nothing.
+    let marker = temp.url.appendingPathComponent("rename-saved-first")
+    let script = temp.url.appendingPathComponent("fake-holos.sh")
+    try Data(("#!/bin/sh\ngrep -q 'Ann' '\(SessionPaths.edits(session).path)' && touch '\(marker.path)'\n"
+        + "echo '{\"message\": \"Nothing could be done.\"}'\nexit 1\n").utf8).write(to: script)
+    try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: script.path)
+    let review = try await ReviewSession(session: session, profiles: nil,
+                                         maintenance: MaintenanceLauncher(executable: script),
+                                         exportDelay: .seconds(60))
+    let (stream, release) = AsyncStream<Void>.makeStream()
+    let entered = SharedValue(0)
+    review.beforeEdit = {
+        entered.update { $0 += 1 }
+        for await _ in stream {}
+    }
+    struct Unreadable: Error {}
+    var failures = 1
+    review.beforeWordChangeReread = {
+        guard failures > 0 else { return }
+        failures -= 1
+        throw Unreadable()
+    }
+    // An edit (its reread will fail), then a rename, then Label Again, queued in that order.
+    let edit = Task { try await review.editWords(wordEditRefs(review, "T1", [1]), to: "Claude") }
+    #expect(await eventually { entered.value == 1 })
+    let rename = Task { try await review.apply([.rename(speakerID: "system:S1", name: "Ann")]) }
+    let relabel = Task { try await review.labelAgain() }
+    #expect(await eventually { review.queuedOperations == 3 })
+    review.beforeEdit = nil
+    release.finish()
+    await #expect(throws: HolosError.self) { _ = try await edit.value }
+    #expect(review.reloadProblem != nil)
+    // The relabel does not run ahead of the rename held behind the failed reread.
+    #expect(review.queuedOperations == 2)
+    #expect(!FileManager.default.fileExists(atPath: marker.path))
+    await review.reload()
+    try await rename.value
+    await #expect(throws: HolosError.self) { try await relabel.value }
+    #expect(FileManager.default.fileExists(atPath: marker.path), "The rename was saved before the relabel ran.")
+    #expect(review.speaker("system:S1")?.name == "Ann", "Carried forward.")
+    await review.close()
+}
+
+@Test(.timeLimit(.minutes(1))) @MainActor
+func aMeetingsLaterEditReplacesWhatItTaughtButNeverAValueSetElsewhere() async throws {
+    for external in [false, true] {
+        let temp = try TemporaryDirectory("review")
+        defer { temp.remove() }
+        let session = try await wordEditCloudSession(temp)
+        let learner = WordEditLearner()
+        let first = try await wordEditOpen(session)
+        learner.attach(to: first)
+        try await first.editWords(wordEditRefs(first, "T1", [0]), to: "Claude")
+        await first.close()
+        #expect(learner.value("cloud") == "Claude")
+        if external { learner.list.set(Correction(heard: "cloud", meant: "Cloud9"), forKey: "cloud") }
+        // Reopened, the same word edited again.
+        let second = try await wordEditOpen(session)
+        learner.attach(to: second)
+        try await second.editWords(wordEditRefs(second, "T1", [0]), to: "Claudia")
+        await second.close()
+        let taught = try ReviewLearning.taught(session: session)
+        if external {
+            #expect(learner.value("cloud") == "Cloud9", "A value set elsewhere is kept.")
+            #expect(taught == [Correction(heard: "cloud", meant: "Claude")], "Claudia was not taught.")
+        } else {
+            #expect(learner.value("cloud") == "Claudia", "The meeting's own earlier lesson gives way.")
+            #expect(taught == [Correction(heard: "cloud", meant: "Claudia")])
+        }
+    }
+}
+
 @Test(.timeLimit(.minutes(1))) @MainActor
 func editsSideBySideAreLearnedAsOnePhraseFromWhatTheRecognizerWrote() async throws {
     let temp = try TemporaryDirectory("review")
@@ -940,10 +1053,11 @@ func anEditBesideAnOlderUnspacedFixIsRefusedSayingWhy() async throws {
     await review.close()
 }
 
-/// "ask more cloud now", whose "cloud" the word-fix stage made "Claude"; the labels are on that revision.
-private func wordEditFixedCloudSession(_ temp: TemporaryDirectory) async throws -> URL {
+/// "ask more cloud now" (or `words`), whose "cloud" the word-fix stage made "Claude"; the labels are on that revision.
+private func wordEditFixedCloudSession(_ temp: TemporaryDirectory,
+                                       words: [String] = ["ask", "more", "cloud", "now"]) async throws -> URL {
     let session = try await wordEditSession(in: temp, [
-        WordEditTurn(speaker: "system:S1", start: 0, words: ["ask", "more", "cloud", "now"]),
+        WordEditTurn(speaker: "system:S1", start: 0, words: words),
     ])
     let base = try wordEditCurrent(session)
     let fixed = try await WordFixStage.fix(base, title: "",

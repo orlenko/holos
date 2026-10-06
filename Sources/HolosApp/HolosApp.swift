@@ -1275,13 +1275,18 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
             NSSpellChecker.shared.checkSpelling(of: word.lowercased(), startingAt: 0).location == NSNotFound
         }
         return TranscriptEditLearning.corrections(heard: edit.heard, meant: edit.meant, before: edit.before,
-                                                  after: edit.after, isDictionaryWord: dictionaryWord)
+                                                  after: edit.after, heardBefore: edit.heardBefore,
+                                                  heardAfter: edit.heardAfter, isDictionaryWord: dictionaryWord)
     }
 
     /// Learns what a meeting's word edits teach into the list Corrections shows when its review closes (`ReviewSession`
     /// `.learnCorrections`): phrases the list lacks are added, the others kept. Returns whether the list was written.
-    func learnReviewCorrections(_ learned: [Correction]) -> Bool {
-        changeCorrections { $0.learnKeepingExisting(learned) }
+    /// Learns what a meeting's review taught (`CorrectionList.learnReplacingTaught`, with what the meeting taught
+    /// before): returns what the list now holds of it, nil when the list could not be written.
+    func learnReviewCorrections(_ learned: [Correction], taught: [Correction]) -> [Correction]? {
+        var applied: [Correction] = []
+        guard changeCorrections({ applied = $0.learnReplacingTaught(learned, taught: taught) }) else { return nil }
+        return applied
     }
 
     /// A manual Add; one that resolves a declined swap also keeps the edit that swap came from, as Learn

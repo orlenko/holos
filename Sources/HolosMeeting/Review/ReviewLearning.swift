@@ -28,12 +28,17 @@ enum ReviewLearning {
         return record.corrections
     }
 
-    /// Adds `corrections` to what this meeting taught: read, merged, and written (atomically) under the meeting's speaker
-    /// lock, so two closes (another Voice is Local running on the same folder) cannot lose each other's entries.
+    /// Adds `corrections` to what this meeting taught, one value per heard phrase (a later lesson replaces the earlier
+    /// one for its phrase): read, merged, and written (atomically) under the meeting's speaker lock, so two closes
+    /// (another Voice is Local running on the same folder) cannot lose each other's entries.
     static func recordTaught(adding corrections: [Correction], session: URL) throws {
         try SessionArchive.withSpeakerLock(at: session) {
-            let taught = try Self.taught(session: session)
-            let merged = taught + untaught(corrections, taught: taught)
+            var merged = try Self.taught(session: session)
+            for correction in untaught(corrections, taught: merged) {
+                let key = CorrectionList.key(correction.heard)
+                merged.removeAll { CorrectionList.key($0.heard) == key }
+                merged.append(correction)
+            }
             try AtomicFile.writeJSON(Taught(version: 1, corrections: merged), to: SessionPaths.reviewLearned(session))
         }
     }
@@ -89,14 +94,33 @@ enum ReviewLearning {
                 let heard = TranscriptWordEdit.cleaned(written)
                 let shown = TranscriptWordEdit.cleaned(meant)
                 guard heard != shown else { continue }
-                let before = first > 0 && sameTurn(segment.id, first, first - 1)
-                    ? TranscriptWordEdit.shownText(of: segment, first: first - 1, end: first) : nil
-                let after = end < words.count && sameTurn(segment.id, end - 1, end)
-                    ? TranscriptWordEdit.shownText(of: segment, first: end, end: end + 1) : nil
-                edits.append(ReviewWordEdit(heard: heard, meant: shown, before: before, after: after))
+                let before = context(first - 1, beside: first, in: segment, words: words, sameTurn: sameTurn)
+                let after = context(end, beside: end - 1, in: segment, words: words, sameTurn: sameTurn)
+                edits.append(ReviewWordEdit(heard: heard, meant: shown, before: before?.shown, after: after?.shown,
+                                            heardBefore: before?.heard, heardAfter: after?.heard))
             }
         }
         return edits
+    }
+
+    /// Word `index` of `segment` as context beside the edited word `edited`, when it is shown in the same turn: its
+    /// shown text, and what the recognizer wrote there when a fix changed it (`heard`: nil when as shown). A word
+    /// under a fix (an automatic correction or term, a live correction) stands with its whole fix: "Claude" shown is
+    /// "cloud" heard, so a correction learned beside it matches the recognizer's text ("as cloud" → "ask Claude").
+    private static func context(_ index: Int, beside edited: Int, in segment: TranscriptSegment,
+                                words: [EffectiveWord],
+                                sameTurn: (String, Int, Int) -> Bool) -> (shown: String, heard: String?)? {
+        guard index >= 0, index < words.count, sameTurn(segment.id, edited, index) else { return nil }
+        if let fix = (segment.fixes ?? []).first(where: { $0.first <= index && index < $0.end }),
+           fix.kind != .reviewRevert,
+           (fix.first..<fix.end).allSatisfy({ sameTurn(segment.id, edited, $0) }),
+           let whole = TranscriptWordEdit.shownText(of: segment, first: fix.first, end: fix.end) {
+            let shown = TranscriptWordEdit.cleaned(whole)
+            let heard = TranscriptWordEdit.cleaned(fix.heard)
+            return (shown, heard == shown ? nil : heard)
+        }
+        guard let shown = TranscriptWordEdit.shownText(of: segment, first: index, end: index + 1) else { return nil }
+        return (shown, nil)
     }
 
     /// The corrections `edits` teach (`teach`: the app's rule, `TranscriptEditLearning`), in order, each heard phrase
