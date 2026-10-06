@@ -54,6 +54,8 @@ public struct SpeakerSessionSnapshot: Sendable {
     ///   `meetingInfoDamaged`, `recognitionUnreadable`, `journal`, `skippedEvents`) and reported by `diagnostics`.
     /// - With an incomplete edit journal (`EditJournal.isComplete` false) the recognition result is not read or
     ///   applied (`recognition` nil): no suggestion or automatic name is made on labels that may miss an edit.
+    /// - The projection hides the call's acoustic echo with `EchoMaskStore.usable` (the mask of the audio as it is
+    ///   now and of this analysis version; none when it is missing, out of date, damaged, or from a newer build).
     /// - `applyRecognition` false does the same for the whole meeting: the stored result is neither read nor
     ///   applied, so no suggestion or automatic name is shown or exported. Callers that read the people store pass
     ///   `rememberVoices` (`VoiceProfileService.recognitionAllowed`), which is the promise the People window makes
@@ -139,9 +141,11 @@ public struct SpeakerSessionSnapshot: Sendable {
                 log.error("Session \(manifest.id, privacy: .public): current transcript unusable: \(error.localizedDescription, privacy: .private)")
             }
         }
+        // A call's acoustic echo (§5.11) is hidden here, in the one view everything reads, never in stored runs.
         let projection = run.map {
             SpeakerProjection.make(run: $0, transcript: transcript, edits: journal.edits, recognition: recognition,
-                                   profileNames: profileNames)
+                                   profileNames: profileNames,
+                                   acousticEcho: EchoMaskStore.usable(session: session, manifest: manifest))
         }
         let timeline = try SessionTimelineReader.readTimeline(session: session)
         return SpeakerSessionSnapshot(

@@ -237,7 +237,7 @@ public enum MeetingVoiceMatcher {
 
     /// Whether a turn's voice counts (see the type's description).
     public static func usable(_ turn: ProjectedTurn) -> Bool {
-        turn.speakerID != nil && !turn.overlap && !turn.modified && !turn.excludedFromEnrollment
+        turn.speakerID != nil && !turn.overlap && !turn.modified && !turn.cutByEcho && !turn.excludedFromEnrollment
             && turn.start.isFinite && turn.end.isFinite
             && turn.end - turn.start >= VoiceEnrollment.minimumTurnSeconds - timeEpsilon
     }

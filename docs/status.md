@@ -195,18 +195,20 @@ thumbnail timeline, and a larger local-model benchmark are follow-ups.
   words stays. Acoustic echo (docs/meeting-design.md §5.11): post-processing also compares
   a call's microphone with the system audio (stage `echo`): it measures the echo delay (about
   46 ms on laptop speakers), predicts the microphone from the call audio, and marks each 16 ms
-  microphone frame as silence, echo, or local speech. A microphone word that is mostly echo
-  is left out too, with reason `acousticEcho`, while speech of your own or of people in the
-  room stays, also over the call. Headphones (no confident delay) and calls without system
-  audio change nothing. The result is saved in the meeting's `echo/` folder, keyed to its
-  audio, and reused by later relabels. On three real calls it removed about 91 % of the
-  leftover "Unknown" microphone words and cut the microphone turns from about 600 to about
-  115 per meeting, losing under 2.5 % of the user's own words; it takes about 2 s per hour of audio
-  (about 5 s with preparing both tracks).
-  Meetings labelled before it get it with `voiceislocal session echo-analyze <id>`, which
-  keeps the speakers and their names and turn edits (no new diarization, no transcript
-  change). Muting the echo in review playback and joining fragments into paragraphs are not
-  done yet. Nothing warns when a call plays on the laptop speakers: the `echoRisk`
+  microphone frame as silence, echo, or local speech. The result is saved in the meeting's
+  `echo/` folder, keyed to its audio. The speaker labels are not changed by it: the review
+  window, the transcript files, summaries and voice learning show them with the microphone
+  words that are mostly echo hidden (a turn cut by echo shows as pieces; editing a piece edits
+  its turn), while speech of your own or of people in the room stays, also over the call.
+  Headphones (no confident delay) and calls without system audio change nothing. On three real
+  calls it hid about 91 % of the leftover "Unknown" microphone words and cut the microphone
+  turns shown from about 600 to about 115 per meeting, hiding under 2.5 % of the user's own
+  words; it takes about 2 s per hour of audio (about 5 s with preparing both tracks). A
+  meeting whose analysis is missing (labelled before this version, or a pass that failed) gets
+  it from the next relabel or Recover, or at once with
+  `voiceislocal session echo-analyze <id>`; nothing stored besides `echo/` and the transcript
+  files changes. Muting the echo in review playback and joining fragments into paragraphs are
+  not done yet. Nothing warns when a call plays on the laptop speakers: the `echoRisk`
   warning, its output-route check, and the start panel's orange line were removed with
   the one meeting mode (below); the menu ignores an `echoRisk` left in `status.json` by an
   older recorder.

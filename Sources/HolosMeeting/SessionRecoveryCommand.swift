@@ -232,13 +232,6 @@ public enum SessionRecoveryCommand {
                 throw afterRecovery("its transcript cannot be read", error)
             }
         }
-        // Any meeting whose last post-processing still owes its echo analysis (§5.11: failed, or put off for disk
-        // space) is labelled again on its current transcript, whatever its status, so the analysis is retried.
-        if rebuild == nil, kept == nil, request.postProcess,
-           let current = try? SessionFiles.readableCurrentTranscriptID(session: session),
-           echoWorkPending(session, transcriptID: current) {
-            kept = current
-        }
         if request.postProcess, let transcriptID = rebuild?.transcriptID ?? kept {
             let unchanged = rebuild?.reused ?? true
             // Read after a new rebuild too: a postprocess.json or speaker head written by a newer Holos is refused
@@ -296,6 +289,25 @@ public enum SessionRecoveryCommand {
                 }
             }
         }
+        // A call's acoustic echo analysis that is still missing (§5.11, worked out from the files: a pass that failed,
+        // or a meeting from before it existed) is made once per Recover, unless post-processing just tried it.
+        if request.postProcess, record?.stages.contains(where: { $0.stage == .echo }) != true,
+           EchoAnalysisStage.needed(session: session), let manifest = try? SessionArchive.readManifest(at: session) {
+            do {
+                let stored = try EchoAnalysisStage.analyzeSession(session: session, manifest: manifest,
+                                                                  freeSpace: freeSpace, progress: progress)
+                parts.append(EchoAnalysisStage.message(stored.record))
+                let names = profiles.map { VoiceProfileService.profileNames(store: $0) } ?? [:]
+                _ = try SessionExports.regenerate(session: session, profileNames: names,
+                                                  applyRecognition: profiles.map {
+                                                      VoiceProfileService.recognitionAllowed(store: $0)
+                                                  } ?? true)
+            } catch let error where !(error is CancellationError) {
+                // Nothing was saved, so the next Recover (or echo-analyze, or relabel) tries again.
+                warnings.append("The microphone echo was not analysed: \(error.localizedDescription)")
+                exitCode = max(exitCode, 3)
+            }
+        }
         if recovery.needsAttention {
             warnings.append("Some saved audio still needs attention; see voiceislocal session inspect.")
             exitCode = 1
@@ -304,14 +316,6 @@ public enum SessionRecoveryCommand {
         let finalStatus = (try? SessionArchive.readManifest(at: session))?.status
         return Outcome(recovery: recovery, status: finalStatus, rebuild: rebuild, postProcessing: record,
                        summary: parts.joined(separator: " "), warnings: warnings, exitCode: exitCode)
-    }
-
-    /// Whether the last post-processing record, of `transcriptID`, has an echo stage that did not succeed. False when
-    /// there is no readable record.
-    static func echoWorkPending(_ session: URL, transcriptID: String) -> Bool {
-        guard let record = try? SessionFiles.postProcessingRecord(session: session),
-              record.transcriptID == transcriptID else { return false }
-        return record.stages.contains { $0.stage == .echo && $0.result != .succeeded }
     }
 
     /// "N unreadable journal lines were skipped." when N > 0.
@@ -377,12 +381,8 @@ public enum SessionRecoveryCommand {
             let message = saved.problems.map(\.localizedDescription).joined(separator: " ")
             log.error("Speaker files are unusable and will be replaced: \(message, privacy: .private)")
         }
-        // An echo analysis that failed or could not run (§5.11; no disk space) leaves the record `succeeded`, as the
-        // labels were still made, but they keep the call's echo: they are not current, so Recover runs
-        // post-processing again and the analysis is retried. The stage is recorded only when it ran or was owed.
         guard let record = saved.record,
               record.state == .succeeded || (record.state == .partial && speakerStagesSettled(record)),
-              !record.stages.contains(where: { $0.stage == .echo && $0.result != .succeeded }),
               record.transcriptID == transcriptID else {
             return nil
         }
@@ -416,8 +416,9 @@ public enum SessionRecoveryCommand {
             case .recognize:
                 return outcome.result != .failed
             case .echo:
-                // Recorded only when the analysis ran; a failure (a render, disk space) is tried again.
-                return outcome.result == .succeeded
+                // Informational (§5.11): whether the analysis is still needed is read from the meeting's files, not
+                // from this record (`EchoAnalysisStage.needed`), and Recover makes it itself.
+                return true
             case .render, .diarize, .align:
                 return outcome.result == .succeeded
                     || (outcome.result == .skipped && outcome.message.map(unchangedSkips.contains) == true)

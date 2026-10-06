@@ -49,9 +49,23 @@ public struct ProjectedSpeaker: Sendable, Equatable, Identifiable {
 }
 
 /// A turn after the edit journal is applied. Text and timing stay in the transcript; spans reference words.
+///
+/// With an acoustic echo mask (docs/meeting-design.md §5.11), a turn whose words the mask partly calls echo is shown
+/// as pieces: the runs of words between the echo. The first piece keeps the turn's ID, the others are
+/// "<turnID>~2", "<turnID>~3", … in word order; every piece names the turn it comes from (`sourceTurnID`). Edits act
+/// on that turn (`SpeakerProjection.storedAction`): reassigning a piece reassigns the whole turn (its echo words are
+/// hidden anyway), and splitting a piece splits the turn at the given word (at the piece's first word, the piece
+/// becomes a turn of its own).
 public struct ProjectedTurn: Sendable, Equatable, Identifiable {
-    /// The run's "T<n>", or "<parent>/<editID>" for the second part of a split.
+    /// The run's "T<n>", or "<parent>/<editID>" for the second part of a split; a later piece of a turn cut by echo
+    /// adds "~<n>".
     public let id: String
+    /// The turn in the run (with the journal applied) this one shows: `id`, or for a piece of a turn cut by echo,
+    /// that turn's ID. Edits always name it.
+    public let sourceTurnID: String
+    /// Echo was taken out of the turn: this is one of its pieces. Voice learning and voice matching leave such turns
+    /// out, since the turn's voice data covers its echo too.
+    public let cutByEcho: Bool
     public let track: String
     public let start: Double
     public let end: Double
@@ -75,8 +89,9 @@ public struct ProjectedTurn: Sendable, Equatable, Identifiable {
     public init(id: String, track: String, start: Double, end: Double, speakerID: String?, clusterID: String?,
                 spans: [WordSpan], overlap: Bool, otherClusters: [String], assignmentScore: Double,
                 timing: WordTimingQuality, reassigned: Bool, modified: Bool, excludedFromEnrollment: Bool,
-                uncertain: Bool) {
-        self.id = id; self.track = track; self.start = start; self.end = end; self.speakerID = speakerID
+                uncertain: Bool, sourceTurnID: String? = nil, cutByEcho: Bool = false) {
+        self.id = id; self.sourceTurnID = sourceTurnID ?? id; self.cutByEcho = cutByEcho
+        self.track = track; self.start = start; self.end = end; self.speakerID = speakerID
         self.clusterID = clusterID; self.spans = spans; self.overlap = overlap; self.otherClusters = otherClusters
         self.assignmentScore = assignmentScore; self.timing = timing; self.reassigned = reassigned
         self.modified = modified; self.excludedFromEnrollment = excludedFromEnrollment; self.uncertain = uncertain
@@ -146,12 +161,21 @@ public struct SpeakerProjection: Sendable, Equatable {
     ///    start with "user:", …). Stale edits change nothing.
     /// 5. Derive names and provenance: explicit name → `userRenamed`; linked profile → `userConfirmed`; automatic
     ///    likely match not rejected → `recognized`; channel → `channelAssumption`; else `diarizer`.
+    /// 6. With `acousticEcho` (a call's mask, docs/meeting-design.md §5.11): the microphone words it flags
+    ///    (`EchoFilter.acousticEchoSpans`, not judging words the run already dropped) are in no turn. A turn that loses
+    ///    some is shown as pieces (`ProjectedTurn`); one that loses all is not shown. A diarized microphone cluster
+    ///    with at least `EchoFilter.echoClusterShare` of the words of its machine turns flagged is echo itself: turns
+    ///    still given to its speaker show unknown speaker, and no turn names it among its overlaps, unless the user
+    ///    named or linked that speaker (their decision stands). Edits never see any of this: they apply to the run's
+    ///    turns in steps 1–4, so the stored journal keeps naming stored turns whatever mask is shown.
     ///
-    /// Listed speakers: every speaker with at least one turn, plus speakers created by `newSpeaker`.
+    /// Listed speakers: every speaker with at least one turn shown, plus speakers created by `newSpeaker`.
     /// `recognition` matches whose profileID is not in `profileNames` (forgotten people) are ignored.
     public static func make(run: DiarizationRun, transcript: Transcript, edits: [SpeakerEdit],
-                            recognition: RecognitionResult?, profileNames: [String: String]) -> SpeakerProjection {
-        let context = Context(run: run, transcript: transcript, recognition: recognition, profileNames: profileNames)
+                            recognition: RecognitionResult?, profileNames: [String: String],
+                            acousticEcho: AcousticEchoMask? = nil) -> SpeakerProjection {
+        let context = Context(run: run, transcript: transcript, recognition: recognition, profileNames: profileNames,
+                              acousticEcho: acousticEcho)
         var journal: [JournalEntry] = []
         var otherRunEditCount = 0
         for edit in edits {
@@ -198,14 +222,44 @@ public struct SpeakerProjection: Sendable, Equatable {
     /// view that has not seen another window split one of its turns is refused rather than moving only the part
     /// that kept the turn's ID.
     public func fingerprint(for action: SpeakerEditAction) -> String? {
-        state.fingerprint(for: action)
+        state.fingerprint(for: storedAction(action))
     }
+
+    /// `action` naming the run's turns: a piece of a turn cut by echo (`ProjectedTurn.sourceTurnID`) becomes that
+    /// turn, once per action. Every edit is journalled this way, so the journal never depends on the mask shown.
+    /// `fingerprint(for:)` and `applying(_:editID:)` take either form.
+    public func storedAction(_ action: SpeakerEditAction) -> SpeakerEditAction {
+        guard turns.contains(where: { $0.id != $0.sourceTurnID }) else { return action }
+        var source: [String: String] = [:]
+        for turn in turns where turn.id != turn.sourceTurnID { source[turn.id] = turn.sourceTurnID }
+        func stored(_ turnIDs: [String]) -> [String] {
+            var seen = Set<String>()
+            return turnIDs.map { source[$0] ?? $0 }.filter { seen.insert($0).inserted }
+        }
+        switch action {
+        case .reassignTurns(let turnIDs, let to):
+            return .reassignTurns(turnIDs: stored(turnIDs), to: to)
+        case .newSpeaker(let speakerID, let name, let turnIDs):
+            return .newSpeaker(speakerID: speakerID, name: name, turnIDs: stored(turnIDs))
+        case .excludeFromEnrollment(let turnIDs):
+            return .excludeFromEnrollment(turnIDs: stored(turnIDs))
+        case .splitTurn(let turnID, let word):
+            return .splitTurn(turnID: source[turnID] ?? turnID, at: word)
+        case .rename, .linkProfile, .rejectProfile, .merge, .revert:
+            return action
+        }
+    }
+
+    /// The mask this projection hides echo with, if any (`make(acousticEcho:)`).
+    public var acousticEcho: AcousticEchoMask? { context.acousticEcho }
 
     /// `self` with one more applied edit, for editor batches and optimistic UI updates. The edit carries
     /// `fingerprint(for: action)` as its expected value and no batchID, so the result equals `make` over the
     /// journal with that line appended. An action that is not valid on `self` (a missing speaker or turn, …) is
-    /// recorded in `staleEdits` and changes nothing.
+    /// recorded in `staleEdits` and changes nothing. An action naming a piece of a turn cut by echo acts on that turn
+    /// (`storedAction`).
     public func applying(_ action: SpeakerEditAction, editID: String) -> SpeakerProjection {
+        let action = storedAction(action)
         let entry = JournalEntry(id: editID, action: action, expected: fingerprint(for: action), batchID: nil)
         // A revert changes which earlier lines apply, and a repeated edit ID may already be reverted: replay those.
         var needsReplay = journal.contains { $0.id == editID }
@@ -392,11 +446,58 @@ extension SpeakerProjection {
         let matches: [String: [SpeakerMatch]]
         /// Recognition's merge suggestions for known profiles.
         let mergeSuggestions: [MergeSuggestion]
+        /// The acoustic echo mask shown (step 6), the microphone words it flags, and the diarized microphone clusters
+        /// that are mostly echo by the words of their machine turns.
+        let acousticEcho: AcousticEchoMask?
+        let echoWords: Set<WordRef>
+        let echoClusters: Set<String>
+        /// Effective words per segment, with a mask (pieces are cut within them); empty without.
+        let wordCounts: [String: Int]
 
         init(run: DiarizationRun, transcript: Transcript, recognition: RecognitionResult?,
-             profileNames: [String: String]) {
+             profileNames: [String: String], acousticEcho: AcousticEchoMask? = nil) {
             self.run = run
             self.transcript = transcript
+            self.acousticEcho = acousticEcho
+            if let acousticEcho {
+                // Spans come from files: only words that exist are expanded (a span to Int.max is not walked).
+                var counts: [String: Int] = [:]
+                for segment in transcript.segments where counts[segment.id] == nil {
+                    counts[segment.id] = WordTiming.effectiveWords(of: segment).count
+                }
+                func words(_ spans: [WordSpan]) -> [WordRef] {
+                    spans.flatMap { span -> [WordRef] in
+                        guard let count = counts[span.segmentID] else { return [] }
+                        let first = max(0, span.first)
+                        let end = min(count, span.end)
+                        guard first < end else { return [] }
+                        return (first..<end).map { WordRef(segmentID: span.segmentID, word: $0) }
+                    }
+                }
+                let dropped = Set(words(run.droppedWords.flatMap(\.spans)))
+                let echo = Set(words(EchoFilter.acousticEchoSpans(transcript: transcript, mask: acousticEcho,
+                                                                  excluding: dropped)))
+                var labelled: [String: Int] = [:]
+                var echoed: [String: Int] = [:]
+                for turn in run.turns where turn.track == EchoFilter.microphoneTrack {
+                    guard let cluster = turn.clusterID else { continue }
+                    for word in words(turn.spans) {
+                        labelled[cluster, default: 0] += 1
+                        if echo.contains(word) { echoed[cluster, default: 0] += 1 }
+                    }
+                }
+                echoWords = echo
+                // The tolerance keeps an exact share (3 of 5 is 60 %) from missing the threshold by rounding.
+                echoClusters = Set(echoed.keys.filter { cluster in
+                    Double(echoed[cluster] ?? 0)
+                        >= EchoFilter.echoClusterShare * Double(labelled[cluster] ?? 0) - 1e-9
+                })
+                wordCounts = counts
+            } else {
+                echoWords = []
+                echoClusters = []
+                wordCounts = [:]
+            }
             let known = profileNames.filter { !$0.value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
             self.profileNames = known
             var matches: [String: [SpeakerMatch]] = [:]
@@ -755,27 +856,49 @@ extension SpeakerProjection {
             var talk: [String: Double] = [:]
             var projectedTurns: [ProjectedTurn] = []
             projectedTurns.reserveCapacity(turns.count)
-            for index in turns.indices.sorted(by: turnPrecedes) {
-                let turn = turns[index]
-                if let speakerID = turn.speakerID {
-                    turnCounts[speakerID, default: 0] += 1
-                    talk[speakerID, default: 0] += max(0, turn.end - turn.start)
+            // Step 6: echo clusters, unless the user named or linked the speaker that holds them.
+            let hidden = context.echoClusters.filter { cluster in
+                !speakers.values.contains {
+                    $0.clusterIDs.contains(cluster) && ($0.explicitName != nil || $0.profileID != nil)
                 }
+            }
+            var cut = false
+            for index in turns.indices.sorted(by: turnPrecedes) {
+                let source = turns[index]
                 let reassigned: Bool
-                if turn.speakerID == turn.machineSpeakerID {
+                if source.speakerID == source.machineSpeakerID {
                     reassigned = false
-                } else if let clusterID = turn.clusterID, let speakerID = turn.speakerID,
+                } else if let clusterID = source.clusterID, let speakerID = source.speakerID,
                           speakers[speakerID]?.clusterIDs.contains(clusterID) == true {
                     reassigned = false
                 } else {
                     reassigned = true
                 }
-                projectedTurns.append(ProjectedTurn(
-                    id: turn.id, track: turn.track, start: turn.start, end: turn.end, speakerID: turn.speakerID,
-                    clusterID: turn.clusterID, spans: turn.spans, overlap: turn.overlap,
-                    otherClusters: turn.otherClusters, assignmentScore: turn.assignmentScore, timing: turn.timing,
-                    reassigned: reassigned, modified: turn.modified, excludedFromEnrollment: turn.excluded,
-                    uncertain: turn.assignmentScore < 0.6 || turn.overlap || turn.speakerID == nil))
+                let parts = shownParts(of: source, context: context, hidden: hidden)
+                if parts.count != 1 || parts.first?.spans != source.spans { cut = true }
+                for turn in parts {
+                    if let speakerID = turn.speakerID {
+                        turnCounts[speakerID, default: 0] += 1
+                        talk[speakerID, default: 0] += max(0, turn.end - turn.start)
+                    }
+                    projectedTurns.append(ProjectedTurn(
+                        id: turn.id, track: turn.track, start: turn.start, end: turn.end, speakerID: turn.speakerID,
+                        clusterID: turn.clusterID, spans: turn.spans, overlap: turn.overlap,
+                        otherClusters: turn.otherClusters, assignmentScore: turn.assignmentScore,
+                        timing: turn.timing, reassigned: reassigned, modified: turn.modified,
+                        excludedFromEnrollment: turn.excluded,
+                        uncertain: turn.assignmentScore < 0.6 || turn.overlap || turn.speakerID == nil,
+                        sourceTurnID: source.id, cutByEcho: turn.spans != source.spans))
+                }
+            }
+            // A later piece can start after the next turn: keep the (start, track, id) order.
+            if cut {
+                projectedTurns = projectedTurns.enumerated().sorted { left, right in
+                    let a = left.element
+                    let b = right.element
+                    if let order = TurnOrder.precedes(a.start, a.track, b.start, b.track) { return order }
+                    return left.offset < right.offset
+                }.map(\.element)
             }
 
             let listed = speakers.values
@@ -823,6 +946,63 @@ extension SpeakerProjection {
             let merges = mergeSuggestions(listed: projectedSpeakers, effectiveProfiles: effectiveProfiles,
                                           context: context)
             return (projectedSpeakers, projectedTurns, merges)
+        }
+
+        /// How `turn` shows with the mask of `context` (step 6): as it is; or its runs of words between flagged echo
+        /// words (the first keeps its ID, the others get "~2", "~3", …), each taking the time and timing quality of its
+        /// words; or not at all when every word is echo. A turn of a cluster in `hidden` still given to the speaker the
+        /// run gave it shows unknown speaker; no shown turn names a hidden cluster among its overlaps.
+        private func shownParts(of turn: TurnState, context: Context, hidden: Set<String>) -> [TurnState] {
+            var shown = turn
+            if !hidden.isEmpty {
+                if let cluster = turn.clusterID, hidden.contains(cluster), turn.speakerID == turn.machineSpeakerID {
+                    shown.speakerID = nil
+                }
+                let others = turn.otherClusters.filter { !hidden.contains($0) }
+                if others != turn.otherClusters {
+                    shown = TurnState(
+                        id: shown.id, track: shown.track, start: shown.start, end: shown.end,
+                        speakerID: shown.speakerID, machineSpeakerID: shown.machineSpeakerID,
+                        clusterID: shown.clusterID, spans: shown.spans, overlap: shown.overlap && !others.isEmpty,
+                        otherClusters: others, assignmentScore: shown.assignmentScore, timing: shown.timing,
+                        modified: shown.modified, excluded: shown.excluded)
+                }
+            }
+            guard !context.echoWords.isEmpty, turn.track == EchoFilter.microphoneTrack else { return [shown] }
+            var pieces: [[WordRef]] = [[]]
+            var removed = false
+            for span in turn.spans {
+                guard let count = context.wordCounts[span.segmentID] else { continue }
+                for word in max(0, span.first)..<max(max(0, span.first), min(count, span.end)) {
+                    let ref = WordRef(segmentID: span.segmentID, word: word)
+                    if context.echoWords.contains(ref) {
+                        removed = true
+                        if !(pieces.last?.isEmpty ?? true) { pieces.append([]) }
+                    } else {
+                        pieces[pieces.count - 1].append(ref)
+                    }
+                }
+            }
+            guard removed else { return [shown] }
+            return pieces.filter { !$0.isEmpty }.enumerated().map { index, words in
+                var piece = shown
+                piece.id = index == 0 ? turn.id : "\(turn.id)~\(index + 1)"
+                var spans: [WordSpan] = []
+                for ref in words {
+                    if let last = spans.last, last.segmentID == ref.segmentID, last.end == ref.word {
+                        spans[spans.count - 1].end += 1
+                    } else {
+                        spans.append(WordSpan(segmentID: ref.segmentID, first: ref.word, end: ref.word + 1))
+                    }
+                }
+                piece.spans = spans
+                if let timing = SpanWords(spans, in: context.transcript) {
+                    piece.start = timing.start
+                    piece.end = timing.end
+                    piece.timing = timing.timing
+                }
+                return piece
+            }
         }
 
         /// "Me" (or the run's name) for the channel speaker, else "Speaker N".

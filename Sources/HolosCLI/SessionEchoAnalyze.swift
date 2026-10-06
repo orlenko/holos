@@ -10,14 +10,14 @@ extension Session {
     struct EchoAnalyze: AsyncParsableCommand {
         static let configuration = CommandConfiguration(
             commandName: "echo-analyze",
-            abstract: "Find the call's echo in a call's microphone audio and relabel the speakers without it.",
+            abstract: "Find the call's echo in a call's microphone audio and hide it from the speaker labels.",
             discussion: """
                 For a call recorded on laptop speakers, the microphone also records the other people a moment \
-                after the system audio. This compares the two tracks, saves which moments of the microphone are \
-                echo in the meeting's echo/ folder, and rebuilds the speaker labels without the microphone words that \
-                are echo. The speakers are not labelled again: names, links and turn changes carry over, and the \
-                transcript and its word fixes are not touched. Meetings labelled after a recording already get this. \
-                Exits 0 when done, also when there is nothing to change.
+                after the system audio. This compares the two tracks and saves which moments of the microphone are \
+                echo in the meeting's echo/ folder; the speaker labels, the review window and the transcript files \
+                then leave those microphone words out. Nothing else changes: the speaker labels, their edits, the \
+                transcript and its word fixes stay as they are. Meetings post-processed after this version get it \
+                on their own. Exits 0 when done, also when there is nothing to change.
                 """)
 
         @Argument(help: "Path to a finished .holos folder, or a session ID.") var path: String

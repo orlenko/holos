@@ -120,6 +120,18 @@ public enum EchoMaskStore {
         return Stored(record: checked, mask: mask)
     }
 
+    /// The mask the labels are shown with (`SpeakerSessionSnapshot`): the stored mask of the audio as it is now and of
+    /// this analysis version; nil without one, whatever the reason (none, out of date, damaged, written by a newer
+    /// build, or not readable now). The labels are then shown without hiding acoustic echo; never an error.
+    public static func usable(session: URL, manifest: SessionManifest) -> AcousticEchoMask? {
+        do {
+            return try current(session: session, manifest: manifest)?.mask
+        } catch {
+            log.error("Session \(manifest.id, privacy: .public): echo analysis not used: \(error.localizedDescription, privacy: .private)")
+            return nil
+        }
+    }
+
     /// Writes the frames file (or removes a stale one), then the record, which names the frames by their hash.
     /// Callers hold the session's processing lease.
     static func write(_ record: EchoMaskRecord, mask: AcousticEchoMask?, session: URL) throws {
@@ -161,6 +173,52 @@ enum EchoAnalysisStage {
             if case .current(let stored) = self { return stored.mask }
             return nil
         }
+    }
+
+    /// Whether the meeting still needs its analysis, worked out from its files alone (nothing records pending work):
+    /// a call with microphone and system audio, its audio kept, and no saved analysis of that audio and this analysis
+    /// version. Any saved verdict counts as done (`noEcho`, `noSystemAudio` too), and so does one a newer build saved
+    /// (it is left alone). False when the files that decide it cannot be read.
+    static func needed(session: URL) -> Bool {
+        guard let manifest = try? SessionArchive.readManifest(at: session),
+              let meeting = try? SessionFiles.meetingInfo(session: session, manifest: manifest),
+              applies(meeting: meeting, manifest: manifest), !renderTracks(manifest: manifest).isEmpty,
+              (try? SessionFiles.audioDeleted(session: session, sessionID: manifest.id)) == false else { return false }
+        if case .missing = saved(session: session, manifest: manifest) { return true }
+        return false
+    }
+
+    /// Renders both tracks to `derived/`, analyses them and saves the result, deleting `derived/` before and after:
+    /// for a pass with no renders of its own (`voiceislocal session echo-analyze`, Recover). Caller holds the
+    /// processing lease. Throws when a track cannot be rendered or there is too little disk space; nothing is saved
+    /// then, so the analysis is still needed and the next pass tries again.
+    static func analyzeSession(session: URL, manifest: SessionManifest, freeSpace: any FreeSpaceProvider,
+                               progress: @escaping @Sendable (String) -> Void = { _ in }) throws -> EchoMaskStore.Stored {
+        let tracks = renderTracks(manifest: manifest)
+        guard !tracks.isEmpty else {
+            return try analyze(session: session, manifest: manifest, microphone: nil, system: nil)
+        }
+        try AtomicFile.removeTree(["derived"], in: session)
+        defer {
+            do {
+                try AtomicFile.removeTree(["derived"], in: session)
+            } catch {
+                log.error("Session \(manifest.id, privacy: .public): cannot delete derived/: \(error.localizedDescription, privacy: .private)")
+            }
+        }
+        let seconds = tracks.reduce(0) { $0 + TrackRenderer.renderedSeconds(manifest: manifest, track: $1) }
+        if let free = try? freeSpace.availableBytes(at: SessionPaths.derived(session)),
+           !SpeakerAnalysis.renderAllowed(freeBytes: free, renderSeconds: seconds) {
+            throw HolosError.unavailable("Not enough disk space to prepare the audio. Free some space, then try again.")
+        }
+        var renders: [String: RenderedTrack] = [:]
+        for track in tracks {
+            progress(track == "system" ? "Preparing the system audio…" : "Preparing the microphone audio…")
+            renders[track] = try TrackRenderer.render(session: session, manifest: manifest, track: track,
+                                                      to: SessionPaths.render(track: track, in: session))
+        }
+        progress("Finding microphone echo…")
+        return try analyze(session: session, manifest: manifest, microphone: renders["mic"], system: renders["system"])
     }
 
     /// The stored analysis, as the post-processor decides on it. A file that cannot be read now counts as missing
@@ -222,7 +280,7 @@ enum EchoAnalysisStage {
             let share = Int((Double(frames.echo) / (Double(frames.echo) + Double(frames.local)) * 100).rounded())
             return "Microphone echo found, \(delay) behind the call: \(share) % of the microphone's sound is echo."
         case .noEcho:
-            return "The microphone did not pick up the call (headphones?), so nothing was taken out as echo."
+            return "The microphone did not pick up the call (headphones?), so nothing is hidden as echo."
         case .noSystemAudio:
             return "The meeting has no system audio, so the microphone has no echo of it."
         }

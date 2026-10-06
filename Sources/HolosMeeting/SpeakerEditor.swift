@@ -136,7 +136,9 @@ public enum SpeakerEditor {
             let at = Date()
             var edits: [SpeakerEdit] = []
             edits.reserveCapacity(actions.count)
-            for action in actions.map(cleaned) {
+            // A piece of a turn the view cut at acoustic echo is journalled as that turn (§5.11), so the journal never
+            // depends on the mask the view was shown with.
+            for action in actions.map(cleaned).map(view.storedAction) {
                 let expected = viewState.fingerprint(for: action)
                 guard expected == current.fingerprint(for: action) else { throw refusedStaleView(base.run) }
                 if case .revert(let target) = action,
@@ -378,8 +380,10 @@ public enum SpeakerEditor {
         }
         let files = try preloaded.get()
         let journal = try SessionSpeakerStore.readEdits(session: session)
+        // With the view's echo mask, so what a batch changes is compared on the turns the view shows.
         let projection = SpeakerProjection.make(run: files.run, transcript: files.transcript, edits: journal.edits,
-                                                recognition: nil, profileNames: profileNames)
+                                                recognition: nil, profileNames: profileNames,
+                                                acousticEcho: view.acousticEcho)
         return Base(run: files.run, journal: journal, projection: projection)
     }
 

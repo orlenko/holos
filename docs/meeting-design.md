@@ -2872,9 +2872,9 @@ Stages (PR7b):
 | 2 | — | track policies from `meeting.json` (or `MeetingInfo.inferred`), with `options.othersInRoom` overriding: a track is `diarized` if it is `system`, or the mode is `inPerson`, or others are in the room; otherwise `channel("mic:me", "Me")`; tracks without words are `skipped` | — |
 | 3 | — | if a head run exists, was built from the current transcript, has applied edits, and `!force`: skip 4–7 with "Speaker labels were edited; relabel with --force (names carry over)". If the head was built from another transcript, relabel. | stages `skipped` |
 | 4 | `render` | skip with "Not enough disk space to label speakers. Free some space, then use Label Speakers." when `stopReason == .diskLow` or `DiskPolicy.renderCheck` fails. Otherwise `TrackRenderer.render` each diarized track to `derived/<track>-16k.caf`, compressing long gaps (below) | failed → skip 5–7 |
-| 4b | `echo` | calls with microphone and system audio and no current echo analysis (§5.11), whether or not a track is diarized, and for edited labels stage 3 keeps (applied to their own turns, edits carried); after a `diskLow` stop it is recorded as skipped and Recover retries it; not after Delete Audio: renders the track stage 4 did not (the microphone of a call labelled as "Me"), then `EchoAnalysis` on the two renders, saved to `echo/` (`EchoMaskStore`); a call without system audio saves `noSystemAudio` and records no stage; a current analysis is reused and records no stage | failed (also a render or disk space for it) → recorded; 5–7 run without the mask; Recover runs post-processing again |
+| 4b | `echo` | when the analysis is needed (§5.11, `EchoAnalysisStage.needed`: a call with microphone and system audio and no saved analysis of that audio), whether or not a track is diarized, also for edited labels stage 3 keeps; not after a `diskLow` stop: renders the track stage 4 did not (the microphone of a call labelled as "Me"), then `EchoAnalysis` on the two renders, saved to `echo/` (`EchoMaskStore`). The run is built without it; the labels' view hides the echo | failed → recorded for reading only; nothing saved, so the next pass (or Recover) tries again |
 | 5 | `diarize` | `nil` diarizer → `skipped`, "Speaker models are not installed. Install them from Setup, or run holos setup --speakers." Otherwise `diarizer.diarize` each rendered track, **one track at a time**, then map times to the session timeline with the render's time map. Speaker hint: `options.speakers`, else `meeting.json` `expectedSpeakers` n as `minimum: n − 1, maximum: n + 1` (or the form PR7c found best) | failed → skip 6–7 |
-| 6 | `align` | `SpeakerRunBuilder.build` (PR5a, pure; with a call's acoustic echo mask, §5.11) → run (no embeddings) plus in-memory voice data. Under the speaker lock: `writeRun`; `writeHead`; `writeVoiceData` only with `forceVoiceData` (evaluation; never for normal meetings); append carry-over edits (§4.9) when the previous head had names, links, or rejections. Release the lock. | failed → skip 7 |
+| 6 | `align` | `SpeakerRunBuilder.build` (PR5a, pure) → run (no embeddings) plus in-memory voice data. Under the speaker lock: `writeRun`; `writeHead`; `writeVoiceData` only with `forceVoiceData` (evaluation; never for normal meetings); append carry-over edits (§4.9) when the previous head had names, links, or rejections. Release the lock. | failed → skip 7 |
 | 7 | `recognize` | PR10: when "Remember voices" is on and some profile has samples: `SpeakerRecognizer.recognize` on the in-memory centroids → `writeRecognition` (distances only) | failed → continue |
 | 8 | `export` | apply live speaker-name hints to the aligned speaker at their words/time unless a later explicit rename governs it; `SessionExports.regenerate` (takes the speaker lock itself; stage 6 has released it) | failed → state `failed` |
 | 9 | — | delete `derived/` whatever happened (unless `keepDerived`); write the final record; release the lease if `run` acquired it | — |
@@ -7899,65 +7899,61 @@ genuinely local (the user, or people in the room) stays even while the call play
   and analysed again, but one of a newer schema or a newer analysis version (checked before
   the record is decoded) is refused and left alone, never overwritten. It is in the
   meeting folder because `derived/` is deleted after every run; Delete Audio leaves it (it
-  holds no speech).
-- *Post-processing.* Stage 4b (§4.7) for calls, also when no track needs diarization (a
-  microphone labelled as "Me" and a system track without words). `SpeakerRunBuilder.build(acousticEcho:)`
-  drops microphone words that either filter flags: the text filter's under reason `echo`, the
-  rest under `acousticEcho` (`EchoFilter.acousticReason`), and both count toward
-  `echoClusterShare`. Without a mask the run is unchanged. `LiveTranscript` keeps the text
-  filter only. A failed echo stage, or one put off after a `diskLow` stop (recorded as
-  skipped), leaves the record `succeeded` (the labels were made) but not current for Recover
-  (`SessionRecoveryCommand.currentLabels`), which runs it again, whatever the meeting's status
-  (`echoWorkPending` admits the current transcript of a complete meeting). When edited labels
-  are kept (stage 3, or an edit landing while the pass runs, so stage 6 cannot publish), a
-  call's echo still leaves them: the analysis is made if missing and applied to those labels
-  as `echo-analyze` does (below), and the head it publishes is recorded like stage 6's; a
-  failure there is a failed `echo` stage too.
-  The summary counts in `mask.json` are recomputed from the frames when read.
+  holds no speech). The summary counts in it are recomputed from the frames when read.
+- *Where it applies: the view only.* Stored runs never hold acoustic echo: they keep the text
+  filter's drops exactly as before, and nothing that writes runs or edits knows the mask.
+  `SpeakerSessionSnapshot.load` reads the mask (`EchoMaskStore.usable`: none when it is
+  missing, out of date, damaged or from a newer build) and `SpeakerProjection.make(acousticEcho:)`
+  hides the microphone words it flags, after the edit journal is applied to the stored turns
+  (§4.9 step 6). Review, exports, summaries, search, live speaker hints and voice learning all
+  read that projection; voice learning and voice matching leave out turns cut by echo
+  (`ProjectedTurn.cutByEcho`), since a turn's voice data covers its echo. Not through it, on
+  purpose: relabel decisions and name carry-over (`SpeakerAnalysis.headState`, matched against
+  a new run that holds the echo too), forget clean-up (it must reach every word a person owns)
+  and evaluation scoring (diarization quality).
+- *Pieces.* A turn that loses some words is shown as pieces, the runs of words between the
+  echo: the first keeps the turn's ID, the others are "<turnID>~2", "~3", … in word order, and
+  each names its turn (`sourceTurnID`). A turn that loses every word is not shown, and a speaker
+  with no turn shown is not listed. Edits on a piece act on its turn
+  (`SpeakerProjection.storedAction`, applied by `SpeakerEditor` and `applying`): reassigning a
+  piece reassigns the whole turn (its echo words are hidden anyway); splitting a piece splits
+  the turn at the given word, so splitting at a piece's first word makes the piece a turn of
+  its own. The journal only ever names stored turns, so it does not depend on the mask shown.
+- *Echo clusters.* A diarized microphone cluster with at least `echoClusterShare` of the words
+  of its machine turns flagged is echo itself: turns still given to its speaker show unknown
+  speaker, and no turn names it among its overlaps, unless the user named or linked that
+  speaker. (The text filter's own cluster rule still runs when the run is built.)
+- *Analysis needed* is worked out from the files, never recorded as pending work: a call with
+  microphone and system audio, its audio kept, and no saved analysis of that audio and this
+  version (`EchoAnalysisStage.needed`); any saved verdict counts as done, and so does one a
+  newer build saved. Post-processing makes it in stage 4b when needed (also for edited labels
+  stage 3 keeps, and when no track is diarized); its `echo` stage outcome is for reading only.
+  A failure saves nothing, so the next pass tries again. Recover makes a missing analysis once
+  per run (unless its post-processing just tried) and rewrites the transcript files.
 - *Existing meetings.* `voiceislocal session echo-analyze <id|path> [--force] [--json]`
-  (`SessionEchoAnalyzeCommand`) saves the analysis, then takes the echo words out of the head
-  run's own turns (`SpeakerRunBuilder.rebuild`: no diarizer pass and no new alignment, so
-  every word keeps the speaker the run gives it, including ownership a word-fix retarget
-  carried by provenance, and every cluster and speaker ID stays; turns are cut where echo was
-  removed, and the echo-cluster rule applies to clusters that lose words; text-echo drops stay,
-  while earlier `acousticEcho` drops are judged again, and words the new mask keeps come back
-  in turns of their own with the speaker the stored diarization gives them, so a no-echo
-  verdict gives back everything an older mask took, never a word a turn already holds; every
-  speaker of the run stays in it, so edits naming a speaker whose own turns were all echo
-  still apply; spans read from the run are kept within their segments' words; nothing to
-  change changes nothing) and
-  replays the head's edits on it (`SpeakerEditReplay`): names, links,
-  rejections and merges as they are; reassign and new-speaker edits on the new turns holding
-  exactly their words (a speaker made only on echo is still made, without turns, when a later
-  edit names it); splits at the same word; exclusions on every turn holding their words.
-  Edits whose words are all echo now, or whose turns now share a turn with other words, are
-  dropped and counted. The transcript, word fixes and the name are untouched; the exports are
-  rewritten, also when the labels were already up to date (a run that published them may have
-  failed to write the files). The publish happens under the speaker lock only if the head and the edit journal
-  are exactly as the edits were carried from (same head, journal complete, same lines, same
-  byte length). Voice suggestions are copied to the new run under the speaker lock and then
-  `profiles.lock` (the §1.7 order, as `RecognizeStage`), only while recognition may be used
-  (`VoiceProfileService.recognitionAllowed`), and without people the store no longer holds,
-  so a forget never comes back through the copy. `session diarize --force` would
-  also pick the mask up, but it diarizes again and carries only speaker-level edits.
+  (`SessionEchoAnalyzeCommand`) saves the analysis and rewrites the transcript files through
+  the projection. Nothing else changes: speaker labels, edits, the transcript and its word
+  fixes stay as they are on disk.
 - *Playback (later).* `AcousticEchoMask.localSpeechIntervals()` gives the microphone's own
   speech: local frames, gaps under 300 ms merged, padded 64 ms before and 200 ms after.
 
 Validation. Synthetic tests (`Tests/HolosSpeakersTests/AcousticEchoTests.swift`,
-`Tests/HolosMeetingTests/AcousticEchoMeetingTests.swift`): the delay to within 1 ms;
-echo-only frames echo, local bursts local, local speech over the call at echo level kept; an
-inverted microphone, a 30 s call, and an outlying delay window; headphones, missing or silent
-system audio, and one signal on both tracks are no-ops; untimed words kept; a mask of other
-audio or an older version is not used and a newer one is left alone; `rebuild` keeps the
-run's word ownership; edits and only allowed voice suggestions survive `echo-analyze`, which
-replaces nothing when the journal changes meanwhile; a failed echo stage is retried by
-Recover. On three real calls (copies), against the research reference: delay 46.1 / 46.3 /
-46.4 ms (+5.1 / +4.3 / +4.3 ms/h); leftover "Unknown" microphone words dropped 1,356/1,489,
-1,352/1,468, 1,479/1,645 (91 / 92 / 90 %); the user's own words dropped 11/638 and 11/441;
-words while the system was silent dropped 2/364, 0/294, 1/4; microphone turns 571 → 113,
-585 → 114, 714 → 125; all 8 edits of the edited meeting kept. The analysis took 1.9–2.1 s
-per hour of audio on the development Mac, about 5 s per hour with both renders (release
-build).
+`Tests/HolosMeetingTests/AcousticEchoMeetingTests.swift`): the delay to within 1 ms (also an
+inverted microphone, a 30 s call, outlying windows); echo-only frames echo, local bursts
+local, local speech over the call at echo level kept, gaps in the recording kept;
+headphones, missing or silent system audio, and one signal on both tracks are no-ops; the
+projection hides echo words, shows pieces whose edits act on their turns, hides echo
+clusters, keeps a named speaker whose turns are all echo with its name and assignments, and
+changes with the mask alone; a word fix across an echo boundary is judged once; stale,
+damaged and newer masks are ignored; exports equal the view; post-processing, Recover and
+`echo-analyze` change no stored speaker file. On three real calls (copies), against the
+research reference: delay 46.1 / 46.3 / 46.4 ms (+5.1 / +4.3 / +4.3 ms/h); leftover
+"Unknown" microphone words hidden 1,356/1,489, 1,352/1,468, 1,479/1,645 (91 / 92 / 90 %);
+the user's own words hidden 11/638 and 11/441; words while the system was silent hidden
+2/364, 0/294, 1/4; microphone turns shown 571 → 113, 585 → 114, 714 → 125 (all turns
+883 → 425, 837 → 366, 996 → 407); all 8 edits of the edited meeting apply, and its stored
+labels are byte-identical. The analysis took 1.8–2.1 s per hour of audio on the development
+Mac, about 5 s per hour with both renders (release build).
 
 **Does not touch.** `Sources/HolosApp/Review/*`, `ReviewSession.swift`, `MeetingsWindow.swift`,
 `SpeakerProjection.swift`, `Package.swift`, README and `docs/status.md` (PR9 writes the

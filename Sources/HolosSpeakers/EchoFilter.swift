@@ -154,15 +154,12 @@ public enum EchoFilter {
         return spans
     }
 
-    /// `DroppedWords.reason` of microphone words the acoustic analysis (`EchoAnalysis`) finds to be echo and the text
-    /// filter does not.
-    public static let acousticReason = "acousticEcho"
-
-    /// Microphone spans the acoustic echo mask drops: every effective word of the segments whose track is exactly
-    /// "mic" for which `AcousticEchoMask.isEcho(start:end:)` is true, except the words in `excluding` (those the text
-    /// filter already dropped). A word the mask cannot judge is kept: times that are not numbers, past its last frame,
-    /// or estimated (a segment without word timing spreads its words evenly, so their times say nothing about which
-    /// sound they were). Spans cover consecutive dropped words of one segment, in microphone word order.
+    /// Microphone spans the acoustic echo mask flags (`SpeakerProjection` hides them; stored runs never list them):
+    /// every effective word of the segments whose track is exactly "mic" for which
+    /// `AcousticEchoMask.isEcho(start:end:)` is true, except the words in `excluding` (those the text filter already
+    /// dropped). A word the mask cannot judge is kept: times that are not numbers, past its last frame, or estimated (a
+    /// segment without word timing spreads its words evenly, so their times say nothing about which sound they were).
+    /// Spans cover consecutive flagged words of one segment, in microphone word order.
     public static func acousticEchoSpans(transcript: Transcript, mask: AcousticEchoMask,
                                          excluding: Set<WordRef> = []) -> [WordSpan] {
         var spans: [WordSpan] = []

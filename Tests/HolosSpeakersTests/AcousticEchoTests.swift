@@ -5,7 +5,7 @@ import HolosCore
 @testable import HolosSpeakers
 
 // Acoustic microphone echo in calls (docs/meeting-design.md §5.11): EchoAnalysis on synthetic signals only, the mask's
-// word rule and playback intervals, and the run builder with a mask.
+// word rule and playback intervals, and the projection that hides the echo (stored runs never hold it).
 
 // MARK: - Synthetic call
 
@@ -327,81 +327,6 @@ func aGapInTheRecordingIsNoEvidenceOfEcho() throws {
         == [WordSpan(segmentID: "T", first: 0, end: 1)])
 }
 
-@Test func rebuildKeepsTheWordOwnershipTheRunHas() {
-    // A system segment without word timing, split between two speakers. Its run's turns were carried across a word
-    // fix by provenance: words 0–1 are S1's, 2–5 S2's, although aligning the fixed segment's estimated times again
-    // would give word 2 to S1. A timed microphone segment has echo at word 1.
-    let system = TranscriptSegment(id: "S", start: 10, end: 16, text: "a b c d e f", track: "system")
-    let mic = segment("M", words: 4, track: "mic", start: 20)
-    let transcript = Transcript(id: "T", createdAt: Date(timeIntervalSince1970: 0), source: "fixture", locale: "en-CA",
-                                backend: .speech, segments: [system, mic])
-    let output = DiarizerOutput(segments: [RawDiarizationSegment(speaker: "S1", start: 10, end: 13),
-                                           RawDiarizationSegment(speaker: "S2", start: 13, end: 16)],
-                                centroids: [:], windows: [], processingSeconds: 0)
-    var parameters = callParameters
-    parameters.offsetSearchSeconds = 0
-    var run = SpeakerRunBuilder.build(
-        sessionID: session, transcript: transcript,
-        tracks: [SpeakerRunBuilder.TrackInput(track: "mic", policy: .channel(speakerID: "mic:me", displayName: "Me")),
-                 SpeakerRunBuilder.TrackInput(track: "system", policy: .diarized, output: output)],
-        engine: .fake, parameters: parameters).run
-    let first = run.turns.firstIndex { $0.clusterID == "system:S1" }!
-    let second = run.turns.firstIndex { $0.clusterID == "system:S2" }!
-    #expect(run.turns[first].spans == [WordSpan(segmentID: "S", first: 0, end: 3)])
-    run.turns[first].spans = [WordSpan(segmentID: "S", first: 0, end: 2)]
-    run.turns[second].spans = [WordSpan(segmentID: "S", first: 2, end: 6)]
-
-    let echoAtWord1 = timedMask(seconds: 30, echo: [(20.4, 20.7)])
-    let rebuilt = SpeakerRunBuilder.rebuild(run, transcript: transcript, acousticEcho: echoAtWord1)
-    #expect(rebuilt.turns.filter { $0.track == "system" }.map(\.spans)
-        == [[WordSpan(segmentID: "S", first: 0, end: 2)], [WordSpan(segmentID: "S", first: 2, end: 6)]])
-    #expect(rebuilt.turns.filter { $0.track == "mic" }.map(\.spans)
-        == [[WordSpan(segmentID: "M", first: 0, end: 1)], [WordSpan(segmentID: "M", first: 2, end: 4)]])
-    #expect(rebuilt.droppedWords == [DroppedWords(spans: [WordSpan(segmentID: "M", first: 1, end: 2)],
-                                                  reason: EchoFilter.acousticReason)])
-
-    // No echo found, or a mask that flags no word: the run as it is.
-    for mask in [nil, timedMask(seconds: 30, echo: [])] {
-        var same = SpeakerRunBuilder.rebuild(run, transcript: transcript, acousticEcho: mask, id: run.id,
-                                             createdAt: run.createdAt)
-        #expect(same == run)
-        same = SpeakerRunBuilder.rebuild(rebuilt, transcript: transcript, acousticEcho: echoAtWord1, id: rebuilt.id,
-                                         createdAt: rebuilt.createdAt)
-        #expect(same == rebuilt, "Applying the same mask again changes nothing.")
-    }
-}
-
-@Test func rebuildGivesBackWordsANewMaskKeeps() {
-    // A diarized microphone run whose words 1–2 an earlier mask took as echo.
-    let mic = segment("M", words: 10, track: "mic", start: 10)
-    let transcript = Transcript(id: "T", createdAt: Date(timeIntervalSince1970: 0), source: "fixture", locale: "en-CA",
-                                backend: .speech, segments: [mic])
-    let output = DiarizerOutput(segments: [RawDiarizationSegment(speaker: "S1", start: 9.9, end: 14.0)],
-                                centroids: [:], windows: [], processingSeconds: 0)
-    var parameters = callParameters
-    parameters.offsetSearchSeconds = 0
-    let earlier = SpeakerRunBuilder.build(
-        sessionID: session, transcript: transcript,
-        tracks: [SpeakerRunBuilder.TrackInput(track: "mic", policy: .diarized, output: output)], engine: .fake,
-        parameters: parameters, acousticEcho: timedMask(seconds: 30, echo: [(10.4, 11.1)])).run
-    #expect(earlier.droppedWords == [DroppedWords(spans: [WordSpan(segmentID: "M", first: 1, end: 3)],
-                                                  reason: EchoFilter.acousticReason)])
-
-    // No echo now (headphones after all, a new analysis version): both words come back, with their speaker.
-    let none = SpeakerRunBuilder.rebuild(earlier, transcript: transcript, acousticEcho: nil)
-    #expect(none.droppedWords.isEmpty)
-    #expect(none.turns.flatMap(\.spans).flatMap { Array($0.first..<$0.end) }.sorted() == Array(0..<10))
-    #expect(none.turns.allSatisfy { $0.speakerID == "mic:S1" })
-    #expect(none.turns.first { $0.spans == [WordSpan(segmentID: "M", first: 1, end: 3)] } != nil)
-
-    // A mask that keeps word 1 but still calls word 2 echo.
-    let narrower = SpeakerRunBuilder.rebuild(earlier, transcript: transcript,
-                                             acousticEcho: timedMask(seconds: 30, echo: [(10.8, 11.1)]))
-    #expect(narrower.droppedWords == [DroppedWords(spans: [WordSpan(segmentID: "M", first: 2, end: 3)],
-                                                   reason: EchoFilter.acousticReason)])
-    #expect(narrower.turns.contains { $0.spans == [WordSpan(segmentID: "M", first: 1, end: 2)] })
-}
-
 @Test func missingOrSilentSystemAudioLeavesNothingToMask() throws {
     let call = SyntheticCall()
     let missing = try EchoAnalysis.analyze(microphone: InMemoryEchoAudio(call.microphone), system: nil)
@@ -486,7 +411,7 @@ private func mask(_ classes: [AcousticEchoMask.FrameClass], levels: [Int8]? = ni
     #expect(AcousticEchoMask(bytes: Data([0, 0, 0]), frameCount: 1) == nil)
 }
 
-// MARK: - Run builder
+// MARK: - Projection
 
 private let session = "SESSION"
 
@@ -519,298 +444,186 @@ private func timedMask(seconds: Double, echo: [(Double, Double)]) -> AcousticEch
 private let callParameters: AlignmentParameters = {
     var parameters = AlignmentParameters.v1
     parameters.echoWindowSeconds = 1.0
+    parameters.offsetSearchSeconds = 0
     return parameters
 }()
 
-@Test func acousticEchoWordsLeaveTheTurnsWithTheirOwnReason() {
-    // Mic words at 10.0, 10.4, …, 12.8 (8 words); the mask calls 10.8–11.9 echo: words 2, 3, 4.
-    let mic = segment("M", words: 8, track: "mic", start: 10)
-    let system = segment("S", words: 4, track: "system", start: 2)
-    let transcript = Transcript(id: "T", createdAt: Date(timeIntervalSince1970: 0), source: "fixture", locale: "en-CA",
-                                backend: .speech, segments: [system, mic])
+private func transcript(_ segments: [TranscriptSegment]) -> Transcript {
+    Transcript(id: "T", createdAt: Date(timeIntervalSince1970: 0), source: "fixture", locale: "en-CA",
+               backend: .speech, segments: segments)
+}
+
+/// A call whose microphone is "Me" (M: ten words from 10 s) and whose system track is one channel speaker (S).
+private func channelCall() -> (transcript: Transcript, run: DiarizationRun) {
+    let words = transcript([segment("M", words: 10, track: "mic", start: 10), segment("S", words: 4, track: "system",
+                                                                                     start: 20)])
     let tracks = [SpeakerRunBuilder.TrackInput(track: "mic", policy: .channel(speakerID: "mic:me", displayName: "Me")),
                   SpeakerRunBuilder.TrackInput(track: "system", policy: .channel(speakerID: "system:all",
                                                                                  displayName: "Others"))]
-    let plain = SpeakerRunBuilder.build(sessionID: session, transcript: transcript, tracks: tracks, engine: nil,
-                                        parameters: callParameters, id: "R", createdAt: Date(timeIntervalSince1970: 0))
-    let masked = SpeakerRunBuilder.build(sessionID: session, transcript: transcript, tracks: tracks, engine: nil,
-                                         parameters: callParameters,
-                                         acousticEcho: timedMask(seconds: 20, echo: [(10.8, 11.9)]),
-                                         id: "R", createdAt: Date(timeIntervalSince1970: 0))
-    #expect(plain.run.droppedWords.isEmpty)
-    #expect(masked.run.droppedWords == [DroppedWords(spans: [WordSpan(segmentID: "M", first: 2, end: 5)],
-                                                     reason: EchoFilter.acousticReason)])
-    // The microphone turn is cut where the echo was taken out.
-    let micTurns = masked.run.turns.filter { $0.track == "mic" }
-    #expect(micTurns.map(\.spans) == [[WordSpan(segmentID: "M", first: 0, end: 2)],
-                                      [WordSpan(segmentID: "M", first: 5, end: 8)]])
+    let run = SpeakerRunBuilder.build(sessionID: session, transcript: words, tracks: tracks, engine: nil,
+                                      parameters: callParameters, id: "RUN").run
+    return (words, run)
 }
 
-@Test func wordsBothFiltersFlagAreListedOnceAsTextEcho() {
-    // The mic repeats the system's words 0.3 s later; the mask calls all of it echo, plus one word after.
-    let system = TranscriptSegment(id: "S", start: 10, end: 11.2, text: "we should vote now", words: [
-        TimedWord(text: "we", start: 10.0, end: 10.3, utf16Offset: 0, utf16Length: 2),
-        TimedWord(text: "should", start: 10.3, end: 10.6, utf16Offset: 3, utf16Length: 6),
-        TimedWord(text: "vote", start: 10.6, end: 10.9, utf16Offset: 10, utf16Length: 4),
-        TimedWord(text: "now", start: 10.9, end: 11.2, utf16Offset: 15, utf16Length: 3),
-    ], track: "system")
-    let mic = TranscriptSegment(id: "M", start: 10.3, end: 11.8, text: "we should vote now ok", words: [
-        TimedWord(text: "we", start: 10.3, end: 10.6, utf16Offset: 0, utf16Length: 2),
-        TimedWord(text: "should", start: 10.6, end: 10.9, utf16Offset: 3, utf16Length: 6),
-        TimedWord(text: "vote", start: 10.9, end: 11.2, utf16Offset: 10, utf16Length: 4),
-        TimedWord(text: "now", start: 11.2, end: 11.5, utf16Offset: 15, utf16Length: 3),
-        TimedWord(text: "ok", start: 11.5, end: 11.8, utf16Offset: 19, utf16Length: 2),
-    ], track: "mic")
-    let transcript = Transcript(id: "T", createdAt: Date(timeIntervalSince1970: 0), source: "fixture", locale: "en-CA",
-                                backend: .speech, segments: [system, mic])
-    let tracks = [SpeakerRunBuilder.TrackInput(track: "mic", policy: .channel(speakerID: "mic:me", displayName: "Me")),
-                  SpeakerRunBuilder.TrackInput(track: "system", policy: .channel(speakerID: "system:all",
-                                                                                 displayName: "Others"))]
-    let built = SpeakerRunBuilder.build(sessionID: session, transcript: transcript, tracks: tracks, engine: nil,
-                                        parameters: callParameters,
-                                        acousticEcho: timedMask(seconds: 20, echo: [(10.0, 12.0)]))
-    #expect(built.run.droppedWords == [
-        DroppedWords(spans: [WordSpan(segmentID: "M", first: 0, end: 4)], reason: EchoFilter.reason),
-        DroppedWords(spans: [WordSpan(segmentID: "M", first: 4, end: 5)], reason: EchoFilter.acousticReason),
-    ])
-    #expect(!built.run.turns.contains { $0.track == "mic" })
+private func view(_ run: DiarizationRun, _ transcript: Transcript, edits: [SpeakerEdit] = [],
+                  mask: AcousticEchoMask? = nil) -> SpeakerProjection {
+    SpeakerProjection.make(run: run, transcript: transcript, edits: edits, recognition: nil, profileNames: [:],
+                           acousticEcho: mask)
 }
 
-@Test func micClusterMostlyAcousticEchoIsHidden() {
-    // A diarized microphone: S1 holds 5 words the mask calls echo and 2 more; S2 is the user. With the mask, S1 is
-    // at 5/7 ≥ 60 % echo and disappears; its other words become unknown speaker.
-    let echoWords = segment("E", words: 7, track: "mic", start: 10)
-    let own = segment("U", words: 5, track: "mic", start: 20)
-    let transcript = Transcript(id: "T", createdAt: Date(timeIntervalSince1970: 0), source: "fixture", locale: "en-CA",
-                                backend: .speech, segments: [echoWords, own])
-    let output = DiarizerOutput(segments: [
-        RawDiarizationSegment(speaker: "S1", start: 9.9, end: 12.9),
-        RawDiarizationSegment(speaker: "S2", start: 19.9, end: 22.0),
-    ], centroids: [:], windows: [], processingSeconds: 0)
-    var parameters = callParameters
-    parameters.offsetSearchSeconds = 0
-    let tracks = [SpeakerRunBuilder.TrackInput(track: "mic", policy: .diarized, output: output)]
-    let plain = SpeakerRunBuilder.build(sessionID: session, transcript: transcript, tracks: tracks, engine: nil,
-                                        parameters: parameters)
-    #expect(plain.run.speakers.map(\.id) == ["mic:S1", "mic:S2"])
-    let masked = SpeakerRunBuilder.build(sessionID: session, transcript: transcript, tracks: tracks, engine: nil,
-                                         parameters: parameters,
-                                         acousticEcho: timedMask(seconds: 30, echo: [(10.0, 11.9)]))
-    #expect(masked.run.speakers.map(\.id) == ["mic:S2"])
-    let unknown = masked.run.turns.filter { $0.speakerID == nil }
-    #expect(unknown.flatMap(\.spans) == [WordSpan(segmentID: "E", first: 5, end: 7)])
+/// Words 2–3 of M (10.8–11.5 s) are echo.
+private let echoInTheMiddle = timedMask(seconds: 30, echo: [(10.8, 11.5)])
+
+@Test func echoWordsAreHiddenAndTheTurnIsShownAsPieces() throws {
+    let (words, run) = channelCall()
+    let plain = view(run, words)
+    let micTurn = try #require(plain.turns.first { $0.track == "mic" })
+    #expect(micTurn.spans == [WordSpan(segmentID: "M", first: 0, end: 10)])
+    #expect(!micTurn.cutByEcho)
+
+    let masked = view(run, words, mask: echoInTheMiddle)
+    let pieces = masked.turns.filter { $0.track == "mic" }
+    #expect(pieces.map(\.id) == [micTurn.id, "\(micTurn.id)~2"])
+    #expect(pieces.map(\.sourceTurnID) == [micTurn.id, micTurn.id])
+    #expect(pieces.map(\.spans) == [[WordSpan(segmentID: "M", first: 0, end: 2)],
+                                    [WordSpan(segmentID: "M", first: 4, end: 10)]])
+    #expect(pieces.allSatisfy { $0.cutByEcho })
+    #expect(abs(pieces[1].start - 11.6) < 1e-9)
+    #expect(pieces.allSatisfy { $0.speakerID == "mic:me" })
+    // The system turn is untouched, and nothing about the stored run says echo.
+    #expect(masked.turns.filter { $0.track == "system" } == plain.turns.filter { $0.track == "system" })
+    #expect(run.droppedWords.isEmpty)
+    // Voice learning never uses a turn whose voice covers echo.
+    #expect(VoiceEnrollment.candidateTurns(for: ["mic:me"], projection: plain).count == 1)
+    #expect(VoiceEnrollment.candidateTurns(for: ["mic:me"], projection: masked).isEmpty)
+    // A turn that is all echo is not shown at all.
+    let allEcho = view(run, words, mask: timedMask(seconds: 30, echo: [(10, 14)]))
+    #expect(!allEcho.turns.contains { $0.track == "mic" })
+    #expect(!allEcho.speakers.contains { $0.id == "mic:me" })
 }
 
-@Test func rebuildingARunOnItsOwnDiarizationReproducesIt() {
-    let system = SessionFixturesLite.alternatingSegments(track: "system")
-    let mic = segment("M", words: 6, track: "mic", start: 3)
-    let transcript = Transcript(id: "T", createdAt: Date(timeIntervalSince1970: 0), source: "fixture", locale: "en-CA",
-                                backend: .speech, segments: (system + [mic]).sorted { $0.start < $1.start })
-    let output = FakeDiarizer.alternating(speakers: ["S1", "S2"], turnSeconds: 5, duration: 20)
-    let tracks = [SpeakerRunBuilder.TrackInput(track: "mic", policy: .channel(speakerID: "mic:me", displayName: "Me")),
-                  SpeakerRunBuilder.TrackInput(track: "system", policy: .diarized, output: output)]
-    let built = SpeakerRunBuilder.build(sessionID: session, transcript: transcript, tracks: tracks, engine: .fake,
-                                        parameters: callParameters).run
-    let rebuilt = SpeakerRunBuilder.rebuild(built, transcript: transcript, acousticEcho: nil, id: "NEW")
-    #expect(rebuilt.id == "NEW")
-    #expect(rebuilt.turns == built.turns)
-    #expect(rebuilt.speakers == built.speakers)
-    #expect(rebuilt.tracks == built.tracks)
-    #expect(rebuilt.droppedWords == built.droppedWords)
-    #expect(rebuilt.alignment == built.alignment)
-    // With a mask that calls the mic words 1–2 echo, only the mic turns change.
-    let masked = SpeakerRunBuilder.rebuild(built, transcript: transcript,
-                                           acousticEcho: timedMask(seconds: 30, echo: [(3.4, 4.1)]))
-    #expect(masked.turns.filter { $0.track == "system" }.map(\.spans)
-        == built.turns.filter { $0.track == "system" }.map(\.spans))
-    #expect(masked.droppedWords == [DroppedWords(spans: [WordSpan(segmentID: "M", first: 1, end: 3)],
-                                                 reason: EchoFilter.acousticReason)])
+@Test func editsOnAPieceActOnItsTurn() throws {
+    let (words, run) = channelCall()
+    let masked = view(run, words, mask: echoInTheMiddle)
+    let micTurn = try #require(masked.turns.first { $0.track == "mic" }).id
+    let piece = "\(micTurn)~2"
+    // Reassigning a piece reassigns the turn: both pieces move.
+    let reassign = SpeakerEditAction.reassignTurns(turnIDs: [piece], to: "system:all")
+    #expect(masked.storedAction(reassign) == .reassignTurns(turnIDs: [micTurn], to: "system:all"))
+    #expect(masked.fingerprint(for: reassign) == masked.fingerprint(for: masked.storedAction(reassign)))
+    let moved = masked.applying(reassign, editID: "E1")
+    #expect(moved.turns.filter { $0.track == "mic" }.allSatisfy { $0.speakerID == "system:all" })
+    // Both pieces at once count once.
+    #expect(masked.storedAction(.excludeFromEnrollment(turnIDs: [micTurn, piece]))
+        == .excludeFromEnrollment(turnIDs: [micTurn]))
+    // Splitting at a piece's first word makes the piece a turn of its own; the journal names the stored turn.
+    let split = SpeakerEditAction.splitTurn(turnID: piece, at: WordRef(segmentID: "M", word: 4))
+    #expect(masked.storedAction(split) == .splitTurn(turnID: micTurn, at: WordRef(segmentID: "M", word: 4)))
+    let parted = masked.applying(split, editID: "E2")
+    #expect(parted.staleEdits.isEmpty)
+    let own = try #require(parted.turns.first { $0.id == "\(micTurn)/E2" })
+    #expect(own.spans == [WordSpan(segmentID: "M", first: 4, end: 10)])
+    #expect(!own.cutByEcho)
+    // The same journal shown without the mask has the same turns, echo included.
+    let journal = [SpeakerEdit(id: "E2", baseRunID: run.id, source: "app", action: masked.storedAction(split))]
+    let plain = view(run, words, edits: journal)
+    #expect(plain.turns.filter { $0.track == "mic" }.map(\.spans)
+        == [[WordSpan(segmentID: "M", first: 0, end: 4)], [WordSpan(segmentID: "M", first: 4, end: 10)]])
 }
 
-/// Transcript helpers matching `FakeDiarizer.alternating`, as the meeting tests' fixtures lay them out.
-private enum SessionFixturesLite {
-    static func alternatingSegments(track: String) -> [TranscriptSegment] {
-        (0..<4).map { turn in segment("\(track)\(turn)", words: 6, track: track, start: Double(turn) * 5 + 0.5) }
-    }
-}
-
-// MARK: - Edit replay
-
-@Test func aSpeakerWhoseOwnTurnsAreAllEchoKeepsItsNameAndItsAssignedTurns() throws {
-    // A diarized microphone: S1 speaks only echo (segment E), S2 is the user (U). The user named S1 and gave it a
-    // system turn; the mask then takes every word of S1.
-    let echoWords = segment("E", words: 4, track: "mic", start: 10)
-    let own = segment("U", words: 4, track: "mic", start: 20)
-    let system = segment("S", words: 4, track: "system", start: 30)
-    let transcript = Transcript(id: "T", createdAt: Date(timeIntervalSince1970: 0), source: "fixture", locale: "en-CA",
-                                backend: .speech, segments: [echoWords, own, system])
-    let output = DiarizerOutput(segments: [RawDiarizationSegment(speaker: "S1", start: 9.9, end: 11.8),
+/// A diarized microphone: S1 holds E (seven words from 10 s, of which the first five are echo), S2 holds U; the
+/// system track is one channel speaker.
+private func diarizedCall() -> (transcript: Transcript, run: DiarizationRun) {
+    let words = transcript([segment("E", words: 7, track: "mic", start: 10), segment("U", words: 4, track: "mic",
+                                                                                    start: 20),
+                            segment("S", words: 4, track: "system", start: 30)])
+    let output = DiarizerOutput(segments: [RawDiarizationSegment(speaker: "S1", start: 9.9, end: 12.8),
                                            RawDiarizationSegment(speaker: "S2", start: 19.9, end: 21.8)],
                                 centroids: [:], windows: [], processingSeconds: 0)
-    var parameters = callParameters
-    parameters.offsetSearchSeconds = 0
-    let old = SpeakerRunBuilder.build(
-        sessionID: session, transcript: transcript,
-        tracks: [SpeakerRunBuilder.TrackInput(track: "mic", policy: .diarized, output: output),
-                 SpeakerRunBuilder.TrackInput(track: "system", policy: .channel(speakerID: "system:all",
-                                                                                displayName: "Others"))],
-        engine: .fake, parameters: parameters, id: "OLD").run
-    let systemTurn = try #require(old.turns.first { $0.track == "system" }?.id)
-    let edits = [
-        SpeakerEdit(id: "E1", baseRunID: "OLD", source: "app", action: .rename(speakerID: "mic:S1", name: "Person C")),
-        SpeakerEdit(id: "E2", baseRunID: "OLD", source: "app",
-                    action: .reassignTurns(turnIDs: [systemTurn], to: "mic:S1")),
-    ]
-    let rebuilt = SpeakerRunBuilder.rebuild(old, transcript: transcript,
-                                            acousticEcho: timedMask(seconds: 40, echo: [(10, 12)]), id: "NEW")
-    #expect(!rebuilt.turns.contains { $0.speakerID == "mic:S1" })
-    #expect(rebuilt.speakers.contains { $0.id == "mic:S1" })
-    let carried = SpeakerEditReplay.carry(edits: edits, effective: ["E1", "E2"], from: old, to: rebuilt,
-                                          transcript: transcript)
-    #expect(carried.droppedEditIDs.isEmpty)
-    let view = SpeakerProjection.make(run: rebuilt, transcript: transcript, edits: carried.edits, recognition: nil,
-                                      profileNames: [:])
-    #expect(view.staleEdits.isEmpty)
-    #expect(view.turns.first { $0.track == "system" }?.speakerID == "mic:S1")
-    #expect(view.speakers.first { $0.id == "mic:S1" }?.name == "Person C")
-    // Without the edits the speaker is in the run but not shown: it has no turn.
-    let plain = SpeakerProjection.make(run: rebuilt, transcript: transcript, edits: [], recognition: nil,
-                                       profileNames: [:])
-    #expect(!plain.speakers.contains { $0.id == "mic:S1" })
-}
-
-@Test func aWordATurnStillHoldsIsNotGivenBackTwice() {
-    // A word fix across an echo boundary mapped the replacement word (M1) both into the dropped echo and into the
-    // turn that survived. A mask that keeps it must not add it again.
-    let mic = segment("M", words: 4, track: "mic", start: 10)
-    let transcript = Transcript(id: "T", createdAt: Date(timeIntervalSince1970: 0), source: "fixture", locale: "en-CA",
-                                backend: .speech, segments: [mic])
-    let tracks = [SpeakerRunBuilder.TrackInput(track: "mic", policy: .channel(speakerID: "mic:me", displayName: "Me"))]
-    var run = SpeakerRunBuilder.build(sessionID: session, transcript: transcript, tracks: tracks, engine: nil,
-                                      parameters: callParameters,
-                                      acousticEcho: timedMask(seconds: 20, echo: [(10.4, 10.7)])).run
-    #expect(run.droppedWords == [DroppedWords(spans: [WordSpan(segmentID: "M", first: 1, end: 2)],
-                                              reason: EchoFilter.acousticReason)])
-    let first = run.turns.firstIndex { $0.spans == [WordSpan(segmentID: "M", first: 0, end: 1)] }!
-    run.turns[first].spans = [WordSpan(segmentID: "M", first: 0, end: 2)]
-    let rebuilt = SpeakerRunBuilder.rebuild(run, transcript: transcript, acousticEcho: nil)
-    let held = rebuilt.turns.flatMap(\.spans).flatMap { Array($0.first..<$0.end) }
-    #expect(held.sorted() == [0, 1, 2, 3])
-    #expect(rebuilt.droppedWords.isEmpty)
-}
-
-@Test(.timeLimit(.minutes(1)))
-func damagedDroppedSpansAreReadOnlyWithinTheirSegment() {
-    // A run file whose dropped spans run to Int.max, start below 0, or name a segment that is not there.
-    let mic = segment("M", words: 4, track: "mic", start: 10)
-    let transcript = Transcript(id: "T", createdAt: Date(timeIntervalSince1970: 0), source: "fixture", locale: "en-CA",
-                                backend: .speech, segments: [mic])
-    let tracks = [SpeakerRunBuilder.TrackInput(track: "mic", policy: .channel(speakerID: "mic:me", displayName: "Me"))]
-    var run = SpeakerRunBuilder.build(sessionID: session, transcript: transcript, tracks: tracks, engine: nil,
-                                      parameters: callParameters).run
-    run.droppedWords = [
-        DroppedWords(spans: [WordSpan(segmentID: "M", first: 0, end: .max)], reason: EchoFilter.acousticReason),
-        DroppedWords(spans: [WordSpan(segmentID: "M", first: .min, end: 2), WordSpan(segmentID: "X", first: 0, end: 9)],
-                     reason: EchoFilter.reason),
-    ]
-    let rebuilt = SpeakerRunBuilder.rebuild(run, transcript: transcript,
-                                            acousticEcho: timedMask(seconds: 20, echo: [(10.8, 11.1)]))
-    // Words 0–1 count as text echo (not judged by the mask; the turn keeps them as it had them), word 2 is flagged
-    // and leaves the turn, which is cut there.
-    #expect(rebuilt.turns.flatMap(\.spans) == [WordSpan(segmentID: "M", first: 0, end: 2),
-                                               WordSpan(segmentID: "M", first: 3, end: 4)])
-    #expect(rebuilt.droppedWords.first == DroppedWords(spans: [WordSpan(segmentID: "M", first: 2, end: 3)],
-                                                       reason: EchoFilter.acousticReason))
-}
-
-@Test func aSpeakerMadeOnEchoIsKeptWhenALaterEditNamesIt() throws {
-    // The user made a speaker on a microphone turn that turns out to be all echo, then gave a system turn to it.
-    let mic = segment("M", words: 4, track: "mic", start: 10)
-    let system = segment("S", words: 4, track: "system", start: 20)
-    let transcript = Transcript(id: "T", createdAt: Date(timeIntervalSince1970: 0), source: "fixture", locale: "en-CA",
-                                backend: .speech, segments: [mic, system])
-    let tracks = [SpeakerRunBuilder.TrackInput(track: "mic", policy: .channel(speakerID: "mic:me", displayName: "Me")),
+    let tracks = [SpeakerRunBuilder.TrackInput(track: "mic", policy: .diarized, output: output),
                   SpeakerRunBuilder.TrackInput(track: "system", policy: .channel(speakerID: "system:all",
                                                                                  displayName: "Others"))]
-    let old = SpeakerRunBuilder.build(sessionID: session, transcript: transcript, tracks: tracks, engine: nil,
-                                      parameters: callParameters, id: "OLD").run
-    let micTurn = try #require(old.turns.first { $0.track == "mic" }?.id)
-    let systemTurn = try #require(old.turns.first { $0.track == "system" }?.id)
-    let edits = [
-        SpeakerEdit(id: "E1", baseRunID: "OLD", source: "app",
-                    action: .newSpeaker(speakerID: "user:X", name: "Person B", turnIDs: [micTurn])),
-        SpeakerEdit(id: "E2", baseRunID: "OLD", source: "app",
-                    action: .reassignTurns(turnIDs: [systemTurn], to: "user:X")),
-    ]
-    let rebuilt = SpeakerRunBuilder.rebuild(old, transcript: transcript,
-                                            acousticEcho: timedMask(seconds: 30, echo: [(10, 12)]), id: "NEW")
-    #expect(!rebuilt.turns.contains { $0.track == "mic" })
-    let carried = SpeakerEditReplay.carry(edits: edits, effective: ["E1", "E2"], from: old, to: rebuilt,
-                                          transcript: transcript)
-    #expect(carried.droppedEditIDs.isEmpty)
-    let view = SpeakerProjection.make(run: rebuilt, transcript: transcript, edits: carried.edits, recognition: nil,
-                                      profileNames: [:])
-    #expect(view.appliedEditIDs == ["E1", "E2"])
-    #expect(view.turns.first { $0.track == "system" }?.speakerID == "user:X")
-    #expect(view.speakers.first { $0.id == "user:X" }?.name == "Person B")
-
-    // Nobody names it later: the speaker made only on echo goes with its turns.
-    let alone = SpeakerEditReplay.carry(edits: [edits[0]], effective: ["E1"], from: old, to: rebuilt,
-                                        transcript: transcript)
-    #expect(alone.droppedEditIDs == ["E1"])
+    let run = SpeakerRunBuilder.build(sessionID: session, transcript: words, tracks: tracks, engine: .fake,
+                                      parameters: callParameters, id: "RUN").run
+    return (words, run)
 }
 
-@Test func editsCarryToARunRebuiltWithoutEcho() throws {
-    // A diarized microphone whose first cluster's words are partly echo, and a system track.
-    let mic = segment("M", words: 10, track: "mic", start: 10)
-    let other = segment("N", words: 4, track: "mic", start: 20)
-    let transcript = Transcript(id: "T", createdAt: Date(timeIntervalSince1970: 0), source: "fixture", locale: "en-CA",
-                                backend: .speech, segments: [mic, other])
-    let output = DiarizerOutput(segments: [
-        RawDiarizationSegment(speaker: "S1", start: 9.9, end: 14.0),
-        RawDiarizationSegment(speaker: "S2", start: 19.9, end: 21.6),
-    ], centroids: [:], windows: [], processingSeconds: 0)
-    var parameters = callParameters
-    parameters.offsetSearchSeconds = 0
-    let old = SpeakerRunBuilder.build(sessionID: session, transcript: transcript,
-                                      tracks: [SpeakerRunBuilder.TrackInput(track: "mic", policy: .diarized,
-                                                                            output: output)],
-                                      engine: .fake, parameters: parameters, id: "OLD").run
-    #expect(old.turns.map(\.id) == ["T1", "T2"])
-    // The user named S2, moved T1 to S2 ... then undid that, split T1 at word 6, and kept T2 out of voice learning.
-    let edits = [
-        SpeakerEdit(id: "E1", baseRunID: "OLD", source: "app", action: .rename(speakerID: "mic:S2", name: "Person")),
-        SpeakerEdit(id: "E2", baseRunID: "OLD", source: "app", action: .reassignTurns(turnIDs: ["T1"], to: "mic:S2")),
-        SpeakerEdit(id: "E3", baseRunID: "OLD", source: "app", action: .revert(editID: "E2")),
-        SpeakerEdit(id: "E4", baseRunID: "OLD", source: "app",
-                    action: .splitTurn(turnID: "T1", at: WordRef(segmentID: "M", word: 6))),
-        SpeakerEdit(id: "E5", baseRunID: "OLD", source: "app",
-                    action: .reassignTurns(turnIDs: ["T1/E4"], to: "mic:S2")),
-        SpeakerEdit(id: "E6", baseRunID: "OLD", source: "app", action: .excludeFromEnrollment(turnIDs: ["T2"])),
-    ]
-    let projection = SpeakerProjection.make(run: old, transcript: transcript, edits: edits, recognition: nil,
-                                            profileNames: [:])
-    #expect(projection.appliedEditIDs == ["E1", "E4", "E5", "E6"])
+/// E's words 0–4 (10.0–11.9 s) are echo: 5 of S1's 7 words.
+private let mostlyEcho = timedMask(seconds: 40, echo: [(10, 11.95)])
 
-    // Words 1–2 of M are echo (10.4–11.0): T1 now starts after them, at word 3, as a separate turn.
-    let rebuilt = SpeakerRunBuilder.rebuild(old, transcript: transcript,
-                                            acousticEcho: timedMask(seconds: 30, echo: [(10.4, 11.1)]), id: "NEW")
-    let carried = SpeakerEditReplay.carry(edits: edits, effective: projection.appliedEditIDs, from: old, to: rebuilt,
-                                          transcript: transcript)
-    #expect(carried.droppedEditIDs.isEmpty)
-    #expect(carried.edits.map(\.id) == ["E1", "E4", "E5", "E6"])
-    #expect(carried.edits.allSatisfy { $0.baseRunID == "NEW" && $0.source == "carry" })
-    let view = SpeakerProjection.make(run: rebuilt, transcript: transcript, edits: carried.edits, recognition: nil,
-                                      profileNames: [:])
-    #expect(view.appliedEditIDs == ["E1", "E4", "E5", "E6"])
-    #expect(view.speakers.first { $0.id == "mic:S2" }?.name == "Person")
-    // Words 6–9 of M belong to the named speaker; words 0 and 3–5 stay with S1; 1–2 are gone.
-    func speaker(of word: Int) -> String? {
-        view.turns.first { turn in turn.spans.contains { $0.segmentID == "M" && $0.first <= word && word < $0.end } }?
-            .speakerID
+@Test func aMicrophoneClusterMostlyEchoShowsAsUnknownUnlessTheUserNamedIt() throws {
+    let (words, run) = diarizedCall()
+    #expect(view(run, words).speakers.map(\.id) == ["mic:S1", "mic:S2", "system:all"])
+    let masked = view(run, words, mask: mostlyEcho)
+    #expect(masked.speakers.map(\.id) == ["mic:S2", "system:all"])
+    let rest = try #require(masked.turns.first { $0.spans == [WordSpan(segmentID: "E", first: 5, end: 7)] })
+    #expect(rest.speakerID == nil)
+    #expect(masked.turns.first { $0.spans.first?.segmentID == "U" }?.speakerID == "mic:S2")
+    // Named by the user, the speaker stays: their decision stands.
+    let named = view(run, words, edits: [SpeakerEdit(id: "E1", baseRunID: run.id, source: "app",
+                                                     action: .rename(speakerID: "mic:S1", name: "Person C"))],
+                     mask: mostlyEcho)
+    #expect(named.turns.first { $0.spans == [WordSpan(segmentID: "E", first: 5, end: 7)] }?.speakerID == "mic:S1")
+}
+
+@Test func aSpeakerWhoseTurnsAreAllEchoKeepsItsNameAndAssignments() throws {
+    // The user named S1 and gave it the system turn; the mask then calls every word of S1 echo.
+    let (words, run) = diarizedCall()
+    let systemTurn = try #require(run.turns.first { $0.track == "system" }?.id)
+    let edits = [
+        SpeakerEdit(id: "E1", baseRunID: run.id, source: "app", action: .rename(speakerID: "mic:S1", name: "Person C")),
+        SpeakerEdit(id: "E2", baseRunID: run.id, source: "app",
+                    action: .reassignTurns(turnIDs: [systemTurn], to: "mic:S1")),
+    ]
+    let masked = view(run, words, edits: edits, mask: timedMask(seconds: 40, echo: [(10, 13)]))
+    #expect(masked.staleEdits.isEmpty)
+    #expect(masked.appliedEditIDs == ["E1", "E2"])
+    #expect(!masked.turns.contains { $0.track == "mic" && $0.speakerID == "mic:S1" })
+    #expect(masked.turns.first { $0.track == "system" }?.speakerID == "mic:S1")
+    #expect(masked.speakers.first { $0.id == "mic:S1" }?.name == "Person C")
+}
+
+@Test func aNewMaskChangesOnlyTheView() {
+    // The same stored run and journal under three masks: no echo, a narrow one, a wide one.
+    let (words, run) = channelCall()
+    let stored = run
+    let counts = [nil, timedMask(seconds: 30, echo: [(10.8, 11.1)]), echoInTheMiddle].map { mask in
+        view(run, words, mask: mask).turns.filter { $0.track == "mic" }.flatMap(\.spans)
+            .reduce(0) { $0 + $1.end - $1.first }
     }
-    #expect((6..<10).allSatisfy { speaker(of: $0) == "mic:S2" })
-    #expect([0, 3, 4, 5].allSatisfy { speaker(of: $0) == "mic:S1" })
-    #expect(speaker(of: 1) == nil && speaker(of: 2) == nil)
-    #expect(view.turns.filter(\.excludedFromEnrollment).flatMap(\.spans) == [WordSpan(segmentID: "N", first: 0, end: 4)])
+    #expect(counts == [10, 9, 8])
+    #expect(run == stored)
 }
+
+@Test func aCorrectedWordAcrossAnEchoBoundaryIsJudgedOnce() {
+    // A word fix joined an echo word and a kept word into one ("data base" → "database", 10.4–11.0 s): the mask
+    // judges the word by its frames, half echo and half local, and keeps it once.
+    let mic = TranscriptSegment(id: "M", start: 10, end: 11.4, text: "so database here", words: [
+        TimedWord(text: "so", start: 10.0, end: 10.3, utf16Offset: 0, utf16Length: 2),
+        TimedWord(text: "database", start: 10.4, end: 11.0, utf16Offset: 3, utf16Length: 8),
+        TimedWord(text: "here", start: 11.1, end: 11.4, utf16Offset: 12, utf16Length: 4),
+    ], track: "mic")
+    let words = transcript([mic])
+    let run = SpeakerRunBuilder.build(
+        sessionID: session, transcript: words,
+        tracks: [SpeakerRunBuilder.TrackInput(track: "mic", policy: .channel(speakerID: "mic:me", displayName: "Me"))],
+        engine: nil, parameters: callParameters, id: "RUN").run
+    let masked = view(run, words, mask: timedMask(seconds: 20, echo: [(10.4, 10.7)]))
+    let shown = masked.turns.flatMap(\.spans).flatMap { Array($0.first..<$0.end) }
+    #expect(shown == [0, 1, 2])
+    // Fully inside the echo, it is hidden.
+    let hidden = view(run, words, mask: timedMask(seconds: 20, echo: [(10.4, 11.05)]))
+    #expect(hidden.turns.flatMap(\.spans).flatMap { Array($0.first..<$0.end) } == [0, 2])
+}
+
+@Test func damagedDroppedSpansAreReadOnlyWithinTheirSegment() {
+    // A run file whose dropped spans run to Int.max or name a segment that is not there: the view is still made.
+    let (words, original) = channelCall()
+    var run = original
+    run.droppedWords = [DroppedWords(spans: [WordSpan(segmentID: "M", first: 0, end: .max),
+                                             WordSpan(segmentID: "X", first: .min, end: 9)], reason: "echo")]
+    let masked = view(run, words, mask: echoInTheMiddle)
+    // Every word of M counts as dropped already, so the mask hides nothing more.
+    #expect(masked.turns.filter { $0.track == "mic" }.count == 1)
+}
+
