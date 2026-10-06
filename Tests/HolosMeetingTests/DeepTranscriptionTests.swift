@@ -585,7 +585,7 @@ func aSilentSessionWithoutATranscriptGetsNone() async throws {
 }
 
 @Test(.timeLimit(.minutes(1)))
-func aTranscriptMadeInOneNamedLanguageUsesThatLanguage() async throws {
+func aMeetingInAnotherLanguageKeepsItsTranscriptUnlessForced() async throws {
     let temp = try TemporaryDirectory("deep")
     defer { temp.remove() }
     let (session, recorded) = try await deepSession(in: temp.url)
@@ -596,11 +596,40 @@ func aTranscriptMadeInOneNamedLanguageUsesThatLanguage() async throws {
     french.languages = ["fr-CA"]
     try await SessionFixtures.saveTranscript(french, in: session)
     let transcriber = ScriptedTranscriber(script: scriptedHearing)
-    let outcome = try await deepRun(session, deepDependencies(transcriber))
+    // A meeting in a language other than English keeps Apple's transcript: not validated on real audio yet.
+    let refused = await #expect(throws: HolosError.self) {
+        _ = try await deepRun(session, deepDependencies(transcriber))
+    }
+    #expect(refused?.localizedDescription == DeepTranscriptionStage.notEnglish)
+    #expect(SessionDeepTranscribeCommand.languageProblem(session: session) == DeepTranscriptionStage.notEnglish)
+    #expect(transcriber.calls.value == 0)
+    #expect(try currentTranscript(session).id == french.id)
+    // Run by the post-processor directly (the app's queue), the stage is skipped and says why.
+    let record = try await MeetingPostProcessor(voiceSamples: .none,
+        diarizer: nil, options: PostProcessingOptions(deepTranscribe: true), freeSpace: FixedFreeSpace(.max),
+        languages: noSpeech, deepTranscription: deepDependencies(transcriber)).run(session: session, lease: nil)
+    #expect(deepStage(record)?.result == .skipped && deepStage(record)?.message == DeepTranscriptionStage.notEnglish)
+    #expect(transcriber.calls.value == 0)
+    // --force tries it anyway, in that language.
+    let outcome = try await deepRun(session, deepDependencies(transcriber), force: true)
     #expect(outcome.exitCode == 0, "\(outcome.summary)")
     #expect(transcriber.requests.value.first?.language == "fr")
     let deep = try currentTranscript(session)
     #expect(deep.engine == "whisper:test" && deep.locale == "fr-CA")
+}
+
+@Test(.timeLimit(.minutes(1)))
+func anEnglishMeetingIsTranscribedWithoutForce() async throws {
+    let temp = try TemporaryDirectory("deep")
+    defer { temp.remove() }
+    // meeting.json names English alone; the recorded transcript is English.
+    let (session, recorded) = try await deepSession(in: temp.url, languages: ["en-CA"])
+    #expect(recorded.locale.hasPrefix("en"))
+    #expect(SessionDeepTranscribeCommand.languageProblem(session: session) == nil)
+    let transcriber = ScriptedTranscriber(script: scriptedHearing)
+    let outcome = try await deepRun(session, deepDependencies(transcriber))
+    #expect(outcome.exitCode == 0, "\(outcome.summary)")
+    #expect(transcriber.requests.value.first?.language == "en")
 }
 
 @Test(.timeLimit(.minutes(1)))

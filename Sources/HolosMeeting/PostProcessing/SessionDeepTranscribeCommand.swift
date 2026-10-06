@@ -48,11 +48,10 @@ public enum SessionDeepTranscribeCommand {
                 + "\(manifest.id) first, so all of its saved audio is transcribed.")
         }
         let meeting = try SessionFiles.meetingInfo(session: session, manifest: manifest)
-        // A transcript made in one language named with `session languages` has `languages` too; only several count.
-        let mergedLanguages = (try? SessionFiles.currentTranscript(session: session))??.languages ?? []
-        let merged = DictationLanguage.meetingLanguages(mergedLanguages).count > 1
-        if DictationLanguage.meetingLanguages(meeting.languages ?? []).count > 1 || merged {
-            throw HolosError.invalidInput(DeepTranscriptionStage.severalLanguages)
+        let current = (try? SessionFiles.currentTranscript(session: session)) ?? nil
+        if let problem = DeepTranscriptionStage.languageProblem(meeting: meeting, transcript: current,
+                                                                manifest: manifest, force: force) {
+            throw HolosError.invalidInput(problem)
         }
         if !force, let current = try? SessionFiles.currentTranscript(session: session),
            let events = try? SessionArchive.readEvents(at: session).events,
@@ -100,6 +99,17 @@ public enum SessionDeepTranscribeCommand {
     /// What a cancelled run says, from the current transcript's ID before the run and after it: a cancellation can
     /// come after the new transcript was published, while live corrections, word fixes, speakers, or the exports were
     /// still being made, and then nothing was rolled back.
+    /// Why the pass would not transcribe `session` for its language without `--force` (several languages, or one
+    /// other than English), read as the pass reads it; nil when it would, and when it cannot be read (the pass then says
+    /// why). Reads files only: the app asks it before it queues a meeting.
+    public static func languageProblem(session: URL) -> String? {
+        guard let manifest = try? SessionArchive.readManifest(at: session),
+              let meeting = try? SessionFiles.meetingInfo(session: session, manifest: manifest) else { return nil }
+        let current = (try? SessionFiles.currentTranscript(session: session)) ?? nil
+        return DeepTranscriptionStage.languageProblem(meeting: meeting, transcript: current, manifest: manifest,
+                                                      force: false)
+    }
+
     public static func cancellationMessage(before: String?, after: String?) -> String {
         if before == after {
             return before == nil ? "Cancelled. No transcript was made." : "Cancelled. The transcript was kept as it was."

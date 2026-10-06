@@ -21,18 +21,21 @@ extension Session {
                 Live corrections and meeting word fixes are applied to it, speakers are labelled again (names carry \
                 over), and the transcript files are rewritten. Nothing leaves this Mac. It takes about 11 minutes \
                 per hour of audio on an M4 Pro, more on the first run while Core ML prepares the model. Running it \
-                again keeps a transcript the model already made; --force transcribes again. Meetings in several \
-                languages are not supported yet. A meeting whose speaker labels were edited is not transcribed \
+                again keeps a transcript the model already made; --force transcribes again. It is tuned for \
+                English meetings: a meeting in another language keeps Apple's transcript unless --force (to try \
+                it anyway); meetings in several languages are not supported. A meeting whose speaker labels were \
+                edited is not transcribed \
                 again unless --force (names carry over). Exits 0 when done (also when the speaker models are not \
                 installed), 3 when the transcript files were written but the meeting could not be transcribed again \
                 or speaker labelling was skipped or failed (it is printed), and 1 when nothing could be done (the \
-                model is not installed, the audio was deleted, the meeting is in several languages, or another \
+                model is not installed, the audio was deleted, the meeting is not in English or in several \
+                languages, or another \
                 pass is running: one runs at a time on this Mac).
                 """)
 
         @Argument(help: "Path to a .holos folder, or a session ID.") var path: String
-        @Flag(help: ArgumentHelp("Transcribe again even when the model already made the transcript, and replace "
-            + "edited speaker labels (names carry over)."))
+        @Flag(help: ArgumentHelp("Transcribe again even when the model already made the transcript, replace "
+            + "edited speaker labels (names carry over), and transcribe a meeting in a language other than English."))
         var force = false
         @Flag(help: "Print the post-processing record as JSON.") var json = false
 
