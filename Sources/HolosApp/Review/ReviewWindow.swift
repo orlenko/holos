@@ -1077,11 +1077,9 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, Clo
         let dictionary: (String) -> Bool = { word in
             NSSpellChecker.shared.checkSpelling(of: word.lowercased(), startingAt: 0).location == NSNotFound
         }
-        let term = add
-            ? WordList.cleaned(edit.meant.trimmingCharacters(in: .punctuationCharacters.union(.whitespaces)))
-            : TranscriptEditLearning.term(heard: edit.heard, meant: edit.meant, isDictionaryWord: dictionary)
-        guard let term else { return }
-        let heardAs = TranscriptEditLearning.heardAs(heard: edit.heard, term: term)
+        guard let offer = Self.wordListTerm(after: edit, add: add, isDictionaryWord: dictionary) else { return }
+        let term = offer.term
+        let heardAs = offer.heardAs
         if add {
             notice = adder(term, heardAs)
             refreshFooter()
@@ -1093,6 +1091,21 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, Clo
         }
         offeredTerm = (term, heardAs)
         refreshFooter()
+    }
+
+    /// The word-list term a saved edit gives (with `add`, ⌥Return: what was typed, as it is; else what was typed when
+    /// it looks like a name or term) and its "often heard as" phrase. Only what was typed, never the words the edit
+    /// took in around it ("Yorkshire", not "New Yorkshire", when only "York" of an automatic "New York" was edited);
+    /// "often heard as" only when the recognizer's text for exactly those words is known.
+    static func wordListTerm(after edit: ReviewWordEdit, add: Bool,
+                             isDictionaryWord: (String) -> Bool) -> (term: String, heardAs: String?)? {
+        let typed = edit.typed ?? edit.meant
+        let heard = edit.typed == nil ? edit.heard : edit.typedHeard
+        let term = add
+            ? WordList.cleaned(typed.trimmingCharacters(in: .punctuationCharacters.union(.whitespaces)))
+            : TranscriptEditLearning.term(heard: heard ?? "", meant: typed, isDictionaryWord: isDictionaryWord)
+        guard let term, !term.isEmpty else { return nil }
+        return (term, heard.flatMap { TranscriptEditLearning.heardAs(heard: $0, term: term) })
     }
 
     @objc private func addOfferedTerm() {

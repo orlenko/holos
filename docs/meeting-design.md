@@ -3772,7 +3772,11 @@ public struct SpeakerProfileDatabase: Codable, Sendable, Equatable {
     serves voice learning). On the user's 53-minute meeting a pass took about 30 s per
     track (debug build). The extractor is asked about each turn with its exact span
     (`T12@723.5-731.25`), so a vector is always of the times the cache keeps it against,
-    even when a split changes the turn while the pass runs. The app passes the spans on the
+    even when a split changes the turn while the pass runs. A word edit keeps the turns (its
+    run is retargeted): what the cache holds for turns at the same times stays; when it moved
+    a turn worth a voice (an untimed segment spreads its words again), the voices are worked
+    out again on the new run, a pass running replaced (what it would store is at the old
+    times, never served). The app passes the spans on the
     child's stdin, one per line (`speakers embed --turns - …`), from a 0600 temporary file it
     unlinks before the child starts: a 3-hour meeting has thousands of turns, and one argv
     entry holding them all could pass `ARG_MAX`. The other helper commands the app runs take
@@ -7944,7 +7948,9 @@ shown, Otter-style.
     holding the value this meeting taught it takes the new one (the word re-edited from
     "Claude" to "Claudia"); one holding anything else keeps it (an external or another
     meeting's choice wins; within one close, the first in the meeting); nothing is removed.
-    Only what the list then holds is recorded as taught, one value per phrase. A write that fails (logged) is not recorded, so the
+    Only what the close put in the list (added, or replacing the meeting's own earlier value)
+    is recorded as taught, one value per phrase; a rule the list already held unchanged is not
+    the meeting's, so a later re-edit there never overwrites it. A write that fails (logged) is not recorded, so the
     meeting's next review close makes it again, since the edits stay in the transcript; a
     record that cannot be read (damaged, or newer) teaches nothing rather than teach again
     what was deleted;
@@ -7962,7 +7968,10 @@ shown, Otter-style.
   - when the new text looks like a name or term (a word that is not a dictionary word, has a
     capital inside it, or a content word the edit capitalized), the window offers "Add
     “Claude” to the word list, often heard as “cloud”?" (Add / Not Now); ⌥Return adds it
-    without asking. "Often heard as" is the recognizer's text unless it is the term itself in
+    without asking. The term is what was typed, never words the edit took in around it
+    ("Yorkshire", not "New Yorkshire", when only "York" of an automatic "New York" was
+    edited), and "often heard as" is given only when the recognizer's text for exactly those
+    words is known. "Often heard as" is the recognizer's text unless it is the term itself in
     another case;
   - a word-list term added from the offer stays (an explicit action). A correction learned
     stays until removed in Corrections.

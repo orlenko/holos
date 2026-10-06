@@ -211,6 +211,52 @@ func aRunAWordEditRetargetedKeepsOnlyTheVoicesOfTurnsAtTheSameTimes() {
     #expect(cache.serve(session: session, track: "system", turns: [after[0]], headRunID: "EDITED")?.count == 1)
 }
 
+@Test(.timeLimit(.minutes(1))) @MainActor
+func turnsAWordEditMovedWhileThePassRanAreWorkedOutAgain() async throws {
+    let temp = try TemporaryDirectory("review")
+    defer { temp.remove() }
+    // One untimed segment shared by two speakers' turns of four words each (T1 0–8 s, T2 8–16 s).
+    let segment = TranscriptSegment(id: "U1", start: 0, end: 16, text: "one two three four five six seven eight",
+                                    track: "system")
+    let transcript = SessionFixtures.transcript([segment])
+    let session = try await SessionFixtures.makeSession(in: temp.url, source: .system, audioSeconds: ["system": 17],
+                                                        mode: .call, transcript: transcript)
+    let manifest = try SessionArchive.readManifest(at: session)
+    let speakers = [s1, s2].enumerated().map {
+        SessionSpeaker(id: $1, ordinal: $0 + 1, provenance: .diarizer, clusterIDs: [$1])
+    }
+    func turn(_ id: String, _ speaker: String, _ words: Range<Int>, _ start: Double, _ end: Double) -> SpeakerTurn {
+        SpeakerTurn(id: id, track: "system", start: start, end: end, speakerID: speaker, clusterID: speaker,
+                    spans: [WordSpan(segmentID: segment.id, first: words.lowerBound, end: words.upperBound)],
+                    overlap: false, otherClusters: [], assignmentScore: 1, timing: .estimated)
+    }
+    let run = DiarizationRun(sessionID: manifest.id, transcriptID: transcript.id, engine: .fake,
+                             alignment: AlignmentInfo(version: 1, parameters: .v1),
+                             tracks: [TrackDiarization(track: "system", policy: .diarized, clusters: speakers.map {
+                                 ClusterSummary(clusterID: $0.id, track: "system", speechSeconds: 8)
+                             })],
+                             speakers: speakers,
+                             turns: [turn("T1", s1, 0..<4, 0, 8), turn("T2", s2, 4..<8, 8, 16)])
+    try SessionArchive.withSpeakerLock(at: session) {
+        try SessionSpeakerStore.writeRun(run, session: session)
+        try SessionSpeakerStore.writeHead(SpeakerHead(runID: run.id), session: session)
+    }
+    let gate = VoiceGate()
+    let extractor = VoiceFakeExtractor(voices: ["T1": voiceA, "T2": voiceB], gate: gate)
+    let review = try await voiceOpen(session, store: try voiceStore(temp), extractor: extractor)
+    try await voiceWait("the pass") { extractor.callCount == 1 }
+    // While the pass runs, a word edit spreads the untimed words again: both turns' times move.
+    let before = review.projection.turns.map(\.end)
+    try await review.editWords([review.words(of: "T1")[0].ref], to: "one and a half")
+    #expect(review.projection.turns.map(\.end) != before)
+    gate.open()
+    try await voiceWait("the voices") { review.voiceAnalysis == .ready }
+    // Worked out again at their new times: both are served.
+    let turns = review.projection.turns.map(TurnRef.init)
+    #expect(review.voiceCache.embeddings(runID: review.projection.runID, turns: turns).keys.sorted() == ["T1", "T2"])
+    await review.close()
+}
+
 @Test(.timeLimit(.minutes(1)))
 func aLearnerWaitsForThePassOrStopsWhenCancelled() async throws {
     let cache = MeetingVoiceCache()

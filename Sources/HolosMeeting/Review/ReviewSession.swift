@@ -32,11 +32,18 @@ public struct ReviewWordEdit: Sendable, Equatable {
     /// "ask Claude"), as corrections are matched against it. Nil: as shown.
     public let heardBefore: String?
     public let heardAfter: String?
+    /// What was typed for the selected words (`meant` also holds any word the edit took in around them, the rest of
+    /// an automatic fix: "New Yorkshire" when only "York" of "New York" became "Yorkshire"); nil when not known.
+    public let typed: String?
+    /// What the recognizer wrote for exactly the selected words; nil when the edit took in others (it is then not
+    /// known for them alone).
+    public let typedHeard: String?
 
     public init(heard: String, meant: String, deletion: Bool = false, before: String? = nil, after: String? = nil,
-                heardBefore: String? = nil, heardAfter: String? = nil) {
+                heardBefore: String? = nil, heardAfter: String? = nil, typed: String? = nil,
+                typedHeard: String? = nil) {
         self.heard = heard; self.meant = meant; self.deletion = deletion; self.before = before; self.after = after
-        self.heardBefore = heardBefore; self.heardAfter = heardAfter
+        self.heardBefore = heardBefore; self.heardAfter = heardAfter; self.typed = typed; self.typedHeard = typedHeard
     }
 }
 
@@ -1635,8 +1642,12 @@ public struct ReviewWord: Sendable, Equatable {
             committed: { [weak self] (published: SessionWordEdit.Outcome??) in
                 guard let self, let saved = published ?? nil else { return }
                 self.turnKeepingRuns[saved.runID] = runID
+                // The span is exactly the selection unless it took in words around it (its move then differs).
+                let exact = saved.move == saved.labelsMove
                 let edit = ReviewWordEdit(heard: saved.heard, meant: saved.meant, deletion: saved.deletion,
-                                          before: saved.before, after: saved.after)
+                                          before: saved.before, after: saved.after,
+                                          typed: TranscriptWordEdit.cleaned(sent.text),
+                                          typedHeard: exact ? saved.heard : nil)
                 op.wordEditResult = edit
                 op.wordEdit = WordEditUndo(previous: transcriptID, edited: saved.transcriptID,
                                            segmentID: sent.segmentID, move: saved.move,
@@ -2567,10 +2578,19 @@ public struct ReviewWord: Sendable, Equatable {
         let headChanged = fresh.run?.id != previousRunID && !retargeted
         let external = forced || headChanged || added.count > windowLines
         let transcriptChanged = fresh.transcript.id != snapshot.transcript.id
+        var voicesMoved = false
         if retargeted, let previousRunID, let newRunID = fresh.run?.id, voiceRunID == previousRunID {
-            // The same turns: the voices worked out for those still at the same times hold; the others are dropped
-            // (and not worked out again until the next pass).
+            // The same turns: the voices worked out for those still at the same times hold; the others are dropped.
             let turns = (fresh.projection?.turns ?? []).map(TurnRef.init)
+            let before = Dictionary((snapshot.projection?.turns ?? []).map { ($0.id, $0) },
+                                    uniquingKeysWith: { first, _ in first })
+            // A turn worth a voice whose times moved (an untimed segment spreads its words again): a pass running
+            // would store it at its old times, which are never served, so a new pass works the voices out again.
+            voicesMoved = (fresh.projection?.turns ?? []).contains { turn in
+                Self.analysable(turn) && before[turn.id].map {
+                    abs($0.start - turn.start) > 1e-6 || abs($0.end - turn.end) > 1e-6
+                } ?? true
+            }
             if voiceCache.moveRun(from: previousRunID, to: newRunID, turns: turns) {
                 voiceRunID = newRunID
                 voiceMatchKey = nil
@@ -2610,6 +2630,9 @@ public struct ReviewWord: Sendable, Equatable {
             Self.log.info("Session \(self.sessionID, privacy: .public): labels changed elsewhere (\(added.count - windowLines, privacy: .public) other lines, head changed: \(headChanged, privacy: .public))")
         }
         updateVoiceAnalysis()
+        // Turns whose times a word edit moved: the voices are worked out again on the new run (a pass running is
+        // replaced, its results at the old times dropped).
+        if voicesMoved, voiceRunID == fresh.run?.id, !closed { startVoiceAnalysis() }
         recomputeProjection()
         notify()
         return !ours.isEmpty

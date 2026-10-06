@@ -159,7 +159,8 @@ func anEditIsSavedLearnedAndUndoneExactlyWithSpeakerEditsAround() async throws {
     let runBefore = review.projection.runID
 
     let edit = try await review.editWords(wordEditRefs(review, "T1", [1]), to: "Claude")
-    #expect(edit == ReviewWordEdit(heard: "cloud", meant: "Claude", before: "ask", after: "now"))
+    #expect(edit == ReviewWordEdit(heard: "cloud", meant: "Claude", before: "ask", after: "now", typed: "Claude",
+                                   typedHeard: "cloud"))
     #expect(learner.taughtBy.isEmpty && learner.value("cloud") == nil, "Nothing is learned before the window closes.")
     let edited = try wordEditCurrent(session)
     #expect(edited.id != original.id)
@@ -977,6 +978,47 @@ func aMeetingsLaterEditReplacesWhatItTaughtButNeverAValueSetElsewhere() async th
 }
 
 @Test(.timeLimit(.minutes(1))) @MainActor
+func anEditOfPartOfAFixSaysWhatWasTypedApartFromTheWordsItTookIn() async throws {
+    let temp = try TemporaryDirectory("review")
+    defer { temp.remove() }
+    let session = try await wordEditFixedCloudSession(temp, words: ["we", "knew", "work", "here"],
+                                                      correction: Correction(heard: "knew work", meant: "New York"))
+    let review = try await wordEditOpen(session)
+    #expect(review.words(of: "T1").map(\.text) == ["we", "New", "York", "here"])
+    var committed: [ReviewWordEdit] = []
+    try await review.editWords(wordEditRefs(review, "T1", [2]), to: "Yorkshire") { committed.append($0) }
+    // The edit takes in the whole fix ("New Yorkshire", heard "knew work"); what was typed is "Yorkshire" alone, and
+    // what the recognizer wrote for "York" alone is not known.
+    #expect(committed.first?.meant == "New Yorkshire" && committed.first?.heard == "knew work")
+    #expect(committed.first?.typed == "Yorkshire" && committed.first?.typedHeard == nil)
+    // A whole word edited: what the recognizer wrote for it is known.
+    try await review.editWords(wordEditRefs(review, "T1", [3]), to: "there") { committed.append($0) }
+    #expect(committed.last?.typed == "there" && committed.last?.typedHeard == "here")
+    await review.close()
+}
+
+@Test(.timeLimit(.minutes(1))) @MainActor
+func aCorrectionTheListAlreadyHadIsNeverTheMeetingsToReplace() async throws {
+    let temp = try TemporaryDirectory("review")
+    defer { temp.remove() }
+    let session = try await wordEditCloudSession(temp)
+    // The list already has "cloud" → "Claude" (set elsewhere); the meeting's edit teaches the same.
+    let learner = WordEditLearner(CorrectionList(entries: [Correction(heard: "cloud", meant: "Claude")]))
+    let first = try await wordEditOpen(session)
+    learner.attach(to: first)
+    try await first.editWords(wordEditRefs(first, "T1", [0]), to: "Claude")
+    await first.close()
+    #expect(try ReviewLearning.taught(session: session).isEmpty, "Already there: not recorded as this meeting's.")
+    // Reopened, the word edited again: the rule the meeting never created stays.
+    let second = try await wordEditOpen(session)
+    learner.attach(to: second)
+    try await second.editWords(wordEditRefs(second, "T1", [0]), to: "Claudia")
+    await second.close()
+    #expect(learner.value("cloud") == "Claude")
+    #expect(try ReviewLearning.taught(session: session).isEmpty)
+}
+
+@Test(.timeLimit(.minutes(1))) @MainActor
 func editsSideBySideAreLearnedAsOnePhraseFromWhatTheRecognizerWrote() async throws {
     let temp = try TemporaryDirectory("review")
     defer { temp.remove() }
@@ -1175,14 +1217,14 @@ func anEditBesideAnOlderUnspacedFixIsRefusedSayingWhy() async throws {
 
 /// "ask more cloud now" (or `words`), whose "cloud" the word-fix stage made "Claude"; the labels are on that revision.
 private func wordEditFixedCloudSession(_ temp: TemporaryDirectory,
-                                       words: [String] = ["ask", "more", "cloud", "now"]) async throws -> URL {
+                                       words: [String] = ["ask", "more", "cloud", "now"],
+                                       correction: Correction = Correction(heard: "cloud", meant: "Claude"))
+    async throws -> URL {
     let session = try await wordEditSession(in: temp, [
         WordEditTurn(speaker: "system:S1", start: 0, words: words),
     ])
     let base = try wordEditCurrent(session)
-    let fixed = try await WordFixStage.fix(base, title: "",
-                                           corrections: CorrectionList(entries: [Correction(heard: "cloud",
-                                                                                            meant: "Claude")]),
+    let fixed = try await WordFixStage.fix(base, title: "", corrections: CorrectionList(entries: [correction]),
                                            terms: CorrectionList(), dependencies: .none).transcript
     try await SessionFixtures.saveTranscript(fixed, in: session)
     var run = try SessionSpeakerStore.readRun(id: try #require(try SessionSpeakerStore.readHead(session: session)?.runID),

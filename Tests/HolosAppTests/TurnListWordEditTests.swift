@@ -134,6 +134,21 @@ struct TurnListWordEditTests {
         #expect(list.wordEdit?.words.map(\.text) == ["alpha"])
     }
 
+    /// The word-list term after an edit is what was typed, never the words the edit took in around it.
+    @Test func theTermOfferedIsWhatWasTyped() {
+        // Only "York" of an automatic "New York" (heard "knew work") became "Yorkshire": the edit's text is
+        // "New Yorkshire", the recognizer's words for "York" alone are not known.
+        let partial = ReviewWordEdit(heard: "knew work", meant: "New Yorkshire", typed: "Yorkshire")
+        let added = ReviewWindow.wordListTerm(after: partial, add: true, isDictionaryWord: { _ in false })
+        #expect(added?.term == "Yorkshire" && added?.heardAs == nil)
+        let offered = ReviewWindow.wordListTerm(after: partial, add: false, isDictionaryWord: { _ in false })
+        #expect(offered?.term == "Yorkshire" && offered?.heardAs == nil)
+        // The whole recognized word edited: "often heard as" what the recognizer wrote.
+        let whole = ReviewWordEdit(heard: "cloud", meant: "Claude", typed: "Claude", typedHeard: "cloud")
+        let term = ReviewWindow.wordListTerm(after: whole, add: true, isDictionaryWord: { _ in false })
+        #expect(term?.term == "Claude" && term?.heardAs == "cloud")
+    }
+
     @Test func tabSavesAndEditsTheNextWordAcrossRowsAndShiftTabGoesBack() {
         let (list, saved) = editingList()
         list.editingWords = true

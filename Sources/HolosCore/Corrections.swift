@@ -143,19 +143,22 @@ public struct CorrectionList: Codable, Sendable, Equatable {
     /// Learns what a meeting's word edits teach as `learnKeepingExisting` does, except that a phrase still holding the
     /// value this meeting taught it before (`taught`: its earlier lessons) takes the new one: the meeting's later edit
     /// wins over its own earlier one ("Claude", re-edited to "Claudia"), never over a value set elsewhere. Returns what
-    /// the list now holds of `learned` (added, replaced, or already so); a phrase kept with another value is left out.
+    /// this call put in the list (added, or replacing the meeting's own earlier value): the meeting's to record as
+    /// taught. A phrase the list already held with the same value is left out too: that rule is not the meeting's, so
+    /// a later re-edit there never overwrites it.
     @discardableResult
     public mutating func learnReplacingTaught(_ learned: [Correction], taught: [Correction]) -> [Correction] {
         var applied: [Correction] = []
         for correction in learned {
             let key = Self.key(correction.heard)
             guard !key.isEmpty else { continue }
-            if let existing = entry(forKey: key), existing.meant != correction.meant {
-                guard taught.contains(where: { Self.key($0.heard) == key && $0.meant == existing.meant }) else {
+            if let existing = entry(forKey: key) {
+                guard existing.meant != correction.meant,
+                      taught.contains(where: { Self.key($0.heard) == key && $0.meant == existing.meant }) else {
                     continue
                 }
                 set(correction, forKey: key)
-            } else if entry(forKey: key) == nil {
+            } else {
                 add(correction)
             }
             if entry(forKey: key)?.meant == correction.meant { applied.append(correction) }
