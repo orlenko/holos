@@ -1008,8 +1008,10 @@ extension HolosAppDelegate: NSMenuDelegate {
         }
         window.onRelabel = { [weak self] running in self?.reviewRelabelChanged(sessionID, running: running) }
         // Word edits in Review teach corrections and offer word-list terms (docs/meeting-design.md §5.10).
-        window.review.learnCorrections = { [weak self] edit in self?.learnReviewEdit(edit) }
-        window.review.unlearnCorrections = { [weak self] learned in self?.unlearnReviewEdit(learned) }
+        window.review.correctionsToLearn = { [weak self] edit in self?.reviewEditCorrections(edit) ?? [] }
+        window.review.syncCorrections = { [weak self] values, capture in
+            self?.syncReviewCorrections(values, capture: capture)
+        }
         window.wordListHeardAs = { [weak self] term in self?.wordListHeardAs(term) }
         window.addWordListTerm = { [weak self] term, heardAs in
             self?.addReviewTerm(term, heardAs: heardAs) ?? "The word list is not available."

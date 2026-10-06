@@ -422,9 +422,10 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate {
         }
         turnList.onEditMessage = { [weak self] message in self?.editBanner.show(message: message) }
         turnList.onRequestEditing = { [weak self] in
-            guard let self, self.review.isEditable else { return }
+            guard let self, self.review.canEditWords else { return }
             self.setEditMode(true)
         }
+        turnList.editText = { [review] words in review.shownText(of: words.map(\.ref)) }
         turnList.onUserScroll = { [weak self] in
             self?.follow.userScrolled(at: ProcessInfo.processInfo.systemUptime)
         }
@@ -602,7 +603,15 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate {
         microphoneItem.isEnabled = editable
         undoItem.isEnabled = editable && review.canUndo
         // Read-only (a command holds the review): edit mode can still be left, not entered.
-        editButton.isEnabled = editable || turnList.editingWords
+        editButton.isEnabled = review.canEditWords || turnList.editingWords
+        // Edit mode while words cannot be edited (the transcript changed after labelling): no field opens, and the
+        // banner says why.
+        turnList.canEditWords = review.canEditWords
+        if turnList.editingWords, let blocked = review.wordEditingBlocked {
+            editBanner.show(message: blocked)
+        } else if turnList.editingWords, editBanner.label.stringValue == ReviewSession.labelAgainFirst.localizedDescription {
+            editBanner.show(message: nil)
+        }
 
         learnBox.isEnabled = review.profiles != nil && review.rememberVoices
         learnBox.state = review.learnVoices && review.rememberVoices ? .on : .off
@@ -641,6 +650,9 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate {
         }
         if let problem { lines.append(Notice(text: "⚠ " + problem, color: .systemRed)) }
         if let notice { lines.append(Notice(text: notice)) }
+        if let learningProblem = review.learningProblem {
+            lines.append(Notice(text: "⚠ " + learningProblem, color: .systemOrange))
+        }
         if let offered = offeredTerm {
             let heard = offered.heardAs.map { ", often heard as “\($0)”" } ?? ""
             lines.append(Notice(text: "Add “\(offered.term)” to the word list\(heard)? Voice is Local then expects it "
@@ -951,7 +963,7 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate {
     /// Edit Words (the toolbar toggle, ⌘E): on only while the review is editable (not while a command holds it
     /// read-only); off always.
     @objc private func toggleEditMode() {
-        let next = Self.editModeAfterToggle(on: turnList.editingWords, editable: review.isEditable)
+        let next = Self.editModeAfterToggle(on: turnList.editingWords, editable: review.canEditWords)
         if next == turnList.editingWords {
             NSSound.beep()
             editButton.state = next ? .on : .off

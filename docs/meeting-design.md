@@ -7740,8 +7740,16 @@ shown, Otter-style.
   timestamp buttons still play. Every word has a VoiceOver action "Edit “word”", which turns
   edit mode on and opens the field. An edited word is dotted-underlined like a fixed word
   ("You changed “heard”"), and its Revert ("Revert to “heard”") is another edit back to what
-  the recognizer wrote. ⌘E turns the mode on only while the review is editable (not while a
-  command holds it read-only); it always turns it off.
+  the recognizer wrote. ⌘E turns the mode on only while words can be edited: the review is
+  editable (no command holds it read-only) and its labels were made on the current transcript
+  (after the transcript changed, the banner says to use Label Again first, and no field
+  opens); it always turns it off.
+- *The words' text.* An edit replaces, and the field starts with, the text the words show
+  in the transcript and the exports (`TranscriptWordEdit.shownText`): from the first word's
+  offset to the next word's, without the whitespace at either end. So punctuation the
+  recognizer did not time goes with its word ("Hello" timed in "Hello." shows and is edited as
+  "Hello."), and the space Apple's recognizer puts at the front of a word's range (" cloud")
+  stays in place ("ask Claude now", never "askClaude now"), in the base revision too.
 - *The open field* follows its words. Tab opens the next word's field before the save of the
   last one ends; every saved edit and undo records how it moved its segment's words
   (`ReviewWordMove`: the selected word indices and what replaced them, the rest shifted; the
@@ -7830,17 +7838,22 @@ shown, Otter-style.
     “Claude” to the word list, often heard as “cloud”?" (Add / Not Now); ⌥Return adds it
     without asking. "Often heard as" is the recognizer's text unless it is the term itself in
     another case;
-  - undoing the edit takes back the corrections it introduced and restores any it displaced
-    (`CorrectionList.reconcileLearned`); a word-list term added stays. The window keeps a
-    learning stack: each learned edit, the stored word range it came from (kept up to date
-    through every word move), and what learning it introduced and displaced. A Revert of
-    edited words (any edit back to what the recognizer wrote) gives back the entries of those
-    very words, newest first, so each restores what it displaced and a chain "cloud" →
-    "Claude" → "Claudia" leaves nothing; another occurrence of the same heard words keeps its
-    own. An entry given back from the middle hands what it displaced on to the later entries
-    that displaced its rules. Undoing the Revert learns them again, oldest first. An edit made
-    in an earlier review is not remembered, so its correction stays until removed in
-    Corrections.
+  - undoing the edit takes back what it taught, and the list is again as the window's other
+    edits, or the list before them, say; a word-list term added stays. corrections.json holds
+    one correction per heard phrase
+    (its key), while several edits of one window may teach the same key, so nothing is pushed
+    or popped: `ReviewLearning` works the wanted state out again after every edit, undo,
+    Revert, and undo of a Revert. It keeps every edit that taught something in the order the
+    edits were made, with the stored word range it came from (kept up to date through every
+    word move) and whether it is in effect (an undo removes it; a Revert of its very words, any
+    edit back to what the recognizer wrote, makes it inactive; the Revert's undo makes it
+    active again), and each touched key's value from before the window first changed it. A
+    key's wanted value is that of the most recent active edit teaching it, else that baseline.
+    The app writes the wanted values under the list's lock (`ReviewSession.syncCorrections`,
+    reading the baselines of new keys in the same write); a write that fails stays owed, is
+    tried again with the next learning change and when the window closes, and the footer says
+    so meanwhile. An edit made in an earlier review is not remembered, so its correction stays
+    until removed in Corrections.
 - *Not in v1.* Editing while the meeting records (Review opens after it), spanning segments
   or turns, deleting a whole segment, editing over a live correction, redo, and showing the
   edit before it is saved (the field closes and the row updates once saved).

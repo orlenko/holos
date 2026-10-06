@@ -76,6 +76,35 @@ private func wordEditCurrent(_ session: URL) throws -> Transcript {
     try #require(try SessionFiles.currentTranscript(session: session))
 }
 
+/// A corrections list in memory that the review keeps in step as the app does (`ReviewSession.syncCorrections`), and
+/// what each edit teaches: "heard" → "meant", as recorded.
+@MainActor
+private final class WordEditLearner {
+    var list: CorrectionList
+    /// While set, writes fail (corrections.json cannot be saved).
+    var failing = false
+    private(set) var taughtBy: [ReviewWordEdit] = []
+
+    init(_ list: CorrectionList = CorrectionList()) { self.list = list }
+
+    func attach(to review: ReviewSession) {
+        review.correctionsToLearn = { [self] edit in
+            taughtBy.append(edit)
+            return edit.heard == edit.meant ? [] : [Correction(heard: edit.heard, meant: edit.meant)]
+        }
+        review.syncCorrections = { [self] values, capture in
+            guard !failing else { return nil }
+            var before: [String: Correction?] = [:]
+            for key in capture { before[key] = .some(list.entry(forKey: key)) }
+            for (key, value) in values { list.set(value, forKey: key) }
+            return before
+        }
+    }
+
+    /// What the list makes of `heard`, nil when nothing.
+    func value(_ heard: String) -> String? { list.entry(forKey: CorrectionList.key(heard))?.meant }
+}
+
 @Test(.timeLimit(.minutes(1))) @MainActor
 func anEditIsSavedLearnedAndUndoneExactlyWithSpeakerEditsAround() async throws {
     let temp = try TemporaryDirectory("review")
@@ -86,20 +115,15 @@ func anEditIsSavedLearnedAndUndoneExactlyWithSpeakerEditsAround() async throws {
     ])
     let original = try wordEditCurrent(session)
     let review = try await wordEditOpen(session)
-    var learned: [ReviewWordEdit] = []
-    var unlearned: [ReviewLearnedCorrections] = []
-    let token = ReviewLearnedCorrections(owned: [Correction(heard: "cloud now", meant: "Claude now")])
-    review.learnCorrections = { edit in
-        learned.append(edit)
-        return token
-    }
-    review.unlearnCorrections = { unlearned.append($0) }
+    let learner = WordEditLearner()
+    learner.attach(to: review)
     try await review.apply([.rename(speakerID: "system:S1", name: "Alice")])
     let runBefore = review.projection.runID
 
     let edit = try await review.editWords(wordEditRefs(review, "T1", [1]), to: "Claude")
     #expect(edit == ReviewWordEdit(heard: "cloud", meant: "Claude", before: "ask", after: "now"))
-    #expect(learned == [ReviewWordEdit(heard: "cloud", meant: "Claude", before: "ask", after: "now")])
+    #expect(learner.taughtBy == [ReviewWordEdit(heard: "cloud", meant: "Claude", before: "ask", after: "now")])
+    #expect(learner.value("cloud") == "Claude")
     let edited = try wordEditCurrent(session)
     #expect(edited.id != original.id)
     #expect(edited.segments.map(\.text) == ["ask Claude now", "we will see"])
@@ -129,7 +153,7 @@ func anEditIsSavedLearnedAndUndoneExactlyWithSpeakerEditsAround() async throws {
     #expect(review.words(of: "T1").map(\.text) == ["ask", "cloud", "now"])
     #expect(review.words(of: "T1").allSatisfy { $0.fix == nil })
     #expect(review.speaker("system:S1")?.name == "Alice")
-    #expect(unlearned == [token])
+    #expect(learner.value("cloud") == nil, "What the edit taught goes with it.")
     #expect(review.canUndo)
     try await review.undo()
     #expect(review.speaker("system:S1")?.name == "Speaker 1")
@@ -233,10 +257,8 @@ func anEditWhoseLabelsCannotBeRereadCanStillBeUndoneAndItsUndoUnlearns() async t
     ])
     let original = try wordEditCurrent(session)
     let review = try await wordEditOpen(session)
-    let token = ReviewLearnedCorrections(owned: [Correction(heard: "cloud now", meant: "Claude now")])
-    var unlearned: [ReviewLearnedCorrections] = []
-    review.learnCorrections = { _ in token }
-    review.unlearnCorrections = { unlearned.append($0) }
+    let learner = WordEditLearner()
+    learner.attach(to: review)
     struct Unreadable: Error {}
 
     // Committed, then the labels cannot be reread: the edit is kept, and undoable once they are.
@@ -244,6 +266,7 @@ func anEditWhoseLabelsCannotBeRereadCanStillBeUndoneAndItsUndoUnlearns() async t
     await #expect(throws: HolosError.self) { try await review.editWords(wordEditRefs(review, "T1", [1]), to: "Claude") }
     #expect(try wordEditCurrent(session).segments[0].text == "ask Claude now")
     #expect(review.reloadProblem != nil && review.canUndo)
+    #expect(learner.value("cloud") == "Claude")
     review.beforeWordChangeReread = nil
     await review.reload()
     #expect(review.reloadProblem == nil && review.canUndo, "The reread knows the edit's run keeps the turns.")
@@ -252,7 +275,7 @@ func anEditWhoseLabelsCannotBeRereadCanStillBeUndoneAndItsUndoUnlearns() async t
     // The undo is committed, then its reread fails: what the edit taught is taken back all the same.
     review.beforeWordChangeReread = { throw Unreadable() }
     await #expect(throws: HolosError.self) { try await review.undo() }
-    #expect(unlearned == [token])
+    #expect(learner.value("cloud") == nil)
     #expect(try wordEditCurrent(session).segments == original.segments)
     review.beforeWordChangeReread = nil
     await review.reload()
@@ -298,74 +321,161 @@ func aQueuedEditWaitsForTheRereadAnEarlierEditsFailureNeeds() async throws {
     await review.close()
 }
 
-/// A corrections list in memory that learns and gives back as the app does (`CorrectionList.reconcileLearned`).
-@MainActor
-private final class WordEditLearner {
-    var list = CorrectionList()
+// MARK: - Learning, worked out again from the window's edits
 
-    func attach(to review: ReviewSession) {
-        review.learnCorrections = { [self] edit in
-            guard edit.heard != edit.meant else { return nil }
-            let done = list.reconcileLearned([], with: [Correction(heard: edit.heard, meant: edit.meant)])
-            return ReviewLearnedCorrections(owned: done.owned, displaced: done.displaced)
+/// Three "cloud"s in one turn, between "x", "y", "z"; the list held "cloud → Cloudy" before the window.
+@MainActor
+private func wordEditOccurrences(_ temp: TemporaryDirectory) async throws
+    -> (session: URL, review: ReviewSession, learner: WordEditLearner) {
+    let session = try await wordEditSession(in: temp, [
+        WordEditTurn(speaker: "system:S1", start: 0, words: ["cloud", "x", "cloud", "y", "cloud", "z"]),
+    ])
+    let review = try await wordEditOpen(session)
+    let learner = WordEditLearner(CorrectionList(entries: [Correction(heard: "cloud", meant: "Cloudy")]))
+    learner.attach(to: review)
+    return (session, review, learner)
+}
+
+@Test(.timeLimit(.minutes(1))) @MainActor
+func aChainOfEditsAndItsRevertLeaveTheListAsTheEditsInEffectSay() async throws {
+    let temp = try TemporaryDirectory("review")
+    defer { temp.remove() }
+    let (session, review, learner) = try await wordEditOccurrences(temp)
+    try await review.editWords(wordEditRefs(review, "T1", [0]), to: "Claude")
+    try await review.editWords(wordEditRefs(review, "T1", [0]), to: "Claudia")
+    #expect(learner.value("cloud") == "Claudia")
+    try await review.revertWordFix(wordEditRefs(review, "T1", [0])[0])
+    #expect(try wordEditCurrent(session).segments[0].text == "cloud x cloud y cloud z")
+    #expect(learner.value("cloud") == "Cloudy", "Nothing the window taught is in effect: the list is as before.")
+    try await review.undo()
+    #expect(learner.value("cloud") == "Claudia")
+    try await review.undo()
+    #expect(learner.value("cloud") == "Claude")
+    try await review.undo()
+    #expect(learner.value("cloud") == "Cloudy")
+    await review.close()
+}
+
+@Test(.timeLimit(.minutes(1))) @MainActor
+func anotherOccurrencesNewerCorrectionWinsWhateverIsRevertedOrUndone() async throws {
+    let temp = try TemporaryDirectory("review")
+    defer { temp.remove() }
+    let (_, review, learner) = try await wordEditOccurrences(temp)
+    try await review.editWords(wordEditRefs(review, "T1", [0]), to: "Claude")
+    try await review.editWords(wordEditRefs(review, "T1", [2]), to: "Klaud")
+    #expect(learner.value("cloud") == "Klaud")
+    // The first one reverted, then its Revert undone: the second, newer one is still what the list says.
+    try await review.revertWordFix(wordEditRefs(review, "T1", [0])[0])
+    #expect(learner.value("cloud") == "Klaud")
+    try await review.undo()
+    #expect(learner.value("cloud") == "Klaud")
+    // An edit earlier in the turn moves the second occurrence; its Revert still finds what it taught.
+    try await review.editWords(wordEditRefs(review, "T1", [1]), to: "x and")
+    try await review.revertWordFix(wordEditRefs(review, "T1", [3])[0])
+    #expect(learner.value("cloud") == "Claude")
+    await review.close()
+}
+
+@Test(.timeLimit(.minutes(1))) @MainActor
+func aFailedCorrectionsWriteIsTriedAgainAndSaid() async throws {
+    let temp = try TemporaryDirectory("review")
+    defer { temp.remove() }
+    let (_, review, learner) = try await wordEditOccurrences(temp)
+    learner.failing = true
+    try await review.editWords(wordEditRefs(review, "T1", [0]), to: "Claude")
+    #expect(review.learningProblem != nil && learner.value("cloud") == "Cloudy")
+    learner.failing = false
+    try await review.editWords(wordEditRefs(review, "T1", [2]), to: "Klaud")
+    #expect(review.learningProblem == nil && learner.value("cloud") == "Klaud")
+    // An undo whose write fails: tried again when the window closes.
+    learner.failing = true
+    try await review.undo()
+    #expect(review.learningProblem != nil && learner.value("cloud") == "Klaud")
+    learner.failing = false
+    await review.close()
+    #expect(learner.value("cloud") == "Claude")
+}
+
+/// A small deterministic generator for the scenarios.
+private struct WordEditRandom {
+    var state: UInt64
+    mutating func next(_ bound: Int) -> Int {
+        state = state &* 6364136223846793005 &+ 1442695040888963407
+        return Int((state >> 33) % UInt64(bound))
+    }
+}
+
+@Test(.timeLimit(.minutes(2))) @MainActor
+func randomEditsRevertsAndUndosKeepTheListAsTheEditsInEffectSay() async throws {
+    // A model of the rule: the most recent active edit of the window teaching "cloud", else the list's own value.
+    struct Taught { var occurrence: Int; var value: String; var active = true; var undone = false }
+    enum Step { case edit(Int, Int, String, Int), revert(Int, [Int], String, Int) }
+    let spellings = ["Claude", "Klaud", "Claude Code"]
+    for seed in [7, 21, 1984] as [UInt64] {
+        let temp = try TemporaryDirectory("review")
+        defer { temp.remove() }
+        let (session, review, learner) = try await wordEditOccurrences(temp)
+        var random = WordEditRandom(state: seed)
+        var values = ["cloud", "cloud", "cloud"]
+        var taught: [Taught] = []
+        var steps: [Step] = []
+        func start(_ occurrence: Int) -> Int {
+            (0..<occurrence).reduce(0) { $0 + values[$1].split(separator: " ").count + 1 }
         }
-        review.unlearnCorrections = { [self] learned in
-            list.reconcileLearned(learned.owned, preserving: learned.displaced, with: [])
+        for _ in 0..<12 {
+            let occurrence = random.next(3)
+            let refs = wordEditRefs(review, "T1", Array(start(occurrence)..<(start(occurrence)
+                + values[occurrence].split(separator: " ").count)))
+            if !steps.isEmpty, random.next(4) == 0 {
+                try await review.undo()
+                switch steps.removeLast() {
+                case .edit(let index, let edited, let before, _):
+                    taught[index].undone = true
+                    values[edited] = before
+                case .revert(let edited, let deactivated, let before, _):
+                    for index in deactivated { taught[index].active = true }
+                    values[edited] = before
+                }
+            } else if values[occurrence] != "cloud", random.next(3) == 0 {
+                try await review.revertWordFix(refs[0])
+                let deactivated = taught.indices.filter {
+                    taught[$0].occurrence == occurrence && taught[$0].active && !taught[$0].undone
+                }
+                for index in deactivated { taught[index].active = false }
+                steps.append(.revert(occurrence, deactivated, values[occurrence], 0))
+                values[occurrence] = "cloud"
+            } else {
+                let value = spellings.filter { $0 != values[occurrence] }[random.next(2)]
+                try await review.editWords(refs, to: value)
+                taught.append(Taught(occurrence: occurrence, value: value))
+                steps.append(.edit(taught.count - 1, occurrence, values[occurrence], 0))
+                values[occurrence] = value
+            }
+            let expected = taught.last { $0.active && !$0.undone }?.value ?? "Cloudy"
+            #expect(learner.value("cloud") == expected, "seed \(seed), after \(steps.count) steps in effect")
+            #expect(try wordEditCurrent(session).segments[0].text
+                == "\(values[0]) x \(values[1]) y \(values[2]) z")
         }
+        await review.close()
     }
 }
 
 @Test(.timeLimit(.minutes(1))) @MainActor
-func revertingAChainOfEditsGivesBackItsLearningNewestFirst() async throws {
+func wordsCannotBeEditedOnceTheTranscriptChangedAfterLabelling() async throws {
     let temp = try TemporaryDirectory("review")
     defer { temp.remove() }
     let session = try await wordEditSession(in: temp, [
         WordEditTurn(speaker: "system:S1", start: 0, words: ["ask", "cloud", "now"]),
     ])
+    // A new revision the speakers were not labelled on.
+    var changed = try wordEditCurrent(session)
+    changed.id = UUID().uuidString
+    try await SessionFixtures.saveTranscript(changed, in: session)
     let review = try await wordEditOpen(session)
-    let learner = WordEditLearner()
-    learner.attach(to: review)
-    try await review.editWords(wordEditRefs(review, "T1", [1]), to: "Claude")
-    try await review.editWords(wordEditRefs(review, "T1", [1]), to: "Claudia")
-    #expect(learner.list.entries == [Correction(heard: "cloud", meant: "Claudia")])
-    // "Revert to “cloud”": "cloud → Claudia" is given back first, which brings back "cloud → Claude" it displaced,
-    // then that one: nothing is left.
-    try await review.revertWordFix(wordEditRefs(review, "T1", [1])[0])
-    #expect(try wordEditCurrent(session).segments[0].text == "ask cloud now")
-    #expect(learner.list.entries.isEmpty)
-    // Undone, the chain is learned again in its order; then each undo gives back its own step.
-    try await review.undo()
-    #expect(learner.list.entries == [Correction(heard: "cloud", meant: "Claudia")])
-    try await review.undo()
-    #expect(learner.list.entries == [Correction(heard: "cloud", meant: "Claude")])
-    try await review.undo()
-    #expect(learner.list.entries.isEmpty)
-    await review.close()
-}
-
-@Test(.timeLimit(.minutes(1))) @MainActor
-func revertingOneOccurrenceGivesBackOnlyWhatItsOwnEditTaught() async throws {
-    let temp = try TemporaryDirectory("review")
-    defer { temp.remove() }
-    let session = try await wordEditSession(in: temp, [
-        WordEditTurn(speaker: "system:S1", start: 0, words: ["cloud", "and", "cloud", "now"]),
-    ])
-    let review = try await wordEditOpen(session)
-    let learner = WordEditLearner()
-    learner.attach(to: review)
-    try await review.editWords(wordEditRefs(review, "T1", [0]), to: "Claude")
-    try await review.editWords(wordEditRefs(review, "T1", [2]), to: "Klaud")
-    #expect(learner.list.entries == [Correction(heard: "cloud", meant: "Klaud")])
-    // The first "cloud" back: the second occurrence's correction stays.
-    try await review.revertWordFix(wordEditRefs(review, "T1", [0])[0])
-    #expect(try wordEditCurrent(session).segments[0].text == "cloud and Klaud now")
-    #expect(learner.list.entries == [Correction(heard: "cloud", meant: "Klaud")])
-    // A word edit earlier in the segment moves the second occurrence; its Revert still finds what it taught.
-    try await review.editWords(wordEditRefs(review, "T1", [1]), to: "and then")
-    try await review.revertWordFix(wordEditRefs(review, "T1", [3])[0])
-    #expect(try wordEditCurrent(session).segments[0].text == "cloud and then cloud now")
-    // Neither "cloud" correction is left: the first one, given back out of order, is not brought back by the second.
-    #expect(!learner.list.entries.contains { $0.heard == "cloud" })
+    #expect(review.snapshot.transcriptChanged)
+    #expect(review.isEditable && !review.canEditWords)
+    #expect(review.wordEditingBlocked?.contains("Label Again") == true)
+    await #expect(throws: HolosError.self) { try await review.editWords(wordEditRefs(review, "T1", [1]), to: "x") }
     await review.close()
 }
 
@@ -403,38 +513,6 @@ func aSpeakerChangeQueuedBehindAnEditWhoseRereadFailedWaitsForTheReread() async 
     #expect(try SessionSpeakerStore.readEdits(session: session).edits.contains {
         $0.action == .rename(speakerID: "system:S1", name: "Ann")
     })
-    await review.close()
-}
-
-@Test(.timeLimit(.minutes(1))) @MainActor
-func revertingAnEditGivesBackWhatItTaughtAndItsUndoLearnsItAgain() async throws {
-    let temp = try TemporaryDirectory("review")
-    defer { temp.remove() }
-    let session = try await wordEditSession(in: temp, [
-        WordEditTurn(speaker: "system:S1", start: 0, words: ["ask", "cloud", "now"]),
-    ])
-    let review = try await wordEditOpen(session)
-    var learned: [ReviewWordEdit] = []
-    var unlearned: [ReviewLearnedCorrections] = []
-    review.learnCorrections = { edit in
-        learned.append(edit)
-        guard edit.heard != edit.meant else { return nil }
-        return ReviewLearnedCorrections(owned: [Correction(heard: edit.heard, meant: edit.meant + "#\(learned.count)")])
-    }
-    review.unlearnCorrections = { unlearned.append($0) }
-    try await review.editWords(wordEditRefs(review, "T1", [1]), to: "Claude")
-    let taught = ReviewLearnedCorrections(owned: [Correction(heard: "cloud", meant: "Claude#1")])
-    // "Revert to “cloud”": the correction the edit taught is given back.
-    try await review.revertWordFix(wordEditRefs(review, "T1", [1])[0])
-    #expect(try wordEditCurrent(session).segments[0].text == "ask cloud now")
-    #expect(unlearned == [taught])
-    // Undoing the Revert learns it again; undoing the edit then gives that back.
-    try await review.undo()
-    #expect(try wordEditCurrent(session).segments[0].text == "ask Claude now")
-    #expect(learned.last == ReviewWordEdit(heard: "cloud", meant: "Claude", before: "ask", after: "now"))
-    try await review.undo()
-    #expect(unlearned.count == 2 && unlearned.last?.owned.first?.meant.hasPrefix("Claude#") == true)
-    #expect(unlearned.last != taught, "The correction learned again is the one taken back.")
     await review.close()
 }
 

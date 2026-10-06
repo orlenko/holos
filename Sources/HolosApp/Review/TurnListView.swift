@@ -449,6 +449,12 @@ final class TurnListView: NSView, NSTableViewDataSource, NSTableViewDelegate {
     var onEditMessage: ((String?) -> Void)?
     /// VoiceOver asked to edit a word while edit mode is off: the window turns it on (`editingWords`).
     var onRequestEditing: (() -> Void)?
+    /// The text an edit field over `words` starts with (`ReviewSession.shownText`); nil: their text as shown.
+    var editText: (([ReviewWord]) -> String?)?
+    /// Words can be edited now (`ReviewSession.canEditWords`); edit mode shows, but a click opens no field, otherwise.
+    var canEditWords = true {
+        didSet { if !canEditWords { loseWordEdit() } }
+    }
 
     let table = TurnTableView()
     private let scroll = TurnScrollView()

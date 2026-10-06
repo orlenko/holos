@@ -136,8 +136,7 @@ public enum TranscriptWordEdit {
 
         let utf16 = Array(segment.text.utf16)
         func characters(_ words: [EffectiveWord], _ range: Range<Int>) -> Range<Int> {
-            words[range.lowerBound].utf16Offset..<(words[range.upperBound - 1].utf16Offset
-                + words[range.upperBound - 1].utf16Length)
+            extent(of: range, words: words, utf16: utf16)
         }
         func string(_ range: Range<Int>) -> String { String(decoding: utf16[range], as: UTF16.self) }
         let span = characters(words, lower..<upper)
@@ -149,7 +148,7 @@ public enum TranscriptWordEdit {
         let meant = cleaned(string(span.lowerBound..<selected.lowerBound) + (deletion ? " " : text)
             + string(selected.upperBound..<span.upperBound))
         let shown = string(span)
-        guard meant != shown, !meant.isEmpty else { return nil }
+        guard meant != cleaned(shown), !meant.isEmpty else { return nil }
 
         // What the recognizer wrote: unmarked words as they are, an automatic fix or an earlier edit its `heard`, and
         // a Review revert its own words (the recognizer's, restored).
@@ -216,6 +215,41 @@ public enum TranscriptWordEdit {
                       after: upper < words.count && editable(upper) ? words[upper].text : nil, move: move)
     }
 
+    /// The text words `range` of a segment show, as the review and the exports show it (`TranscriptText`): from the
+    /// first word's offset (the text's start for the segment's first word) to the next word's offset (the text's end
+    /// after its last word), without the whitespace at either end. So a word's punctuation that the recognizer did
+    /// not time ("Hello" in "Hello.") goes with it, and the space a recognizer puts at the front of a word's range
+    /// (Apple's " cloud") stays where it is when the words are replaced.
+    static func extent(of range: Range<Int>, words: [EffectiveWord], utf16: [UInt16]) -> Range<Int> {
+        guard range.lowerBound >= 0, range.lowerBound < range.upperBound, range.upperBound <= words.count else {
+            return 0..<0
+        }
+        var lower = range.lowerBound == 0 ? 0 : words[range.lowerBound].utf16Offset
+        var upper = range.upperBound == words.count ? utf16.count : words[range.upperBound].utf16Offset
+        // Offsets that do not fit the text: the words' own ranges.
+        if lower < 0 || upper > utf16.count || lower >= upper {
+            lower = words[range.lowerBound].utf16Offset
+            upper = words[range.upperBound - 1].utf16Offset + words[range.upperBound - 1].utf16Length
+        }
+        guard lower >= 0, lower <= upper, upper <= utf16.count else { return 0..<0 }
+        func isSpace(_ unit: UInt16) -> Bool {
+            Unicode.Scalar(unit).map { Character($0).isWhitespace } ?? false
+        }
+        while lower < upper, isSpace(utf16[lower]) { lower += 1 }
+        while upper > lower, isSpace(utf16[upper - 1]) { upper -= 1 }
+        return lower..<upper
+    }
+
+    /// The text words `[first, end)` of `segment` show (`extent`): what an edit field over them starts with.
+    public static func shownText(of segment: TranscriptSegment, first: Int, end: Int) -> String? {
+        let words = WordTiming.effectiveWords(of: segment)
+        guard first >= 0, first < end, end <= words.count else { return nil }
+        let utf16 = Array(segment.text.utf16)
+        let range = extent(of: first..<end, words: words, utf16: utf16)
+        guard !range.isEmpty else { return nil }
+        return String(decoding: utf16[range], as: UTF16.self)
+    }
+
     /// A copy of `previous` to make current again (undoing an edit): the same segments, words, and fixes, a new ID. A
     /// transcript that was its own word space keeps naming it, so speaker labels map back by word provenance.
     public static func restoring(_ previous: Transcript, now: Date = Date()) -> Transcript {
@@ -245,7 +279,11 @@ public enum TranscriptWordEdit {
               var working = WordFixes.Working(baseSegment, preservingExistingFixes: true) else {
             throw HolosError.invalidInput("These words cannot be matched to the transcript they were fixed from.")
         }
-        let range = baseWords[first].utf16Offset..<(baseWords[end - 1].utf16Offset + baseWords[end - 1].utf16Length)
+        // As in the current transcript: the words' shown text, its boundary whitespace left where it is.
+        let range = extent(of: first..<end, words: baseWords, utf16: Array(baseSegment.text.utf16))
+        guard !range.isEmpty else {
+            throw HolosError.invalidInput("These words cannot be matched to the transcript they were fixed from.")
+        }
         working.marks.removeAll { $0.range.overlaps(range) }
         let edited = WordFixes.applying([.init(range: range, text: meant, kind: .reviewEdit, heard: heard)],
                                         to: working)

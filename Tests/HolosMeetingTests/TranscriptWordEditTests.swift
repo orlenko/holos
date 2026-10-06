@@ -43,6 +43,61 @@ private func editRequest(_ first: Int, _ end: Int, _ text: String, segment: Stri
     #expect(TranscriptWordEdit.hasReviewEdits(result.transcript) && !TranscriptWordEdit.hasReviewEdits(current))
 }
 
+/// A timed segment whose words' ranges are given as (offset, length) pairs into `text`, as a recognizer reports them.
+private func editRanged(_ text: String, _ ranges: [(Int, Int)], id: String = "S1") -> TranscriptSegment {
+    let utf16 = Array(text.utf16)
+    let words = ranges.enumerated().map { index, range in
+        TimedWord(text: String(decoding: utf16[range.0..<(range.0 + range.1)], as: UTF16.self),
+                  start: Double(index), end: Double(index) + 0.8, utf16Offset: range.0, utf16Length: range.1)
+    }
+    return TranscriptSegment(id: id, start: 0, end: Double(ranges.count), text: text, words: words, track: "system")
+}
+
+@Test func aSpaceAtTheFrontOfAWordsRangeStaysWhereItIs() async throws {
+    // Apple's speech recognition: " cloud" and " now" carry the space before them.
+    let apple = editTranscript([editRanged("ask cloud now", [(0, 3), (3, 6), (9, 4)])])
+    #expect(TranscriptWordEdit.shownText(of: apple.segments[0], first: 1, end: 2) == "cloud")
+    let edited = try #require(try TranscriptWordEdit.editing(editRequest(1, 2, "Claude"), in: apple, base: nil))
+    #expect(edited.transcript.segments[0].text == "ask Claude now")
+    #expect(WordTiming.effectiveWords(of: edited.transcript.segments[0]).map(\.text) == ["ask", "Claude", " now"])
+    let twoWords = try #require(try TranscriptWordEdit.editing(editRequest(1, 3, "Claude later"), in: apple,
+                                                                base: nil))
+    #expect(twoWords.transcript.segments[0].text == "ask Claude later")
+    // The same through a fixed revision and its base.
+    let base = editTranscript([editRanged("ask cloud now please", [(0, 3), (3, 6), (9, 4), (13, 7)])])
+    let fixed = try await editFixed(base, [Correction(heard: "please", meant: "pls")])
+    #expect(fixed.segments[0].text == "ask cloud now pls")
+    let both = try #require(try TranscriptWordEdit.editing(editRequest(1, 2, "Claude"), in: fixed, base: base))
+    #expect(both.transcript.segments[0].text == "ask Claude now pls")
+    #expect(both.base?.segments[0].text == "ask Claude now please")
+    // Whisper-style ranges with the space after the word instead.
+    let trailing = editTranscript([editRanged("ask cloud now", [(0, 4), (4, 6), (10, 3)])])
+    let after = try #require(try TranscriptWordEdit.editing(editRequest(1, 2, "Claude"), in: trailing, base: nil))
+    #expect(after.transcript.segments[0].text == "ask Claude now")
+}
+
+@Test func punctuationTheRecognizerDidNotTimeGoesWithItsWord() throws {
+    // "Hello." and "you?" are timed as "Hello" and "you".
+    let segment = editRanged("Hello. How are you?", [(0, 5), (7, 3), (11, 3), (15, 3)])
+    let current = editTranscript([segment])
+    #expect(TranscriptWordEdit.shownText(of: segment, first: 0, end: 1) == "Hello.")
+    #expect(TranscriptWordEdit.shownText(of: segment, first: 3, end: 4) == "you?")
+    let question = try #require(try TranscriptWordEdit.editing(editRequest(0, 1, "Hello?"), in: current, base: nil))
+    #expect(question.transcript.segments[0].text == "Hello? How are you?")
+    #expect(question.heard == "Hello.")
+    let last = try #require(try TranscriptWordEdit.editing(editRequest(3, 4, "they!"), in: current, base: nil))
+    #expect(last.transcript.segments[0].text == "Hello. How are they!")
+    #expect(try TranscriptWordEdit.editing(editRequest(0, 1, "Hello."), in: current, base: nil) == nil,
+            "The field's text as it started changes nothing.")
+}
+
+@Test func aCorruptEditedRangeIsReadOnlyWithinItsSegment() {
+    var segment = editSegment(["one", "two", "three"])
+    segment.fixes = [TranscriptWordFix(first: 1, end: Int.max, heard: "x", kind: .reviewEdit)]
+    let words = EchoFilter.reviewEditedWords(in: editTranscript([segment]))
+    #expect(words == [WordRef(segmentID: "S1", word: 1), WordRef(segmentID: "S1", word: 2)])
+}
+
 @Test func moreAndFewerWordsShareTheEditedSpansTime() throws {
     let current = editTranscript([editSegment(["ask", "cloud", "now"])])
     let more = try #require(try TranscriptWordEdit.editing(editRequest(1, 2, "  Claude   Code "), in: current,

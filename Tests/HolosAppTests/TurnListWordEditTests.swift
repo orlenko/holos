@@ -232,6 +232,34 @@ struct TurnListWordEditTests {
         #expect(abs(list.editField.frame.minX - (origin.x - 4)) < 0.5 && abs(list.editField.frame.minY - (origin.y - 3)) < 0.5)
     }
 
+    @Test func theFieldStartsWithTheWordsTextAsTheTranscriptHasIt() {
+        let (list, _) = editingList()
+        // The review gives a word's text with the punctuation the recognizer did not time.
+        list.editText = { words in words.map(\.text) == ["beta"] ? "beta." : nil }
+        list.editingWords = true
+        list.table.handleWordClick(row: 0, word: 1, through: 1, extend: false)
+        #expect(list.editField.stringValue == "beta.")
+        list.table.handleWordClick(row: 0, word: 0, through: 0, extend: false)
+        #expect(list.editField.stringValue == "alpha")
+    }
+
+    @Test func noFieldOpensWhileWordsCannotBeEdited() {
+        let (list, saved) = editingList()
+        var played: [Double] = []
+        list.onPlay = { played.append($0) }
+        list.editingWords = true
+        list.table.handleWordClick(row: 0, word: 1, through: 1, extend: false)
+        list.editField.stringValue = "Beta"
+        // The transcript changed after labelling: the open field closes keeping what was typed, and none opens.
+        var messages: [String?] = []
+        list.onEditMessage = { messages.append($0) }
+        list.canEditWords = false
+        #expect(list.wordEdit == nil && saved().isEmpty)
+        #expect(messages.last == TurnListView.wordsChanged + " What you typed: “Beta”.")
+        list.table.handleWordClick(row: 0, word: 0, through: 0, extend: false)
+        #expect(list.wordEdit == nil && played.isEmpty)
+    }
+
     @Test func editModeTurnsOnOnlyWhileTheReviewIsEditable() {
         #expect(ReviewWindow.editModeAfterToggle(on: false, editable: true))
         #expect(!ReviewWindow.editModeAfterToggle(on: false, editable: false), "Read-only: ⌘E does not turn it on.")

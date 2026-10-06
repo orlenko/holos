@@ -108,6 +108,22 @@ public struct CorrectionList: Codable, Sendable, Equatable {
         entries.removeAll { $0 == correction }
     }
 
+    /// What one heard phrase is known by: lowercased, trimmed, whitespace collapsed. The list holds one entry per key.
+    public static func key(_ heard: String) -> String {
+        normalized(heard.trimmingCharacters(in: .whitespacesAndNewlines))
+    }
+
+    /// The entry for heard phrase `key` (`key(_:)`), nil when there is none.
+    public func entry(forKey key: String) -> Correction? {
+        entries.last { Self.normalized($0.heard) == key }
+    }
+
+    /// Makes `correction` the entry for heard phrase `key`, or removes it (nil).
+    public mutating func set(_ correction: Correction?, forKey key: String) {
+        entries.removeAll { Self.normalized($0.heard) == key }
+        if let correction { add(correction) }
+    }
+
     /// Reconciles rules introduced by live editing with the rules its latest edits still confirm. `managed` is every
     /// exact rule a live edit has introduced; removing those first lets the desired rules be rebuilt in edit order.
     /// `preexisting` remembers desired rules known to have been present before live editing, including one temporarily

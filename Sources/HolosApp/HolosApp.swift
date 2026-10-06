@@ -1268,26 +1268,26 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
         })
     }
 
-    /// A word edit saved in a meeting's Review teaches the corrections `TranscriptEditLearning` finds (none for a
-    /// trivial edit), into the list Corrections shows; a pair the list already gives is skipped. Returns what it
-    /// introduced and displaced, for `unlearnReviewEdit` when the edit is undone; nil when nothing was learned.
-    func learnReviewEdit(_ edit: ReviewWordEdit) -> ReviewLearnedCorrections? {
+    /// The corrections a word edit saved in a meeting's Review teaches (`TranscriptEditLearning`; none for a trivial
+    /// edit).
+    func reviewEditCorrections(_ edit: ReviewWordEdit) -> [Correction] {
         let dictionaryWord: (String) -> Bool = { word in
             NSSpellChecker.shared.checkSpelling(of: word.lowercased(), startingAt: 0).location == NSNotFound
         }
-        let learned = TranscriptEditLearning.corrections(heard: edit.heard, meant: edit.meant, before: edit.before,
-                                                         after: edit.after, isDictionaryWord: dictionaryWord)
-            .filter { corrections.apply(to: $0.heard) != $0.meant }
-        guard !learned.isEmpty else { return nil }
-        var reconciliation = CorrectionList.LearningReconciliation()
-        guard changeCorrections({ reconciliation = $0.reconcileLearned([], with: learned) }) else { return nil }
-        guard !reconciliation.owned.isEmpty || !reconciliation.displaced.isEmpty else { return nil }
-        return ReviewLearnedCorrections(owned: reconciliation.owned, displaced: reconciliation.displaced)
+        return TranscriptEditLearning.corrections(heard: edit.heard, meant: edit.meant, before: edit.before,
+                                                  after: edit.after, isDictionaryWord: dictionaryWord)
     }
 
-    /// An undone Review edit takes back the corrections it introduced and puts back the ones they displaced.
-    func unlearnReviewEdit(_ learned: ReviewLearnedCorrections) {
-        changeCorrections { $0.reconcileLearned(learned.owned, preserving: learned.displaced, with: []) }
+    /// Brings the list Corrections shows in step with what a Review window's edits teach (`ReviewSession`
+    /// `.syncCorrections`): each key gets its value; the values of `capture` keys just before are returned. Nil, and
+    /// no alert (the review's footer says so and tries again), when the list cannot be changed.
+    func syncReviewCorrections(_ values: [String: Correction?], capture: Set<String>) -> [String: Correction?]? {
+        var before: [String: Correction?] = [:]
+        guard changeCorrections(alerting: false, { list in
+            for key in capture { before[key] = .some(list.entry(forKey: key)) }
+            for (key, value) in values { list.set(value, forKey: key) }
+        }) else { return nil }
+        return before
     }
 
     /// A manual Add; one that resolves a declined swap also keeps the edit that swap came from, as Learn
@@ -1320,16 +1320,17 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
     @discardableResult
     /// The change is made to the list as saved now, under its lock (`CorrectionList.update`), so corrections another
     /// process added since it was loaded (`voiceislocal eval apply`) are kept, never saved over.
-    private func changeCorrections(_ change: (inout CorrectionList) -> Void) -> Bool {
+    /// `alerting: false`: a failure is only returned (the caller says it its own way).
+    private func changeCorrections(alerting: Bool = true, _ change: (inout CorrectionList) -> Void) -> Bool {
         guard correctionsWritable else {
-            show("Could not read corrections.json; fix or remove it, then relaunch Voice is Local.")
+            if alerting { show("Could not read corrections.json; fix or remove it, then relaunch Voice is Local.") }
             return false
         }
         do {
             adoptCorrections(try CorrectionList.update(at: CorrectionList.defaultURL) { change(&$0) }.list)
             return true
         } catch {
-            show("Could not save corrections: \(error.localizedDescription)")
+            if alerting { show("Could not save corrections: \(error.localizedDescription)") }
             return false
         }
     }

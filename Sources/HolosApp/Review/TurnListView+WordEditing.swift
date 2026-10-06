@@ -73,7 +73,7 @@ extension TurnListView: NSTextFieldDelegate {
     /// open field's anchor to `through` in the same row. The selection stops at the end of the anchor's segment and
     /// turn, and at hidden words (the banner says so).
     func beginEditing(row: Int, from: Int, through: Int, extend: Bool) {
-        guard editingWords, editable, row >= 0, row < paragraphs.count else { return }
+        guard editingWords, editable, canEditWords, row >= 0, row < paragraphs.count else { return }
         let paragraph = paragraphs[row]
         let (all, turns) = paragraphWords(paragraph)
         guard from >= 0, through >= 0, from < all.count, through < all.count else { return }
@@ -102,7 +102,10 @@ extension TurnListView: NSTextFieldDelegate {
 
     private func openField(row: Int, paragraph: ReviewParagraph, words all: [ReviewWord], range: ClosedRange<Int>,
                            anchor: Int) {
-        let shown = textView(row: row)?.shownText(from: range.lowerBound, through: range.upperBound)
+        // The words' text as the transcript has it (with the punctuation the recognizer did not time), else as shown.
+        let shown = editText?(Array(all[range]))
+            ?? textView(row: row)?.shownText(from: range.lowerBound, through: range.upperBound)?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
             ?? all[range].map(\.text).joined(separator: " ")
         wordEdit = WordEditTarget(paragraphID: paragraph.id, range: range, anchor: anchor, words: Array(all[range]),
                                   shown: shown, movesSeen: wordMoves.count)
@@ -167,7 +170,8 @@ extension TurnListView: NSTextFieldDelegate {
     /// close the field, and what was typed in it is shown in the banner rather than lost.
     func followWordEdit() {
         guard let target = wordEdit else { return }
-        guard editingWords, editable, let row = paragraphs.firstIndex(where: { $0.id == target.paragraphID }) else {
+        guard editingWords, editable, canEditWords,
+              let row = paragraphs.firstIndex(where: { $0.id == target.paragraphID }) else {
             loseWordEdit()
             return
         }
@@ -193,7 +197,7 @@ extension TurnListView: NSTextFieldDelegate {
     }
 
     /// The open field's words are gone: it closes, keeping what was typed in the banner when it was changed.
-    private func loseWordEdit() {
+    func loseWordEdit() {
         guard let target = wordEdit else { return }
         let typed = editField.stringValue
         cancelWordEdit()

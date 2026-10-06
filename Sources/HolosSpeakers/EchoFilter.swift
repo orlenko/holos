@@ -164,8 +164,15 @@ public enum EchoFilter {
     public static func reviewEditedWords(in transcript: Transcript) -> Set<WordRef> {
         var refs = Set<WordRef>()
         for segment in transcript.segments {
-            for fix in segment.fixes ?? [] where fix.kind == .reviewEdit && fix.first >= 0 && fix.first < fix.end {
-                for word in fix.first..<fix.end { refs.insert(WordRef(segmentID: segment.id, word: word)) }
+            let fixes = (segment.fixes ?? []).filter { $0.kind == .reviewEdit }
+            guard !fixes.isEmpty else { continue }
+            // Fixes come from files: only words that exist are expanded (an end of Int.max is not walked).
+            let count = WordTiming.effectiveWords(of: segment).count
+            for fix in fixes {
+                let first = max(0, fix.first)
+                let end = min(count, fix.end)
+                guard first < end else { continue }
+                for word in first..<end { refs.insert(WordRef(segmentID: segment.id, word: word)) }
             }
         }
         return refs
