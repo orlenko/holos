@@ -179,13 +179,22 @@ public struct ReviewWord: Sendable, Equatable {
 
     /// The corrections one word edit teaches (the app: `TranscriptEditLearning`).
     public var correctionsToLearn: ((ReviewWordEdit) -> [Correction])?
-    /// Learns `learned` (the app: into corrections.json, `CorrectionList.learnReplacingTaught`: a heard phrase the list
-    /// lacks is added; one still holding what this meeting taught it before, `taught`, takes the new value; any other
-    /// is kept; nothing is removed); returns what the list now holds of `learned`, recorded as taught, or nil when the
-    /// list could not be written. Called when the window closes, with what the meeting's word edits teach and it has
-    /// not taught yet (`ReviewLearning`); a write that fails is made again by the next review's close, since the edits
-    /// stay in the transcript.
-    public var learnCorrections: ((_ learned: [Correction], _ taught: [Correction]) -> [Correction]?)?
+    /// Writes what a close learned into the corrections list (the app: corrections.json under its own file lock,
+    /// `CorrectionList.learnReplacingTaught`: a heard phrase the list lacks is added; one still holding what this
+    /// meeting taught it before, `taught`, takes the new value; any other is kept; nothing is removed) and returns
+    /// what the list now holds of `learned`, recorded as taught; throws when it cannot be written. Run off the main
+    /// actor, inside the meeting's speaker lock, so the transcript and labels it learned from are checked, the list
+    /// written, and the record kept as one step.
+    public typealias CorrectionsWrite = @Sendable (_ learned: [Correction], _ taught: [Correction]) throws
+        -> [Correction]
+
+    /// Asked for at close, on the main actor: the corrections write (`CorrectionsWrite`), nil when the list cannot be
+    /// written now (the next review's close learns from the same edits, which stay in the transcript).
+    public var correctionsWriter: (() -> CorrectionsWrite?)?
+
+    /// The corrections list was written by a close (on the main actor, after the locks are released): the app takes
+    /// it again.
+    public var correctionsWritten: (() -> Void)?
 
     private var savedProjection: SpeakerProjection
     private var people: [SpeakerProfile]
@@ -344,8 +353,9 @@ public struct ReviewWord: Sendable, Equatable {
             + "cannot be edited here: the speaker labels could not be kept on the edited words.")
 
     /// Why words `refs` (consecutive words of one segment) cannot be edited, known before a field opens over them: a
-    /// word corrected while the meeting was recording, or a segment with an older automatic fix that cannot be
-    /// counted. Nil when an edit can be tried (it may still be refused when saved, saying why).
+    /// word corrected while the meeting was recording, words that overlapping turns hold only some of
+    /// (`TranscriptWordEdit.overlappingTurns`), or a segment with an older automatic fix that cannot be counted. Nil
+    /// when an edit can be tried (it may still be refused when saved, saying why).
     public func wordEditRefusal(_ refs: [WordRef]) -> String? {
         guard let first = refs.first, let segment = segments[first.segmentID] else { return nil }
         let fixes = segment.fixes ?? []
@@ -353,6 +363,10 @@ public struct ReviewWord: Sendable, Equatable {
             fix.kind == .liveCorrection && refs.contains { fix.first <= $0.word && $0.word < fix.end }
         }) {
             return TranscriptWordEdit.liveCorrected.localizedDescription
+        }
+        if !TranscriptWordEdit.sameOwners(refs.map(\.word), segmentID: first.segmentID,
+                                          turns: projection.turns.map(\.spans)) {
+            return TranscriptWordEdit.overlappingTurns.localizedDescription
         }
         return blockedByOlderFix(segment) ? TranscriptWordEdit.olderFix.localizedDescription : nil
     }
@@ -845,6 +859,10 @@ public struct ReviewWord: Sendable, Equatable {
             throw HolosError.invalidInput("Words of two turns cannot be edited together yet; edit each turn's words "
                                           + "on its own.")
         }
+        guard TranscriptWordEdit.sameOwners(indices, segmentID: first.segmentID,
+                                            turns: projection.turns.map(\.spans)) else {
+            throw TranscriptWordEdit.overlappingTurns
+        }
         let request = TranscriptWordEdit.Request(segmentID: first.segmentID, first: lowest, end: highest + 1,
                                                  text: text)
         return queued(.editWords(request, segment: segment), optimistic: [])
@@ -974,8 +992,23 @@ public struct ReviewWord: Sendable, Equatable {
     /// once (`pauseReason` says why; changes are refused), and this returns once every change made before is saved
     /// and the transcript files are written, so the command starts from them. `hold` is this run of the command (each
     /// run has its own); pausing again with a hold already held only waits for those saves.
-    public func pause(_ hold: ReviewMaintenance.Hold, reason: String) async {
-        guard !closed else { return }
+    ///
+    /// `typed`: what the window's open edit field holds (a command makes the review read-only, so the field closes):
+    /// queued as `editWords` before the review turns read-only, and waited for like every change before. Returns, when
+    /// it is not saved (refused, or still waiting), why, with what was typed; nil otherwise.
+    @discardableResult
+    public func pause(_ hold: ReviewMaintenance.Hold, reason: String,
+                      typed: (words: [WordRef], text: String, seenMoves: Int)? = nil) async -> String? {
+        guard !closed else { return nil }
+        var typedEdit: Operation?
+        var refusal: (any Error)?
+        if let typed, !pauses.contains(where: { $0.hold == hold }) {
+            do {
+                typedEdit = try queuedWordEdit(typed.words, to: typed.text, seenMoves: typed.seenMoves)
+            } catch {
+                refusal = error
+            }
+        }
         if !pauses.contains(where: { $0.hold == hold }) {
             pauses.append((hold, reason))
             exportTimer?.cancel()
@@ -997,6 +1030,18 @@ public struct ReviewWord: Sendable, Equatable {
         }
         if let running = sampleRun { await running.value }
         _ = try? await enqueue(.exports, optimistic: [])
+        // The edit was queued before the exports, so it has run (or waits behind labels that could not be reread).
+        guard let typed else { return nil }
+        if case .failure(let error)? = typedEdit?.result { refusal = error }
+        let words = TranscriptWordEdit.cleaned(typed.text)
+        if let refusal {
+            let message = refusal.localizedDescription
+            return message.contains("“\(words)”") ? message : message + " What you typed: “\(words)”."
+        }
+        if let typedEdit, !typedEdit.finished {
+            return "The edit waits until the speaker labels are reread. What you typed: “\(words)”."
+        }
+        return nil
     }
 
     /// The command run `hold` paused for has ended: the review rereads the transcript, the labels, and the people, then
@@ -1654,13 +1699,19 @@ public struct ReviewWord: Sendable, Equatable {
     /// (`ReviewLearning.taught`) is taught, and recorded once its write succeeds; a write that fails is logged, and the
     /// next review's close makes it again.
     private func learnFromEdits() async {
-        guard let learn = learnCorrections, let teach = correctionsToLearn else { return }
+        guard let writer = correctionsWriter, let teach = correctionsToLearn else { return }
         let session = self.session
-        let read = await Self.detachedResult { try SessionFiles.currentTranscript(session: session) }
-        guard case .success(let current?) = read else {
+        // The transcript, and the unfixed revision it was fixed from (what the recognizer wrote around a fixed word).
+        let read = await Self.detachedResult { () throws -> (Transcript, Transcript?)? in
+            guard let current = try SessionFiles.currentTranscript(session: session) else { return nil }
+            let base = current.fixedFrom.flatMap { try? SessionFiles.transcript(id: $0, session: session) }
+            return (current, base)
+        }
+        guard case .success(let loaded?) = read else {
             Self.log.error("Session \(self.sessionID, privacy: .public): the transcript could not be read to learn from its edits")
             return
         }
+        let (current, base) = loaded
         // Context only from the edited word's own turn as shown (never another speaker's word, nor hidden echo): the
         // labels on this very transcript say which. Labels shown on another transcript (they could not be reread
         // after an edit) are read again. When that fails, or the labels are still not on this transcript (a speaker
@@ -1679,37 +1730,69 @@ public struct ReviewWord: Sendable, Equatable {
             Self.log.error("Session \(self.sessionID, privacy: .public): the speaker labels are not on the current transcript; a later close learns from the edits")
             return
         }
-        let corrections = ReviewLearning.corrections(ReviewLearning.edits(in: current, turns: turns.map(\.spans)),
-                                                     teach: teach)
+        let corrections = ReviewLearning.corrections(
+            ReviewLearning.edits(in: current, turns: turns.map(\.spans), base: base), teach: teach)
         guard !corrections.isEmpty else { return }
-        // Only what this meeting has not taught yet: a correction deleted or changed in Corrections since stays so.
-        let record = await Self.detachedResult { try ReviewLearning.taught(session: session) }
-        guard case .success(let taught) = record else {
-            Self.log.error("Session \(self.sessionID, privacy: .public): what this meeting taught cannot be read; nothing learned from its edits")
+        guard let write = writer() else {
+            Self.log.error("Session \(self.sessionID, privacy: .public): the corrections list cannot be written now; the next review's close learns from the edits")
             return
         }
-        let toTeach = ReviewLearning.untaught(corrections, taught: taught)
-        guard !toTeach.isEmpty else { return }
-        // Read again just before the write, under the speaker lock: a transcript replaced since it was read (another
-        // process) teaches nothing now; the next close learns from the transcript as it is then.
-        let still = await Self.detachedResult {
-            try SessionArchive.withSpeakerLock(at: session) { try SessionArchive.currentTranscriptID(at: session) }
+        // One hold of the speaker lock, off the main actor: the transcript and the labels learned from must still be
+        // the current ones (a replacement or a relabel since teaches nothing now; the next close learns from them as
+        // they are then); then what this meeting has not taught yet is written (the corrections list under its own
+        // lock, taken inside this one: nothing takes them the other way round) and recorded as taught.
+        let transcriptID = current.id
+        let runID = labels.run?.id
+        let outcome = await Self.detachedResult { () throws -> LearnOutcome in
+            try SessionArchive.withSpeakerLock(at: session) {
+                guard try SessionArchive.currentTranscriptID(at: session) == transcriptID,
+                      try SessionSpeakerStore.readHead(session: session)?.runID == runID else { return .changed }
+                // Only what this meeting has not taught yet: a correction deleted or changed in Corrections since
+                // stays so.
+                let taught = try ReviewLearning.taught(session: session)
+                let toTeach = ReviewLearning.untaught(corrections, taught: taught)
+                guard !toTeach.isEmpty else { return .learned(applied: 0, of: 0) }
+                let applied: [Correction]
+                do {
+                    applied = try write(toTeach, taught)
+                } catch {
+                    return .notWritten(ProcessSpawner.logCategory(error))
+                }
+                // Only what the list now holds is taught: a phrase kept with a value set elsewhere is not this
+                // meeting's.
+                if !applied.isEmpty {
+                    do {
+                        try ReviewLearning.mergeTaught(adding: applied, session: session)
+                    } catch {
+                        return .notRecorded(applied: applied.count, ProcessSpawner.logCategory(error))
+                    }
+                }
+                return .learned(applied: applied.count, of: toTeach.count)
+            }
         }
-        guard case .success(let id) = still, id == current.id else {
-            Self.log.error("Session \(self.sessionID, privacy: .public): the transcript changed while learning from its edits; a later close learns them")
-            return
+        switch outcome {
+        case .success(.learned(let applied, let of)):
+            guard of > 0 else { return }
+            Self.log.info("Session \(self.sessionID, privacy: .public): learned \(applied, privacy: .public) of \(of, privacy: .public) corrections of review edits")
+            if applied > 0 { correctionsWritten?() }
+        case .success(.changed):
+            Self.log.error("Session \(self.sessionID, privacy: .public): the transcript or its speaker labels changed while learning from its edits; a later close learns them")
+        case .success(.notWritten(let why)):
+            Self.log.error("Session \(self.sessionID, privacy: .public): corrections from review edits not saved (\(why, privacy: .public)); the next review's close tries again")
+        case .success(.notRecorded(let applied, let why)):
+            Self.log.error("Session \(self.sessionID, privacy: .public): what this meeting taught was not recorded (\(why, privacy: .public)); a later close may teach it again")
+            if applied > 0 { correctionsWritten?() }
+        case .failure(let error):
+            Self.log.error("Session \(self.sessionID, privacy: .public): nothing learned from the edits (\(ProcessSpawner.logCategory(error), privacy: .public)); a later close learns them")
         }
-        guard let applied = learn(toTeach, taught) else {
-            Self.log.error("Session \(self.sessionID, privacy: .public): corrections from review edits not saved; the next review's close tries again")
-            return
-        }
-        Self.log.info("Session \(self.sessionID, privacy: .public): learned \(applied.count, privacy: .public) of \(toTeach.count, privacy: .public) corrections of review edits")
-        // Only what the list now holds is taught: a phrase kept with a value set elsewhere is not this meeting's.
-        guard !applied.isEmpty else { return }
-        let recorded = await Self.detachedResult { try ReviewLearning.recordTaught(adding: applied, session: session) }
-        if case .failure(let error) = recorded {
-            Self.log.error("Session \(self.sessionID, privacy: .public): what this meeting taught was not recorded (\(ProcessSpawner.logCategory(error), privacy: .public)); a later close may teach it again")
-        }
+    }
+
+    /// How close-time learning ended (`learnFromEdits`).
+    private enum LearnOutcome: Sendable {
+        case learned(applied: Int, of: Int)
+        case changed
+        case notWritten(String)
+        case notRecorded(applied: Int, String)
     }
 
     /// `refs` where `moves` took them, and whether one of them was among the words a move replaced (its text may have

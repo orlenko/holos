@@ -306,6 +306,23 @@ public enum TranscriptWordEdit {
                           base: WordTiming.effectiveWords(of: base)) == nil
     }
 
+    /// An edit refused because its words do not all belong to the same speaker turns (turns that overlap hold some of
+    /// them): its new words would belong to every turn of every word it replaced, and its undo could not give each
+    /// word back to its own turns.
+    public static let overlappingTurns = HolosError.invalidInput(
+        "These words belong to overlapping speaker turns, so they cannot be edited together here yet; edit words that "
+            + "belong to the same turns.")
+
+    /// Each of `words` (word indices of segment `segmentID`) belongs to the same turns (`turns`: their word spans).
+    public static func sameOwners(_ words: some Collection<Int>, segmentID: String, turns: [[WordSpan]]) -> Bool {
+        let owners = words.map { word in
+            Set(turns.indices.filter { index in
+                turns[index].contains { $0.segmentID == segmentID && $0.first <= word && word < $0.end }
+            })
+        }
+        return Set(owners).count <= 1
+    }
+
     /// An edit refused because it takes in words corrected while the meeting was recording (`liveCorrection`, whose live
     /// hint would no longer match).
     public static let liveCorrected = HolosError.invalidInput(

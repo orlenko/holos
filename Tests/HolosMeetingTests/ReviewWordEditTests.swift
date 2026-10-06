@@ -93,19 +93,31 @@ private func wordEditCurrent(_ session: URL) throws -> Transcript {
 }
 
 /// A corrections list in memory that a review teaches when it closes, as the app's does
-/// (`CorrectionList.learnKeepingExisting`), and what each edit teaches: "heard" → "meant" as recorded, or with
-/// `contextual`, the app's rule with every word a dictionary word (so a lone word is learned with its neighbour).
+/// (`CorrectionList.learnReplacingTaught`, written off the main actor inside the meeting's speaker lock), and what each
+/// edit teaches: "heard" → "meant" as recorded, or with `contextual`, the app's rule with every word a dictionary word
+/// (so a lone word is learned with its neighbour).
 @MainActor
 private final class WordEditLearner {
-    var list: CorrectionList
-    /// While set, the list cannot be written.
-    var failing = false
+    private let stored: SharedValue<CorrectionList>
+    private let failingNow = SharedValue(false)
+    private let writes = SharedValue(0)
     let contextual: Bool
     private(set) var taughtBy: [ReviewWordEdit] = []
-    private(set) var lessons = 0
+
+    var list: CorrectionList {
+        get { stored.value }
+        set { stored.set(newValue) }
+    }
+    /// While set, the list cannot be written.
+    var failing: Bool {
+        get { failingNow.value }
+        set { failingNow.set(newValue) }
+    }
+    /// How many times a close tried to write the list.
+    var lessons: Int { writes.value }
 
     init(_ list: CorrectionList = CorrectionList(), contextual: Bool = false) {
-        self.list = list
+        stored = SharedValue(list)
         self.contextual = contextual
     }
 
@@ -117,10 +129,13 @@ private final class WordEditLearner {
                                                       after: edit.after, heardBefore: edit.heardBefore,
                                                       heardAfter: edit.heardAfter, isDictionaryWord: { _ in true })
         }
-        review.learnCorrections = { [self] learned, taught in
-            lessons += 1
-            guard !failing else { return nil }
-            return list.learnReplacingTaught(learned, taught: taught)
+        let stored = self.stored, failing = failingNow, writes = self.writes
+        review.correctionsWriter = {
+            { learned, taught in
+                writes.update { $0 += 1 }
+                if failing.value { throw HolosError.io("corrections.json cannot be written") }
+                return stored.update { $0.learnReplacingTaught(learned, taught: taught) }
+            }
         }
     }
 
@@ -429,6 +444,40 @@ func anEditKeepsEveryWordsOwnerWhenRecognizerTimingsOverlapAcrossSpeakers() asyn
                                                 expectedRunID: runID)
     #expect(try wordEditCurrent(session).segments[0].text == "hello there yeah indeed")
     #expect(try wordEditHeadSpans(session) == spans(0..<2, 2..<4))
+}
+
+@Test(.timeLimit(.minutes(1))) @MainActor
+func wordsOfOverlappingTurnsAreNotEditedTogether() async throws {
+    let temp = try TemporaryDirectory("review")
+    defer { temp.remove() }
+    let session = try await wordEditSharedSession(in: temp, ["hello", "there", "yes", "now"],
+                                                  times: [(0, 0.8), (1, 1.8), (2, 2.8), (3, 3.8)], split: 2)
+    // Overlapping turns: T1 holds words 0–2, T2 words 1–3.
+    let head = try #require(try SessionSpeakerStore.readHead(session: session)?.runID)
+    var run = try SessionSpeakerStore.readRun(id: head, session: session)
+    let segmentID = try wordEditCurrent(session).segments[0].id
+    run.turns[0].spans = [WordSpan(segmentID: segmentID, first: 0, end: 3)]
+    run.turns[1].spans = [WordSpan(segmentID: segmentID, first: 1, end: 4)]
+    run.id = UUID().uuidString
+    try SessionArchive.withSpeakerLock(at: session) {
+        try SessionSpeakerStore.writeRun(run, session: session)
+        try SessionSpeakerStore.writeHead(SpeakerHead(runID: run.id), session: session)
+    }
+    let review = try await wordEditOpen(session)
+    // "hello" is T1's alone, "there" both turns': edited together, the undo could not give each back its own turns.
+    let hello = wordEditRefs(review, "T1", [0, 1])
+    #expect(review.wordEditRefusal(hello) == TranscriptWordEdit.overlappingTurns.localizedDescription,
+            "Known before a field opens.")
+    let refusal = await #expect(throws: HolosError.self) { try await review.editWords(hello, to: "hi there") }
+    #expect(refusal?.localizedDescription == TranscriptWordEdit.overlappingTurns.localizedDescription)
+    // A word only one turn holds is edited, and undone, exactly.
+    let spans = try wordEditHeadSpans(session)
+    try await review.editWords(wordEditRefs(review, "T2", [2]), to: "today")
+    #expect(try wordEditCurrent(session).segments[0].text == "hello there yes today")
+    try await review.undo()
+    #expect(try wordEditCurrent(session).segments[0].text == "hello there yes now")
+    #expect(try wordEditHeadSpans(session) == spans)
+    await review.close()
 }
 
 @Test(.timeLimit(.minutes(1))) @MainActor
@@ -1322,6 +1371,98 @@ func aTranscriptReplacedWhileLearningTeachesNothingAtThisClose() async throws {
     }
     await review.close()
     #expect(learner.lessons == 0 && learner.list.entries.isEmpty, "Nothing taught from a transcript no longer current.")
+}
+
+@Test(.timeLimit(.minutes(1))) @MainActor
+func aRelabelSavedWhileLearningTeachesNothingAtThisClose() async throws {
+    let temp = try TemporaryDirectory("review")
+    defer { temp.remove() }
+    let session = try await wordEditCloudSession(temp)
+    let review = try await wordEditOpen(session)
+    let learner = WordEditLearner()
+    learner.attach(to: review)
+    try await review.editWords(wordEditRefs(review, "T1", [0]), to: "Claude")
+    // Another process labels the speakers again on the same transcript after the close read the labels.
+    let teach = try #require(review.correctionsToLearn)
+    review.correctionsToLearn = { edit in
+        if let head = try? SessionSpeakerStore.readHead(session: session)?.runID,
+           var run = try? SessionSpeakerStore.readRun(id: head, session: session) {
+            run.id = UUID().uuidString
+            try? SessionArchive.withSpeakerLock(at: session) {
+                try SessionSpeakerStore.writeRun(run, session: session)
+                try SessionSpeakerStore.writeHead(SpeakerHead(runID: run.id), session: session)
+            }
+        }
+        return teach(edit)
+    }
+    await review.close()
+    #expect(learner.lessons == 0 && learner.list.entries.isEmpty, "Nothing taught on labels no longer current.")
+    #expect(try ReviewLearning.taught(session: session).isEmpty)
+    // The next close, on the labels as they are then, learns it.
+    let reopened = try await wordEditOpen(session)
+    learner.attach(to: reopened)
+    await reopened.close()
+    #expect(learner.value("cloud") == "Claude")
+    #expect(try ReviewLearning.taught(session: session) == [Correction(heard: "cloud", meant: "Claude")])
+}
+
+@Test func contextBesideAFixedWordCoversTheSameCharactersOnBothSides() {
+    // "as cloud." with "cloud" fixed to "Claude" (the period is not timed), then "as" edited to "ask". The unfixed
+    // revision holds the edit too, as an edit is made in both.
+    let baseText = "ask cloud."
+    let baseSegment = TranscriptSegment(id: "S1", start: 0, end: 2, text: baseText, words: [
+        TimedWord(text: "ask", start: 0, end: 0.8, utf16Offset: 0, utf16Length: 3),
+        TimedWord(text: "cloud", start: 1, end: 1.8, utf16Offset: 4, utf16Length: 5),
+    ], track: "system", fixes: [TranscriptWordFix(first: 0, end: 1, heard: "as", kind: .reviewEdit, heardWords: 1)])
+    let base = SessionFixtures.transcript([baseSegment])
+    let fixedSegment = TranscriptSegment(id: "S1", start: 0, end: 2, text: "ask Claude.", words: [
+        TimedWord(text: "ask", start: 0, end: 0.8, utf16Offset: 0, utf16Length: 3),
+        TimedWord(text: "Claude", start: 1, end: 1.8, utf16Offset: 4, utf16Length: 6),
+    ], track: "system", fixes: [TranscriptWordFix(first: 0, end: 1, heard: "as", kind: .reviewEdit, heardWords: 1),
+                                TranscriptWordFix(first: 1, end: 2, heard: "cloud", kind: .correction, heardWords: 1)])
+    var fixed = SessionFixtures.transcript([fixedSegment])
+    fixed.fixedFrom = base.id
+    let turns = [[WordSpan(segmentID: "S1", first: 0, end: 2)]]
+    // From the unfixed revision: "cloud." beside "Claude.", the same characters.
+    #expect(ReviewLearning.edits(in: fixed, turns: turns, base: base)
+        == [ReviewWordEdit(heard: "as", meant: "ask", after: "Claude.", heardAfter: "cloud.")])
+    // Learned with the period on neither side (the rule leaves sentence punctuation out of both alike): never one
+    // inserting it ("as cloud" → "ask Claude.").
+    let learned = TranscriptEditLearning.corrections(heard: "as", meant: "ask", after: "Claude.",
+                                                     heardAfter: "cloud.", isDictionaryWord: { _ in true })
+    #expect(learned == [Correction(heard: "as cloud", meant: "ask Claude")])
+    // Without it, the heard side cannot cover the period: no context on that side, never one mismatched.
+    #expect(ReviewLearning.edits(in: fixed, turns: turns) == [ReviewWordEdit(heard: "as", meant: "ask")])
+}
+
+@Test(.timeLimit(.minutes(1))) @MainActor
+func pausingForACommandSavesWhatTheOpenFieldHolds() async throws {
+    let temp = try TemporaryDirectory("review")
+    defer { temp.remove() }
+    let session = try await wordEditSession(in: temp, [
+        WordEditTurn(speaker: "system:S1", start: 0, words: ["ask", "cloud", "now"]),
+        WordEditTurn(speaker: "system:S2", start: 10, words: ["we", "will", "see"]),
+    ])
+    let review = try await wordEditOpen(session)
+    // A command makes the review read-only while "Claude" is typed in the field: saved before the command starts.
+    let hold = ReviewMaintenance.Hold(.recover)
+    let unsaved = await review.pause(hold, reason: "Voice is Local is recovering this meeting.",
+                                     typed: (words: wordEditRefs(review, "T1", [1]), text: "Claude",
+                                             seenMoves: review.wordMoves.count))
+    #expect(unsaved == nil)
+    #expect(try wordEditCurrent(session).segments[0].text == "ask Claude now")
+    #expect(review.pauseReason != nil && !review.isEditable)
+    await review.resume(hold)
+    // One that is refused says what was typed.
+    let other = ReviewMaintenance.Hold(.recover)
+    let refused = await review.pause(other, reason: "again",
+                                     typed: (words: [wordEditRefs(review, "T1", [2])[0],
+                                                     wordEditRefs(review, "T2", [0])[0]],
+                                             text: "today we", seenMoves: review.wordMoves.count))
+    #expect(refused?.contains("What you typed: “today we”") == true)
+    #expect(try wordEditCurrent(session).segments.map(\.text) == ["ask Claude now", "we will see"])
+    await review.resume(other)
+    await review.close()
 }
 
 @Test(.timeLimit(.minutes(1))) @MainActor

@@ -7742,7 +7742,10 @@ shown, Otter-style.
   what it holds, before the close learns from the edits. Quitting starts every review
   window's close at once (`ReviewQuit.closeAll`), so each queues its open field's edit before
   any slow close (another window's voice sync) is waited for; when the closes cannot finish
-  within the quit's limit, an edit not saved yet is logged with what was typed. Space still plays and pauses outside the field; the
+  within the quit's limit, an edit not saved yet is logged with what was typed. A maintenance
+  command that makes the review read-only does the same: the open field's edit is queued
+  before the pause and waited for; when it is refused, the footer says why, with what was
+  typed (`ReviewSession.pause(typed:)`). Space still plays and pauses outside the field; the
   timestamp buttons still play. Every word has a VoiceOver action "Edit “word”", which turns
   edit mode on and opens the field; it is offered only while words can be edited (not after
   the transcript changed under the labels), and reports failure when no field opened. An edited word is dotted-underlined like a fixed word
@@ -7757,8 +7760,11 @@ shown, Otter-style.
   from splitting them. Revert (of an edit or of an automatic fix) is offered only while words
   can be edited, since otherwise it would be refused. Words known not to be editable open no
   field either, and the banner says why (`ReviewSession.wordEditRefusal`): a word corrected
-  while the meeting was recording, a segment with an older automatic fix that cannot be
-  counted. A save refused or failed after Return never loses what was typed: the field opens
+  while the meeting was recording, words that do not all belong to the same speaker turns
+  (overlapping turns hold only some of them: the new words would belong to every turn of
+  every word replaced, and the undo could not give each back to its own; checked again on
+  everything an edit takes in when it is saved), a segment with an older automatic fix that
+  cannot be counted. A save refused or failed after Return never loses what was typed: the field opens
   again over the words with it (when they still read the same and no other field is open),
   and the message says what was typed in any case, also for a queued edit refused later.
   ⌥Return's word-list term is added once the edit is saved, also when the labels could not be
@@ -7923,7 +7929,10 @@ shown, Otter-style.
     hidden as echo; without such a neighbour the rule learns as it does without context. A
     neighbour under a fix (automatic, live) stands with its whole fix, and the heard side
     takes what the recognizer wrote there: beside "cloud" fixed to "Claude", "as" → "ask"
-    teaches "as cloud" → "ask Claude", which matches the recognizer's text. A fix the edit's
+    teaches "as cloud" → "ask Claude", which matches the recognizer's text. Both sides cover the
+    same characters: an automatic fix's heard side is the unfixed revision's text over the
+    extent shown ("cloud." beside "Claude.", the period untimed); when that cannot be read,
+    its `heard` only if its shown text is just its words, else no context. A fix the edit's
     turn holds only part of gives no context on that side (corrected text never stands for
     what was heard: "as New" beside "newark" made "New York" would match nothing). The
     turns are the labels on the transcript as it is then: labels the window could not reread
@@ -7939,9 +7948,12 @@ shown, Otter-style.
     meeting's next review close makes it again, since the edits stay in the transcript; a
     record that cannot be read (damaged, or newer) teaches nothing rather than teach again
     what was deleted;
-  - just before the corrections are written, the current transcript is read again under the
-    meeting's speaker lock: one replaced since (another process) teaches nothing at this
-    close (logged; the next close learns from the transcript as it is then);
+  - the write is one step under the meeting's speaker lock, off the main actor: the current
+    transcript and the head run must still be the ones learned from (a replacement or a
+    relabel since, by another process, teaches nothing at this close; logged, and the next
+    close learns from them as they are then), then corrections.json is written under its own
+    lock (taken inside the speaker lock; nothing takes them the other way round), then the
+    record; the app takes the list again afterwards;
   - nothing is learned from a deletion, a punctuation-only change, or a case-only change
     (decided on the edited words alone: a context word's own fix never makes "Hello" →
     "Hello," teach "Hello cloud" → "Hello, Claude"), unless the case change makes a proper noun (a word whose lowercase is not a dictionary

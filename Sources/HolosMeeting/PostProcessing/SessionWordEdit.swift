@@ -65,6 +65,12 @@ enum SessionWordEdit {
             }
             guard let result = try TranscriptWordEdit.editing(request, in: current, base: base, editable: editable,
                                                               now: now) else { return nil }
+            // Every word the edit replaces (with any it took in) belongs to the same turns, so the labels map back on
+            // its undo exactly; overlapping turns holding only some of them refuse it.
+            guard TranscriptWordEdit.sameOwners(result.labelsMove.replaced, segmentID: request.segmentID,
+                                                turns: projection.turns.map(\.spans)) else {
+                throw TranscriptWordEdit.overlappingTurns
+            }
             guard let plan = try SpeakerTranscriptRetarget.plan(session: session, from: snapshot, to: result.transcript,
                                                                move: result.labelsMove, now: now) else {
                 throw HolosError.invalidInput("The speaker labels cannot be kept on the edited words.")

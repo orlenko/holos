@@ -1010,9 +1010,8 @@ extension HolosAppDelegate: NSMenuDelegate {
         // Word edits in Review teach corrections and offer word-list terms (docs/meeting-design.md §5.10).
         // Learned when the window closes, from every word edited in the meeting; existing corrections are kept.
         window.review.correctionsToLearn = { [weak self] edit in self?.reviewEditCorrections(edit) ?? [] }
-        window.review.learnCorrections = { [weak self] learned, taught in
-            self?.learnReviewCorrections(learned, taught: taught)
-        }
+        window.review.correctionsWriter = { [weak self] in self?.reviewCorrectionsWriter() }
+        window.review.correctionsWritten = { [weak self] in self?.reviewCorrectionsWritten() }
         window.wordListHeardAs = { [weak self] term in self?.wordListHeardAs(term) }
         window.addWordListTerm = { [weak self] term, heardAs in
             self?.addReviewTerm(term, heardAs: heardAs) ?? "The word list is not available."

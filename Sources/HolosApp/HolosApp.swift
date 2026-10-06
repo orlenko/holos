@@ -1279,14 +1279,21 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
                                                   heardAfter: edit.heardAfter, isDictionaryWord: dictionaryWord)
     }
 
-    /// Learns what a meeting's word edits teach into the list Corrections shows when its review closes (`ReviewSession`
-    /// `.learnCorrections`): phrases the list lacks are added, the others kept. Returns whether the list was written.
-    /// Learns what a meeting's review taught (`CorrectionList.learnReplacingTaught`, with what the meeting taught
-    /// before): returns what the list now holds of it, nil when the list could not be written.
-    func learnReviewCorrections(_ learned: [Correction], taught: [Correction]) -> [Correction]? {
-        var applied: [Correction] = []
-        guard changeCorrections({ applied = $0.learnReplacingTaught(learned, taught: taught) }) else { return nil }
-        return applied
+    /// How a review's close writes what a meeting's word edits teach into the list Corrections shows
+    /// (`ReviewSession.correctionsWriter`): `CorrectionList.learnReplacingTaught` on corrections.json under its file
+    /// lock, off the main actor (the review runs it inside the meeting's speaker lock). Nil while the list cannot be
+    /// written (corrections.json unreadable).
+    func reviewCorrectionsWriter() -> ReviewSession.CorrectionsWrite? {
+        guard correctionsWritable else { return nil }
+        let url = CorrectionList.defaultURL
+        return { learned, taught in
+            try CorrectionList.update(at: url) { $0.learnReplacingTaught(learned, taught: taught) }.result
+        }
+    }
+
+    /// A review's close wrote corrections.json: the list is taken again.
+    func reviewCorrectionsWritten() {
+        reloadCorrectionsIfChanged()
     }
 
     /// A manual Add; one that resolves a declined swap also keeps the edit that swap came from, as Learn
