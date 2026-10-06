@@ -1221,7 +1221,10 @@ func recognitionIsShownOnlyWhenRecognitionIsAllowed() async throws {
     let temp = try TemporaryDirectory("review")
     defer { temp.remove() }
     let store = reviewStore(temp)
-    try store.update { $0.profiles = [SpeakerProfile(id: "JIM", displayName: "Jim")] }
+    try store.update {
+        $0.profiles = [SpeakerProfile(id: "JIM", displayName: "Jim")]
+        $0.rememberVoices = false
+    }
     let fixture = try await SessionFixtures.labelledSession(in: temp.url)
     try SessionArchive.withSpeakerLock(at: fixture.session) {
         try SessionSpeakerStore.writeRecognition(
@@ -1245,6 +1248,26 @@ func recognitionIsShownOnlyWhenRecognitionIsAllowed() async throws {
     #expect(review.speaker("system:S1")?.isAutomatic == true)
     #expect(review.speaker("system:S1")?.name == "Jim")
     #expect(String(decoding: try await review.render(.md), as: UTF8.self).contains("Jim"))
+}
+
+/// "Learn voices of people I name in this meeting" follows Remember voices: a new people store (on by default)
+/// starts it checked, and a store saved off by an earlier build keeps it unchecked.
+@Test(.timeLimit(.minutes(1))) @MainActor
+func learnVoicesFollowsTheRememberSetting() async throws {
+    let temp = try TemporaryDirectory("review")
+    defer { temp.remove() }
+    let store = reviewStore(temp)
+    let fixture = try await SessionFixtures.labelledSession(in: temp.url)
+    let fresh = try await reviewOpen(fixture.session, store: store)
+    #expect(fresh.rememberVoices)
+    #expect(fresh.learnVoices, "A new store remembers voices, so the footer box starts on.")
+
+    try store.update { $0.profiles = [SpeakerProfile(displayName: "Jim")] }
+    let legacy = Data(#"{"schemaVersion": 1, "rememberVoices": false, "profiles": []}"#.utf8)
+    try AtomicFile.write(legacy, to: store.databaseURL)
+    let off = try await reviewOpen(fixture.session, store: store)
+    #expect(!off.rememberVoices, "An existing store keeps its setting.")
+    #expect(!off.learnVoices)
 }
 
 // MARK: - Paragraphs

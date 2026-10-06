@@ -162,8 +162,9 @@ thumbnail timeline, and a larger local-model benchmark are follow-ups.
 - People and voices (wave 4): `speakers link <session> <speaker> <person|new:NAME>` (and
   `speakers me`) links a speaker to a person and names it, so names carry across
   meetings with or without voiceprints; `speakers reject` says a speaker is not a person
-  in that meeting. "Remember voices" is off by default (`people remember on|off|status
-  [--forget]`, or the People window): with it on, `link --learn-voice` learns one voice
+  in that meeting. "Remember voices" is on for new installs since 2026-10-06; an
+  existing setting is kept (`people remember on|off|status [--forget]`, or the People
+  window): with it on, `link --learn-voice` learns one voice
   sample per person and meeting from the confirmed speaker's clear turns only (2 s or
   longer, not overlapped, not reassigned, split, or excluded; an outlier pass drops
   turns far from the rest), extracted on demand by a fresh FluidAudio pass (the app runs
@@ -292,7 +293,7 @@ thumbnail timeline, and a larger local-model benchmark are follow-ups.
   (and before Voice is Local quits); a hand-edited export is moved aside and the footer says so.
   Playback uses the saved chunks at their session times (off after Delete Audio). The
   footer box "Learn voices of people I name in this meeting" decides whether naming learns
-  a voice. Delete Meeting can also forget the voice samples learned from that meeting.
+  a voice; it starts checked while Remember voices is on (on for new installs). Delete Meeting can also forget the voice samples learned from that meeting.
 - `voices list` and `say` provide native voice discovery (with each voice's quality, and a
   hint to download Premium voices when none is installed), playback, and `.m4a`, `.wav`,
   or `.caf` export. Text comes from arguments or UTF-8 stdin. `--voice` takes a name as

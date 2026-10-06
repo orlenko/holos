@@ -6,7 +6,7 @@ import HolosMeeting
 import HolosSpeakers
 import HolosStorage
 
-/// `voiceislocal people …` (docs/meeting-design.md §5.9): the people Holos knows by name, and their opt-in voice samples.
+/// `voiceislocal people …` (docs/meeting-design.md §5.9): the people Holos knows by name, and their voice samples.
 /// Names and counts go to stdout; notes and warnings to stderr (§1.4). Voice vectors are printed only by
 /// `export --include-voiceprints`, and never to a terminal.
 struct People: AsyncParsableCommand {
@@ -14,8 +14,9 @@ struct People: AsyncParsableCommand {
         abstract: "Manage the people Voice is Local knows by name, and their remembered voices.",
         discussion: """
             People are created when you link a speaker to a person (voiceislocal speakers link or me). Their names carry \
-            across meetings whatever the Remember voices setting says. With Remember voices on, linking with \
-            --learn-voice learns a person's voice from that meeting, and later meetings suggest them (\"Maybe Jim\"). \
+            across meetings whatever the Remember voices setting says. With Remember voices on (on for new installs), \
+            linking with --learn-voice learns a person's voice from that meeting, and later meetings suggest them \
+            (\"Maybe Jim\"). \
             Voiceprints are biometric data: only remember people who agreed to it. They stay on this Mac, in \
             Application Support/Holos/Speakers, which is not included in Time Machine backups. <person> is a \
             person's ID or unique name.
@@ -87,9 +88,9 @@ struct People: AsyncParsableCommand {
         static let configuration = CommandConfiguration(
             abstract: "Turn Remember voices on or off, or show it.",
             discussion: """
-                On: linking a speaker with --learn-voice learns that person's voice, and later meetings suggest \
-                people whose voices match. Off: no voice is learned or compared; names are still kept. \
-                off --forget also forgets every voice sample and every meeting's voice data.
+                On for new installs; an existing setting is kept. On: linking a speaker with --learn-voice learns \
+                that person's voice, and later meetings suggest people whose voices match. Off: no voice is learned \
+                or compared; names are still kept. off --forget also forgets every voice sample and every meeting's voice data.
                 """)
 
         @Argument(help: "on, off, or status.") var setting: Setting

@@ -1349,11 +1349,13 @@ decision 2 in the [meeting-recording plan](meeting-recording-plan.md); details i
 - **Names are not biometric.** Linking a speaker to a person creates or reuses that
   person whatever the settings, so names carry across meetings; each meeting also keeps
   the name it was given as its own edit.
-- **Voiceprints are opt-in and come only from confirmed labels.** With "Remember
-  voices" on (off by default), naming a speaker with voice learning on stores one
-  sample per person and meeting: the mean embedding of that speaker's clear turns,
-  extracted on demand. Post-processing never stores voice embeddings; nothing is
-  inferred from unconfirmed speakers or automatic matches.
+- **Voiceprints come only from confirmed labels.** "Remember voices" is on for new
+  installs (user decision, 2026-10-06: naming people is the point of labelling them);
+  an existing setting is kept, so a store saved off stays off. With it on, naming a speaker with voice learning on
+  (the review window's box follows the setting) stores one sample per person and
+  meeting: the mean embedding of that speaker's clear turns, extracted on demand.
+  Post-processing never stores voice embeddings; nothing is inferred from unconfirmed
+  speakers or automatic matches.
 - **Recognition only suggests** ("Maybe Jim — Confirm") until thresholds are calibrated
   on the user's own confirmed meetings; suggestions never appear in exports.
 - **Storage and control.** Samples live only in Application Support/Holos/Speakers

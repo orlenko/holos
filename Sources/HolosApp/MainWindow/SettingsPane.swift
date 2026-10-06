@@ -482,8 +482,8 @@ final class SettingsPane: NSViewController, MainSectionContent, NSSearchFieldDel
         addRow(.speakerModels, "Speaker labels", to: grid)
         addRow(.deepTranscriptionModel, "Final transcript", to: grid)
         addRow(.people, "Remember voices", to: grid)
-        set(.people, .pending, "Whether Voice is Local remembers the voices of people you name is set in People, "
-            + "with each person's samples.", button: "Open People")
+        set(.people, .pending, "On for new installs: Voice is Local learns the voices of people you name, on this Mac, "
+            + "and suggests them in later meetings. Turn it off or forget voices in People.", button: "Open People")
         rows[.people]?.icon.image = NSImage(systemSymbolName: "person.2", accessibilityDescription: nil)
         rows[.people]?.icon.contentTintColor = .secondaryLabelColor
 
