@@ -114,4 +114,20 @@ import Testing
         #expect(runs.map(\.range) == [0..<180, 180..<260, 260..<300, 400..<450])
         #expect(runs.map(\.language) == ["fr", "en", "fr", "fr"], "Separate stretches stay apart.")
     }
+
+    @Test func passagesAreNeverJoinedAcrossThePlannedStretches() {
+        // Three touching 20 s stretches of one long French turn: three runs, none longer than its stretch (the
+        // decoder's window and prompt budget rely on that bound).
+        let stretch = 20 * 16_000
+        let runs = WhisperLanguagePick.runs(byStretch: [
+            [(0..<(stretch / 2), "fr"), ((stretch / 2)..<stretch, "fr")],
+            [(stretch..<(2 * stretch), "fr")],
+            [((2 * stretch)..<(3 * stretch), "fr")],
+        ])
+        #expect(runs.map(\.range) == [0..<stretch, stretch..<(2 * stretch), (2 * stretch)..<(3 * stretch)])
+        #expect(runs.allSatisfy { $0.range.count <= stretch })
+        // Within a stretch, a change of language still cuts it.
+        let mixed = WhisperLanguagePick.runs(byStretch: [[(0..<100, "fr"), (100..<200, "en"), (200..<300, "en")]])
+        #expect(mixed.map(\.range) == [0..<100, 100..<300])
+    }
 }

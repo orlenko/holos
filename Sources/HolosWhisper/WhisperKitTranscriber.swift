@@ -172,12 +172,14 @@ public final class WhisperKitTranscriber: DeepTranscriber, @unchecked Sendable {
     /// The stretches to decode of a request in several `languages` (Whisper's names, the preferred one first): each of
     /// `ranges` cut into passages at its pauses (`WhisperLanguagePick.passages`), each passage's language chosen among
     /// `languages` by the model's language detection (an unsure one halved and each half chosen on its own), and
-    /// adjacent passages in one language joined again.
+    /// adjacent passages in one language joined again, within each range only (`runs(byStretch:)`): a run is never
+    /// longer than the range it lies in.
     private func languageRuns(_ ranges: [Range<Int>], samples: [Float],
                               languages: [String]) async throws -> [(range: Range<Int>, language: String?)] {
         let frame = Int(WhisperLanguagePick.frameSeconds * 16_000)
-        var passages: [(range: Range<Int>, language: String)] = []
+        var stretches: [[(range: Range<Int>, language: String)]] = []
         for range in ranges {
+            var passages: [(range: Range<Int>, language: String)] = []
             let stretch = Array(samples[range])
             let levels = WhisperLanguagePick.levels(stretch, frameSamples: frame)
             let activity = WhisperLanguagePick.activity(levels: levels)
@@ -204,8 +206,9 @@ public final class WhisperKitTranscriber: DeepTranscriber, @unchecked Sendable {
                                                     probabilities: probabilities, language: language))
                 passages.append(((offset + passage.range.lowerBound)..<(offset + passage.range.upperBound), language))
             }
+            stretches.append(passages)
         }
-        return WhisperLanguagePick.runs(passages).map { ($0.range, $0.language) }
+        return WhisperLanguagePick.runs(byStretch: stretches).map { ($0.range, $0.language) }
     }
 
     /// The model's language-detection logits for `samples` (its first 30 s), for each of `languages` (Whisper's

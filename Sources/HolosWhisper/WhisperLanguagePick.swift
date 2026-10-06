@@ -216,6 +216,14 @@ enum WhisperLanguagePick {
     }
 
     /// The stretches to decode: adjacent passages in the same language joined, each with its language, in order.
+    /// `runs` of each planned stretch's passages on its own, in order: passages are never joined across the stretches
+    /// they came from, so no run is longer than the stretch it lies in (at most `maxChunkSeconds`, the bound the
+    /// decoder's window and prompt budget rely on), even when touching stretches chose one language.
+    static func runs(byStretch stretches: [[(range: Range<Int>, language: String)]])
+        -> [(range: Range<Int>, language: String)] {
+        stretches.flatMap { runs($0) }
+    }
+
     static func runs(_ passages: [(range: Range<Int>, language: String)]) -> [(range: Range<Int>, language: String)] {
         var out: [(range: Range<Int>, language: String)] = []
         for passage in passages where !passage.range.isEmpty {
