@@ -170,7 +170,6 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate {
     /// Rebuilds playback from the manifest as saved now (off when the audio was deleted).
     private func reloadPlayback() {
         loadedChunks = review.snapshot.manifest.chunks
-        echoMaskFollow.reset(to: review.snapshot.echoMaskIdentity)
         player.load(session: review.session, manifest: review.snapshot.manifest,
                     audioDeleted: review.snapshot.audioDeleted)
     }
@@ -442,7 +441,7 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate {
     private func refresh() {
         // Labels that came with another echo mask (a relabel here, a reload, `session echo-analyze`): the playing
         // item's microphone volume follows it.
-        if echoMaskFollow.update(review.snapshot.echoMaskIdentity) {
+        if echoMaskFollow.update(review.snapshot.echoMaskIdentity, playerReady: player.isReady) {
             Task { [weak self] in await self?.refreshMicVolume() }
         }
         let projection = review.projection
@@ -506,6 +505,11 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate {
         // Every change of the player's state (loading, ready, off and why) redraws what depends on it: the sidebar's
         // play buttons and the footer's "Playback is off" notice.
         if shownPlayerState.update(player.state) {
+            // A new player: its playback read the echo mask while it was built (possibly before the labels adopted
+            // another one), so the microphone's volume is read once more against the labels' mask now.
+            if player.isReady, echoMaskFollow.playerBecameReady(labels: review.snapshot.echoMaskIdentity) {
+                Task { [weak self] in await self?.refreshMicVolume() }
+            }
             sidebar.update(rows: sidebarRows(), people: review.knownPeople(), editable: review.isEditable,
                            suggestions: review.suggestionCount)
             refreshFooter()

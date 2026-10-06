@@ -137,13 +137,18 @@ public struct ReviewEchoMaskFollow: Sendable, Equatable {
 
     public init(identity: String? = nil) { self.identity = identity }
 
-    /// The playback was built (reading the mask itself) while the labels showed `identity`.
-    public mutating func reset(to identity: String?) { self.identity = identity }
+    /// A player became ready (its playback read the mask while it was built, possibly an older one): the volume is
+    /// read once more against the labels' mask now, `identity`. Always true.
+    public mutating func playerBecameReady(labels identity: String?) -> Bool {
+        self.identity = identity
+        return true
+    }
 
-    /// The labels now show `identity`: true when it is another mask than the last one (the volume must be read
-    /// again); the same mask, or none again, is false.
-    public mutating func update(_ identity: String?) -> Bool {
-        guard identity != self.identity else { return false }
+    /// The labels now show `identity`: true when it is another mask than the last one read for and the player is
+    /// ready (the volume must be read again). While the player is not ready nothing is taken as read: its becoming
+    /// ready reads the volume then. The same mask, or none again, is false.
+    public mutating func update(_ identity: String?, playerReady: Bool) -> Bool {
+        guard playerReady, identity != self.identity else { return false }
         self.identity = identity
         return true
     }

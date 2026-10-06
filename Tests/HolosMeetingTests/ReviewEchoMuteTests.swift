@@ -166,21 +166,30 @@ func echoMixBenchmark() {
 
 @Test func anotherMaskInTheLabelsReadsTheVolumeAgain() {
     var follow = ReviewEchoMaskFollow()
-    // The playback was built while the labels had no mask.
-    follow.reset(to: nil)
-    let noneAgain = follow.update(nil)
+    // A player became ready while the labels had no mask: read once.
+    let firstReady = follow.playerBecameReady(labels: nil)
+    let noneAgain = follow.update(nil, playerReady: true)
+    #expect(firstReady)
     #expect(!noneAgain, "No mask again: nothing to read.")
     // A relabel in the window saved a mask, and the labels adopted it.
-    let saved = follow.update("sha-a")
-    let same = follow.update("sha-a")
+    let saved = follow.update("sha-a", playerReady: true)
+    let same = follow.update("sha-a", playerReady: true)
     #expect(saved)
     #expect(!same, "The same mask: nothing to read.")
     // The analysis was run again (another mask), then dropped.
-    let replaced = follow.update("sha-b")
-    let dropped = follow.update(nil)
+    let replaced = follow.update("sha-b", playerReady: true)
+    let dropped = follow.update(nil, playerReady: true)
     #expect(replaced && dropped)
-    // A rebuilt playback reads the mask itself: the labels' mask at that time is taken as read.
-    follow.reset(to: "sha-c")
-    let rebuilt = follow.update("sha-c")
-    #expect(!rebuilt)
+}
+
+@Test func aMaskChangedWhilePlaybackLoadsIsReadOnceThePlayerIsReady() {
+    var follow = ReviewEchoMaskFollow(identity: "sha-a")
+    // Playback is being rebuilt (it may read "sha-a"); the labels adopt "sha-b" meanwhile: not taken as read.
+    let whileLoading = follow.update("sha-b", playerReady: false)
+    #expect(!whileLoading)
+    // The player becomes ready: the volume is read against "sha-b" now, whatever the build read.
+    let ready = follow.playerBecameReady(labels: "sha-b")
+    let after = follow.update("sha-b", playerReady: true)
+    #expect(ready)
+    #expect(!after)
 }
