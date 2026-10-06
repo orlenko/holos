@@ -13,8 +13,6 @@ struct HairlineTests {
         let sources = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
             .deletingLastPathComponent().appendingPathComponent("Sources")
         let helper = sources.appendingPathComponent("HolosApp/Hairline.swift").standardizedFileURL.path
-        // `boxType = .separator`, `boxType: .separator`, `NSBox.BoxType.separator`, `BoxType.separator`.
-        let pattern = try Regex(#"boxType\s*[:=]\s*(NSBox\.BoxType)?\.separator\b|BoxType\.separator\b"#)
         let files = try #require(FileManager.default.enumerator(at: sources, includingPropertiesForKeys: nil))
             .compactMap { $0 as? URL }.filter { $0.pathExtension == "swift" }
         #expect(files.count > 50, "The sources were found.")
@@ -22,12 +20,32 @@ struct HairlineTests {
         var offenders: [String] = []
         for file in files where file.standardizedFileURL.path != helper {
             let text = try String(contentsOf: file, encoding: .utf8)
-            for (index, line) in text.split(separator: "\n", omittingEmptySubsequences: false).enumerated()
-            where line.contains(pattern) {
-                offenders.append("\(file.lastPathComponent):\(index + 1)")
-            }
+            offenders += try Self.separatorLines(in: text).map { "\(file.lastPathComponent):\($0)" }
         }
         #expect(offenders.isEmpty, "Make separator boxes with NSBox.hairline(): \(offenders)")
+    }
+
+    /// The lines (1-based) where `text` makes a separator box: `boxType = .separator`, `boxType: .separator`,
+    /// `NSBox.BoxType.separator`, `BoxType.separator`, matched over the whole text so an assignment split across lines
+    /// counts too.
+    static func separatorLines(in text: String) throws -> [Int] {
+        let pattern = try Regex(#"boxType\s*[:=]\s*(NSBox\.BoxType)?\.separator\b|BoxType\.separator\b"#)
+        return text.matches(of: pattern).map { match in
+            text[..<match.range.lowerBound].reduce(1) { $1 == "\n" ? $0 + 1 : $0 }
+        }
+    }
+
+    @Test func theGuardFindsEverySpellingOfASeparatorBox() throws {
+        let text = """
+            let a = NSBox()
+            a.boxType = .separator
+            let b = NSBox()
+            b.boxType =
+                .separator
+            let c = NSBox(); c.boxType = NSBox.BoxType.separator
+            let d: NSBox.BoxType = .custom
+            """
+        #expect(try Self.separatorLines(in: text) == [2, 4, 6])
     }
 
     /// The hairline stays one point high between two views that have no height of their own, in a tall view, and in a
