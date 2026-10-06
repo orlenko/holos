@@ -1278,10 +1278,10 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
                                                   after: edit.after, isDictionaryWord: dictionaryWord)
     }
 
-    /// Learns what a closed Review window's edits taught into the list Corrections shows (`ReviewSession`
-    /// `.learnCorrections`), keeping any heard phrase whose correction changed since the window opened (`opened`).
-    func learnReviewCorrections(_ learned: [Correction], openedWith opened: CorrectionList) {
-        changeCorrections { $0.learn(learned, keepingChangesSince: opened) }
+    /// Learns what a meeting's word edits teach into the list Corrections shows when its review closes (`ReviewSession`
+    /// `.learnCorrections`): phrases the list lacks are added, the others kept. Returns whether the list was written.
+    func learnReviewCorrections(_ learned: [Correction]) -> Bool {
+        changeCorrections { $0.learnKeepingExisting(learned) }
     }
 
     /// A manual Add; one that resolves a declined swap also keeps the edit that swap came from, as Learn

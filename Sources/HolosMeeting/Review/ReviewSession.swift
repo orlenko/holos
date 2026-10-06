@@ -147,12 +147,11 @@ public struct ReviewWord: Sendable, Equatable {
 
     /// The corrections one word edit teaches (the app: `TranscriptEditLearning`).
     public var correctionsToLearn: ((ReviewWordEdit) -> [Correction])?
-    /// Learns `corrections` (the app: into corrections.json, adding or updating those heard phrases only, and keeping a
-    /// value changed elsewhere since the window opened). Called once, when the window closes, with what the edits left
-    /// in the transcript teach (`ReviewLearning`).
-    public var learnCorrections: (([Correction]) -> Void)?
-    /// The transcript the window opened on: what its edits are told apart from when it closes.
-    private let openedTranscript: Transcript
+    /// Learns `corrections` (the app: into corrections.json, adding a heard phrase it lacks and keeping one it has,
+    /// removing nothing); returns whether the list could be written. Called when the window closes, with what every
+    /// word edited in the meeting teaches (`ReviewLearning`); a write that fails is made again by the next review's
+    /// close, since the edits stay in the transcript.
+    public var learnCorrections: (([Correction]) -> Bool)?
 
     private var savedProjection: SpeakerProjection
     private var people: [SpeakerProfile]
@@ -256,7 +255,6 @@ public struct ReviewWord: Sendable, Equatable {
         self.analyseVoices = analyseVoices
         self.pendingVoices = pendingVoices
         snapshot = loaded.snapshot
-        openedTranscript = loaded.snapshot.transcript
         self.projection = projection
         savedProjection = projection
         people = loaded.people
@@ -1270,8 +1268,14 @@ public struct ReviewWord: Sendable, Equatable {
         case .editWords(let request, let asked):
             try requireBasis(op)
             try await saveWordEdit(request, segment: asked, op: op)
-        case .revertWordFix(let word):
+        case .revertWordFix(let asked):
             try requireBasis(op)
+            // A word edit of the segment saved since it was asked for moves the fix's words: it is found where they
+            // are now; an edit that replaced the fixed word leaves nothing to revert.
+            let followed = Self.follow([asked], through: wordMoves.dropFirst(op.movesSeen))
+            guard !followed.replaced, let word = followed.refs.first else {
+                throw HolosError.invalidInput("That word was edited meanwhile, so its fix is no longer there to revert.")
+            }
             guard let runID = snapshot.run?.id else {
                 throw HolosError.invalidInput("The speaker labels cannot be kept on the reverted words.")
             }
@@ -1471,8 +1475,9 @@ public struct ReviewWord: Sendable, Equatable {
         range.map { TranscriptWordEdit.shownText(of: segment, first: $0, end: $0 + 1) }
     }
 
-    /// At close: learns what the window's word edits left in the transcript teach (`ReviewLearning`), once. Edits undone
-    /// or reverted are not in it, so they teach nothing.
+    /// At close: learns what every word edited in the meeting's transcript, as it is now, teaches (`ReviewLearning`).
+    /// Edits undone or reverted are not in it, so they teach nothing; learning it again changes nothing. A write that
+    /// fails is logged: the next review's close makes it again.
     private func learnFromEdits() async {
         guard let learn = learnCorrections, let teach = correctionsToLearn else { return }
         let session = self.session
@@ -1481,11 +1486,13 @@ public struct ReviewWord: Sendable, Equatable {
             Self.log.error("Session \(self.sessionID, privacy: .public): the transcript could not be read to learn from its edits")
             return
         }
-        let corrections = ReviewLearning.corrections(ReviewLearning.netEdits(opened: openedTranscript, final: current),
-                                                     teach: teach)
+        let corrections = ReviewLearning.corrections(ReviewLearning.edits(in: current), teach: teach)
         guard !corrections.isEmpty else { return }
-        learn(corrections)
-        Self.log.info("Session \(self.sessionID, privacy: .public): learned \(corrections.count, privacy: .public) corrections from review edits")
+        if learn(corrections) {
+            Self.log.info("Session \(self.sessionID, privacy: .public): learned from \(corrections.count, privacy: .public) corrections of review edits")
+        } else {
+            Self.log.error("Session \(self.sessionID, privacy: .public): corrections from review edits not saved; the next review's close tries again")
+        }
     }
 
     /// `refs` where `moves` took them, and whether one of them was among the words a move replaced (its text may have

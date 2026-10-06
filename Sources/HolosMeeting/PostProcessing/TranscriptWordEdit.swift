@@ -157,11 +157,32 @@ public enum TranscriptWordEdit {
             return WordFixes.tokens(of: Array(text.utf16)).count == range.count
                 ? text : words[range].map(\.text).joined(separator: " ")
         }
+        // An automatic fix's `heard` is only the phrase it matched: the recognizer's words around it in the base
+        // (their punctuation, "cloud." for "Claude.") are what it wrote there.
+        let baseSegment = base.flatMap { base in
+            base.id == current.fixedFrom ? base.segments.first { $0.id == segment.id } : nil
+        }
+        let baseWords = baseSegment.map(WordTiming.effectiveWords(of:))
+        let bounds = baseWords.flatMap { baseBounds(fixes: fixes, current: words, base: $0) }
+        func automatic(_ fix: TranscriptWordFix) -> String {
+            guard let baseSegment, let baseWords, let bounds, bounds[fix.first] >= 0, bounds[fix.end] >= 0 else {
+                return fix.heard
+            }
+            let range = extent(of: bounds[fix.first]..<bounds[fix.end], words: baseWords,
+                               utf16: Array(baseSegment.text.utf16))
+            let text = String(decoding: Array(baseSegment.text.utf16)[range], as: UTF16.self)
+            return WordFixes.tokens(of: Array(text.utf16)).count == WordFixes.tokens(of: Array(fix.heard.utf16)).count
+                ? text : fix.heard
+        }
         var pieces: [String] = []
         var word = lower
         while word < upper {
             if let fix = touched.first(where: { $0.first == word }) {
-                pieces.append(fix.kind == .reviewRevert ? recognized(fix.first..<fix.end) : fix.heard)
+                switch fix.kind {
+                case .reviewRevert: pieces.append(recognized(fix.first..<fix.end))
+                case .correction, .term: pieces.append(automatic(fix))
+                default: pieces.append(fix.heard)
+                }
                 word = fix.end
             } else {
                 let next = touched.map(\.first).filter { $0 > word }.min() ?? upper

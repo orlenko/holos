@@ -124,19 +124,20 @@ public struct CorrectionList: Codable, Sendable, Equatable {
         if let correction { add(correction) }
     }
 
-    /// Learns `learned` (what a meeting review's edits taught, when its window closed): each heard phrase gets its
-    /// correction, unless its entry changed since `opened` (the list when the window opened), where the value set since
-    /// is kept. Nothing else changes and nothing is removed. Returns what was learned.
+    /// Learns `learned` (what a meeting's word edits teach, when a review window closes) keeping what the list has: a
+    /// heard phrase it lacks is added; one it has keeps its correction (an earlier or another choice wins). Nothing is
+    /// removed, so learning the same again changes nothing. Returns what was added.
     @discardableResult
-    public mutating func learn(_ learned: [Correction], keepingChangesSince opened: CorrectionList) -> [Correction] {
-        var done: [Correction] = []
+    public mutating func learnKeepingExisting(_ learned: [Correction]) -> [Correction] {
+        var added: [Correction] = []
         for correction in learned {
             let key = Self.key(correction.heard)
-            guard !key.isEmpty, entry(forKey: key) == opened.entry(forKey: key) else { continue }
-            set(correction, forKey: key)
-            done.append(correction)
+            guard !key.isEmpty, entry(forKey: key) == nil else { continue }
+            let before = entries.count
+            add(correction)
+            if entries.count > before { added.append(correction) }
         }
-        return done
+        return added
     }
 
     /// Reconciles rules introduced by live editing with the rules its latest edits still confirm. `managed` is every

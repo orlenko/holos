@@ -93,28 +93,34 @@ private func wordEditCurrent(_ session: URL) throws -> Transcript {
 }
 
 /// A corrections list in memory that a review teaches when it closes, as the app's does
-/// (`CorrectionList.learn(_:keepingChangesSince:)`), and what each edit teaches: "heard" → "meant", as recorded.
+/// (`CorrectionList.learnKeepingExisting`), and what each edit teaches: "heard" → "meant" as recorded, or with
+/// `contextual`, the app's rule with every word a dictionary word (so a lone word is learned with its neighbour).
 @MainActor
 private final class WordEditLearner {
     var list: CorrectionList
-    /// The list when the window opened.
-    let opened: CorrectionList
+    /// While set, the list cannot be written.
+    var failing = false
+    let contextual: Bool
     private(set) var taughtBy: [ReviewWordEdit] = []
     private(set) var lessons = 0
 
-    init(_ list: CorrectionList = CorrectionList()) {
+    init(_ list: CorrectionList = CorrectionList(), contextual: Bool = false) {
         self.list = list
-        opened = list
+        self.contextual = contextual
     }
 
     func attach(to review: ReviewSession) {
         review.correctionsToLearn = { [self] edit in
             taughtBy.append(edit)
-            return [Correction(heard: edit.heard, meant: edit.meant)]
+            guard contextual else { return [Correction(heard: edit.heard, meant: edit.meant)] }
+            return TranscriptEditLearning.corrections(heard: edit.heard, meant: edit.meant, before: edit.before,
+                                                      after: edit.after, isDictionaryWord: { _ in true })
         }
         review.learnCorrections = { [self] learned in
             lessons += 1
-            list.learn(learned, keepingChangesSince: opened)
+            guard !failing else { return false }
+            list.learnKeepingExisting(learned)
+            return true
         }
     }
 
@@ -393,35 +399,30 @@ func aQueuedEditWaitsForTheRereadAnEarlierEditsFailureNeeds() async throws {
     await review.close()
 }
 
-// MARK: - Learning, once, when the window closes
+// MARK: - Learning, when a review closes, from every edited word
 
-/// Two "cloud"s in one turn, between "x" and "y"; the list held "cloud → Cloudy" and "other → Other" before the window.
-@MainActor
-private func wordEditOccurrences(_ temp: TemporaryDirectory) async throws
-    -> (session: URL, review: ReviewSession, learner: WordEditLearner) {
-    let session = try await wordEditSession(in: temp, [
-        WordEditTurn(speaker: "system:S1", start: 0, words: ["cloud", "x", "cloud", "y"]),
+/// "cloud now and cloud later" in one turn.
+private func wordEditCloudSession(_ temp: TemporaryDirectory) async throws -> URL {
+    try await wordEditSession(in: temp, [
+        WordEditTurn(speaker: "system:S1", start: 0, words: ["cloud", "now", "and", "cloud", "later"]),
     ])
-    let review = try await wordEditOpen(session)
-    let learner = WordEditLearner(CorrectionList(entries: [Correction(heard: "cloud", meant: "Cloudy"),
-                                                           Correction(heard: "other", meant: "Other")]))
-    learner.attach(to: review)
-    return (session, review, learner)
 }
 
 @Test(.timeLimit(.minutes(1))) @MainActor
-func anEditKeptTillTheWindowClosesIsLearnedThen() async throws {
+func anEditStillThereWhenTheReviewClosesIsLearned() async throws {
     let temp = try TemporaryDirectory("review")
     defer { temp.remove() }
-    let (_, review, learner) = try await wordEditOccurrences(temp)
+    let session = try await wordEditCloudSession(temp)
+    let review = try await wordEditOpen(session)
+    let learner = WordEditLearner(CorrectionList(entries: [Correction(heard: "other", meant: "Other")]))
+    learner.attach(to: review)
     try await review.editWords(wordEditRefs(review, "T1", [0]), to: "Claude")
     try await review.editWords(wordEditRefs(review, "T1", [0]), to: "Claudia")
-    #expect(learner.value("cloud") == "Cloudy", "Nothing is learned while editing.")
+    #expect(learner.value("cloud") == nil, "Nothing is learned while editing.")
     await review.close()
-    // Only what the transcript holds at the end: "cloud" → "Claudia", with its neighbour as context.
-    #expect(learner.taughtBy == [ReviewWordEdit(heard: "cloud", meant: "Claudia", after: "x")])
+    // What the transcript holds: "cloud" → "Claudia", with its neighbour as context.
+    #expect(learner.taughtBy == [ReviewWordEdit(heard: "cloud", meant: "Claudia", after: "now")])
     #expect(learner.value("cloud") == "Claudia" && learner.value("other") == "Other")
-    #expect(learner.lessons == 1)
 }
 
 @Test(.timeLimit(.minutes(1))) @MainActor
@@ -429,43 +430,112 @@ func anEditUndoneOrRevertedBeforeCloseTeachesNothing() async throws {
     for revert in [false, true] {
         let temp = try TemporaryDirectory("review")
         defer { temp.remove() }
-        let (session, review, learner) = try await wordEditOccurrences(temp)
+        let session = try await wordEditCloudSession(temp)
+        let review = try await wordEditOpen(session)
+        let learner = WordEditLearner()
+        learner.attach(to: review)
         try await review.editWords(wordEditRefs(review, "T1", [0]), to: "Claude")
         if revert {
             try await review.revertWordFix(wordEditRefs(review, "T1", [0])[0])
         } else {
             try await review.undo()
         }
-        #expect(try wordEditCurrent(session).segments[0].text == "cloud x cloud y")
+        #expect(try wordEditCurrent(session).segments[0].text == "cloud now and cloud later")
         await review.close()
-        #expect(learner.lessons == 0 && learner.value("cloud") == "Cloudy", revert ? "Reverted" : "Undone")
+        #expect(learner.list.entries.isEmpty, revert ? "Reverted" : "Undone")
     }
 }
 
 @Test(.timeLimit(.minutes(1))) @MainActor
-func aCorrectionChangedElsewhereMeanwhileIsKept() async throws {
+func learningAgainAtTheNextCloseChangesNothingAndASecondOccurrenceIsAdded() async throws {
     let temp = try TemporaryDirectory("review")
     defer { temp.remove() }
-    let (_, review, learner) = try await wordEditOccurrences(temp)
-    try await review.editWords(wordEditRefs(review, "T1", [0]), to: "Claude")
-    // Changed in Corrections while the window was open; an unrelated phrase too.
-    learner.list.set(Correction(heard: "cloud", meant: "Cloud9"), forKey: "cloud")
-    learner.list.set(Correction(heard: "other", meant: "Another"), forKey: "other")
-    await review.close()
-    #expect(learner.value("cloud") == "Cloud9" && learner.value("other") == "Another")
+    let session = try await wordEditCloudSession(temp)
+    let learner = WordEditLearner(contextual: true)
+    let first = try await wordEditOpen(session)
+    learner.attach(to: first)
+    try await first.editWords(wordEditRefs(first, "T1", [0]), to: "Claude")
+    await first.close()
+    #expect(learner.list.entries == [Correction(heard: "cloud now", meant: "Claude now")])
+    // Reopened and closed: the same edit, learned again, changes nothing.
+    let again = try await wordEditOpen(session)
+    learner.attach(to: again)
+    await again.close()
+    #expect(learner.list.entries == [Correction(heard: "cloud now", meant: "Claude now")] && learner.lessons == 2)
+    // The second "cloud", spelled otherwise, has its own context: added beside the first.
+    let third = try await wordEditOpen(session)
+    learner.attach(to: third)
+    try await third.editWords(wordEditRefs(third, "T1", [3]), to: "Klaud")
+    await third.close()
+    #expect(learner.list.entries == [Correction(heard: "cloud now", meant: "Claude now"),
+                                     Correction(heard: "cloud later", meant: "Klaud later")])
 }
 
 @Test(.timeLimit(.minutes(1))) @MainActor
-func ofTwoOccurrencesSpelledDifferentlyTheLaterInTheMeetingWins() async throws {
+func anExistingCorrectionIsKeptAndAFailedWriteIsMadeAtTheNextClose() async throws {
     let temp = try TemporaryDirectory("review")
     defer { temp.remove() }
-    let (_, review, learner) = try await wordEditOccurrences(temp)
-    // The later occurrence is edited first: the order in the meeting decides, not the order of the edits.
-    try await review.editWords(wordEditRefs(review, "T1", [2]), to: "Klaud")
+    let session = try await wordEditCloudSession(temp)
+    let learner = WordEditLearner()
+    let review = try await wordEditOpen(session)
+    learner.attach(to: review)
     try await review.editWords(wordEditRefs(review, "T1", [0]), to: "Claude")
+    try await review.editWords(wordEditRefs(review, "T1", [2]), to: "plus")
+    // Set elsewhere while the window was open (in Corrections): kept.
+    learner.list.set(Correction(heard: "cloud", meant: "Cloud9"), forKey: "cloud")
+    // The list cannot be written now.
+    learner.failing = true
     await review.close()
-    #expect(learner.taughtBy.map(\.meant) == ["Claude", "Klaud"])
-    #expect(learner.value("cloud") == "Klaud")
+    #expect(learner.lessons == 1 && learner.value("and") == nil)
+    learner.failing = false
+    let reopened = try await wordEditOpen(session)
+    learner.attach(to: reopened)
+    await reopened.close()
+    #expect(learner.value("and") == "plus", "The edits are still in the transcript: learned at the next close.")
+    #expect(learner.value("cloud") == "Cloud9")
+}
+
+@Test(.timeLimit(.minutes(1))) @MainActor
+func aQueuedRevertOfAnAutomaticFixFollowsAnEditBeforeIt() async throws {
+    let temp = try TemporaryDirectory("review")
+    defer { temp.remove() }
+    let session = try await wordEditSession(in: temp, [
+        WordEditTurn(speaker: "system:S1", start: 0, words: ["ask", "more", "cloud", "now"]),
+    ])
+    // The word-fix stage made "cloud" "Claude"; the labels are on that revision.
+    let base = try wordEditCurrent(session)
+    let fixed = try await WordFixStage.fix(base, title: "",
+                                           corrections: CorrectionList(entries: [Correction(heard: "cloud",
+                                                                                            meant: "Claude")]),
+                                           terms: CorrectionList(), dependencies: .none).transcript
+    try await SessionFixtures.saveTranscript(fixed, in: session)
+    var run = try SessionSpeakerStore.readRun(id: try #require(try SessionSpeakerStore.readHead(session: session)?.runID),
+                                              session: session)
+    run.id = UUID().uuidString
+    run.transcriptID = fixed.id
+    try SessionArchive.withSpeakerLock(at: session) {
+        try SessionSpeakerStore.writeRun(run, session: session)
+        try SessionSpeakerStore.writeHead(SpeakerHead(runID: run.id), session: session)
+    }
+    let review = try await wordEditOpen(session)
+    let (stream, release) = AsyncStream<Void>.makeStream()
+    let entered = SharedValue(0)
+    review.beforeEdit = {
+        entered.update { $0 += 1 }
+        for await _ in stream {}
+    }
+    let words = review.words(of: "T1")
+    #expect(words.map(\.text) == ["ask", "more", "Claude", "now"])
+    // "more" becomes "a lot more" while "Claude" is reverted from its old place.
+    let edit = Task { try await review.editWords([words[1].ref], to: "a lot more") }
+    #expect(await eventually { entered.value == 1 })
+    let revert = Task { try await review.revertWordFix(words[2].ref) }
+    #expect(await eventually { review.queuedOperations == 2 })
+    release.finish()
+    _ = try await edit.value
+    try await revert.value
+    #expect(try wordEditCurrent(session).segments[0].text == "ask a lot more cloud now")
+    await review.close()
 }
 
 @Test(.timeLimit(.minutes(1))) @MainActor

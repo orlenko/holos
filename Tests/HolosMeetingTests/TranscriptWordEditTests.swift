@@ -200,6 +200,20 @@ private func editRanged(_ text: String, _ ranges: [(Int, Int)], id: String = "S1
     #expect(think.ref.word == 1 && !think.replaced)
 }
 
+@Test func anEditOfAnAutomaticFixKeepsTheRecognizersPunctuationForItsRevert() async throws {
+    // The recognizer wrote "cloud."; the correction replaced "cloud" only, giving "Claude.".
+    let base = editTranscript([editSegment(["ask", "cloud."])])
+    let fixed = try await editFixed(base, [Correction(heard: "cloud", meant: "Claude")])
+    #expect(fixed.segments[0].text == "ask Claude.")
+    let edited = try #require(try TranscriptWordEdit.editing(editRequest(1, 2, "Claudia."), in: fixed, base: base))
+    #expect(edited.heard == "cloud.", "What the recognizer wrote over the whole word, its period too.")
+    // Revert: an edit back to what the recognizer wrote.
+    let reverted = try #require(try TranscriptWordEdit.editing(editRequest(1, 2, edited.heard), in: edited.transcript,
+                                                                base: edited.base))
+    #expect(reverted.transcript.segments[0].text == "ask cloud.")
+    #expect(reverted.base?.segments[0].text == "ask cloud.")
+}
+
 @Test func anUntimedSegmentKeepsEstimatedTiming() throws {
     let untimed = TranscriptSegment(id: "S1", start: 0, end: 3, text: "one two three", track: "system")
     let current = editTranscript([untimed])

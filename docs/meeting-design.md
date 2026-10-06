@@ -7778,7 +7778,9 @@ shown, Otter-style.
   collapses to single spaces; an edit that changes nothing saves nothing.
 - *Revisions* (`TranscriptWordEdit`, pure; `SessionWordEdit`, published). The edit is a fix
   of a new kind, `reviewEdit`, whose `heard` is what the recognizer wrote over the whole span
-  (an automatic fix it absorbed gives its own `heard`; a Review revert's restored words are
+  (an automatic fix it absorbed gives the recognizer's words it stands for in the base, the
+  punctuation outside the phrase it matched included, so "Claude." edited and reverted is
+  "cloud." again; a Review revert's restored words are
   the recognizer's), so `heard` stays in the unfixed word space every provenance map uses
   (`WordFixStage.wordOrigins`, `SpeakerTranscriptRetarget.origins`: like a live correction,
   its original word count is `tokens(heard)`; `WordFixes.originalWordRanges`: like a live
@@ -7829,21 +7831,21 @@ shown, Otter-style.
   its "I think so", hides nothing. The person read and confirmed them. Their ranges are read
   only within their segment's words.
 - *Learning* (`ReviewLearning`, `TranscriptEditLearning`; the app's learner). Corrections are
-  learned when the review window closes (also when the app quits, which closes its reviews),
-  once, from the transcript the window leaves, never while editing, so nothing is ever
-  taken back:
-  - the edits are the `reviewEdit` fixes of the final transcript that the transcript the
-    window opened on did not have; an edit undone or reverted before closing is not there, so
-    it teaches nothing;
+  learned when a review closes (also when the app quits, which closes its reviews), from
+  every word you edited in that meeting; an existing correction for the same phrase is kept.
+  Nothing is learned while editing, so nothing is ever taken back, and no state is kept:
+  - the edits are every `reviewEdit` fix of the transcript as it is then; an edit undone or
+    reverted is not there, so it teaches nothing;
   - each is diffed as dictation's Learn does (`CorrectionList.learn`, the recognizer's words
     against the words' shown text, one shown word on each side as context so a lone
-    dictionary word is learned only with its neighbour). Of two edits teaching the same heard
-    phrase differently (two occurrences spelled differently), the later one in the meeting
-    wins;
-  - the pairs are added to `corrections.json`, the list Corrections (⌘2) shows, adding or
-    updating those heard phrases only and removing nothing
-    (`CorrectionList.learn(_:keepingChangesSince:)`): a phrase whose correction changed
-    elsewhere since the window opened keeps that value, and every other phrase is untouched;
+    dictionary word is learned only with its neighbour: "cloud now" and "cloud later" are two
+    phrases);
+  - the pairs go to `corrections.json`, the list Corrections (⌘2) shows
+    (`CorrectionList.learnKeepingExisting`): a phrase the list lacks is added; one it has
+    keeps its correction (an earlier or an external choice wins; within one close, the first
+    in the meeting); nothing is removed. Learning the same meeting again changes nothing, and
+    a write that fails (logged) is made again by the meeting's next review close, since the
+    edits stay in the transcript;
   - nothing is learned from a deletion, a punctuation-only change, or a case-only change,
     unless the case change makes a proper noun (a word whose lowercase is not a dictionary
     word: "github" → "GitHub"); words split or joined ("everyday" → "every day") are a real
@@ -7854,7 +7856,7 @@ shown, Otter-style.
     without asking. "Often heard as" is the recognizer's text unless it is the term itself in
     another case;
   - a word-list term added from the offer stays (an explicit action). A correction learned
-    when an earlier review closed stays until removed in Corrections.
+    stays until removed in Corrections.
 - *Not in v1.* Editing while the meeting records (Review opens after it), spanning segments
   or turns, deleting a whole segment, editing over a live correction, redo, and showing the
   edit before it is saved (the field closes and the row updates once saved).
