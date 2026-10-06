@@ -124,12 +124,29 @@ public enum EchoMaskStore {
     /// this analysis version; nil without one, whatever the reason (none, out of date, damaged, written by a newer
     /// build, or not readable now). The labels are then shown without hiding acoustic echo; never an error.
     public static func usable(session: URL, manifest: SessionManifest) -> AcousticEchoMask? {
+        usableWithIdentity(session: session, manifest: manifest).mask
+    }
+
+    /// `usable`, with its identity: the SHA-256 of its frames, nil without a mask (a saved `noEcho` or
+    /// `noSystemAudio` verdict hides nothing, so it is nil too). The snapshot keeps the identity of the mask it shows,
+    /// and the transcript files record it when written (`SessionExports`), so a mask saved, replaced or dropped since
+    /// makes them out of date.
+    static func usableWithIdentity(session: URL, manifest: SessionManifest)
+        -> (mask: AcousticEchoMask?, identity: String?) {
         do {
-            return try current(session: session, manifest: manifest)?.mask
+            guard let stored = try current(session: session, manifest: manifest), let mask = stored.mask else {
+                return (nil, nil)
+            }
+            return (mask, stored.record.frames?.sha256)
         } catch {
             log.error("Session \(manifest.id, privacy: .public): echo analysis not used: \(error.localizedDescription, privacy: .private)")
-            return nil
+            return (nil, nil)
         }
+    }
+
+    /// `usableWithIdentity`'s identity alone.
+    public static func identity(session: URL, manifest: SessionManifest) -> String? {
+        usableWithIdentity(session: session, manifest: manifest).identity
     }
 
     /// Writes the frames file (or removes a stale one), then the record, which names the frames by their hash.

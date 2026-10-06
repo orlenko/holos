@@ -406,6 +406,40 @@ func recoverMakesAMissingAnalysisOncePerRun() async throws {
 }
 
 @Test(.timeLimit(.minutes(2)))
+func transcriptFilesWrittenWithAnotherMaskAreOutOfDateAndRecoverRewritesThem() async throws {
+    // The meeting is labelled while its microphone audio cannot be read (files written without a mask); a mask is
+    // then saved by a pass that did not get to rewrite the files.
+    let temp = try TemporaryDirectory("echo")
+    defer { temp.remove() }
+    let call = CallTranscript()
+    let session = try await callSession(in: temp.url, audio: CallAudio.tracks(echo: true), transcript: call.transcript)
+    try moveMicrophoneAudio(session, away: true)
+    _ = try await MeetingPostProcessor(diarizer: systemDiarizer(), freeSpace: FixedFreeSpace(.max))
+        .run(session: session, lease: nil)
+    try moveMicrophoneAudio(session, away: false)
+    let title = { SessionCatalog.summary(session: session, jobState: .free).displayTitle }
+    #expect(SessionExports.filesState(session: session, title: title()) == .current)
+    #expect(SessionFixtures.text(SessionPaths.export("md", in: session)).contains("heard0w0"))
+
+    let manifest = try SessionArchive.readManifest(at: session)
+    _ = try EchoAnalysisStage.analyzeSession(session: session, manifest: manifest, freeSpace: FixedFreeSpace(.max))
+    #expect(!EchoAnalysisStage.needed(session: session))
+    #expect(SessionExports.filesState(session: session, title: title()) == .stale, "The app offers the update.")
+    #expect(!SessionExports.echoMaskIsCurrent(session: session))
+
+    // Recover has no analysis to make, and rewrites the files from what the files say.
+    let outcome = try await SessionRecoveryCommand.run(.init(session: session), diarizer: systemDiarizer(),
+                                                       freeSpace: FixedFreeSpace(.max))
+    #expect(outcome.warnings.isEmpty)
+    #expect(SessionExports.filesState(session: session, title: title()) == .current)
+    #expect(!SessionFixtures.text(SessionPaths.export("md", in: session)).contains("heard0w0"))
+
+    // Dropping the mask makes them out of date again.
+    try FileManager.default.removeItem(at: EchoMaskStore.directory(session))
+    #expect(SessionExports.filesState(session: session, title: title()) == .stale)
+}
+
+@Test(.timeLimit(.minutes(2)))
 func anAnalysisPutOffForDiskSpaceIsMadeByRecover() async throws {
     let temp = try TemporaryDirectory("echo")
     defer { temp.remove() }
@@ -469,8 +503,8 @@ func echoAnalyzeChangesOnlyTheViewOfAnOldCall() async throws {
     #expect(view.appliedEditIDs.count == 3)
     #expect(!view.speakers.contains { $0.id == "mic:S1" }, "The echo cluster has nothing left to show.")
     #expect(view.speakers.first { $0.id == "mic:S2" }?.name == "Person A")
-    #expect(view.turns.first { $0.sourceTurnID == systemTurn.id }?.speakerID == "system:S2")
-    #expect(view.turns.first { $0.sourceTurnID == ownTurn.id }?.excludedFromEnrollment == true)
+    #expect(view.turns.first { $0.id == systemTurn.id }?.speakerID == "system:S2")
+    #expect(view.turns.first { $0.id == ownTurn.id }?.excludedFromEnrollment == true)
     #expect(!SessionFixtures.text(SessionPaths.export("md", in: session)).contains("heard1w2"))
 
     let again = try await SessionEchoAnalyzeCommand.run(.init(session: session), freeSpace: FixedFreeSpace(.max))
@@ -481,10 +515,11 @@ func echoAnalyzeChangesOnlyTheViewOfAnOldCall() async throws {
     #expect(speakerFiles(session) == speakersBefore)
 }
 
+@MainActor
 @Test(.timeLimit(.minutes(2)))
-func anEditOnAPieceIsJournalledOnItsStoredTurn() async throws {
+func theReviewSplitsAssignsAndUndoesATurnWithHiddenEchoAsItsStoredTurn() async throws {
     // One microphone turn ("Me") runs from the user's words (8 s) through the far end's echo (10–16 s) to the user
-    // again (16.8 s): the view shows it as two pieces, and an edit made on the second names the stored turn.
+    // again (16.8 s): the review shows it as one turn, same ID, without the echo words.
     let temp = try TemporaryDirectory("echo")
     defer { temp.remove() }
     let call = CallTranscript()
@@ -493,20 +528,69 @@ func anEditOnAPieceIsJournalledOnItsStoredTurn() async throws {
     let session = try await callSession(in: temp.url, audio: CallAudio.tracks(echo: true), transcript: transcript)
     _ = try await MeetingPostProcessor(diarizer: systemDiarizer(), freeSpace: FixedFreeSpace(.max))
         .run(session: session, lease: nil)
-    let view = try #require(try SpeakerSessionSnapshot.load(session: session).projection)
-    let pieces = view.turns.filter { $0.track == "mic" }
-    #expect(pieces.count == 2)
-    let stored = try #require(pieces.first?.sourceTurnID)
-    #expect(pieces.allSatisfy { $0.sourceTurnID == stored && $0.cutByEcho })
-    let second = pieces[1]
-    #expect(second.id == "\(stored)~2")
-    #expect(second.start > 16)
+    let run = try #require(try SpeakerSessionSnapshot.load(session: session).run)
+    let stored = try #require(run.turns.first { $0.track == "mic" })
+    let review = try await ReviewSession(session: session, profiles: nil, maintenance: nil, exportDelay: .seconds(60))
+    let shown = review.projection.turns.filter { $0.track == "mic" }
+    #expect(shown.map(\.id) == [stored.id])
+    #expect(shown.first?.cutByEcho == true)
+    let words = review.words(of: stored.id)
+    // The words shown jump over the echo: before it, the user's words up to 10 s; after it, theirs from 16 s.
+    let gap = try #require(words.indices.dropFirst().first { words[$0].ref.word != words[$0 - 1].ref.word + 1 })
+    #expect(words[..<gap].allSatisfy { $0.start < 10 })
+    #expect(words[gap...].allSatisfy { $0.start >= 16 })
+    #expect(words[gap].ref.word > gap)
 
-    try SessionFixtures.appendEdits([.reassignTurns(turnIDs: [second.id], to: "system:S1")], session: session)
+    // The first word after the echo, picked by its place among the words shown (as the split sheet and
+    // `speakers split --at-word` pick it), names that word of the segment: the split is made there in the stored
+    // turn.
+    let picked = try SpeakerSelector.splitWord(turnID: stored.id, atWord: gap + 1, at: nil, in: review.projection,
+                                               transcript: review.snapshot.transcript)
+    #expect(picked == words[gap].ref)
+    try await review.split(turnID: stored.id, at: picked)
     let journal = try SessionSpeakerStore.readEdits(session: session)
-    #expect(journal.edits.last?.action == .reassignTurns(turnIDs: [stored], to: "system:S1"))
-    let after = try #require(try SpeakerSessionSnapshot.load(session: session).projection)
-    #expect(after.turns.filter { $0.track == "mic" }.allSatisfy { $0.speakerID == "system:S1" })
+    guard case .splitTurn(let turnID, let at)? = journal.edits.last?.action else {
+        Issue.record("No split was journalled")
+        return
+    }
+    #expect(turnID == stored.id)
+    #expect(at == picked)
+    let parts = review.projection.turns.filter { $0.track == "mic" }
+    #expect(parts.map { review.words(of: $0) } == [Array(words[..<gap]), Array(words[gap...])])
+    #expect(parts.first?.id == stored.id)
+
+    // Assigning the second part names it; undo takes back the assignment, then the split.
+    let second = try #require(parts.last).id
+    try await review.assign([second], to: .speaker("system:S1"))
+    #expect(review.projection.turns.first { $0.id == second }?.speakerID == "system:S1")
+    #expect(review.projection.turns.first { $0.id == stored.id }?.speakerID == stored.speakerID)
+    try await review.undo()
+    #expect(review.projection.turns.first { $0.id == second }?.speakerID == stored.speakerID)
+    try await review.undo()
+    #expect(review.projection.turns.filter { $0.track == "mic" }.map(\.id) == [stored.id])
+    #expect(review.words(of: stored.id) == words)
+    await review.close()
+}
+
+@Test(.timeLimit(.minutes(2)))
+func recognitionDoesNotCompareAMicrophoneClusterThatIsEcho() async throws {
+    // S1 on the microphone is the far end's echo: its voice must not take a person's match from the system speaker.
+    let temp = try TemporaryDirectory("echo")
+    defer { temp.remove() }
+    let (session, _, run) = try await labelledOldCall(in: temp.url)
+    _ = try await SessionEchoAnalyzeCommand.run(.init(session: session), freeSpace: FixedFreeSpace(.max))
+    let manifest = try SessionArchive.readManifest(at: session)
+    let snapshot = try SpeakerSessionSnapshot.load(session: session)
+    let clusters = run.speakers.flatMap(\.clusterIDs)
+    let echoCluster = try #require(run.speakers.first { $0.id == "mic:S1" }?.clusterIDs.first)
+    let voices = SessionVoiceData(runID: run.id, sessionID: manifest.id,
+                                  embeddingModel: DiarizationEngineInfo.fake.embeddingModel,
+                                  centroids: Dictionary(uniqueKeysWithValues: clusters.map { ($0, FloatVector([1, 0])) }),
+                                  turnEmbeddings: [])
+    let mask = EchoMaskStore.usable(session: session, manifest: manifest)
+    let kept = RecognizeStage.withoutEcho(voices, run: run, transcript: snapshot.transcript, mask: mask)
+    #expect(Set(kept?.centroids.keys ?? [:].keys) == Set(clusters).subtracting([echoCluster]))
+    #expect(RecognizeStage.withoutEcho(voices, run: run, transcript: snapshot.transcript, mask: nil) == voices)
 }
 
 @Test func echoAnalyzeLeavesAnInPersonMeetingAlone() async throws {

@@ -554,7 +554,9 @@ public struct MeetingPostProcessor: Sendable {
         // Stage 7: recognition on the in-memory voice data of the run just published (never persisted here).
         if result.published, let profiles {
             let started = recorder.begin(.recognize, message: "Comparing voices…")
-            switch RecognizeStage.run(built.run, voiceData: built.voiceData, session: session, store: profiles) {
+            let voices = RecognizeStage.withoutEcho(built.voiceData, run: built.run, transcript: transcript,
+                                                    mask: EchoMaskStore.usable(session: session, manifest: manifest))
+            switch RecognizeStage.run(built.run, voiceData: voices, session: session, store: profiles) {
             case .skipped(let message):
                 recorder.end(.recognize, .skipped, message, since: started)
             case .recognized(let recognition):

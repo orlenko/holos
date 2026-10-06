@@ -46,8 +46,14 @@ public final class MeetingPeopleCache: Sendable {
         let names = profileNames.sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value)" }.joined(separator: "\u{1F}")
         return [summary.transcriptID ?? "-", summary.runID ?? "-", fileStamp(SessionPaths.head(summary.directory)),
                 fileStamp(SessionPaths.edits(summary.directory)), recognitionStamp(summary.directory),
-                applyRecognition ? "r" : "-", names]
+                echoStamp(summary.directory), applyRecognition ? "r" : "-", names]
             .joined(separator: "|")
+    }
+
+    /// The acoustic echo analysis (`echo/mask.json` and `echo/frames.bin`, §5.11): the labels' view hides the echo it
+    /// finds, which can take a speaker, and so a person, out of the meeting.
+    static func echoStamp(_ session: URL) -> String {
+        fileStamp(SessionPaths.echoMask(session)) + "," + fileStamp(SessionPaths.echoFrames(session))
     }
 
     /// The recognition results (`speakers/recognition/<run>.json`, written after the head run): each file's name, size
@@ -87,8 +93,10 @@ public final class TranscriptFilesCache: Sendable {
         // The manifest's copy of the name not updated after a rename: out of date whatever the files hold.
         if summary.nameCopyIsStale { return .stale }
         let session = summary.directory
+        // The echo analysis too: a mask saved or replaced makes the files out of date (§5.11).
         let stamp = (SessionExports.formats.map { SessionPaths.export($0.rawValue, in: session) }
-            + [SessionPaths.generatedExports(session), SessionPaths.transcriptPointer(session)])
+            + [SessionPaths.generatedExports(session), SessionPaths.transcriptPointer(session),
+               SessionPaths.echoMask(session), SessionPaths.echoFrames(session)])
             .map(MeetingPeopleCache.fileStamp).joined(separator: "|")
         // The title shown and the name transcript.json records.
         let title = summary.displayTitle + "\u{1F}" + summary.name

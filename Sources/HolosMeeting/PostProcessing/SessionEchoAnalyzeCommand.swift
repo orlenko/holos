@@ -98,11 +98,7 @@ public enum SessionEchoAnalyzeCommand {
         progress("Writing transcript files…")
         var exportsNote = ""
         do {
-            let names = profiles.map { VoiceProfileService.profileNames(store: $0) } ?? [:]
-            _ = try SessionExports.regenerate(session: session, profileNames: names,
-                                              applyRecognition: profiles.map {
-                                                  VoiceProfileService.recognitionAllowed(store: $0)
-                                              } ?? true)
+            try SessionExports.regenerate(session: session, people: profiles)
         } catch {
             exportsNote = " The transcript files could not be rewritten (\(error.localizedDescription)); run the "
                 + "command again, or use Update Transcript Files in the app."

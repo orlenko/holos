@@ -906,7 +906,7 @@ public enum VoiceProfileService {
                                            forgetBaseline: Int?) async throws {
         for attempt in 1...sampleAttempts {
             try Task.checkCancellation()
-            let (generation, snapshot) = try consistentSnapshot(session)
+            let (generation, echo, snapshot) = try consistentSnapshot(session)
             let sessionID = snapshot.manifest.id
             guard snapshot.journal.isComplete else {
                 let hasSample = try store.load().profiles.contains { $0.samples.contains { $0.sessionID == sessionID } }
@@ -988,7 +988,10 @@ public enum VoiceProfileService {
             // a person forgotten, Remember voices or the calibration changed, all make the work stale.
             var forgotten = false
             let published = try SessionArchive.withSpeakerLock(at: session) { () throws -> Bool in
-                guard try SessionSpeakerStore.generation(session: session) == generation else { return false }
+                // The echo analysis too (§5.11): the turns the samples were planned on hide the echo it found, so a
+                // mask saved meanwhile (`echo-analyze`, Recover) makes the plan stale.
+                guard try SessionSpeakerStore.generation(session: session) == generation,
+                      MeetingPeopleCache.echoStamp(session) == echo else { return false }
                 return try store.update { current -> Bool in
                     // A forget that landed while this was computed wins: it was the later request, and the samples
                     // alone cannot show it when the person had none from this meeting either way.
@@ -1020,16 +1023,17 @@ public enum VoiceProfileService {
         throw HolosError.unavailable(labelsKeptChanging)
     }
 
-    /// The generation and the snapshot loaded while it held (read under the speaker lock before and after the load,
-    /// so the lock is held only for the two readings).
-    private static func consistentSnapshot(_ session: URL) throws -> (String?, SpeakerSessionSnapshot) {
+    /// The generation, the echo analysis's file stamp (`MeetingPeopleCache.echoStamp`), and the snapshot loaded while
+    /// both held (read under the speaker lock before and after the load, so the lock is held only for the readings).
+    private static func consistentSnapshot(_ session: URL) throws -> (String?, String, SpeakerSessionSnapshot) {
         let generation = { try SessionArchive.withSpeakerLock(at: session) {
-            try SessionSpeakerStore.generation(session: session)
+            (try SessionSpeakerStore.generation(session: session), MeetingPeopleCache.echoStamp(session))
         } }
         for _ in 1...sampleAttempts {
             let before = try generation()
             let snapshot = try SpeakerSessionSnapshot.load(session: session)
-            if try generation() == before { return (before, snapshot) }
+            let after = try generation()
+            if after.0 == before.0, after.1 == before.1 { return (before.0, before.1, snapshot) }
         }
         throw HolosError.unavailable("Speaker labels are being changed; try again.")
     }

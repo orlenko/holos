@@ -136,9 +136,7 @@ public enum SpeakerEditor {
             let at = Date()
             var edits: [SpeakerEdit] = []
             edits.reserveCapacity(actions.count)
-            // A piece of a turn the view cut at acoustic echo is journalled as that turn (§5.11), so the journal never
-            // depends on the mask the view was shown with.
-            for action in actions.map(cleaned).map(view.storedAction) {
+            for action in actions.map(cleaned) {
                 let expected = viewState.fingerprint(for: action)
                 guard expected == current.fingerprint(for: action) else { throw refusedStaleView(base.run) }
                 if case .revert(let target) = action,

@@ -7911,14 +7911,22 @@ genuinely local (the user, or people in the room) stays even while the call play
   purpose: relabel decisions and name carry-over (`SpeakerAnalysis.headState`, matched against
   a new run that holds the echo too), forget clean-up (it must reach every word a person owns)
   and evaluation scoring (diarization quality).
-- *Pieces.* A turn that loses some words is shown as pieces, the runs of words between the
-  echo: the first keeps the turn's ID, the others are "<turnID>~2", "~3", … in word order, and
-  each names its turn (`sourceTurnID`). A turn that loses every word is not shown, and a speaker
-  with no turn shown is not listed. Edits on a piece act on its turn
-  (`SpeakerProjection.storedAction`, applied by `SpeakerEditor` and `applying`): reassigning a
-  piece reassigns the whole turn (its echo words are hidden anyway); splitting a piece splits
-  the turn at the given word, so splitting at a piece's first word makes the piece a turn of
-  its own. The journal only ever names stored turns, so it does not depend on the mask shown.
+- *Turns.* A turn keeps its ID and speaker and leaves out the words the mask flags; its start,
+  end and timing quality are those of the words left. A turn that loses every word is not
+  shown, and a speaker with no turn shown is not listed. Edits work as without echo: the words a
+  split is chosen from are the words shown, each named by its place in its segment (`WordRef`),
+  so the split lands at that word of the stored turn; assign and undo name the turn. The
+  journal only ever names stored turns and words, so it does not depend on the mask shown.
+- *Out of date when the mask changes.* The transcript files record the mask they were written
+  with (`.generated.json` `echoMask`: the SHA-256 of the frames, none without a mask), and
+  `SessionExports.filesState` calls them out of date when it is not the one the labels show now,
+  so the app offers Update Transcript Files. Recover rewrites them whenever they are, whatever
+  else it did (`echoMaskIsCurrent`). The people cache and the summary schedule key on the
+  echo files' stamps, and a voice sample is published only if the echo files did not change
+  while it was computed.
+- *Recognition.* Post-processing compares voices only for clusters the view lists with the mask
+  (`RecognizeStage.withoutEcho`): a microphone cluster that is echo sounds like the far end and
+  must not take a person's match from the system speaker. The mask exists by then (stage 4b).
 - *Echo clusters.* A diarized microphone cluster with at least `echoClusterShare` of the words
   of its machine turns flagged is echo itself: turns still given to its speaker show unknown
   speaker, and no turn names it among its overlaps, unless the user named or linked that
@@ -7929,7 +7937,9 @@ genuinely local (the user, or people in the room) stays even while the call play
   newer build saved. Post-processing makes it in stage 4b when needed (also for edited labels
   stage 3 keeps, and when no track is diarized); its `echo` stage outcome is for reading only.
   A failure saves nothing, so the next pass tries again. Recover makes a missing analysis once
-  per run (unless its post-processing just tried) and rewrites the transcript files.
+  per run (unless its post-processing just tried). Transcript files are rewritten after a save
+  by `echo-analyze` and Recover with the speaker lock, then `profiles.lock`, held while people's
+  names are read (§1.7 order).
 - *Existing meetings.* `voiceislocal session echo-analyze <id|path> [--force] [--json]`
   (`SessionEchoAnalyzeCommand`) saves the analysis and rewrites the transcript files through
   the projection. Nothing else changes: speaker labels, edits, the transcript and its word
@@ -7942,16 +7952,18 @@ Validation. Synthetic tests (`Tests/HolosSpeakersTests/AcousticEchoTests.swift`,
 inverted microphone, a 30 s call, outlying windows); echo-only frames echo, local bursts
 local, local speech over the call at echo level kept, gaps in the recording kept;
 headphones, missing or silent system audio, and one signal on both tracks are no-ops; the
-projection hides echo words, shows pieces whose edits act on their turns, hides echo
+projection hides echo words from turns that keep their IDs, a split chosen among the words
+shown lands at that stored word (assign and undo too, through the review), hides echo
 clusters, keeps a named speaker whose turns are all echo with its name and assignments, and
 changes with the mask alone; a word fix across an echo boundary is judged once; stale,
-damaged and newer masks are ignored; exports equal the view; post-processing, Recover and
+damaged and newer masks are ignored; exports equal the view, go out of date when the mask
+changes, and Recover rewrites them; recognition skips an echo cluster; post-processing, Recover and
 `echo-analyze` change no stored speaker file. On three real calls (copies), against the
 research reference: delay 46.1 / 46.3 / 46.4 ms (+5.1 / +4.3 / +4.3 ms/h); leftover
 "Unknown" microphone words hidden 1,356/1,489, 1,352/1,468, 1,479/1,645 (91 / 92 / 90 %);
 the user's own words hidden 11/638 and 11/441; words while the system was silent hidden
-2/364, 0/294, 1/4; microphone turns shown 571 → 113, 585 → 114, 714 → 125 (all turns
-883 → 425, 837 → 366, 996 → 407); all 8 edits of the edited meeting apply, and its stored
+2/364, 0/294, 1/4; microphone turns shown 571 → 94, 585 → 103, 714 → 110 (all turns
+883 → 406, 837 → 355, 996 → 392); all 8 edits of the edited meeting apply, and its stored
 labels are byte-identical. The analysis took 1.8–2.1 s per hour of audio on the development
 Mac, about 5 s per hour with both renders (release build).
 

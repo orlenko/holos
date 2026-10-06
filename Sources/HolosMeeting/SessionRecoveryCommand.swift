@@ -297,14 +297,19 @@ public enum SessionRecoveryCommand {
                 let stored = try EchoAnalysisStage.analyzeSession(session: session, manifest: manifest,
                                                                   freeSpace: freeSpace, progress: progress)
                 parts.append(EchoAnalysisStage.message(stored.record))
-                let names = profiles.map { VoiceProfileService.profileNames(store: $0) } ?? [:]
-                _ = try SessionExports.regenerate(session: session, profileNames: names,
-                                                  applyRecognition: profiles.map {
-                                                      VoiceProfileService.recognitionAllowed(store: $0)
-                                                  } ?? true)
             } catch let error where !(error is CancellationError) {
                 // Nothing was saved, so the next Recover (or echo-analyze, or relabel) tries again.
                 warnings.append("The microphone echo was not analysed: \(error.localizedDescription)")
+                exitCode = max(exitCode, 3)
+            }
+        }
+        // Transcript files written with another echo mask than the labels show now (one just saved, or one saved by a
+        // pass whose rewrite failed) are written again: worked out from the files, whatever ran this time.
+        if request.postProcess, !SessionExports.echoMaskIsCurrent(session: session) {
+            do {
+                try SessionExports.regenerate(session: session, people: profiles)
+            } catch let error where !(error is CancellationError) {
+                warnings.append("The transcript files were not rewritten: \(error.localizedDescription)")
                 exitCode = max(exitCode, 3)
             }
         }

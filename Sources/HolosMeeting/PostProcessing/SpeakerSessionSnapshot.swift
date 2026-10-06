@@ -32,6 +32,9 @@ public struct SpeakerSessionSnapshot: Sendable {
     public let recognitionUnreadable: Bool
     /// Event journal lines and events the gaps and markers skipped (`SessionTimelineReader`).
     public let skippedEvents: Int
+    /// The acoustic echo mask the projection hides echo with (`EchoMaskStore.usableWithIdentity`), nil without one;
+    /// the transcript files written from this snapshot record it.
+    public internal(set) var echoMaskIdentity: String? = nil
 
     private static let log = Logger(subsystem: "ca.orlenko.holos.app", category: "speakers")
 
@@ -142,13 +145,13 @@ public struct SpeakerSessionSnapshot: Sendable {
             }
         }
         // A call's acoustic echo (§5.11) is hidden here, in the one view everything reads, never in stored runs.
+        let echo = EchoMaskStore.usableWithIdentity(session: session, manifest: manifest)
         let projection = run.map {
             SpeakerProjection.make(run: $0, transcript: transcript, edits: journal.edits, recognition: recognition,
-                                   profileNames: profileNames,
-                                   acousticEcho: EchoMaskStore.usable(session: session, manifest: manifest))
+                                   profileNames: profileNames, acousticEcho: echo.mask)
         }
         let timeline = try SessionTimelineReader.readTimeline(session: session)
-        return SpeakerSessionSnapshot(
+        var snapshot = SpeakerSessionSnapshot(
             session: session, manifest: manifest, meeting: meeting, transcript: transcript, run: run,
             journal: journal, recognition: recognition, projection: projection, gaps: timeline.gaps,
             markers: timeline.markers, transcriptChanged: transcriptChanged,
@@ -156,6 +159,8 @@ public struct SpeakerSessionSnapshot: Sendable {
             audioDeleted: try SessionFiles.audioDeleted(session: session, sessionID: manifest.id),
             meetingInfoDamaged: meetingInfoDamaged, recognitionUnreadable: recognitionUnreadable,
             skippedEvents: timeline.skippedEvents)
+        snapshot.echoMaskIdentity = echo.identity
+        return snapshot
     }
 
     public func exportDocument(timeZone: TimeZone = .current) -> ExportDocument {

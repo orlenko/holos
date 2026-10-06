@@ -474,61 +474,71 @@ private func view(_ run: DiarizationRun, _ transcript: Transcript, edits: [Speak
 /// Words 2–3 of M (10.8–11.5 s) are echo.
 private let echoInTheMiddle = timedMask(seconds: 30, echo: [(10.8, 11.5)])
 
-@Test func echoWordsAreHiddenAndTheTurnIsShownAsPieces() throws {
+/// The word indexes of M a turn shows.
+private func shownWords(_ turn: ProjectedTurn?) -> [Int] {
+    (turn?.spans ?? []).flatMap { Array($0.first..<$0.end) }
+}
+
+@Test func echoWordsLeaveTheTurnWhichKeepsItsIDAndSpeaker() throws {
     let (words, run) = channelCall()
     let plain = view(run, words)
     let micTurn = try #require(plain.turns.first { $0.track == "mic" })
-    #expect(micTurn.spans == [WordSpan(segmentID: "M", first: 0, end: 10)])
+    #expect(shownWords(micTurn) == Array(0..<10))
     #expect(!micTurn.cutByEcho)
 
     let masked = view(run, words, mask: echoInTheMiddle)
-    let pieces = masked.turns.filter { $0.track == "mic" }
-    #expect(pieces.map(\.id) == [micTurn.id, "\(micTurn.id)~2"])
-    #expect(pieces.map(\.sourceTurnID) == [micTurn.id, micTurn.id])
-    #expect(pieces.map(\.spans) == [[WordSpan(segmentID: "M", first: 0, end: 2)],
-                                    [WordSpan(segmentID: "M", first: 4, end: 10)]])
-    #expect(pieces.allSatisfy { $0.cutByEcho })
-    #expect(abs(pieces[1].start - 11.6) < 1e-9)
-    #expect(pieces.allSatisfy { $0.speakerID == "mic:me" })
+    let shown = masked.turns.filter { $0.track == "mic" }
+    #expect(shown.count == 1)
+    #expect(shown.first?.id == micTurn.id)
+    #expect(shown.first?.speakerID == "mic:me")
+    #expect(shown.first?.spans == [WordSpan(segmentID: "M", first: 0, end: 2), WordSpan(segmentID: "M", first: 4, end: 10)])
+    #expect(shown.first?.cutByEcho == true)
+    #expect(shown.first?.start == micTurn.start)
     // The system turn is untouched, and nothing about the stored run says echo.
     #expect(masked.turns.filter { $0.track == "system" } == plain.turns.filter { $0.track == "system" })
     #expect(run.droppedWords.isEmpty)
     // Voice learning never uses a turn whose voice covers echo.
     #expect(VoiceEnrollment.candidateTurns(for: ["mic:me"], projection: plain).count == 1)
     #expect(VoiceEnrollment.candidateTurns(for: ["mic:me"], projection: masked).isEmpty)
-    // A turn that is all echo is not shown at all.
+    // Echo at the start: the turn starts at its first word shown.
+    let leading = view(run, words, mask: timedMask(seconds: 30, echo: [(10, 10.8)]))
+    #expect(abs((leading.turns.first { $0.track == "mic" }?.start ?? 0) - 10.8) < 1e-9)
+    // A turn that is all echo is not shown at all, nor its speaker.
     let allEcho = view(run, words, mask: timedMask(seconds: 30, echo: [(10, 14)]))
     #expect(!allEcho.turns.contains { $0.track == "mic" })
     #expect(!allEcho.speakers.contains { $0.id == "mic:me" })
 }
 
-@Test func editsOnAPieceActOnItsTurn() throws {
+@Test func editsOnATurnWithHiddenWordsWorkAsOnItsStoredWords() throws {
     let (words, run) = channelCall()
     let masked = view(run, words, mask: echoInTheMiddle)
     let micTurn = try #require(masked.turns.first { $0.track == "mic" }).id
-    let piece = "\(micTurn)~2"
-    // Reassigning a piece reassigns the turn: both pieces move.
-    let reassign = SpeakerEditAction.reassignTurns(turnIDs: [piece], to: "system:all")
-    #expect(masked.storedAction(reassign) == .reassignTurns(turnIDs: [micTurn], to: "system:all"))
-    #expect(masked.fingerprint(for: reassign) == masked.fingerprint(for: masked.storedAction(reassign)))
-    let moved = masked.applying(reassign, editID: "E1")
-    #expect(moved.turns.filter { $0.track == "mic" }.allSatisfy { $0.speakerID == "system:all" })
-    // Both pieces at once count once.
-    #expect(masked.storedAction(.excludeFromEnrollment(turnIDs: [micTurn, piece]))
-        == .excludeFromEnrollment(turnIDs: [micTurn]))
-    // Splitting at a piece's first word makes the piece a turn of its own; the journal names the stored turn.
-    let split = SpeakerEditAction.splitTurn(turnID: piece, at: WordRef(segmentID: "M", word: 4))
-    #expect(masked.storedAction(split) == .splitTurn(turnID: micTurn, at: WordRef(segmentID: "M", word: 4)))
-    let parted = masked.applying(split, editID: "E2")
+    // Reassigning moves the turn, echo words and all (hidden either way).
+    let moved = masked.applying(.reassignTurns(turnIDs: [micTurn], to: "system:all"), editID: "E1")
+    #expect(moved.turns.first { $0.id == micTurn }?.speakerID == "system:all")
+    // The words a split is chosen from are those shown; the third shown word is word 4 of the segment, the first
+    // after the hidden echo. Splitting there splits the stored turn at that word.
+    let shown = try #require(masked.turns.first { $0.id == micTurn })
+    let third = shown.spans.flatMap { span in (span.first..<span.end).map { WordRef(segmentID: span.segmentID, word: $0) } }[2]
+    #expect(third == WordRef(segmentID: "M", word: 4))
+    let parted = masked.applying(.splitTurn(turnID: micTurn, at: third), editID: "E2")
     #expect(parted.staleEdits.isEmpty)
-    let own = try #require(parted.turns.first { $0.id == "\(micTurn)/E2" })
-    #expect(own.spans == [WordSpan(segmentID: "M", first: 4, end: 10)])
-    #expect(!own.cutByEcho)
-    // The same journal shown without the mask has the same turns, echo included.
-    let journal = [SpeakerEdit(id: "E2", baseRunID: run.id, source: "app", action: masked.storedAction(split))]
+    #expect(shownWords(parted.turns.first { $0.id == micTurn }) == [0, 1])
+    let part = try #require(parted.turns.first { $0.id == "\(micTurn)/E2" })
+    #expect(shownWords(part) == Array(4..<10))
+    #expect(!part.cutByEcho)
+    // The stored journal names the same turn and word whatever is shown: without the mask, the echo words are in the
+    // first part.
+    let journal = [SpeakerEdit(id: "E2", baseRunID: run.id, source: "app",
+                               action: .splitTurn(turnID: micTurn, at: third))]
     let plain = view(run, words, edits: journal)
-    #expect(plain.turns.filter { $0.track == "mic" }.map(\.spans)
-        == [[WordSpan(segmentID: "M", first: 0, end: 4)], [WordSpan(segmentID: "M", first: 4, end: 10)]])
+    #expect(plain.turns.filter { $0.track == "mic" }.map(shownWords) == [[0, 1, 2, 3], Array(4..<10)])
+    // The first word shown is still the turn's first: a split there is refused, as on a turn without echo.
+    let first = masked.applying(.splitTurn(turnID: micTurn, at: WordRef(segmentID: "M", word: 0)), editID: "E3")
+    #expect(first.staleEdits.map(\.editID) == ["E3"])
+    // Undo takes a split back.
+    let undone = parted.applying(.revert(editID: "E2"), editID: "E4")
+    #expect(undone.turns.filter { $0.track == "mic" }.map(shownWords) == [[0, 1, 4, 5, 6, 7, 8, 9]])
 }
 
 /// A diarized microphone: S1 holds E (seven words from 10 s, of which the first five are echo), S2 holds U; the

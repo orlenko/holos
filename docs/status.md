@@ -198,11 +198,13 @@ thumbnail timeline, and a larger local-model benchmark are follow-ups.
   microphone frame as silence, echo, or local speech. The result is saved in the meeting's
   `echo/` folder, keyed to its audio. The speaker labels are not changed by it: the review
   window, the transcript files, summaries and voice learning show them with the microphone
-  words that are mostly echo hidden (a turn cut by echo shows as pieces; editing a piece edits
-  its turn), while speech of your own or of people in the room stays, also over the call.
+  words that are mostly echo hidden (a turn keeps its ID and speaker without them, and edits
+  work as before), while speech of your own or of people in the room stays, also over the call.
+  Transcript files written before the echo was found show as out of date (Update Transcript
+  Files, or Recover), and voice recognition leaves out a microphone cluster that is echo.
   Headphones (no confident delay) and calls without system audio change nothing. On three real
   calls it hid about 91 % of the leftover "Unknown" microphone words and cut the microphone
-  turns shown from about 600 to about 115 per meeting, hiding under 2.5 % of the user's own
+  turns shown from about 600 to about 100 per meeting, hiding under 2.5 % of the user's own
   words; it takes about 2 s per hour of audio (about 5 s with preparing both tracks). A
   meeting whose analysis is missing (labelled before this version, or a pass that failed) gets
   it from the next relabel or Recover, or at once with
