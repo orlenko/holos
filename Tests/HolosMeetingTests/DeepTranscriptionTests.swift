@@ -725,6 +725,28 @@ func theQueueReadsTheLanguagesThePassWouldChooseFrom() async throws {
     #expect(DeepTranscriptionStage.languagesProblem(["zu-ZA"]) == nil, "One language is transcribed whatever it is.")
     #expect(DeepTranscriptionStage.languagesProblem(["fr-CA", "en-CA"]) == nil)
     #expect(DeepTranscriptionStage.languagesProblem(["fr-CA", "zu-ZA"]) != nil)
+    // Two languages Whisper names alike: their passages could not be told apart, so the meeting is not transcribed.
+    #expect(DeepTranscriptionStage.languagesProblem(["zh-Hans", "zh-Hant"]) != nil)
+    #expect(DeepTranscriptionStage.languagesProblem(["fr-CA", "zh-Hans", "zh-Hant"])
+        == DeepTranscriptionStage.indistinctLanguages(["zh-Hans", "zh-Hant"]))
+}
+
+@Test func aPartialMergeIsTranscribedInEveryLanguageItWasAskedFor() throws {
+    // A merge of a three-language meeting with no speech model for Spanish holds two languages, but was asked for
+    // three: the pass chooses among the three.
+    let meeting = MeetingInfo(sessionID: "S", mode: .inPerson, othersInRoom: false, createdAt: SessionFixtures.date,
+                              languages: ["fr-CA", "en-CA"])
+    var merged = SessionFixtures.transcript([])
+    merged.id = "M"
+    merged.languages = ["fr-CA", "en-CA"]
+    let event = try archiveEvent(2, MeetingEventKind.languagesDetected, [
+        "transcriptID": "M", "base": "R", "languages": "fr-CA,en-CA", "requested": "fr-CA,en-CA,es-ES",
+    ])
+    #expect(DeepTranscriptionStage.languages(meeting: meeting, transcript: merged, events: [event])
+        == ["fr-CA", "en-CA", "es-ES"])
+    // Without its event, the transcript's own languages; without those, meeting.json's.
+    #expect(DeepTranscriptionStage.languages(meeting: meeting, transcript: merged) == ["fr-CA", "en-CA"])
+    #expect(DeepTranscriptionStage.languages(meeting: meeting, transcript: nil) == ["fr-CA", "en-CA"])
 }
 
 @Test(.timeLimit(.minutes(1)))

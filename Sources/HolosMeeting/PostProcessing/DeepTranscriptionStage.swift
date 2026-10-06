@@ -87,6 +87,10 @@ enum DeepTranscriptionStage {
         "\(DeepTranscriptionModel.displayName) does not transcribe \(LanguageStage.names(unknown)), one of this "
             + "meeting's languages, so the transcript was kept."
     }
+    static func indistinctLanguages(_ alike: [String]) -> String {
+        "\(DeepTranscriptionModel.displayName) cannot tell \(LanguageStage.names(alike)) apart, so the transcript "
+            + "was kept."
+    }
     static let audioDeleted = "The meeting's audio was deleted, so it cannot be transcribed again."
     static let noDiskSpace = "Not enough disk space to transcribe the meeting again. Free some space, then try again."
     static let kept = "Kept the transcript as it was."
@@ -120,7 +124,7 @@ enum DeepTranscriptionStage {
             return fail("\(keptText) \(error.localizedDescription)")
         }
         let base = current.map { recordedBase(of: $0, events: events, session: request.session) }
-        let languages = languages(meeting: meeting, transcript: base?.unfixed)
+        let languages = languages(meeting: meeting, transcript: base?.unfixed, events: events)
         if let problem = languagesProblem(languages) { return fail(problem, .skipped) }
         if let base, base.unfixed.engine == dependencies.engine, !request.force {
             let message = "The meeting was already transcribed with \(DeepTranscriptionModel.displayName)."
@@ -256,20 +260,37 @@ enum DeepTranscriptionStage {
 
     // MARK: - Languages
 
-    /// The meeting's languages, the preferred one first (locale identifiers): those the transcript the pass stands
-    /// for was made from (`transcript`, the current one's `unfixed`: a merge's, languages named with `session
-    /// languages`, or an earlier deep transcript's), else meeting.json's. One (or none) is a meeting in one language.
-    static func languages(meeting: MeetingInfo, transcript: Transcript?) -> [String] {
+    /// The meeting's languages, the preferred one first (locale identifiers), as the transcript the pass stands for
+    /// (`transcript`, the current one's `unfixed`) was asked for: a merge's (or a `session languages` request's)
+    /// `requested` languages from its `languagesDetected` event in `events`, which a partial merge (a language without
+    /// a speech model) names in full though its `languages` hold fewer; else the transcript's own `languages` (an
+    /// earlier deep transcript's); else meeting.json's. One (or none) is a meeting in one language.
+    static func languages(meeting: MeetingInfo, transcript: Transcript?, events: [ArchiveEvent] = []) -> [String] {
+        if let transcript, let requested = LanguageStage.mergeEvent(of: transcript.id, events: events)?
+            .details["requested"] {
+            let asked = DictationLanguage.meetingLanguages(DictationLanguage.list(requested))
+            if !asked.isEmpty { return asked }
+        }
         let made = DictationLanguage.meetingLanguages(transcript?.languages ?? [])
         return made.isEmpty ? DictationLanguage.meetingLanguages(meeting.languages ?? []) : made
     }
 
-    /// Why a meeting in `languages` is not transcribed again: several, one of which Whisper does not know. Nil when it
+    /// Why a meeting in `languages` is not transcribed again: several, one of which Whisper does not know, or two that
+    /// Whisper names alike (`zh-CN` and `zh-TW` are both `zh`: it could not tell their passages apart). Nil when it
     /// can be (one language is transcribed whatever it is: one Whisper does not know is detected).
     static func languagesProblem(_ languages: [String]) -> String? {
         guard languages.count > 1 else { return nil }
         let unknown = languages.filter { DeepTranscriptionModel.whisperLanguage($0) == nil }
-        return unknown.isEmpty ? nil : unknownLanguages(unknown)
+        if !unknown.isEmpty { return unknownLanguages(unknown) }
+        var byCode: [String: [String]] = [:]
+        for locale in languages {
+            if let code = DeepTranscriptionModel.whisperLanguage(locale) { byCode[code, default: []].append(locale) }
+        }
+        if let alike = languages.compactMap({ DeepTranscriptionModel.whisperLanguage($0) })
+            .first(where: { (byCode[$0]?.count ?? 0) > 1 }).flatMap({ byCode[$0] }) {
+            return indistinctLanguages(alike)
+        }
+        return nil
     }
 
     /// The language a pass transcribes in: one (Whisper's name, nil to detect it), or several to choose from passage

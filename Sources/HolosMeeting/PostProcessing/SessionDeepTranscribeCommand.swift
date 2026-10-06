@@ -49,9 +49,9 @@ public enum SessionDeepTranscribeCommand {
                 + "\(manifest.id) first, so all of its saved audio is transcribed.")
         }
         let meeting = try SessionFiles.meetingInfo(session: session, manifest: manifest)
-        let unfixed = unfixedTranscript(session: session)
+        let (unfixed, events) = unfixedTranscript(session: session)
         if let problem = DeepTranscriptionStage.languagesProblem(
-            DeepTranscriptionStage.languages(meeting: meeting, transcript: unfixed)) {
+            DeepTranscriptionStage.languages(meeting: meeting, transcript: unfixed, events: events)) {
             throw HolosError.invalidInput(problem)
         }
         if !force, let unfixed, unfixed.engine == dependencies.engine { return }
@@ -77,16 +77,17 @@ public enum SessionDeepTranscribeCommand {
     public static func languagesProblem(session: URL) -> String? {
         guard let manifest = try? SessionArchive.readManifest(at: session),
               let meeting = try? SessionFiles.meetingInfo(session: session, manifest: manifest) else { return nil }
+        let (unfixed, events) = unfixedTranscript(session: session)
         return DeepTranscriptionStage.languagesProblem(
-            DeepTranscriptionStage.languages(meeting: meeting, transcript: unfixedTranscript(session: session)))
+            DeepTranscriptionStage.languages(meeting: meeting, transcript: unfixed, events: events))
     }
 
-    /// The transcript the current one stands for (`DeepTranscriptionStage.recordedBase`'s `unfixed`); the current
-    /// one when the journal cannot be read; nil without one.
-    private static func unfixedTranscript(session: URL) -> Transcript? {
-        guard let current = try? SessionFiles.currentTranscript(session: session) else { return nil }
-        guard let events = try? SessionArchive.readEvents(at: session).events else { return current }
-        return DeepTranscriptionStage.recordedBase(of: current, events: events, session: session).unfixed
+    /// The transcript the current one stands for (`DeepTranscriptionStage.recordedBase`'s `unfixed`; the current one
+    /// when the journal cannot be read; nil without one), and the journal's events (none when it cannot be read).
+    private static func unfixedTranscript(session: URL) -> (Transcript?, [ArchiveEvent]) {
+        guard let current = try? SessionFiles.currentTranscript(session: session) else { return (nil, []) }
+        guard let events = try? SessionArchive.readEvents(at: session).events else { return (current, []) }
+        return (DeepTranscriptionStage.recordedBase(of: current, events: events, session: session).unfixed, events)
     }
 
     /// Runs `precheck`, then the post-processor. Throws, with nothing changed, when the precheck fails, the session is

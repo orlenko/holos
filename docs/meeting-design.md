@@ -4832,13 +4832,17 @@ skips it.
    that base is a deep transcript (`Transcript.engine` "whisper:…"), the recorded transcript
    it replaced is the one its `deepTranscribed` event names; otherwise the current transcript
    is the recorded one.
-2. *Languages, and skips.* The meeting's languages are those of the transcript of step 1 (a
-   merge's, languages named with `session languages`, even one, or an earlier deep
-   transcript's), else meeting.json's. One: transcribed in it (a language Whisper does not
-   know is detected). Several: each passage in one of them ("Meetings in several languages"
-   above); several with one Whisper does not know: `skipped`, "Whisper large-v3 turbo does not
-   transcribe Zulu (South Africa), one of this meeting's languages, so the transcript was
-   kept." A base this
+2. *Languages, and skips.* The meeting's languages are those the transcript of step 1 was
+   asked for: a merge's (or a `session languages` request's, even one) `requested` languages
+   from its `languagesDetected` event, which a partial merge (a language without a speech
+   model) names in full though its `languages` hold fewer; else its own `languages` (an
+   earlier deep transcript's); else meeting.json's. One: transcribed in it (a language
+   Whisper does not know is detected). Several: each passage in one of them ("Meetings in
+   several languages" above); several with one Whisper does not know: `skipped`, "Whisper
+   large-v3 turbo does not transcribe Zulu (South Africa), one of this meeting's languages, so
+   the transcript was kept."; several of which two are one language to Whisper (`zh-Hans` and
+   `zh-Hant` are both `zh`): `skipped`, "Whisper large-v3 turbo cannot tell … apart, so the
+   transcript was kept." A base this
    model made already: `succeeded`, "The meeting was already transcribed with Whisper
    large-v3 turbo.", unless `force`. Edited speaker labels of the current transcript:
    `skipped` with "Speaker labels were edited, so the meeting was not transcribed again. …
