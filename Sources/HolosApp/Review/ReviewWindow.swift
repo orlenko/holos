@@ -235,7 +235,7 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate {
         editButton.setButtonType(.pushOnPushOff)
         editButton.image = NSImage(systemSymbolName: "pencil", accessibilityDescription: nil)
         editButton.imagePosition = .imageLeading
-        editButton.toolTip = "Edit the transcript's words: click a word to change it (⌘E)"
+        editButton.toolTip = Self.editWordsHelp
         editButton.target = self
         editButton.action = #selector(toggleEditMode)
         let toolbar = NSStackView(views: [nextUncertainButton, assignPopUp, splitButton, speakersPopUp, editButton,
@@ -604,12 +604,15 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate {
         undoItem.isEnabled = editable && review.canUndo
         // Read-only (a command holds the review): edit mode can still be left, not entered.
         editButton.isEnabled = review.canEditWords || turnList.editingWords
-        // Edit mode while words cannot be edited (the transcript changed after labelling): no field opens, and the
-        // banner says why.
+        // Why words cannot be edited (the transcript changed after labelling, or speaker changes cannot be read): the
+        // button's tooltip says so before edit mode is entered, and in edit mode (no field opens) the banner does.
+        editButton.toolTip = review.wordEditingBlocked ?? Self.editWordsHelp
         turnList.canEditWords = review.canEditWords
+        let blockedMessages = [ReviewSession.labelAgainFirst, ReviewSession.speakerChangesUnreadable]
+            .map(\.localizedDescription)
         if turnList.editingWords, let blocked = review.wordEditingBlocked {
             editBanner.show(message: blocked)
-        } else if turnList.editingWords, editBanner.label.stringValue == ReviewSession.labelAgainFirst.localizedDescription {
+        } else if turnList.editingWords, blockedMessages.contains(editBanner.label.stringValue) {
             editBanner.show(message: nil)
         }
 
@@ -968,6 +971,9 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate {
         }
         setEditMode(next)
     }
+
+    /// The Edit Words button's tooltip while words can be edited.
+    static let editWordsHelp = "Edit the transcript's words: click a word to change it (⌘E)"
 
     /// Edit mode after a toggle from `on`: it turns off whenever asked, and on only while `editable`.
     static func editModeAfterToggle(on: Bool, editable: Bool) -> Bool {

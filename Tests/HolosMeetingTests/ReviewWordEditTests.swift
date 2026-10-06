@@ -724,11 +724,11 @@ func learningAgainAtTheNextCloseChangesNothingAndASecondOccurrenceIsAdded() asyn
     try await first.editWords(wordEditRefs(first, "T1", [0]), to: "Claude")
     await first.close()
     #expect(learner.list.entries == [Correction(heard: "cloud now", meant: "Claude now")])
-    // Reopened and closed: the same edit, learned again, changes nothing.
+    // Reopened and closed: the meeting taught that already, so nothing is written.
     let again = try await wordEditOpen(session)
     learner.attach(to: again)
     await again.close()
-    #expect(learner.list.entries == [Correction(heard: "cloud now", meant: "Claude now")] && learner.lessons == 2)
+    #expect(learner.list.entries == [Correction(heard: "cloud now", meant: "Claude now")] && learner.lessons == 1)
     // The second "cloud", spelled otherwise, has its own context: added beside the first.
     let third = try await wordEditOpen(session)
     learner.attach(to: third)
@@ -876,6 +876,131 @@ func anEditBesideAnOlderUnspacedFixIsRefusedSayingWhy() async throws {
     #expect(try wordEditCurrent(session).id == fixed.id, "Nothing was written.")
     #expect(review.reloadProblem == nil && review.canEditWords, "The review goes on.")
     await review.close()
+}
+
+/// "ask more cloud now", whose "cloud" the word-fix stage made "Claude"; the labels are on that revision.
+private func wordEditFixedCloudSession(_ temp: TemporaryDirectory) async throws -> URL {
+    let session = try await wordEditSession(in: temp, [
+        WordEditTurn(speaker: "system:S1", start: 0, words: ["ask", "more", "cloud", "now"]),
+    ])
+    let base = try wordEditCurrent(session)
+    let fixed = try await WordFixStage.fix(base, title: "",
+                                           corrections: CorrectionList(entries: [Correction(heard: "cloud",
+                                                                                            meant: "Claude")]),
+                                           terms: CorrectionList(), dependencies: .none).transcript
+    try await SessionFixtures.saveTranscript(fixed, in: session)
+    var run = try SessionSpeakerStore.readRun(id: try #require(try SessionSpeakerStore.readHead(session: session)?.runID),
+                                              session: session)
+    run.id = UUID().uuidString
+    run.transcriptID = fixed.id
+    try SessionArchive.withSpeakerLock(at: session) {
+        try SessionSpeakerStore.writeRun(run, session: session)
+        try SessionSpeakerStore.writeHead(SpeakerHead(runID: run.id), session: session)
+    }
+    return session
+}
+
+@Test(.timeLimit(.minutes(1))) @MainActor
+func anEditQueuedWhileARevertSavesFollowsItsWordsAndNeverLosesWhatWasTyped() async throws {
+    let temp = try TemporaryDirectory("review")
+    defer { temp.remove() }
+    let session = try await wordEditFixedCloudSession(temp)
+    let review = try await wordEditOpen(session)
+    try await review.apply([.rename(speakerID: "system:S1", name: "Ann")])
+    let (stream, release) = AsyncStream<Void>.makeStream()
+    let entered = SharedValue(0)
+    review.beforeEdit = {
+        entered.update { $0 += 1 }
+        for await _ in stream {}
+    }
+    let words = review.words(of: "T1")
+    #expect(words.map(\.text) == ["ask", "more", "Claude", "now"])
+    // "Claude" is reverted; while that saves, "now" and "Claude" itself are edited.
+    let revert = Task { try await review.revertWordFix(words[2].ref) }
+    #expect(await eventually { entered.value == 1 })
+    let after = Task { try await review.editWords([words[3].ref], to: "today") }
+    let onIt = Task { try await review.editWords([words[2].ref], to: "Claudia") }
+    #expect(await eventually { review.queuedOperations == 3 })
+    review.beforeEdit = nil
+    release.finish()
+    try await revert.value
+    // The window's own revert is not a change made elsewhere: the edit after it follows its words.
+    _ = try await after.value
+    #expect(try wordEditCurrent(session).segments[0].text == "ask more cloud today")
+    // The reverted word itself changed: refused, saying what was typed.
+    let refusal = await #expect(throws: HolosError.self) { _ = try await onIt.value }
+    #expect(refusal?.localizedDescription.contains("Claudia") == true)
+    #expect(review.speaker("system:S1")?.name == "Ann" && review.canUndo, "The speaker changes and undo stay.")
+    await review.close()
+}
+
+@Test(.timeLimit(.minutes(1))) @MainActor
+func wordsCannotBeEditedWhileSpeakerChangesCannotAllBeRead() async throws {
+    let temp = try TemporaryDirectory("review")
+    defer { temp.remove() }
+    let session = try await wordEditFixedCloudSession(temp)
+    // A damaged line in the speaker-change journal.
+    let journal = SessionPaths.edits(session)
+    let existing = (try? Data(contentsOf: journal)) ?? Data()
+    try (existing + Data("{not a speaker change}\n".utf8)).write(to: journal)
+    let review = try await wordEditOpen(session)
+    #expect(!review.snapshot.journal.isComplete)
+    #expect(!review.canEditWords)
+    #expect(review.wordEditingBlocked == ReviewSession.speakerChangesUnreadable.localizedDescription,
+            "The window says why before any field opens.")
+    let words = review.words(of: "T1")
+    let edit = await #expect(throws: HolosError.self) { try await review.editWords([words[1].ref], to: "less") }
+    #expect(edit?.localizedDescription == ReviewSession.speakerChangesUnreadable.localizedDescription)
+    await #expect(throws: HolosError.self) { try await review.revertWordFix(words[2].ref) }
+    #expect(try wordEditCurrent(session).segments[0].text == "ask more Claude now", "Nothing was written.")
+    await review.close()
+}
+
+@Test(.timeLimit(.minutes(1))) @MainActor
+func aCorrectionDeletedInCorrectionsIsNotTaughtAgainByTheMeeting() async throws {
+    let temp = try TemporaryDirectory("review")
+    defer { temp.remove() }
+    let session = try await wordEditCloudSession(temp)
+    let learner = WordEditLearner()
+    let review = try await wordEditOpen(session)
+    learner.attach(to: review)
+    try await review.editWords(wordEditRefs(review, "T1", [0]), to: "Claude")
+    await review.close()
+    #expect(learner.value("cloud") == "Claude")
+    // Deleted in Corrections; the meeting is reviewed again and an edit made.
+    learner.list = CorrectionList()
+    let reopened = try await wordEditOpen(session)
+    learner.attach(to: reopened)
+    try await reopened.editWords(wordEditRefs(reopened, "T1", [2]), to: "plus")
+    await reopened.close()
+    #expect(learner.value("cloud") == nil, "What the meeting taught before is not taught again.")
+    #expect(learner.value("and") == "plus", "A new edit is.")
+}
+
+@Test(.timeLimit(.minutes(1))) @MainActor
+func nothingIsLearnedOnLabelsNotOnTheCurrentTranscriptUntilALaterClose() async throws {
+    let temp = try TemporaryDirectory("review")
+    defer { temp.remove() }
+    let session = try await wordEditCloudSession(temp)
+    let original = try wordEditCurrent(session)
+    let learner = WordEditLearner()
+    let review = try await wordEditOpen(session)
+    learner.attach(to: review)
+    let runID = try #require(review.snapshot.run?.id)
+    // The edit's head cannot be published, nor repaired: the labels stay on the transcript as it was.
+    review.beforeHeadPublish = { throw HolosError.io("the speaker head is read-only") }
+    await #expect(throws: HolosError.self) {
+        try await review.editWords(wordEditRefs(review, "T1", [0]), to: "Claude")
+    }
+    await review.close()
+    #expect(learner.lessons == 0, "No context could be taken: nothing learned now.")
+    // Once the head is published, the next close learns it.
+    try await SessionWordEdit.repairCurrentHead(session: session, expectedTranscriptID: original.id,
+                                                expectedRunID: runID)
+    let reopened = try await wordEditOpen(session)
+    learner.attach(to: reopened)
+    await reopened.close()
+    #expect(learner.value("cloud") == "Claude")
 }
 
 @Test(.timeLimit(.minutes(1))) @MainActor

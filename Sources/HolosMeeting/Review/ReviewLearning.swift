@@ -1,13 +1,44 @@
 import Foundation
 import HolosCore
 import HolosSpeakers
+import HolosStorage
 
 /// What a meeting's word edits teach (docs/meeting-design.md §5.10, "Editing words"), worked out when a review window
 /// closes from every word edited in the meeting's transcript as it is then: nothing is learned while editing, so
-/// nothing has to be taken back, and an edit undone or reverted is not in the transcript. Learning the same transcript
-/// again changes nothing (the app keeps an existing correction for a phrase), so no state is kept between reviews.
-/// Pure.
+/// nothing has to be taken back, and an edit undone or reverted is not in the transcript. The meeting keeps what it
+/// has taught (`review-learned.json`), so a close teaches only what is new: a correction deleted or changed in
+/// Corrections is not taught again, and one whose write failed is taught at the next close.
 enum ReviewLearning {
+    /// review-learned.json: the corrections this meeting's review closes taught (their write succeeded).
+    struct Taught: Codable, Equatable {
+        var version: Int
+        var corrections: [Correction]
+    }
+
+    /// What this meeting taught already; empty when nothing was. Throws when the record cannot be read (damaged, or
+    /// written by a newer Voice is Local): nothing is taught then, rather than teaching again what was deleted.
+    static func taught(session: URL) throws -> [Correction] {
+        guard let data = try AtomicFile.readIfPresent(SessionPaths.reviewLearned(session), maxBytes: 4 << 20) else {
+            return []
+        }
+        let record = try JSONDecoder().decode(Taught.self, from: data)
+        guard record.version <= 1 else {
+            throw HolosError.unavailable("What this meeting taught was recorded by a newer Voice is Local.")
+        }
+        return record.corrections
+    }
+
+    /// Records `corrections` as what this meeting taught (atomically).
+    static func recordTaught(_ corrections: [Correction], session: URL) throws {
+        try AtomicFile.writeJSON(Taught(version: 1, corrections: corrections), to: SessionPaths.reviewLearned(session))
+    }
+
+    /// `corrections` this meeting has not taught: none with the same heard phrase (`CorrectionList.key`) and meaning.
+    static func untaught(_ corrections: [Correction], taught: [Correction]) -> [Correction] {
+        let known = Set(taught.map { "\(CorrectionList.key($0.heard))\u{1f}\($0.meant)" })
+        return corrections.filter { !known.contains("\(CorrectionList.key($0.heard))\u{1f}\($0.meant)") }
+    }
+
     /// The `reviewEdit` fixes of `transcript` as edits: what the recognizer wrote, the words' shown text, and the shown
     /// words around them as context. In transcript order (segments by start, then track; fixes by position). An edit
     /// back to what the recognizer wrote (a Revert) is left out. `sameTurn(segmentID, word, neighbour)` says whether a

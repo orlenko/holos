@@ -475,6 +475,7 @@ extension SessionArchive {
   audio/{mic,system}/NNNNNN.caf            AudioChunkWriter             Int16 from PR2a, system audio mono; Float32 still readable
   audio-deleted.json                       PR3                          written by Delete Audio; chunks are intentionally absent
   summary.json                             §4.17 session summarize      MeetingSummaryRecord: generated title and summary of one transcript
+  review-learned.json                      §5.10 review close           ReviewLearning.Taught: corrections the meeting's word edits taught
   transcripts/<TRANSCRIPT-UUID>.json       SessionArchive               immutable revisions (also one per language, never current, §4.14)
   transcripts/current.json                 PR6 (saveTranscript)         TranscriptPointer: which revision is current
   transcripts/current.pending              PR6 (saveTranscript)         TranscriptPointer: the revision a save is publishing; removed when done
@@ -7748,13 +7749,16 @@ shown, Otter-style.
   and open no field (an edit takes in the whole mark, across the turns, and would be
   refused; a selection stops before them); their tooltip and the banner say so, and that the
   other words of each turn can be edited (`ReviewWord.revertible`). Relabels are not stopped
-  from splitting them. An edit's Revert is offered only while words can be edited (after the
-  transcript changed under the labels it would be refused); an automatic fix's Revert stays.
+  from splitting them. Revert (of an edit or of an automatic fix) is offered only while words
+  can be edited, since otherwise it would be refused.
   ⌥Return's word-list term is added once the edit is saved, also when the labels could not be
-  refreshed after it. ⌘E turns the mode on only while words can be edited: the review is
-  editable (no command holds it read-only) and its labels were made on the current transcript
-  (after the transcript changed, the banner says to use Label Again first, and no field
-  opens); it always turns it off.
+  refreshed after it. ⌘E turns the mode on only while words can be edited
+  (`ReviewSession.canEditWords`): the review is editable (no command holds it read-only), its
+  labels were made on the current transcript (after the transcript changed, the banner says
+  to use Label Again first), and every speaker change can be read (a damaged or newer line in
+  the journal: each edit carries them all over, so it would be refused). The Edit Words
+  button's tooltip, and the banner in edit mode, say which; no field opens. It always turns
+  it off.
 - *The words' text.* An edit replaces, and the field starts with, the text the words show
   in the transcript and the exports (`TranscriptWordEdit.shownText`): from the first word's
   offset to the next word's, without the whitespace at either end. So punctuation the
@@ -7805,7 +7809,12 @@ shown, Otter-style.
   between its words (Chinese, Japanese) is then counted wrong, and an edit in its segment is
   refused with "This segment has a word fix made by an earlier version of Voice is Local,
   which edits cannot work around yet" (`TranscriptWordEdit.olderFix`); its Revert fails as it
-  did before this version. The edit is made in both layers:
+  did before this version. No write counts words by splitting text at its spaces: an edit and
+  an automatic fix record the words they replaced (`heardWords`) and are their mark's words;
+  the Revert of an automatic fix brings back the recognizer's own words from the base, with
+  their text, times, and boundaries ("你好世界" is "你好" and "世界" again), and a revert kept
+  on a new base keeps the words already there; the Revert of an edit is another edit. The
+  edit is made in both layers:
   - the unfixed base `B` (`current.fixedFrom`, or the current transcript when it has none)
     gets a new revision `B′` with the edit marked `reviewEdit`, `fixedFrom` nil and
     `liveCorrectedFrom` = `B.liveCorrectedFrom ?? B.id` (the stable word space retargeting
@@ -7848,8 +7857,12 @@ shown, Otter-style.
   even when the labels cannot be reread then, or when saving the transcript failed after its
   pointer was renamed into place (the head is then owed, as above). Split Turn is refused
   inside words edited together, so their edit and its Revert stay in one turn.
-- *Undo.* An edit is one entry of the window's undo, among speaker changes; unlike a revert,
-  it keeps the undo history (the retargeted run keeps every edit ID and batch). Undoing it
+- *Undo.* An edit is one entry of the window's undo, among speaker changes; it keeps the undo
+  history (the retargeted run keeps every edit ID and batch). An automatic fix's Revert is not
+  undoable, but it is this window's own change too: its run keeps the speaker changes' undo,
+  changes queued while it saves follow its word move (an edit of the reverted words is
+  refused, saying what was typed), and the word edits' undo entries go (each needs its own
+  transcript current). Undoing an edit
   publishes a copy of `C` (new ID; `fixedFrom` still names `B`, so `B′` is left unused) with
   the head retargeted again by the inverse move: the text, words, timing, and fixes are
   exactly `C`'s, every word is back with its owner, and speaker edits made since carry over. It is refused when the current transcript is no longer the
@@ -7867,7 +7880,10 @@ shown, Otter-style.
 - *Learning* (`ReviewLearning`, `TranscriptEditLearning`; the app's learner). Corrections are
   learned when a review closes (also when the app quits, which closes its reviews), from
   every word you edited in that meeting; an existing correction for the same phrase is kept.
-  Nothing is learned while editing, so nothing is ever taken back, and no state is kept:
+  Nothing is learned while editing, so nothing is ever taken back. The meeting keeps what its
+  closes taught (`review-learned.json`, written atomically: each phrase and meaning whose
+  write succeeded), and a close teaches only what is not there, so a correction you delete
+  or change in Corrections is not taught again by the meeting:
   - the edits are every `reviewEdit` fix of the transcript as it is then; an edit undone or
     reverted is not there, so it teaches nothing;
   - each is diffed as dictation's Learn does (`CorrectionList.learn`, the recognizer's words
@@ -7877,14 +7893,16 @@ shown, Otter-style.
     an edit itself may take in: never the next speaker's word at a turn boundary, nor a word
     hidden as echo; without such a neighbour the rule learns as it does without context. The
     turns are the labels on the transcript as it is then: labels the window could not reread
-    after an edit are read again at close, and when that fails nothing is learned at this
-    close (logged; the next close learns the same edits);
+    after an edit are read again at close; when that fails, or the labels read are still on
+    another transcript (a speaker head owed, or the transcript changed under them), nothing
+    is learned at this close (logged; a later close learns the same edits);
   - the pairs go to `corrections.json`, the list Corrections (⌘2) shows
     (`CorrectionList.learnKeepingExisting`): a phrase the list lacks is added; one it has
     keeps its correction (an earlier or an external choice wins; within one close, the first
-    in the meeting); nothing is removed. Learning the same meeting again changes nothing, and
-    a write that fails (logged) is made again by the meeting's next review close, since the
-    edits stay in the transcript;
+    in the meeting); nothing is removed. A write that fails (logged) is not recorded, so the
+    meeting's next review close makes it again, since the edits stay in the transcript; a
+    record that cannot be read (damaged, or newer) teaches nothing rather than teach again
+    what was deleted;
   - nothing is learned from a deletion, a punctuation-only change, or a case-only change,
     unless the case change makes a proper noun (a word whose lowercase is not a dictionary
     word: "github" → "GitHub"); words split or joined ("everyday" → "every day") are a real

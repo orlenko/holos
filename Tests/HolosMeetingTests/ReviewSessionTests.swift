@@ -136,7 +136,7 @@ func reviewRevertsOneWordFixAndKeepsSpeakerEdits() async throws {
     #expect(review.projection.runID != fixedRun.id)
     #expect(review.projection.speakers.first { $0.id == "system:S1" }?.name == "Alice")
     #expect(review.projection.turns.map(\.id) == ["T1"])
-    #expect(!review.canUndo, "A transcript revision starts a new speaker-head undo history.")
+    #expect(review.canUndo, "The window's own revert keeps the speaker changes' undo (its run keeps their IDs).")
     let currentRun = review.projection.runID
     #expect(try reviewJournal(session).contains {
         $0.baseRunID == currentRun && $0.source == "carry"

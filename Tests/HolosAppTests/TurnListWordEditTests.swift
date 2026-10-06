@@ -222,10 +222,10 @@ struct TurnListWordEditTests {
         #expect(messages.last == TurnListView.selectionStopped)
     }
 
-    /// After the transcript changed under the labels (`canEditWords` off), an edit made here cannot be reverted (its
-    /// Revert is another edit, which would be refused): neither VoiceOver nor the context menu offers it. An automatic
-    /// fix's Revert stays.
-    @Test func anEditsRevertIsOfferedOnlyWhileWordsCanBeEdited() throws {
+    /// After the transcript changed under the labels (`canEditWords` off), no fix can be reverted (an edit's Revert is
+    /// another edit, an automatic fix's publishes new words under the labels; both would be refused): neither VoiceOver
+    /// nor the context menu offers it.
+    @Test func revertIsOfferedOnlyWhileWordsCanBeEdited() throws {
         let (list, _) = editingList()
         let edited = TranscriptWordFix(first: 1, end: 2, heard: "bet", kind: .reviewEdit, heardWords: 1)
         let fixed = TranscriptWordFix(first: 1, end: 2, heard: "delt", kind: .correction, heardWords: 1)
@@ -241,8 +241,8 @@ struct TurnListWordEditTests {
         func names() -> [String] { (text.accessibilityCustomActions() ?? []).map(\.name) }
         #expect(names().contains("Revert to “bet”") && names().contains("Revert to “delt”"))
         list.canEditWords = false
-        #expect(!names().contains("Revert to “bet”") && names().contains("Revert to “delt”"))
-        #expect(!text.canRevert(edited) && text.canRevert(fixed), "The context menu follows the same rule.")
+        #expect(!names().contains("Revert to “bet”") && !names().contains("Revert to “delt”"))
+        #expect(!text.canRevert(edited) && !text.canRevert(fixed), "The context menu follows the same rule.")
     }
 
     @Test func theFieldFollowsItsWordsWhenAnEditEarlierInTheSegmentSaves() throws {

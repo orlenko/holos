@@ -27,10 +27,14 @@ public enum WordFixes {
         public var heard: String?
         /// `TranscriptWordFix.heardWords` for the mark.
         public var heardWords: Int?
+        /// The timed words of `text` (offsets from its start), used as they are instead of splitting `text` at its
+        /// spaces: a revert restores the recognizer's own words ("你好" and "世界" in "你好世界").
+        public var words: [TimedWord]?
 
         public init(range: Range<Int>, text: String, kind: TranscriptWordFixKind, heard: String? = nil,
-                    heardWords: Int? = nil) {
+                    heardWords: Int? = nil, words: [TimedWord]? = nil) {
             self.range = range; self.text = text; self.kind = kind; self.heard = heard; self.heardWords = heardWords
+            self.words = words
         }
     }
 
@@ -173,7 +177,23 @@ public enum WordFixes {
                 marks.append(Working.Mark(range: markStart..<(markStart + replacement.text.utf16.count), heard: heard,
                                           kind: replacement.kind, heardWords: heardWords))
             }
-            if timed {
+            if timed, let given = replacement.words, leading.isEmpty, trailing.isEmpty {
+                // The words are given (a revert's, the recognizer's own): never split again at the spaces.
+                for word in given {
+                    var placed = word
+                    placed.utf16Offset += start
+                    words.append(placed)
+                }
+                nextWord = region.words.upperBound
+            } else if timed, new == Array(utf16[region.range]) {
+                // The same text written back (a revert kept on a new base): its words stay as they are.
+                for word in working.words[region.words] {
+                    var placed = word
+                    placed.utf16Offset += start - region.range.lowerBound
+                    words.append(placed)
+                }
+                nextWord = region.words.upperBound
+            } else if timed {
                 let replaced = working.words[region.words]
                 let from = replaced.first?.start ?? 0
                 let to = max(replaced.last?.end ?? from, from)
@@ -253,7 +273,17 @@ public enum WordFixes {
                                              textLength: segment.text.utf16.count) else { return nil }
             return Working.Mark(range: range, heard: fix.heard, kind: fix.kind, heardWords: fix.heardWords)
         }
-        working = applying([Replacement(range: currentRange, text: heard, kind: .reviewRevert)], to: working)
+        // The recognizer's own words come back, with their times and boundaries, never split again at the spaces of
+        // the text ("你好世界" is the two words "你好" and "世界" again, as in the base).
+        let restored = baseSegment.words.filter { word in
+            originalRange.lowerBound <= word.utf16Offset && word.utf16Offset + word.utf16Length <= originalRange.upperBound
+        }.map { word in
+            var relative = word
+            relative.utf16Offset -= originalRange.lowerBound
+            return relative
+        }
+        working = applying([Replacement(range: currentRange, text: heard, kind: .reviewRevert,
+                                        words: restored.isEmpty ? nil : restored)], to: working)
 
         var result = transcript
         result.id = UUID().uuidString

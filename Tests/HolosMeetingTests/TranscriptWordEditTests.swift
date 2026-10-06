@@ -284,6 +284,41 @@ private func editRanged(_ text: String, _ ranges: [(Int, Int)], id: String = "S1
     #expect(reverted.segments[0].text == "你好世界 再见")
 }
 
+@Test func aRevertBringsBackTheRecognizersOwnWordsSoTheSegmentStaysEditable() async throws {
+    struct Case {
+        var base: Transcript
+        var heard: String
+        var meant: String
+        /// The fixed word in the fixed revision, and the last word (edited after the revert) in the reverted one.
+        var fixedWord: Int
+        var lastWord: Int
+        var lastText: String
+        var edited: String
+    }
+    for item in [
+        // No spaces between the words: "你好世界" timed as "你好" and "世界".
+        Case(base: editTranscript([editRanged("你好世界 再见", [(0, 2), (2, 2), (5, 2)])]), heard: "你好世界",
+             meant: "你好地球", fixedWord: 0, lastWord: 2, lastText: "拜拜", edited: "你好世界 拜拜"),
+        Case(base: editTranscript([editSegment(["we", "knew", "work", "here"])]), heard: "knew work",
+             meant: "New York", fixedWord: 1, lastWord: 3, lastText: "there", edited: "we knew work there"),
+    ] {
+        let fixed = try await editFixed(item.base, [Correction(heard: item.heard, meant: item.meant)])
+        let reverted = try WordFixes.reverting(WordRef(segmentID: "S1", word: item.fixedWord), in: fixed,
+                                               to: item.base)
+        // Exactly the recognizer's words again: text, times, and boundaries.
+        #expect(reverted.segments[0].text == item.base.segments[0].text)
+        #expect(reverted.segments[0].words == item.base.segments[0].words)
+        #expect(reverted.segments[0].fixes?.first?.kind == .reviewRevert)
+        #expect(reverted.segments[0].fixes?.first.map { $0.end - $0.first } == 2)
+        // A later edit in the segment still maps onto the base.
+        let edit = try #require(try TranscriptWordEdit.editing(editRequest(item.lastWord, item.lastWord + 1,
+                                                                           item.lastText),
+                                                               in: reverted, base: item.base))
+        #expect(edit.transcript.segments[0].text == item.edited)
+        #expect(edit.base?.segments[0].text == item.edited)
+    }
+}
+
 @Test func anOlderAutomaticFixWithoutItsCountIsCountedByItsSpaces() async throws {
     // Saved by an earlier version: no `heardWords`. With spaces between the words, the spaces count them.
     let base = editTranscript([editSegment(["ask", "cloud", "now", "please"])])

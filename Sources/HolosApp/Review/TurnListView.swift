@@ -284,10 +284,11 @@ final class TurnTextView: NSTextView {
     }
 
     /// "Heard as “cloud”; a word-list term" — for a fixed word's tooltip and VoiceOver.
-    /// `fix` can be reverted now: an edit made here goes back by another edit, so only while words can be edited
-    /// (`canEditWord`: not after the transcript changed under the labels); an automatic fix whenever reverts are.
+    /// `fix` can be reverted now: only while words can be edited (`canEditWord`: not after the transcript changed
+    /// under the labels, nor while speaker changes cannot all be read), since a revert publishes new words under the
+    /// labels as an edit does (an edit's Revert is another edit).
     func canRevert(_ fix: TranscriptWordFix) -> Bool {
-        fix.kind != .reviewEdit || (canEditWord?() ?? false)
+        canEditWord?() ?? false
     }
 
     /// With `revertible` false (words edited together, now in two turns), it says how to change them instead.
