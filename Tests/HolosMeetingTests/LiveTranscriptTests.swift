@@ -224,6 +224,48 @@ private func summary(_ id: String, state: SessionState = .complete, runID: Strin
     #expect(MeetingOpenPolicy.finishedTarget(labelled, inUse: false, hasExport: true) == .review)
 }
 
+private func menu(_ summary: SessionSummary, liveSessionID: String? = nil, inUse: Bool = false,
+                  hasExport: Bool) -> [String] {
+    MeetingOpenPolicy.menuItems(summary, liveSessionID: liveSessionID, inUse: inUse, hasExport: hasExport).map {
+        $0.title + ($0.isEnabled ? "" : " (off)")
+    }
+}
+
+@Test func theMenuNamesWhatEachItemOpensAndNeverRepeatsOne() {
+    // A labelled, finished meeting: Open opens Review, so there is no second Review item; the preview stays reachable.
+    let labelled = summary("C")
+    #expect(menu(labelled, hasExport: true) == ["Open Review", "Show Transcript File"])
+    #expect(menu(labelled, hasExport: false) == ["Open Review", "Show Transcript File (off)"])
+    // The same meeting while a command works on it: Review is closed, so Open shows the preview and Review… is off.
+    #expect(menu(labelled, inUse: true, hasExport: true) == ["Open Transcript", "Review… (off)"])
+    // Not labelled: the preview, or nothing to open.
+    let unlabelled = summary("D", runID: nil, speakers: .notLabelled)
+    #expect(menu(unlabelled, hasExport: true) == ["Open Transcript", "Review… (off)"])
+    #expect(menu(unlabelled, hasExport: false) == ["Review… (off)", "Show Transcript File (off)"])
+    // Recording or saving: the live transcript.
+    let live = summary("A", state: .recording, runID: nil, speakers: .none)
+    #expect(menu(live, liveSessionID: "A", hasExport: false)
+        == ["Open Live Transcript", "Review… (off)", "Show Transcript File (off)"])
+    // Followed while it saves, though the catalog already says complete and labelled: Review opens something else.
+    #expect(menu(labelled, liveSessionID: "C", hasExport: true)
+        == ["Open Live Transcript", "Review…", "Show Transcript File"])
+
+    // Every case: one item per action, titles all different, the first one (if any) is what double-click opens.
+    let cases: [(SessionSummary, String?, Bool, Bool)] = [
+        (labelled, nil, false, true), (labelled, nil, true, true), (unlabelled, nil, false, true),
+        (unlabelled, nil, false, false), (live, "A", false, false), (labelled, "C", false, true),
+    ]
+    for (meeting, liveID, inUse, export) in cases {
+        let items = MeetingOpenPolicy.menuItems(meeting, liveSessionID: liveID, inUse: inUse, hasExport: export)
+        #expect(Set(items.map(\.action)).count == items.count)
+        #expect(Set(items.map(\.title)).count == items.count)
+        let target = MeetingOpenPolicy.target(meeting, liveSessionID: liveID, inUse: inUse, hasExport: export)
+        #expect(items.first { $0.action == .open }?.title == MeetingOpenPolicy.openTitle(target))
+        #expect(items.contains { $0.action == .review } == (target != .review))
+        #expect(items.contains { $0.action == .transcriptFile } == (target != .transcript))
+    }
+}
+
 @Test func liveMeetingsComeFirst() {
     let older = summary("old")
     let newer = summary("new")
