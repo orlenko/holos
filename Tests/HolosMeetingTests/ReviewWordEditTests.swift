@@ -957,6 +957,48 @@ func wordsCannotBeEditedWhileSpeakerChangesCannotAllBeRead() async throws {
 }
 
 @Test(.timeLimit(.minutes(1))) @MainActor
+func aRevertWhoseHeadCouldNotBePublishedHoldsTheReviewUntilAReloadRepairsIt() async throws {
+    let temp = try TemporaryDirectory("review")
+    defer { temp.remove() }
+    let session = try await wordEditFixedCloudSession(temp)
+    let fixed = try wordEditCurrent(session)
+    let review = try await wordEditOpen(session)
+    try await review.apply([.rename(speakerID: "system:S1", name: "Ann")])
+    let failing = SharedValue(true)
+    review.beforeHeadPublish = { if failing.value { throw HolosError.io("the speaker head is read-only") } }
+    // The revert's transcript is current; its head, and the repair right after, cannot be published.
+    await #expect(throws: (any Error).self) { try await review.revertWordFix(wordEditRefs(review, "T1", [2])[0]) }
+    #expect(try wordEditCurrent(session).segments[0].text == "ask more cloud now")
+    #expect(review.reloadProblem != nil && !review.canEditWords)
+    // Reload: the repair fails again, so the labels on the fixed words are not taken; still held.
+    await review.reload()
+    #expect(review.reloadProblem?.contains("could not be saved") == true)
+    #expect(review.snapshot.transcript.id == fixed.id, "Labels on the old transcript are not adopted.")
+    // Reload once the head can be published: repaired and resumed.
+    failing.set(false)
+    await review.reload()
+    #expect(review.reloadProblem == nil && review.canEditWords && !review.snapshot.transcriptChanged)
+    #expect(review.words(of: "T1").map(\.text) == ["ask", "more", "cloud", "now"])
+    #expect(review.speaker("system:S1")?.name == "Ann", "The turn edits were carried over.")
+    await review.close()
+}
+
+@Test func whatAMeetingTaughtIsMergedSoTwoClosesKeepBothEntries() async throws {
+    let temp = try TemporaryDirectory("review")
+    defer { temp.remove() }
+    let session = try await wordEditCloudSession(temp)
+    let cloud = Correction(heard: "cloud", meant: "Claude")
+    let plus = Correction(heard: "and", meant: "plus")
+    // Two closes, each with what it read before: neither loses the other's entry.
+    try ReviewLearning.recordTaught(adding: [cloud], session: session)
+    try ReviewLearning.recordTaught(adding: [plus, cloud], session: session)
+    #expect(try ReviewLearning.taught(session: session) == [cloud, plus])
+    #expect(ReviewLearning.untaught([cloud, Correction(heard: "Cloud", meant: "Claude"), plus,
+                                     Correction(heard: "cloud", meant: "Cloud9")],
+                                    taught: [cloud, plus]) == [Correction(heard: "cloud", meant: "Cloud9")])
+}
+
+@Test(.timeLimit(.minutes(1))) @MainActor
 func aCorrectionDeletedInCorrectionsIsNotTaughtAgainByTheMeeting() async throws {
     let temp = try TemporaryDirectory("review")
     defer { temp.remove() }

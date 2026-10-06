@@ -152,10 +152,11 @@ public struct ReviewWord: Sendable, Equatable {
     /// (`SpeakerTranscriptRetarget.beforePublishHead`, set inside the window's detached publications); throwing makes
     /// the publication fail.
     var beforeHeadPublish: (@Sendable () throws -> Void)?
-    /// A word edit or its undo made its transcript current, but its speaker head could not be published, nor repaired
-    /// at once: the transcript it was made on and the head run then. The review is held read-only until a reread finds
-    /// the labels on the current transcript; `.reload` repairs the head first (`SessionWordEdit.repairCurrentHead`).
-    private var owedHead: (transcriptID: String, runID: String)?
+    /// A word edit, its undo, or an automatic fix's revert made its transcript current, but its speaker head could not
+    /// be published, nor repaired at once: the transcript it was made on, the head run then, and which change (each
+    /// has its own repair). The review is held read-only until a reread finds the labels on the current transcript;
+    /// `.reload` repairs the head first (`repairOwedHead`).
+    private var owedHead: (transcriptID: String, runID: String, revert: Bool)?
 
     /// The corrections one word edit teaches (the app: `TranscriptEditLearning`).
     public var correctionsToLearn: ((ReviewWordEdit) -> [Correction])?
@@ -1359,10 +1360,13 @@ public struct ReviewWord: Sendable, Equatable {
             let session = self.session
             let transcriptID = snapshot.transcript.id
             let hook = beforeEdit
+            let headHook = beforeHeadPublish
             let outcome = await Self.detachedResult {
                 if let hook { await hook() }
-                return try await SessionWordFixRevert.run(session: session, word: word,
-                                                          expectedTranscriptID: transcriptID, expectedRunID: runID)
+                return try await SpeakerTranscriptRetarget.$beforePublishHead.withValue(headHook) {
+                    try await SessionWordFixRevert.run(session: session, word: word,
+                                                       expectedTranscriptID: transcriptID, expectedRunID: runID)
+                }
             }
             switch outcome {
             case .success(let published):
@@ -1383,13 +1387,11 @@ public struct ReviewWord: Sendable, Equatable {
                 if error is CancellationError { throw error }
                 if let incomplete = error as? SessionWordFixRevert.IncompletePublication {
                     if let published = incomplete.outcome { revertCommitted(published) }
-                    let repair = await Self.detachedResult {
-                        try await SessionWordFixRevert.repairCurrentHead(
-                            session: session, expectedTranscriptID: transcriptID, expectedRunID: runID)
-                    }
+                    // Owed until a reread finds the labels on the current transcript (`adopt`), as a word edit's is; a
+                    // reload repairs it.
+                    owedHead = (transcriptID, runID, true)
                     do {
-                        // Only the run the repair published keeps the turns; a head published elsewhere is not ours.
-                        if let repaired = try repair.get() { turnKeepingRuns[repaired] = runID }
+                        try await repairOwedHead()
                         let fresh = try await loadSnapshot()
                         guard fresh.projection != nil, !fresh.transcriptChanged else {
                             throw HolosError.unavailable("The new speaker head is incomplete.")
@@ -1398,8 +1400,8 @@ public struct ReviewWord: Sendable, Equatable {
                         changesSaved(exportsWritten: false)
                         return
                     } catch let reread {
-                        holdUnreread(matching: nil, problem: "The word fix was reverted, but the window could not "
-                                     + "reread the speaker labels: \(reread.localizedDescription)")
+                        holdUnreread(matching: nil, problem: "The word fix was reverted, but its speaker labels could "
+                                     + "not be saved or reread (\(reread.localizedDescription)); Reload tries again.")
                     }
                     changesSaved(exportsWritten: false)
                     throw error
@@ -1414,9 +1416,9 @@ public struct ReviewWord: Sendable, Equatable {
         case .relabel(let arguments):
             try await runRelabel(arguments)
         case .reload:
-            // A speaker head still owed by a word edit or its undo is repaired first: until the labels read are on the
-            // current transcript, the review stays held (labels made on the words as they were would let an undo
-            // fail and Label Again drop the turn edits).
+            // A speaker head still owed (a word edit, its undo, or a revert) is repaired first: until the labels read
+            // are on the current transcript, the review stays held (labels made on the words as they were would let
+            // an undo fail and Label Again drop the turn edits).
             var repairProblem: String?
             if owedHead != nil {
                 do { try await repairOwedHead() } catch { repairProblem = error.localizedDescription }
@@ -1628,7 +1630,7 @@ public struct ReviewWord: Sendable, Equatable {
             return
         }
         Self.log.info("Session \(self.sessionID, privacy: .public): learned from \(toTeach.count, privacy: .public) corrections of review edits")
-        let recorded = await Self.detachedResult { try ReviewLearning.recordTaught(taught + toTeach, session: session) }
+        let recorded = await Self.detachedResult { try ReviewLearning.recordTaught(adding: toTeach, session: session) }
         if case .failure(let error) = recorded {
             Self.log.error("Session \(self.sessionID, privacy: .public): what this meeting taught was not recorded (\(ProcessSpawner.logCategory(error), privacy: .public)); a later close may teach it again")
         }
@@ -1710,7 +1712,7 @@ public struct ReviewWord: Sendable, Equatable {
                 committed(value)
                 changesSaved(exportsWritten: false)
                 // Owed until a reread finds the labels on the current transcript (`adopt`); a reload repairs it.
-                owedHead = (transcriptID, runID)
+                owedHead = (transcriptID, runID, false)
                 do {
                     try await repairOwedHead()
                     let fresh = try await loadSnapshot()
@@ -1743,17 +1745,20 @@ public struct ReviewWord: Sendable, Equatable {
         undoStack.removeAll { $0.wordEdit != nil }
     }
 
-    /// Publishes the speaker head owed since a word edit or its undo (`owedHead`), retargeted from the old one
-    /// (`SessionWordEdit.repairCurrentHead`). Only the run it published keeps the turns; a head published elsewhere
-    /// meanwhile is not this window's.
+    /// Publishes the speaker head owed since a word edit, its undo, or a revert (`owedHead`), retargeted from the old
+    /// one (`SessionWordEdit.repairCurrentHead`, `SessionWordFixRevert.repairCurrentHead`). Only the run it published
+    /// keeps the turns; a head published elsewhere meanwhile is not this window's.
     private func repairOwedHead() async throws {
         guard let owed = owedHead else { return }
         let session = self.session
         let hook = beforeHeadPublish
         let repaired = try await Self.detachedResult {
             try await SpeakerTranscriptRetarget.$beforePublishHead.withValue(hook) {
-                try await SessionWordEdit.repairCurrentHead(session: session, expectedTranscriptID: owed.transcriptID,
-                                                            expectedRunID: owed.runID)
+                owed.revert
+                    ? try await SessionWordFixRevert.repairCurrentHead(
+                        session: session, expectedTranscriptID: owed.transcriptID, expectedRunID: owed.runID)
+                    : try await SessionWordEdit.repairCurrentHead(
+                        session: session, expectedTranscriptID: owed.transcriptID, expectedRunID: owed.runID)
             }
         }.get()
         if let repaired { turnKeepingRuns[repaired] = owed.runID }

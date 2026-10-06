@@ -7801,10 +7801,11 @@ shown, Otter-style.
   whitespace-separated tokens of `heard`), so `heard` stays in the unfixed word space every
   provenance map uses (`WordFixStage.wordOrigins`, `SpeakerTranscriptRetarget.origins`: its
   original word count is `heardWords`, else `tokens(heard)`; `WordFixes.originalWordRanges`:
-  like a live correction, the base already holds it). Every Review edit and every automatic
-  fix (correction, term) written from this version on records `heardWords` (for an automatic
-  fix, the words it touched: "你好世界" over two timed words, "type c" in "“type c”" over two),
-  the one source of truth. An older fix without it is counted by the whitespace-separated
+  like a live correction, the base already holds it). Every Review edit, automatic fix
+  (correction, term), and live correction written from this version on records `heardWords`
+  (for an automatic fix or a live correction, the words it touched: "你好世界" over two timed
+  words, "type c" in "“type c”" over two, "hello — there" over two; a live correction across
+  language pieces adds those of a deleted piece it carries), the one source of truth. An older fix without it is counted by the whitespace-separated
   tokens of its `heard`, as before. *Limit:* an older automatic fix over text without spaces
   between its words (Chinese, Japanese) is then counted wrong, and an edit in its segment is
   refused with "This segment has a word fix made by an earlier version of Voice is Local,
@@ -7840,7 +7841,8 @@ shown, Otter-style.
   `segment`), then `C′`'s `transcriptEdited` event (also `replaced` and `replacement`, the
   move, which a repair maps by), then `C′` becomes current, then the new head. `unfixedID` follows
   `transcriptEdited` like `wordsFixed`. A head that could not be published is repaired from
-  the old head as a revert's is. When that repair fails too, the head is owed: the window
+  the old head as a revert's is. When that repair fails too (after an edit, its undo, or an
+  automatic fix's revert), the head is owed: the window
   stays read-only with a banner saying so, Reload repairs it first, and no reread (Reload, a
   relabel) resumes the review until the labels are on the current transcript (labels made on
   the words as they were would make the edit's undo fail and Label Again drop turn edits);
@@ -7881,8 +7883,11 @@ shown, Otter-style.
   learned when a review closes (also when the app quits, which closes its reviews), from
   every word you edited in that meeting; an existing correction for the same phrase is kept.
   Nothing is learned while editing, so nothing is ever taken back. The meeting keeps what its
-  closes taught (`review-learned.json`, written atomically: each phrase and meaning whose
-  write succeeded), and a close teaches only what is not there, so a correction you delete
+  closes taught (`review-learned.json`, each phrase and meaning whose write succeeded; read,
+  merged, and written atomically under the meeting's speaker lock, so two closes cannot lose
+  an entry: the app keeps one review window per meeting and waits for a closing one before
+  opening another, but a second Voice is Local could run on the same folder), and a close
+  teaches only what is not there, so a correction you delete
   or change in Corrections is not taught again by the meeting:
   - the edits are every `reviewEdit` fix of the transcript as it is then; an edit undone or
     reverted is not there, so it teaches nothing;

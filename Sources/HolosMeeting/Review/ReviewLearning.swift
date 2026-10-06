@@ -28,9 +28,14 @@ enum ReviewLearning {
         return record.corrections
     }
 
-    /// Records `corrections` as what this meeting taught (atomically).
-    static func recordTaught(_ corrections: [Correction], session: URL) throws {
-        try AtomicFile.writeJSON(Taught(version: 1, corrections: corrections), to: SessionPaths.reviewLearned(session))
+    /// Adds `corrections` to what this meeting taught: read, merged, and written (atomically) under the meeting's speaker
+    /// lock, so two closes (another Voice is Local running on the same folder) cannot lose each other's entries.
+    static func recordTaught(adding corrections: [Correction], session: URL) throws {
+        try SessionArchive.withSpeakerLock(at: session) {
+            let taught = try Self.taught(session: session)
+            let merged = taught + untaught(corrections, taught: taught)
+            try AtomicFile.writeJSON(Taught(version: 1, corrections: merged), to: SessionPaths.reviewLearned(session))
+        }
     }
 
     /// `corrections` this meeting has not taught: none with the same heard phrase (`CorrectionList.key`) and meaning.
