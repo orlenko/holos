@@ -192,6 +192,35 @@ func deliberateStopSharingStillEndsTheMeeting() async throws {
     #expect(factory.made == 2)
 }
 
+/// Production makes a fresh native capture for every system attempt (`LiveMeetingCapture()`, unlike the factories
+/// here, which hand back their last native again): a start past its limit leaves system audio unavailable and starts
+/// no other stream while it hangs; once it returns it is stopped, and a fresh capture is tried, whose frames end the
+/// outage.
+@Test(.timeLimit(.minutes(1))) @MainActor
+func anOverLimitSystemStartIsRetriedWithAFreshCaptureAndAudioResumes() async throws {
+    let mic = IndependentNativeCapture(), slow = IndependentNativeCapture(), fresh = IndependentNativeCapture()
+    slow.startGate = true
+    let factory = IndependentNativeFactory([mic, slow, fresh])
+    let capture = isolatedCapture(factory, startLimit: independentHungLimit)
+    let heard = SharedValue<[String]>([])
+    let consumer = Task {
+        do { for try await audio in capture.frames { heard.update { $0.append(audio.track) } } }
+        catch { Issue.record("Unexpected error: \(error)") }
+    }
+    try await capture.start(CaptureRequest(source: .microphoneAndSystem))
+    #expect(await eventually { capture.unavailableTracks == ["system"] }, "The start ran past its limit.")
+    #expect(factory.made == 2, "No other stream is started while the abandoned start hangs.")
+    // The retry must succeed whenever it comes.
+    capture.startLimit = .seconds(3_600)
+    slow.releaseStart = true
+    #expect(await eventually { fresh.requests.count == 1 })
+    #expect(slow.stops >= 1, "The late start's capture is stopped before the retry.")
+    try fresh.emit("system", at: 1)
+    #expect(await eventually { heard.value.contains("system") && capture.unavailableTracks.isEmpty })
+    try await capture.stop()
+    await consumer.value
+}
+
 @Test(.timeLimit(.minutes(1))) @MainActor
 func lateSystemStartMustFinishCleanupBeforeRetrying() async throws {
     let mic = IndependentNativeCapture(), system = IndependentNativeCapture(), later = IndependentNativeCapture()

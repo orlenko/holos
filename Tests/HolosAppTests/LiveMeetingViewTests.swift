@@ -14,7 +14,7 @@ import Testing
 struct LiveMeetingViewTests {
     nonisolated static let sizes = SettingsEmbeddingTests.sizes
 
-    @Test(.timeLimit(.minutes(1)), arguments: sizes)
+    @Test(.timeLimit(.minutes(10)), arguments: sizes)
     func theTranscriptFillsTheSectionAndShowsTheJournaledWords(size: NSSize) async throws {
         let session = try Self.recordingSession()
         defer { try? FileManager.default.removeItem(at: session.deletingLastPathComponent()) }

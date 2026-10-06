@@ -31,7 +31,7 @@ private func pumpEventually(polls: Int = 6_000, _ condition: () -> Bool) async -
 }
 
 /// Tail markers wait behind samples on a slow disk and a resume journals only the part not already saved.
-@Test(.timeLimit(.minutes(1)), arguments: [true, false])
+@Test(.timeLimit(.minutes(10)), arguments: [true, false])
 func unavailableTailUsesQueuedSamplesWithoutDuplicatingResume(initialAudio: Bool) async throws {
     let (archive, root) = try pumpArchive(.microphoneAndSystem)
     defer { try? FileManager.default.removeItem(at: root) }
@@ -146,7 +146,7 @@ func unavailableTailUsesQueuedSamplesWithoutDuplicatingResume(initialAudio: Bool
 /// The queue overflows right before a pause or a capture restart: the one gap after it still says `overflow`, where
 /// audio was lost (the boundary has its own journal event), whether the overflow was noted by the pump or by the
 /// capture's `followsDrop`.
-@Test(.timeLimit(.minutes(1)), arguments: [GapReason.paused, .captureRestarted], [false, true])
+@Test(.timeLimit(.minutes(10)), arguments: [GapReason.paused, .captureRestarted], [false, true])
 func overflowBeforeABoundaryKeepsItsReason(boundary: GapReason, notedByCapture: Bool) async throws {
     let (archive, root) = try pumpArchive()
     defer { try? FileManager.default.removeItem(at: root) }

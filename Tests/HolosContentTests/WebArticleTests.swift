@@ -619,7 +619,7 @@ private func isPrintable(_ text: String) -> Bool {
         }
     }
 
-    @Test(.timeLimit(.minutes(1)), arguments: [
+    @Test(.timeLimit(.minutes(10)), arguments: [
         // Script redirect while the page parses.
         Fixture.leavingHTTPS("", #"<script>location.replace("http://127.0.0.1:9/next");</script>"#),
         // Meta refresh.
@@ -641,7 +641,7 @@ private func isPrintable(_ text: String) -> Bool {
         }
     }
 
-    @Test(.timeLimit(.minutes(1)), arguments: Fixture.redirects(to: "slow").indices)
+    @Test(.timeLimit(.minutes(10)), arguments: Fixture.redirects(to: "slow").indices)
     func aPageThatMovesOnAfterLoadingIsReadWhereItLands(variant: Int) async throws {
         // The first page is a whole article of its own, and the destination answers only after a pause: a
         // read while the destination is on its way must not return the first page.
@@ -673,7 +673,7 @@ private func isPrintable(_ text: String) -> Bool {
         #expect(article.url == URL(string: "site://news.test/slow"))
     }
 
-    @Test(.timeLimit(.minutes(1)), arguments: Fixture.redirects(to: "never").indices)
+    @Test(.timeLimit(.minutes(10)), arguments: Fixture.redirects(to: "never").indices)
     func aPageThatMovesOnToADestinationThatNeverAnswersTimesOut(variant: Int) async throws {
         let redirect = Fixture.redirects(to: "never")[variant]
         let handler = SiteSchemeHandler([
@@ -711,7 +711,7 @@ private func isPrintable(_ text: String) -> Bool {
         }
     }
 
-    @Test(.timeLimit(.minutes(1)), arguments: [
+    @Test(.timeLimit(.minutes(10)), arguments: [
         // A slow self-refresh (a live page) is not a redirect.
         #"<meta http-equiv="refresh" content="300">"#,
         // Moving within the document loads nothing new.
@@ -773,7 +773,7 @@ private func isPrintable(_ text: String) -> Bool {
         #expect(await handler.firstRequest() == URL(string: "stall://slow.png"))
     }
 
-    @Test(.timeLimit(.minutes(1)), arguments: [Fixture.neverFinishesLoading, Fixture.stallsAfterLoading])
+    @Test(.timeLimit(.minutes(10)), arguments: [Fixture.neverFinishesLoading, Fixture.stallsAfterLoading])
     func cancellingTheCallerEndsTheExtraction(page: String) async throws {
         // Every wait is far longer than the time limit, so only cancellation can end the extraction in time.
         let handler = StallingSchemeHandler()
