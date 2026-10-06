@@ -468,13 +468,17 @@ private struct FixedVoice: VoiceSampleExtractor {
 
 /// An older call whose microphone turn ("Me", 8–17.6 s) runs through the far end's echo (10–16 s), labelled before
 /// the echo was found (its microphone audio could not be read then), whose voice the user then linked and learned:
-/// the people store holds one sample from it.
-private func learnedBeforeTheEcho(in temp: TemporaryDirectory) async throws -> (URL, SpeakerProfileStore) {
+/// the people store holds one sample from it. With `ownTurn`, "Me" also has a turn of the user alone (26.6–29.4 s,
+/// while the call is quiet), so a sample can be recomputed without the echo.
+private func learnedBeforeTheEcho(in temp: TemporaryDirectory,
+                                  ownTurn: Bool = false) async throws -> (URL, SpeakerProfileStore) {
     let store = SpeakerProfileStore(directory: temp.url.appendingPathComponent("Support/Speakers", isDirectory: true))
     try store.update { $0.rememberVoices = true }
     let call = CallTranscript()
     let mixed = SessionFixtures.segment((0..<24).map { "mixw\($0)" }, track: "mic", start: 8.0, wordSeconds: 0.4)
-    let transcript = SessionFixtures.transcript(call.transcript.segments.filter { $0.track == "system" } + [mixed])
+    let own = SessionFixtures.segment((0..<7).map { "alonew\($0)" }, track: "mic", start: 26.6, wordSeconds: 0.4)
+    let transcript = SessionFixtures.transcript(call.transcript.segments.filter { $0.track == "system" } + [mixed]
+                                                + (ownTurn ? [own] : []))
     let session = try await callSession(in: temp.url, audio: CallAudio.tracks(echo: true), transcript: transcript)
     try moveMicrophoneAudio(session, away: true)
     _ = try await MeetingPostProcessor(diarizer: systemDiarizer(), freeSpace: FixedFreeSpace(.max))
@@ -552,6 +556,63 @@ func aMaskSavedWithoutUpdatingSamplesIsCaughtUpByTheNextPass() async throws {
                                                          voiceSamples: { _ in FixedVoice() })
     #expect(recovered.warnings.isEmpty)
     try expectSampleDropped(otherStore)
+}
+
+/// Fails every extraction.
+private struct BrokenVoice: VoiceSampleExtractor {
+    func turnEmbeddings(session: URL, track: String, turns: [TurnRef]) async throws -> [TurnEmbedding] {
+        throw HolosError.io("The voice could not be read.")
+    }
+}
+
+@Test(.timeLimit(.minutes(2)))
+func aSampleSyncThatFailsAfterTheMaskIsSavedIsRetriedByTheNextPass() async throws {
+    // The pass that saves the mask cannot recompute the sample (its extraction fails); nothing records that, so the
+    // next post-processing pass, which has no analysis left to make, brings the sample in step.
+    let temp = try TemporaryDirectory("echo")
+    defer { temp.remove() }
+    let (session, store) = try await learnedBeforeTheEcho(in: temp, ownTurn: true)
+    let learned = try #require(try store.load().profiles.first?.samples.first)
+    let keep = PostProcessingOptions(keepTranscript: true)
+    let first = try await SessionDiarizeCommand.run(.init(session: session, options: keep), diarizer: systemDiarizer(),
+                                                    freeSpace: FixedFreeSpace(.max), profiles: store,
+                                                    voiceSamples: { _ in BrokenVoice() })
+    let echo = try #require(first.record.stages.first { $0.stage == .echo })
+    #expect(echo.result == .succeeded)
+    #expect(echo.message?.contains("could not be updated") == true)
+    #expect(!EchoAnalysisStage.needed(session: session))
+    #expect(try store.load().profiles.first?.samples == [learned], "Left as it was.")
+
+    let second = try await SessionDiarizeCommand.run(.init(session: session, options: keep), diarizer: systemDiarizer(),
+                                                     freeSpace: FixedFreeSpace(.max), profiles: store,
+                                                     voiceSamples: { _ in FixedVoice() })
+    #expect(!second.record.stages.contains { $0.stage == .echo }, "No analysis left to make.")
+    let refreshed = try #require(try store.load().profiles.first?.samples.first)
+    #expect(refreshed.id == learned.id)
+    #expect(refreshed.inputDigest != learned.inputDigest, "Recomputed from the user's own turn alone.")
+}
+
+@Test(.timeLimit(.minutes(2)))
+func aSampleFromAnEarlierRunWhoseTurnsAreNowEchoIsNotKept() async throws {
+    // The sample was learned from run R1. A forced relabel (R2) runs with no voice sample source, and saves the
+    // mask. In R2 the user's turn is cut by echo, so R2 gives no sample; the R1 sample, seen through the mask, has
+    // lost its turn too, so the next sync removes it instead of keeping it as an earlier run's.
+    let temp = try TemporaryDirectory("echo")
+    defer { temp.remove() }
+    let (session, store) = try await learnedBeforeTheEcho(in: temp)
+    let firstRun = try SessionSpeakerStore.readHead(session: session)?.runID
+    _ = try await SessionDiarizeCommand.run(
+        .init(session: session, options: PostProcessingOptions(force: true, keepTranscript: true)),
+        diarizer: systemDiarizer(), freeSpace: FixedFreeSpace(.max), profiles: store)
+    #expect(try SessionSpeakerStore.readHead(session: session)?.runID != firstRun)
+    #expect(!EchoAnalysisStage.needed(session: session))
+    #expect(try store.load().profiles.flatMap(\.samples).count == 1)
+
+    let outcome = try await SessionEchoAnalyzeCommand.run(.init(session: session), profiles: store,
+                                                          voiceSamples: { _ in FixedVoice() },
+                                                          freeSpace: FixedFreeSpace(.max))
+    #expect(!outcome.analysed)
+    try expectSampleDropped(store)
 }
 
 @Test(.timeLimit(.minutes(2)))

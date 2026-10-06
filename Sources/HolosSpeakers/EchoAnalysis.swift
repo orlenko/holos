@@ -288,18 +288,33 @@ public enum EchoAnalysis {
     }
 
     /// The Theil–Sen line: the median slope over every pair of windows with different centres (0 when there is no
-    /// such pair), and the median intercept for it. Up to about 29 % of the windows can be anywhere.
+    /// such pair), and the median intercept for it over every window. Up to about 29 % of the windows can be anywhere.
+    /// The slopes come from at most `maximumSlopeWindows` windows spread evenly over the call (`slopeWindows`), so
+    /// memory stays bounded (a 149-hour call has about 18,000 windows, 160 million pairs); a call under about 4 hours
+    /// uses every window.
     static func robustLine(_ windows: [DelayWindow]) -> (intercept: Double, slope: Double)? {
         guard !windows.isEmpty else { return nil }
+        let sampled = slopeWindows(windows)
         var slopes: [Double] = []
-        for first in windows.indices {
-            for second in windows.indices where second > first && windows[second].centre != windows[first].centre {
-                slopes.append((windows[second].milliseconds - windows[first].milliseconds)
-                              / (windows[second].centre - windows[first].centre))
+        slopes.reserveCapacity(sampled.count * (sampled.count - 1) / 2)
+        for first in sampled.indices {
+            for second in sampled.indices where second > first && sampled[second].centre != sampled[first].centre {
+                slopes.append((sampled[second].milliseconds - sampled[first].milliseconds)
+                              / (sampled[second].centre - sampled[first].centre))
             }
         }
         let slope = slopes.isEmpty ? 0 : median(slopes)
         return (median(windows.map { $0.milliseconds - slope * $0.centre }), slope)
+    }
+
+    static let maximumSlopeWindows = 512
+
+    /// `windows`, or `maximumSlopeWindows` of them evenly spaced by position (first and last included) when there are
+    /// more.
+    static func slopeWindows(_ windows: [DelayWindow]) -> [DelayWindow] {
+        guard windows.count > maximumSlopeWindows else { return windows }
+        let last = windows.count - 1
+        return (0..<maximumSlopeWindows).map { windows[$0 * last / (maximumSlopeWindows - 1)] }
     }
 
     /// The gate (step 2).

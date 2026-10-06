@@ -7866,7 +7866,8 @@ genuinely local (the user, or people in the room) stays even while the call play
      microphone of inverted polarity records the echo upside down) is over 20× the median
      |correlation|. Two starts are refined by least squares three times on the windows within
      3 ms, and the one more windows agree with wins: a robust (Theil–Sen) line, so an outlying
-     window cannot drag it away from the rest, and a constant delay at the median, for few
+     window cannot drag it away from the rest (its slopes from at most 512 windows spread
+     evenly, about 4 hours' worth, so memory stays bounded), and a constant delay at the median, for few
      windows with an outlier at an end (the delay drifts a few ms per hour between the two
      tracks' clocks).
   2. *Gate.* Echo is present only when at least 3 windows, and at least 30 % of the windows
@@ -7930,9 +7931,13 @@ genuinely local (the user, or people in the room) stays even while the call play
   the echo files did not change while it was computed. A sample's freshness comes from the
   files: its input digest covers the turns the masked view lets it use, so
   `VoiceProfileService.refreshSamples` (as after an edit) recomputes or removes one whose turns
-  the mask changed and leaves the rest alone. Post-processing runs it right after saving a mask
-  (before recognition, with the head the sample was learned from, no lock held), and every
-  `echo-analyze` and Recover run it, so a pass that saved a mask without it is caught up.
+  the mask changed and leaves the rest alone. Every post-processing pass (after the echo step,
+  before recognition, with the head the sample was learned from, no lock held), every Recover
+  and every `echo-analyze` run it when they have a voice extractor, whether or not they saved a
+  mask, so a sync that failed is retried by the next pass and nothing records it as done. A
+  sample learned from an earlier run is kept when the new labels give none only while its own
+  turns, in that run seen through the mask, still give its digest; otherwise (or when that run
+  cannot be read) it is removed.
 - *Recognition.* Post-processing compares voices only for clusters the view lists with the mask
   (`RecognizeStage.withoutEcho`): a microphone cluster that is echo sounds like the far end and
   must not take a person's match from the system speaker. The mask exists by then (stage 4b).

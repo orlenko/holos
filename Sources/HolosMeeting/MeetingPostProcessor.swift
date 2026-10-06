@@ -634,9 +634,15 @@ public struct MeetingPostProcessor: Sendable {
     /// little disk space, costs only the analysis. The outcome is recorded for the user to read; nothing reads it
     /// back: a failure saves nothing, so the analysis is still needed and the next pass tries again. The run is built
     /// without it: the labels' view hides the echo (`SpeakerSessionSnapshot`). Only cancellation throws.
+    ///
+    /// Then, every pass, whether or not a mask was saved: the meeting's voice samples are brought in step with what the
+    /// labels show (`syncVoiceSamples`), before recognition and with the head they were learned from still current.
     private func analyzeEchoIfNeeded(_ rendered: [RenderedTrack], session: URL, manifest: SessionManifest,
                                      recorder: StageRecorder) async throws {
-        guard options.stopReason != .diskLow, EchoAnalysisStage.needed(session: session) else { return }
+        guard options.stopReason != .diskLow, EchoAnalysisStage.needed(session: session) else {
+            _ = try await syncVoiceSamples(session: session, manifest: manifest)
+            return
+        }
         let message = "Finding microphone echo…"
         let started = recorder.begin(.echo, track: "mic", message: message)
         let journal = recorder.journal
@@ -658,22 +664,35 @@ public struct MeetingPostProcessor: Sendable {
                                                             message: message))
                 })
             var outcome = EchoAnalysisStage.message(stored.record)
-            // The mask changes which turns a voice sample from this meeting may use: brought in step now, while the
-            // head the samples were learned from is still the current one, and with no lock held.
-            if let profiles, let voiceSamples {
-                do {
-                    try await VoiceProfileService.refreshSamples(session: session, extractor: voiceSamples(session),
-                                                                 store: profiles)
-                } catch is CancellationError {
-                    throw CancellationError()
-                } catch {
-                    outcome += " A voice sample learned from this meeting could not be updated: "
-                        + error.localizedDescription
-                }
+            if let failure = try await syncVoiceSamples(session: session, manifest: manifest) {
+                outcome += " " + failure
             }
             recorder.end(.echo, .succeeded, outcome, since: started)
         } catch let error where !(error is CancellationError) {
             recorder.end(.echo, .failed, error.localizedDescription, since: started)
+            _ = try await syncVoiceSamples(session: session, manifest: manifest)
+        }
+    }
+
+    /// Brings the voice samples people have from this meeting in step with what the labels show
+    /// (`VoiceProfileService.refreshSamples`, as after an edit; docs/meeting-design.md §5.11), with no lock held.
+    /// Freshness is worked out from the files (each sample's input digest), so this runs on every pass and a pass
+    /// whose sync failed is simply retried by the next; nothing records it as done. Skipped without people or a voice
+    /// sample source, and when nobody has a sample from this meeting. Returns why it failed (also logged), nil
+    /// otherwise; only cancellation throws.
+    private func syncVoiceSamples(session: URL, manifest: SessionManifest) async throws -> String? {
+        guard let profiles, let voiceSamples else { return nil }
+        do {
+            guard try profiles.load().profiles.contains(where: { $0.samples.contains { $0.sessionID == manifest.id } })
+            else { return nil }
+            try await VoiceProfileService.refreshSamples(session: session, extractor: voiceSamples(session),
+                                                         store: profiles)
+            return nil
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            Self.log.error("Session \(manifest.id, privacy: .public): voice samples not brought in step: \(error.localizedDescription, privacy: .private)")
+            return "A voice sample learned from this meeting could not be updated: \(error.localizedDescription)"
         }
     }
 

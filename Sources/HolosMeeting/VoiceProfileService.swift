@@ -931,9 +931,11 @@ public enum VoiceProfileService {
                 log.notice("Session \(sessionID, privacy: .public): voices were forgotten while a voice was waiting to be learned; nothing was saved")
                 throw HolosError.unavailable(forgottenWhileLearning)
             }
+            // Read once, outside every lock: earlier runs are never changed, and the mask is the snapshot's.
+            let earlierRuns = try earlierRunViews(database, snapshot: snapshot, headRunID: run.id)
             let makePlans = { (database: SpeakerProfileDatabase) in
                 plan(database: database, snapshot: snapshot, run: run, projection: projection, enroll: enroll,
-                     extractorAvailable: extractor != nil)
+                     earlierRuns: earlierRuns, extractorAvailable: extractor != nil)
             }
             let plans = makePlans(database)
             guard !plans.isEmpty else { return }
@@ -1045,9 +1047,10 @@ public enum VoiceProfileService {
     /// qualifying turn left, Remember voices off, audio deleted, no extractor, another model): the change may have
     /// moved a turn it holds to someone else. A sample built from an earlier run (the meeting was labelled again) is
     /// different: that run can no longer be edited, so its turns are still the ones the user confirmed. It is replaced
-    /// only by a sample learned from the new labels, and otherwise kept.
+    /// by a sample learned from the new labels, and otherwise kept while its own turns still hold
+    /// (`earlierSampleHolds`: an acoustic echo mask can make them echo, §5.11); when they do not, it is removed.
     private static func plan(database: SpeakerProfileDatabase, snapshot: SpeakerSessionSnapshot, run: DiarizationRun,
-                             projection: SpeakerProjection, enroll: Set<String>,
+                             projection: SpeakerProjection, enroll: Set<String>, earlierRuns: EarlierRunViews,
                              extractorAvailable: Bool) -> [SamplePlan] {
         let sessionID = snapshot.manifest.id
         let model = run.engine?.embeddingModel
@@ -1060,27 +1063,73 @@ public enum VoiceProfileService {
             let digest = VoiceEnrollment.inputDigest(speakerIDs: speakerIDs, projection: projection)
             if let existing, existing.inputDigest == digest { continue }
             let fromEarlierRun = existing.map { builtFromEarlierRun($0, headRunID: run.id) } ?? false
+            let keepable = fromEarlierRun && existing.map { earlierSampleHolds($0, earlierRuns) } == true
             let turns = VoiceEnrollment.candidateTurns(for: speakerIDs, projection: projection)
             let canLearn = database.rememberVoices && !snapshot.audioDeleted && extractorAvailable && model != nil
                 && (profile.embeddingModel == nil || profile.embeddingModel == model)
             let action: SamplePlan.Action
             if speakerIDs.isEmpty || turns.isEmpty || !canLearn {
-                guard existing != nil, !fromEarlierRun else { continue }
+                guard existing != nil, !keepable else { continue }
                 action = .remove
             } else {
                 action = .extract
             }
             plans.append(SamplePlan(profileID: profile.id, existing: existing, speakerIDs: speakerIDs, turns: turns,
-                                    digest: digest, action: action, keepWhenUnlearnable: fromEarlierRun))
+                                    digest: digest, action: action, keepWhenUnlearnable: keepable))
         }
         return plans
     }
 
     /// Whether `sample` was computed from a run other than the head (its generation names another run ID).
     static func builtFromEarlierRun(_ sample: VoiceprintSample, headRunID: String) -> Bool {
-        guard let generation = sample.generation,
-              let separator = generation.lastIndex(of: ":") else { return false }
-        return generation[..<separator] != headRunID
+        guard let runID = sourceRunID(sample) else { return false }
+        return runID != headRunID
+    }
+
+    /// The run `sample` was computed from (its generation is "<runID>:<edits length>").
+    static func sourceRunID(_ sample: VoiceprintSample) -> String? {
+        guard let generation = sample.generation, let separator = generation.lastIndex(of: ":") else { return nil }
+        return String(generation[..<separator])
+    }
+
+    /// The labels' view of each earlier run a sample from this meeting was learned from, with the acoustic echo mask
+    /// the head is shown with (`mask`); a run that cannot be read (gone or damaged) maps to nil.
+    struct EarlierRunViews {
+        var mask: AcousticEchoMask?
+        var views: [String: SpeakerProjection?] = [:]
+    }
+
+    /// `EarlierRunViews` for the samples of `database` from `snapshot`'s meeting. Only with a mask: without one
+    /// nothing can have turned into echo, and an earlier-run sample is kept as before.
+    static func earlierRunViews(_ database: SpeakerProfileDatabase, snapshot: SpeakerSessionSnapshot,
+                                headRunID: String) throws -> EarlierRunViews {
+        var result = EarlierRunViews(mask: snapshot.projection?.acousticEcho)
+        guard result.mask != nil else { return result }
+        for sample in database.profiles.flatMap(\.samples) where sample.sessionID == snapshot.manifest.id {
+            guard let runID = sourceRunID(sample), runID != headRunID, !result.views.keys.contains(runID) else {
+                continue
+            }
+            do {
+                let run = try SessionSpeakerStore.readRun(id: runID, session: snapshot.session)
+                let transcript = try SessionFiles.transcript(id: run.transcriptID, session: snapshot.session)
+                result.views[runID] = SpeakerProjection.make(run: run, transcript: transcript,
+                                                             edits: snapshot.journal.edits, recognition: nil,
+                                                             profileNames: [:], acousticEcho: result.mask)
+            } catch let error where SessionFiles.isDamage(error) {
+                result.views[runID] = .some(nil)
+            }
+        }
+        return result
+    }
+
+    /// Whether a sample learned from an earlier run may stay when the head gives no sample: always without an echo
+    /// mask; with one, only when its turns, seen through the mask, are still the ones it was learned from (same input
+    /// digest). One whose run cannot be read, or that has no digest, cannot be shown free of echo and is not kept.
+    static func earlierSampleHolds(_ sample: VoiceprintSample, _ earlier: EarlierRunViews) -> Bool {
+        guard earlier.mask != nil else { return true }
+        guard let runID = sourceRunID(sample), let view = earlier.views[runID] ?? nil,
+              let digest = sample.inputDigest else { return false }
+        return VoiceEnrollment.inputDigest(speakerIDs: sample.speakerIDs, projection: view) == digest
     }
 
     /// The meeting's speakers linked to `profileID`, plus the speakers `sample` was built from whose link names the

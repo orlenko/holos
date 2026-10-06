@@ -286,6 +286,26 @@ func aCallOfExactlyThirtySecondsHasThreeDelayWindows() throws {
     #expect(abs(try #require(line.driftMillisecondsPerHour) - 5) < 0.01)
 }
 
+@Test func theRobustFitOfTheLongestCallUsesABoundedNumberOfPairs() throws {
+    // 149 hours of windows every 30 s, drifting +5 ms/h, every 7th window far off: the slopes come from 512 windows
+    // (130,816 pairs instead of about 160 million), and the line is still found.
+    let count = 149 * 3_600 / 30
+    var windows = (0..<count).map { index -> EchoAnalysis.DelayWindow in
+        let centre = 15 + Double(index) * 30
+        return EchoAnalysis.DelayWindow(centre: centre, milliseconds: 46 + 5 * centre / 3_600, peakRatio: 100)
+    }
+    for index in stride(from: 3, to: count, by: 7) { windows[index].milliseconds = 400 }
+    let sampled = EchoAnalysis.slopeWindows(windows)
+    #expect(sampled.count == EchoAnalysis.maximumSlopeWindows)
+    #expect(sampled.count * (sampled.count - 1) / 2 == 130_816)
+    #expect(sampled.first == windows.first && sampled.last == windows.last)
+    let line = try #require(EchoAnalysis.robustLine(windows))
+    #expect(abs(line.slope * 3_600 - 5) < 0.01)
+    // Up to the cap, every window is used: real calls (a few hundred windows) fit exactly as before.
+    let hourly = Array(windows.prefix(EchoAnalysis.maximumSlopeWindows))
+    #expect(EchoAnalysis.slopeWindows(hourly) == hourly)
+}
+
 @Test func aShortMeetingWithAnOutlyingEndWindowStillFindsTheDelay() throws {
     // Four windows, the last 200 ms off: the Theil–Sen slope (3.3 ms/s) agrees with none of them; the constant start
     // agrees with three.
