@@ -18,14 +18,20 @@ enum SpeakerTranscriptRetarget {
     }
 
     /// A complete replacement for the current head, or nil when there is no usable head to preserve.
+    ///
+    /// `move`: the word change is a Review word edit (or its undo) that moved these words and no others. Words are then
+    /// mapped by index, not by time: every other word keeps its exact owner, and the replacement words take the owner of
+    /// the words they replace (one turn). Recognizer timings of neighbouring words can overlap across speakers, so
+    /// mapping an edit's words by time could give an untouched word to another turn as well.
     static func plan(session: URL, from snapshot: SpeakerSessionSnapshot, to transcript: Transcript,
-                     now: Date = Date()) throws -> Plan? {
+                     move: ReviewWordMove? = nil, now: Date = Date()) throws -> Plan? {
         guard let oldRun = snapshot.run, let projection = snapshot.projection,
               oldRun.transcriptID == snapshot.transcript.id else { return nil }
         guard snapshot.journal.isComplete else {
             throw HolosError.invalidInput("The speaker edits cannot all be read, so the labels cannot be kept.")
         }
-        let mapping = try Mapping(from: snapshot.transcript, to: transcript)
+        let mapping = try move.map { try Mapping(from: snapshot.transcript, to: transcript, move: $0) }
+            ?? Mapping(from: snapshot.transcript, to: transcript)
         var run = oldRun
         run.id = UUID().uuidString
         run.createdAt = now
@@ -301,6 +307,43 @@ enum SpeakerTranscriptRetarget {
             }
             guard Set(mapped.keys) == Set(oldSegments.keys) else {
                 throw HolosError.invalidInput("The fixed transcript changed its segments, so speaker labels cannot be kept.")
+            }
+            segments = mapped
+            order = new.segments.map(\.id)
+        }
+
+        /// A Review word edit's (or its undo's) mapping: in `move`'s segment, words before the replaced ones keep their
+        /// index, words after shift by the change in count, and each replacement word is owned by every replaced word;
+        /// every other segment keeps its words as they are.
+        init(from old: Transcript, to new: Transcript, move: ReviewWordMove) throws {
+            let changed = HolosError.invalidInput("The edited transcript does not match the speaker labels' words.")
+            let oldSegments = Dictionary(old.segments.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+            guard Set(oldSegments.keys) == Set(new.segments.map(\.id)), old.segments.count == new.segments.count,
+                  move.replaced.lowerBound == move.replacement.lowerBound, move.replaced.lowerBound >= 0 else {
+                throw changed
+            }
+            var mapped: [String: Segment] = [:]
+            for segment in new.segments {
+                guard let before = oldSegments[segment.id] else { throw changed }
+                let oldWords = WordTiming.effectiveWords(of: before)
+                let newWords = WordTiming.effectiveWords(of: segment)
+                let ref = { (word: Int) in WordRef(segmentID: segment.id, word: word) }
+                let owners: [[WordRef]]
+                if segment.id == move.segmentID {
+                    guard move.replaced.upperBound <= oldWords.count,
+                          newWords.count == oldWords.count - move.replaced.count + move.replacement.count else {
+                        throw changed
+                    }
+                    owners = newWords.indices.map { index in
+                        if index < move.replacement.lowerBound { return [ref(index)] }
+                        if index < move.replacement.upperBound { return move.replaced.map(ref) }
+                        return [ref(index - move.replacement.count + move.replaced.count)]
+                    }
+                } else {
+                    guard newWords.count == oldWords.count else { throw changed }
+                    owners = newWords.indices.map { [ref($0)] }
+                }
+                mapped[segment.id] = Segment(old: oldWords, new: newWords, owners: owners)
             }
             segments = mapped
             order = new.segments.map(\.id)

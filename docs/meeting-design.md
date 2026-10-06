@@ -7740,7 +7740,8 @@ shown, Otter-style.
   the previous one, Esc cancels. Closing the window (or quitting) with the field open saves
   what it holds, before the close learns from the edits. Space still plays and pauses outside the field; the
   timestamp buttons still play. Every word has a VoiceOver action "Edit “word”", which turns
-  edit mode on and opens the field. An edited word is dotted-underlined like a fixed word
+  edit mode on and opens the field; it is offered only while words can be edited (not after
+  the transcript changed under the labels), and reports failure when no field opened. An edited word is dotted-underlined like a fixed word
   ("You changed “heard”"), and its Revert ("Revert to “heard”") is another edit back to what
   the recognizer wrote. ⌘E turns the mode on only while words can be edited: the review is
   editable (no command holds it read-only) and its labels were made on the current transcript
@@ -7802,16 +7803,23 @@ shown, Otter-style.
   the speaker lock; the current transcript and head run must be the ones the window showed;
   the words must still be shown in the head's projection (echo mask included); the speaker
   run is retargeted (`SpeakerTranscriptRetarget.plan`: turns keep their IDs, effective edits
-  are replayed with their IDs and batches) and staged; `B′` is saved as a revision with a
-  `transcriptEdited` event (`transcriptID`, `base`, `segment`), then `C′`'s
-  `transcriptEdited` event, then `C′` becomes current, then the new head. `unfixedID` follows
+  are replayed with their IDs and batches) and staged. An edit's words map by index, never by
+  time (`labelsMove`: the edited span, with any neighbour a deletion merged into, and its
+  replacement): every other word keeps its exact owner, and the replacement words take the
+  edited turn; recognizer timings of neighbouring words can overlap across speakers, and a
+  time mapping gave such a word to both turns. Automatic word-fix stages still map by time.
+  `B′` is saved as a revision with a `transcriptEdited` event (`transcriptID`, `base`,
+  `segment`), then `C′`'s `transcriptEdited` event (also `replaced` and `replacement`, the
+  move, which a repair maps by), then `C′` becomes current, then the new head. `unfixedID` follows
   `transcriptEdited` like `wordsFixed`. A head that could not be published is repaired from
   the old head as a revert's is; when the app quits in between, post-processing repairs it
   first (`SessionWordEdit.repairPendingHead`, before any stage may replace the transcript or
   relabel over the old head, the only copy of the turn edits). Exports are regenerated
   `exportDelay` later; the summary is no longer current (its key holds the transcript ID).
   Speaker labels, speaker edits, and the window's paragraph breaks survive (a run an edit or
-  its undo published is known to keep the turns, `ReviewSession.keepsTurns`); the playback
+  its undo published is known to keep the turns, `ReviewSession.keepsTurns`; the labels
+  reread afterwards are the edit's own only when their run is that one, so a relabel saved
+  elsewhere in between is a change made elsewhere); the playback
   and highlight mapping is rebuilt from the new segments. What the window keeps of a
   committed edit (its undo, its word move) is recorded as soon as the transcript is current,
   even when the labels cannot be reread then, or when saving the transcript failed after its
@@ -7820,8 +7828,8 @@ shown, Otter-style.
 - *Undo.* An edit is one entry of the window's undo, among speaker changes; unlike a revert,
   it keeps the undo history (the retargeted run keeps every edit ID and batch). Undoing it
   publishes a copy of `C` (new ID; `fixedFrom` still names `B`, so `B′` is left unused) with
-  the head retargeted again: the text, words, timing, and fixes are exactly `C`'s, and speaker
-  edits made since carry over. It is refused when the current transcript is no longer the
+  the head retargeted again by the inverse move: the text, words, timing, and fixes are
+  exactly `C`'s, every word is back with its owner, and speaker edits made since carry over. It is refused when the current transcript is no longer the
   edit's `C′` (or the copy an undo made of it). A speaker split waiting in the queue whose
   word is in the edited segment is refused (its word index may have moved).
 - *Echo.* Words under a `reviewEdit` mark are never echo (`EchoFilter.reviewEditedWords`):

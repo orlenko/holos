@@ -68,6 +68,10 @@ public enum TranscriptWordEdit {
         public var after: String?
         /// Where the words moved: the span's word indices in the segment before and after the edit.
         public var move: ReviewWordMove
+        /// The whole edited span's move, with the words it took in around the selection (a deletion's neighbour, the
+        /// rest of a mark): every one of them is in the edited turn and its replacement is never empty, so the speaker
+        /// labels map by it, and by its inverse when the edit is undone (`SpeakerTranscriptRetarget.plan`).
+        public var labelsMove: ReviewWordMove
     }
 
     /// Whether `transcript` holds words edited in Review.
@@ -213,11 +217,12 @@ public enum TranscriptWordEdit {
         let keptAround = selectedCount >= 0
             && WordFixes.tokens(of: Array(string(span.lowerBound..<selected.lowerBound).utf16)).count == prefix
             && WordFixes.tokens(of: Array(string(selected.upperBound..<span.upperBound).utf16)).count == suffix
+        let labelsMove = ReviewWordMove(segmentID: segment.id, replaced: lower..<upper,
+                                        replacement: lower..<(lower + max(0, newCount)))
         let move = keptAround
             ? ReviewWordMove(segmentID: segment.id, replaced: request.first..<request.end,
                              replacement: request.first..<(request.first + selectedCount))
-            : ReviewWordMove(segmentID: segment.id, replaced: lower..<upper,
-                             replacement: lower..<(lower + max(0, newCount)))
+            : labelsMove
         var newBase: Transcript?
         if let baseID = current.fixedFrom {
             guard let base, base.id == baseID else {
@@ -233,7 +238,8 @@ public enum TranscriptWordEdit {
         }
         return Result(transcript: result, base: newBase, heard: heard, meant: meant, shown: shown, deletion: deletion,
                       before: lower > 0 && editable(lower - 1) ? words[lower - 1].text : nil,
-                      after: upper < words.count && editable(upper) ? words[upper].text : nil, move: move)
+                      after: upper < words.count && editable(upper) ? words[upper].text : nil, move: move,
+                      labelsMove: labelsMove)
     }
 
     /// The text words `range` of a segment show, as the review and the exports show it (`TranscriptText`): from the

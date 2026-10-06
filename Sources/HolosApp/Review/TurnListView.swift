@@ -188,8 +188,11 @@ final class TurnTextView: NSTextView {
     var onPlay: ((Double) -> Void)?
     var onRevertFix: ((WordRef) -> Void)?
     var canRevertFix = false
-    /// VoiceOver's "Edit “word”" (word `index` of the text): turns edit mode on and edits that word.
-    var onEditWord: ((Int) -> Void)?
+    /// VoiceOver's "Edit “word”" (word `index` of the text): turns edit mode on and edits that word; false when no
+    /// field opened.
+    var onEditWord: ((Int) -> Bool)?
+    /// Words can be edited now (the list's `canEditWords`): the "Edit" actions are offered only then.
+    var canEditWord: (() -> Bool)?
     /// Edit mode: the pointer over the text is an I-beam.
     var editingWords = false {
         didSet { if editingWords != oldValue { window?.invalidateCursorRects(for: self) } }
@@ -296,11 +299,9 @@ final class TurnTextView: NSTextView {
                 onPlay(start)
                 return true
             })
-            if canRevertFix {
+            if canRevertFix, canEditWord?() ?? false {
                 actions.append(NSAccessibilityCustomAction(name: "Edit “\(word)”") { [weak self] in
-                    guard let onEditWord = self?.onEditWord else { return false }
-                    onEditWord(index)
-                    return true
+                    self?.onEditWord?(index) ?? false
                 })
             }
             if canRevertFix, index < wordRefs.count, index < wordFixes.count, let fixed = wordFixes[index] {
@@ -691,12 +692,14 @@ final class TurnListView: NSView, NSTableViewDataSource, NSTableViewDelegate {
             cell.hintButton.action = #selector(hintClicked(_:))
             cell.bodyText.onPlay = { [weak self] seconds in self?.onPlay?(seconds) }
             cell.bodyText.onRevertFix = { [weak self] word in self?.onRevertFix?(word) }
+            cell.bodyText.canEditWord = { [weak self] in (self?.editable ?? false) && (self?.canEditWords ?? false) }
             cell.bodyText.onEditWord = { [weak self, weak cell] word in
-                guard let self, let cell else { return }
+                guard let self, let cell, self.editable, self.canEditWords else { return false }
                 let row = self.table.row(for: cell)
-                guard row >= 0 else { return }
+                guard row >= 0 else { return false }
                 if !self.editingWords { self.onRequestEditing?() }
                 self.beginEditing(row: row, from: word, through: word, extend: false)
+                return self.wordEdit != nil
             }
             return cell
         }()

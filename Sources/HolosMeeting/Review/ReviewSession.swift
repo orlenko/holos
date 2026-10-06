@@ -1037,6 +1037,8 @@ public struct ReviewWord: Sendable, Equatable {
         let segmentID: String
         /// How it moved the segment's words (undone by its inverse).
         let move: ReviewWordMove
+        /// The move its speaker labels were mapped by, whose inverse maps them back.
+        let labelsMove: ReviewWordMove
     }
 
     /// One queued change or task.
@@ -1457,7 +1459,8 @@ public struct ReviewWord: Sendable, Equatable {
                                           before: saved.before, after: saved.after)
                 op.wordEditResult = edit
                 op.wordEdit = WordEditUndo(previous: transcriptID, edited: saved.transcriptID,
-                                           segmentID: sent.segmentID, move: saved.move)
+                                           segmentID: sent.segmentID, move: saved.move,
+                                           labelsMove: saved.labelsMove)
                 self.wordMoves.append(saved.move)
                 self.refuseQueuedSplits(in: sent.segmentID)
             }) {
@@ -1501,7 +1504,8 @@ public struct ReviewWord: Sendable, Equatable {
             }) {
             if let hook { await hook() }
             return try await SessionWordEdit.restore(session: session, previousTranscriptID: edit.previous,
-                                                     expectedTranscriptID: current, expectedRunID: runID)
+                                                     expectedTranscriptID: current, expectedRunID: runID,
+                                                     move: edit.labelsMove.inverse)
         }
     }
 
@@ -1579,8 +1583,9 @@ public struct ReviewWord: Sendable, Equatable {
     }
 
     /// Runs one publication of the transcript (a word edit or its undo) off the main actor. Once it is committed (the
-    /// transcript current), `committed` records it, whatever happens next; then the labels it left are adopted as this
-    /// window's own change (`adopt(retargeted:)`): the turns and edit IDs are the same, so the undo history stays. A head
+    /// transcript current), `committed` records it, whatever happens next (with the run it published, in
+    /// `turnKeepingRuns`); then the labels reread are adopted as this window's own change when their run is that one
+    /// (`adopt`): the turns and edit IDs are the same, so the undo history stays. A head
     /// that could not be published is repaired from the old one, as a word-fix revert's is (`recover` gives what was
     /// committed). Labels that cannot be reread make the review read-only until they are (a reread then still knows the
     /// new run keeps the turns). Any other failure rereads the labels and throws.
@@ -1597,7 +1602,9 @@ public struct ReviewWord: Sendable, Equatable {
             changesSaved(exportsWritten: false)
             do {
                 try beforeWordChangeReread?()
-                adopt(try await loadSnapshot(), op: nil, matching: nil, retargeted: true)
+                // The labels reread are this change's only when their run is the one it published (`committed` noted
+                // it in `turnKeepingRuns`); a relabel made elsewhere since is a change made elsewhere.
+                adopt(try await loadSnapshot(), op: nil, matching: nil)
             } catch {
                 holdUnreread(matching: nil, problem: "\(what), but the window could not reread the speaker labels: "
                              + error.localizedDescription)
@@ -1616,13 +1623,13 @@ public struct ReviewWord: Sendable, Equatable {
                                                                 expectedRunID: runID)
                 }
                 do {
-                    try repair.get()
+                    // Only the run the repair published keeps the turns; a head published elsewhere is not ours.
+                    if let repaired = try repair.get() { turnKeepingRuns[repaired] = runID }
                     let fresh = try await loadSnapshot()
                     guard fresh.projection != nil, !fresh.transcriptChanged else {
                         throw HolosError.unavailable("The new speaker head is incomplete.")
                     }
-                    if let newRun = fresh.run?.id { turnKeepingRuns[newRun] = runID }
-                    adopt(fresh, op: nil, matching: nil, retargeted: true)
+                    adopt(fresh, op: nil, matching: nil)
                     return value
                 } catch let reread {
                     holdUnreread(matching: nil, problem: "\(what), but the window could not reread the speaker "
@@ -2212,12 +2219,12 @@ public struct ReviewWord: Sendable, Equatable {
     /// are the batches of changes saved but not reread (`unreloaded`), which get their undo entries here; any other
     /// new line, or a new head run, is a change made elsewhere. Returns whether the window's batch was found.
     ///
-    /// `retargeted`: `fresh` is this window's word edit (or its undo), whose new head run keeps every turn, turn ID,
-    /// and edit ID of the old one: the undo history, the split IDs, and the voices worked out stay, and it is not a
-    /// change made elsewhere.
+    /// A head run this window's word edit (or its undo) published from the run shown (`turnKeepingRuns`) keeps every
+    /// turn, turn ID, and edit ID of the old one: the undo history, the split IDs, and the voices worked out stay, and
+    /// it is not a change made elsewhere.
     @discardableResult
     private func adopt(_ fresh: SpeakerSessionSnapshot, op: Operation?, matching: (([SpeakerEdit]) -> Bool)?,
-                       external forced: Bool = false, retargeted: Bool = false) -> Bool {
+                       external forced: Bool = false) -> Bool {
         let known = Set(snapshot.journal.edits.map(\.id))
         let added = fresh.journal.edits.filter { !known.contains($0.id) }
         var groups: [[SpeakerEdit]] = []
@@ -2267,7 +2274,7 @@ public struct ReviewWord: Sendable, Equatable {
         let previousRunID = snapshot.run?.id
         // Also a reread after one of this window's word edits whose labels could not be reread at once.
         let keptFrom = fresh.run.flatMap { turnKeepingRuns[$0.id] }
-        let retargeted = retargeted || (keptFrom != nil && keptFrom == previousRunID)
+        let retargeted = keptFrom != nil && keptFrom == previousRunID
         let headChanged = fresh.run?.id != previousRunID && !retargeted
         let external = forced || headChanged || added.count > windowLines
         let transcriptChanged = fresh.transcript.id != snapshot.transcript.id

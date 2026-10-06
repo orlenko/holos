@@ -28,6 +28,9 @@ enum SessionWordEdit {
         var before: String?
         var after: String?
         var move: ReviewWordMove
+        /// The move the speaker labels were mapped by (`TranscriptWordEdit.Result.labelsMove`); its undo maps them back
+        /// by its inverse.
+        var labelsMove: ReviewWordMove
     }
 
     /// A published undo.
@@ -59,7 +62,7 @@ enum SessionWordEdit {
             guard let result = try TranscriptWordEdit.editing(request, in: current, base: base, editable: editable,
                                                               now: now) else { return nil }
             guard let plan = try SpeakerTranscriptRetarget.plan(session: session, from: snapshot, to: result.transcript,
-                                                               now: now) else {
+                                                               move: result.labelsMove, now: now) else {
                 throw HolosError.invalidInput("The speaker labels cannot be kept on the edited words.")
             }
             try Task.checkCancellation()
@@ -71,11 +74,11 @@ enum SessionWordEdit {
                 ])
             }
             try await archive.recordEvent(kind: MeetingEventKind.transcriptEdited, details: [
-                "transcriptID": result.transcript.id, "base": current.id, "segment": request.segmentID,
-            ])
+                "transcriptID": result.transcript.id, "base": current.id,
+            ].merging(details(of: result.labelsMove), uniquingKeysWith: { first, _ in first }))
             let outcome = Outcome(transcriptID: result.transcript.id, runID: plan.run.id, heard: result.heard,
                                   meant: result.meant, deletion: result.deletion, before: result.before,
-                                  after: result.after, move: result.move)
+                                  after: result.after, move: result.move, labelsMove: result.labelsMove)
             try await save(result.transcript, archive: archive, session: session,
                            incomplete: IncompletePublication(message: "The words were edited", outcome: outcome))
             try publishHead(plan, session: session, now: now,
@@ -86,23 +89,24 @@ enum SessionWordEdit {
 
     /// Undoes an edit: the current transcript must still be the edit's (`expectedTranscriptID`, head run
     /// `expectedRunID`); a copy of `previousTranscriptID` (`TranscriptWordEdit.restoring`) becomes current, with the
-    /// speaker labels and their effective edits carried over. Returns the restored transcript and its run.
+    /// speaker labels and their effective edits carried over. `move`: the edit's `labelsMove` undone (`inverse`), which
+    /// maps the labels' words. Returns the restored transcript and its run.
     static func restore(session: URL, previousTranscriptID: String, expectedTranscriptID: String,
-                        expectedRunID: String, now: Date = Date()) async throws -> Restored {
+                        expectedRunID: String, move: ReviewWordMove, now: Date = Date()) async throws -> Restored {
         try await publishing(session: session) { archive in
             let (current, snapshot) = try expectedState(session: session, transcriptID: expectedTranscriptID,
                                                         runID: expectedRunID)
             let previous = try SessionFiles.transcript(id: previousTranscriptID, session: session)
             let restored = TranscriptWordEdit.restoring(previous, now: now)
             guard let plan = try SpeakerTranscriptRetarget.plan(session: session, from: snapshot, to: restored,
-                                                               now: now) else {
+                                                               move: move, now: now) else {
                 throw HolosError.invalidInput("The speaker labels cannot be kept on the words as they were.")
             }
             try Task.checkCancellation()
             try SpeakerTranscriptRetarget.stage(plan, session: session)
             try await archive.recordEvent(kind: MeetingEventKind.transcriptEdited, details: [
                 "transcriptID": restored.id, "base": current.id, "undo": "1",
-            ])
+            ].merging(details(of: move), uniquingKeysWith: { first, _ in first }))
             let published = Restored(transcriptID: restored.id, runID: plan.run.id)
             try await save(restored, archive: archive, session: session,
                            incomplete: IncompletePublication(message: "The edit was undone", restored: published))
@@ -115,29 +119,33 @@ enum SessionWordEdit {
     /// Finishes the only partial state `run` and `restore` can leave: the edited (or restored) transcript is current,
     /// journaled as edited from `expectedTranscriptID`, but the head still has run `expectedRunID` on that transcript.
     /// The old head remains the authoritative copy of every speaker edit, so its retargeted replacement is published.
+    /// Returns the run it published; nil when the head was already on the edited transcript (published elsewhere).
+    @discardableResult
     static func repairCurrentHead(session: URL, expectedTranscriptID: String, expectedRunID: String,
-                                  now: Date = Date()) async throws {
-        try await publishing(session: session) { _ in
+                                  now: Date = Date()) async throws -> String? {
+        try await publishing(session: session) { _ -> String? in
             guard let current = try SessionFiles.currentTranscript(session: session), current.id != expectedTranscriptID,
-                  try editedBase(of: current.id, session: session) == expectedTranscriptID else {
+                  let edited = try editedEvent(of: current.id, session: session),
+                  edited.base == expectedTranscriptID else {
                 throw HolosError.invalidInput("The edited transcript is no longer current.")
             }
             guard let head = try SpeakerAnalysis.headState(session: session, transcript: current) else {
                 throw HolosError.invalidInput("The speaker head to repair is missing.")
             }
-            if head.sameTranscript { return }
+            if head.sameTranscript { return nil }
             guard head.runID == expectedRunID else {
                 throw HolosError.invalidInput("The speaker labels changed while they were being repaired.")
             }
             let snapshot = try SpeakerSessionSnapshot.load(session: session)
             guard snapshot.transcript.id == expectedTranscriptID,
                   let plan = try SpeakerTranscriptRetarget.plan(session: session, from: snapshot, to: current,
-                                                               now: now) else {
+                                                               move: edited.move, now: now) else {
                 throw HolosError.invalidInput("The speaker labels cannot be repaired on the edited words.")
             }
             try Task.checkCancellation()
             try SpeakerTranscriptRetarget.stage(plan, session: session)
             try SpeakerTranscriptRetarget.publishHead(plan, session: session, now: now)
+            return plan.run.id
         }
     }
 
@@ -150,7 +158,8 @@ enum SessionWordEdit {
                                   now: Date = Date()) async throws -> Bool {
         guard let state = try SpeakerAnalysis.headState(session: session, transcript: transcript),
               !state.sameTranscript, let run = state.run,
-              try editedBase(of: transcript.id, session: session) == run.transcriptID else { return false }
+              let edited = try editedEvent(of: transcript.id, session: session),
+              edited.base == run.transcriptID else { return false }
         let archive = try SessionArchive.openForMaintenance(at: session, lease: lease)
         do {
             let repaired = try await SessionArchive.withSpeakerLockAsync(at: session) { () async throws -> Bool in
@@ -163,7 +172,7 @@ enum SessionWordEdit {
                 let snapshot = try SpeakerSessionSnapshot.load(session: session)
                 guard snapshot.transcript.id == run.transcriptID,
                       let plan = try SpeakerTranscriptRetarget.plan(session: session, from: snapshot, to: transcript,
-                                                                   now: now) else {
+                                                                   move: edited.move, now: now) else {
                     throw HolosError.invalidInput("The speaker labels cannot be kept on the words edited in Review.")
                 }
                 try Task.checkCancellation()
@@ -179,12 +188,28 @@ enum SessionWordEdit {
         }
     }
 
-    /// The transcript `transcriptID` was made from by its latest Review edit or undo (`transcriptEdited`), nil when it
-    /// was not made in Review.
-    static func editedBase(of transcriptID: String, session: URL) throws -> String? {
-        try SessionArchive.readEvents(at: session).events.last {
+    /// The latest Review edit or undo that made `transcriptID` (`transcriptEdited`), nil when it was not made in
+    /// Review: the transcript it was made from, and its word move (nil in a journal written before moves were
+    /// recorded: the labels are then mapped by time).
+    static func editedEvent(of transcriptID: String, session: URL) throws -> (base: String, move: ReviewWordMove?)? {
+        guard let details = try SessionArchive.readEvents(at: session).events.last(where: {
             $0.kind == MeetingEventKind.transcriptEdited && $0.details["transcriptID"] == transcriptID
-        }?.details["base"]
+        })?.details, let base = details["base"] else { return nil }
+        func range(_ key: String) -> Range<Int>? {
+            let bounds = (details[key] ?? "").split(separator: "-").compactMap { Int($0) }
+            guard bounds.count == 2, bounds[0] >= 0, bounds[0] <= bounds[1] else { return nil }
+            return bounds[0]..<bounds[1]
+        }
+        guard let segment = details["segment"], let replaced = range("replaced"),
+              let replacement = range("replacement") else { return (base, nil) }
+        return (base, ReviewWordMove(segmentID: segment, replaced: replaced, replacement: replacement))
+    }
+
+    /// A word move as `transcriptEdited` details record it.
+    private static func details(of move: ReviewWordMove) -> [String: String] {
+        ["segment": move.segmentID,
+         "replaced": "\(move.replaced.lowerBound)-\(move.replaced.upperBound)",
+         "replacement": "\(move.replacement.lowerBound)-\(move.replacement.upperBound)"]
     }
 
     // MARK: - Publication

@@ -159,6 +159,21 @@ struct TurnListWordEditTests {
         #expect(list.wordEdit?.words.map(\.text) == ["gamma"])
     }
 
+    /// The transcript changed after labelling (`canEditWords` off): no "Edit" action is offered, and one VoiceOver
+    /// still holds from before reports that nothing happened.
+    @Test func voiceOverOffersNoEditWhileWordsCannotBeEdited() throws {
+        let (list, _) = editingList()
+        list.onRequestEditing = { list.editingWords = true }
+        let text = try TurnListViewTests.cell(list, row: 0).bodyText
+        let held = try #require(text.accessibilityCustomActions()?.first { $0.name == "Edit “beta”" })
+        list.canEditWords = false
+        let actions = text.accessibilityCustomActions() ?? []
+        #expect(!actions.contains { $0.name.hasPrefix("Edit “") })
+        #expect(actions.contains { $0.name.hasPrefix("Play from “beta”") }, "Playing still works.")
+        #expect(held.handler?() == false)
+        #expect(list.wordEdit == nil && !list.editingWords)
+    }
+
     /// The list shown with `words` and the review's word `moves`.
     private func update(_ list: TurnListView, words: [String: [ReviewWord]], moves: [ReviewWordMove]) {
         list.update(paragraphs: ReviewParagraphs.group(TurnListViewTests.turns),

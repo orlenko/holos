@@ -330,6 +330,140 @@ func aSaveThatFailsAfterTheTranscriptBecameCurrentIsAPublicationStillOwed() asyn
     #expect(!snapshot.transcriptChanged && snapshot.transcript.segments[0].text == "ask Claude now")
 }
 
+/// One segment shared by two speakers' turns: T1 (system:S1) has words `0..<split`, T2 (system:S2) the rest; `times`
+/// are each word's start and end.
+private func wordEditSharedSession(in temp: TemporaryDirectory, _ words: [String], times: [(Double, Double)],
+                                   split: Int) async throws -> URL {
+    var segment = SessionFixtures.segment(words, track: "system", start: 0, wordSeconds: 1)
+    for (index, time) in times.enumerated() {
+        segment.words[index].start = time.0
+        segment.words[index].end = time.1
+    }
+    segment.start = times.first?.0 ?? 0
+    segment.end = times.last?.1 ?? 0
+    let transcript = SessionFixtures.transcript([segment])
+    let session = try await SessionFixtures.makeSession(in: temp.url, source: .system, audioSeconds: ["system": 5],
+                                                        mode: .call, transcript: transcript)
+    let manifest = try SessionArchive.readManifest(at: session)
+    let speakers = ["system:S1", "system:S2"].enumerated().map {
+        SessionSpeaker(id: $1, ordinal: $0 + 1, provenance: .diarizer, clusterIDs: [$1])
+    }
+    func turn(_ id: String, _ speaker: String, _ words: Range<Int>) -> SpeakerTurn {
+        SpeakerTurn(id: id, track: "system", start: times[words.lowerBound].0, end: times[words.upperBound - 1].1,
+                    speakerID: speaker, clusterID: speaker,
+                    spans: [WordSpan(segmentID: segment.id, first: words.lowerBound, end: words.upperBound)],
+                    overlap: false, otherClusters: [], assignmentScore: 1, timing: .measured)
+    }
+    let run = DiarizationRun(sessionID: manifest.id, transcriptID: transcript.id, engine: .fake,
+                             alignment: AlignmentInfo(version: 1, parameters: .v1),
+                             tracks: [TrackDiarization(track: "system", policy: .diarized, clusters: speakers.map {
+                                 ClusterSummary(clusterID: $0.id, track: "system", speechSeconds: 2)
+                             })],
+                             speakers: speakers,
+                             turns: [turn("T1", "system:S1", 0..<split), turn("T2", "system:S2", split..<words.count)])
+    try SessionArchive.withSpeakerLock(at: session) {
+        try SessionSpeakerStore.writeRun(run, session: session)
+        try SessionSpeakerStore.writeHead(SpeakerHead(runID: run.id), session: session)
+    }
+    return session
+}
+
+/// The head run's word spans, by turn ID.
+private func wordEditHeadSpans(_ session: URL) throws -> [String: [WordSpan]] {
+    let runID = try #require(try SessionSpeakerStore.readHead(session: session)?.runID)
+    let run = try SessionSpeakerStore.readRun(id: runID, session: session)
+    return Dictionary(uniqueKeysWithValues: run.turns.map { ($0.id, $0.spans) })
+}
+
+@Test(.timeLimit(.minutes(1))) @MainActor
+func anEditKeepsEveryWordsOwnerWhenRecognizerTimingsOverlapAcrossSpeakers() async throws {
+    let temp = try TemporaryDirectory("review")
+    defer { temp.remove() }
+    // S1's "there" (0.6–1.2 s) overlaps S2's "yes" (1.1–1.7 s).
+    let session = try await wordEditSharedSession(in: temp, ["hello", "there", "yes", "indeed"],
+                                                  times: [(0, 0.6), (0.6, 1.2), (1.1, 1.7), (1.7, 2.3)], split: 2)
+    let segmentID = try wordEditCurrent(session).segments[0].id
+    func spans(_ t1: Range<Int>, _ t2: Range<Int>) -> [String: [WordSpan]] {
+        ["T1": [WordSpan(segmentID: segmentID, first: t1.lowerBound, end: t1.upperBound)],
+         "T2": [WordSpan(segmentID: segmentID, first: t2.lowerBound, end: t2.upperBound)]]
+    }
+    let review = try await wordEditOpen(session)
+    func shown() -> [[String]] { ["T1", "T2"].map { review.words(of: $0).map(\.text) } }
+
+    try await review.editWords(wordEditRefs(review, "T2", [0]), to: "yeah")
+    #expect(shown() == [["hello", "there"], ["yeah", "indeed"]])
+    #expect(try wordEditHeadSpans(session) == spans(0..<2, 2..<4))
+    // More words: they all go to the turn of the word they replace; the words after keep theirs.
+    try await review.editWords(wordEditRefs(review, "T2", [0]), to: "yeah right")
+    #expect(shown() == [["hello", "there"], ["yeah", "right", "indeed"]])
+    #expect(try wordEditHeadSpans(session) == spans(0..<2, 2..<5))
+    // A deletion beside the other speaker's word merges into its own turn's neighbour.
+    try await review.editWords(wordEditRefs(review, "T1", [1]), to: "")
+    #expect(shown() == [["hello"], ["yeah", "right", "indeed"]])
+    #expect(try wordEditHeadSpans(session) == spans(0..<1, 1..<4))
+
+    // Each undo maps the words back the same way.
+    try await review.undo()
+    #expect(shown() == [["hello", "there"], ["yeah", "right", "indeed"]])
+    #expect(try wordEditHeadSpans(session) == spans(0..<2, 2..<5))
+    try await review.undo()
+    try await review.undo()
+    #expect(shown() == [["hello", "there"], ["yes", "indeed"]])
+    #expect(try wordEditHeadSpans(session) == spans(0..<2, 2..<4))
+    await review.close()
+
+    // A head still owed after the transcript became current is repaired with the move the journal recorded.
+    let original = try wordEditCurrent(session)
+    let runID = try #require(try SessionSpeakerStore.readHead(session: session)?.runID)
+    struct DirectorySync: Error {}
+    await #expect(throws: SessionWordEdit.IncompletePublication.self) {
+        _ = try await SessionWordEdit.$afterSave.withValue({ throw DirectorySync() }) {
+            try await SessionWordEdit.run(
+                session: session,
+                request: TranscriptWordEdit.Request(segmentID: segmentID, first: 2, end: 3, text: "yeah"),
+                expectedTranscriptID: original.id, expectedRunID: runID)
+        }
+    }
+    try await SessionWordEdit.repairCurrentHead(session: session, expectedTranscriptID: original.id,
+                                                expectedRunID: runID)
+    #expect(try wordEditCurrent(session).segments[0].text == "hello there yeah indeed")
+    #expect(try wordEditHeadSpans(session) == spans(0..<2, 2..<4))
+}
+
+@Test(.timeLimit(.minutes(1))) @MainActor
+func aRelabelSavedBeforeAnEditsRereadIsAChangeMadeElsewhere() async throws {
+    let temp = try TemporaryDirectory("review")
+    defer { temp.remove() }
+    let session = try await wordEditSession(in: temp, [
+        WordEditTurn(speaker: "system:S1", start: 0, words: ["ask", "cloud", "now"]),
+    ])
+    let review = try await wordEditOpen(session)
+    let original = try #require(review.snapshot.run?.id)
+    try await review.apply([.rename(speakerID: "system:S1", name: "Ann")])
+    // Another process relabels the edited transcript after the edit published its labels, before the window rereads.
+    var relabelled: String?
+    review.beforeWordChangeReread = {
+        let head = try #require(try SessionSpeakerStore.readHead(session: session)?.runID)
+        var run = try SessionSpeakerStore.readRun(id: head, session: session)
+        run.id = UUID().uuidString
+        relabelled = run.id
+        try SessionArchive.withSpeakerLock(at: session) {
+            try SessionSpeakerStore.writeRun(run, session: session)
+            try SessionSpeakerStore.writeHead(SpeakerHead(runID: run.id), session: session)
+        }
+    }
+    try await review.editWords(wordEditRefs(review, "T1", [1]), to: "Claude")
+    review.beforeWordChangeReread = nil
+    let relabel = try #require(relabelled)
+    #expect(review.snapshot.run?.id == relabel)
+    #expect(!review.keepsTurns(of: original, in: relabel), "The relabel is not the edit's run.")
+    // The labels changed elsewhere: the rename's undo, made on the old labels, is gone; the edit's own stays.
+    try await review.undo()
+    #expect(try wordEditCurrent(session).segments[0].text == "ask cloud now")
+    #expect(!review.canUndo)
+    await review.close()
+}
+
 @Test(.timeLimit(.minutes(1))) @MainActor
 func anEditWhoseLabelsCannotBeRereadCanStillBeUndone() async throws {
     let temp = try TemporaryDirectory("review")
