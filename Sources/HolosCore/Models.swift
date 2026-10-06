@@ -91,9 +91,15 @@ public struct TranscriptWordFix: Codable, Sendable, Equatable {
     /// older fixes (and on reverts and live corrections, which occupy their own words), whose count is `heard`'s
     /// whitespace-separated tokens.
     public var heardWords: Int?
+    /// A Review edit that deleted words (merged into a neighbour, so `heard` holds the deleted words with it), or that
+    /// took in such a deletion: it teaches no correction (it would make dictation drop a word everywhere). Nil
+    /// otherwise, so other fixes encode as before.
+    public var deleted: Bool?
 
-    public init(first: Int, end: Int, heard: String, kind: TranscriptWordFixKind, heardWords: Int? = nil) {
+    public init(first: Int, end: Int, heard: String, kind: TranscriptWordFixKind, heardWords: Int? = nil,
+                deleted: Bool? = nil) {
         self.first = first; self.end = end; self.heard = heard; self.kind = kind; self.heardWords = heardWords
+        self.deleted = deleted
     }
 }
 

@@ -401,7 +401,7 @@ enum SpeakerTranscriptRetarget {
                 text += words.map { _ in "word" }
                 fixes += (piece.fixes ?? []).map {
                     TranscriptWordFix(first: $0.first + offset, end: $0.end + offset,
-                                      heard: $0.heard, kind: $0.kind, heardWords: $0.heardWords)
+                                      heard: $0.heard, kind: $0.kind, heardWords: $0.heardWords, deleted: $0.deleted)
                 }
                 offset += words.count
             }

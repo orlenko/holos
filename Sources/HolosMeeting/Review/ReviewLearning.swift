@@ -9,23 +9,48 @@ import HolosStorage
 /// has taught (`review-learned.json`), so a close teaches only what is new: a correction deleted or changed in
 /// Corrections is not taught again, and one whose write failed is taught at the next close.
 enum ReviewLearning {
-    /// review-learned.json: the corrections this meeting's review closes taught (their write succeeded).
+    /// review-learned.json, what this meeting's review closes taught. `corrections`: confirmed, the meeting's own (a
+    /// close wrote them into the list); one deleted or changed in Corrections since stays so. `pending`: being written
+    /// by a close (recorded before the list, so a failure is repaired by the next close: one the list holds is then
+    /// confirmed, one it does not is dropped and taught again as new). Older records have no `pending`.
     struct Taught: Codable, Equatable {
         var version: Int
         var corrections: [Correction]
+        var pending: [Correction]? = nil
     }
 
-    /// What this meeting taught already; empty when nothing was. Throws when the record cannot be read (damaged, or
-    /// written by a newer Voice is Local): nothing is taught then, rather than teaching again what was deleted.
-    static func taught(session: URL) throws -> [Correction] {
+    /// The record; empty when nothing was taught. Throws when it cannot be read (damaged, or written by a newer Voice
+    /// is Local): nothing is taught then, rather than teaching again what was deleted.
+    static func record(session: URL) throws -> Taught {
         guard let data = try AtomicFile.readIfPresent(SessionPaths.reviewLearned(session), maxBytes: 4 << 20) else {
-            return []
+            return Taught(version: 1, corrections: [])
         }
         let record = try JSONDecoder().decode(Taught.self, from: data)
         guard record.version <= 1 else {
             throw HolosError.unavailable("What this meeting taught was recorded by a newer Voice is Local.")
         }
-        return record.corrections
+        return record
+    }
+
+    /// Writes the record (atomically); the caller holds the meeting's speaker lock.
+    static func writeRecord(_ record: Taught, session: URL) throws {
+        try AtomicFile.writeJSON(record, to: SessionPaths.reviewLearned(session))
+    }
+
+    /// What this meeting taught and owns (confirmed); empty when nothing was.
+    static func taught(session: URL) throws -> [Correction] {
+        try record(session: session).corrections
+    }
+
+    /// `base` with `adding`, one value per heard phrase (a later lesson replaces the earlier one for its phrase).
+    static func merged(_ base: [Correction], _ adding: [Correction]) -> [Correction] {
+        var merged = base
+        for correction in untaught(adding, taught: base) {
+            let key = CorrectionList.key(correction.heard)
+            merged.removeAll { CorrectionList.key($0.heard) == key }
+            merged.append(correction)
+        }
+        return merged
     }
 
     /// Adds `corrections` to what this meeting taught, one value per heard phrase (a later lesson replaces the earlier
@@ -37,13 +62,9 @@ enum ReviewLearning {
 
     /// `recordTaught`, for a caller already holding the meeting's speaker lock (close-time learning's one step).
     static func mergeTaught(adding corrections: [Correction], session: URL) throws {
-        var merged = try Self.taught(session: session)
-        for correction in untaught(corrections, taught: merged) {
-            let key = CorrectionList.key(correction.heard)
-            merged.removeAll { CorrectionList.key($0.heard) == key }
-            merged.append(correction)
-        }
-        try AtomicFile.writeJSON(Taught(version: 1, corrections: merged), to: SessionPaths.reviewLearned(session))
+        var current = try record(session: session)
+        current.corrections = merged(current.corrections, corrections)
+        try writeRecord(current, session: session)
     }
 
     /// `corrections` this meeting has not taught: none with the same heard phrase (`CorrectionList.key`) and meaning.
@@ -77,6 +98,8 @@ enum ReviewLearning {
             /// recognizer did not time included): from the unfixed segment for an automatic fix; else its `heard`
             /// when its shown text is just its words; nil when that cannot be told (no context then).
             func recognized(_ fix: TranscriptWordFix, shown: String) -> String? {
+                // A deletion's `heard` holds the deleted words too: beside an edit, it would teach dropping them.
+                if fix.deleted == true { return nil }
                 if fix.kind == .correction || fix.kind == .term, let baseSegment, let baseWords, let bounds,
                    bounds[fix.first] >= 0, bounds[fix.end] >= 0 {
                     let baseText = Array(baseSegment.text.utf16)
@@ -96,9 +119,12 @@ enum ReviewLearning {
             }
             // Only words edited together that one shown turn still holds: a relabel may since have put them in two
             // turns, and a correction learned from them would mix two speakers' words.
+            // A deletion (or an edit that took one in) teaches nothing: its `heard` holds the deleted words, and
+            // learning it would make dictation drop them everywhere ("um cloud" → "Claude"). It is left out before
+            // edits side by side are joined, so an edit beside it is learned on its own.
             let fixes = (segment.fixes ?? []).filter { fix in
-                fix.kind == .reviewEdit && fix.first >= 0 && fix.first < fix.end && fix.end <= words.count
-                    && turn(holding: fix.first..<fix.end) != nil
+                fix.kind == .reviewEdit && fix.deleted != true && fix.first >= 0 && fix.first < fix.end
+                    && fix.end <= words.count && turn(holding: fix.first..<fix.end) != nil
             }.sorted { $0.first < $1.first }
             // Edits side by side in one turn ("bull" → "pull", then "requested" → "request") are one span: learned
             // apart, each would take the other's corrected word as what was heard beside it ("pull requested"), and

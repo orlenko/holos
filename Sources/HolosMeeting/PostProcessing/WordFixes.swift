@@ -30,11 +30,13 @@ public enum WordFixes {
         /// The timed words of `text` (offsets from its start), used as they are instead of splitting `text` at its
         /// spaces: a revert restores the recognizer's own words ("你好" and "世界" in "你好世界").
         public var words: [TimedWord]?
+        /// `TranscriptWordFix.deleted` for the mark.
+        public var deleted: Bool?
 
         public init(range: Range<Int>, text: String, kind: TranscriptWordFixKind, heard: String? = nil,
-                    heardWords: Int? = nil, words: [TimedWord]? = nil) {
+                    heardWords: Int? = nil, words: [TimedWord]? = nil, deleted: Bool? = nil) {
             self.range = range; self.text = text; self.kind = kind; self.heard = heard; self.heardWords = heardWords
-            self.words = words
+            self.words = words; self.deleted = deleted
         }
     }
 
@@ -53,6 +55,8 @@ public enum WordFixes {
             public var kind: TranscriptWordFixKind
             /// `TranscriptWordFix.heardWords`.
             public var heardWords: Int? = nil
+            /// `TranscriptWordFix.deleted`.
+            public var deleted: Bool? = nil
         }
 
         public init(text: String, words: [TimedWord], marks: [Mark] = []) {
@@ -79,7 +83,8 @@ public enum WordFixes {
                                                                textLength: segment.text.utf16.count) else {
                         return nil
                     }
-                    marks.append(Mark(range: range, heard: fix.heard, kind: fix.kind, heardWords: fix.heardWords))
+                    marks.append(Mark(range: range, heard: fix.heard, kind: fix.kind, heardWords: fix.heardWords,
+                                      deleted: fix.deleted))
                 }
             }
         }
@@ -152,7 +157,8 @@ public enum WordFixes {
             }
             while let mark = existing.first, mark.range.lowerBound < end {
                 marks.append(Working.Mark(range: (mark.range.lowerBound + shift)..<(mark.range.upperBound + shift),
-                                          heard: mark.heard, kind: mark.kind, heardWords: mark.heardWords))
+                                          heard: mark.heard, kind: mark.kind, heardWords: mark.heardWords,
+                                          deleted: mark.deleted))
                 existing = existing.dropFirst()
             }
             cursor = end
@@ -175,7 +181,8 @@ public enum WordFixes {
             }
             if !replacement.text.isEmpty {
                 marks.append(Working.Mark(range: markStart..<(markStart + replacement.text.utf16.count), heard: heard,
-                                          kind: replacement.kind, heardWords: heardWords))
+                                          kind: replacement.kind, heardWords: heardWords,
+                                          deleted: replacement.deleted))
             }
             if timed, let given = replacement.words, leading.isEmpty, trailing.isEmpty {
                 // The words are given (a revert's, the recognizer's own): never split again at the spaces.
@@ -232,7 +239,7 @@ public enum WordFixes {
             }
             guard let first = touched.first, let last = touched.last else { return nil }
             return TranscriptWordFix(first: first, end: last + 1, heard: mark.heard, kind: mark.kind,
-                                     heardWords: mark.heardWords)
+                                     heardWords: mark.heardWords, deleted: mark.deleted)
         }
         fixed.fixes = fixes.isEmpty ? nil : fixes
         return fixed
@@ -271,7 +278,8 @@ public enum WordFixes {
             guard index != targetIndex,
                   let range = characterRange(of: fix, words: currentWords,
                                              textLength: segment.text.utf16.count) else { return nil }
-            return Working.Mark(range: range, heard: fix.heard, kind: fix.kind, heardWords: fix.heardWords)
+            return Working.Mark(range: range, heard: fix.heard, kind: fix.kind, heardWords: fix.heardWords,
+                                deleted: fix.deleted)
         }
         // The recognizer's own words come back, with their times and boundaries, never split again at the spaces of
         // the text ("你好世界" is the two words "你好" and "世界" again, as in the base).

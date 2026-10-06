@@ -108,10 +108,20 @@ public enum TranscriptWordEdit {
         var upper = request.end
         let deletion = text.isEmpty
         if deletion {
-            // The deleted words go into a neighbour of the same turn, which keeps their time and provenance.
-            if upper < words.count, editable(upper) {
+            // The deleted words go into a neighbour of the same turn, which keeps their time and provenance; a word
+            // corrected while recording cannot take them (it cannot be edited here), so the other one does.
+            let liveCorrected = { (word: Int) in
+                fixes.contains { $0.kind == .liveCorrection && $0.first <= word && word < $0.end }
+            }
+            let next = upper < words.count && editable(upper)
+            let previous = lower > 0 && editable(lower - 1)
+            if next, !liveCorrected(upper) {
                 upper += 1
-            } else if lower > 0, editable(lower - 1) {
+            } else if previous, !liveCorrected(lower - 1) {
+                lower -= 1
+            } else if next {
+                upper += 1
+            } else if previous {
                 lower -= 1
             } else if words.count == request.end - request.first {
                 throw HolosError.invalidInput("A segment cannot lose all its words yet; leave at least one word.")
@@ -206,9 +216,12 @@ public enum TranscriptWordEdit {
             throw HolosError.invalidInput("That segment's word positions cannot be edited safely.")
         }
 
+        // A deletion teaches nothing (its `heard` holds the deleted words with the neighbour they merged into), nor
+        // does an edit taking in one: the deleted words' heard text cannot be told apart from the rest.
+        let deleted = deletion || touched.contains { $0.kind == .reviewEdit && $0.deleted == true } ? true : nil
         working.marks.removeAll { $0.range.overlaps(span) }
         let edited = WordFixes.applying([.init(range: span, text: meant, kind: .reviewEdit, heard: heard,
-                                               heardWords: heardWords)], to: working)
+                                               heardWords: heardWords, deleted: deleted)], to: working)
         guard edited.text != working.text || edited.marks != working.marks else { return nil }
 
         var result = current
@@ -237,7 +250,7 @@ public enum TranscriptWordEdit {
                 throw HolosError.invalidInput("The transcript the words were fixed from cannot be read.")
             }
             let edited = try editingBase(base, segment: segment, words: words, span: lower..<upper, meant: meant,
-                                         heard: heard, heardWords: heardWords, now: now)
+                                         heard: heard, heardWords: heardWords, deleted: deleted, now: now)
             newBase = edited
             result.fixedFrom = edited.id
             result.liveCorrectedFrom = edited.liveCorrectedFrom
@@ -339,7 +352,7 @@ public enum TranscriptWordEdit {
 
     /// `base` with the same edit, made on the words the current segment's span stands for there.
     private static func editingBase(_ base: Transcript, segment: TranscriptSegment, words: [EffectiveWord],
-                                    span: Range<Int>, meant: String, heard: String, heardWords: Int?,
+                                    span: Range<Int>, meant: String, heard: String, heardWords: Int?, deleted: Bool?,
                                     now: Date) throws -> Transcript {
         guard let index = base.segments.firstIndex(where: { $0.id == segment.id }),
               let bounds = baseBounds(fixes: segment.fixes ?? [], current: words,
@@ -367,7 +380,7 @@ public enum TranscriptWordEdit {
         }
         working.marks.removeAll { $0.range.overlaps(range) }
         let edited = WordFixes.applying([.init(range: range, text: meant, kind: .reviewEdit, heard: heard,
-                                               heardWords: heardWords)], to: working)
+                                               heardWords: heardWords, deleted: deleted)], to: working)
         var result = base
         result.id = UUID().uuidString
         result.createdAt = now

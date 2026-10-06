@@ -7954,12 +7954,20 @@ shown, Otter-style.
     meeting's next review close makes it again, since the edits stay in the transcript; a
     record that cannot be read (damaged, or newer) teaches nothing rather than teach again
     what was deleted;
-  - the write is one step under the meeting's speaker lock, off the main actor: the current
-    transcript and the head run must still be the ones learned from (a replacement or a
-    relabel since, by another process, teaches nothing at this close; logged, and the next
-    close learns from them as they are then), then corrections.json is written under its own
-    lock (taken inside the speaker lock; nothing takes them the other way round), then the
-    record; the app takes the list again afterwards;
+  - the write is one step under the meeting's speaker lock, off the main actor. The labels
+    are read again in it (transcript, head run, speaker-change journal) and must give the
+    edits the corrections were made from (the corrections are those edits taught by the app's
+    rule, which needs the main actor's spell checker, so the edits, not the rule, are derived
+    again): a replacement, a relabel, or a speaker change (a split) since teaches nothing at
+    this close (logged; the next close learns from the labels as they are then). Then, in
+    order: the lessons are recorded as *pending*, corrections.json is written under its own
+    lock (taken inside the speaker lock; nothing takes them the other way round), and the
+    lessons are *confirmed*. The app takes the list again afterwards;
+  - `review-learned.json` holds two states. *Confirmed*: the meeting's own (a close put them
+    in the list); one deleted or changed in Corrections stays so, and a later edit of the
+    meeting may replace it. *Pending*: being written; at the next close one the list holds is
+    confirmed, one it does not hold is dropped and taught again as new. So a failure between
+    the writes is repaired, never leaves a correction no record owns, nor one wrongly owned;
   - nothing is learned from a deletion, a punctuation-only change, or a case-only change
     (decided on the edited words alone: a context word's own fix never makes "Hello" →
     "Hello," teach "Hello cloud" → "Hello, Claude"), unless the case change makes a proper noun (a word whose lowercase is not a dictionary

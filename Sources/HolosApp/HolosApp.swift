@@ -1279,16 +1279,13 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
                                                   heardAfter: edit.heardAfter, isDictionaryWord: dictionaryWord)
     }
 
-    /// How a review's close writes what a meeting's word edits teach into the list Corrections shows
-    /// (`ReviewSession.correctionsWriter`): `CorrectionList.learnReplacingTaught` on corrections.json under its file
-    /// lock, off the main actor (the review runs it inside the meeting's speaker lock). Nil while the list cannot be
-    /// written (corrections.json unreadable).
-    func reviewCorrectionsWriter() -> ReviewSession.CorrectionsWrite? {
+    /// How a review's close changes the list Corrections shows (`ReviewSession.correctionsWriter`): corrections.json
+    /// loaded, changed, and saved under its file lock, off the main actor (the review runs it inside the meeting's
+    /// speaker lock). Nil while the list cannot be written (corrections.json unreadable).
+    func reviewCorrectionsWriter() -> ReviewSession.CorrectionsUpdate? {
         guard correctionsWritable else { return nil }
         let url = CorrectionList.defaultURL
-        return { learned, taught in
-            try CorrectionList.update(at: url) { $0.learnReplacingTaught(learned, taught: taught) }.result
-        }
+        return { change in _ = try CorrectionList.update(at: url) { try change(&$0) } }
     }
 
     /// A review's close wrote corrections.json: the list is taken again.

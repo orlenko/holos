@@ -125,22 +125,42 @@ private func editRanged(_ text: String, _ ranges: [(Int, Int)], id: String = "S1
     #expect(segment.words.map(\.text) == ["I", "think"])
     #expect(segment.words[1].start == 1 && segment.words[1].end == 2.8, "The deleted word's time goes to its neighbour.")
     #expect(segment.fixes == [TranscriptWordFix(first: 1, end: 2, heard: "um think", kind: .reviewEdit,
-                                                heardWords: 2)])
+                                                heardWords: 2, deleted: true)], "A deletion, which teaches nothing.")
     #expect(next.deletion && next.heard == "um think" && next.meant == "think")
 
     let last = try #require(try TranscriptWordEdit.editing(editRequest(2, 3, " "), in: current, base: nil))
     #expect(last.transcript.segments[0].text == "I um")
     #expect(last.transcript.segments[0].fixes == [TranscriptWordFix(first: 1, end: 2, heard: "um think",
-                                                                    kind: .reviewEdit, heardWords: 2)])
+                                                                    kind: .reviewEdit, heardWords: 2, deleted: true)])
     // Not past a word another turn shows: the previous word is taken instead.
     let fenced = try #require(try TranscriptWordEdit.editing(editRequest(1, 2, ""), in: current, base: nil,
                                                               editable: { $0 < 2 }))
     #expect(fenced.transcript.segments[0].text == "I think")
     #expect(fenced.transcript.segments[0].fixes == [TranscriptWordFix(first: 0, end: 1, heard: "I um",
-                                                                      kind: .reviewEdit, heardWords: 2)])
+                                                                      kind: .reviewEdit, heardWords: 2,
+                                                                      deleted: true)])
     // A segment never loses all its words.
     let lone = editTranscript([editSegment(["um"])])
     #expect(throws: HolosError.self) { try TranscriptWordEdit.editing(editRequest(0, 1, ""), in: lone, base: nil) }
+}
+
+@Test func aDeletionBesideAWordCorrectedWhileRecordingGoesIntoTheOtherNeighbour() throws {
+    // "think" was corrected live (it cannot be edited here): "um" goes into "I" instead.
+    var segment = editSegment(["I", "um", "think"])
+    segment.fixes = [TranscriptWordFix(first: 2, end: 3, heard: "thing", kind: .liveCorrection, heardWords: 1)]
+    let deleted = try #require(try TranscriptWordEdit.editing(editRequest(1, 2, ""), in: editTranscript([segment]),
+                                                               base: nil))
+    #expect(deleted.transcript.segments[0].text == "I think")
+    #expect(deleted.heard == "I um" && deleted.meant == "I")
+    #expect(deleted.transcript.segments[0].fixes?.contains { $0.kind == .liveCorrection && $0.heard == "thing" } == true,
+            "The live correction stays.")
+    // With no other neighbour, it is refused, saying why.
+    var alone = editSegment(["um", "think"])
+    alone.fixes = [TranscriptWordFix(first: 1, end: 2, heard: "thing", kind: .liveCorrection, heardWords: 1)]
+    let refusal = #expect(throws: HolosError.self) {
+        try TranscriptWordEdit.editing(editRequest(0, 1, ""), in: editTranscript([alone]), base: nil)
+    }
+    #expect(refusal?.localizedDescription == TranscriptWordEdit.liveCorrected.localizedDescription)
 }
 
 @Test func anEditOfAFixedTranscriptIsMadeInItsBaseTooSoWordFixesKeepIt() async throws {
@@ -453,7 +473,8 @@ private let editEchoMask: AcousticEchoMask = {
     let deleted = try #require(try TranscriptWordEdit.editing(editRequest(1, 2, "", segment: "M"), in: transcript,
                                                                base: nil, editable: editable))
     #expect(deleted.transcript.segments[0].fixes == [TranscriptWordFix(first: 0, end: 1, heard: "Mw0 Mw1",
-                                                                       kind: .reviewEdit, heardWords: 2)])
+                                                                       kind: .reviewEdit, heardWords: 2,
+                                                                       deleted: true)])
 }
 
 @Test func anEditThatMatchesTheCallIsNotDroppedAsTextEchoWhenSpeakersAreLabelledAgain() throws {
