@@ -590,14 +590,15 @@ final class TurnListView: NSView, NSTableViewDataSource, NSTableViewDelegate {
 
     /// Tints the paragraph playing and its word being spoken at `time`: the paragraph of `turnID` (the turn being
     /// spoken; none when it is not shown), or in a pause, the paragraph whose span holds `time` (so a pause inside a
-    /// paragraph does not untint it). Nothing in silence between paragraphs. True when the paragraph shown playing
-    /// changed.
+    /// paragraph does not untint it). Nothing in silence between paragraphs. True when the paragraph or the word
+    /// shown playing changed (a seek within a paragraph taller than the list moves only the word).
     @discardableResult
     func showPlaying(turnID: String?, at time: Double) -> Bool {
         // A turn spoken that is not shown (search left it out) tints no row, not one it overlaps.
         let row = turnID.map { rowOf[$0] } ?? ReviewParagraphs.index(at: time, in: paragraphs)
         let paragraphID = row.map { paragraphs[$0].id }
         let changed = paragraphID != playingParagraphID
+        let previousWord = playingWord
         if changed {
             if let old = playingParagraphID, let oldRow = rowOf[old] { cell(forRow: oldRow)?.setPlaying(false, word: nil) }
             playingParagraphID = paragraphID
@@ -609,7 +610,7 @@ final class TurnListView: NSView, NSTableViewDataSource, NSTableViewDelegate {
                                                    starts: paragraph.turns.map { words($0).map(\.start) })
         // Not on screen: its word is shown when its row is made.
         cell(forRow: row)?.setPlaying(true, word: playingWord)
-        return changed
+        return changed || playingWord != previousWord
     }
 
     /// Nothing is tinted (playback has not started, or is off).

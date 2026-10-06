@@ -512,7 +512,8 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate {
             speakingLabel.toolTip = speaker.map { "Speaking now: \($0)" }
         }
         // Kept in view while playing, and when a seek while paused moved to another paragraph (also from a pause in
-        // one paragraph to a pause in another, where no turn is spoken at either end).
+        // one paragraph to a pause in another, where no turn is spoken at either end) or to another word of the same
+        // one (in a paragraph taller than the list, the list follows the word).
         let moved = turnList.showPlaying(turnID: turn?.id, at: time)
         if player.isPlaying || moved, follow.isFollowing(at: ProcessInfo.processInfo.systemUptime) {
             turnList.scrollToPlaying()

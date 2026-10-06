@@ -177,6 +177,30 @@ struct TurnListViewTests {
         #expect(list.table.visibleRect.intersects(list.table.rect(ofRow: 29)))
     }
 
+    @Test func aPausedSeekWithinATallParagraphReportsTheMoveAndFollowsTheWord() throws {
+        // One speaker's 150 turns, each half a second apart: one paragraph far taller than the list.
+        let list = Self.list()
+        let turns = (0..<150).map { Self.turn("T\($0)", "S1", Double($0) * 2, Double($0) * 2 + 1.5) }
+        let words = Dictionary(uniqueKeysWithValues: turns.map { turn in
+            (turn.id, (0..<5).map { Self.word(turn.id, $0, "\(turn.id)w\($0)", turn.start + Double($0) * 0.25) })
+        })
+        list.update(paragraphs: ReviewParagraphs.group(turns), speakers: [Self.speaker("S1", 1)], people: [],
+                    editable: true, text: { (words[$0.id] ?? []).map(\.text).joined(separator: " ") },
+                    words: { words[$0.id] ?? [] }, resolve: { $0 })
+        list.layoutSubtreeIfNeeded()
+        #expect(list.table.numberOfRows == 1)
+        #expect(list.table.rect(ofRow: 0).height > list.table.visibleRect.height)
+        #expect(list.showPlaying(turnID: "T0", at: 0.1))
+        list.scrollToPlaying()
+        #expect(!list.showPlaying(turnID: "T0", at: 0.15), "Same word: nothing moved.")
+        // A seek far down the same paragraph, while paused: only the word moved, and the list follows it.
+        #expect(list.showPlaying(turnID: "T140", at: 280.6))
+        list.scrollToPlaying()
+        let cell = try Self.cell(list, row: 0)
+        let word = try #require(cell.bodyText.rect(ofWord: 140 * 5 + 2))
+        #expect(list.table.visibleRect.intersects(list.table.convert(word, from: cell.bodyText)))
+    }
+
     // MARK: - Helpers
 
     static func turn(_ id: String, _ speaker: String?, _ start: Double, _ end: Double,
