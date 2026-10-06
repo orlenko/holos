@@ -277,4 +277,15 @@ enum SpeakerAnalysis {
     static func trackLabel(_ track: String) -> String {
         track == "system" ? "system audio" : track == "mic" ? "microphone" : track
     }
+
+    /// "microphone audio" or "system audio" (`trackLabel` already ends in "audio" for the system track, so "audio"
+    /// is not added after it), for text that names the track's audio.
+    static func trackAudioLabel(_ track: String) -> String {
+        track == "system" ? "system audio" : track == "mic" ? "microphone audio" : "\(track) audio"
+    }
+
+    /// The progress text while a track's audio is prepared (stage 4).
+    static func preparingMessage(_ track: String) -> String {
+        "Preparing \(trackAudioLabel(track))…"
+    }
 }

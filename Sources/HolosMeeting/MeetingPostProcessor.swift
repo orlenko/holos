@@ -615,7 +615,7 @@ public struct MeetingPostProcessor: Sendable {
                         recorder: StageRecorder) throws -> Result<[RenderedTrack], StageFailure> {
         let first = tracks.first ?? "mic"
         let started = recorder.begin(.render, track: first,
-                                     message: "Preparing \(SpeakerAnalysis.trackLabel(first)) audio…")
+                                     message: SpeakerAnalysis.preparingMessage(first))
         let seconds = tracks.reduce(0) { $0 + TrackRenderer.renderedSeconds(manifest: manifest, track: $1) }
         var allowed = options.stopReason != .diskLow
         if allowed {
@@ -634,7 +634,7 @@ public struct MeetingPostProcessor: Sendable {
         var rendered: [RenderedTrack] = []
         do {
             for track in tracks {
-                let message = "Preparing \(SpeakerAnalysis.trackLabel(track)) audio…"
+                let message = SpeakerAnalysis.preparingMessage(track)
                 recorder.progress(.render, track: track, fraction: 0, message: message)
                 let journal = recorder.journal
                 rendered.append(try TrackRenderer.render(

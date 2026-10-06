@@ -253,6 +253,30 @@ func lowFreeSpaceSkipsRender() async throws {
 }
 
 @Test(.timeLimit(.minutes(1)))
+func theProgressNamesEachTracksAudioOnce() async throws {
+    let temp = try TemporaryDirectory("postprocess")
+    defer { temp.remove() }
+    // Others in the room: both tracks are labelled, so both are prepared.
+    let (session, _) = try await postProcessorCall(in: temp.url, othersInRoom: true)
+    let reports = SharedValue<[PostProcessingProgress]>([])
+    let processor = postProcessor(postProcessorFake(["mic", "system"]))
+    let record = try await processor.run(session: session, lease: nil) { progress in
+        reports.update { $0.append(progress) }
+    }
+    #expect(record.state == .succeeded)
+    let preparing = Set(reports.value.filter { $0.stage == .render }.compactMap(\.message))
+    #expect(preparing == ["Preparing microphone audio…", "Preparing system audio…"])
+    // No progress text repeats a word ("system audio audio").
+    let doubled = try Regex(#"\b(\w+) \1\b"#).ignoresCase()
+    let messages = Set(reports.value.compactMap(\.message))
+    #expect(!messages.isEmpty)
+    #expect(messages.filter { $0.contains(doubled) }.isEmpty, "\(messages.sorted())")
+    #expect(SpeakerAnalysis.trackAudioLabel("mic") == "microphone audio")
+    #expect(SpeakerAnalysis.trackAudioLabel("system") == "system audio")
+    #expect(SpeakerAnalysis.trackAudioLabel("screen") == "screen audio")
+}
+
+@Test(.timeLimit(.minutes(1)))
 func callWithoutOthersInRoomMakesMicMe() async throws {
     let temp = try TemporaryDirectory("postprocess")
     defer { temp.remove() }
