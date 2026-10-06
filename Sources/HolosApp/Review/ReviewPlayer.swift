@@ -51,6 +51,9 @@ final class ReviewPlayer {
     private(set) var micVolume: ReviewMicVolume?
     /// Where the system track's audio is in the playback; nil without a system track (the echo is never muted then).
     private(set) var systemPlaced: [Range<Double>]?
+    /// Bumped by each microphone-volume refresh, each new player, and `invalidate`: a refresh applies its result
+    /// only while it is the newest and its item still plays.
+    private var micRefreshGeneration = 0
     /// Clips still to play after the current one, and where the current one stops.
     private var pendingClips: [ClosedRange<Double>] = []
     private var stopAt: Double?
@@ -165,6 +168,7 @@ final class ReviewPlayer {
         micTrackID = nil
         micVolume = nil
         systemPlaced = nil
+        micRefreshGeneration += 1
         if state == .ready { state = .loading }
     }
 
@@ -179,6 +183,18 @@ final class ReviewPlayer {
         item.audioMix = volume?.audioMix(track: micTrackID)
     }
 
+    /// Reads the microphone's volume again (`read`, off the main actor) and sets it with `setMicVolume`, unless a
+    /// newer refresh began, or the player was rebuilt or let go, while it read: an older read finishing last never
+    /// puts back a mix a newer one replaced.
+    func refreshMicVolume(_ read: @escaping @Sendable () async -> ReviewMicVolume?) async {
+        micRefreshGeneration += 1
+        let generation = micRefreshGeneration
+        guard let item = player?.currentItem else { return }
+        let volume = await read()
+        guard generation == micRefreshGeneration, player?.currentItem === item else { return }
+        setMicVolume(volume)
+    }
+
     // MARK: - Private
 
     /// Makes the player for a built playback (internal for tests, which install one without building it).
@@ -190,6 +206,7 @@ final class ReviewPlayer {
         micTrackID = playback.micTrackID
         micVolume = playback.micVolume
         systemPlaced = playback.systemPlaced
+        micRefreshGeneration += 1
         item.audioMix = playback.audioMix
         let player = AVPlayer(playerItem: item)
         player.actionAtItemEnd = .pause

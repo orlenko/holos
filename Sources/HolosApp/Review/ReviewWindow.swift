@@ -196,12 +196,13 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate {
         // Without system audio in the playback the echo is never muted.
         guard player.isReady, let systemPlaced = player.systemPlaced else { return }
         let session = review.session, manifest = review.snapshot.manifest, duration = player.duration
-        let volume = await Task.detached(priority: .utility) {
-            ReviewEchoMute.micVolume(session: session, manifest: manifest, duration: duration,
-                                     systemPlaced: systemPlaced)
-        }.value
-        guard !isClosing, player.isReady, manifest.chunks == loadedChunks else { return }
-        player.setMicVolume(volume)
+        // The player drops the result when a newer refresh or a rebuilt playback came meanwhile.
+        await player.refreshMicVolume {
+            await Task.detached(priority: .utility) {
+                ReviewEchoMute.micVolume(session: session, manifest: manifest, duration: duration,
+                                         systemPlaced: systemPlaced)
+            }.value
+        }
     }
 
     /// The window was closed and is still saving its changes (or has finished).
