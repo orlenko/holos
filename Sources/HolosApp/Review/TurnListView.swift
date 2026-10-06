@@ -61,12 +61,17 @@ enum AssignMenu {
 
 /// The turn table: the number keys go to the window, everything else to the table (the window takes Space and the
 /// playback keys before they get here). A plain single click on a word of a turn's text selects the turn and plays
-/// from that word.
+/// from that word; in edit mode (`editingWords`), a click, a ⇧-click, or a drag over words edits them instead.
 final class TurnTableView: NSTableView {
     /// 1–9: assign the selection to the speaker with that number.
     var onDigit: ((Int) -> Void)?
     /// A word was clicked: the session time it starts at.
     var onWordClick: ((Double) -> Void)?
+    /// Edit mode: words clicked do not play, they are edited.
+    var editingWords = false
+    /// Edit mode: words `from`…`to` (indices into the row's words, either order) of `row` were clicked or dragged
+    /// over; `extend`: with ⇧, the selection being edited grows to them.
+    var onWordEditClick: ((_ row: Int, _ from: Int, _ to: Int, _ extend: Bool) -> Void)?
     /// Revert the automatic fix under a contextual-menu word.
     var onRevertFix: ((WordRef) -> Void)?
     /// Return or Enter: play the selected turn (the keyboard's way to what a click on its timestamp does).
@@ -97,21 +102,52 @@ final class TurnTableView: NSTableView {
     /// The reader moved through the list with the keyboard.
     var onKeyboardScroll: (() -> Void)?
 
+    /// Edit mode, before a click is handled: `extend` (⇧) keeps the open field's words to grow from; any other click
+    /// saves it first. Then `onEditClickEnded` once the click was handled.
+    var onEditClickBegan: ((_ extend: Bool) -> Void)?
+    var onEditClickEnded: (() -> Void)?
+
     override func mouseDown(with event: NSEvent) {
         let point = convert(event.locationInWindow, from: nil)
         let modifiers = event.modifierFlags.intersection([.shift, .command, .control, .option])
+        if editingWords { onEditClickBegan?(modifiers == [.shift]) }
+        defer { if editingWords { onEditClickEnded?() } }
         // Selection first (the table tracks the mouse until it is released), as for any click on a row.
         super.mouseDown(with: event)
+        var end = point
+        if let up = NSApplication.shared.currentEvent, up.type == .leftMouseUp, up.window === window {
+            end = convert(up.locationInWindow, from: nil)
+        }
+        let dragged = abs(end.x - point.x) > 4 || abs(end.y - point.y) > 4
+        let row = row(at: point)
+        guard event.clickCount == 1, row >= 0,
+              let cell = view(atColumn: 0, row: row, makeIfNecessary: false) as? TurnCellView,
+              let word = cell.bodyText.wordIndex(atPoint: cell.bodyText.convert(point, from: self)) else { return }
+        if editingWords {
+            // ⇧ extends what is being edited; a drag within the row takes the words it went over.
+            guard modifiers.isEmpty || modifiers == [.shift] else { return }
+            var last = word
+            if dragged, self.row(at: end) == row,
+               let other = cell.bodyText.wordIndex(atPoint: cell.bodyText.convert(end, from: self)) {
+                last = other
+            }
+            handleWordClick(row: row, word: word, through: last, extend: modifiers == [.shift])
+            return
+        }
         // ⇧/⌘ clicks extend the selection, a double click is a second click on the same word, and a drag selects
         // rows: none of them plays.
-        guard event.clickCount == 1, modifiers.isEmpty else { return }
-        if let up = NSApplication.shared.currentEvent, up.type == .leftMouseUp, up.window === window {
-            let end = convert(up.locationInWindow, from: nil)
-            guard abs(end.x - point.x) <= 4, abs(end.y - point.y) <= 4 else { return }
+        guard modifiers.isEmpty, !dragged else { return }
+        handleWordClick(row: row, word: word, through: word, extend: false)
+    }
+
+    /// Words `word`…`last` of `row` were clicked: edited in edit mode, else played from `word`.
+    func handleWordClick(row: Int, word: Int, through last: Int, extend: Bool) {
+        if editingWords {
+            onWordEditClick?(row, word, last, extend)
+            return
         }
-        let row = row(at: point)
-        guard row >= 0, let cell = view(atColumn: 0, row: row, makeIfNecessary: false) as? TurnCellView,
-              let start = cell.bodyText.wordStart(at: cell.bodyText.convert(point, from: self)) else { return }
+        guard let cell = view(atColumn: 0, row: row, makeIfNecessary: true) as? TurnCellView,
+              let start = cell.bodyText.reviewWord(at: word)?.start else { return }
         onWordClick?(start)
     }
 
@@ -152,6 +188,12 @@ final class TurnTextView: NSTextView {
     var onPlay: ((Double) -> Void)?
     var onRevertFix: ((WordRef) -> Void)?
     var canRevertFix = false
+    /// VoiceOver's "Edit “word”" (word `index` of the text): turns edit mode on and edits that word.
+    var onEditWord: ((Int) -> Void)?
+    /// Edit mode: the pointer over the text is an I-beam.
+    var editingWords = false {
+        didSet { if editingWords != oldValue { window?.invalidateCursorRects(for: self) } }
+    }
     private var textColorShown: NSColor = .labelColor
     /// The root of this view's text system (it keeps the layout manager and the container): a text view made with
     /// its own container does not own its storage.
@@ -237,7 +279,7 @@ final class TurnTextView: NSTextView {
     /// "Heard as “cloud”; a word-list term" — for a fixed word's tooltip and VoiceOver.
     static func fixDescription(_ fix: TranscriptWordFix) -> String {
         "Heard as “\(fix.heard)”; " + (fix.kind == .term ? "a word-list term Apple Intelligence chose"
-            : "fixed by a learned correction")
+            : fix.kind == .reviewEdit ? "you edited it" : "fixed by a learned correction")
     }
 
     /// The keyboard and VoiceOver way to a word (VO-⌘-Space lists them): "Play from “budget” (00:12:03)". Made
@@ -254,6 +296,13 @@ final class TurnTextView: NSTextView {
                 onPlay(start)
                 return true
             })
+            if canRevertFix {
+                actions.append(NSAccessibilityCustomAction(name: "Edit “\(word)”") { [weak self] in
+                    guard let onEditWord = self?.onEditWord else { return false }
+                    onEditWord(index)
+                    return true
+                })
+            }
             if canRevertFix, index < wordRefs.count, index < wordFixes.count, let fixed = wordFixes[index] {
                 let ref = wordRefs[index]
                 let key = "\(ref.segmentID)\u{1f}\(fixed.first)\u{1f}\(fixed.end)"
@@ -301,19 +350,35 @@ final class TurnTextView: NSTextView {
 
     /// The start time of the word under `point` (in this view), or nil when the point is not on the text.
     func wordStart(at point: NSPoint) -> Double? {
-        guard let index = wordIndex(at: point), index < wordStarts.count else { return nil }
+        guard let index = wordIndex(atPoint: point), index < wordStarts.count else { return nil }
         return wordStarts[index]
     }
 
     /// The review word under `point`, for its contextual action.
     func word(at point: NSPoint) -> ReviewWord? {
-        guard let index = wordIndex(at: point), index < wordRefs.count, index < wordTexts.count,
-              index < wordStarts.count else { return nil }
+        wordIndex(atPoint: point).flatMap(reviewWord(at:))
+    }
+
+    /// Word `index` of the text.
+    func reviewWord(at index: Int) -> ReviewWord? {
+        guard index >= 0, index < wordRefs.count, index < wordTexts.count, index < wordStarts.count else { return nil }
         return ReviewWord(ref: wordRefs[index], text: wordTexts[index], start: wordStarts[index],
                           fix: index < wordFixes.count ? wordFixes[index] : nil)
     }
 
-    private func wordIndex(at point: NSPoint) -> Int? {
+    /// How many words the text has.
+    var wordCount: Int { wordRefs.count }
+
+    /// The text shown from word `first` through word `last` (punctuation between them as shown); nil when one of them
+    /// is not in the text.
+    func shownText(from first: Int, through last: Int) -> String? {
+        guard first <= last, last < wordRanges.count, let start = wordRanges[first], let end = wordRanges[last],
+              let storage = textStorage, NSMaxRange(end) <= storage.length else { return nil }
+        return (storage.string as NSString).substring(with: NSRange(location: start.location,
+                                                                    length: NSMaxRange(end) - start.location))
+    }
+
+    func wordIndex(atPoint point: NSPoint) -> Int? {
         guard let layout = layoutManager, let container = textContainer, let storage = textStorage,
               storage.length > 0 else { return nil }
         var fraction: CGFloat = 0
@@ -342,7 +407,7 @@ final class TurnTextView: NSTextView {
             // intersection is the null rect, whose infinite origin AppKit rejects with an exception.
             let rect = used.intersection(visible)
             guard !rect.isNull, !rect.isEmpty else { return }
-            self.addCursorRect(rect, cursor: .pointingHand)
+            self.addCursorRect(rect, cursor: self.editingWords ? .iBeam : .pointingHand)
         }
     }
 }
@@ -375,6 +440,13 @@ final class TurnListView: NSView, NSTableViewDataSource, NSTableViewDelegate {
     var onAcceptHint: ((String) -> Void)?
     /// The reader scrolled the turns themselves.
     var onUserScroll: (() -> Void)?
+    /// Edit mode: `words` (shown words of one segment of one turn, in order) are to become `text`; `addTerm`: ⌥Return
+    /// asked for the new text in the word list too.
+    var onEditWords: ((_ words: [ReviewWord], _ text: String, _ addTerm: Bool) -> Void)?
+    /// What the edit mode banner says for a moment (a selection stopped at a turn's end), nil for its usual text.
+    var onEditMessage: ((String?) -> Void)?
+    /// VoiceOver asked to edit a word while edit mode is off: the window turns it on (`editingWords`).
+    var onRequestEditing: (() -> Void)?
 
     let table = TurnTableView()
     private let scroll = TurnScrollView()
@@ -386,15 +458,28 @@ final class TurnListView: NSView, NSTableViewDataSource, NSTableViewDelegate {
     private var hints: [String: MeetingTurnHint] = [:]
     private var speakers: [ProjectedSpeaker] = []
     private var people: [SpeakerProfile] = []
-    private var editable = true
+    private(set) var editable = true
     private var text: (ProjectedTurn) -> String = { _ in "" }
-    private var words: (ProjectedTurn) -> [ReviewWord] = { _ in [] }
+    private(set) var words: (ProjectedTurn) -> [ReviewWord] = { _ in [] }
+    /// Edit mode (the window's Edit Words, ⌘E): word clicks edit words instead of playing from them.
+    var editingWords = false {
+        didSet {
+            guard editingWords != oldValue else { return }
+            editingWordsChanged()
+        }
+    }
+    /// The words being edited, while the edit field is open.
+    var wordEdit: WordEditTarget?
+    /// A ⇧-click is on its way: the field losing the keyboard to the table does not save (the selection grows).
+    var extendingWordEdit = false
+    /// The field over the words being edited.
+    let editField = WordEditField()
     /// The paragraph playing (its ID) and the word of it playing, tinted while shown.
     private(set) var playingParagraphID: String?
     private var playingWord: Int?
     /// Row heights by paragraph ID (with the words they were measured for, and whether a hint and a warning are
     /// stacked), for `heightWidth`.
-    private var heights: [String: (spans: [WordSpan], stacked: Bool, height: CGFloat)] = [:]
+    private var heights: [String: (spans: [WordSpan], stacked: Bool, text: String, height: CGFloat)] = [:]
     private var heightWidth: CGFloat = 0
     private var heightsStale = false
 
@@ -435,6 +520,12 @@ final class TurnListView: NSView, NSTableViewDataSource, NSTableViewDelegate {
         table.onKeyboardScroll = { [weak self] in self?.onUserScroll?() }
         table.onWordClick = { [weak self] seconds in self?.onPlay?(seconds) }
         table.onRevertFix = { [weak self] word in self?.onRevertFix?(word) }
+        table.onWordEditClick = { [weak self] row, from, to, extend in
+            self?.beginEditing(row: row, from: from, through: to, extend: extend)
+        }
+        table.onEditClickBegan = { [weak self] extend in self?.editClickBegan(extend: extend) }
+        table.onEditClickEnded = { [weak self] in self?.editClickEnded() }
+        editField.delegate = self
     }
 
     required init?(coder: NSCoder) { nil }
@@ -467,20 +558,25 @@ final class TurnListView: NSView, NSTableViewDataSource, NSTableViewDelegate {
         self.words = words
         labels = Dictionary(newSpeakers.map { ($0.id, $0.label) }, uniquingKeysWith: { first, _ in first })
 
+        // A word edit (or a word-fix revert) can change a paragraph's text and nothing else about its turns.
+        let oldTexts = shownTexts
+        shownTexts = Dictionary(newParagraphs.map { ($0.id, self.text(of: $0)) }, uniquingKeysWith: { first, _ in first })
         guard oldParagraphs.map(\.id) == newParagraphs.map(\.id) else {
             table.reloadData()
             restoreSelection(selected)
+            followWordEdit()
             return
         }
         var changed = IndexSet()
         var resized = IndexSet()
         for (index, paragraph) in newParagraphs.enumerated() {
             let old = oldParagraphs[index]
-            if old != paragraph || oldLabels[paragraph.speakerID ?? ""] != labels[paragraph.speakerID ?? ""]
+            let textChanged = oldTexts[paragraph.id] != shownTexts[paragraph.id]
+            if old != paragraph || textChanged || oldLabels[paragraph.speakerID ?? ""] != labels[paragraph.speakerID ?? ""]
                 || Self.hint(of: old, in: oldHints) != Self.hint(of: paragraph, in: hints) {
                 changed.insert(index)
             }
-            if old.spans != paragraph.spans
+            if old.spans != paragraph.spans || textChanged
                 || TurnCellView.stacksWarning(old, hint: Self.hint(of: old, in: oldHints))
                 != TurnCellView.stacksWarning(paragraph, hint: Self.hint(of: paragraph, in: hints)) {
                 resized.insert(index)
@@ -495,7 +591,11 @@ final class TurnListView: NSView, NSTableViewDataSource, NSTableViewDelegate {
             if !resized.isEmpty { table.noteHeightOfRows(withIndexesChanged: resized) }
         }
         restoreSelection(selected)
+        followWordEdit()
     }
+
+    /// Each shown paragraph's text, by paragraph ID, as last shown.
+    private var shownTexts: [String: String] = [:]
 
     /// Selects again the rows of the turns selected before an update, only rows all of whose turns were selected: a
     /// row that took in other turns (a turn given to the speaker before it joins that paragraph) is not selected, so
@@ -556,14 +656,14 @@ final class TurnListView: NSView, NSTableViewDataSource, NSTableViewDelegate {
         let stacked = TurnCellView.stacksWarning(paragraph, hint: Self.hint(of: paragraph, in: hints))
         // Keyed by ID and checked against the words: a split, or a turn joining or leaving, changes a paragraph's
         // words and keeps its ID.
-        if let cached = heights[paragraph.id], cached.spans == spans, cached.stacked == stacked {
+        let shown = text(of: paragraph)
+        if let cached = heights[paragraph.id], cached.spans == spans, cached.stacked == stacked, cached.text == shown {
             return cached.height
         }
         // Measured as the row's text view lays it out (`TurnCellView.layout`).
-        let measured = TurnTextView.height(of: text(of: paragraph),
-                                           width: TurnCellView.textViewWidth(forTextWidth: width))
+        let measured = TurnTextView.height(of: shown, width: TurnCellView.textViewWidth(forTextWidth: width))
         let height = max(stacked ? TurnCellView.stackedHeight : 28, ceil(measured) + 10)
-        heights[paragraph.id] = (spans, stacked, height)
+        heights[paragraph.id] = (spans, stacked, shown, height)
         return height
     }
 
@@ -581,8 +681,16 @@ final class TurnListView: NSView, NSTableViewDataSource, NSTableViewDelegate {
             cell.hintButton.action = #selector(hintClicked(_:))
             cell.bodyText.onPlay = { [weak self] seconds in self?.onPlay?(seconds) }
             cell.bodyText.onRevertFix = { [weak self] word in self?.onRevertFix?(word) }
+            cell.bodyText.onEditWord = { [weak self, weak cell] word in
+                guard let self, let cell else { return }
+                let row = self.table.row(for: cell)
+                guard row >= 0 else { return }
+                if !self.editingWords { self.onRequestEditing?() }
+                self.beginEditing(row: row, from: word, through: word, extend: false)
+            }
             return cell
         }()
+        cell.bodyText.editingWords = editingWords
         let paragraph = paragraphs[row]
         cell.configure(paragraph: paragraph, text: text(of: paragraph), words: paragraph.turns.flatMap(words),
                        menu: AssignMenu.items(speakers: speakers, people: people), editable: editable,

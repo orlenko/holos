@@ -95,6 +95,8 @@ enum LanguageStage {
 
     static let editedHead = "Speaker labels were edited, so the languages were not detected again. To detect them "
         + "and label speakers again (names carry over), run voiceislocal session languages with --force."
+    static let editedWords = "Words were edited in Review, so the languages were not detected again. To detect them "
+        + "again (the edited words are replaced), run voiceislocal session languages with --force."
     /// Ends the note that the recorded transcript stood in for a language that could not be transcribed again.
     static let standsIn = "The recorded transcript stands in for it."
 
@@ -499,6 +501,7 @@ enum LanguageStage {
     /// only when it is damaged, as stage 3 decides), and when there is no transcript, whose labels there would be.
     private static func editedHeadProblem(_ request: Request) -> String? {
         guard let transcript = request.transcript else { return nil }
+        if !replacesEditedLabels(request), TranscriptWordEdit.hasReviewEdits(transcript) { return editedWords }
         do {
             guard let head = try SpeakerAnalysis.headState(session: request.session, transcript: transcript),
                   head.needsForce(replacesEditedLabels(request)) else { return nil }

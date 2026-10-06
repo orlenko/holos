@@ -243,7 +243,7 @@ public enum WordFixes {
         return result
     }
 
-    private static func characterRange(of fix: TranscriptWordFix, words: [EffectiveWord], textLength: Int)
+    static func characterRange(of fix: TranscriptWordFix, words: [EffectiveWord], textLength: Int)
         -> Range<Int>? {
         guard fix.first >= 0, fix.first < fix.end, fix.end <= words.count else { return nil }
         let first = words[fix.first]
@@ -271,7 +271,7 @@ public enum WordFixes {
     /// Original word ranges for every mark, reconstructed in text order. A word fix changes only the words its mark
     /// covers; all words between marks are unchanged. That makes the correspondence stable even when an untimed
     /// segment redistributes its estimated times, and avoids guessing among repeated substrings.
-    private static func originalWordRanges(fixes: [TranscriptWordFix], currentWords: [EffectiveWord],
+    static func originalWordRanges(fixes: [TranscriptWordFix], currentWords: [EffectiveWord],
                                            originalWords: [EffectiveWord]) -> [Range<Int>?] {
         let ordered = fixes.indices.sorted { (fixes[$0].first, fixes[$0].end) < (fixes[$1].first, fixes[$1].end) }
         var result = Array<Range<Int>?>(repeating: nil, count: fixes.count)
@@ -287,9 +287,10 @@ public enum WordFixes {
             }
             current += unchanged
             original += unchanged
-            // `segment` is the revision named by `fixedFrom`. It already contains live corrections, so a live mark
-            // occupies its current word span there; automatic fixes still occupy the recognizer words in `heard`.
-            let count = fix.kind == .reviewRevert || fix.kind == .liveCorrection
+            // `segment` is the revision named by `fixedFrom`. It already contains live corrections and Review edits,
+            // so such a mark occupies its current word span there; automatic fixes still occupy the recognizer words
+            // in `heard`.
+            let count = fix.kind == .reviewRevert || fix.kind == .liveCorrection || fix.kind == .reviewEdit
                 ? fix.end - fix.first
                 : tokens(of: Array(fix.heard.utf16)).count
             guard count > 0, original + count <= originalWords.count else { return [] }

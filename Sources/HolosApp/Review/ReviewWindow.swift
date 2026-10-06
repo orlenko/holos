@@ -13,7 +13,7 @@ import UniformTypeIdentifiers
 /// Holos has no main menu, so the "Speakers" menu is a pull-down in the window's toolbar and the window handles its
 /// own shortcuts: Space (or K) play/pause, ←/→ (or J/L) back and ahead 5 seconds, and ⌘←/⌘→ the previous and next
 /// turn, anywhere but while typing in a text field; 1–9 assign (in the turn list), ⌘' next uncertain, ⌘Z undo,
-/// ⌘F search, ⌘E export, and the usual editing keys in text fields.
+/// ⌘F search, ⌘E edit mode (word clicks edit words), ⇧⌘E export, and the usual editing keys in text fields.
 ///
 /// The playback bar above the footer holds Play/Pause, the position, a scrubber, the speed, and who is speaking.
 /// Playing goes on through the meeting until paused; a click on a timestamp or on a word plays from there. While a
@@ -55,6 +55,20 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate {
     private let searchField = NSSearchField()
     private let exportPopUp = NSPopUpButton(frame: .zero, pullsDown: true)
     private let screenTextButton = NSButton(title: "Screen Text…", target: nil, action: nil)
+    /// Edit mode (⌘E): word clicks edit the words instead of playing from them (docs/meeting-design.md §5.10,
+    /// "Editing words").
+    private let editButton = NSButton(title: "Edit Words", target: nil, action: nil)
+    private let editBanner = EditModeBanner()
+    /// The window's column of bars and panes, and the banner's width in it (made again each time the banner shows: a
+    /// hidden arranged view leaves the stack, and its constraints with it).
+    private weak var contentStack: NSStackView?
+    private var bannerWidth: NSLayoutConstraint?
+    /// A name or term the last word edit may have taught, offered for the word list until the next action.
+    private var offeredTerm: (term: String, heardAs: String?)?
+    /// The word list, as the app keeps it: a term's "often heard as" phrases (nil when the list does not have it), and
+    /// adding a term with what it is often heard as (returns what happened). Nil: no word list offers.
+    var wordListHeardAs: ((String) -> [String]?)?
+    var addWordListTerm: ((_ term: String, _ heardAs: String?) -> String)?
     private var screenTextPanel: ScreenTextPanel?
     private var screenOCRTask: Task<Void, Never>?
     private let learnBox = NSButton(checkboxWithTitle: "Learn voices of people I name in this meeting", target: nil,
@@ -63,6 +77,8 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate {
     private let notices = NSStackView()
     /// The last action's error, until the next action.
     private var problem: String?
+    /// What the last action did, when it says so (a term added to the word list), until the next action.
+    private var notice: String?
     private var query = ""
     /// Where "Split Turn" broke a paragraph without splitting a turn: the window's view only, never saved; kept with
     /// its turn on its run and through this window's word-fix reverts, dropped by any other new run (a relabel).
@@ -211,12 +227,19 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate {
         searchField.sendsSearchStringImmediately = true
         searchField.delegate = self
         searchField.widthAnchor.constraint(equalToConstant: 160).isActive = true
-        exportPopUp.toolTip = "Save or copy the transcript (⌘E)"
+        exportPopUp.toolTip = "Save or copy the transcript (⇧⌘E)"
         screenTextButton.target = self; screenTextButton.action = #selector(showScreenText)
         screenTextButton.bezelStyle = .push
         screenTextButton.toolTip = "Read saved screen OCR and unverified vocabulary candidates; never adds words automatically"
-        let toolbar = NSStackView(views: [nextUncertainButton, assignPopUp, splitButton, speakersPopUp, NSView(),
-                                          screenTextButton, searchField, exportPopUp])
+        editButton.bezelStyle = .push
+        editButton.setButtonType(.pushOnPushOff)
+        editButton.image = NSImage(systemSymbolName: "pencil", accessibilityDescription: nil)
+        editButton.imagePosition = .imageLeading
+        editButton.toolTip = "Edit the transcript's words: click a word to change it (⌘E)"
+        editButton.target = self
+        editButton.action = #selector(toggleEditMode)
+        let toolbar = NSStackView(views: [nextUncertainButton, assignPopUp, splitButton, speakersPopUp, editButton,
+                                          NSView(), screenTextButton, searchField, exportPopUp])
         toolbar.spacing = 8
         toolbar.alignment = .centerY
 
@@ -245,7 +268,8 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate {
         notices.spacing = 4
 
         let playbackBar = makePlaybackBar()
-        let stack = NSStackView(views: [toolbar, split, playbackBar, footer, notices])
+        editBanner.isHidden = true
+        let stack = NSStackView(views: [toolbar, editBanner, split, playbackBar, footer, notices])
         stack.orientation = .vertical
         stack.alignment = .leading
         stack.distribution = .fill
@@ -253,6 +277,7 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate {
         stack.translatesAutoresizingMaskIntoConstraints = false
         // The panes take the height; the bars keep theirs.
         for bar in [toolbar, footer, notices] { bar.setHuggingPriority(.defaultHigh, for: .vertical) }
+        editBanner.setContentHuggingPriority(.defaultHigh, for: .vertical)
         playbackBar.setContentHuggingPriority(.defaultHigh, for: .vertical)
         split.heightAnchor.constraint(greaterThanOrEqualToConstant: 300).isActive = true
         let content = NSView()
@@ -270,6 +295,7 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate {
         ])
         split.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .vertical)
         split.setContentCompressionResistancePriority(.defaultLow, for: .vertical)
+        contentStack = stack
         return content
     }
 
@@ -391,6 +417,9 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate {
         }
         turnList.onPlay = { [weak self] seconds in self?.play(from: seconds) }
         turnList.onRevertFix = { [weak self] word in self?.revertFix(word) }
+        turnList.onEditWords = { [weak self] words, text, addTerm in self?.editWords(words, to: text, addTerm: addTerm) }
+        turnList.onEditMessage = { [weak self] message in self?.editBanner.show(message: message) }
+        turnList.onRequestEditing = { [weak self] in self?.setEditMode(true) }
         turnList.onUserScroll = { [weak self] in
             self?.follow.userScrolled(at: ProcessInfo.processInfo.systemUptime)
         }
@@ -562,6 +591,8 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate {
         microphoneItem.isHidden = !review.canLabelMicrophoneSpeakers
         microphoneItem.isEnabled = editable
         undoItem.isEnabled = editable && review.canUndo
+        // Read-only (a command holds the review): edit mode can still be left, not entered.
+        editButton.isEnabled = editable || turnList.editingWords
 
         learnBox.isEnabled = review.profiles != nil && review.rememberVoices
         learnBox.state = review.learnVoices && review.rememberVoices ? .on : .off
@@ -599,6 +630,14 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate {
                                 action: #selector(rereadLabels)))
         }
         if let problem { lines.append(Notice(text: "⚠ " + problem, color: .systemRed)) }
+        if let notice { lines.append(Notice(text: notice)) }
+        if let offered = offeredTerm {
+            let heard = offered.heardAs.map { ", often heard as “\($0)”" } ?? ""
+            lines.append(Notice(text: "Add “\(offered.term)” to the word list\(heard)? Voice is Local then expects it "
+                                + "in dictation and meetings.", button: "Add to Word List",
+                                action: #selector(addOfferedTerm), secondButton: "Not Now",
+                                secondAction: #selector(dismissOfferedTerm)))
+        }
         if let runProblem = review.snapshot.runProblem { lines.append(Notice(text: "⚠ " + runProblem, color: .systemRed)) }
         if review.snapshot.transcriptChanged {
             lines.append(Notice(text: "The transcript changed after speakers were labelled.", button: "Label Again",
@@ -641,6 +680,8 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate {
         var button: String?
         var action: Selector?
         var enabled = true
+        var secondButton: String?
+        var secondAction: Selector?
     }
 
     private func addNotice(_ notice: Notice) {
@@ -648,7 +689,8 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate {
         label.textColor = notice.color
         label.font = .systemFont(ofSize: 12)
         var views: [NSView] = [label]
-        if let button = notice.button, let action = notice.action {
+        for (button, action) in [(notice.button, notice.action), (notice.secondButton, notice.secondAction)] {
+            guard let button, let action else { continue }
             let control = NSButton(title: button, target: self, action: action)
             control.bezelStyle = .push
             control.controlSize = .small
@@ -666,6 +708,8 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate {
     /// Runs one change; its error shows in the footer until the next action.
     private func perform(_ change: @escaping @MainActor (ReviewSession) async throws -> Void) {
         problem = nil
+        notice = nil
+        offeredTerm = nil
         refreshFooter()
         let review = self.review
         Task { [weak self] in
@@ -892,6 +936,90 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate {
         }
     }
 
+    // MARK: - Editing words
+
+    /// Edit Words (the toolbar toggle, ⌘E).
+    @objc private func toggleEditMode() {
+        setEditMode(!turnList.editingWords)
+    }
+
+    /// Turns edit mode on or off: the toggle, the banner, and the turn list (an open field closes unsaved when it
+    /// turns off). Playback keys work either way; word clicks play only with it off.
+    func setEditMode(_ on: Bool) {
+        turnList.editingWords = on
+        editButton.state = on ? .on : .off
+        editButton.setAccessibilityValue(on ? "on" : "off")
+        editBanner.show(message: nil)
+        editBanner.isHidden = !on
+        bannerWidth?.isActive = false
+        bannerWidth = nil
+        if on, let stack = contentStack {
+            let width = editBanner.widthAnchor.constraint(equalTo: stack.widthAnchor)
+            width.isActive = true
+            bannerWidth = width
+        }
+        if on, NSWorkspace.shared.isVoiceOverEnabled {
+            NSAccessibility.post(element: window, notification: .announcementRequested, userInfo: [
+                .announcement: "Editing words", .priority: NSAccessibilityPriorityLevel.medium.rawValue,
+            ])
+        }
+        if !on { window.makeFirstResponder(turnList.table) }
+    }
+
+    /// Edit mode is on.
+    var isEditingWords: Bool { turnList.editingWords }
+
+    /// Saves an edit made in the turn list. Its new run keeps the turns (their estimated starts may move), so the
+    /// window's paragraph breaks are carried over by turn as for a revert. Once saved, a new text that looks like a
+    /// name or term is offered for the word list (with ⌥Return it is added at once).
+    private func editWords(_ words: [ReviewWord], to text: String, addTerm: Bool) {
+        offeredTerm = nil
+        paragraphBreaks.beginCarryOver()
+        perform { [weak self] review in
+            defer { self?.endBreakCarryOver() }
+            guard let edit = try await review.editWords(words.map(\.ref), to: text) else { return }
+            self?.offerTerm(after: edit, add: addTerm)
+        }
+    }
+
+    /// After a saved edit: with `add` (⌥Return), its new text goes into the word list now, with what the recognizer
+    /// wrote as "often heard as"; otherwise a new text that looks like a name or term is offered in the footer, unless
+    /// the list has it with that phrase already.
+    private func offerTerm(after edit: ReviewWordEdit, add: Bool) {
+        guard !edit.deletion, let adder = addWordListTerm else { return }
+        let dictionary: (String) -> Bool = { word in
+            NSSpellChecker.shared.checkSpelling(of: word.lowercased(), startingAt: 0).location == NSNotFound
+        }
+        let term = add
+            ? WordList.cleaned(edit.meant.trimmingCharacters(in: .punctuationCharacters.union(.whitespaces)))
+            : TranscriptEditLearning.term(heard: edit.heard, meant: edit.meant, isDictionaryWord: dictionary)
+        guard let term else { return }
+        let heardAs = TranscriptEditLearning.heardAs(heard: edit.heard, term: term)
+        if add {
+            notice = adder(term, heardAs)
+            refreshFooter()
+            return
+        }
+        if let known = wordListHeardAs?(term),
+           heardAs.map({ phrase in known.contains { $0.caseInsensitiveCompare(phrase) == .orderedSame } }) ?? true {
+            return
+        }
+        offeredTerm = (term, heardAs)
+        refreshFooter()
+    }
+
+    @objc private func addOfferedTerm() {
+        guard let offered = offeredTerm, let adder = addWordListTerm else { return }
+        offeredTerm = nil
+        notice = adder(offered.term, offered.heardAs)
+        refreshFooter()
+    }
+
+    @objc private func dismissOfferedTerm() {
+        offeredTerm = nil
+        refreshFooter()
+    }
+
     private func endBreakCarryOver() {
         paragraphBreaks.endCarryOver(turns: review.projection.turns, runID: review.projection.runID)
         refresh()
@@ -1078,6 +1206,10 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate {
         if flags == [.command, .shift], key == "z" {
             return editingText && NSApplication.shared.sendAction(Selector(("redo:")), to: nil, from: window)
         }
+        if flags == [.command, .shift], key == "e" {
+            exportPopUp.performClick(nil)
+            return true
+        }
         guard flags == [.command] else { return false }
         switch key {
         case "'":
@@ -1087,7 +1219,8 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate {
             window.makeFirstResponder(searchField)
             return true
         case "e":
-            exportPopUp.performClick(nil)
+            // From the field being edited too: it closes unsaved, as the mode ends.
+            toggleEditMode()
             return true
         case "w":
             window.performClose(nil)
@@ -1150,6 +1283,51 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate {
         let cleaned = name.map { "/:\\\n\r\t".contains($0) ? "-" : $0 }
         let text = String(cleaned).trimmingCharacters(in: .whitespacesAndNewlines)
         return text.isEmpty ? "Transcript" : String(text.prefix(100))
+    }
+}
+
+/// The band under the toolbar while edit mode is on: a tint of the accent color and what to do, or a passing message.
+final class EditModeBanner: NSView {
+    static let usual = "Editing — click a word to change it. ⇧-click or drag for more words of the same turn. Return "
+        + "saves, ⌥Return saves and adds it to the word list, Tab saves and edits the next word, Esc cancels. "
+        + "Space still plays and pauses."
+    let label = NSTextField(wrappingLabelWithString: EditModeBanner.usual)
+
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        label.font = .systemFont(ofSize: 12, weight: .medium)
+        label.textColor = .labelColor
+        label.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(label)
+        NSLayoutConstraint.activate([
+            label.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 10),
+            label.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -10),
+            label.topAnchor.constraint(equalTo: topAnchor, constant: 6),
+            label.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -6),
+        ])
+        setAccessibilityElement(true)
+        setAccessibilityRole(.group)
+        setAccessibilityLabel("Edit mode")
+    }
+
+    convenience init() { self.init(frame: .zero) }
+
+    required init?(coder: NSCoder) { nil }
+
+    /// `message` for now, or the usual text.
+    func show(message: String?) {
+        let text = message ?? Self.usual
+        if label.stringValue != text { label.stringValue = text }
+        label.textColor = message == nil ? .labelColor : .systemOrange
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        let path = NSBezierPath(roundedRect: bounds.insetBy(dx: 0.5, dy: 0.5), xRadius: 6, yRadius: 6)
+        NSColor.controlAccentColor.withAlphaComponent(0.14).setFill()
+        path.fill()
+        NSColor.controlAccentColor.withAlphaComponent(0.5).setStroke()
+        path.lineWidth = 1
+        path.stroke()
     }
 }
 

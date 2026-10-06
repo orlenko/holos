@@ -238,9 +238,19 @@ playback bar above the footer has Play/Pause, the position, a scrubber, the spee
 speaking. Keys: Space (or K) plays or pauses and ←/→ (or J/L) move 5 seconds, ⌘←/⌘→ go to
 the previous/next turn (all of these anywhere except while typing in a field), ↑/↓ move, 1–9
 give the selected turns to that speaker number, ⌘' goes to the next uncertain turn and plays
-it, ⌘Z undoes, ⌘F searches, ⌘E opens Export. The **Speakers** pull-down holds Confirm All
-Suggestions, Find More Speakers…, Label Speakers on My Microphone… (calls recorded before the one
-meeting mode without "others in the room"), and Undo.
+it, ⌘Z undoes, ⌘F searches, ⌘E turns edit mode on and off, ⇧⌘E opens Export. The **Speakers**
+pull-down holds Confirm All Suggestions, Find More Speakers…, Label Speakers on My Microphone…
+(calls recorded before the one meeting mode without "others in the room"), and Undo.
+
+**Edit Words** (⌘E) fixes misheard words and names where they are shown. A tinted banner says
+the mode is on; a click on a word then opens a field over it instead of playing (⇧-click or a
+drag takes in more words of the same turn). Return saves, ⌥Return saves and adds the new text
+to the word list, Tab saves and goes to the next word, Esc cancels; Space still plays. An
+edited word is dotted-underlined ("Heard as …; you edited it") and Undo takes the edit back.
+Each edit is learned as a correction (Corrections, ⌘2) unless it only changed punctuation or
+case; a name or term is offered for the word list ("often heard as" what was heard). To check
+on screen: edit a word in a turn you named, then reassign that turn and undo twice; the words,
+names, playback from the edited word, and the transcript files all follow.
 
 Every change shows at once and is saved in the background to the meeting's edit journal (there
 is no Save button); the transcript files in `exports/` follow about 2 seconds after the last

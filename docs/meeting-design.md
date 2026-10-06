@@ -7698,7 +7698,7 @@ public enum SessionAudioComposition {
   start of the playing one first), ⌘→ next turn — anywhere in the window except while
   typing in a text field (with keyboard navigation on, Space presses a focused button
   instead); Return in the turn list plays the selected turn; ↑/↓ move selection; 1–9 assign the selection to the speaker
-  with that ordinal; ⌘' next uncertain; ⌘Z undo; ⌘F search; ⌘E export menu.
+  with that ordinal; ⌘' next uncertain; ⌘Z undo; ⌘F search; ⌘E edit mode (Editing words, below); ⇧⌘E export menu.
 - Menu "Speakers": Confirm All Suggestions, Find More Speakers… (explains that names
   carry over and turn-level changes do not), Label Speakers on My Microphone (call
   recordings recorded without "others in the room").
@@ -7725,6 +7725,92 @@ public enum SessionAudioComposition {
 - Heavy work (snapshot load, edits, export regeneration) runs off the main actor (§1.3).
 - The footer is redrawn on every change of the player's state (loading, ready, off and
   why), so "Playback is off: …" shows as soon as a first build fails.
+
+**Editing words** (edit mode, 2026-10-06): fix misheard words and names where the text is
+shown, Otter-style.
+
+- *Mode.* "Edit Words" (a toggle in the toolbar, ⌘E; Export moves to ⇧⌘E) turns edit
+  mode on: a tinted banner says "Editing — click a word to change it…" and the turn list
+  is tinted. Off, a word click plays from it as before. On, a word click does not seek: it
+  opens a field over the word, prefilled with it and selected. ⇧-click or a drag in the
+  same row extends the selection; it stops at the end of the word's turn and segment (the
+  banner says so), since v1 edits one segment of one turn at a time. Return saves, ⌥Return
+  saves and adds the new text to the word list, Tab saves and edits the next word, ⇧Tab
+  the previous one, Esc cancels. Space still plays and pauses outside the field; the
+  timestamp buttons still play. Every word has a VoiceOver action "Edit “word”", which turns
+  edit mode on and opens the field. An edited word is dotted-underlined like a fixed word
+  ("You changed “heard”"), and its Revert ("Revert to “heard”") is another edit back to what
+  the recognizer wrote.
+- *What an edit is.* `ReviewSession.editWords(refs, to: text)`: shown words (stored
+  `WordRef`s, so a word the echo mask hides is never named, §5.11) of one segment, in a row,
+  replaced by any text: more or fewer words, or nothing (a deletion). The refs must be
+  consecutive stored indices of words shown in one projected turn; hidden echo words between
+  them, another segment, or another turn refuse the edit with a message. The span grows to
+  whole word-fix marks it touches (a mark is never split), and a deletion is merged into the
+  next word of the same turn (else the previous one), so the deleted words keep provenance
+  and time: "I um think" with "um" deleted is "I think" whose "think" was heard as "um
+  think". Deleting every word of a segment, and touching a live correction (`liveCorrection`,
+  whose live hint would no longer match), are refused in v1. Whitespace in the new text
+  collapses to single spaces; an edit that changes nothing saves nothing.
+- *Revisions* (`TranscriptWordEdit`, pure; `SessionWordEdit`, published). The edit is a fix
+  of a new kind, `reviewEdit`, whose `heard` is what the recognizer wrote over the whole span
+  (an automatic fix it absorbed gives its own `heard`; a Review revert's restored words are
+  the recognizer's), so `heard` stays in the unfixed word space every provenance map uses
+  (`WordFixStage.wordOrigins`, `SpeakerTranscriptRetarget.origins`: like a live correction,
+  its original word count is `tokens(heard)`; `WordFixes.originalWordRanges`: like a live
+  correction, the base already holds it). The edit is made in both layers:
+  - the unfixed base `B` (`current.fixedFrom`, or the current transcript when it has none)
+    gets a new revision `B′` with the edit marked `reviewEdit`, `fixedFrom` nil and
+    `liveCorrectedFrom` = `B.liveCorrectedFrom ?? B.id` (the stable word space retargeting
+    compares);
+  - a fixed current transcript `C` gets `C′`: `C` with the same edit, `fixedFrom = B′.id`;
+    its other fixes stay where they are.
+  An edited span keeps the original span's start and end: in a timed segment its new words
+  share that time evenly (`WordFixes.applying`); an untimed segment stays untimed, so its
+  words keep estimated times. Because the edit lives in the base, every later word-fix pass
+  starts from `B′` and keeps it (a `reviewEdit` mark is never replaced by a correction or a
+  term). Deep transcription and language detection refuse to replace a transcript that
+  holds Review edits unless forced, as for edited speaker labels (the edits are then lost).
+- *Publication* follows `SessionWordFixRevert`: the processing lease, the writer lock, then
+  the speaker lock; the current transcript and head run must be the ones the window showed;
+  the words must still be shown in the head's projection (echo mask included); the speaker
+  run is retargeted (`SpeakerTranscriptRetarget.plan`: turns keep their IDs, effective edits
+  are replayed with their IDs and batches) and staged; `B′` is saved as a revision with a
+  `transcriptEdited` event (`transcriptID`, `base`, `segment`), then `C′`'s
+  `transcriptEdited` event, then `C′` becomes current, then the new head. `unfixedID` follows
+  `transcriptEdited` like `wordsFixed`. A head that could not be published is repaired from
+  the old head as a revert's is. Exports are regenerated `exportDelay` later; the summary is
+  no longer current (its key holds the transcript ID). Speaker labels, speaker edits, and
+  the window's paragraph breaks (carried over as for a revert) survive; the playback and
+  highlight mapping is rebuilt from the new segments.
+- *Undo.* An edit is one entry of the window's undo, among speaker changes; unlike a revert,
+  it keeps the undo history (the retargeted run keeps every edit ID and batch). Undoing it
+  publishes a copy of `C` (new ID; `fixedFrom` still names `B`, so `B′` is left unused) with
+  the head retargeted again: the text, words, timing, and fixes are exactly `C`'s, and speaker
+  edits made since carry over. It is refused when the current transcript is no longer the
+  edit's `C′`. A speaker split waiting in the queue whose word is in the edited segment is
+  refused (its word index may have moved).
+- *Echo.* Words under a `reviewEdit` mark are never hidden as echo (`SpeakerProjection`
+  excludes them like dropped words): the person read and confirmed them, and new words that
+  share a span's time could otherwise be judged echo one by one.
+- *Learning* (`TranscriptEditLearning`, HolosCore; the app's learner):
+  - every edit is diffed as dictation's Learn does (`CorrectionList.learn`, the recognizer's
+    words against the new text, one shown word on each side as context so a lone dictionary
+    word is learned only with its neighbour), and the pairs go to `corrections.json`, the
+    list Corrections (⌘2) shows; a pair the list already gives is skipped;
+  - nothing is learned from a deletion, a punctuation-only change, or a case-only change,
+    unless the case change makes a proper noun (a word whose lowercase is not a dictionary
+    word: "github" → "GitHub");
+  - when the new text looks like a name or term (a word that is not a dictionary word, has a
+    capital inside it, or a content word the edit capitalized), the window offers "Add
+    “Claude” to the word list, often heard as “cloud”?" (Add / Not Now); ⌥Return adds it
+    without asking. "Often heard as" is the recognizer's text unless it is the term itself in
+    another case;
+  - undoing the edit takes back the corrections it introduced and restores any it displaced
+    (`CorrectionList.reconcileLearned`); a word-list term added stays.
+- *Not in v1.* Editing while the meeting records (Review opens after it), spanning segments
+  or turns, deleting a whole segment, editing over a live correction, redo, and showing the
+  edit before it is saved (the field closes and the row updates once saved).
 
 **Saving, undo, and rereading** (`ReviewSession`): what the window shows always matches
 the disk.
@@ -7813,6 +7899,10 @@ whose review is open or still opening):
 | `reviewAssigningAParagraphMovesEveryTurnOfItAndUndoRestoresIt` | assign a two-turn row; undo | one `reassignTurns` of both turns; rows join; undo restores turns and rows |
 | `reviewSplittingInsideAParagraphStartsOneThatUndoJoinsAgain` | split inside a row's first turn; undo | the second part starts a row with the next turn; undo joins them |
 | `TurnListViewTests` (HolosAppTests) | the list laid out offscreen | rows joined, word click, fixes and VoiceOver, selection, pop-up and hint, tint through a pause |
+| `TranscriptWordEditTests` | hand-built transcripts | one word, more and fewer words, deletion into a neighbour, a fixed transcript's base edited too (word fixes made again give the same words), a fix taken whole, untimed words, refusals, exact restore, shown words to stored indices with hidden echo, an edited word never hidden as echo |
+| `TranscriptEditLearningTests` (HolosCoreTests) | heard/meant pairs | corrections learned with a neighbour; deletions, punctuation, and case changes skipped unless a proper noun; terms offered; often-heard-as |
+| `ReviewWordEditTests` | fixture sessions | edit, learn, speaker edits before and after, undo in order and exactly; edit and deletion inside a paragraph; refusals across turns, segments, hidden words; word fixes made again keep an edit |
+| `TurnListWordEditTests` (HolosAppTests) | the list laid out offscreen | word clicks play or edit by mode; Return, ⌥Return, Esc, Tab, ⇧Tab; selection kept in one turn; mode off closes unsaved; VoiceOver "Edit"; the field follows its words |
 
 **Manual.** H14 and H20 in §7.
 

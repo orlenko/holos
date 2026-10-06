@@ -93,6 +93,18 @@ public final class MeetingVoiceCache: Sendable {
         for waiter in waiters { waiter.resume() }
     }
 
+    /// The head run `old` was replaced by `new` with the same turns (a word edit in Review retargets the run): what
+    /// is stored now belongs to `new`, and a running pass goes on storing into it. A turn whose times moved is still not
+    /// served (`serve` compares them). False, changing nothing, when the cache holds another run's.
+    @discardableResult
+    public func moveRun(from old: String, to new: String) -> Bool {
+        storage.withLock { storage in
+            guard storage.runID == old else { return false }
+            storage.runID = new
+            return true
+        }
+    }
+
     /// Whether a pass is running.
     public var isComputing: Bool { storage.withLock { $0.computing } }
 

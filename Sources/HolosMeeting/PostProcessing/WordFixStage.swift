@@ -673,7 +673,7 @@ enum WordFixStage {
             let replacementCount = fix.end - fix.first
             let originalCount: Int
             switch fix.kind {
-            case .correction, .term, .liveCorrection:
+            case .correction, .term, .liveCorrection, .reviewEdit:
                 originalCount = WordFixes.tokens(of: Array(fix.heard.utf16)).count
             case .reviewRevert:
                 originalCount = replacementCount
@@ -848,7 +848,8 @@ enum WordFixStage {
         var id = transcriptID
         var seen: Set<String> = [id]
         while let base = events.last(where: {
-            ($0.kind == MeetingEventKind.wordsFixed || $0.kind == MeetingEventKind.liveHintsApplied)
+            ($0.kind == MeetingEventKind.wordsFixed || $0.kind == MeetingEventKind.liveHintsApplied
+                || $0.kind == MeetingEventKind.transcriptEdited)
                 && $0.details["transcriptID"] == id
         })?.details["base"], !base.isEmpty, seen.insert(base).inserted {
             id = base

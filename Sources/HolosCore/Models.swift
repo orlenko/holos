@@ -70,6 +70,10 @@ public struct TranscriptWordFixKind: OpenStringCode {
     public static let reviewRevert = TranscriptWordFixKind("reviewRevert")
     /// A correction made against a finalized phrase while its meeting was still recording.
     public static let liveCorrection = TranscriptWordFixKind("liveCorrection")
+    /// Words the person typed in Review's edit mode (docs/meeting-design.md §5.10, "Editing words"). `heard` is what
+    /// the recognizer wrote over the whole edited span; like a live correction, the edit is in the unfixed base too,
+    /// so automatic word fixes never replace it.
+    public static let reviewEdit = TranscriptWordFixKind("reviewEdit")
 }
 
 /// Words of a segment that the meeting word-fix stage changed (docs/design.md "Meeting word fixes"): what the

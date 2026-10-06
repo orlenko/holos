@@ -392,6 +392,32 @@ func deepEditedSpeakerLabelsAreKeptUnlessForced() async throws {
 }
 
 @Test(.timeLimit(.minutes(1)))
+func deepWordsEditedInReviewAreKeptUnlessForced() async throws {
+    let temp = try TemporaryDirectory("deep")
+    defer { temp.remove() }
+    let (session, recorded) = try await deepSession(in: temp.url)
+    _ = try await MeetingPostProcessor(voiceSamples: .none, diarizer: FakeDiarizer(outputs: ["mic": SessionFixtures.alternatingOutput()]),
+                                       freeSpace: FixedFreeSpace(.max), languages: noSpeech)
+        .run(session: session, lease: nil)
+    let runID = try #require(try SessionSpeakerStore.readHead(session: session)?.runID)
+    let edited = try #require(try await SessionWordEdit.run(
+        session: session,
+        request: TranscriptWordEdit.Request(segmentID: recorded.segments[0].id, first: 0, end: 1, text: "Edited"),
+        expectedTranscriptID: recorded.id, expectedRunID: runID))
+    let transcriber = ScriptedTranscriber(script: scriptedHearing)
+
+    let refused = try await deepRun(session, deepDependencies(transcriber))
+    #expect(deepStage(refused.record)?.result == .skipped)
+    #expect(deepStage(refused.record)?.message == DeepTranscriptionStage.editedWords)
+    #expect(transcriber.calls.value == 0)
+    #expect(try currentTranscript(session).id == edited.transcriptID, "The words edited in Review stay.")
+
+    let forced = try await deepRun(session, deepDependencies(transcriber), force: true)
+    #expect(forced.exitCode == 0)
+    #expect(try currentTranscript(session).engine == "whisper:test")
+}
+
+@Test(.timeLimit(.minutes(1)))
 func deepLabelsEditedWhileTranscribingAreKept() async throws {
     let temp = try TemporaryDirectory("deep")
     defer { temp.remove() }

@@ -142,6 +142,9 @@ public enum MeetingEventKind {
     public static let wordsFixed = "wordsFixed"
     /// transcriptID, base, applied, unmatched: live text hints reconciled with the finished transcript.
     public static let liveHintsApplied = "liveHintsApplied"
+    /// transcriptID, base, segment, and `undo` ("1") for an undo: words edited in Review (docs/meeting-design.md §5.10,
+    /// "Editing words"), journaled before the edited revision is saved; `base` is the revision it was edited from.
+    public static let transcriptEdited = "transcriptEdited"
     /// transcriptID, base, engine, language, tracks, seconds, segments, words, droppedSilent, droppedRepeats,
     /// promptTerms: journaled before a transcript made from the saved audio by the deep transcription pass is saved as
     /// current; `base` is the recorded transcript it replaced, which is kept (docs/meeting-design.md §4.16)

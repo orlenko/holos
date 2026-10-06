@@ -1268,6 +1268,28 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
         })
     }
 
+    /// A word edit saved in a meeting's Review teaches the corrections `TranscriptEditLearning` finds (none for a
+    /// trivial edit), into the list Corrections shows; a pair the list already gives is skipped. Returns what it
+    /// introduced and displaced, for `unlearnReviewEdit` when the edit is undone; nil when nothing was learned.
+    func learnReviewEdit(_ edit: ReviewWordEdit) -> ReviewLearnedCorrections? {
+        let dictionaryWord: (String) -> Bool = { word in
+            NSSpellChecker.shared.checkSpelling(of: word.lowercased(), startingAt: 0).location == NSNotFound
+        }
+        let learned = TranscriptEditLearning.corrections(heard: edit.heard, meant: edit.meant, before: edit.before,
+                                                         after: edit.after, isDictionaryWord: dictionaryWord)
+            .filter { corrections.apply(to: $0.heard) != $0.meant }
+        guard !learned.isEmpty else { return nil }
+        var reconciliation = CorrectionList.LearningReconciliation()
+        guard changeCorrections({ reconciliation = $0.reconcileLearned([], with: learned) }) else { return nil }
+        guard !reconciliation.owned.isEmpty || !reconciliation.displaced.isEmpty else { return nil }
+        return ReviewLearnedCorrections(owned: reconciliation.owned, displaced: reconciliation.displaced)
+    }
+
+    /// An undone Review edit takes back the corrections it introduced and puts back the ones they displaced.
+    func unlearnReviewEdit(_ learned: ReviewLearnedCorrections) {
+        changeCorrections { $0.reconcileLearned(learned.owned, preserving: learned.displaced, with: []) }
+    }
+
     /// A manual Add; one that resolves a declined swap also keeps the edit that swap came from, as Learn
     /// does, unless a newer dictation or kept edit has replaced the text it was edited from.
     private func addCorrection(_ correction: Correction, resolving edit: DeclinedCorrectionQueue.PendingEdit?)

@@ -200,7 +200,7 @@ enum SpeakerTranscriptRetarget {
             let replacementCount = fix.end - fix.first
             let originalCount: Int
             switch fix.kind {
-            case .correction, .term, .liveCorrection:
+            case .correction, .term, .liveCorrection, .reviewEdit:
                 originalCount = WordFixes.tokens(of: Array(fix.heard.utf16)).count
             case .reviewRevert:
                 originalCount = replacementCount

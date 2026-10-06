@@ -443,8 +443,15 @@ extension SpeakerProjection {
                     }
                 }
                 let dropped = Set(words(run.droppedWords.flatMap(\.spans)))
+                // Words the person edited in Review were read and confirmed: never echo, even when their new words
+                // share a span's time differently than the recognizer's did.
+                let edited = Set(words(transcript.segments.flatMap { segment in
+                    (segment.fixes ?? []).filter { $0.kind == .reviewEdit && $0.first < $0.end }.map {
+                        WordSpan(segmentID: segment.id, first: $0.first, end: $0.end)
+                    }
+                }))
                 let echo = Set(words(EchoFilter.acousticEchoSpans(transcript: transcript, mask: acousticEcho,
-                                                                  excluding: dropped)))
+                                                                  excluding: dropped.union(edited))))
                 var labelled: [String: Int] = [:]
                 var echoed: [String: Int] = [:]
                 for turn in run.turns where turn.track == EchoFilter.microphoneTrack {

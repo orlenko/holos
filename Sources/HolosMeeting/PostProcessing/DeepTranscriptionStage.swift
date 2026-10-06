@@ -79,6 +79,8 @@ enum DeepTranscriptionStage {
 
     static let editedHead = "Speaker labels were edited, so the meeting was not transcribed again. To transcribe it "
         + "again and label speakers again (names carry over), run voiceislocal session deep-transcribe with --force."
+    static let editedWords = "Words were edited in Review, so the meeting was not transcribed again. To transcribe it "
+        + "again (the edited words are replaced), run voiceislocal session deep-transcribe with --force."
     static let severalLanguages = "This meeting is in several languages; deep transcription handles meetings in one "
         + "language for now, so the transcript was kept."
     static let audioDeleted = "The meeting's audio was deleted, so it cannot be transcribed again."
@@ -431,10 +433,11 @@ enum DeepTranscriptionStage {
 
     // MARK: - Publication
 
-    /// Why the transcript must not be replaced now: its speaker labels were edited and `force` was not given. Nil when
-    /// it may be.
+    /// Why the transcript must not be replaced now: its words were edited in Review, or its speaker labels were edited,
+    /// and `force` was not given. Nil when it may be.
     private static func editedHeadProblem(_ request: Request) -> String? {
         guard let transcript = request.transcript else { return nil }
+        if !request.force, TranscriptWordEdit.hasReviewEdits(transcript) { return editedWords }
         do {
             guard let head = try SpeakerAnalysis.headState(session: request.session, transcript: transcript),
                   head.needsForce(request.force) else { return nil }
