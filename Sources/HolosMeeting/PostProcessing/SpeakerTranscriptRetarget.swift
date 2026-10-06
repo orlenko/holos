@@ -335,8 +335,10 @@ enum SpeakerTranscriptRetarget {
                 let ref = { (word: Int) in WordRef(segmentID: segment.id, word: word) }
                 let owners: [[WordRef]]
                 if segment.id == move.segmentID {
-                    guard move.replaced.upperBound <= oldWords.count,
-                          newWords.count == oldWords.count - move.replaced.count + move.replacement.count else {
+                    // Both ranges within their words before any count is used (a move read from a damaged journal
+                    // can hold any numbers), then compared without adding, so nothing can overflow.
+                    guard move.replaced.upperBound <= oldWords.count, move.replacement.upperBound <= newWords.count,
+                          newWords.count - move.replacement.count == oldWords.count - move.replaced.count else {
                         throw changed
                     }
                     owners = newWords.indices.map { index in

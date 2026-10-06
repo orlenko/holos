@@ -758,13 +758,13 @@ func anEditIsNeverSavedOverAWordChangedElsewhereInItsPlace() async throws {
     // The field's edit, queued with the words as it showed them: refused, saying what was typed; nothing written.
     let refused = await #expect(throws: HolosError.self) {
         try await review.editWords([seen.ref], to: "Claude", seenMoves: review.wordMoves.count,
-                                   expecting: [seen.text])
+                                   expecting: [seen.shown])
     }
     #expect(refused?.localizedDescription.contains("what you typed: “Claude”") == true)
     #expect(try wordEditCurrent(session).segments[0].text == "ask crowd now")
     // The same when a maintenance pause takes the field's edit, and when the window's close does.
     let stale = ReviewSession.TypedEdit(words: [seen.ref], text: "Claude", seenMoves: review.wordMoves.count,
-                                        expected: [seen.text])
+                                        expected: [seen.shown])
     let hold = ReviewMaintenance.Hold(.recover)
     let paused = await review.pause(hold, reason: "Voice is Local is recovering this meeting.", typed: stale)
     #expect(paused?.contains("“Claude”") == true)
@@ -777,6 +777,66 @@ func anEditIsNeverSavedOverAWordChangedElsewhereInItsPlace() async throws {
                                                seenMoves: review.wordMoves.count, expected: ["then"])
     await review.close(typed: closingStale)
     #expect(try wordEditCurrent(session).segments[0].text == "ask Claude now", "Not saved over “now”.")
+}
+
+@Test(.timeLimit(.minutes(1))) @MainActor
+func aDamagedWordMoveFromTheJournalIsRefusedNeverCounted() async throws {
+    let temp = try TemporaryDirectory("review")
+    defer { temp.remove() }
+    let session = try await wordEditSession(in: temp, [
+        WordEditTurn(speaker: "system:S1", start: 0, words: ["ask", "cloud", "now"]),
+    ])
+    let snapshot = try SpeakerSessionSnapshot.load(session: session)
+    let segment = try #require(snapshot.transcript.segments.first?.id)
+    var edited = snapshot.transcript
+    edited.id = UUID().uuidString
+    // A decodable journal event whose move holds numbers past any word count (repairing a speaker head reads it).
+    for move in [ReviewWordMove(segmentID: segment, replaced: 1..<2, replacement: 1..<Int.max),
+                 ReviewWordMove(segmentID: segment, replaced: 1..<Int.max, replacement: 1..<2),
+                 ReviewWordMove(segmentID: segment, replaced: 1..<2, replacement: 1..<9)] {
+        #expect(throws: HolosError.self, "\(move)") {
+            try SpeakerTranscriptRetarget.plan(session: session, from: snapshot, to: edited, move: move)
+        }
+    }
+    // A sound one maps as before.
+    #expect(try SpeakerTranscriptRetarget.plan(session: session, from: snapshot, to: edited,
+                                               move: ReviewWordMove(segmentID: segment, replaced: 1..<2,
+                                                                    replacement: 1..<2)) != nil)
+}
+
+@Test(.timeLimit(.minutes(1))) @MainActor
+func anEditIsNeverSavedOverAWordWhosePunctuationChangedElsewhere() async throws {
+    let temp = try TemporaryDirectory("review")
+    defer { temp.remove() }
+    let session = try await wordEditSession(in: temp, [
+        WordEditTurn(speaker: "system:S1", start: 0, words: ["ask", "cloud", "now"]),
+    ])
+    let review = try await wordEditOpen(session)
+    let seen = review.words(of: "T1")[1]
+    #expect(seen.text == "cloud" && seen.shown == "cloud")
+    // Another process changes only the punctuation the recognizer did not time: "cloud" shows as "cloud?".
+    var changed = try wordEditCurrent(session)
+    changed.id = UUID().uuidString
+    changed.segments[0].text = "ask cloud? now"
+    changed.segments[0].words[2].utf16Offset = 11
+    try await SessionFixtures.saveTranscript(changed, in: session)
+    var run = try SessionSpeakerStore.readRun(id: try #require(try SessionSpeakerStore.readHead(session: session)?.runID),
+                                              session: session)
+    run.id = UUID().uuidString
+    run.transcriptID = changed.id
+    try SessionArchive.withSpeakerLock(at: session) {
+        try SessionSpeakerStore.writeRun(run, session: session)
+        try SessionSpeakerStore.writeHead(SpeakerHead(runID: run.id), session: session)
+    }
+    await review.reload()
+    #expect(review.words(of: "T1")[1].text == "cloud" && review.words(of: "T1")[1].shown == "cloud?")
+    // Its timed text is the same, its shown text is not: refused, saying what was typed.
+    let refused = await #expect(throws: HolosError.self) {
+        try await review.editWords([seen.ref], to: "Claude", expecting: [seen.shown])
+    }
+    #expect(refused?.localizedDescription.contains("what you typed: “Claude”") == true)
+    #expect(try wordEditCurrent(session).segments[0].text == "ask cloud? now")
+    await review.close()
 }
 
 @Test(.timeLimit(.minutes(1))) @MainActor

@@ -29,6 +29,32 @@ enum ReviewQuit {
     }
 }
 
+/// Closing a review window by hand (its close button, ⌘W) with an edit typed in its field: the window stays open until
+/// the edit is saved, and stays open when it is not, so a save that fails (a full disk) never loses what was typed.
+/// Quitting, and closing before a meeting is deleted, never come here (`ClosingReview.startClosing` closes the window
+/// directly): they keep their bounded wait, and log what was typed when it could not be saved.
+@MainActor
+final class ReviewCloseGate {
+    /// The edit typed when the close was asked for is being saved: another close waits for it.
+    private(set) var saving = false
+
+    /// Whether the window may close now. With an edit typed (`typed`), no: `save` saves it (nil when saved, else why,
+    /// with what was typed); then `close` closes the window, or `keep` opens the field again with what was typed and
+    /// shows why, and the window stays.
+    func shouldClose(typed: Bool, save: @escaping () async -> String?, close: @escaping () -> Void,
+                     keep: @escaping (String) -> Void) -> Bool {
+        if saving { return false }
+        guard typed else { return true }
+        saving = true
+        Task { @MainActor in
+            let refusal = await save()
+            saving = false
+            if let refusal { keep(refusal) } else { close() }
+        }
+        return false
+    }
+}
+
 /// The transcript review window (docs/meeting-design.md §5.10): name the speakers of a meeting, play their audio,
 /// reassign, merge, split, confirm suggestions in bulk, find more speakers, undo, and export. The model is
 /// `ReviewSession` (HolosMeeting); this file only arranges views and routes actions to it. Every change shows at once
@@ -112,6 +138,8 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, Clo
     private var shownPlayerState = StateChangeTracker<ReviewPlayer.State>()
     private var resignedKeyAt: Date?
     private var closeTask: Task<Void, Never>?
+    /// A close by hand waits for the edit typed in the field to be saved (`windowShouldClose`).
+    private let closeGate = ReviewCloseGate()
     private var splitSheet: SplitSheet?
     private var assignSignature: [String] = []
     private var refreshScheduled = false
@@ -184,7 +212,7 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, Clo
         // The review turns read-only, so the open edit field closes: what it holds is saved first, never lost.
         let typed = turnList.takeOpenWordEdit().map { open in
             ReviewSession.TypedEdit(words: open.words.map(\.ref), text: open.text, seenMoves: open.movesSeen,
-                                    expected: open.words.map(\.text))
+                                    expected: open.words.map(\.shown))
         }
         player.invalidate()
         refresh()
@@ -1063,7 +1091,7 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, Clo
                 // term is still added).
                 // The words as the field showed them: never saved over words changed elsewhere since.
                 _ = try await review.editWords(words.map(\.ref), to: text, seenMoves: movesSeen,
-                                               whileUnread: whileUnread, expecting: words.map(\.text)) { edit in
+                                               whileUnread: whileUnread, expecting: words.map(\.shown)) { edit in
                     saved = true
                     self?.offerTerm(after: edit, add: addTerm)
                 }
@@ -1367,6 +1395,42 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, Clo
         if window.attachedSheet == nil { resignedKeyAt = Date() }
     }
 
+    /// Closed by hand with an edit typed in the field: saved first, and the window stays open when it is not
+    /// (`ReviewCloseGate`).
+    func windowShouldClose(_ sender: NSWindow) -> Bool {
+        guard sender === window, closeTask == nil else { return true }
+        let open = closeGate.saving ? nil : turnList.takeOpenWordEdit()
+        return closeGate.shouldClose(typed: open != nil, save: { [weak self] in
+            guard let self, let open else { return nil }
+            return await self.saveTypedEdit(open.words, text: open.text, movesSeen: open.movesSeen)
+        }, close: { [weak self] in
+            self?.window.close()
+        }, keep: { [weak self] message in
+            guard let self, let open else { return }
+            if !self.turnList.editingWords { self.turnList.editingWords = true }
+            self.turnList.reopenWordEdit(open.words, typed: open.text, message: message)
+            self.problem = message
+            self.refreshFooter()
+        })
+    }
+
+    /// Saves an edit typed in the field and waits for it: nil when saved (also when its labels could not be reread
+    /// after it: the edit stands), else why, with what was typed.
+    private func saveTypedEdit(_ words: [ReviewWord], text: String, movesSeen: Int) async -> String? {
+        var saved = false
+        do {
+            _ = try await review.editWords(words.map(\.ref), to: text, seenMoves: movesSeen, whileUnread: true,
+                                           expecting: words.map(\.shown)) { _ in saved = true }
+            return nil
+        } catch where saved {
+            return nil
+        } catch {
+            let typed = TranscriptWordEdit.cleaned(text)
+            return error.localizedDescription.contains("“\(typed)”") ? error.localizedDescription
+                : error.localizedDescription + " What you typed: “\(typed)”."
+        }
+    }
+
     func windowWillClose(_ notification: Notification) {
         guard (notification.object as? NSWindow) === window else { return }
         beginClosing()
@@ -1381,7 +1445,7 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, Clo
         // AppKit ends no editing when a window closes: an open edit field's text is saved (and learned) by the close.
         let typed = turnList.takeOpenWordEdit().map { open in
             ReviewSession.TypedEdit(words: open.words.map(\.ref), text: open.text, seenMoves: open.movesSeen,
-                                    expected: open.words.map(\.text))
+                                    expected: open.words.map(\.shown))
         }
         closeTask = Task { [weak self] in
             await review.close(typed: typed)

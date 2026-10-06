@@ -113,6 +113,26 @@ struct TurnListWordEditTests {
         #expect(list.wordEdit?.words.map(\.text) == ["alpha"])
     }
 
+    /// Typed in the field, then a ⇧-click onto a word that cannot be edited (corrected while recording): the field
+    /// stays as it was, with what was typed, and the banner says why.
+    @Test func aRefusedShiftClickLeavesTheFieldAsItWas() {
+        let (list, saved) = editingList()
+        var messages: [String?] = []
+        list.onEditMessage = { messages.append($0) }
+        list.editRefusal = { words in words.contains { $0.text == "beta" } ? "Corrected while recording." : nil }
+        list.editingWords = true
+        list.table.handleWordClick(row: 0, word: 0, through: 0, extend: false)
+        list.editField.stringValue = "Alfa"
+        list.table.handleWordClick(row: 0, word: 1, through: 1, extend: true)
+        #expect(list.wordEdit?.words.map(\.text) == ["alpha"] && list.editField.superview != nil)
+        #expect(list.editField.stringValue == "Alfa" && saved().isEmpty)
+        #expect(messages.last == "Corrected while recording.")
+        // An extension that is allowed still grows it, keeping what was typed.
+        list.editRefusal = nil
+        list.table.handleWordClick(row: 0, word: 1, through: 1, extend: true)
+        #expect(list.wordEdit?.words.map(\.text) == ["alpha", "beta"] && list.editField.stringValue == "Alfa")
+    }
+
     /// A save refused or failed after Return: the field opens again over the words with what was typed.
     @Test func aRefusedSaveOpensTheFieldAgainWithWhatWasTyped() throws {
         let (list, saved) = editingList()

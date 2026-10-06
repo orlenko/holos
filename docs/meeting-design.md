@@ -7745,7 +7745,10 @@ shown, Otter-style.
   banner says so), since v1 edits one segment of one turn at a time. Return saves, ⌥Return
   saves and adds the new text to the word list, Tab saves and edits the next word, ⇧Tab
   the previous one, Esc cancels. Closing the window (or quitting) with the field open saves
-  what it holds, before the close learns from the edits. Quitting starts every review
+  what it holds, before the close learns from the edits. Closed by hand (its close button,
+  ⌘W), the window stays open until that edit is saved, and stays open when it is not (a full
+  disk, a refusal): the field opens again with what was typed and the footer says why
+  (`ReviewCloseGate`), so nothing typed is lost to a failed save. Quitting starts every review
   window's close at once (`ReviewQuit.closeAll`), so each queues its open field's edit before
   any slow close (another window's voice sync) is waited for; when the closes cannot finish
   within the quit's limit, an edit not saved yet is logged with what was typed. A maintenance
@@ -7760,9 +7763,12 @@ shown, Otter-style.
   was typed. However else the field closes (edit mode turned off, a search filtering its row
   away, its words moved or gone, the review turned read-only), its text is queued as an edit
   (`TurnListView.keepWordEdit`), and the review's queue keeps it, saves it, or refuses it
-  saying what was typed. A queued field edit carries its words' text as the field showed them
-  (`editWords(expecting:)`): a change made elsewhere and read since that kept a word's place
-  but changed it refuses the edit, saying what was typed, never writing over it. The field is
+  saying what was typed. A queued field edit, on every path (save, pause, close), carries its
+  words' text as the field showed them, untimed punctuation included (`ReviewWord.shown`,
+  `editWords(expecting:)`): a change made elsewhere and read since that kept a word's place
+  but changed it ("Hello." to "Hello?") refuses the edit, saying what was typed, never writing
+  over it. A ⇧-click that cannot grow the field (onto a word that cannot be edited) leaves the
+  field as it was, with what was typed and its selection, and the banner says why. The field is
   at least 90 pt wide, so it can lie over the next words: a ⇧-click there passes through it to
   the table (`WordEditField.hitTest`, outside `wordsFrame`), which extends the selection; a
   plain click there edits the field's text. A head made elsewhere that lands between an

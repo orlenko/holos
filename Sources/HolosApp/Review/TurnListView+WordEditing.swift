@@ -111,24 +111,15 @@ extension TurnListView: NSTextFieldDelegate {
         var anchor = from
         /// What was typed before a ⇧-click grew the selection: it stays in the field.
         var typed: String?
-        if extend, let open = wordEdit, open.paragraphID == paragraph.id {
-            // The selection grows from where it began; the field starts again with the words it now covers, unless
-            // something was typed in it.
+        // A ⇧-click grows the open field's selection from where it began.
+        let extending = extend && wordEdit?.paragraphID == paragraph.id
+        if extending, let open = wordEdit {
             anchor = open.anchor
-            let text = editField.stringValue
-            if TranscriptWordEdit.cleaned(text) != TranscriptWordEdit.cleaned(open.shown) { typed = text }
-            closeEditField()
         } else if wordEdit != nil {
             // Clicking elsewhere while the field is open saves what it holds first.
             commitWordEdit(addTerm: false, advance: .stay)
         }
         extendingWordEdit = false
-        // Words edited together that a relabel put in two turns (`ReviewWord.revertible`): an edit takes in all of
-        // them, across the turns, and would be refused.
-        guard all[anchor].revertible else {
-            onEditMessage?(Self.editedAcrossTurns)
-            return
-        }
         var lower = anchor
         var upper = anchor
         func joins(_ index: Int, _ neighbour: Int) -> Bool {
@@ -137,11 +128,20 @@ extension TurnListView: NSTextFieldDelegate {
         }
         while upper < through, joins(upper + 1, upper) { upper += 1 }
         while lower > through, joins(lower - 1, lower) { lower -= 1 }
-        // Words known not to be editable (corrected while recording, an older fix in their segment): no field opens,
-        // and the banner says why (with what was typed before a ⇧-click grew the selection onto them).
-        if let refusal = editRefusal?(Array(all[lower...upper])) {
-            onEditMessage?(typed.map { refusal + " What you typed: “\(TranscriptWordEdit.cleaned($0))”." } ?? refusal)
+        // Words edited together that a relabel put in two turns (`ReviewWord.revertible`: an edit takes in all of them,
+        // across the turns), and words known not to be editable (corrected while recording, an older fix in their
+        // segment): no field opens, and the banner says why. A ⇧-click growing an open field onto them leaves that field
+        // as it was, with what was typed and where.
+        if let refusal = all[anchor].revertible ? editRefusal?(Array(all[lower...upper])) : Self.editedAcrossTurns {
+            if extending { keepFieldAfterRefusedExtension() }
+            onEditMessage?(refusal)
             return
+        }
+        if extending, let open = wordEdit {
+            // Grown: the field starts again with the words it now covers, unless something was typed in it.
+            let text = editField.stringValue
+            if TranscriptWordEdit.cleaned(text) != TranscriptWordEdit.cleaned(open.shown) { typed = text }
+            closeEditField()
         }
         let stopped = through > upper || through < lower
         onEditMessage?(stopped ? Self.selectionStopped : nil)
@@ -379,11 +379,26 @@ extension TurnListView: NSTextFieldDelegate {
         commitWordEdit(addTerm: false, advance: .stay)
     }
 
+    /// A ⇧-click could not grow the field (`beginEditing`): it stays open as it was, with the keyboard, what was
+    /// typed, and the selection it had when the click came.
+    private func keepFieldAfterRefusedExtension() {
+        guard wordEdit != nil, editField.superview != nil else { return }
+        let selection = selectionBeforeExtension
+        selectionBeforeExtension = nil
+        if window?.firstResponder !== editField.currentEditor() { window?.makeFirstResponder(editField) }
+        if let selection, let editor = editField.currentEditor(),
+           NSMaxRange(selection) <= (editField.stringValue as NSString).length {
+            editor.selectedRange = selection
+        }
+    }
+
     /// A click in the list in edit mode is about to be handled (`TurnTableView.mouseDown`).
     func editClickBegan(extend: Bool) {
         guard wordEdit != nil else { return }
         if extend {
             extendingWordEdit = true
+            // Kept in case the selection cannot grow and the field stays as it was.
+            selectionBeforeExtension = editField.currentEditor()?.selectedRange
         } else {
             commitWordEdit(addTerm: false, advance: .stay)
         }

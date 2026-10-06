@@ -60,9 +60,14 @@ public struct ReviewWord: Sendable, Equatable {
     /// Speakers, Label Speakers on My Microphone) has since put in two turns: their Revert, and any edit of them (it
     /// takes in the whole mark), would be an edit across turns and refused. The other words of each turn can be edited.
     public let revertible: Bool
+    /// The word as the transcript shows it (`TranscriptWordEdit.shownText`: with the punctuation the recognizer did not
+    /// time, "Hello." for a timed "Hello"): what an edit of it expects to find (`editWords(expecting:)`).
+    public let shown: String
 
-    public init(ref: WordRef, text: String, start: Double, fix: TranscriptWordFix? = nil, revertible: Bool = true) {
+    public init(ref: WordRef, text: String, start: Double, fix: TranscriptWordFix? = nil, revertible: Bool = true,
+                shown: String? = nil) {
         self.ref = ref; self.text = text; self.start = start; self.fix = fix; self.revertible = revertible
+        self.shown = shown ?? text.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 }
 
@@ -618,7 +623,9 @@ public struct ReviewWord: Sendable, Equatable {
                                                        turns: projection.turns.map(\.spans)))
                 } ?? true
                 words.append(ReviewWord(ref: WordRef(segmentID: span.segmentID, word: index), text: word.text,
-                                        start: word.start, fix: fix, revertible: revertible))
+                                        start: word.start, fix: fix, revertible: revertible,
+                                        shown: TranscriptWordEdit.shownText(of: segment, first: index,
+                                                                            end: index + 1)))
             }
         }
         wordCache[turn.id] = (turn.spans, words)
@@ -938,11 +945,11 @@ public struct ReviewWord: Sendable, Equatable {
         }
         // Before any fix's words are walked (`takingInMarks`).
         if TranscriptWordEdit.hasDamagedMark(segment) { throw TranscriptWordEdit.damagedMarks }
-        // The words still read as the person saw them (a change made elsewhere may keep a word's place and change it).
+        // The words still read as the person saw them, punctuation included (`ReviewWord.shown`: a change made
+        // elsewhere may keep a word's place and change only its untimed punctuation, "Hello." to "Hello?").
         if let expecting {
-            let effective = WordTiming.effectiveWords(of: segment)
-            guard expecting.count == words.count, zip(words, expecting).allSatisfy({ word, text in
-                word.word >= 0 && word.word < effective.count && effective[word.word].text == text
+            guard expecting.count == words.count, zip(words, expecting).allSatisfy({ word, shown in
+                TranscriptWordEdit.shownText(of: segment, first: word.word, end: word.word + 1) == shown
             }) else {
                 throw HolosError.invalidInput("Those words were changed elsewhere while you edited them; edit them "
                                               + "again (what you typed: “\(TranscriptWordEdit.cleaned(text))”).")
