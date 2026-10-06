@@ -43,9 +43,10 @@ public enum ReviewParagraphSplit: Sendable, Equatable {
 }
 
 /// The paragraph breaks "Split Turn" made in the window without splitting a turn (`ReviewParagraphSplit.breakBefore`),
-/// never saved. Each is kept with the turn it breaks before as it was (ID, track, start), so it outlives labels that
-/// keep their turns (a word fix reverted publishes a new run with the same turns) and goes with a turn that is gone or
-/// changed (a relabel gives turn IDs to other turns). Pure.
+/// never saved. Each is kept with the turn it breaks before as it was (ID, track, start), so it goes with a turn that
+/// is gone or changed (a relabel gives turn IDs to other turns). While `carryingOver` (the window reverts a word fix:
+/// a new run with the same turns, whose estimated starts may move), a turn with the break's ID and track keeps it and
+/// its start is taken as it now is. Pure.
 public struct ReviewParagraphBreaks: Sendable, Equatable {
     private struct Mark: Sendable, Equatable {
         let track: String
@@ -53,6 +54,9 @@ public struct ReviewParagraphBreaks: Sendable, Equatable {
     }
 
     private var marks: [String: Mark] = [:]
+    /// The turns keep their identity through the label changes now coming (a word fix reverted in this window), even
+    /// if their starts move.
+    public var carryingOver = false
 
     public init() {}
 
@@ -64,12 +68,14 @@ public struct ReviewParagraphBreaks: Sendable, Equatable {
     }
 
     /// The turns of `turns` to break before (`ReviewParagraphs.group`): those still as they were when the break was
-    /// made. Breaks whose turn is gone or changed are forgotten.
+    /// made (or, while `carryingOver`, with the same ID and track). Breaks whose turn is gone or changed are forgotten.
     public mutating func active(in turns: [ProjectedTurn]) -> Set<String> {
         guard !marks.isEmpty else { return [] }
         var kept: [String: Mark] = [:]
         for turn in turns {
-            if let mark = marks[turn.id], mark == Mark(track: turn.track, start: turn.start) { kept[turn.id] = mark }
+            guard let mark = marks[turn.id], mark.track == turn.track,
+                  carryingOver || mark.start == turn.start else { continue }
+            kept[turn.id] = Mark(track: turn.track, start: turn.start)
         }
         marks = kept
         return Set(kept.keys)

@@ -193,3 +193,20 @@ private func paragraphWords(_ paragraph: ReviewParagraph, counts: [Int]) -> [[Re
     #expect(breaks.active(in: relabelled).isEmpty)
     #expect(breaks.active(in: [t1, t2]).isEmpty && breaks.isEmpty)
 }
+
+@Test func aBreakIsCarriedOverByTurnWhileAWordFixIsReverted() {
+    var breaks = ReviewParagraphBreaks()
+    breaks.insert(before: paragraphTurn("T2", "S1", 2.4, 6))
+    // The revert republishes the same turns; T2's estimated start moves from 2.4 s to 3 s.
+    breaks.carryingOver = true
+    let republished = [paragraphTurn("T1", "S1", 0, 2.9), paragraphTurn("T2", "S1", 3, 6)]
+    #expect(breaks.active(in: republished) == ["T2"])
+    breaks.carryingOver = false
+    // Kept with its new start from then on; still forgotten when its turn changes after.
+    #expect(breaks.active(in: republished) == ["T2"])
+    #expect(breaks.active(in: [paragraphTurn("T1", "S1", 0, 1), paragraphTurn("T2", "S1", 1.5, 6)]).isEmpty)
+    // Carrying over keeps only a turn on the same track.
+    breaks.insert(before: paragraphTurn("T2", "S1", 3, 6))
+    breaks.carryingOver = true
+    #expect(breaks.active(in: [paragraphTurn("T2", "S1", 3, 6, track: "mic")]).isEmpty)
+}

@@ -390,9 +390,7 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate {
             self?.perform { review in try await review.acceptTurnHint(turnID) }
         }
         turnList.onPlay = { [weak self] seconds in self?.play(from: seconds) }
-        turnList.onRevertFix = { [weak self] word in
-            self?.perform { review in try await review.revertWordFix(word) }
-        }
+        turnList.onRevertFix = { [weak self] word in self?.revertFix(word) }
         turnList.onUserScroll = { [weak self] in
             self?.follow.userScrolled(at: ProcessInfo.processInfo.systemUptime)
         }
@@ -882,6 +880,22 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate {
                 self.turnList.select([turnID], scroll: true)
             }
         }
+    }
+
+    /// Reverts a word fix. It publishes a new run with the same turns, whose estimated starts may move, so the
+    /// window's paragraph breaks are carried over by turn until it ends (then taken with the turns as they are).
+    private func revertFix(_ word: WordRef) {
+        paragraphBreaks.carryingOver = true
+        perform { [weak self] review in
+            defer { self?.endBreakCarryOver() }
+            try await review.revertWordFix(word)
+        }
+    }
+
+    private func endBreakCarryOver() {
+        _ = paragraphBreaks.active(in: review.projection.turns)
+        paragraphBreaks.carryingOver = false
+        refresh()
     }
 
     @objc private func undo() {
