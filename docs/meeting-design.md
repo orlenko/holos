@@ -7753,7 +7753,12 @@ shown, Otter-style.
   refused; a selection stops before them); their tooltip and the banner say so, and that the
   other words of each turn can be edited (`ReviewWord.revertible`). Relabels are not stopped
   from splitting them. Revert (of an edit or of an automatic fix) is offered only while words
-  can be edited, since otherwise it would be refused.
+  can be edited, since otherwise it would be refused. Words known not to be editable open no
+  field either, and the banner says why (`ReviewSession.wordEditRefusal`): a word corrected
+  while the meeting was recording, a segment with an older automatic fix that cannot be
+  counted. A save refused or failed after Return never loses what was typed: the field opens
+  again over the words with it (when they still read the same and no other field is open),
+  and the message says what was typed in any case, also for a queued edit refused later.
   ⌥Return's word-list term is added once the edit is saved, also when the labels could not be
   refreshed after it. ⌘E turns the mode on only while words can be edited
   (`ReviewSession.canEditWords`): the review is editable (no command holds it read-only), its
@@ -7851,7 +7856,11 @@ shown, Otter-style.
   the words as they were would make the edit's undo fail and Label Again drop turn edits);
   when the app quits in between, post-processing repairs it
   first (`SessionWordEdit.repairPendingHead`, before any stage may replace the transcript or
-  relabel over the old head, the only copy of the turn edits). Exports are regenerated
+  relabel over the old head, the only copy of the turn edits). Every Review change that moves
+  the transcript pointer (an edit, its undo, an automatic fix's revert) records `headFrom`,
+  the transcript it was made from, in its journal event, so the head it owes is found
+  whatever the event's kind (an edit's word move maps the labels; a revert's map by time).
+  Exports are regenerated
   `exportDelay` later; the summary is no longer current (its key holds the transcript ID).
   Speaker labels, speaker edits, and the window's paragraph breaks survive (a run an edit or
   its undo published is known to keep the turns, `ReviewSession.keepsTurns`; the labels

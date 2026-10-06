@@ -116,6 +116,12 @@ extension TurnListView: NSTextFieldDelegate {
         }
         while upper < through, joins(upper + 1, upper) { upper += 1 }
         while lower > through, joins(lower - 1, lower) { lower -= 1 }
+        // Words known not to be editable (corrected while recording, an older fix in their segment): no field opens,
+        // and the banner says why (with what was typed before a ⇧-click grew the selection onto them).
+        if let refusal = editRefusal?(Array(all[lower...upper])) {
+            onEditMessage?(typed.map { refusal + " What you typed: “\(TranscriptWordEdit.cleaned($0))”." } ?? refusal)
+            return
+        }
         let stopped = through > upper || through < lower
         onEditMessage?(stopped ? Self.selectionStopped : nil)
         openField(row: row, paragraph: paragraph, words: all, range: lower...upper, anchor: anchor)
@@ -171,6 +177,28 @@ extension TurnListView: NSTextFieldDelegate {
         case .stay:
             break
         }
+    }
+
+    /// A save of `words` was refused or failed before it was made: the field opens over them again with what was
+    /// typed, and the banner says why. False (nothing opens) when another field is open or the words no longer read
+    /// as they did; the window's message then carries what was typed.
+    @discardableResult
+    func reopenWordEdit(_ words: [ReviewWord], typed: String, message: String) -> Bool {
+        guard editingWords, editable, canEditWords, wordEdit == nil,
+              let first = words.first, let last = words.last else { return false }
+        for (row, paragraph) in paragraphs.enumerated() {
+            let all = paragraphWords(paragraph).words
+            guard let from = all.firstIndex(where: { $0.ref == first.ref }),
+                  let through = all.firstIndex(where: { $0.ref == last.ref }), from <= through,
+                  all[from...through].map(\.text) == words.map(\.text) else { continue }
+            beginEditing(row: row, from: from, through: through, extend: false)
+            guard wordEdit != nil else { return false }
+            editField.stringValue = typed
+            editField.currentEditor()?.selectedRange = NSRange(location: (typed as NSString).length, length: 0)
+            onEditMessage?(message)
+            return true
+        }
+        return false
     }
 
     /// The window is closing (AppKit ends no editing then): closes the field and hands over what it holds to be saved

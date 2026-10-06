@@ -928,6 +928,8 @@ func anEditBesideAnOlderUnspacedFixIsRefusedSayingWhy() async throws {
     }
     let review = try await wordEditOpen(session)
     #expect(review.words(of: "T1").map(\.text) == ["你好地球", "再见"])
+    #expect(review.wordEditRefusal(wordEditRefs(review, "T1", [1])) == TranscriptWordEdit.olderFix.localizedDescription,
+            "Known before a field opens.")
     // What the window's banner shows.
     let refusal = await #expect(throws: HolosError.self) {
         try await review.editWords(wordEditRefs(review, "T1", [1]), to: "拜拜")
@@ -958,6 +960,39 @@ private func wordEditFixedCloudSession(_ temp: TemporaryDirectory) async throws 
         try SessionSpeakerStore.writeHead(SpeakerHead(runID: run.id), session: session)
     }
     return session
+}
+
+@Test(.timeLimit(.minutes(1))) @MainActor
+func aWordCorrectedWhileRecordingIsKnownNotEditableBeforeAFieldOpens() async throws {
+    let temp = try TemporaryDirectory("review")
+    defer { temp.remove() }
+    let session = try await wordEditSession(in: temp, [
+        WordEditTurn(speaker: "system:S1", start: 0, words: ["ask", "cloud", "now"]),
+    ])
+    // "cloud" was corrected live, during the recording.
+    var corrected = try wordEditCurrent(session)
+    corrected.id = UUID().uuidString
+    corrected.segments[0].fixes = [TranscriptWordFix(first: 1, end: 2, heard: "clod", kind: .liveCorrection,
+                                                     heardWords: 1)]
+    try await SessionFixtures.saveTranscript(corrected, in: session)
+    var run = try SessionSpeakerStore.readRun(id: try #require(try SessionSpeakerStore.readHead(session: session)?.runID),
+                                              session: session)
+    run.id = UUID().uuidString
+    run.transcriptID = corrected.id
+    try SessionArchive.withSpeakerLock(at: session) {
+        try SessionSpeakerStore.writeRun(run, session: session)
+        try SessionSpeakerStore.writeHead(SpeakerHead(runID: run.id), session: session)
+    }
+    let review = try await wordEditOpen(session)
+    #expect(review.wordEditRefusal(wordEditRefs(review, "T1", [1]))
+        == TranscriptWordEdit.liveCorrected.localizedDescription)
+    #expect(review.wordEditRefusal(wordEditRefs(review, "T1", [0])) == nil)
+    let refusal = await #expect(throws: HolosError.self) {
+        try await review.editWords(wordEditRefs(review, "T1", [1]), to: "Claude")
+    }
+    #expect(refusal?.localizedDescription == TranscriptWordEdit.liveCorrected.localizedDescription)
+    #expect(try wordEditCurrent(session).id == corrected.id, "Nothing was written.")
+    await review.close()
 }
 
 @Test(.timeLimit(.minutes(1))) @MainActor
@@ -1308,6 +1343,36 @@ func postProcessingFinishesAnEditWhoseSpeakerHeadWasNeverPublished() async throw
     #expect(!snapshot.transcriptChanged && snapshot.transcript.id == current.id)
     #expect(snapshot.projection?.turns.first { $0.id == "T2" }?.speakerID == "system:S1",
             "The reassignment made before the edit is kept.")
+}
+
+@Test(.timeLimit(.minutes(1))) @MainActor
+func postProcessingPublishesTheHeadARevertStillOwes() async throws {
+    let temp = try TemporaryDirectory("review")
+    defer { temp.remove() }
+    let session = try await wordEditFixedCloudSession(temp)
+    let fixed = try wordEditCurrent(session)
+    try SessionFixtures.appendEdits([.rename(speakerID: "system:S1", name: "Ann")], session: session)
+    let runID = try #require(try SessionSpeakerStore.readHead(session: session)?.runID)
+    // The app quits between the reverted transcript and its speaker head.
+    await #expect(throws: SessionWordFixRevert.IncompletePublication.self) {
+        try await SpeakerTranscriptRetarget.$beforePublishHead.withValue({ throw HolosError.io("quit") }) {
+            _ = try await SessionWordFixRevert.run(session: session,
+                                                   word: WordRef(segmentID: fixed.segments[0].id, word: 2),
+                                                   expectedTranscriptID: fixed.id, expectedRunID: runID)
+        }
+    }
+    #expect(try SpeakerSessionSnapshot.load(session: session).transcriptChanged)
+
+    // Post-processing publishes the revert's head first, from the old one, rather than relabel over it.
+    _ = try await MeetingPostProcessor(voiceSamples: .none,
+                                       diarizer: FakeDiarizer(outputs: ["system": SessionFixtures.alternatingOutput()]),
+                                       freeSpace: FixedFreeSpace(.max)).run(session: session, lease: nil)
+    let snapshot = try SpeakerSessionSnapshot.load(session: session)
+    let current = try wordEditCurrent(session)
+    #expect(current.segments[0].text == "ask more cloud now")
+    #expect(!snapshot.transcriptChanged && snapshot.transcript.id == current.id)
+    #expect(snapshot.projection?.speakers.first { $0.id == "system:S1" }?.name == "Ann",
+            "The speaker edit made before the revert is kept.")
 }
 
 @Test(.timeLimit(.minutes(1))) @MainActor

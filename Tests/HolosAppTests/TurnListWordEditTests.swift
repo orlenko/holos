@@ -99,6 +99,41 @@ struct TurnListWordEditTests {
         #expect(saved().isEmpty)
     }
 
+    /// A word known not to be editable (corrected while recording, say): no field opens, and the banner says why.
+    @Test func aWordThatCannotBeEditedOpensNoFieldAndSaysWhy() {
+        let (list, _) = editingList()
+        var messages: [String?] = []
+        list.onEditMessage = { messages.append($0) }
+        list.editRefusal = { words in words.contains { $0.text == "beta" } ? "Corrected while recording." : nil }
+        list.editingWords = true
+        list.table.handleWordClick(row: 0, word: 1, through: 1, extend: false)
+        #expect(list.wordEdit == nil && list.editField.superview == nil)
+        #expect(messages.last == "Corrected while recording.")
+        list.table.handleWordClick(row: 0, word: 0, through: 0, extend: false)
+        #expect(list.wordEdit?.words.map(\.text) == ["alpha"])
+    }
+
+    /// A save refused or failed after Return: the field opens again over the words with what was typed.
+    @Test func aRefusedSaveOpensTheFieldAgainWithWhatWasTyped() throws {
+        let (list, saved) = editingList()
+        var messages: [String?] = []
+        list.onEditMessage = { messages.append($0) }
+        list.editingWords = true
+        list.table.handleWordClick(row: 0, word: 1, through: 1, extend: false)
+        list.editField.stringValue = "Beta"
+        press(list, #selector(NSResponder.insertNewline(_:)))
+        #expect(saved().count == 1 && list.wordEdit == nil)
+        let beta = try #require(TurnListViewTests.words["T1"]?[1])
+        #expect(list.reopenWordEdit([beta], typed: "Beta", message: "Could not save. What you typed: “Beta”."))
+        #expect(list.wordEdit?.words.map(\.text) == ["beta"] && list.editField.stringValue == "Beta")
+        #expect(messages.last == "Could not save. What you typed: “Beta”.")
+        // Another field open meanwhile (Tab went on): it stays; the message carries what was typed.
+        list.cancelWordEdit()
+        list.table.handleWordClick(row: 0, word: 0, through: 0, extend: false)
+        #expect(!list.reopenWordEdit([beta], typed: "Beta", message: "Could not save."))
+        #expect(list.wordEdit?.words.map(\.text) == ["alpha"])
+    }
+
     @Test func tabSavesAndEditsTheNextWordAcrossRowsAndShiftTabGoesBack() {
         let (list, saved) = editingList()
         list.editingWords = true

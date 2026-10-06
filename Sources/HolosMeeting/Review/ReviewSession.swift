@@ -331,6 +331,36 @@ public struct ReviewWord: Sendable, Equatable {
         "Some of this meeting's speaker changes cannot be read (damaged, or saved by a newer Voice is Local), so words "
             + "cannot be edited here: the speaker labels could not be kept on the edited words.")
 
+    /// Why words `refs` (consecutive words of one segment) cannot be edited, known before a field opens over them: a
+    /// word corrected while the meeting was recording, or a segment with an older automatic fix that cannot be
+    /// counted. Nil when an edit can be tried (it may still be refused when saved, saying why).
+    public func wordEditRefusal(_ refs: [WordRef]) -> String? {
+        guard let first = refs.first, let segment = segments[first.segmentID] else { return nil }
+        let fixes = segment.fixes ?? []
+        if fixes.contains(where: { fix in
+            fix.kind == .liveCorrection && refs.contains { fix.first <= $0.word && $0.word < fix.end }
+        }) {
+            return TranscriptWordEdit.liveCorrected.localizedDescription
+        }
+        return blockedByOlderFix(segment) ? TranscriptWordEdit.olderFix.localizedDescription : nil
+    }
+
+    /// Segments checked for an older automatic fix that cannot be counted (`TranscriptWordEdit.blockedByOlderFix`), by
+    /// transcript and segment: the unfixed base is read once, only for a segment with such a fix.
+    private var olderFixChecked: [String: Bool] = [:]
+
+    private func blockedByOlderFix(_ segment: TranscriptSegment) -> Bool {
+        guard (segment.fixes ?? []).contains(where: {
+            ($0.kind == .correction || $0.kind == .term) && $0.heardWords == nil
+        }), let baseID = snapshot.transcript.fixedFrom else { return false }
+        let key = "\(snapshot.transcript.id)\u{1f}\(segment.id)"
+        if let known = olderFixChecked[key] { return known }
+        let base = (try? SessionFiles.transcript(id: baseID, session: session))?.segments.first { $0.id == segment.id }
+        let blocked = base.map { TranscriptWordEdit.blockedByOlderFix(segment, base: $0) } ?? false
+        olderFixChecked[key] = blocked
+        return blocked
+    }
+
     /// The text words `refs` (consecutive words of one segment) show in the transcript, as an edit field over them
     /// starts (`TranscriptWordEdit.shownText`: with the punctuation the recognizer did not time, without the space
     /// some recognizers put at a word's front). Nil when they are not such words.

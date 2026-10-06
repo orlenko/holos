@@ -455,6 +455,7 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, Clo
             self.setEditMode(true)
         }
         turnList.editText = { [review] words in review.shownText(of: words.map(\.ref)) }
+        turnList.editRefusal = { [review] words in review.wordEditRefusal(words.map(\.ref)) }
         turnList.onUserScroll = { [weak self] in
             self?.follow.userScrolled(at: ProcessInfo.processInfo.systemUptime)
         }
@@ -1041,10 +1042,22 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, Clo
     private func editWords(_ words: [ReviewWord], to text: String, addTerm: Bool, movesSeen: Int) {
         offeredTerm = nil
         perform { [weak self] review in
-            // Once saved, also when the labels could not be refreshed after it (the edit stands, and ⌥Return's term
-            // is still added).
-            _ = try await review.editWords(words.map(\.ref), to: text, seenMoves: movesSeen) { edit in
-                self?.offerTerm(after: edit, add: addTerm)
+            var saved = false
+            do {
+                // Once saved, also when the labels could not be refreshed after it (the edit stands, and ⌥Return's
+                // term is still added).
+                _ = try await review.editWords(words.map(\.ref), to: text, seenMoves: movesSeen) { edit in
+                    saved = true
+                    self?.offerTerm(after: edit, add: addTerm)
+                }
+            } catch let error where !saved && !(error is CancellationError) {
+                // Refused or failed before it was saved: what was typed is never lost. The field opens again with it
+                // when the words are still there; the message says it in any case.
+                let typed = TranscriptWordEdit.cleaned(text)
+                let message = error.localizedDescription.contains("“\(typed)”") ? error.localizedDescription
+                    : error.localizedDescription + " What you typed: “\(typed)”."
+                self?.turnList.reopenWordEdit(words, typed: text, message: message)
+                throw HolosError.invalidInput(message)
             }
         }
     }

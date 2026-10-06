@@ -74,7 +74,7 @@ enum SessionWordEdit {
                 ])
             }
             try await archive.recordEvent(kind: MeetingEventKind.transcriptEdited, details: [
-                "transcriptID": result.transcript.id, "base": current.id,
+                "transcriptID": result.transcript.id, "base": current.id, headFromKey: current.id,
             ].merging(details(of: result.labelsMove), uniquingKeysWith: { first, _ in first }))
             let outcome = Outcome(transcriptID: result.transcript.id, runID: plan.run.id, heard: result.heard,
                                   meant: result.meant, deletion: result.deletion, before: result.before,
@@ -105,7 +105,7 @@ enum SessionWordEdit {
             try Task.checkCancellation()
             try SpeakerTranscriptRetarget.stage(plan, session: session)
             try await archive.recordEvent(kind: MeetingEventKind.transcriptEdited, details: [
-                "transcriptID": restored.id, "base": current.id, "undo": "1",
+                "transcriptID": restored.id, "base": current.id, headFromKey: current.id, "undo": "1",
             ].merging(details(of: move), uniquingKeysWith: { first, _ in first }))
             let published = Restored(transcriptID: restored.id, runID: plan.run.id)
             try await save(restored, archive: archive, session: session,
@@ -150,10 +150,11 @@ enum SessionWordEdit {
     }
 
     /// Post-processing (`MeetingPostProcessor`, before any stage may replace the transcript or relabel): finishes a
-    /// word edit or undo whose transcript became current but whose speaker head was never published (the app quit or
-    /// crashed in between). The old head is still the only copy of the speaker edits, so its retargeted replacement is
-    /// published from it; relabelling over it would lose turn-level edits. Returns true when it published a head.
-    /// Nothing is done unless the journal says `transcript` was edited in Review from the head run's transcript.
+    /// word edit, its undo, or an automatic fix's revert whose transcript became current but whose speaker head was
+    /// never published (the app quit or crashed in between). The old head is still the only copy of the speaker edits,
+    /// so its retargeted replacement is published from it; relabelling over it would lose turn-level edits. Returns
+    /// true when it published a head. Nothing is done unless the journal says `transcript` was made in Review from the
+    /// head run's transcript (`editedEvent`).
     static func repairPendingHead(session: URL, transcript: Transcript, lease: ProcessingLease,
                                   now: Date = Date()) async throws -> Bool {
         guard let state = try SpeakerAnalysis.headState(session: session, transcript: transcript),
@@ -188,13 +189,20 @@ enum SessionWordEdit {
         }
     }
 
-    /// The latest Review edit or undo that made `transcriptID` (`transcriptEdited`), nil when it was not made in
-    /// Review: the transcript it was made from, and its word move (nil in a journal written before moves were
-    /// recorded: the labels are then mapped by time).
+    /// The journal detail every Review change that moves the transcript pointer (an edit, its undo, an automatic fix's
+    /// revert) records with the transcript it was made from, whatever its event's kind: a speaker head it still owes
+    /// is found from it (`repairPendingHead`).
+    static let headFromKey = "headFrom"
+
+    /// The latest Review change that made `transcriptID` current (an edit or undo, `transcriptEdited`; an automatic
+    /// fix's revert, `wordsFixed` with `headFrom`), nil when none did: the transcript it was made from, and its word
+    /// move (an edit's; nil for a revert, or in a journal written before moves were recorded: the labels are then
+    /// mapped by time).
     static func editedEvent(of transcriptID: String, session: URL) throws -> (base: String, move: ReviewWordMove?)? {
         guard let details = try SessionArchive.readEvents(at: session).events.last(where: {
-            $0.kind == MeetingEventKind.transcriptEdited && $0.details["transcriptID"] == transcriptID
-        })?.details, let base = details["base"] else { return nil }
+            $0.details["transcriptID"] == transcriptID
+                && ($0.details[headFromKey] != nil || $0.kind == MeetingEventKind.transcriptEdited)
+        })?.details, let base = details[headFromKey] ?? details["base"] else { return nil }
         func range(_ key: String) -> Range<Int>? {
             let bounds = (details[key] ?? "").split(separator: "-").compactMap { Int($0) }
             guard bounds.count == 2, bounds[0] >= 0, bounds[0] <= bounds[1] else { return nil }

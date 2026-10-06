@@ -118,6 +118,8 @@ enum SessionWordFixRevert {
                     "terms": String(counts.terms),
                     "asked": "0",
                     "reverted": "1",
+                    // Made from `current`: a speaker head still owed after a crash is found and repaired from it.
+                    SessionWordEdit.headFromKey: current.id,
                 ])
                 // Committed once the pointer names it, even when the save throws after that.
                 try await TranscriptPointerSave.save(reverted, archive: archive, session: session) { error in

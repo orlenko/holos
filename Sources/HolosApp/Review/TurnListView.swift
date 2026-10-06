@@ -472,6 +472,8 @@ final class TurnListView: NSView, NSTableViewDataSource, NSTableViewDelegate {
     var onRequestEditing: (() -> Void)?
     /// The text an edit field over `words` starts with (`ReviewSession.shownText`); nil: their text as shown.
     var editText: (([ReviewWord]) -> String?)?
+    /// Why `words` cannot be edited, known before a field opens (`ReviewSession.wordEditRefusal`); nil when they can.
+    var editRefusal: (([ReviewWord]) -> String?)?
     /// Words can be edited now (`ReviewSession.canEditWords`); edit mode shows, but a click opens no field, otherwise.
     var canEditWords = true {
         didSet { if !canEditWords { loseWordEdit() } }

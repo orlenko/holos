@@ -131,9 +131,7 @@ public enum TranscriptWordEdit {
         }
         guard lower >= 0, upper <= words.count, (lower..<upper).allSatisfy(editable) else { throw notShown }
         let touched = fixes.filter { $0.first < upper && lower < $0.end }
-        if touched.contains(where: { $0.kind == .liveCorrection }) {
-            throw HolosError.invalidInput("Words corrected while the meeting was recording cannot be edited here yet.")
-        }
+        if touched.contains(where: { $0.kind == .liveCorrection }) { throw liveCorrected }
         guard touched.allSatisfy({ [.correction, .term, .reviewRevert, .reviewEdit].contains($0.kind) }) else {
             throw HolosError.invalidInput("These words were changed by a newer Voice is Local and cannot be edited here.")
         }
@@ -297,9 +295,25 @@ public enum TranscriptWordEdit {
         return copy
     }
 
+    /// `segment` has an automatic fix saved by an earlier version (without `heardWords`) that cannot be counted against
+    /// its unfixed `base`: every edit in it is refused (`olderFix`).
+    public static func blockedByOlderFix(_ segment: TranscriptSegment, base: TranscriptSegment) -> Bool {
+        let fixes = segment.fixes ?? []
+        guard fixes.contains(where: { ($0.kind == .correction || $0.kind == .term) && $0.heardWords == nil }) else {
+            return false
+        }
+        return baseBounds(fixes: fixes, current: WordTiming.effectiveWords(of: segment),
+                          base: WordTiming.effectiveWords(of: base)) == nil
+    }
+
+    /// An edit refused because it takes in words corrected while the meeting was recording (`liveCorrection`, whose live
+    /// hint would no longer match).
+    public static let liveCorrected = HolosError.invalidInput(
+        "Words corrected while the meeting was recording cannot be edited here yet.")
+
     /// An edit refused because its segment has an automatic word fix saved by an earlier version whose replaced words
     /// cannot be told (docs/meeting-design.md §5.10, "Editing words").
-    static let olderFix = HolosError.invalidInput(
+    public static let olderFix = HolosError.invalidInput(
         "This segment has a word fix made by an earlier version of Voice is Local, which edits cannot work around yet. "
             + "Its words were not changed.")
 
