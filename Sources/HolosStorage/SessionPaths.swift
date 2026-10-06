@@ -17,8 +17,6 @@ public enum SessionPaths {
     public static func audioDeleted(_ session: URL) -> URL { file("audio-deleted.json", in: session) }
     /// The generated title, summary, key points and action items of the current transcript (`MeetingSummaryRecord`).
     public static func summary(_ session: URL) -> URL { file("summary.json", in: session) }
-    /// The corrections the meeting's review closes taught from its word edits (`ReviewLearning.Taught`).
-    public static func reviewLearned(_ session: URL) -> URL { file("review-learned.json", in: session) }
 
     public static func transcripts(_ session: URL) -> URL { folder("transcripts", in: session) }
     public static func transcript(_ id: String, in session: URL) -> URL {

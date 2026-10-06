@@ -475,7 +475,6 @@ extension SessionArchive {
   audio/{mic,system}/NNNNNN.caf            AudioChunkWriter             Int16 from PR2a, system audio mono; Float32 still readable
   audio-deleted.json                       PR3                          written by Delete Audio; chunks are intentionally absent
   summary.json                             §4.17 session summarize      MeetingSummaryRecord: generated title and summary of one transcript
-  review-learned.json                      §5.10 review close           ReviewLearning.Taught: corrections the meeting's word edits taught
   transcripts/<TRANSCRIPT-UUID>.json       SessionArchive               immutable revisions (also one per language, never current, §4.14)
   transcripts/current.json                 PR6 (saveTranscript)         TranscriptPointer: which revision is current
   transcripts/current.pending              PR6 (saveTranscript)         TranscriptPointer: the revision a save is publishing; removed when done
@@ -7936,13 +7935,13 @@ shown, Otter-style.
 - *Learning* (`ReviewLearning`, `TranscriptEditLearning`; the app's learner). Corrections are
   learned when a review closes (also when the app quits, which closes its reviews), from
   every word you edited in that meeting; an existing correction for the same phrase is kept.
-  Nothing is learned while editing, so nothing is ever taken back. The meeting keeps what its
-  closes taught (`review-learned.json`, each phrase and meaning whose write succeeded; read,
-  merged, and written atomically under the meeting's speaker lock, so two closes cannot lose
-  an entry: the app keeps one review window per meeting and waits for a closing one before
-  opening another, but a second Voice is Local could run on the same folder), and a close
-  teaches only what is not there, so a correction you delete
-  or change in Corrections is not taught again by the meeting:
+  Nothing is learned while editing, so nothing is ever taken back. What each meeting's closes
+  taught is kept in corrections.json itself, beside the rules (`CorrectionList.reviewTaught`,
+  meeting ID → its lessons, one value per phrase), and written in the same atomic save as the
+  rules under the list's lock: a rule and the record that the meeting taught it can never
+  disagree, so no close stopped part way needs repairing. A close teaches only what the
+  meeting has not taught, so a correction you delete or change in Corrections (which removes
+  or changes the rule, never the record) is not taught again by the meeting:
   - the edits are every `reviewEdit` fix of the transcript as it is then; an edit undone or
     reverted is not there, so it teaches nothing. Edits side by side in one turn are one
     phrase: "bull" → "pull" then "requested" → "request" teaches "bull requested" → "pull
@@ -7976,35 +7975,29 @@ shown, Otter-style.
     another transcript (a speaker head owed, or the transcript changed under them), nothing
     is learned at this close (logged; a later close learns the same edits);
   - the pairs go to `corrections.json`, the list Corrections (⌘2) shows
-    (`CorrectionList.learnReplacingTaught`): a phrase the list lacks is added; one still
+    (`CorrectionList.learnFromReview`, then `learnReplacingTaught`): a lesson the meeting
+    taught already (same phrase and value) is skipped; a phrase the list lacks is added; one still
     holding the value this meeting taught it takes the new one (the word re-edited from
     "Claude" to "Claudia"); one holding anything else keeps it (an external or another
     meeting's choice wins; within one close, the first in the meeting); nothing is removed.
     Only what the close put in the list (added, or replacing the meeting's own earlier value)
     is recorded as taught, one value per phrase; a rule the list already held unchanged is not
-    the meeting's, so a later re-edit there never overwrites it. A write that fails (logged) is not recorded, so the
-    meeting's next review close makes it again, since the edits stay in the transcript; a
-    record that cannot be read (damaged, or newer) teaches nothing rather than teach again
-    what was deleted;
+    the meeting's, so a later re-edit there never overwrites it. A write that fails (logged)
+    changes neither the rules nor the record, so the meeting's next review close makes it
+    again, since the edits stay in the transcript. Dictation and Corrections read only the
+    rules. An older Voice is Local reads the file as before (it ignores the record) and, if it
+    saves the list, drops the record: the meetings could then teach a rule deleted since
+    again. `review-learned.json`, which only builds of this change's development wrote, is
+    ignored (never shipped, so nothing to migrate);
   - the write is one step under the meeting's speaker lock, off the main actor. The labels
     are read again in it (transcript, head run, speaker-change journal) and must give the
     edits the corrections were made from (the corrections are those edits taught by the app's
     rule, which needs the main actor's spell checker, so the edits, not the rule, are derived
     again): a replacement, a relabel, or a speaker change (a split) since teaches nothing at
-    this close (logged; the next close learns from the labels as they are then). Then, in
-    order: the lessons are recorded as *pending*, corrections.json is written under its own
-    lock (taken inside the speaker lock; nothing takes them the other way round), and the
-    lessons are *confirmed*. The app takes the list again afterwards;
-  - `review-learned.json` holds two states. *Confirmed*: the meeting's own (a close put them
-    in the list); one deleted or changed in Corrections stays so, and a later edit of the
-    meeting may replace it. Then the two phases of a close, settled by the next close (also
-    one with nothing to teach, the edit since undone) as what happened says. *Pending*:
-    recorded before the list is written; one the list holds is confirmed, one it does not
-    hold was never written, so it is dropped, taught again only when an edit still teaches it.
-    *Written*: recorded as soon as the list write succeeded, before the confirmation; each is
-    confirmed whether or not the list holds it (one it lacks was deleted in Corrections since,
-    and is never added back). So a failure between
-    the writes is repaired, never leaves a correction no record owns, nor one wrongly owned;
+    this close (logged; the next close learns from the labels as they are then). Then
+    corrections.json is read, changed (rules and record), and saved once under its own lock
+    (taken inside the speaker lock; nothing takes them the other way round). The app takes the
+    list again afterwards;
   - nothing is learned from a deletion, a punctuation-only change, or a case-only change
     (decided on the edited words alone: a context word's own fix never makes "Hello" →
     "Hello," teach "Hello cloud" → "Hello, Claude"), unless the case change makes a proper noun (a word whose lowercase is not a dictionary

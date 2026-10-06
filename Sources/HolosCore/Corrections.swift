@@ -44,8 +44,45 @@ public struct CorrectionList: Codable, Sendable, Equatable {
 
     public private(set) var entries: [Correction] = []
 
+    /// What each meeting's review closes taught (`learnFromReview`), by meeting ID: one value per heard phrase. Kept in
+    /// corrections.json beside the rules and written in the same save, so a rule and the record that the meeting
+    /// taught it can never disagree. Only review learning reads it: dictation and Corrections use `entries`. Deleting a
+    /// rule in Corrections leaves its lesson here, so the meeting never teaches it again. Absent from files no meeting
+    /// taught anything into (older files decode with none); an older Voice is Local ignores it when reading, and a
+    /// save by one drops it (its meetings may then teach a deleted rule again).
+    public private(set) var reviewTaught: [String: [Correction]]? = nil
+
     public init(entries: [Correction] = []) {
         for entry in entries { add(entry) }
+    }
+
+    /// What meeting `meeting`'s review closes taught (`reviewTaught`); empty when nothing.
+    public func taught(byMeeting meeting: String) -> [Correction] { reviewTaught?[meeting] ?? [] }
+
+    /// Learns what meeting `meeting`'s word edits teach (a review window closing) and records it as the meeting's, in
+    /// this one value (so one save writes both):
+    /// - a lesson the meeting taught already (same heard phrase and value) is never taught again, whether or not the
+    ///   list still holds it (deleted in Corrections, it stays deleted);
+    /// - otherwise `learnReplacingTaught`: a phrase the list lacks is added; one still holding the value this meeting
+    ///   taught takes the new one; one holding anything else (an external or another meeting's value, or the same
+    ///   value set before) keeps it, and is not recorded as the meeting's.
+    /// Returns what was put in the list, recorded as the meeting's (one value per phrase, the later replacing).
+    @discardableResult
+    public mutating func learnFromReview(_ learned: [Correction], meeting: String) -> [Correction] {
+        var taught = taught(byMeeting: meeting)
+        let known = Set(taught.map { Self.key($0.heard) + "\u{1f}" + $0.meant })
+        let new = learned.filter { !known.contains(Self.key($0.heard) + "\u{1f}" + $0.meant) }
+        let applied = learnReplacingTaught(new, taught: taught)
+        guard !applied.isEmpty else { return [] }
+        for correction in applied {
+            let key = Self.key(correction.heard)
+            taught.removeAll { Self.key($0.heard) == key }
+            taught.append(correction)
+        }
+        var all = reviewTaught ?? [:]
+        all[meeting] = taught
+        reviewTaught = all
+        return applied
     }
 
     /// `<supportRoot>/corrections.json`, beside `words.json`: Application Support/Holos, or `HOLOS_SUPPORT_DIR` when

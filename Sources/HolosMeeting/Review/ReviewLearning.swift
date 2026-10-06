@@ -5,82 +5,11 @@ import HolosStorage
 
 /// What a meeting's word edits teach (docs/meeting-design.md §5.10, "Editing words"), worked out when a review window
 /// closes from every word edited in the meeting's transcript as it is then: nothing is learned while editing, so
-/// nothing has to be taken back, and an edit undone or reverted is not in the transcript. The meeting keeps what it
-/// has taught (`review-learned.json`), so a close teaches only what is new: a correction deleted or changed in
-/// Corrections is not taught again, and one whose write failed is taught at the next close.
+/// nothing has to be taken back, and an edit undone or reverted is not in the transcript. What the meeting taught is
+/// kept in corrections.json with the rules (`CorrectionList.reviewTaught`, saved with them), so a close teaches only
+/// what is new: a correction deleted or changed in Corrections is not taught again, and one whose write failed is
+/// taught at the next close.
 enum ReviewLearning {
-    /// review-learned.json, what this meeting's review closes taught. `corrections`: confirmed, the meeting's own (a
-    /// close wrote them into the list); one deleted or changed in Corrections since stays so. Then two phases of a
-    /// close, so one that stopped part way is settled by the next close as what happened says:
-    /// - `pending`: recorded before the list is written. One the list holds is confirmed; one it does not was never
-    ///   written, so it is dropped (taught again when an edit still teaches it).
-    /// - `written`: recorded once the list was written, before the confirmation. Each is confirmed whether or not the
-    ///   list still holds it: one it lacks was deleted in Corrections since, and stays deleted.
-    /// Older records have neither.
-    struct Taught: Codable, Equatable {
-        var version: Int
-        var corrections: [Correction]
-        var pending: [Correction]? = nil
-        var written: [Correction]? = nil
-
-        /// An earlier close's lessons not settled yet.
-        var unsettled: Bool { !(pending ?? []).isEmpty || !(written ?? []).isEmpty }
-    }
-
-    /// The record; empty when nothing was taught. Throws when it cannot be read (damaged, or written by a newer Voice
-    /// is Local): nothing is taught then, rather than teaching again what was deleted.
-    static func record(session: URL) throws -> Taught {
-        guard let data = try AtomicFile.readIfPresent(SessionPaths.reviewLearned(session), maxBytes: 4 << 20) else {
-            return Taught(version: 1, corrections: [])
-        }
-        let record = try JSONDecoder().decode(Taught.self, from: data)
-        guard record.version <= 1 else {
-            throw HolosError.unavailable("What this meeting taught was recorded by a newer Voice is Local.")
-        }
-        return record
-    }
-
-    /// Writes the record (atomically); the caller holds the meeting's speaker lock.
-    static func writeRecord(_ record: Taught, session: URL) throws {
-        try AtomicFile.writeJSON(record, to: SessionPaths.reviewLearned(session))
-    }
-
-    /// What this meeting taught and owns (confirmed); empty when nothing was.
-    static func taught(session: URL) throws -> [Correction] {
-        try record(session: session).corrections
-    }
-
-    /// `base` with `adding`, one value per heard phrase (a later lesson replaces the earlier one for its phrase).
-    static func merged(_ base: [Correction], _ adding: [Correction]) -> [Correction] {
-        var merged = base
-        for correction in untaught(adding, taught: base) {
-            let key = CorrectionList.key(correction.heard)
-            merged.removeAll { CorrectionList.key($0.heard) == key }
-            merged.append(correction)
-        }
-        return merged
-    }
-
-    /// Adds `corrections` to what this meeting taught, one value per heard phrase (a later lesson replaces the earlier
-    /// one for its phrase): read, merged, and written (atomically) under the meeting's speaker lock, so two closes
-    /// (another Voice is Local running on the same folder) cannot lose each other's entries.
-    static func recordTaught(adding corrections: [Correction], session: URL) throws {
-        try SessionArchive.withSpeakerLock(at: session) { try mergeTaught(adding: corrections, session: session) }
-    }
-
-    /// `recordTaught`, for a caller already holding the meeting's speaker lock (close-time learning's one step).
-    static func mergeTaught(adding corrections: [Correction], session: URL) throws {
-        var current = try record(session: session)
-        current.corrections = merged(current.corrections, corrections)
-        try writeRecord(current, session: session)
-    }
-
-    /// `corrections` this meeting has not taught: none with the same heard phrase (`CorrectionList.key`) and meaning.
-    static func untaught(_ corrections: [Correction], taught: [Correction]) -> [Correction] {
-        let known = Set(taught.map { "\(CorrectionList.key($0.heard))\u{1f}\($0.meant)" })
-        return corrections.filter { !known.contains("\(CorrectionList.key($0.heard))\u{1f}\($0.meant)") }
-    }
-
     /// The `reviewEdit` fixes of `transcript` as edits: what the recognizer wrote, the words' shown text, and the shown
     /// words around them as context. In transcript order (segments by start, then track; fixes by position). An edit
     /// back to what the recognizer wrote (a Revert) is left out. `turns`: the shown turns' word spans (a word the echo

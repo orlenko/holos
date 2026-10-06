@@ -60,7 +60,12 @@ final class WordEditField: NSTextField {
     /// A ⇧-click on the field but beyond its words (on a word it lies over) goes to the table, which extends the
     /// selection to the word under it (`TurnTableView.mouseDown`); every other click edits the text in the field.
     override func hitTest(_ point: NSPoint) -> NSView? {
-        if frame.contains(point), !wordsFrame.contains(point), extendsSelection() { return nil }
+        // `point` is in the superview's (the table's) coordinates, as AppKit passes it; compared in the field's own,
+        // with the words' frame brought there too, so the row the field is on never matters.
+        if let superview, extendsSelection() {
+            let local = convert(point, from: superview)
+            if bounds.contains(local), !convert(wordsFrame, from: superview).contains(local) { return nil }
+        }
         return super.hitTest(point)
     }
 }

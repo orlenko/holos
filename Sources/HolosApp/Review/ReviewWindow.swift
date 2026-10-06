@@ -183,7 +183,8 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, Clo
     func pauseForMaintenance(_ hold: ReviewMaintenance.Hold, banner: String) async {
         // The review turns read-only, so the open edit field closes: what it holds is saved first, never lost.
         let typed = turnList.takeOpenWordEdit().map { open in
-            (words: open.words.map(\.ref), text: open.text, seenMoves: open.movesSeen)
+            ReviewSession.TypedEdit(words: open.words.map(\.ref), text: open.text, seenMoves: open.movesSeen,
+                                    expected: open.words.map(\.text))
         }
         player.invalidate()
         refresh()
@@ -1379,7 +1380,8 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, Clo
         let review = self.review
         // AppKit ends no editing when a window closes: an open edit field's text is saved (and learned) by the close.
         let typed = turnList.takeOpenWordEdit().map { open in
-            (words: open.words.map(\.ref), text: open.text, seenMoves: open.movesSeen)
+            ReviewSession.TypedEdit(words: open.words.map(\.ref), text: open.text, seenMoves: open.movesSeen,
+                                    expected: open.words.map(\.text))
         }
         closeTask = Task { [weak self] in
             await review.close(typed: typed)

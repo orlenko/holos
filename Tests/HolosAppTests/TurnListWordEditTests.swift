@@ -236,6 +236,30 @@ struct TurnListWordEditTests {
         #expect(list.wordEdit?.words.map(\.text) == ["alpha", "beta"])
     }
 
+    /// The same on a lower row ("epsilon zeta", row 1): the field and the words compare in the table's coordinates.
+    @Test func aShiftClickOnTheFieldReachesTheTableOnALowerRow() throws {
+        let (list, _) = editingList()
+        list.editingWords = true
+        list.table.handleWordClick(row: 1, word: 0, through: 0, extend: false)
+        #expect(list.wordEdit?.words.map(\.text) == ["epsilon"])
+        let text = try TurnListViewTests.cell(list, row: 1).bodyText
+        let field = list.editField
+        let container = try #require(list.table.superview)
+        func hit(onWord index: Int, shift: Bool) throws -> NSView? {
+            let rect = try #require(text.rect(ofWord: index))
+            let point = list.table.convert(NSPoint(x: rect.midX, y: rect.midY), from: text)
+            #expect(field.frame.contains(point), "The field lies over word \(index).")
+            field.extendsSelection = { shift }
+            return container.hitTest(container.convert(point, from: list.table))
+        }
+        func inField(_ view: NSView?) -> Bool { view.map { $0 === field || $0.isDescendant(of: field) } ?? false }
+        #expect(field.frame.minY > 0, "A lower row.")
+        let shiftOnZeta = try hit(onWord: 1, shift: true)
+        #expect(!inField(shiftOnZeta) && shiftOnZeta.map { $0 === list.table || $0.isDescendant(of: list.table) } == true)
+        #expect(inField(try hit(onWord: 1, shift: false)))
+        #expect(inField(try hit(onWord: 0, shift: true)))
+    }
+
     /// Only Esc drops what was typed: turning edit mode off saves it.
     @Test func turningEditModeOffSavesTheFieldAndEscDropsIt() {
         let (list, saved) = editingList()

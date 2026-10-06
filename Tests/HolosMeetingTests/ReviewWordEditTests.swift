@@ -132,12 +132,17 @@ private final class WordEditLearner {
                                                       heardAfter: edit.heardAfter, isDictionaryWord: { _ in true })
         }
         let stored = self.stored, failing = failingNow, writes = self.writes
+        // As `CorrectionList.update`: read, changed, and saved only when it changed (`lessons` counts those saves).
         review.correctionsWriter = {
             { change in
-                writes.update { $0 += 1 }
-                if failing.value { throw HolosError.io("corrections.json cannot be written") }
+                if failing.value {
+                    writes.update { $0 += 1 }
+                    throw HolosError.io("corrections.json cannot be written")
+                }
                 var list = stored.value
                 try change(&list)
+                guard list != stored.value else { return }
+                writes.update { $0 += 1 }
                 stored.set(list)
             }
         }
@@ -145,6 +150,11 @@ private final class WordEditLearner {
 
     /// What the list makes of `heard`, nil when nothing.
     func value(_ heard: String) -> String? { list.entry(forKey: CorrectionList.key(heard))?.meant }
+
+    /// What the meeting at `session` taught, as the list records it (`CorrectionList.reviewTaught`).
+    func taught(_ session: URL) throws -> [Correction] {
+        list.taught(byMeeting: try SessionArchive.readManifest(at: session).id)
+    }
 }
 
 @Test(.timeLimit(.minutes(1))) @MainActor
@@ -752,10 +762,21 @@ func anEditIsNeverSavedOverAWordChangedElsewhereInItsPlace() async throws {
     }
     #expect(refused?.localizedDescription.contains("what you typed: “Claude”") == true)
     #expect(try wordEditCurrent(session).segments[0].text == "ask crowd now")
+    // The same when a maintenance pause takes the field's edit, and when the window's close does.
+    let stale = ReviewSession.TypedEdit(words: [seen.ref], text: "Claude", seenMoves: review.wordMoves.count,
+                                        expected: [seen.text])
+    let hold = ReviewMaintenance.Hold(.recover)
+    let paused = await review.pause(hold, reason: "Voice is Local is recovering this meeting.", typed: stale)
+    #expect(paused?.contains("“Claude”") == true)
+    await review.resume(hold)
+    #expect(try wordEditCurrent(session).segments[0].text == "ask crowd now")
     // Words as they are now are edited as usual.
     try await review.editWords([seen.ref], to: "Claude", expecting: ["crowd"])
     #expect(try wordEditCurrent(session).segments[0].text == "ask Claude now")
-    await review.close()
+    let closingStale = ReviewSession.TypedEdit(words: [review.words(of: "T1")[2].ref], text: "later",
+                                               seenMoves: review.wordMoves.count, expected: ["then"])
+    await review.close(typed: closingStale)
+    #expect(try wordEditCurrent(session).segments[0].text == "ask Claude now", "Not saved over “now”.")
 }
 
 @Test(.timeLimit(.minutes(1))) @MainActor
@@ -1169,7 +1190,7 @@ func aMeetingsLaterEditReplacesWhatItTaughtButNeverAValueSetElsewhere() async th
         learner.attach(to: second)
         try await second.editWords(wordEditRefs(second, "T1", [0]), to: "Claudia")
         await second.close()
-        let taught = try ReviewLearning.taught(session: session)
+        let taught = try learner.taught(session)
         if external {
             #expect(learner.value("cloud") == "Cloud9", "A value set elsewhere is kept.")
             #expect(taught == [Correction(heard: "cloud", meant: "Claude")], "Claudia was not taught.")
@@ -1240,14 +1261,14 @@ func aCorrectionTheListAlreadyHadIsNeverTheMeetingsToReplace() async throws {
     learner.attach(to: first)
     try await first.editWords(wordEditRefs(first, "T1", [0]), to: "Claude")
     await first.close()
-    #expect(try ReviewLearning.taught(session: session).isEmpty, "Already there: not recorded as this meeting's.")
+    #expect(try learner.taught(session).isEmpty, "Already there: not recorded as this meeting's.")
     // Reopened, the word edited again: the rule the meeting never created stays.
     let second = try await wordEditOpen(session)
     learner.attach(to: second)
     try await second.editWords(wordEditRefs(second, "T1", [0]), to: "Claudia")
     await second.close()
     #expect(learner.value("cloud") == "Claude")
-    #expect(try ReviewLearning.taught(session: session).isEmpty)
+    #expect(try learner.taught(session).isEmpty)
 }
 
 @Test(.timeLimit(.minutes(1))) @MainActor
@@ -1341,7 +1362,7 @@ func whatTheOpenFieldHoldsAtCloseIsSavedAndLearned() async throws {
     let seen = review.wordMoves.count
     try await review.editWords(wordEditRefs(review, "T1", [1]), to: "a lot more")
     // The window closes with "Claude" typed in the field.
-    await review.close(typed: (words: field, text: "Claude", seenMoves: seen))
+    await review.close(typed: .init(words: field, text: "Claude", seenMoves: seen))
     #expect(try wordEditCurrent(session).segments[0].text == "ask a lot more Claude now")
     #expect(learner.value("more cloud") == "a lot more Claude",
             "Learned at this close, with the edit beside it (one phrase).")
@@ -1363,7 +1384,7 @@ func whatWasTypedIsKnownUntilTheEditOpenAtCloseIsSaved() async throws {
         for await _ in stream {}
     }
     #expect(review.unsavedEditAtClose == nil)
-    let closing = Task { await review.close(typed: (words: wordEditRefs(review, "T1", [1]), text: "Claude",
+    let closing = Task { await review.close(typed: .init(words: wordEditRefs(review, "T1", [1]), text: "Claude",
                                                     seenMoves: review.wordMoves.count)) }
     // While the edit saves, quitting can still say what was typed (it logs it when it cannot wait).
     #expect(await eventually { entered.value == 1 })
@@ -1714,13 +1735,13 @@ func aRelabelSavedWhileLearningTeachesNothingAtThisClose() async throws {
     }
     await review.close()
     #expect(learner.lessons == 0 && learner.list.entries.isEmpty, "Nothing taught on labels no longer current.")
-    #expect(try ReviewLearning.taught(session: session).isEmpty)
+    #expect(try learner.taught(session).isEmpty)
     // The next close, on the labels as they are then, learns it.
     let reopened = try await wordEditOpen(session)
     learner.attach(to: reopened)
     await reopened.close()
     #expect(learner.value("cloud") == "Claude")
-    #expect(try ReviewLearning.taught(session: session) == [Correction(heard: "cloud", meant: "Claude")])
+    #expect(try learner.taught(session) == [Correction(heard: "cloud", meant: "Claude")])
 }
 
 @Test(.timeLimit(.minutes(1))) @MainActor
@@ -1757,86 +1778,48 @@ func aSpeakerChangeSavedWhileLearningTeachesNothingAtThisClose() async throws {
 }
 
 @Test(.timeLimit(.minutes(1))) @MainActor
-func aCloseInterruptedBetweenItsWritesIsRepairedByTheNext() async throws {
+func aRuleTheMeetingTaughtThenDeletedInCorrectionsIsNeverTaughtAgain() async throws {
+    let temp = try TemporaryDirectory("review")
+    defer { temp.remove() }
+    let session = try await wordEditCloudSession(temp)
     let claude = Correction(heard: "cloud", meant: "Claude")
-    for written in [true, false] {
-        let temp = try TemporaryDirectory("review")
-        defer { temp.remove() }
-        let session = try await wordEditCloudSession(temp)
-        let review = try await wordEditOpen(session)
-        try await review.editWords(wordEditRefs(review, "T1", [0]), to: "Claude")
-        // A close recorded the lesson as pending, then stopped: after writing the list (`written`), or before.
-        try ReviewLearning.writeRecord(ReviewLearning.Taught(version: 1, corrections: [], pending: [claude]),
-                                       session: session)
-        let learner = WordEditLearner(CorrectionList(entries: written ? [claude] : []))
-        learner.attach(to: review)
-        await review.close()
-        // Either way the next close leaves it in the list and confirmed as the meeting's.
-        #expect(learner.value("cloud") == "Claude")
-        #expect(try ReviewLearning.record(session: session) == ReviewLearning.Taught(version: 1, corrections: [claude]))
-        // Confirmed: deleted in Corrections, it stays deleted.
-        learner.list = CorrectionList()
-        let reopened = try await wordEditOpen(session)
-        learner.attach(to: reopened)
-        await reopened.close()
-        #expect(learner.value("cloud") == nil)
-    }
+    let review = try await wordEditOpen(session)
+    try await review.editWords(wordEditRefs(review, "T1", [0]), to: "Claude")
+    let learner = WordEditLearner()
+    learner.attach(to: review)
+    await review.close()
+    // Taught, and recorded as the meeting's in the same list (one save).
+    #expect(learner.value("cloud") == "Claude" && learner.lessons == 1)
+    #expect(try learner.taught(session) == [claude])
+    // Deleted in Corrections: the rule goes, what the meeting taught stays.
+    learner.list.remove(claude)
+    #expect(try learner.value("cloud") == nil && learner.taught(session) == [claude])
+    // The next close, with the same edit still in the transcript, does not add it back.
+    let reopened = try await wordEditOpen(session)
+    learner.attach(to: reopened)
+    await reopened.close()
+    #expect(try learner.value("cloud") == nil && learner.taught(session) == [claude])
 }
 
-@Test(.timeLimit(.minutes(1))) @MainActor
-func aCloseStoppedAfterItsListWriteNeverAddsBackARuleDeletedSince() async throws {
-    let claude = Correction(heard: "cloud", meant: "Claude")
-    for afterListWrite in [false, true] {
-        let temp = try TemporaryDirectory("review")
-        defer { temp.remove() }
-        let session = try await wordEditCloudSession(temp)
-        let review = try await wordEditOpen(session)
-        try await review.editWords(wordEditRefs(review, "T1", [0]), to: "Claude")
-        // A close stopped before confirming its lesson: before writing the list (`pending`), or after it (`written`).
-        // Either way the list lacks the rule now: never written, or deleted in Corrections since.
-        let record = afterListWrite
-            ? ReviewLearning.Taught(version: 1, corrections: [], written: [claude])
-            : ReviewLearning.Taught(version: 1, corrections: [], pending: [claude])
-        try ReviewLearning.writeRecord(record, session: session)
-        let learner = WordEditLearner()
-        learner.attach(to: review)
-        await review.close()
-        // Never written: taught now (the edit still teaches it). Written, then deleted: the deletion stands.
-        #expect(learner.value("cloud") == (afterListWrite ? nil : "Claude"))
-        #expect(try ReviewLearning.record(session: session) == ReviewLearning.Taught(version: 1, corrections: [claude]))
-    }
-}
-
-@Test(.timeLimit(.minutes(1))) @MainActor
-func aPendingLessonIsSettledByACloseThatTeachesNothing() async throws {
-    let claude = Correction(heard: "cloud", meant: "Claude")
-    for written in [true, false] {
-        let temp = try TemporaryDirectory("review")
-        defer { temp.remove() }
-        let session = try await wordEditCloudSession(temp)
-        // A close recorded the lesson as pending, then stopped: after writing the list (`written`), or before. The
-        // edit was then undone, so this close has nothing to teach.
-        try ReviewLearning.writeRecord(ReviewLearning.Taught(version: 1, corrections: [], pending: [claude]),
-                                       session: session)
-        let review = try await wordEditOpen(session)
-        try await review.editWords(wordEditRefs(review, "T1", [0]), to: "Claude")
-        try await review.undo()
-        let learner = WordEditLearner(CorrectionList(entries: written ? [claude] : []))
-        learner.attach(to: review)
-        await review.close()
-        // Settled all the same: the meeting's where the list holds it, else dropped; the list is not touched.
-        #expect(try ReviewLearning.record(session: session)
-            == ReviewLearning.Taught(version: 1, corrections: written ? [claude] : []))
-        #expect(learner.value("cloud") == (written ? "Claude" : nil))
-        // Deleted in Corrections, then the same edit again: taught again only where it was dropped (a current edit
-        // teaches it); once confirmed, the deletion stands.
-        learner.list = CorrectionList()
-        let reopened = try await wordEditOpen(session)
-        try await reopened.editWords(wordEditRefs(reopened, "T1", [0]), to: "Claude")
-        learner.attach(to: reopened)
-        await reopened.close()
-        #expect(learner.value("cloud") == (written ? nil : "Claude"))
-    }
+@Test func whatAMeetingTaughtTravelsWithTheRulesAndOlderFilesReadAsBefore() throws {
+    // One value, saved and read back whole: the rules and what each meeting taught.
+    var list = CorrectionList(entries: [Correction(heard: "um", meant: "uh")])
+    #expect(list.learnFromReview([Correction(heard: "cloud", meant: "Claude")], meeting: "M1")
+        == [Correction(heard: "cloud", meant: "Claude")])
+    let decoded = try JSONDecoder().decode(CorrectionList.self, from: JSONEncoder().encode(list))
+    #expect(decoded == list && decoded.taught(byMeeting: "M1") == [Correction(heard: "cloud", meant: "Claude")])
+    // A file from before (no `reviewTaught`) reads as before, and one with no lesson writes none.
+    let older = try JSONDecoder().decode(CorrectionList.self,
+                                         from: Data(#"{"entries":[{"heard":"um","meant":"uh"}]}"#.utf8))
+    #expect(older.entries == [Correction(heard: "um", meant: "uh")] && older.reviewTaught == nil)
+    let written = String(decoding: try JSONEncoder().encode(older), as: UTF8.self)
+    #expect(!written.contains("reviewTaught"))
+    // The same lesson again teaches nothing; another meeting's is its own.
+    #expect(list.learnFromReview([Correction(heard: "cloud", meant: "Claude")], meeting: "M1").isEmpty)
+    list.remove(Correction(heard: "cloud", meant: "Claude"))
+    #expect(list.learnFromReview([Correction(heard: "cloud", meant: "Claude")], meeting: "M1").isEmpty)
+    #expect(list.learnFromReview([Correction(heard: "cloud", meant: "Claude")], meeting: "M2")
+        == [Correction(heard: "cloud", meant: "Claude")], "Another meeting teaches it as its own.")
 }
 
 @Test func contextBesideAFixedWordCoversTheSameCharactersOnBothSides() {
@@ -1880,7 +1863,7 @@ func pausingForACommandSavesWhatTheOpenFieldHolds() async throws {
     // A command makes the review read-only while "Claude" is typed in the field: saved before the command starts.
     let hold = ReviewMaintenance.Hold(.recover)
     let unsaved = await review.pause(hold, reason: "Voice is Local is recovering this meeting.",
-                                     typed: (words: wordEditRefs(review, "T1", [1]), text: "Claude",
+                                     typed: .init(words: wordEditRefs(review, "T1", [1]), text: "Claude",
                                              seenMoves: review.wordMoves.count))
     #expect(unsaved == nil)
     #expect(try wordEditCurrent(session).segments[0].text == "ask Claude now")
@@ -1889,7 +1872,7 @@ func pausingForACommandSavesWhatTheOpenFieldHolds() async throws {
     // One that is refused says what was typed.
     let other = ReviewMaintenance.Hold(.recover)
     let refused = await review.pause(other, reason: "again",
-                                     typed: (words: [wordEditRefs(review, "T1", [2])[0],
+                                     typed: .init(words: [wordEditRefs(review, "T1", [2])[0],
                                                      wordEditRefs(review, "T2", [0])[0]],
                                              text: "today we", seenMoves: review.wordMoves.count))
     #expect(refused?.contains("What you typed: “today we”") == true)
@@ -1925,19 +1908,24 @@ func aRevertWhoseHeadCouldNotBePublishedHoldsTheReviewUntilAReloadRepairsIt() as
     await review.close()
 }
 
-@Test func whatAMeetingTaughtIsMergedSoTwoClosesKeepBothEntries() async throws {
+@Test func whatAMeetingTaughtIsMergedSoTwoClosesKeepBothEntries() throws {
     let temp = try TemporaryDirectory("review")
     defer { temp.remove() }
-    let session = try await wordEditCloudSession(temp)
+    let url = temp.url.appendingPathComponent("corrections.json")
     let cloud = Correction(heard: "cloud", meant: "Claude")
     let plus = Correction(heard: "and", meant: "plus")
-    // Two closes, each with what it read before: neither loses the other's entry.
-    try ReviewLearning.recordTaught(adding: [cloud], session: session)
-    try ReviewLearning.recordTaught(adding: [plus, cloud], session: session)
-    #expect(try ReviewLearning.taught(session: session) == [cloud, plus])
-    #expect(ReviewLearning.untaught([cloud, Correction(heard: "Cloud", meant: "Claude"), plus,
-                                     Correction(heard: "cloud", meant: "Cloud9")],
-                                    taught: [cloud, plus]) == [Correction(heard: "cloud", meant: "Cloud9")])
+    // Two closes, each a read, change and save under the list's lock: neither loses the other's entry.
+    _ = try CorrectionList.update(at: url) { $0.learnFromReview([cloud], meeting: "M1") }
+    _ = try CorrectionList.update(at: url) { $0.learnFromReview([plus, cloud], meeting: "M1") }
+    let list = try CorrectionList.load(from: url)
+    #expect(list.taught(byMeeting: "M1") == [cloud, plus] && list.entries == [cloud, plus])
+    // Taught already, in any case: nothing new. Another value for the phrase replaces the meeting's own (the list still
+    // holds the value it taught).
+    var next = list
+    #expect(next.learnFromReview([Correction(heard: "Cloud", meant: "Claude")], meeting: "M1").isEmpty)
+    #expect(next.learnFromReview([Correction(heard: "cloud", meant: "Cloud9")], meeting: "M1")
+        == [Correction(heard: "cloud", meant: "Cloud9")])
+    #expect(next.taught(byMeeting: "M1") == [plus, Correction(heard: "cloud", meant: "Cloud9")])
 }
 
 @Test(.timeLimit(.minutes(1))) @MainActor
@@ -1952,7 +1940,7 @@ func aCorrectionDeletedInCorrectionsIsNotTaughtAgainByTheMeeting() async throws 
     await review.close()
     #expect(learner.value("cloud") == "Claude")
     // Deleted in Corrections; the meeting is reviewed again and an edit made.
-    learner.list = CorrectionList()
+    learner.list.remove(Correction(heard: "cloud", meant: "Claude"))
     let reopened = try await wordEditOpen(session)
     learner.attach(to: reopened)
     try await reopened.editWords(wordEditRefs(reopened, "T1", [2]), to: "plus")
