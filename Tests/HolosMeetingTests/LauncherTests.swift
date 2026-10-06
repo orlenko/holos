@@ -172,11 +172,13 @@ private final class ReaperProbe {
         var samples = 0
         var free = 0
         var afterStart = 0
-        while afterStart < 50, !handedOff.value {
+        while afterStart < 50, !handedOff.value, !Task.isCancelled {
             samples += 1
             if (try? SessionArchive.isProcessing(at: session)) != true { free += 1 }
             probing.set(true)
             if FileManager.default.fileExists(atPath: started.path) { afterStart += 1 }
+            // Lets the hand-off run on a pool of one worker; sampling still runs between its steps.
+            await Task.yield()
         }
         try? Data().write(to: gate)
         return (samples, free, afterStart)

@@ -479,7 +479,9 @@ func leaseHandOffLeavesNoUnlockedGap() async throws {
             samples += 1
             if !locked { unlocked += 1 }
             probeStarted.set(true)
-        } while !hookStarted.value && !runEnded.value
+            // Lets the run go on, even on a pool of one worker.
+            await Task.yield()
+        } while !hookStarted.value && !runEnded.value && !Task.isCancelled
         probeDone.set(true)
         return (samples, unlocked)
     }
