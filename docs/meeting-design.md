@@ -7907,9 +7907,12 @@ genuinely local (the user, or people in the room) stays even while the call play
   `echoClusterShare`. Without a mask the run is unchanged. `LiveTranscript` keeps the text
   filter only. A failed echo stage, or one put off after a `diskLow` stop (recorded as
   skipped), leaves the record `succeeded` (the labels were made) but not current for Recover
-  (`SessionRecoveryCommand.currentLabels`), which runs it again. When stage 3 keeps edited
-  labels, a call's echo still leaves them: the analysis is made if missing and applied to
-  those labels as `echo-analyze` does (below); a failure there is a failed `echo` stage too.
+  (`SessionRecoveryCommand.currentLabels`), which runs it again, whatever the meeting's status
+  (`echoWorkPending` admits the current transcript of a complete meeting). When edited labels
+  are kept (stage 3, or an edit landing while the pass runs, so stage 6 cannot publish), a
+  call's echo still leaves them: the analysis is made if missing and applied to those labels
+  as `echo-analyze` does (below), and the head it publishes is recorded like stage 6's; a
+  failure there is a failed `echo` stage too.
   The summary counts in `mask.json` are recomputed from the frames when read.
 - *Existing meetings.* `voiceislocal session echo-analyze <id|path> [--force] [--json]`
   (`SessionEchoAnalyzeCommand`) saves the analysis, then takes the echo words out of the head
@@ -7919,7 +7922,10 @@ genuinely local (the user, or people in the room) stays even while the call play
   removed, and the echo-cluster rule applies to clusters that lose words; text-echo drops stay,
   while earlier `acousticEcho` drops are judged again, and words the new mask keeps come back
   in turns of their own with the speaker the stored diarization gives them, so a no-echo
-  verdict gives back everything an older mask took; nothing to change changes nothing) and
+  verdict gives back everything an older mask took, never a word a turn already holds; every
+  speaker of the run stays in it, so edits naming a speaker whose own turns were all echo
+  still apply; spans read from the run are kept within their segments' words; nothing to
+  change changes nothing) and
   replays the head's edits on it (`SpeakerEditReplay`): names, links,
   rejections and merges as they are; reassign and new-speaker edits on the new turns holding
   exactly their words (a speaker made only on echo is still made, without turns, when a later

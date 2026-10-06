@@ -636,6 +636,93 @@ private enum SessionFixturesLite {
 
 // MARK: - Edit replay
 
+@Test func aSpeakerWhoseOwnTurnsAreAllEchoKeepsItsNameAndItsAssignedTurns() throws {
+    // A diarized microphone: S1 speaks only echo (segment E), S2 is the user (U). The user named S1 and gave it a
+    // system turn; the mask then takes every word of S1.
+    let echoWords = segment("E", words: 4, track: "mic", start: 10)
+    let own = segment("U", words: 4, track: "mic", start: 20)
+    let system = segment("S", words: 4, track: "system", start: 30)
+    let transcript = Transcript(id: "T", createdAt: Date(timeIntervalSince1970: 0), source: "fixture", locale: "en-CA",
+                                backend: .speech, segments: [echoWords, own, system])
+    let output = DiarizerOutput(segments: [RawDiarizationSegment(speaker: "S1", start: 9.9, end: 11.8),
+                                           RawDiarizationSegment(speaker: "S2", start: 19.9, end: 21.8)],
+                                centroids: [:], windows: [], processingSeconds: 0)
+    var parameters = callParameters
+    parameters.offsetSearchSeconds = 0
+    let old = SpeakerRunBuilder.build(
+        sessionID: session, transcript: transcript,
+        tracks: [SpeakerRunBuilder.TrackInput(track: "mic", policy: .diarized, output: output),
+                 SpeakerRunBuilder.TrackInput(track: "system", policy: .channel(speakerID: "system:all",
+                                                                                displayName: "Others"))],
+        engine: .fake, parameters: parameters, id: "OLD").run
+    let systemTurn = try #require(old.turns.first { $0.track == "system" }?.id)
+    let edits = [
+        SpeakerEdit(id: "E1", baseRunID: "OLD", source: "app", action: .rename(speakerID: "mic:S1", name: "Person C")),
+        SpeakerEdit(id: "E2", baseRunID: "OLD", source: "app",
+                    action: .reassignTurns(turnIDs: [systemTurn], to: "mic:S1")),
+    ]
+    let rebuilt = SpeakerRunBuilder.rebuild(old, transcript: transcript,
+                                            acousticEcho: timedMask(seconds: 40, echo: [(10, 12)]), id: "NEW")
+    #expect(!rebuilt.turns.contains { $0.speakerID == "mic:S1" })
+    #expect(rebuilt.speakers.contains { $0.id == "mic:S1" })
+    let carried = SpeakerEditReplay.carry(edits: edits, effective: ["E1", "E2"], from: old, to: rebuilt,
+                                          transcript: transcript)
+    #expect(carried.droppedEditIDs.isEmpty)
+    let view = SpeakerProjection.make(run: rebuilt, transcript: transcript, edits: carried.edits, recognition: nil,
+                                      profileNames: [:])
+    #expect(view.staleEdits.isEmpty)
+    #expect(view.turns.first { $0.track == "system" }?.speakerID == "mic:S1")
+    #expect(view.speakers.first { $0.id == "mic:S1" }?.name == "Person C")
+    // Without the edits the speaker is in the run but not shown: it has no turn.
+    let plain = SpeakerProjection.make(run: rebuilt, transcript: transcript, edits: [], recognition: nil,
+                                       profileNames: [:])
+    #expect(!plain.speakers.contains { $0.id == "mic:S1" })
+}
+
+@Test func aWordATurnStillHoldsIsNotGivenBackTwice() {
+    // A word fix across an echo boundary mapped the replacement word (M1) both into the dropped echo and into the
+    // turn that survived. A mask that keeps it must not add it again.
+    let mic = segment("M", words: 4, track: "mic", start: 10)
+    let transcript = Transcript(id: "T", createdAt: Date(timeIntervalSince1970: 0), source: "fixture", locale: "en-CA",
+                                backend: .speech, segments: [mic])
+    let tracks = [SpeakerRunBuilder.TrackInput(track: "mic", policy: .channel(speakerID: "mic:me", displayName: "Me"))]
+    var run = SpeakerRunBuilder.build(sessionID: session, transcript: transcript, tracks: tracks, engine: nil,
+                                      parameters: callParameters,
+                                      acousticEcho: timedMask(seconds: 20, echo: [(10.4, 10.7)])).run
+    #expect(run.droppedWords == [DroppedWords(spans: [WordSpan(segmentID: "M", first: 1, end: 2)],
+                                              reason: EchoFilter.acousticReason)])
+    let first = run.turns.firstIndex { $0.spans == [WordSpan(segmentID: "M", first: 0, end: 1)] }!
+    run.turns[first].spans = [WordSpan(segmentID: "M", first: 0, end: 2)]
+    let rebuilt = SpeakerRunBuilder.rebuild(run, transcript: transcript, acousticEcho: nil)
+    let held = rebuilt.turns.flatMap(\.spans).flatMap { Array($0.first..<$0.end) }
+    #expect(held.sorted() == [0, 1, 2, 3])
+    #expect(rebuilt.droppedWords.isEmpty)
+}
+
+@Test(.timeLimit(.minutes(1)))
+func damagedDroppedSpansAreReadOnlyWithinTheirSegment() {
+    // A run file whose dropped spans run to Int.max, start below 0, or name a segment that is not there.
+    let mic = segment("M", words: 4, track: "mic", start: 10)
+    let transcript = Transcript(id: "T", createdAt: Date(timeIntervalSince1970: 0), source: "fixture", locale: "en-CA",
+                                backend: .speech, segments: [mic])
+    let tracks = [SpeakerRunBuilder.TrackInput(track: "mic", policy: .channel(speakerID: "mic:me", displayName: "Me"))]
+    var run = SpeakerRunBuilder.build(sessionID: session, transcript: transcript, tracks: tracks, engine: nil,
+                                      parameters: callParameters).run
+    run.droppedWords = [
+        DroppedWords(spans: [WordSpan(segmentID: "M", first: 0, end: .max)], reason: EchoFilter.acousticReason),
+        DroppedWords(spans: [WordSpan(segmentID: "M", first: .min, end: 2), WordSpan(segmentID: "X", first: 0, end: 9)],
+                     reason: EchoFilter.reason),
+    ]
+    let rebuilt = SpeakerRunBuilder.rebuild(run, transcript: transcript,
+                                            acousticEcho: timedMask(seconds: 20, echo: [(10.8, 11.1)]))
+    // Words 0–1 count as text echo (not judged by the mask; the turn keeps them as it had them), word 2 is flagged
+    // and leaves the turn, which is cut there.
+    #expect(rebuilt.turns.flatMap(\.spans) == [WordSpan(segmentID: "M", first: 0, end: 2),
+                                               WordSpan(segmentID: "M", first: 3, end: 4)])
+    #expect(rebuilt.droppedWords.first == DroppedWords(spans: [WordSpan(segmentID: "M", first: 2, end: 3)],
+                                                       reason: EchoFilter.acousticReason))
+}
+
 @Test func aSpeakerMadeOnEchoIsKeptWhenALaterEditNamesIt() throws {
     // The user made a speaker on a microphone turn that turns out to be all echo, then gave a system turn to it.
     let mic = segment("M", words: 4, track: "mic", start: 10)

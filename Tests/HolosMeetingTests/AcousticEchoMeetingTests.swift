@@ -252,6 +252,81 @@ func anEchoAnalysisThatFailedIsRetriedAfterTheLabelsAreEdited() async throws {
 }
 
 @Test(.timeLimit(.minutes(2)))
+func recoverRetriesAnEchoAnalysisOfACompleteMeeting() async throws {
+    // A complete recording (nothing to rebuild) whose echo analysis failed: Recover labels it again so the analysis
+    // runs, instead of calling its labels up to date.
+    let temp = try TemporaryDirectory("echo")
+    defer { temp.remove() }
+    let call = CallTranscript()
+    let session = try await callSession(in: temp.url, audio: CallAudio.tracks(echo: true), transcript: call.transcript)
+    let manifest = try SessionArchive.readManifest(at: session)
+    let micChunks = manifest.chunks.filter { $0.track == "mic" }.map { session.appendingPathComponent($0.relativePath) }
+    for chunk in micChunks {
+        try FileManager.default.moveItem(at: chunk, to: chunk.appendingPathExtension("away"))
+    }
+    let first = try await MeetingPostProcessor(diarizer: systemDiarizer(), freeSpace: FixedFreeSpace(.max))
+        .run(session: session, lease: nil)
+    #expect(first.stages.first { $0.stage == .echo }?.result == .failed)
+    for chunk in micChunks {
+        try FileManager.default.moveItem(at: chunk.appendingPathExtension("away"), to: chunk)
+    }
+    #expect(try SessionArchive.readManifest(at: session).status == ArchiveStatus.complete)
+
+    let outcome = try await SessionRecoveryCommand.run(.init(session: session), diarizer: systemDiarizer(),
+                                                       freeSpace: FixedFreeSpace(.max))
+    let record = try #require(outcome.postProcessing)
+    #expect(record.stages.first { $0.stage == .echo }?.result == .succeeded)
+    let run = try SessionSpeakerStore.readRun(id: try #require(record.runID), session: session)
+    #expect(run.droppedWords == [DroppedWords(spans: call.echoSpans, reason: EchoFilter.acousticReason)])
+    // Settled: a second Recover leaves the labels alone.
+    let again = try await SessionRecoveryCommand.run(.init(session: session), diarizer: systemDiarizer(),
+                                                     freeSpace: FixedFreeSpace(.max))
+    #expect(again.postProcessing == nil)
+}
+
+/// Diarizes like `FakeDiarizer` and, while it does, has the user name a speaker in the labels in place (an edit landing
+/// during a relabel).
+private struct EditingDiarizer: SpeakerDiarizer {
+    let session: URL
+    let inner: FakeDiarizer
+
+    func engineInfo() async throws -> DiarizationEngineInfo { try await inner.engineInfo() }
+
+    func diarize(_ request: DiarizationRequest,
+                 progress: @escaping @Sendable (Double) -> Void) async throws -> DiarizerOutput {
+        try SessionFixtures.appendEdits([.rename(speakerID: "system:S1", name: "Person A")], session: session)
+        return try await inner.diarize(request, progress: progress)
+    }
+}
+
+@Test(.timeLimit(.minutes(2)))
+func anEditDuringTheRelabelStillGetsTheEchoTakenOut() async throws {
+    // Labels without edits are being made again; an edit lands meanwhile, so the new run is not published. The echo
+    // found in this pass still leaves the edited labels, and the record names the head that was published.
+    let temp = try TemporaryDirectory("echo")
+    defer { temp.remove() }
+    let call = CallTranscript()
+    let session = try await callSession(in: temp.url, audio: CallAudio.tracks(echo: true), transcript: call.transcript)
+    let old = try SessionFixtures.writeHeadRun(
+        session: session, transcript: call.transcript,
+        outputs: ["system": SessionFixtures.alternatingOutput(turnSeconds: 5, duration: CallAudio.seconds)],
+        policies: ["mic": .channel(speakerID: "mic:me", displayName: "Me")])
+    let diarizer = EditingDiarizer(session: session, inner: systemDiarizer())
+    let record = try await MeetingPostProcessor(diarizer: diarizer, freeSpace: FixedFreeSpace(.max))
+        .run(session: session, lease: nil)
+    #expect(record.stages.first { $0.stage == .align }?.result == .skipped)
+    #expect(record.stages.first { $0.stage == .echo }?.result == .succeeded)
+    let snapshot = try SpeakerSessionSnapshot.load(session: session)
+    let head = try #require(snapshot.run)
+    #expect(head.id != old.id)
+    #expect(record.runID == head.id)
+    #expect(try SessionFiles.postProcessingRecord(session: session)?.runID == head.id)
+    #expect(head.droppedWords.contains(DroppedWords(spans: call.echoSpans, reason: EchoFilter.acousticReason)))
+    #expect(snapshot.projection?.speakers.first { $0.id == "system:S1" }?.name == "Person A")
+    #expect(!SessionFixtures.text(SessionPaths.export("md", in: session)).contains("heard0w0"))
+}
+
+@Test(.timeLimit(.minutes(2)))
 func anEchoAnalysisPutOffForDiskSpaceIsNotSettled() async throws {
     // No track to diarize and a stop for low disk space: the analysis is put off, and Recover tries again later.
     let temp = try TemporaryDirectory("echo")
@@ -424,7 +499,8 @@ func echoAnalyzeRebuildsAnOldCallKeepingItsEdits() async throws {
     #expect(try SessionFiles.currentTranscript(session: session) == transcriptBefore)
     // The echo cluster is gone; the user's cluster keeps its name, the reassigned system turn its speaker, the
     // excluded turn its exclusion.
-    #expect(!head.speakers.contains { $0.id == "mic:S1" })
+    #expect(!head.turns.contains { $0.speakerID == "mic:S1" })
+    #expect(snapshot.projection?.speakers.contains { $0.id == "mic:S1" } == false)
     let view = try #require(snapshot.projection)
     #expect(view.staleEdits.isEmpty)
     #expect(view.speakers.first { $0.id == "mic:S2" }?.name == "Person A")

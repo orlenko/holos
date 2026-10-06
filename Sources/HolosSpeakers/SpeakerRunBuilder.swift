@@ -136,7 +136,11 @@ public enum SpeakerRunBuilder {
     ///   unknown speaker, and other turns stop naming it among their overlaps. Its labelled words are those of its
     ///   turns plus its words in no turn (dropped, or given back), labelled by the run's stored diarization. A cluster
     ///   hidden before is not listed again.
-    /// - Turns are numbered T1… again in (start, track) order and speakers listed again (`build`'s rules).
+    /// - Turns are numbered T1… again in (start, track) order and speakers listed again (`build`'s rules); every
+    ///   speaker the run had stays listed after them, even without turns now, so the head's edits that name it still
+    ///   apply.
+    /// - A word a surviving turn already holds is never given back a second time, and turn and dropped-word spans are
+    ///   read only within the words their segments have.
     /// - Nothing to drop or give back returns the run as it is, with the new `id` and `createdAt`.
     ///
     /// Tracks, offsets, alignment and engine are the run's. No voice data: the run's embedding windows were never
@@ -146,25 +150,34 @@ public enum SpeakerRunBuilder {
         var rebuilt = run
         rebuilt.id = id
         rebuilt.createdAt = createdAt
-        let textDropped = EchoFilter.words(in: run.droppedWords.filter { $0.reason != EchoFilter.acousticReason }
-            .flatMap(\.spans))
-        let earlier = EchoFilter.words(in: run.droppedWords.filter { $0.reason == EchoFilter.acousticReason }
-            .flatMap(\.spans))
-        let acousticSpans = acousticEcho.map {
-            EchoFilter.acousticEchoSpans(transcript: transcript, mask: $0, excluding: textDropped)
-        } ?? []
-        let acoustic = EchoFilter.words(in: acousticSpans)
-        let echo = acoustic.subtracting(earlier)
-        let restored = earlier.subtracting(acoustic)
-        guard !echo.isEmpty || !restored.isEmpty else { return rebuilt }
-        let microphone = EchoFilter.microphoneTrack
-        let hidden = echoClusters(run, transcript: transcript, newEcho: echo,
-                                  alreadyDropped: textDropped.union(earlier.intersection(acoustic)), restored: restored)
-
         var effective: [String: [EffectiveWord]] = [:]
         for segment in transcript.segments where effective[segment.id] == nil {
             effective[segment.id] = WordTiming.effectiveWords(of: segment)
         }
+        // Spans come from a file: only the words they name that exist are read (a span to Int.max must not be
+        // expanded word by word).
+        let counts = effective.mapValues(\.count)
+        let textDropped = EchoFilter.words(in: bounded(run.droppedWords.filter { $0.reason != EchoFilter.acousticReason }
+            .flatMap(\.spans), counts))
+        let earlier = EchoFilter.words(in: bounded(run.droppedWords.filter { $0.reason == EchoFilter.acousticReason }
+            .flatMap(\.spans), counts))
+        let held = Set(run.turns.flatMap { turnWords($0, counts) })
+        let acousticSpans = acousticEcho.map {
+            EchoFilter.acousticEchoSpans(transcript: transcript, mask: $0, excluding: textDropped)
+        } ?? []
+        let acoustic = EchoFilter.words(in: acousticSpans)
+        // Leaving the turns: what the mask flags that a turn holds. Coming back: what an older mask took and this one
+        // keeps, unless a turn holds it already (a word fix can map one replacement word both into the dropped words
+        // and into a turn).
+        let echo = acoustic.intersection(held)
+        let restored = earlier.subtracting(acoustic).subtracting(held)
+        let listedBefore = run.droppedWords.filter { $0.reason == EchoFilter.acousticReason }.flatMap(\.spans)
+        guard !echo.isEmpty || !restored.isEmpty || listedBefore != acousticSpans else { return rebuilt }
+        let microphone = EchoFilter.microphoneTrack
+        let hidden = echoClusters(run, transcript: transcript, newEcho: echo, counts: counts,
+                                  alreadyDropped: textDropped.union(earlier.intersection(acoustic)).subtracting(held),
+                                  restored: restored)
+
         var turns: [SpeakerTurn] = []
         for turn in run.turns {
             guard turn.track == microphone else {
@@ -172,7 +185,7 @@ public enum SpeakerRunBuilder {
                 continue
             }
             var pieces: [[WordRef]] = [[]]
-            for ref in turnWords(turn) {
+            for ref in turnWords(turn, counts) {
                 if echo.contains(ref) {
                     if !(pieces.last?.isEmpty ?? true) { pieces.append([]) }
                 } else {
@@ -226,6 +239,16 @@ public enum SpeakerRunBuilder {
         }
         rebuilt.turns = turns
         rebuilt.speakers = makeSpeakers(turns: turns, channelSpeakers: channelSpeakers)
+        // Every speaker the run had stays listed in it, with or without turns now (after the others): the head's
+        // edits name them (a speaker renamed, a system turn given to a microphone speaker whose own turns were all
+        // echo), and an edit on a speaker the run does not hold could not apply. The projection shows a speaker
+        // only once it has turns.
+        var listed = Set(rebuilt.speakers.map(\.id))
+        for speaker in run.speakers where listed.insert(speaker.id).inserted {
+            var kept = speaker
+            kept.ordinal = rebuilt.speakers.count + 1
+            rebuilt.speakers.append(kept)
+        }
         if let index = rebuilt.droppedWords.firstIndex(where: { $0.reason == EchoFilter.acousticReason }) {
             if acousticSpans.isEmpty {
                 rebuilt.droppedWords.remove(at: index)
@@ -284,7 +307,8 @@ public enum SpeakerRunBuilder {
     /// The diarized microphone clusters `rebuild` hides: each that loses a word to `newEcho` and then has at least
     /// `EchoFilter.echoClusterShare` of its labelled words dropped (words given back, `restored`, count as labelled).
     private static func echoClusters(_ run: DiarizationRun, transcript: Transcript, newEcho: Set<WordRef>,
-                                     alreadyDropped: Set<WordRef>, restored: Set<WordRef>) -> Set<String> {
+                                     counts: [String: Int], alreadyDropped: Set<WordRef>,
+                                     restored: Set<WordRef>) -> Set<String> {
         let microphone = EchoFilter.microphoneTrack
         guard let diarization = run.tracks.first(where: { $0.track == microphone }),
               case .diarized = diarization.policy else { return [] }
@@ -293,7 +317,7 @@ public enum SpeakerRunBuilder {
         var losing = Set<String>()
         for turn in run.turns where turn.track == microphone {
             guard let cluster = turn.clusterID else { continue }
-            for ref in turnWords(turn) {
+            for ref in turnWords(turn, counts) {
                 labelled[cluster, default: 0] += 1
                 if newEcho.contains(ref) {
                     echoed[cluster, default: 0] += 1
@@ -322,10 +346,21 @@ public enum SpeakerRunBuilder {
         }
     }
 
-    /// A turn's words in span order.
-    private static func turnWords(_ turn: SpeakerTurn) -> [WordRef] {
-        turn.spans.flatMap { span in
-            (span.first..<max(span.first, span.end)).map { WordRef(segmentID: span.segmentID, word: $0) }
+    /// A turn's words in span order, only those that exist (`counts`: effective words per segment).
+    private static func turnWords(_ turn: SpeakerTurn, _ counts: [String: Int]) -> [WordRef] {
+        bounded(turn.spans, counts).flatMap { span in
+            (span.first..<span.end).map { WordRef(segmentID: span.segmentID, word: $0) }
+        }
+    }
+
+    /// `spans` cut to the words that exist: a span of a segment the transcript does not have, or one that ends at or
+    /// before its first word, goes; the others are clamped to 0..<count.
+    private static func bounded(_ spans: [WordSpan], _ counts: [String: Int]) -> [WordSpan] {
+        spans.compactMap { span in
+            guard let count = counts[span.segmentID] else { return nil }
+            let first = max(0, span.first)
+            let end = min(count, span.end)
+            return first < end ? WordSpan(segmentID: span.segmentID, first: first, end: end) : nil
         }
     }
 

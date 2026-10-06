@@ -232,6 +232,13 @@ public enum SessionRecoveryCommand {
                 throw afterRecovery("its transcript cannot be read", error)
             }
         }
+        // Any meeting whose last post-processing still owes its echo analysis (§5.11: failed, or put off for disk
+        // space) is labelled again on its current transcript, whatever its status, so the analysis is retried.
+        if rebuild == nil, kept == nil, request.postProcess,
+           let current = try? SessionFiles.readableCurrentTranscriptID(session: session),
+           echoWorkPending(session, transcriptID: current) {
+            kept = current
+        }
         if request.postProcess, let transcriptID = rebuild?.transcriptID ?? kept {
             let unchanged = rebuild?.reused ?? true
             // Read after a new rebuild too: a postprocess.json or speaker head written by a newer Holos is refused
@@ -297,6 +304,14 @@ public enum SessionRecoveryCommand {
         let finalStatus = (try? SessionArchive.readManifest(at: session))?.status
         return Outcome(recovery: recovery, status: finalStatus, rebuild: rebuild, postProcessing: record,
                        summary: parts.joined(separator: " "), warnings: warnings, exitCode: exitCode)
+    }
+
+    /// Whether the last post-processing record, of `transcriptID`, has an echo stage that did not succeed. False when
+    /// there is no readable record.
+    static func echoWorkPending(_ session: URL, transcriptID: String) -> Bool {
+        guard let record = try? SessionFiles.postProcessingRecord(session: session),
+              record.transcriptID == transcriptID else { return false }
+        return record.stages.contains { $0.stage == .echo && $0.result != .succeeded }
     }
 
     /// "N unreadable journal lines were skipped." when N > 0.
