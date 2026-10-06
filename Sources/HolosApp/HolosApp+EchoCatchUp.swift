@@ -16,6 +16,9 @@ final class EchoCatchUpAppState {
     /// The meeting analysed now (this app's own child; the app never signals it).
     var running: String?
     var scanning = false
+    /// The first scan of this launch ended: until then the queue is not known yet, and automatic final transcripts
+    /// and summaries wait for it (they would be made from labels a call's echo analysis is about to change).
+    var scanned = false
     /// A scan was asked for while one ran: it runs again once that one ends.
     var scanAgain = false
     /// How the runs that did not finish in this launch ended (failed: not tried again until the next launch;
@@ -65,6 +68,8 @@ extension HolosAppDelegate {
             let found = await Task.detached { EchoCatchUpSchedule.scan(root: root) }.value
             guard let self else { return }
             self.meeting.echo.scanning = false
+            let first = !self.meeting.echo.scanned
+            self.meeting.echo.scanned = true
             // A meeting analysed since the scan read it is checked again before its run starts.
             self.meeting.echo.queue = found
             if !found.isEmpty {
@@ -76,15 +81,21 @@ extension HolosAppDelegate {
             }
             self.updateEchoStates()
             self.scheduleEchoCatchUp()
+            // The automatic jobs held back until the queue was known go on (or keep waiting for a call it found).
+            if first {
+                self.scheduleMeetingSummaries()
+                self.scheduleDeepTranscription()
+            }
         }
     }
 
     /// Whether a queued meeting could be analysed now were no other job running (not in use, under review, failed in
-    /// this launch, or turned down for now): an automatic final transcript or summary then waits for it.
+    /// this launch, or turned down for now), or the first scan of this launch has not ended (the queue is not known
+    /// yet): an automatic final transcript or summary then waits for it.
     func echoCatchUpReady() -> Bool {
-        guard let controller = meeting.controller, meeting.echo.running == nil, !meeting.echo.queue.isEmpty else {
-            return false
-        }
+        guard let controller = meeting.controller else { return false }
+        if !meeting.echo.scanned, meeting.controller?.root != nil { return true }
+        guard meeting.echo.running == nil, !meeting.echo.queue.isEmpty else { return false }
         let now = Date()
         if let retryAfter = meeting.echo.retryAfter, retryAfter > now { return false }
         return !EchoCatchUpSchedule.ready(meeting.echo.queue, echoSituation(controller, now: now)).isEmpty
