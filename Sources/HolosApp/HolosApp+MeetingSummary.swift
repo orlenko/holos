@@ -210,7 +210,7 @@ extension HolosAppDelegate {
 
     /// A Make Final Transcript Now pass is queued (or its languages are being read) and could start (the setting and power do not hold it back; its
     /// meeting is not in use or delayed, and the model is installed): asked-for work goes before automatic summaries.
-    private func askedForPassWaiting(inUse: Set<String>, now: Date) -> Bool {
+    func askedForPassWaiting(inUse: Set<String>, now: Date) -> Bool {
         guard meeting.deep.model == "installed", meeting.deep.retryAfter.map({ $0 <= now }) ?? true else { return false }
         // One whose languages are still being read (`pending`, saved so the request survives a quit) counts too: it
         // is about to join the queue.
@@ -227,9 +227,13 @@ extension HolosAppDelegate {
         case unreadable(String?)
     }
 
-    /// An automatic final transcript held back for this scan (`waitsForSummaryScan`) is looked at again: it starts
-    /// unless the scan started a summary (then it waits for the lock).
+    /// An echo analysis or automatic final transcript held back for this scan (`waitsForSummaryScan`) is looked at
+    /// again: it starts unless the scan started a summary (then it waits for it).
     private func meetingSummaryScanEnded() {
+        if meeting.echo.waitsForSummaryScan {
+            meeting.echo.waitsForSummaryScan = false
+            scheduleEchoCatchUp()
+        }
         guard meeting.deep.waitsForSummaryScan else { return }
         meeting.deep.waitsForSummaryScan = false
         scheduleDeepTranscription()
@@ -250,7 +254,9 @@ extension HolosAppDelegate {
         let situation = MeetingSummarySchedule.Situation(
             enabled: MeetingSummaryAppState.enabled, modelAvailable: OnDeviceFix.unavailableReason == nil,
             meetingBusy: meetingIsBusy(controller.state),
-            deepPassRunning: meeting.deep.running != nil || DeepTranscriptionLock.state() != .free,
+            // This app's echo analysis counts as a job running (one at a time, §5.11).
+            deepPassRunning: meeting.deep.running != nil || DeepTranscriptionLock.state() != .free
+                || meeting.echo.running != nil,
             running: nil,
             inUse: inUse, attempted: meeting.summaries.attempted, delayedUntil: meeting.summaries.delayedUntil,
             requested: meeting.summaries.requested, onBattery: PowerSource.current() == .battery,
@@ -260,6 +266,11 @@ extension HolosAppDelegate {
             now: now)
         guard case .run(let sessionID, let path, let force) = MeetingSummarySchedule.next(candidates, situation)
         else { return }
+        // A call's missing echo analysis goes before an automatic summary (§5.11); Summarize Again does not wait.
+        if !meeting.summaries.requested.contains(sessionID), echoCatchUpReady() {
+            scheduleEchoCatchUp()
+            return
+        }
         // A failure is remembered by the meeting's key (transcript and speakers' names): either changing makes it
         // due again.
         let key = candidates.first { $0.sessionID == sessionID }?.key
@@ -345,9 +356,11 @@ extension HolosAppDelegate {
         if let review = meeting.summaries.reviewAfterRun.removeValue(forKey: sessionID) {
             openReview(sessionID: sessionID, directory: review.directory, name: review.name)
         }
-        // A final transcript waits while a summary runs (they share the background job lock). Summaries are looked for
-        // first, so one the user asked for goes before the next automatic pass (which waits for the scan).
+        // A final transcript waits while a summary runs (they share the background job lock), and so does an echo
+        // analysis. Summaries are looked for first, so one the user asked for goes before the next automatic job
+        // (which waits for the scan).
         scheduleMeetingSummaries()
+        scheduleEchoCatchUp()
         scheduleDeepTranscription()
     }
 

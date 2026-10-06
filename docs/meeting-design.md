@@ -5367,7 +5367,9 @@ one running (it is made again afterwards). Work the user asked for goes before a
 queues: when a final transcript or a summary ends, or a command lets a meeting go, summaries are looked for
 first, and an automatic final
 transcript waits for that scan while a Summarize Again is pending; an automatic summary waits while a Make Final
-Transcript Now pass is ready to run or has its languages read (`Situation.askedForPassWaiting`); automatic work keeps its order. A Summarize
+Transcript Now pass is ready to run or has its languages read (`Situation.askedForPassWaiting`); automatic work keeps its order.
+The app's echo catch-up (§5.11, "Catching up in the app") goes after asked-for work and before automatic final
+transcripts and summaries. A Summarize
 Again request is dropped for a missing
 meeting only when no folder holds it, whatever the folder is named (`SessionCatalog.hasSession`: the sessions
 folder listed and every folder's manifest, a regular file of at most 1 MiB never followed, read for its `id`), not when the scan could not read it. After a meeting is saved, the scan waits until the final
@@ -8044,6 +8046,36 @@ genuinely local (the user, or people in the room) stays even while the call play
   (`SessionEchoAnalyzeCommand`) saves the analysis and rewrites the transcript files through
   the projection. Nothing else changes: speaker labels, edits, the transcript and its word
   fixes stay as they are on disk.
+- *Catching up in the app.* Calls recorded before the analysis existed (or whose analysis
+  failed) get it without a command (`EchoCatchUpSchedule`, `HolosApp+EchoCatchUp.swift`; no
+  setting: about 5 s per hour of audio). At launch and after each meeting is saved the app
+  reads the sessions folder off the main actor and queues every finished meeting
+  (`DeepTranscriptionSchedule.isFinished`) whose analysis is needed (`EchoAnalysisStage.needed`),
+  newest first. Nothing about it is saved: a run a quit cut short leaves the analysis missing,
+  so the next launch finds it again. One meeting at a time, the app runs `voiceislocal session
+  echo-analyze <path> --json` as a maintenance command (so the transcript files and the voice
+  samples learned from the meeting follow, exactly as the command does them), after reading
+  `needed` once more (a relabel, Recover or a run in Terminal may have made it since). It
+  shares the one-job-at-a-time rule of final transcripts and summaries (§4.16, §4.17): nothing
+  starts while a meeting starts, records or saves, while this app makes a final transcript or a
+  summary, or while any process holds the background job lock; while it runs neither of them
+  starts (it takes no lock itself: a job started in Terminal is not held back, and the meeting's
+  processing lease keeps the two off the same meeting). Priority: a Make Final Transcript Now
+  that is ready (or has its languages read) and a Summarize Again the summary scan going on may
+  start go first; the echo analysis goes before automatic final transcripts and automatic
+  summaries, which wait while a queued meeting is ready for it. A run is not stopped when a
+  meeting starts (the command has no cancellation; it ends in seconds). Meetings in use or under
+  Review (open, opening or saving) wait and are tried every 30 s. A run turned down because
+  another process held the meeting (or it records again) is tried again after 1, 2, 4… minutes,
+  at most 30; one that failed is not tried again until the next launch. The Meetings list shows
+  "Echo removal queued" on waiting meetings and "Removing echo…" (the meeting's use,
+  `MeetingController.beginUsing`) on the one running; a failure shows "Echo not removed" and the
+  selected meeting's status line says why in the command's words; exit 3 (saved, but the
+  transcript files or a voice sample not brought in step) says so in the status line. A run
+  holds the meeting as a maintenance command does (`ReviewMaintenance.Command.echoAnalysis`): a
+  Review opened while it runs opens read-only and, when it ends, rereads the labels, so the
+  window takes the new mask (`ReviewEchoMaskFollow`) and its microphone volume follows; one that
+  finished opening after the run ended rereads the meeting too (`maintenanceEnded`).
 - *Playback.* `AcousticEchoMask.localSpeechIntervals()` gives the microphone's own
   speech: local frames, gaps under 300 ms merged, padded 64 ms before and 200 ms after. The
   review window plays the microphone only there (§5.10, echo-free playback).

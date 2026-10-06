@@ -208,7 +208,9 @@ thumbnail timeline, and a larger local-model benchmark are follow-ups.
   turns shown from about 600 to about 100 per meeting, hiding under 2.5 % of the user's own
   words; it takes about 2 s per hour of audio (about 5 s with preparing both tracks). A
   meeting whose analysis is missing (labelled before this version, or a pass that failed) gets
-  it from the next relabel or Recover, or at once with
+  it in the background from the app, newest first, one meeting at a time between the other
+  background jobs ("Removing echo…" in Meetings; a failure is tried again at the next launch),
+  or from the next relabel or Recover, or at once with
   `voiceislocal session echo-analyze <id>`; nothing stored besides `echo/` and the transcript
   files changes. Review playback mutes the echo: with an echo verdict, the microphone plays
   only where it has speech of its own (25 ms fades), and as recorded otherwise

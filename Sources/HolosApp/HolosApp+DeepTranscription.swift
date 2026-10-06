@@ -324,7 +324,7 @@ extension HolosAppDelegate {
         guard let controller = meeting.controller, let maintenance = meeting.maintenance else { return }
         // Another process's pass holds the lock: wait for it (checked again every 30 s). One at a time on this Mac.
         // A meeting summary shares the lock (§4.17), this app's own while it starts too: wait for it, without saying
-        // another final transcript runs.
+        // another final transcript runs. So does this app's echo analysis (§5.11), which takes no lock.
         if meeting.deep.running == nil {
             let lock = DeepTranscriptionLock.state()
             let other = lock.isDeepPass
@@ -332,7 +332,7 @@ extension HolosAppDelegate {
                 meeting.deep.otherPassRunning = other
                 updateDeepStates()
             }
-            if lock != .free || meeting.summaries.running != nil { return }
+            if lock != .free || meeting.summaries.running != nil || meeting.echo.running != nil { return }
         }
         if let retryAfter = meeting.deep.retryAfter, retryAfter > Date() { return }
         meeting.deep.retryAfter = nil
@@ -360,6 +360,12 @@ extension HolosAppDelegate {
         // it goes on, the pass waits for its end (`meetingSummaryScanEnded`).
         if !item.runNow, meeting.summaries.scanning, !meeting.summaries.requests.isEmpty {
             meeting.deep.waitsForSummaryScan = true
+            return
+        }
+        // A call's missing echo analysis goes before an automatic pass: it takes seconds and fixes the meeting's
+        // playback and labels now (§5.11). A pass asked for from the menu does not wait for it.
+        if !item.runNow, echoCatchUpReady() {
+            scheduleEchoCatchUp()
             return
         }
         // Marked running before the meeting is taken: taking it schedules again (`onSessionsInUseChanged`), which must
@@ -438,8 +444,9 @@ extension HolosAppDelegate {
         meeting.meetingsPane?.refresh()
         updateDeepStates()
         // The final transcript is a new transcript: its summary follows (§4.17). Looked for first, so a summary the
-        // user asked for goes before the next automatic pass (which waits for the scan).
+        // user asked for goes before the next automatic job (which waits for the scan).
         scheduleMeetingSummaries()
+        scheduleEchoCatchUp()
         scheduleDeepTranscription()
         // Review asked for while the pass worked on the meeting.
         if let review = meeting.deep.reviewAfterPass.removeValue(forKey: sessionID) {
