@@ -2,6 +2,7 @@ import AVFoundation
 import Foundation
 import HolosCore
 @testable import HolosMeeting
+import HolosSpeakers
 import HolosStorage
 import Testing
 
@@ -252,4 +253,76 @@ func compositionLeavesUnreadableChunksSilent() async throws {
     #expect(compositionClose(mic[0].at, 0) && compositionClose(mic[0].seconds, 10))
     #expect(compositionClose(mic[1].at, 30) && compositionClose(mic[1].seconds, 10))
     #expect(compositionClose(composition.duration.seconds, 40))
+}
+
+// MARK: - Echo-free playback
+
+/// An echo mask of `seconds` of 16 ms frames, echo everywhere but local speech in `local`, saved for `manifest` with
+/// `verdict` (no frames unless `echo`).
+private func compositionSaveMask(_ session: URL, manifest: SessionManifest, seconds: Double,
+                                 local: ClosedRange<Double>, verdict: EchoAnalysis.Verdict = .echo) throws
+    -> AcousticEchoMask? {
+    let count = Int(seconds / AcousticEchoMask.hopSeconds)
+    let classes = (0..<count).map { frame -> UInt8 in
+        local.contains(AcousticEchoMask.centre(ofFrame: frame)) ? 2 : 1
+    }
+    let mask = verdict == .echo ? AcousticEchoMask(classes: classes, echoLevels: classes.map { _ in 0 }) : nil
+    let frames = mask.map { mask in
+        EchoMaskRecord.Frames(count: count, hopSeconds: AcousticEchoMask.hopSeconds,
+                              firstCentreSeconds: AcousticEchoMask.firstCentreSeconds,
+                              sha256: SessionExports.sha256(mask.bytes),
+                              echo: classes.filter { $0 == 1 }.count, local: classes.filter { $0 == 2 }.count)
+    }
+    let record = EchoMaskRecord(sessionID: manifest.id, audio: EchoMaskStore.audioKey(manifest: manifest),
+                                verdict: verdict, frames: frames)
+    try EchoMaskStore.write(record, mask: mask, session: session)
+    return mask
+}
+
+@Test(.timeLimit(.minutes(1)))
+func playbackKeepsTheMicrophoneOnlyWhereItHasLocalSpeechWhenThereIsEcho() async throws {
+    let temp = try TemporaryDirectory("composition")
+    defer { temp.remove() }
+    // A real session (the echo files are written under its speaker lock): 10 s on each track.
+    let session = try await SessionFixtures.makeSession(in: temp.url, source: .microphoneAndSystem,
+                                                        audioSeconds: ["mic": 10, "system": 10], mode: .call,
+                                                        transcript: nil)
+    let manifest = try SessionArchive.readManifest(at: session)
+    // No analysis: as recorded.
+    let plain = try await SessionAudioComposition.makePlayback(session: session, manifest: manifest)
+    #expect(plain.micTrackID != nil)
+    #expect(plain.micVolume == nil && plain.audioMix == nil)
+
+    // Echo, with local speech from 2 to 3 s: the microphone is kept there only, and only its track is mixed.
+    let mask = try #require(try compositionSaveMask(session, manifest: manifest, seconds: 10, local: 2...3))
+    let muted = try await SessionAudioComposition.makePlayback(session: session, manifest: manifest)
+    let micTrack = try #require(muted.micTrackID)
+    let duration = muted.composition.duration.seconds
+    #expect(muted.micVolume == ReviewMicVolume.keeping(mask.localSpeechIntervals(), duration: duration))
+    #expect(muted.micVolume?.initial == 0)
+    #expect(muted.micVolume?.ramps.count == 2)
+    let mix = try #require(muted.audioMix)
+    #expect(mix.inputParameters.map(\.trackID) == [micTrack])
+    #expect(muted.composition.tracks.count == 2, "The system track plays as it is.")
+
+    // Headphones (no echo heard): as recorded.
+    _ = try compositionSaveMask(session, manifest: manifest, seconds: 10, local: 2...3, verdict: .noEcho)
+    #expect(try await SessionAudioComposition.makePlayback(session: session, manifest: manifest).audioMix == nil)
+    // An analysis of other audio (out of date): as recorded.
+    _ = try compositionSaveMask(session, manifest: manifest, seconds: 10, local: 2...3)
+    var other = manifest
+    other.chunks.removeAll { $0.track == "system" }
+    #expect(try await SessionAudioComposition.makePlayback(session: session, manifest: other).audioMix == nil)
+}
+
+@Test(.timeLimit(.minutes(1)))
+func playbackWithoutMicrophoneAudioHasNoMix() async throws {
+    let temp = try TemporaryDirectory("composition")
+    defer { temp.remove() }
+    let session = temp.url.appendingPathComponent("\(UUID().uuidString).holos", isDirectory: true)
+    let manifest = compositionManifest([
+        try compositionChunk(session, track: "system", name: "000001", start: 0, seconds: 10),
+    ])
+    let playback = try await SessionAudioComposition.makePlayback(session: session, manifest: manifest)
+    #expect(playback.micTrackID == nil && playback.audioMix == nil)
 }

@@ -7714,6 +7714,19 @@ the disk.
   inserted (`TrackPlacement`), so a chunk that is missing, unreadable, shorter than the
   manifest says, whose track or time range cannot be loaded, or that AVFoundation
   refuses leaves only its own time silent and never shortens the next chunk.
+- Echo-free playback (`SessionAudioComposition.makePlayback`, `ReviewEchoMute`,
+  `ReviewMicVolume`): when the call's current echo analysis found echo (§5.11,
+  `EchoMaskStore.current` with verdict `echo`), the player item gets an audio mix that plays
+  the microphone track at full volume in `AcousticEchoMask.localSpeechIntervals()` and at 0
+  elsewhere, with 25 ms linear ramps (a fade in ends where an interval starts, inside its
+  lead padding; a fade out starts where it ends; intervals closer than two ramps are
+  joined). The system track and any other track play as recorded. No analysis, one out of
+  date, damaged, or written by a newer Voice is Local, and every other verdict (`noEcho`
+  for headphones, `noSystemAudio`, `tooLong`) play the microphone as recorded. When the
+  labels are reread (the window back from elsewhere) the volume is read again, and a
+  changed one replaces the item's mix in place, so playing goes on where it is. Ramps are
+  added last first: AVFoundation keeps them sorted, and in time order 12,000 ramps took
+  13 s to add, last first 13 ms (debug build).
 
 **Reviews and maintenance** (`ReviewMaintenance`, one rule for every command on a meeting
 whose review is open or still opening):
@@ -7777,6 +7790,9 @@ whose review is open or still opening):
 | `compositionDoesNotTrimAfterAMissingOrShortChunk` | files as above | next chunk placed whole at 10 s |
 | `compositionLeavesUnreadableChunksSilent` | garbage and truncated chunks between good ones | only their time silent |
 | `trackerReportsEveryPlaybackStateTransition` | loading → off → other reason → ready | every change reported |
+| `ReviewEchoMuteTests` | local-speech intervals (edges, joins, from 0, past the end, none) | the volume schedule; a mix on the microphone track only, read back as scheduled |
+| `playbackKeepsTheMicrophoneOnlyWhereItHasLocalSpeechWhenThereIsEcho` | a call with an echo mask, then `noEcho`, then other audio | a mix on the microphone track only with an echo mask; none otherwise |
+| `ReviewPlayerTests` (HolosAppTests) | a playback with and without a volume; a changed volume | the item's mix follows it, replaced in place |
 
 **Manual.** H14 and H20 in §7.
 
@@ -7961,8 +7977,9 @@ genuinely local (the user, or people in the room) stays even while the call play
   (`SessionEchoAnalyzeCommand`) saves the analysis and rewrites the transcript files through
   the projection. Nothing else changes: speaker labels, edits, the transcript and its word
   fixes stay as they are on disk.
-- *Playback (later).* `AcousticEchoMask.localSpeechIntervals()` gives the microphone's own
-  speech: local frames, gaps under 300 ms merged, padded 64 ms before and 200 ms after.
+- *Playback.* `AcousticEchoMask.localSpeechIntervals()` gives the microphone's own
+  speech: local frames, gaps under 300 ms merged, padded 64 ms before and 200 ms after. The
+  review window plays the microphone only there (§5.10, echo-free playback).
 
 Validation. Synthetic tests (`Tests/HolosSpeakersTests/AcousticEchoTests.swift`,
 `Tests/HolosMeetingTests/AcousticEchoMeetingTests.swift`): the delay to within 1 ms (also an

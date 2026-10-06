@@ -183,8 +183,22 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate {
             if deleted != playerSaysDeleted || self.review.snapshot.manifest.chunks != self.loadedChunks
                 || (!deleted && !self.player.hasAudio) {
                 self.reloadPlayback()
+            } else {
+                await self.refreshMicVolume()
             }
         }
+    }
+
+    /// The echo analysis may have changed meanwhile (`voiceislocal session echo-analyze`): the microphone's volume
+    /// is read again and, when it changed, set on the playing item without rebuilding it.
+    private func refreshMicVolume() async {
+        guard player.isReady else { return }
+        let session = review.session, manifest = review.snapshot.manifest, duration = player.duration
+        let volume = await Task.detached(priority: .utility) {
+            ReviewEchoMute.micVolume(session: session, manifest: manifest, duration: duration)
+        }.value
+        guard !isClosing, player.isReady, manifest.chunks == loadedChunks else { return }
+        player.setMicVolume(volume)
     }
 
     /// The window was closed and is still saving its changes (or has finished).
