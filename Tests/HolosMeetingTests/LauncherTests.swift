@@ -158,32 +158,36 @@ private final class ReaperProbe {
     let session = try await launcherSession(in: temp.url)
     let lease = try SessionArchive.acquireProcessingLease(at: session)
     // The child marks that it runs, then holds the lease until the probe opens the gate. The probe polls the lease
-    // from before the hand-off until it has seen the child running for 50 samples, however slowly it is scheduled.
+    // from before the hand-off until it has seen the child running for 50 samples, however slowly it is scheduled;
+    // it also stops once the hand-off has returned (a child that failed to start or exited early), so such a failure
+    // is reported rather than left spinning.
     let started = temp.url.appendingPathComponent("started")
     let gate = temp.url.appendingPathComponent("gate")
     defer { try? Data().write(to: gate) }
     let child = try launcherScript(
         "touch '\(started.path)'\nwhile [ ! -e '\(gate.path)' ]; do sleep 0.01; done", in: temp.url)
     let probing = SharedValue(false)
-    let probe = Task.detached { () -> (samples: Int, free: Int) in
+    let handedOff = SharedValue(false)
+    let probe = Task.detached { () -> (samples: Int, free: Int, whileRunning: Int) in
         var samples = 0
         var free = 0
         var afterStart = 0
-        while afterStart < 50 {
+        while afterStart < 50, !handedOff.value {
             samples += 1
             if (try? SessionArchive.isProcessing(at: session)) != true { free += 1 }
             probing.set(true)
             if FileManager.default.fileExists(atPath: started.path) { afterStart += 1 }
         }
         try? Data().write(to: gate)
-        return (samples, free)
+        return (samples, free, afterStart)
     }
     #expect(await eventually { probing.value })
     let record = await InProcessLauncher.handOffPostProcessing(
         session: session, lease: lease, executable: child, arguments: [], log: nil,
         progress: { _ in }, pollInterval: .milliseconds(20))
+    handedOff.set(true)
     let seen = await probe.value
-    #expect(seen.samples >= 50)
+    #expect(seen.whileRunning >= 50, "The child ran while the probe watched the lease.")
     #expect(seen.free == 0, "The processing lease was free during the hand-off.")
     #expect(try !SessionArchive.isProcessing(at: session), "The child's exit ends the lease.")
     // /bin/sleep printed no record: the hook reports that labelling stopped.
