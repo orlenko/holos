@@ -114,15 +114,19 @@ enum ReviewLearning {
 
     /// Word `index` of `segment` as context, when the edit's own turn holds it (`inTurn`): its shown text, and what the
     /// recognizer wrote there when a fix changed it (`heard`: nil when as shown). A word under a fix (an automatic
-    /// correction or term, a live correction) stands with its whole fix, when that turn holds it all: "Claude" shown
-    /// is "cloud" heard, so a correction learned beside it matches the recognizer's text ("as cloud" → "ask Claude").
+    /// correction or term, a live correction) stands with its whole fix: "Claude" shown is "cloud" heard, so a
+    /// correction learned beside it matches the recognizer's text ("as cloud" → "ask Claude"). A fix the turn does not
+    /// hold all of ("newark" made "New York", split as "as New" / "York") gives no context: part of it has no heard
+    /// text of its own, and corrected text never stands for what was heard ("as New" would match nothing).
     private static func context(_ index: Int, in segment: TranscriptSegment, words: [EffectiveWord],
                                 inTurn: (Int) -> Bool) -> (shown: String, heard: String?)? {
         guard index >= 0, index < words.count, inTurn(index) else { return nil }
         if let fix = (segment.fixes ?? []).first(where: { $0.first <= index && index < $0.end }),
-           fix.kind != .reviewRevert,
-           (fix.first..<fix.end).allSatisfy(inTurn),
-           let whole = TranscriptWordEdit.shownText(of: segment, first: fix.first, end: fix.end) {
+           fix.kind != .reviewRevert {
+            guard (fix.first..<fix.end).allSatisfy(inTurn),
+                  let whole = TranscriptWordEdit.shownText(of: segment, first: fix.first, end: fix.end) else {
+                return nil
+            }
             let shown = TranscriptWordEdit.cleaned(whole)
             let heard = TranscriptWordEdit.cleaned(fix.heard)
             return (shown, heard == shown ? nil : heard)

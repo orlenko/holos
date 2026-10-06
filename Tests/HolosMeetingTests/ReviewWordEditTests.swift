@@ -508,8 +508,9 @@ func wordsEditedTogetherThatARelabelPutInTwoTurnsAreNotRevertible() async throws
     #expect(try wordEditCurrent(session).segments[0].text == "ask much Claude today")
     await review.close()
     // At close, the words edited together are not learned: they now mix two turns' words ("more cloud" → "much
-    // Claude" would teach one speaker's words with another's). The edit beside them, in one turn, is learned alone.
-    #expect(learner.taughtBy == [ReviewWordEdit(heard: "now", meant: "today", before: "Claude")])
+    // Claude" would teach one speaker's words with another's). The edit beside them, in one turn, is learned alone,
+    // without them as context ("Claude" is part of an edit its turn holds only part of).
+    #expect(learner.taughtBy == [ReviewWordEdit(heard: "now", meant: "today")])
 }
 
 @Test(.timeLimit(.minutes(1))) @MainActor
@@ -779,6 +780,57 @@ func learningAgainAtTheNextCloseChangesNothingAndASecondOccurrenceIsAdded() asyn
     // Words 0–2 are each in a turn, word by word, but no one turn holds them all: not learned. "cloud" is in both;
     // the first turn holding it (A) gives its context: "ask" before it, nothing after (B's "now" is not A's).
     #expect(edits == [ReviewWordEdit(heard: "cloud", meant: "Claude", before: "ask")])
+}
+
+@Test func aFixTheTurnHoldsOnlyPartOfGivesNoContext() {
+    // "as newark": "newark" fixed automatically to "New York", then "as" edited to "ask"; the labels split the fix,
+    // "as New" in one turn and "York" in the next.
+    var segment = SessionFixtures.segment(["ask", "New", "York"], track: "system", start: 0, wordSeconds: 1, id: "S1")
+    segment.fixes = [TranscriptWordFix(first: 0, end: 1, heard: "as", kind: .reviewEdit, heardWords: 1),
+                     TranscriptWordFix(first: 1, end: 3, heard: "newark", kind: .correction, heardWords: 1)]
+    let edits = ReviewLearning.edits(in: SessionFixtures.transcript([segment]),
+                                     turns: [[WordSpan(segmentID: "S1", first: 0, end: 2)],
+                                             [WordSpan(segmentID: "S1", first: 2, end: 3)]])
+    // No "as New" → "ask New", which would never match the recognizer's "as newark": no context on that side.
+    #expect(edits == [ReviewWordEdit(heard: "as", meant: "ask")])
+}
+
+@Test(.timeLimit(.minutes(1))) @MainActor
+func anEditOfPunctuationAloneKeepsItsMarkAndRevert() async throws {
+    let temp = try TemporaryDirectory("review")
+    defer { temp.remove() }
+    // "Hello. there", timed as "Hello" and "there": the period is not timed.
+    var segment = SessionFixtures.segment(["Hello", "there"], track: "system", start: 0, wordSeconds: 1)
+    segment.text = "Hello. there"
+    segment.words[1].utf16Offset = 7
+    let transcript = SessionFixtures.transcript([segment])
+    let session = try await SessionFixtures.makeSession(in: temp.url, source: .system, audioSeconds: ["system": 3],
+                                                        mode: .call, transcript: transcript)
+    let manifest = try SessionArchive.readManifest(at: session)
+    let speaker = SessionSpeaker(id: "system:S1", ordinal: 1, provenance: .diarizer, clusterIDs: ["system:S1"])
+    let run = DiarizationRun(
+        sessionID: manifest.id, transcriptID: transcript.id, engine: .fake,
+        alignment: AlignmentInfo(version: 1, parameters: .v1),
+        tracks: [TrackDiarization(track: "system", policy: .diarized,
+                                  clusters: [ClusterSummary(clusterID: speaker.id, track: "system", speechSeconds: 2)])],
+        speakers: [speaker],
+        turns: [SpeakerTurn(id: "T1", track: "system", start: 0, end: 2, speakerID: speaker.id, clusterID: speaker.id,
+                            spans: [WordSpan(segmentID: segment.id, first: 0, end: 2)], overlap: false,
+                            otherClusters: [], assignmentScore: 1, timing: .measured)])
+    try SessionArchive.withSpeakerLock(at: session) {
+        try SessionSpeakerStore.writeRun(run, session: session)
+        try SessionSpeakerStore.writeHead(SpeakerHead(runID: run.id), session: session)
+    }
+    let review = try await wordEditOpen(session)
+    try await review.editWords(wordEditRefs(review, "T1", [0]), to: "Hello?")
+    #expect(try wordEditCurrent(session).segments[0].text == "Hello? there")
+    // The words are the same ("Hello"); the edit is not: it stays marked, with its Revert.
+    let edited = try #require(review.words(of: "T1").first)
+    #expect(edited.fix?.kind == .reviewEdit && edited.fix?.heard == "Hello." && edited.revertible)
+    try await review.revertWordFix(edited.ref)
+    #expect(try wordEditCurrent(session).segments[0].text == "Hello. there")
+    #expect(review.words(of: "T1").first?.fix == nil, "Back to what the recognizer wrote: no longer a change.")
+    await review.close()
 }
 
 @Test(.timeLimit(.minutes(1))) @MainActor

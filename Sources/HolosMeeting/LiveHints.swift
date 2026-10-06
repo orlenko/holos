@@ -384,6 +384,11 @@ public enum LiveHints {
                     already += 1
                     continue
                 }
+                // Words edited in Review since are the person's newer choice: replay never marks or changes them.
+                if overlapsReviewEdit(range, in: working) {
+                    unmatched += 1
+                    continue
+                }
                 // Replay may independently produce the text the person requested. It still needs live provenance:
                 // without the mark, the automatic word-fix stage can replace the person's explicit choice. Replace
                 // an overlapping older mark, but keep the replay's text and word timings exactly as they are.
@@ -605,6 +610,12 @@ public enum LiveHints {
         return expandedLower.utf16Offset(in: segment.text)..<expandedUpper.utf16Offset(in: segment.text)
     }
 
+    /// `range` touches words edited in Review (a `reviewEdit` mark): a live hint replayed later (recovery) must leave
+    /// them, the person's newer choice, as they are, neither marking nor changing them.
+    private static func overlapsReviewEdit(_ range: Range<Int>, in working: WordFixes.Working) -> Bool {
+        working.marks.contains { $0.kind == .reviewEdit && $0.range.overlaps(range) }
+    }
+
     /// How many of `segment`'s words `range` touches: the words a live correction there replaces, recorded as its
     /// `heardWords`.
     private static func wordsTouched(_ range: Range<Int>, in segment: TranscriptSegment) -> Int {
@@ -656,7 +667,9 @@ public enum LiveHints {
             let part = match.parts[index]
             let segment = result.segments[part.segment]
             let range = ranges[index]
-            guard var working = WordFixes.Working(segment, preservingExistingFixes: true) else {
+            // Words edited in Review since are the person's newer choice: the whole hint is skipped.
+            guard var working = WordFixes.Working(segment, preservingExistingFixes: true),
+                  !overlapsReviewEdit(range, in: working) else {
                 return nil
             }
             let heard = provenances[index].isEmpty ? text(in: range, of: segment) : provenances[index]

@@ -522,8 +522,9 @@ public struct ReviewWord: Sendable, Equatable {
                 guard fix.kind == .reviewEdit, fix.first >= 0, fix.first < fix.end, fix.end <= effective.count else {
                     return false
                 }
-                return TranscriptWordEdit.cleaned(fix.heard)
-                    != effective[fix.first..<fix.end].map(\.text).joined(separator: " ")
+                // As shown, with the punctuation the recognizer did not time ("Hello." edited to "Hello?" is a change).
+                let shown = TranscriptWordEdit.shownText(of: segment, first: fix.first, end: fix.end)
+                return shown.map { TranscriptWordEdit.cleaned(fix.heard) != TranscriptWordEdit.cleaned($0) } ?? true
             }
             for index in span.first..<span.end {
                 let word = effective[index]

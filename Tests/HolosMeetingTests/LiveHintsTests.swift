@@ -52,6 +52,33 @@ private func hint(_ segment: TranscriptSegment, words: Range<Int>, action: LiveH
     #expect(fix?.heardWords == 2, "Two words, though what was heard has three tokens.")
 }
 
+@Test func aReplayedLiveHintNeverChangesOrMarksWordsEditedInReview() {
+    // Live: "send" → "share". Later edited in Review too (the mark is the person's newer choice), then the hint is
+    // replayed (recovery): it finds "share" shown, and would have marked it as its own.
+    let live = SessionFixtures.segment(["please", "send", "the", "deck"], track: "system", start: 4, id: "live")
+    var edited = SessionFixtures.segment(["please", "share", "the", "deck"], track: "system", start: 4, id: "live")
+    edited.fixes = [TranscriptWordFix(first: 1, end: 2, heard: "send", kind: .reviewEdit, heardWords: 1)]
+    let one = LiveHints.applyingText([hint(live, words: 1..<2, action: .replaceText("share"))],
+                                     to: SessionFixtures.transcript([edited]))
+    #expect(one.applied == 0)
+    #expect(one.transcript.segments == [edited], "The Review edit stays as it is.")
+
+    // Across language pieces: "send the latest deck" → "share this doc.", with "doc." edited in Review since.
+    let sentence = SessionFixtures.segment(["please", "send", "the", "latest", "deck"], track: "mic", start: 2,
+                                           id: "sentence")
+    let liveHint = hint(sentence, words: 1..<5, action: .replaceText("share this doc."), id: "H1")
+    let first = LanguageMerge.piece(of: sentence, first: 0, end: 3, language: "en-CA")
+    let second = LanguageMerge.piece(of: sentence, first: 3, end: 5, language: "fr-CA")
+    let applied = LiveHints.applyingText([liveHint], to: SessionFixtures.transcript([first, second])).transcript
+    var reviewed = applied
+    reviewed.segments[1].fixes = [TranscriptWordFix(first: 0, end: 1, heard: "latest deck", kind: .reviewEdit,
+                                                    heardWords: 2)]
+    reviewed.segments[0].fixes = nil
+    let replayed = LiveHints.applyingText([liveHint], to: reviewed)
+    #expect(replayed.applied == 0)
+    #expect(replayed.transcript.segments == reviewed.segments, "Neither piece is marked or changed.")
+}
+
 @Test func liveTextHintSurvivesReplayChangingTheSegmentID() {
     let live = SessionFixtures.segment(["asked", "cloud", "today"], track: "mic", start: 10, id: "live")
     let replayed = SessionFixtures.segment(["asked", "cloud", "today"], track: "mic", start: 10.08, id: "replayed")

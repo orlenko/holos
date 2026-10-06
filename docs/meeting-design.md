@@ -7747,7 +7747,9 @@ shown, Otter-style.
   edit mode on and opens the field; it is offered only while words can be edited (not after
   the transcript changed under the labels), and reports failure when no field opened. An edited word is dotted-underlined like a fixed word
   ("You changed “heard”"), and its Revert ("Revert to “heard”") is another edit back to what
-  the recognizer wrote. Words edited together that a relabel (Find More Speakers, Label
+  the recognizer wrote; an edit is a change when its text as shown differs from what was
+  heard, punctuation included ("Hello." → "Hello?"). A live hint replayed later (recovery)
+  never marks or changes words edited in Review: the hint is skipped. Words edited together that a relabel (Find More Speakers, Label
   Speakers on My Microphone) has since put in two turns offer no Revert (menu or VoiceOver)
   and open no field (an edit takes in the whole mark, across the turns, and would be
   refused; a selection stops before them); their tooltip and the banner say so, and that the
@@ -7921,7 +7923,9 @@ shown, Otter-style.
     hidden as echo; without such a neighbour the rule learns as it does without context. A
     neighbour under a fix (automatic, live) stands with its whole fix, and the heard side
     takes what the recognizer wrote there: beside "cloud" fixed to "Claude", "as" → "ask"
-    teaches "as cloud" → "ask Claude", which matches the recognizer's text. The
+    teaches "as cloud" → "ask Claude", which matches the recognizer's text. A fix the edit's
+    turn holds only part of gives no context on that side (corrected text never stands for
+    what was heard: "as New" beside "newark" made "New York" would match nothing). The
     turns are the labels on the transcript as it is then: labels the window could not reread
     after an edit are read again at close; when that fails, or the labels read are still on
     another transcript (a speaker head owed, or the transcript changed under them), nothing
