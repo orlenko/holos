@@ -486,7 +486,12 @@ thumbnail timeline, and a larger local-model benchmark are follow-ups.
   scrolls up ("Jump to Live"). After the stop it shows the saving progress, then offers
   Open Review or Open Transcript. The separate Live Transcript window is gone. Unit-tested
   (volatile to final, echo hiding, following, what opens) and rendered offscreen in light
-  and dark; not yet seen in a real meeting.
+  and dark. In the first real meeting (2026-10-06) it stayed blank although the recorder
+  journaled its words live: the hairline under the header had no height of its own and, in
+  a tall window, took all the height and left the transcript none (as in Settings before).
+  Fixed; `LiveMeetingViewTests` opens a recording's live transcript in the real main window
+  at five sizes, feeds it a journal shaped like that meeting's, and checks the words are read
+  and the transcript has the height. Not yet seen again in a real meeting.
 - Reading section (docs/design.md "Reading section"): the main window's Reading (⌘5) makes
   the `voiceislocal read` file in the app. A New reading card takes an `https://` link or a
   document (typed, pasted with ⌘V, dropped anywhere on the section, or chosen; several files
