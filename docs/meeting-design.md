@@ -7939,8 +7939,12 @@ shown, Otter-style.
     meeting's next review close makes it again, since the edits stay in the transcript; a
     record that cannot be read (damaged, or newer) teaches nothing rather than teach again
     what was deleted;
-  - nothing is learned from a deletion, a punctuation-only change, or a case-only change,
-    unless the case change makes a proper noun (a word whose lowercase is not a dictionary
+  - just before the corrections are written, the current transcript is read again under the
+    meeting's speaker lock: one replaced since (another process) teaches nothing at this
+    close (logged; the next close learns from the transcript as it is then);
+  - nothing is learned from a deletion, a punctuation-only change, or a case-only change
+    (decided on the edited words alone: a context word's own fix never makes "Hello" →
+    "Hello," teach "Hello cloud" → "Hello, Claude"), unless the case change makes a proper noun (a word whose lowercase is not a dictionary
     word: "github" → "GitHub"); words split or joined ("everyday" → "every day") are a real
     change;
   - when the new text looks like a name or term (a word that is not a dictionary word, has a

@@ -159,6 +159,9 @@ public struct ReviewWord: Sendable, Equatable {
     /// (`SpeakerTranscriptRetarget.beforePublishHead`, set inside the window's detached publications); throwing makes
     /// the publication fail.
     var beforeHeadPublish: (@Sendable () throws -> Void)?
+    /// Test seam: called once a word edit, its undo, or a revert wrote its speaker head
+    /// (`SpeakerTranscriptRetarget.afterHeadWritten`); throwing is a failure after the rename.
+    var afterHeadWritten: (@Sendable () throws -> Void)?
     /// A word edit, its undo, or an automatic fix's revert made its transcript current, but its speaker head could not
     /// be published, nor repaired at once: the transcript it was made on, the head run then, and which change (each
     /// has its own repair). The review is held read-only until a reread finds the labels on the current transcript;
@@ -1422,11 +1425,14 @@ public struct ReviewWord: Sendable, Equatable {
             let transcriptID = snapshot.transcript.id
             let hook = beforeEdit
             let headHook = beforeHeadPublish
+            let writtenHook = afterHeadWritten
             let outcome = await Self.detachedResult {
                 if let hook { await hook() }
                 return try await SpeakerTranscriptRetarget.$beforePublishHead.withValue(headHook) {
-                    try await SessionWordFixRevert.run(session: session, word: word,
-                                                       expectedTranscriptID: transcriptID, expectedRunID: runID)
+                    try await SpeakerTranscriptRetarget.$afterHeadWritten.withValue(writtenHook) {
+                        try await SessionWordFixRevert.run(session: session, word: word,
+                                                           expectedTranscriptID: transcriptID, expectedRunID: runID)
+                    }
                 }
             }
             switch outcome {
@@ -1447,7 +1453,12 @@ public struct ReviewWord: Sendable, Equatable {
             case .failure(let error):
                 if error is CancellationError { throw error }
                 if let incomplete = error as? SessionWordFixRevert.IncompletePublication {
-                    if let published = incomplete.outcome { revertCommitted(published) }
+                    if let published = incomplete.outcome {
+                        revertCommitted(published)
+                        // Its run is this window's, as a word edit's is: head.json may name it already (the rename was
+                        // done, a later step failed), and then no repair publishes another.
+                        turnKeepingRuns[published.runID] = runID
+                    }
                     // Owed until a reread finds the labels on the current transcript (`adopt`), as a word edit's is; a
                     // reload repairs it.
                     owedHead = (transcriptID, runID, true)
@@ -1679,6 +1690,15 @@ public struct ReviewWord: Sendable, Equatable {
         }
         let toTeach = ReviewLearning.untaught(corrections, taught: taught)
         guard !toTeach.isEmpty else { return }
+        // Read again just before the write, under the speaker lock: a transcript replaced since it was read (another
+        // process) teaches nothing now; the next close learns from the transcript as it is then.
+        let still = await Self.detachedResult {
+            try SessionArchive.withSpeakerLock(at: session) { try SessionArchive.currentTranscriptID(at: session) }
+        }
+        guard case .success(let id) = still, id == current.id else {
+            Self.log.error("Session \(self.sessionID, privacy: .public): the transcript changed while learning from its edits; a later close learns them")
+            return
+        }
         guard let applied = learn(toTeach, taught) else {
             Self.log.error("Session \(self.sessionID, privacy: .public): corrections from review edits not saved; the next review's close tries again")
             return
@@ -1743,8 +1763,11 @@ public struct ReviewWord: Sendable, Equatable {
         _ body: @escaping @Sendable () async throws -> T
     ) async throws -> T? {
         let headHook = beforeHeadPublish
+        let writtenHook = afterHeadWritten
         switch await Self.detachedResult({
-            try await SpeakerTranscriptRetarget.$beforePublishHead.withValue(headHook) { try await body() }
+            try await SpeakerTranscriptRetarget.$beforePublishHead.withValue(headHook) {
+                try await SpeakerTranscriptRetarget.$afterHeadWritten.withValue(writtenHook) { try await body() }
+            }
         }) {
         case .success(let value):
             committed(value)

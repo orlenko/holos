@@ -9,6 +9,9 @@ import HolosStorage
 enum SpeakerTranscriptRetarget {
     @TaskLocal static var beforePublishHead: (@Sendable () throws -> Void)?
     @TaskLocal static var afterPublishHead: (@Sendable () -> Void)?
+    /// Test hook: called once head.json names the new run, before anything after it; throwing is a failure after the
+    /// rename (a folder sync).
+    @TaskLocal static var afterHeadWritten: (@Sendable () throws -> Void)?
 
     struct Plan {
         var run: DiarizationRun
@@ -91,6 +94,7 @@ enum SpeakerTranscriptRetarget {
     static func publishHead(_ plan: Plan, session: URL, now: Date = Date()) throws {
         try beforePublishHead?()
         try SessionSpeakerStore.writeHead(SpeakerHead(runID: plan.run.id, updatedAt: now), session: session)
+        try afterHeadWritten?()
         afterPublishHead?()
     }
 

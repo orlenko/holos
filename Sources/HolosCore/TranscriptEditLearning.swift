@@ -16,6 +16,11 @@ public enum TranscriptEditLearning {
                                    isDictionaryWord: (String) -> Bool) -> [Correction] {
         let heard = words(heard), meant = words(meant)
         guard !heard.isEmpty, !meant.isEmpty, heard != meant else { return [] }
+        // Whether the edit teaches anything is the edited words' own: a punctuation-only or case-only change stays one
+        // whatever its context ("Hello" → "Hello," beside "cloud" fixed to "Claude" never teaches "Hello cloud" →
+        // "Hello, Claude"), unless the case change makes a proper noun.
+        guard key(heard) != key(meant)
+            || makesProperNoun(from: heard, to: meant, isDictionaryWord: isDictionaryWord) else { return [] }
         let original = [heardBefore ?? before, heard, heardAfter ?? after].compactMap { $0 }.joined(separator: " ")
         let corrected = [before, meant, after].compactMap { $0 }.joined(separator: " ")
         return CorrectionList.learn(original: original, corrected: corrected,

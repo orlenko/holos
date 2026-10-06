@@ -1265,6 +1265,66 @@ func aRevertWhoseSaveFailsAfterItBecameCurrentIsAPublicationStillOwed() async th
 }
 
 @Test(.timeLimit(.minutes(1))) @MainActor
+func aRevertWhoseHeadWasWrittenThenFailedStaysTheWindowsOwnChange() async throws {
+    let temp = try TemporaryDirectory("review")
+    defer { temp.remove() }
+    let session = try await wordEditFixedCloudSession(temp)
+    let review = try await wordEditOpen(session)
+    try await review.apply([.rename(speakerID: "system:S1", name: "Ann")])
+    let (stream, release) = AsyncStream<Void>.makeStream()
+    let entered = SharedValue(0)
+    review.beforeEdit = {
+        entered.update { $0 += 1 }
+        for await _ in stream {}
+    }
+    // head.json names the revert's run, then syncing its folder fails (once).
+    let failures = SharedValue(1)
+    review.afterHeadWritten = {
+        if failures.update({ count in defer { count -= 1 }; return count > 0 }) {
+            throw HolosError.io("the folder could not be synced")
+        }
+    }
+    let revert = Task { try await review.revertWordFix(wordEditRefs(review, "T1", [2])[0]) }
+    #expect(await eventually { entered.value == 1 })
+    // Queued while the revert saves.
+    let rename = Task { try await review.apply([.rename(speakerID: "system:S1", name: "Bo")]) }
+    #expect(await eventually { review.queuedOperations == 2 })
+    review.beforeEdit = nil
+    release.finish()
+    try await revert.value
+    // The revert's own head is not a relabel made elsewhere: the queued rename is not refused, the undo stays.
+    try await rename.value
+    #expect(try wordEditCurrent(session).segments[0].text == "ask more cloud now")
+    #expect(review.speaker("system:S1")?.name == "Bo")
+    #expect(review.reloadProblem == nil && review.canUndo)
+    await review.close()
+}
+
+@Test(.timeLimit(.minutes(1))) @MainActor
+func aTranscriptReplacedWhileLearningTeachesNothingAtThisClose() async throws {
+    let temp = try TemporaryDirectory("review")
+    defer { temp.remove() }
+    let session = try await wordEditCloudSession(temp)
+    let review = try await wordEditOpen(session)
+    let learner = WordEditLearner()
+    learner.attach(to: review)
+    try await review.editWords(wordEditRefs(review, "T1", [0]), to: "Claude")
+    // Another process replaces the current transcript after the close read it, before the corrections are written.
+    let teach = try #require(review.correctionsToLearn)
+    review.correctionsToLearn = { edit in
+        if var other = try? wordEditCurrent(session) {
+            other.id = UUID().uuidString
+            try? AtomicFile.writeJSON(other, to: SessionPaths.transcript(other.id, in: session))
+            try? AtomicFile.writeJSON(TranscriptPointer(transcriptID: other.id),
+                                      to: SessionPaths.transcriptPointer(session))
+        }
+        return teach(edit)
+    }
+    await review.close()
+    #expect(learner.lessons == 0 && learner.list.entries.isEmpty, "Nothing taught from a transcript no longer current.")
+}
+
+@Test(.timeLimit(.minutes(1))) @MainActor
 func aRevertWhoseHeadCouldNotBePublishedHoldsTheReviewUntilAReloadRepairsIt() async throws {
     let temp = try TemporaryDirectory("review")
     defer { temp.remove() }

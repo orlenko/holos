@@ -41,6 +41,22 @@ private func isWord(_ word: String) -> Bool { dictionary.contains(word.lowercase
     #expect(TranscriptEditLearning.corrections(heard: "ask  now", meant: "ask now", isDictionaryWord: isWord).isEmpty)
 }
 
+@Test func whetherAnEditTeachesIsDecidedOnTheEditedWordsAloneNotTheirContext() {
+    // "Hello cloud welcome back", whose "cloud" a correction made "Claude": only "Hello" → "Hello," was edited. The
+    // context's own change ("cloud" → "Claude") never makes a punctuation-only edit teach "Hello cloud" → "Hello, Claude".
+    #expect(TranscriptEditLearning.corrections(heard: "Hello", meant: "Hello,", after: "Claude", heardAfter: "cloud",
+                                               isDictionaryWord: { _ in true }).isEmpty)
+    #expect(TranscriptEditLearning.corrections(heard: "so", meant: "So", after: "Claude", heardAfter: "cloud",
+                                               isDictionaryWord: isWord).isEmpty, "Nor a case-only one.")
+    // A real edit beside the fixed word is learned against what the recognizer wrote there.
+    #expect(TranscriptEditLearning.corrections(heard: "as", meant: "ask", after: "Claude", heardAfter: "cloud",
+                                               isDictionaryWord: { _ in true })
+        == [Correction(heard: "as cloud", meant: "ask Claude")])
+    // A case change making a proper noun still teaches, beside a fixed word too.
+    #expect(!TranscriptEditLearning.corrections(heard: "github", meant: "GitHub", after: "Claude", heardAfter: "cloud",
+                                                isDictionaryWord: isWord).isEmpty)
+}
+
 @Test func splittingOrJoiningWordsIsLearned() {
     // Only the spaces differ, which is no punctuation-only or case-only change.
     #expect(TranscriptEditLearning.corrections(heard: "everyday", meant: "every day", isDictionaryWord: { _ in false })
