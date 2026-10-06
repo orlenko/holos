@@ -7794,7 +7794,11 @@ shown, Otter-style.
   whitespace-separated tokens of `heard`), so `heard` stays in the unfixed word space every
   provenance map uses (`WordFixStage.wordOrigins`, `SpeakerTranscriptRetarget.origins`: its
   original word count is `heardWords`, else `tokens(heard)`; `WordFixes.originalWordRanges`:
-  like a live correction, the base already holds it). The edit is made in both layers:
+  like a live correction, the base already holds it). An automatic fix records `heardWords`
+  too when it replaced a number of words its `heard` does not show ("你好世界" over two timed
+  words); where the base segment is at hand (`baseBounds`, `originalWordRanges`), an older
+  fix without it is counted by the base's own words its `heard` covers
+  (`WordFixes.replacedWords`), so such a segment stays editable and revertible. The edit is made in both layers:
   - the unfixed base `B` (`current.fixedFrom`, or the current transcript when it has none)
     gets a new revision `B′` with the edit marked `reviewEdit`, `fixedFrom` nil and
     `liveCorrectedFrom` = `B.liveCorrectedFrom ?? B.id` (the stable word space retargeting
@@ -7820,7 +7824,11 @@ shown, Otter-style.
   `segment`), then `C′`'s `transcriptEdited` event (also `replaced` and `replacement`, the
   move, which a repair maps by), then `C′` becomes current, then the new head. `unfixedID` follows
   `transcriptEdited` like `wordsFixed`. A head that could not be published is repaired from
-  the old head as a revert's is; when the app quits in between, post-processing repairs it
+  the old head as a revert's is. When that repair fails too, the head is owed: the window
+  stays read-only with a banner saying so, Reload repairs it first, and no reread (Reload, a
+  relabel) resumes the review until the labels are on the current transcript (labels made on
+  the words as they were would make the edit's undo fail and Label Again drop turn edits);
+  when the app quits in between, post-processing repairs it
   first (`SessionWordEdit.repairPendingHead`, before any stage may replace the transcript or
   relabel over the old head, the only copy of the turn edits). Exports are regenerated
   `exportDelay` later; the summary is no longer current (its key holds the transcript ID).

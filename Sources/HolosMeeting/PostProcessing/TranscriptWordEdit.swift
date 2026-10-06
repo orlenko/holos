@@ -165,7 +165,10 @@ public enum TranscriptWordEdit {
             base.id == current.fixedFrom ? base.segments.first { $0.id == segment.id } : nil
         }
         let baseWords = baseSegment.map(WordTiming.effectiveWords(of:))
-        let bounds = baseWords.flatMap { baseBounds(fixes: fixes, current: words, base: $0) }
+        let bounds = baseSegment.flatMap { baseSegment in
+            baseWords.flatMap { baseBounds(fixes: fixes, current: words, base: $0,
+                                           baseText: Array(baseSegment.text.utf16)) }
+        }
         func automatic(_ fix: TranscriptWordFix) -> (text: String, words: Int) {
             guard let baseSegment, let baseWords, let bounds, bounds[fix.first] >= 0, bounds[fix.end] >= 0 else {
                 return (fix.heard, fix.heardWordCount)
@@ -307,7 +310,8 @@ public enum TranscriptWordEdit {
                                     now: Date) throws -> Transcript {
         guard let index = base.segments.firstIndex(where: { $0.id == segment.id }),
               let bounds = baseBounds(fixes: segment.fixes ?? [], current: words,
-                                      base: WordTiming.effectiveWords(of: base.segments[index])) else {
+                                      base: WordTiming.effectiveWords(of: base.segments[index]),
+                                      baseText: Array(base.segments[index].text.utf16)) else {
             throw HolosError.invalidInput("These words cannot be matched to the transcript they were fixed from.")
         }
         let baseSegment = base.segments[index]
@@ -336,9 +340,11 @@ public enum TranscriptWordEdit {
     }
 
     /// For each word boundary `0...current.count` of a fixed segment, the boundary in its unfixed `base` segment; -1
-    /// inside a mark. An automatic fix took `tokens(heard)` base words; a Review revert, a live correction, and a Review
-    /// edit occupy their own words in the base too. Nil when the unmarked words do not match.
-    static func baseBounds(fixes: [TranscriptWordFix], current: [EffectiveWord], base: [EffectiveWord]) -> [Int]? {
+    /// inside a mark. An automatic fix took the base words its `heard` covers there (`WordFixes.replacedWords`, from
+    /// `baseText`); a Review revert, a live correction, and a Review edit occupy their own words in the base too. Nil
+    /// when the unmarked words do not match.
+    static func baseBounds(fixes: [TranscriptWordFix], current: [EffectiveWord], base: [EffectiveWord],
+                           baseText: [UInt16]) -> [Int]? {
         var bounds = Array(repeating: -1, count: current.count + 1)
         var word = 0
         var baseWord = 0
@@ -358,7 +364,8 @@ public enum TranscriptWordEdit {
             bounds[fix.first] = baseWord
             let count: Int
             switch fix.kind {
-            case .correction, .term: count = fix.heardWordCount
+            case .correction, .term:
+                count = WordFixes.replacedWords(by: fix, from: baseWord, in: base, text: baseText) ?? fix.heardWordCount
             case .reviewRevert, .liveCorrection, .reviewEdit: count = fix.end - fix.first
             default: return nil
             }

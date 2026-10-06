@@ -148,6 +148,14 @@ public struct ReviewWord: Sendable, Equatable {
     /// Test seam: called once a word edit or its undo is committed, before the labels are reread; throwing makes the
     /// reread fail.
     var beforeWordChangeReread: (() throws -> Void)?
+    /// Test seam: called before a word edit, its undo, or a repair publishes a speaker head
+    /// (`SpeakerTranscriptRetarget.beforePublishHead`, set inside the window's detached publications); throwing makes
+    /// the publication fail.
+    var beforeHeadPublish: (@Sendable () throws -> Void)?
+    /// A word edit or its undo made its transcript current, but its speaker head could not be published, nor repaired
+    /// at once: the transcript it was made on and the head run then. The review is held read-only until a reread finds
+    /// the labels on the current transcript; `.reload` repairs the head first (`SessionWordEdit.repairCurrentHead`).
+    private var owedHead: (transcriptID: String, runID: String)?
 
     /// The corrections one word edit teaches (the app: `TranscriptEditLearning`).
     public var correctionsToLearn: ((ReviewWordEdit) -> [Correction])?
@@ -1376,8 +1384,21 @@ public struct ReviewWord: Sendable, Equatable {
         case .relabel(let arguments):
             try await runRelabel(arguments)
         case .reload:
+            // A speaker head still owed by a word edit or its undo is repaired first: until the labels read are on the
+            // current transcript, the review stays held (labels made on the words as they were would let an undo
+            // fail and Label Again drop the turn edits).
+            var repairProblem: String?
+            if owedHead != nil {
+                do { try await repairOwedHead() } catch { repairProblem = error.localizedDescription }
+            }
             // `loadSnapshot` rereads the people first, so the labels are built with their current names.
-            adopt(try await loadSnapshot(), op: nil, matching: nil)
+            let fresh = try await loadSnapshot()
+            if owedHead != nil, fresh.projection == nil || fresh.transcriptChanged {
+                holdUnreread(matching: nil, problem: "The words were changed, but their speaker labels could not be "
+                             + "saved (\(repairProblem ?? "the new speaker head is incomplete")); Reload tries again.")
+                return
+            }
+            adopt(fresh, op: nil, matching: nil)
         case .exports:
             try await regenerateExports()
         }
@@ -1605,8 +1626,10 @@ public struct ReviewWord: Sendable, Equatable {
         committed: (T?) -> Void,
         _ body: @escaping @Sendable () async throws -> T
     ) async throws -> T? {
-        let session = self.session
-        switch await Self.detachedResult(body) {
+        let headHook = beforeHeadPublish
+        switch await Self.detachedResult({
+            try await SpeakerTranscriptRetarget.$beforePublishHead.withValue(headHook) { try await body() }
+        }) {
         case .success(let value):
             committed(value)
             changesSaved(exportsWritten: false)
@@ -1628,13 +1651,10 @@ public struct ReviewWord: Sendable, Equatable {
                 let value = recover(incomplete)
                 committed(value)
                 changesSaved(exportsWritten: false)
-                let repair = await Self.detachedResult {
-                    try await SessionWordEdit.repairCurrentHead(session: session, expectedTranscriptID: transcriptID,
-                                                                expectedRunID: runID)
-                }
+                // Owed until a reread finds the labels on the current transcript (`adopt`); a reload repairs it.
+                owedHead = (transcriptID, runID)
                 do {
-                    // Only the run the repair published keeps the turns; a head published elsewhere is not ours.
-                    if let repaired = try repair.get() { turnKeepingRuns[repaired] = runID }
+                    try await repairOwedHead()
                     let fresh = try await loadSnapshot()
                     guard fresh.projection != nil, !fresh.transcriptChanged else {
                         throw HolosError.unavailable("The new speaker head is incomplete.")
@@ -1642,8 +1662,8 @@ public struct ReviewWord: Sendable, Equatable {
                     adopt(fresh, op: nil, matching: nil)
                     return value
                 } catch let reread {
-                    holdUnreread(matching: nil, problem: "\(what), but the window could not reread the speaker "
-                                 + "labels: \(reread.localizedDescription)")
+                    holdUnreread(matching: nil, problem: "\(what), but its speaker labels could not be saved or "
+                                 + "reread (\(reread.localizedDescription)); Reload tries again.")
                 }
                 throw HolosError.incomplete(incomplete.message)
             }
@@ -1654,6 +1674,22 @@ public struct ReviewWord: Sendable, Equatable {
             }
             throw error
         }
+    }
+
+    /// Publishes the speaker head owed since a word edit or its undo (`owedHead`), retargeted from the old one
+    /// (`SessionWordEdit.repairCurrentHead`). Only the run it published keeps the turns; a head published elsewhere
+    /// meanwhile is not this window's.
+    private func repairOwedHead() async throws {
+        guard let owed = owedHead else { return }
+        let session = self.session
+        let hook = beforeHeadPublish
+        let repaired = try await Self.detachedResult {
+            try await SpeakerTranscriptRetarget.$beforePublishHead.withValue(hook) {
+                try await SessionWordEdit.repairCurrentHead(session: session, expectedTranscriptID: owed.transcriptID,
+                                                            expectedRunID: owed.runID)
+            }
+        }.get()
+        if let repaired { turnKeepingRuns[repaired] = owed.runID }
     }
 
     /// Queued splits not started yet whose word is in `segmentID`, which a word edit or its undo just changed: their
@@ -2235,6 +2271,15 @@ public struct ReviewWord: Sendable, Equatable {
     @discardableResult
     private func adopt(_ fresh: SpeakerSessionSnapshot, op: Operation?, matching: (([SpeakerEdit]) -> Bool)?,
                        external forced: Bool = false) -> Bool {
+        // A speaker head still owed (`owedHead`): labels not on the current transcript are not taken, and the review
+        // stays held (a relabel that could not repair it first left them so); labels on it end the debt.
+        if owedHead != nil {
+            guard fresh.projection != nil, !fresh.transcriptChanged else {
+                Self.log.error("Session \(self.sessionID, privacy: .public): labels reread while a speaker head is owed are not on the current transcript; review stays read-only")
+                return false
+            }
+            owedHead = nil
+        }
         let known = Set(snapshot.journal.edits.map(\.id))
         let added = fresh.journal.edits.filter { !known.contains($0.id) }
         var groups: [[SpeakerEdit]] = []

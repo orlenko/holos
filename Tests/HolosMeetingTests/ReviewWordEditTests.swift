@@ -507,6 +507,47 @@ func wordsEditedTogetherThatARelabelPutInTwoTurnsAreNotRevertible() async throws
 }
 
 @Test(.timeLimit(.minutes(1))) @MainActor
+func aHeadThatCouldNotBePublishedHoldsTheReviewUntilAReloadRepairsIt() async throws {
+    let temp = try TemporaryDirectory("review")
+    defer { temp.remove() }
+    let session = try await wordEditSession(in: temp, [
+        WordEditTurn(speaker: "system:S1", start: 0, words: ["ask", "cloud", "now"]),
+    ])
+    let original = try wordEditCurrent(session)
+    let review = try await wordEditOpen(session)
+    try await review.apply([.rename(speakerID: "system:S1", name: "Ann")])
+    let failing = SharedValue(true)
+    review.beforeHeadPublish = { if failing.value { throw HolosError.io("the speaker head is read-only") } }
+
+    // The edit's transcript is current; its head, and the repair right after, cannot be published.
+    await #expect(throws: HolosError.self) {
+        try await review.editWords(wordEditRefs(review, "T1", [1]), to: "Claude")
+    }
+    #expect(try wordEditCurrent(session).segments[0].text == "ask Claude now")
+    #expect(review.reloadProblem != nil && !review.canEditWords)
+
+    // Reload: the repair fails again, so the labels made on the words as they were are not taken; still held.
+    await review.reload()
+    #expect(review.reloadProblem?.contains("could not be saved") == true)
+    #expect(!review.canEditWords && !review.isEditable)
+    #expect(review.snapshot.transcript.id == original.id, "Labels on the old transcript are not adopted.")
+
+    // Reload once the head can be published: repaired, resumed, and the edit is still undoable.
+    failing.set(false)
+    await review.reload()
+    #expect(review.reloadProblem == nil && review.canEditWords)
+    #expect(!review.snapshot.transcriptChanged)
+    #expect(review.words(of: "T1").map(\.text) == ["ask", "Claude", "now"])
+    #expect(review.speaker("system:S1")?.name == "Ann", "The turn edits were carried over.")
+    #expect(review.canUndo)
+    try await review.undo()
+    #expect(try wordEditCurrent(session).segments == original.segments)
+    #expect(review.words(of: "T1").map(\.text) == ["ask", "cloud", "now"])
+    #expect(review.speaker("system:S1")?.name == "Ann")
+    await review.close()
+}
+
+@Test(.timeLimit(.minutes(1))) @MainActor
 func anEditWhoseLabelsCannotBeRereadCanStillBeUndone() async throws {
     let temp = try TemporaryDirectory("review")
     defer { temp.remove() }

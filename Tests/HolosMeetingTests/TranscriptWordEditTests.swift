@@ -253,6 +253,28 @@ private func editRanged(_ text: String, _ ranges: [(Int, Int)], id: String = "S1
     #expect(reverted.base?.segments[0].text == "hello — there please")
 }
 
+@Test func anAutomaticFixOverWordsWithoutSpacesLeavesTheSegmentEditable() async throws {
+    // "你好世界" timed as "你好" and "世界"; a correction makes it "你好地球".
+    let base = editTranscript([editRanged("你好世界 再见", [(0, 2), (2, 2), (5, 2)])])
+    let fixed = try await editFixed(base, [Correction(heard: "你好世界", meant: "你好地球")])
+    #expect(fixed.segments[0].text == "你好地球 再见")
+    #expect(fixed.segments[0].fixes == [TranscriptWordFix(first: 0, end: 1, heard: "你好世界", kind: .correction,
+                                                          heardWords: 2)], "It replaced two words.")
+    // The same fix as an earlier version saved it, without the count: told from the base's words.
+    var legacy = fixed
+    legacy.segments[0].fixes = [TranscriptWordFix(first: 0, end: 1, heard: "你好世界", kind: .correction)]
+    for current in [fixed, legacy] {
+        let other = try #require(try TranscriptWordEdit.editing(editRequest(1, 2, "拜拜"), in: current, base: base))
+        #expect(other.transcript.segments[0].text == "你好地球 拜拜")
+        #expect(other.base?.segments[0].text == "你好世界 拜拜")
+        let fix = try #require(try TranscriptWordEdit.editing(editRequest(0, 1, "你好朋友"), in: current, base: base))
+        #expect(fix.heard == "你好世界" && fix.transcript.segments[0].fixes?.first?.heardWords == 2)
+        #expect(fix.base?.segments[0].text == "你好朋友 再见")
+        let reverted = try WordFixes.reverting(WordRef(segmentID: "S1", word: 0), in: current, to: base)
+        #expect(reverted.segments[0].text == "你好世界 再见")
+    }
+}
+
 @Test func anUntimedSegmentKeepsEstimatedTiming() throws {
     let untimed = TranscriptSegment(id: "S1", start: 0, end: 3, text: "one two three", track: "system")
     let current = editTranscript([untimed])
