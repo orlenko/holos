@@ -192,9 +192,12 @@ enum DeepTranscriptionStage {
 
         // Without a recorded transcript, the silence guard has no words to look for: the audio level alone decides.
         var (segments, guarded, lostSpeech) = Self.segments(pass.segments, reference: base?.reference)
-        // A transcript made from languages named (several, or a merge of one) keeps naming them, and every segment its
-        // own (the preferred one when the model did not), as a merge does: the languages stage takes it for done.
-        let named = several || !(base?.unfixed.languages ?? []).isEmpty
+        // A transcript made from languages named (several, a merge of one, or one asked for by name and journaled as
+        // answered without a merge: `recordRequest` leaves that transcript's `languages` nil) keeps naming them, and
+        // every segment its own (the preferred one when the model did not), as a merge does: the languages stage takes
+        // it for done, and a later pass for meeting.json's languages does not replace it.
+        let requested = base.flatMap { LanguageStage.mergeEvent(of: $0.unfixed.id, events: events)?.details["requested"] }
+        let named = several || !(base?.unfixed.languages ?? []).isEmpty || !(requested ?? "").isEmpty
         if named {
             for index in segments.indices where segments[index].language == nil { segments[index].language = locale }
         }

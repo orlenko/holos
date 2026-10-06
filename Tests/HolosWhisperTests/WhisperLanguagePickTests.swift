@@ -34,6 +34,25 @@ import Testing
         #expect(passages.map(\.speech) == [0..<(30 * frame), (40 * frame)..<(88 * frame)])
     }
 
+    @Test func joinedShortPassagesCountTheirSpeechNotTheirPauses() {
+        // "Oui." (0.5 s), a 1.5 s pause, "Merci." (0.5 s), a 0.6 s pause, 4 s: joined, the two short ones span 2.5 s
+        // but hold 1 s of speech, so they join the long one too; counted by their span they would stay apart.
+        let pattern = String(repeating: "#", count: 5) + String(repeating: ".", count: 15)
+            + String(repeating: "#", count: 5) + String(repeating: ".", count: 6) + String(repeating: "#", count: 40)
+        let passages = WhisperLanguagePick.passages(activity: activity(pattern), frameSamples: frame,
+                                                    total: pattern.count * frame)
+        #expect(passages.count == 1)
+        // A passage with 1 s of speech each side of a 3 s pause has 2 s of speech: too little to halve.
+        let sparse = String(repeating: "#", count: 10) + String(repeating: ".", count: 30)
+            + String(repeating: "#", count: 10)
+        let levels = sparse.map { $0 == "#" ? -20.0 : -60.0 }
+        let passage = WhisperLanguagePick.Passage(range: 0..<(sparse.count * frame), speech: 0..<(sparse.count * frame))
+        #expect(WhisperLanguagePick.halves(passage, activity: activity(sparse), levels: levels,
+                                           frameSamples: frame) == nil)
+        #expect(WhisperLanguagePick.activeSamples(in: 0..<(sparse.count * frame), activity: activity(sparse),
+                                                  frameSamples: frame) == 20 * frame)
+    }
+
     @Test func aShortPassageJoinsItsCloserNeighbour() {
         // 4 s, a 1.5 s pause, "Okay." (0.6 s), a 0.6 s pause, 4 s: the short one joins the one after it.
         let pattern = String(repeating: "#", count: 40) + String(repeating: ".", count: 15)

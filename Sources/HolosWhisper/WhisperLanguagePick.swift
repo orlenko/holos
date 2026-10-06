@@ -107,16 +107,22 @@ enum WhisperLanguagePick {
         guard speech.count > 1 else {
             return [Passage(range: 0..<total, speech: speech.first ?? 0..<total)]
         }
-        // Short ones joined to the closer neighbour (the shorter pause), the shortest first.
+        // The speech each passage holds, not counting the pauses inside it (a joined passage spans them).
+        var spoken = speech.map { range in
+            activeSamples(in: range, activity: activity, frameSamples: frame)
+        }
+        // Short ones joined to the closer neighbour (the shorter pause), the least speech first.
         while speech.count > 1,
-              let short = speech.indices.filter({ speech[$0].count < minimumSpeechSamples })
-                  .min(by: { speech[$0].count < speech[$1].count }) {
+              let short = speech.indices.filter({ spoken[$0] < minimumSpeechSamples })
+                  .min(by: { spoken[$0] < spoken[$1] }) {
             let before = short > 0 ? speech[short].lowerBound - speech[short - 1].upperBound : Int.max
             let after = short < speech.count - 1 ? speech[short + 1].lowerBound - speech[short].upperBound : Int.max
             let other = before <= after ? short - 1 : short + 1
             let first = min(short, other)
             speech[first] = speech[first].lowerBound..<speech[first + 1].upperBound
+            spoken[first] += spoken[first + 1]
             speech.remove(at: first + 1)
+            spoken.remove(at: first + 1)
         }
         var out: [Passage] = []
         for position in speech.indices {
@@ -128,18 +134,37 @@ enum WhisperLanguagePick {
         return out
     }
 
+    /// The samples of `range` in speech frames (`activity`, one flag per frame of `frameSamples`): the speech a range
+    /// holds, without its pauses.
+    static func activeSamples(in range: Range<Int>, activity: [Bool], frameSamples: Int) -> Int {
+        let frame = max(1, frameSamples)
+        guard !range.isEmpty else { return 0 }
+        var count = 0
+        for index in (range.lowerBound / frame)..<min(activity.count, (range.upperBound + frame - 1) / frame)
+            where activity[index] {
+            let start = max(range.lowerBound, index * frame)
+            let end = min(range.upperBound, (index + 1) * frame)
+            if end > start { count += end - start }
+        }
+        return count
+    }
+
     /// Where to halve `passage` when its language is unsure (rule 3): the middle of the longest pause in its speech
-    /// (frames of `frameSamples` whose `activity` is false) that leaves at least `minimumSpeechSamples` of speech on
-    /// each side, the one nearer the middle on a tie; without one, the middle of its quietest frame (`levels`) that
-    /// does. Nil when its speech is shorter than twice that.
+    /// (frames of `frameSamples` whose `activity` is false) that leaves at least `minimumSpeechSamples` of speech
+    /// (speech frames, not the pauses between them) on each side, the one nearer the middle on a tie; without one, the
+    /// middle of its quietest frame (`levels`) that does. Nil when its speech is less than twice that.
     static func halves(_ passage: Passage, activity: [Bool], levels: [Double], frameSamples: Int,
                        minimumSpeechSamples: Int = Int(minimumSpeechSeconds * 16_000)) -> (Passage, Passage)? {
         let frame = max(1, frameSamples)
         let speech = passage.speech
         let least = max(1, minimumSpeechSamples)
-        guard speech.count >= 2 * least else { return nil }
+        func spoken(_ range: Range<Int>) -> Int { activeSamples(in: range, activity: activity, frameSamples: frame) }
+        guard spoken(speech) >= 2 * least else { return nil }
         let middle = (speech.lowerBound + speech.upperBound) / 2
-        func allowed(_ cut: Int) -> Bool { cut - speech.lowerBound >= least && speech.upperBound - cut >= least }
+        func allowed(_ cut: Int) -> Bool {
+            cut > speech.lowerBound && cut < speech.upperBound
+                && spoken(speech.lowerBound..<cut) >= least && spoken(cut..<speech.upperBound) >= least
+        }
         // Pauses inside the speech, in frames.
         let first = speech.lowerBound / frame
         let last = min(activity.count, (speech.upperBound + frame - 1) / frame)

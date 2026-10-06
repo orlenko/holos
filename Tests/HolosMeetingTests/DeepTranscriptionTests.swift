@@ -607,6 +607,29 @@ func aTranscriptMadeInOneNamedLanguageUsesThatLanguage() async throws {
     #expect(deep.engine == "whisper:test" && deep.locale == "fr-CA")
 }
 
+@Test(.timeLimit(.minutes(1)))
+func aLanguageAskedForByNameAndJournaledStaysNamed() async throws {
+    let temp = try TemporaryDirectory("deep")
+    defer { temp.remove() }
+    let (session, recorded) = try await deepSession(in: temp.url)
+    // What `session languages --languages en-CA` leaves when the recorded transcript already answers it: the
+    // transcript as it was (no `languages`), and a journaled request naming it.
+    let lease = try SessionArchive.acquireProcessingLease(at: session)
+    let archive = try SessionArchive.openForMaintenance(at: session, lease: lease)
+    try await archive.recordEvent(kind: MeetingEventKind.languagesDetected, details: [
+        "transcriptID": recorded.id, "base": "", "languages": "en-CA", "requested": "en-CA",
+    ])
+    await archive.releaseLock()
+    lease.release()
+    let transcriber = ScriptedTranscriber(script: scriptedHearing)
+    let outcome = try await deepRun(session, deepDependencies(transcriber))
+    #expect(outcome.exitCode == 0, "\(outcome.summary)")
+    // The deep transcript keeps naming it (and each segment its language), so it is not taken for an unmerged one.
+    let deep = try currentTranscript(session)
+    #expect(deep.engine == "whisper:test" && deep.languages == ["en-CA"])
+    #expect(!deep.segments.isEmpty && deep.segments.allSatisfy { $0.language == "en-CA" })
+}
+
 /// What the scripted model hears when it chooses among French and English: the first two passages in French, the
 /// others in English (the text stays the scripted English; only the languages matter here).
 private func bilingualHearing(_ request: DeepTranscriptionRequest) -> [DeepTranscribedSegment] {
