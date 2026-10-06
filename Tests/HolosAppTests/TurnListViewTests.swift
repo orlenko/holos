@@ -152,6 +152,31 @@ struct TurnListViewTests {
         #expect(list.selectedTurnIDs == ["T1", "T2", "T3"])
     }
 
+    @Test func aPausedSeekFromAPauseToAPauseInAnotherParagraphReportsTheMove() {
+        // 30 paragraphs, each two turns of one speaker with a pause between them; the last ones are off screen.
+        let list = Self.list()
+        var turns: [ProjectedTurn] = []
+        for index in 0..<30 {
+            let speaker = index.isMultiple(of: 2) ? "S1" : "S2"
+            let start = Double(index) * 20
+            turns.append(Self.turn("A\(index)", speaker, start, start + 2))
+            turns.append(Self.turn("B\(index)", speaker, start + 4, start + 6))
+        }
+        Self.update(list, turns: turns)
+        #expect(list.table.numberOfRows == 30)
+        // In the pause of the first paragraph: no turn is spoken, the move is reported.
+        #expect(list.showPlaying(turnID: nil, at: 3))
+        #expect(!list.showPlaying(turnID: nil, at: 3.5), "Still the same paragraph: nothing moved.")
+        let last = list.table.rect(ofRow: 29)
+        #expect(!list.table.visibleRect.intersects(last))
+        // A seek into the pause of the last paragraph: still no turn spoken at either end, yet the move is reported,
+        // and following it brings that paragraph into view.
+        #expect(list.showPlaying(turnID: nil, at: 29 * 20 + 3))
+        #expect(list.playingParagraphID == "A29")
+        list.scrollToPlaying()
+        #expect(list.table.visibleRect.intersects(list.table.rect(ofRow: 29)))
+    }
+
     // MARK: - Helpers
 
     static func turn(_ id: String, _ speaker: String?, _ start: Double, _ end: Double,

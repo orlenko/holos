@@ -164,3 +164,16 @@ private func paragraphWords(_ paragraph: ReviewParagraph, counts: [Int]) -> [[Re
     #expect(ReviewParagraphs.playingWord(in: paragraph, turnID: "T1", at: 4.5, starts: starts) == 2)
     #expect(ReviewParagraphs.playingWord(in: paragraph, turnID: "T2", at: 3.5, starts: starts) == 4)
 }
+
+@Test func aPauseAfterAnOverlapKeepsTheWordOfTheTurnThatFinishedLast() {
+    // T2 (microphone) lies inside T1; T3 follows after a pause. In that pause the last word spoken is T1's, not the
+    // last word of T2, which started later but ended long before.
+    let paragraph = ReviewParagraphs.group([paragraphTurn("T1", "S1", 0, 10, track: "system"),
+                                            paragraphTurn("T2", "S1", 1, 2, track: "mic"),
+                                            paragraphTurn("T3", "S1", 11, 12, track: "system")])[0]
+    #expect(paragraph.turnIDs == ["T1", "T2", "T3"])
+    let starts = [[0.0, 5, 9], [1.0], [11.0]]
+    #expect(ReviewParagraphs.playingWord(in: paragraph, turnID: "T1", at: 9.5, starts: starts) == 2)
+    #expect(ReviewParagraphs.playingWord(in: paragraph, turnID: nil, at: 10.5, starts: starts) == 2)
+    #expect(ReviewParagraphs.playingWord(in: paragraph, turnID: "T3", at: 11.5, starts: starts) == 4)
+}

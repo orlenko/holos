@@ -47,8 +47,6 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate {
     /// Playback started at least once (the turn list tints what plays only from then on, paused included).
     private var played = false
     private var follow = ReviewFollow()
-    /// The turn playing when the list last followed playback.
-    private var followedTurnID: String?
     private var announcer = ReviewSpeakerAnnouncer()
     private let nextUncertainButton = NSButton(title: "Next Uncertain", target: nil, action: nil)
     private let assignPopUp = NSPopUpButton(frame: .zero, pullsDown: true)
@@ -513,10 +511,9 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate {
             speakingLabel.stringValue = speaking
             speakingLabel.toolTip = speaker.map { "Speaking now: \($0)" }
         }
-        turnList.showPlaying(turnID: turn?.id, at: time)
-        // Kept in view while playing, and when a seek while paused moved to another turn.
-        let moved = turn?.id != followedTurnID
-        followedTurnID = turn?.id
+        // Kept in view while playing, and when a seek while paused moved to another paragraph (also from a pause in
+        // one paragraph to a pause in another, where no turn is spoken at either end).
+        let moved = turnList.showPlaying(turnID: turn?.id, at: time)
         if player.isPlaying || moved, follow.isFollowing(at: ProcessInfo.processInfo.systemUptime) {
             turnList.scrollToPlaying()
         }

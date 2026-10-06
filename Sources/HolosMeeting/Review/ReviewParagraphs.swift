@@ -88,7 +88,9 @@ public enum ReviewParagraphs {
     ///
     /// With `turnID` (the turn being spoken) one of the paragraph's turns: its word being spoken, or the word before
     /// it when that turn has not reached its first word. Otherwise (a pause inside the paragraph): the last word of the
-    /// latest turn started by then. Nil before the paragraph's first word. `starts` are each turn's word starts.
+    /// turn that finished last by then (of the turns started by then, the latest end; ties to the later turn), so a
+    /// short turn inside a long one never takes over once the long one ends. Nil before the paragraph's first word.
+    /// `starts` are each turn's word starts.
     public static func playingWord(in paragraph: ReviewParagraph, turnID: String?, at time: Double,
                                    starts: [[Double]]) -> Int? {
         var offsets: [Int] = []
@@ -104,7 +106,7 @@ public enum ReviewParagraphs {
         }
         var latest: Int?
         for (index, turn) in paragraph.turns.enumerated() where turn.start <= time {
-            if let current = latest, paragraph.turns[current].start > turn.start { continue }
+            if let current = latest, paragraph.turns[current].end > turn.end { continue }
             latest = index
         }
         guard let latest else { return nil }
