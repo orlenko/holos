@@ -116,14 +116,16 @@ public struct SpeakerProfileStore: Sendable {
 
     // MARK: - Database
 
-    /// The database; a missing file (or folder) gives an empty one with "Remember voices" off. A file written by a
-    /// newer Holos is refused (`unavailable`); a damaged one (not JSON, or JSON that breaks a `validate` rule, such as
-    /// a repeated ID) throws `invalidInput` and is never overwritten.
+    /// The database; a missing file (or folder) gives an empty one with "Remember voices" on (the default, not a
+    /// choice). A store from before that default had no record of the user's choice, so an off setting nobody
+    /// chose reads as on (`SpeakerProfileDatabase.applyRememberDefault`); the next write of the store saves it. A file
+    /// written by a newer Holos is refused (`unavailable`); a damaged one (not JSON, or JSON that breaks a `validate`
+    /// rule, such as a repeated ID) throws `invalidInput` and is never overwritten.
     public func load() throws -> SpeakerProfileDatabase {
         guard let data = try AtomicFile.readIfPresent(databaseURL, maxBytes: Self.maxDatabaseBytes) else {
             return SpeakerProfileDatabase()
         }
-        let database = try SchemaVersion.decode(SpeakerProfileDatabase.self, from: data,
+        var database = try SchemaVersion.decode(SpeakerProfileDatabase.self, from: data,
                                                 current: SpeakerProfileDatabase.currentSchemaVersion,
                                                 name: Self.databaseName)
         do {
@@ -132,6 +134,7 @@ public struct SpeakerProfileStore: Sendable {
             Self.log.error("The people store is damaged and was not used")
             throw error
         }
+        database.applyRememberDefault()
         return database
     }
 

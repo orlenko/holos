@@ -4,7 +4,7 @@ import HolosMeeting
 import HolosSpeakers
 import HolosStorage
 
-/// People (docs/meeting-design.md §5.9): the people Holos knows by name and their opt-in voice samples,
+/// People (docs/meeting-design.md §5.9): the people Holos knows by name and their voice samples,
 /// with "Remember voices", per-person suggestions, rename, merge, and the forget actions. People without samples are
 /// listed whatever the setting. Every store read and write runs off the main actor through `VoiceProfileService`;
 /// the section shows names and counts, never a voiceprint. The main window's People section; it rereads the store

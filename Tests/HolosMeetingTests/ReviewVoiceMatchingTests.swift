@@ -98,7 +98,7 @@ private let voiceMap: [String: [Float]] = {
 
 private func voiceStore(_ temp: TemporaryDirectory, remember: Bool = true) throws -> SpeakerProfileStore {
     let store = SpeakerProfileStore(directory: temp.url.appendingPathComponent("Support/Speakers", isDirectory: true))
-    try store.update { $0.rememberVoices = remember }
+    try store.update { $0.chooseRememberVoices(remember) }
     return store
 }
 

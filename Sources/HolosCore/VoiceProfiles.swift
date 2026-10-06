@@ -1,6 +1,6 @@
 import Foundation
 
-// People and their opt-in voiceprints (docs/meeting-design.md §4.10, PR10). Names are not biometric; voiceprints are.
+// People and their voiceprints (docs/meeting-design.md §4.10, PR10). Names are not biometric; voiceprints are.
 // A person (`SpeakerProfile`) exists whether or not "Remember voices" is on, so names carry across meetings; a
 // voiceprint reaches disk only as a `VoiceprintSample` of a person the user confirmed with voice learning on.
 // Stored in `<support>/Speakers/profiles.json` by `SpeakerProfileStore` (HolosStorage).
@@ -90,8 +90,14 @@ public struct SpeakerProfileDatabase: Codable, Sendable, Equatable {
 
     /// 1.
     public var schemaVersion: Int
-    /// Off by default. Governs voice samples, per-session voice data, and recognition. Never names.
+    /// On by default. Governs voice samples, per-session voice data, and recognition. Never names. A user's own
+    /// change goes through `chooseRememberVoices`, which also sets `rememberVoicesChosen`.
     public var rememberVoices: Bool
+    /// True once the user chose "Remember voices" themselves (the People window, `voiceislocal people remember`,
+    /// or a forget that turns it off). Absent (nil) in stores written before remembering was on by default, and in
+    /// a store nobody chose for: `SpeakerProfileStore.load` then reads an off setting as never chosen and turns it
+    /// on (`applyRememberDefault`). An earlier Holos ignores this key and drops it when it rewrites the store.
+    public var rememberVoicesChosen: Bool?
     /// Counts the store writes of forgets (`VoiceProfileService.perform`). Voice sample work started before a
     /// forget and published after it would put back what the forget removed, and comparing the samples cannot see
     /// that when the work concerns a person and meeting the forget left empty either way; this counter can.
@@ -115,14 +121,37 @@ public struct SpeakerProfileDatabase: Codable, Sendable, Equatable {
     /// while this is set and nothing is calibrated.
     public var calibrationResetAt: Date?
 
-    public init(schemaVersion: Int = SpeakerProfileDatabase.currentSchemaVersion, rememberVoices: Bool = false,
+    public init(schemaVersion: Int = SpeakerProfileDatabase.currentSchemaVersion, rememberVoices: Bool = true,
+                rememberVoicesChosen: Bool? = nil,
                 calibratedThresholds: RecognitionThresholds? = nil, calibratedModel: EmbeddingModelID? = nil,
                 profiles: [SpeakerProfile] = [], calibrationResetAt: Date? = nil, forgetEpoch: Int? = nil,
                 mergedInto: [String: String]? = nil) {
         self.schemaVersion = schemaVersion; self.rememberVoices = rememberVoices
+        self.rememberVoicesChosen = rememberVoicesChosen
         self.calibratedThresholds = calibratedThresholds; self.calibratedModel = calibratedModel
         self.profiles = profiles; self.calibrationResetAt = calibrationResetAt; self.forgetEpoch = forgetEpoch
         self.mergedInto = mergedInto
+    }
+
+    /// Sets "Remember voices" as the user chose it, and records that they chose (`rememberVoicesChosen`), so the
+    /// default never overrides it. Every change the user makes goes through here.
+    public mutating func chooseRememberVoices(_ on: Bool) {
+        rememberVoices = on
+        rememberVoicesChosen = true
+    }
+
+    /// Brings a store written before "Remember voices" was on by default up to date (`SpeakerProfileStore.load`).
+    /// Without the chosen marker, an off setting is one nobody chose (the old default) and turns on, unless the
+    /// store holds voice samples: samples are learned only while the setting is on, so off with samples kept means
+    /// the user turned it on and later off themselves, and that choice is recorded instead. A store whose choice
+    /// is recorded, or that is already on, is left as it is.
+    public mutating func applyRememberDefault() {
+        guard rememberVoicesChosen != true, !rememberVoices else { return }
+        if sampleCount > 0 {
+            rememberVoicesChosen = true
+        } else {
+            rememberVoices = true
+        }
     }
 
     /// The calibrated thresholds for a run of `model`: nil unless they were measured on that model.

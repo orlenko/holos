@@ -1221,7 +1221,10 @@ func recognitionIsShownOnlyWhenRecognitionIsAllowed() async throws {
     let temp = try TemporaryDirectory("review")
     defer { temp.remove() }
     let store = reviewStore(temp)
-    try store.update { $0.profiles = [SpeakerProfile(id: "JIM", displayName: "Jim")] }
+    try store.update {
+        $0.profiles = [SpeakerProfile(id: "JIM", displayName: "Jim")]
+        $0.chooseRememberVoices(false)
+    }
     let fixture = try await SessionFixtures.labelledSession(in: temp.url)
     try SessionArchive.withSpeakerLock(at: fixture.session) {
         try SessionSpeakerStore.writeRecognition(
@@ -1240,11 +1243,31 @@ func recognitionIsShownOnlyWhenRecognitionIsAllowed() async throws {
     #expect(!markdown.contains("Jim"), "The rendered transcript names nobody recognition chose.")
 
     // Turned on in People: the review rereads (a reload), and the automatic name is shown.
-    try store.update { $0.rememberVoices = true }
+    try store.update { $0.chooseRememberVoices(true) }
     await review.reload()
     #expect(review.speaker("system:S1")?.isAutomatic == true)
     #expect(review.speaker("system:S1")?.name == "Jim")
     #expect(String(decoding: try await review.render(.md), as: UTF8.self).contains("Jim"))
+}
+
+/// "Learn voices of people I name in this meeting" follows Remember voices, which is on by default: a new people
+/// store, and one from before that default where nobody chose, start it checked.
+@Test(.timeLimit(.minutes(1))) @MainActor
+func learnVoicesStartsOnWithTheRememberDefault() async throws {
+    let temp = try TemporaryDirectory("review")
+    defer { temp.remove() }
+    let store = reviewStore(temp)
+    let fixture = try await SessionFixtures.labelledSession(in: temp.url)
+    let fresh = try await reviewOpen(fixture.session, store: store)
+    #expect(fresh.rememberVoices)
+    #expect(fresh.learnVoices, "A new store remembers voices, so the footer box starts on.")
+
+    // A store an earlier build saved with the old default (off, no choice recorded).
+    try store.update { $0.profiles = [SpeakerProfile(displayName: "Jim")] }
+    let legacy = Data(#"{"schemaVersion": 1, "rememberVoices": false, "profiles": []}"#.utf8)
+    try AtomicFile.write(legacy, to: store.databaseURL)
+    let migrated = try await reviewOpen(fixture.session, store: store)
+    #expect(migrated.learnVoices, "Off with no recorded choice was the old default; it reads as on.")
 }
 
 // MARK: - Paragraphs
