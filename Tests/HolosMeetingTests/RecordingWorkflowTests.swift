@@ -450,13 +450,13 @@ func leaseHandOffLeavesNoUnlockedGap() async throws {
     let temp = try TemporaryDirectory()
     defer { temp.remove() }
     let hookStarted = SharedValue(false)
+    let probeStarted = SharedValue(false)
     let probeDone = SharedValue(false)
     let hook: PostProcessHook = { session, _, _ in
         hookStarted.set(true)
-        // Hold the lease until the probe has stopped, so no sample can see its release.
-        let clock = ContinuousClock()
-        let deadline = clock.now.advanced(by: .seconds(5))
-        while !probeDone.value, clock.now < deadline { try? await Task.sleep(for: .milliseconds(1)) }
+        // Hold the lease until the probe has stopped, so no sample can see its release (however late the probe runs;
+        // the test's time limit ends a probe that never stops).
+        while !probeDone.value, !Task.isCancelled { try? await Task.sleep(for: .milliseconds(1)) }
         return fakeRecord(session)
     }
     let captures = threeMicFrames()
@@ -470,16 +470,19 @@ func leaseHandOffLeavesNoUnlockedGap() async throws {
     let probe = Task.detached { () -> (samples: Int, unlocked: Int) in
         var samples = 0
         var unlocked = 0
-        while !hookStarted.value {
+        // At least one sample, and the stop is requested only once sampling has begun.
+        repeat {
             // Writer lock first: once it is gone, the lease must already be held.
             let locked = ((try? SessionArchive.isActive(at: directory)) ?? true)
                 || ((try? SessionArchive.isProcessing(at: directory)) ?? true)
             samples += 1
             if !locked { unlocked += 1 }
-        }
+            probeStarted.set(true)
+        } while !hookStarted.value
         probeDone.set(true)
         return (samples, unlocked)
     }
+    #expect(await eventually { probeStarted.value })
     stop.requestStop()
     let outcome = try await run.value
     let result = await probe.value

@@ -283,34 +283,53 @@ private func waitingMachine(at: Double) -> RecorderMachine {
 extension RecorderEnvironmentLoopTests {
     /// Before a sleep the loop stops capture (a hung platform stop is abandoned after the capture-stop limit), closes
     /// the chunks, and only then lets the Mac sleep.
+    ///
+    /// Told by order, not by the wall clock: when the sleep is allowed, the abandoned stop is already journaled (the loop
+    /// waited out the capture-stop limit) and the chunk is closed, while the platform stop still hangs (the loop did not
+    /// wait for it). The sleep margin is long so a loaded machine never cuts the chunk close short.
     @Test(.timeLimit(.minutes(1)))
     func loopAcknowledgesAfterClosingChunks() async throws {
         let temp = try TemporaryDirectory()
         defer { temp.remove() }
         let session = SharedValue<URL?>(nil)
         let chunksAtAllow = SharedValue<Int?>(nil)
+        let abandonedAtAllow = SharedValue<Bool?>(nil)
+        let hold = RecorderStopHold()
+        defer { hold.open() }
+        let stopHangsAtAllow = SharedValue<Bool?>(nil)
         let power = RecorderFakePower(onAllow: { _ in
-            let chunks = session.value.flatMap { try? SessionArchive.readManifest(at: $0).chunks.count }
-            chunksAtAllow.set(chunks)
+            let directory = session.value
+            chunksAtAllow.set(directory.flatMap { try? SessionArchive.readManifest(at: $0).chunks.count })
+            abandonedAtAllow.set(directory.flatMap { directory in
+                (try? recorderEvents(directory, MeetingEventKind.captureFailed))?.contains {
+                    $0.details["error"]?.hasPrefix("Capture did not stop within") == true
+                }
+            })
+            stopHangsAtAllow.set(!hold.isOpen)
         })
-        let hangingStop = FakeCaptureScript(frames: FakeFrame.run(count: 3), continuous: FakeFrame(start: 0),
-                                            stopDelay: .seconds(30))
-        let captures = FakeCaptureFactory([hangingStop])
+        let hanging = RecorderHangingStopCapture(
+            FakeCapture(script: FakeCaptureScript(frames: FakeFrame.run(count: 3), continuous: FakeFrame(start: 0))),
+            hold: hold)
+        let made = SharedValue(0)
         let stop = ManualStopSource()
-        let timeouts = StopTimeouts(captureStop: .milliseconds(300))
-        var dependencies = recorderDependencies(captures: captures, stop: stop, clock: ManualSessionClock(0),
-                                                timeouts: timeouts)
+        var tuning = recorderFastTuning()
+        tuning.sleepMargin = .seconds(60)
+        var dependencies = recorderDependencies(captures: FakeCaptureFactory([]), stop: stop,
+                                                clock: ManualSessionClock(0),
+                                                timeouts: StopTimeouts(captureStop: .milliseconds(300)), tuning: tuning,
+                                                makeCapture: {
+                                                    made.update { $0 += 1 }
+                                                    return made.value == 1 ? hanging : FakeCapture()
+                                                })
         dependencies.power = power
         let run = recorderRecordOnly(temp.url, dependencies)
         session.set(await recorderSession(in: temp.url))
-        #expect(await eventually { (captures.captures.first?.consumedFrames ?? 0) >= 3 && power.attached })
-        let clock = ContinuousClock()
-        let asked = clock.now
+        #expect(await eventually { hanging.inner.consumedFrames >= 3 && power.attached })
         power.post(.willSleep(token: 42))
         #expect(await eventually { power.allowed == [42] })
-        let waited = asked.duration(to: clock.now)
-        #expect(waited >= .milliseconds(300), "The loop waited for the capture stop, up to its limit.")
-        #expect(waited < .seconds(3), "…and no longer: the Mac is not held awake by a hung stop.")
+        #expect(abandonedAtAllow.value == true, "The loop waited for the capture stop, up to its limit.")
+        #expect(stopHangsAtAllow.value == true, "…and no longer: the Mac is not held awake by a hung stop.")
+        #expect(hanging.stopCalls == 1)
         #expect(chunksAtAllow.value == 1, "The chunk was closed and saved before the sleep was allowed.")
         let directory = try #require(session.value)
         #expect(await eventually { recorderStatus(directory)?.phase == .sleeping })
@@ -319,8 +338,6 @@ extension RecorderEnvironmentLoopTests {
         #expect(outcome.stopReason == .requested)
         let slept = try #require(try recorderEvents(outcome.directory, MeetingEventKind.systemWillSleep).first)
         #expect(slept.details["phaseBeforeSleep"] == "recording")
-        #expect(try recorderEvents(outcome.directory, MeetingEventKind.captureFailed).first?.details["error"]?
-            .hasPrefix("Capture did not stop within") == true)
         #expect(!power.listening, "The loop detaches when it ends, so later sleeps are not delayed.")
     }
 

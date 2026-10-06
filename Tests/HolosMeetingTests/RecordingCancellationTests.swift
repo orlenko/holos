@@ -13,12 +13,10 @@ import Testing
 /// Waits for conditions under load: far longer than any of them takes, well inside the tests' time limits.
 private let patience: Duration = .seconds(60)
 
-/// How long the fakes below hang when nothing cancels them, and the speech time limit of the tests that use them:
-/// longer than `promptly`, so a run that waited for either instead of cancelling fails that bound.
-private let hang: Duration = .seconds(120)
-
-/// A cancelled run returns within this, however loaded the machine (10x what an idle one needs).
-private let promptly: Duration = .seconds(50)
+/// How long the fakes below hang when nothing cancels them, and the speech time limit of the tests that use them: far
+/// past the tests' time limits, so a run that waited for either instead of cancelling never ends in time (no
+/// wall-clock bound needed).
+private let hang: Duration = .seconds(86_400)
 
 /// A speech session whose `finish()` ignores task cancellation: it returns only after `cancel()` (then throws
 /// `CancellationError`), or after `limit` with no segments.
@@ -227,7 +225,7 @@ func cancelledRestartStopsTheRunAsCancelled() async throws {
 // MARK: - While transcribing
 
 /// Cancelled while the live speech session finishes, with a session that ignores task cancellation. Neither the
-/// session nor the speech time limit ends the wait before `promptly`: only the cancellation can.
+/// session nor the speech time limit ends the wait within the test's time limit: only the cancellation can.
 @Test(.timeLimit(.minutes(3))) @MainActor
 func cancelWhileLiveSpeechFinishesCancelsTheSession() async throws {
     let temp = try TemporaryDirectory()
@@ -248,11 +246,9 @@ func cancelWhileLiveSpeechFinishesCancelsTheSession() async throws {
     #expect(await eventually(timeout: patience) { (captures.captures.first?.consumedFrames ?? 0) >= 3 })
     stop.requestStop()
     #expect(await eventually(timeout: patience) { finishStarted.value })
-    let clock = ContinuousClock()
-    let cancelledAt = clock.now
     run.cancel()
+    // Returning at all shows the cancel did not wait for the speech session.
     await expectCancellation(run)
-    #expect(cancelledAt.duration(to: clock.now) < promptly, "The cancel must not wait for the speech session.")
     #expect(sessionCancelled.value)
     #expect(calls.value == 1, "A cancelled run replays nothing.")
     let directory = try #require(sessionFolders(in: temp.url).first)
@@ -262,7 +258,7 @@ func cancelWhileLiveSpeechFinishesCancelsTheSession() async throws {
 }
 
 /// Cancelled while replaying saved audio (live speech was unavailable), with a session that ignores task
-/// cancellation. Neither the session nor the speech time limit ends the wait before `promptly`.
+/// cancellation. Neither the session nor the speech time limit ends the wait within the test's time limit.
 @Test(.timeLimit(.minutes(3))) @MainActor
 func cancelWhileReplayFinishesCancelsTheSession() async throws {
     let temp = try TemporaryDirectory()
@@ -284,11 +280,9 @@ func cancelWhileReplayFinishesCancelsTheSession() async throws {
     #expect(await eventually(timeout: patience) { (captures.captures.first?.consumedFrames ?? 0) >= 3 })
     stop.requestStop()
     #expect(await eventually(timeout: patience) { finishStarted.value })
-    let clock = ContinuousClock()
-    let cancelledAt = clock.now
     run.cancel()
+    // Returning at all shows the cancel did not wait for the replay session.
     await expectCancellation(run)
-    #expect(cancelledAt.duration(to: clock.now) < promptly, "The cancel must not wait for the replay session.")
     #expect(sessionCancelled.value)
     let directory = try #require(sessionFolders(in: temp.url).first)
     #expect(try SessionArchive.readManifest(at: directory).status == ArchiveStatus.transcriptionIncomplete)

@@ -98,9 +98,9 @@ private func profilePerson(_ id: String, _ name: String, vector: [Float], condit
 
 private func profileManifestID(_ session: URL) throws -> String { try SessionArchive.readManifest(at: session).id }
 
-/// Polls `condition` every 5 ms on a 10 s `PollBudget`.
+/// Polls `condition` every 5 ms on a 30 s `PollBudget` (the default: long enough for a loaded machine).
 private func profileEventually(_ condition: @Sendable () -> Bool) async -> Bool {
-    var budget = PollBudget(timeout: .seconds(10))
+    var budget = PollBudget(timeout: .seconds(30))
     while !budget.isSpent {
         if condition() { return true }
         await budget.poll()

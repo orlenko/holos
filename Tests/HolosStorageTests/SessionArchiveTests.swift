@@ -494,15 +494,16 @@ private func journalSyncs(_ counter: FileSyncCounter) -> Int { counter.count("ev
     let writer = try archive(in: root)
     let counter = FileSyncCounter()
     try await AtomicFile.$fileSyncCounter.withValue(counter) {
-        await writer.setJournalSync(.interval(seconds: 0.5))
+        // An interval no machine reaches between two events: the second is always deferred. (The real timer firing
+        // is `shorterGroupCommitIntervalReschedulesThePendingFlush`.)
+        await writer.setJournalSync(.interval(seconds: 3_600))
         try await writer.recordEvent(kind: "first", details: [:])
         try await writer.recordEvent(kind: "second", details: [:])
         #expect(journalSyncs(counter) == 1)
-        // The scheduled flush syncs the dirty journal without another event.
-        let deadline = ContinuousClock.now + .seconds(5)
-        while journalSyncs(counter) < 2, ContinuousClock.now < deadline {
-            try await Task.sleep(for: .milliseconds(50))
-        }
+        let schedule = await writer.journalScheduleForTesting()
+        #expect(schedule.dirty && schedule.pending)
+        // The scheduled flush, run as its deadline comes, syncs the dirty journal without another event.
+        await writer.runPendingJournalFlushForTesting()
         #expect(journalSyncs(counter) == 2)
         try await writer.finish(status: ArchiveStatus.complete)
         // Nothing was dirty at finish.
@@ -539,12 +540,22 @@ private func journalSyncs(_ counter: FileSyncCounter) -> Int { counter.count("ev
     let writer = try archive(in: root)
     let counter = FileSyncCounter()
     try await AtomicFile.$fileSyncCounter.withValue(counter) {
-        await writer.setJournalSync(.interval(seconds: 0.2))
+        // Told by the schedule, not by waiting out the shorter interval: no event can come later than its interval.
+        await writer.setJournalSync(.interval(seconds: 60))
         try await writer.recordEvent(kind: "first", details: [:])
         try await writer.recordEvent(kind: "second", details: [:])
         #expect(journalSyncs(counter) == 1)
+        let before = await writer.journalScheduleForTesting()
         await writer.setJournalSync(.interval(seconds: 3_600))
-        try await Task.sleep(for: .milliseconds(600))
+        let after = await writer.journalScheduleForTesting()
+        #expect(after.pending && after.dirty)
+        // The flush pending for 60 s after the last sync is gone; the one left is due an hour after it.
+        if let lastSync = after.lastSync, let earlier = before.pendingDeadline, let deadline = after.pendingDeadline {
+            #expect(earlier == lastSync + .seconds(60))
+            #expect(deadline == lastSync + .seconds(3_600))
+        } else {
+            Issue.record("A flush is pending after the last sync.")
+        }
         #expect(journalSyncs(counter) == 1)
         try await writer.finish(status: ArchiveStatus.complete)
         #expect(journalSyncs(counter) == 2)

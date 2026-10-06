@@ -54,7 +54,9 @@ func hungSpeechFinishTimesOut() async throws {
     ])
     let captures = FakeCaptureFactory([FakeCaptureScript(frames: FakeFrame.run(count: 3))])
     let stop = ManualStopSource()
-    let timeouts = StopTimeouts(speechFinishBase: .milliseconds(300), speechFinishPerAudioSecond: 0)
+    // One limit covers every speech call here: the hung one runs into it, and the ones that must finish (a fake's,
+    // which return at once) never race it, even on a loaded machine.
+    let timeouts = StopTimeouts(speechFinishBase: .seconds(3), speechFinishPerAudioSecond: 0)
     let run = Task {
         try await RecordingWorkflow.run(.testing(root: temp.url),
             dependencies: recorderDependencies(captures: captures, speech: speech.factory, stop: stop,
@@ -89,7 +91,9 @@ func hungReplayFinishTimesOut() async throws {
     let frames = FakeFrame.run(count: 3) + FakeFrame.run(from: 2, count: 3)
     let captures = FakeCaptureFactory([FakeCaptureScript(frames: frames)])
     let stop = ManualStopSource()
-    let timeouts = StopTimeouts(speechFinishBase: .milliseconds(300), speechFinishPerAudioSecond: 0)
+    // One limit covers every speech call here: the hung one runs into it, and the ones that must finish (a fake's,
+    // which return at once) never race it, even on a loaded machine.
+    let timeouts = StopTimeouts(speechFinishBase: .seconds(3), speechFinishPerAudioSecond: 0)
     let run = Task {
         try await RecordingWorkflow.run(.testing(root: temp.url),
             dependencies: recorderDependencies(captures: captures, speech: speech.factory, stop: stop,
@@ -110,7 +114,7 @@ func hungReplayFinishTimesOut() async throws {
     #expect(cancelled, "The hung replay session is cancelled.")
     #expect(outcome.archiveStatus == ArchiveStatus.transcriptionIncomplete)
     #expect(outcome.transcriptErrors.count == 1)
-    #expect(outcome.transcriptErrors.first?.hasPrefix("mic: Speech did not respond within 0.3 s") == true)
+    #expect(outcome.transcriptErrors.first?.hasPrefix("mic: Speech did not respond within 3 s") == true)
     let transcript = try AtomicFile.readJSON(Transcript.self, from: SessionPaths.transcript(
         try #require(outcome.transcriptID), in: outcome.directory))
     #expect(transcript.segments.map(\.text) == ["Before the gap"], "Segments already returned are kept.")

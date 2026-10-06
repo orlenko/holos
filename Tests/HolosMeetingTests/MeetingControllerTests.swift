@@ -936,28 +936,28 @@ func finishedMeetingWithoutLabelsOffersNothing(postprocessing: PostProcessingSta
     for doing in ["Recovering…", "Cleaning up…", "Saving the transcript…"] {
         #expect(controller.beginUsing(manifest.id, for: doing))
         controller.runAutoRelabel()
-        #expect(await eventually(timeout: .seconds(10)) { !controller.relabelling })
+        #expect(await eventually { !controller.relabelling })
         controller.endUsing(manifest.id)
     }
     // So does it while a review window of the meeting is open (PR9), without taking the meeting from Meetings.
     controller.sessionsUnderReview = { [manifest.id] }
     controller.runAutoRelabel()
-    #expect(await eventually(timeout: .seconds(10)) { !controller.relabelling })
+    #expect(await eventually { !controller.relabelling })
     #expect(controller.sessionsInUse.isEmpty)
     controller.sessionsUnderReview = { [] }
     #expect(!exists(arguments))
     #expect(probe.attempts.isEmpty)
     controller.runAutoRelabel()
     #expect(controller.relabelling)
-    #expect(await eventually(timeout: .seconds(10)) { !controller.relabelling && exists(arguments) })
+    #expect(await eventually { !controller.relabelling && exists(arguments) })
     let text = (try? String(contentsOf: arguments, encoding: .utf8)) ?? ""
     #expect(text == "session diarize \(session.path) --json\n")
     #expect(probe.attempts == [manifest.id: 1])
     // The fake labelling changed nothing, so the session is still a candidate: a second attempt, then no more.
     controller.runAutoRelabel()
-    #expect(await eventually(timeout: .seconds(10)) { probe.attempts[manifest.id] == 2 && !controller.relabelling })
+    #expect(await eventually { probe.attempts[manifest.id] == 2 && !controller.relabelling })
     controller.runAutoRelabel()
-    #expect(await eventually(timeout: .seconds(10)) { !controller.relabelling })
+    #expect(await eventually { !controller.relabelling })
     #expect(probe.attempts[manifest.id] == 2)
     let lines = ((try? String(contentsOf: arguments, encoding: .utf8)) ?? "").split(separator: "\n")
     #expect(lines.count == 2)
@@ -988,14 +988,14 @@ func finishedMeetingWithoutLabelsOffersNothing(postprocessing: PostProcessingSta
     for _ in 0...AutoRelabelPolicy.maxAttempts {
         controller.runAutoRelabel()
         #expect(controller.relabelling)
-        #expect(await eventually(timeout: .seconds(10)) { !controller.relabelling })
+        #expect(await eventually { !controller.relabelling })
         #expect(probe.attempts[manifest.id] == nil, "A command that did not start is not an attempt.")
     }
     #expect(controller.relabellingSessionID == nil)
     try Data("#!/bin/sh\necho \"$*\" >> '\(arguments.path)'\n".utf8).write(to: script)
     #expect(chmod(script.path, 0o700) == 0)
     controller.runAutoRelabel()
-    #expect(await eventually(timeout: .seconds(10)) { !controller.relabelling && exists(arguments) })
+    #expect(await eventually { !controller.relabelling && exists(arguments) })
     #expect(probe.attempts == [manifest.id: 1])
 }
 
@@ -1046,10 +1046,10 @@ func automaticRelabelThatLabelsOffersNamingOnce(code: Int32) async throws {
     try AtomicFile.writeJSON(PostProcessingRecord(sessionID: manifest.id, state: .running, pid: Int32.max,
                                                   startedAt: Date(), updatedAt: Date()),
                              to: SessionPaths.postprocess(session))
-    // A labelling that runs until the test opens the gate (10 s at most).
+    // A labelling that runs until the test opens the gate (the defer below opens it however the test ends).
     let gate = temp.url.appendingPathComponent("gate")
     let script = temp.url.appendingPathComponent("fake-holos.sh")
-    try Data("#!/bin/sh\ni=0\nwhile [ ! -e '\(gate.path)' ] && [ $i -lt 200 ]; do sleep 0.05; i=$((i+1)); done\n".utf8)
+    try Data("#!/bin/sh\nwhile [ ! -e '\(gate.path)' ]; do sleep 0.05; done\n".utf8)
         .write(to: script)
     #expect(chmod(script.path, 0o700) == 0)
     let probe = ControllerProbe()
@@ -1064,13 +1064,13 @@ func automaticRelabelThatLabelsOffersNamingOnce(code: Int32) async throws {
     controller.runAutoRelabel()
     // While it runs, the meeting is in use: the app turns down Meetings commands, Clean Up, and Save Transcript As…
     // for it (they would contend for its lease).
-    #expect(await eventually(timeout: .seconds(10)) { controller.relabellingSessionID == manifest.id })
+    #expect(await eventually { controller.relabellingSessionID == manifest.id })
     #expect(controller.relabelling)
     #expect(events == ["\(manifest.id) true"])
     #expect(controller.sessionsInUse == [manifest.id: MeetingController.relabelDoing])
     #expect(!controller.beginUsing(manifest.id, for: "Cleaning up…"))
     try Data().write(to: gate)
-    #expect(await eventually(timeout: .seconds(10)) { !controller.relabelling })
+    #expect(await eventually { !controller.relabelling })
     #expect(controller.relabellingSessionID == nil)
     #expect(events == ["\(manifest.id) true", "\(manifest.id) false"])
     #expect(controller.sessionsInUse.isEmpty)

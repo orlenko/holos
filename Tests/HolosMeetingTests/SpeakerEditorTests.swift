@@ -184,12 +184,10 @@ private func editorRefusal(_ expected: String, _ body: () throws -> Void,
     let text = SessionPaths.export("txt", in: session)
     #expect(SessionFixtures.text(text).hasPrefix("Speaker 1  00:00"))
 
-    // Regenerating inside the speaker lock would wait for the editor's own lock and time out after 2 s.
-    let clock = ContinuousClock()
-    let start = clock.now
+    // Regenerating inside the speaker lock would wait for the editor's own lock, time out, and throw (the exports
+    // below would then still name Speaker 2): no wall-clock bound is needed.
     try SpeakerEditor.apply([.rename(speakerID: "system:S2", name: "Maria")], view: try SessionFixtures.view(session),
                             session: session, source: "cli", regenerateExports: true)
-    #expect(clock.now - start < .seconds(2))
 
     #expect(SessionFixtures.text(text).contains("Maria  00:05"))
     #expect(SessionFixtures.text(SessionPaths.export("md", in: session)).contains("**Maria**"))
