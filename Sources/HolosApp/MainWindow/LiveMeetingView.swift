@@ -112,9 +112,8 @@ final class LiveMeetingViewController: NSViewController, NSTextViewDelegate {
         bar.alignment = .centerY
         bar.translatesAutoresizingMaskIntoConstraints = false
 
-        let separator = NSBox()
-        separator.boxType = .separator
-        separator.translatesAutoresizingMaskIntoConstraints = false
+        // One point high (`hairline`): in tall windows a separator without a height took all the transcript's.
+        let separator = NSBox.hairline()
 
         textView.isEditable = false
         textView.isSelectable = true
@@ -192,10 +191,6 @@ final class LiveMeetingViewController: NSViewController, NSTextViewDelegate {
             separator.leadingAnchor.constraint(equalTo: root.leadingAnchor),
             separator.trailingAnchor.constraint(equalTo: root.trailingAnchor),
             separator.topAnchor.constraint(equalTo: bar.bottomAnchor, constant: 12),
-            // A separator box has no height of its own: without this, the height between the header and the edit bar
-            // was split between it and the transcript at random, and in tall windows the box took all of it, leaving
-            // the transcript no height (a blank live view while its words were read).
-            separator.heightAnchor.constraint(equalToConstant: 1),
             scroll.leadingAnchor.constraint(equalTo: root.leadingAnchor),
             scroll.trailingAnchor.constraint(equalTo: root.trailingAnchor),
             scroll.topAnchor.constraint(equalTo: separator.bottomAnchor),

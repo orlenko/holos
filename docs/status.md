@@ -491,7 +491,9 @@ thumbnail timeline, and a larger local-model benchmark are follow-ups.
   a tall window, took all the height and left the transcript none (as in Settings before).
   Fixed; `LiveMeetingViewTests` opens a recording's live transcript in the real main window
   at five sizes, feeds it a journal shaped like that meeting's, and checks the words are read
-  and the transcript has the height. Not yet seen again in a real meeting.
+  and the transcript has the height. Every separator line in the app is now made by
+  `NSBox.hairline()` (1 pt high), and `HairlineTests` fails on a separator box made any
+  other way. Not yet seen again in a real meeting.
 - Reading section (docs/design.md "Reading section"): the main window's Reading (⌘5) makes
   the `voiceislocal read` file in the app. A New reading card takes an `https://` link or a
   document (typed, pasted with ⌘V, dropped anywhere on the section, or chosen; several files
