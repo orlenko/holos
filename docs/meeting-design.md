@@ -7669,9 +7669,10 @@ public enum SessionAudioComposition {
   words: a word inside a turn splits that turn there (a `splitTurn` edit, undone as any
   other; its second part starts a row), and a word that already starts a turn only
   breaks the row before that turn, in this window (nothing is saved, so Undo has nothing
-  to take back; the break is kept with its turn (ID, track, start; while the window reverts a
-  word fix, by ID and track, since the new run's estimated starts may move), and goes
-  when that turn does: the speakers labelled again, or the window closed). After any
+  to take back; the break belongs to the run it was made on and goes with its turn; a new
+  run drops it (the speakers labelled again; turn IDs then name other turns), except the
+  runs published while the window reverts word fixes, which keep the turns and their
+  breaks; the window closed drops it too). After any
   change, a row stays selected only if every turn of it was selected: a turn that joins a
   selected row's paragraph clears that selection rather than widening it.
   While playing, the row of the turn being spoken is tinted, and a pause inside

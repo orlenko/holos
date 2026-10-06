@@ -43,41 +43,57 @@ public enum ReviewParagraphSplit: Sendable, Equatable {
 }
 
 /// The paragraph breaks "Split Turn" made in the window without splitting a turn (`ReviewParagraphSplit.breakBefore`),
-/// never saved. Each is kept with the turn it breaks before as it was (ID, track, start), so it goes with a turn that
-/// is gone or changed (a relabel gives turn IDs to other turns). While `carryingOver` (the window reverts a word fix:
-/// a new run with the same turns, whose estimated starts may move), a turn with the break's ID and track keeps it and
-/// its start is taken as it now is. Pure.
+/// never saved. They belong to the run they were made on: a new run drops them (a relabel gives turn IDs such as "T1"
+/// to other turns), except one published while the window reverts a word fix (`beginCarryOver`), which keeps the same
+/// turns (their estimated starts may move): there a break follows its turn by ID and track. Within a run, a break goes
+/// with its turn. Pure.
 public struct ReviewParagraphBreaks: Sendable, Equatable {
-    private struct Mark: Sendable, Equatable {
-        let track: String
-        let start: Double
-    }
-
-    private var marks: [String: Mark] = [:]
-    /// The turns keep their identity through the label changes now coming (a word fix reverted in this window), even
-    /// if their starts move.
-    public var carryingOver = false
+    /// Turn ID → its track, on `runID`.
+    private var tracks: [String: String] = [:]
+    private var runID: String?
+    /// Word-fix reverts in flight.
+    private var carryOvers = 0
 
     public init() {}
 
-    public var isEmpty: Bool { marks.isEmpty }
+    public var isEmpty: Bool { tracks.isEmpty }
 
-    /// Breaks the paragraph before `turn`.
-    public mutating func insert(before turn: ProjectedTurn) {
-        marks[turn.id] = Mark(track: turn.track, start: turn.start)
+    /// Breaks the paragraph before `turn` of run `runID`.
+    public mutating func insert(before turn: ProjectedTurn, runID: String?) {
+        if runID != self.runID {
+            tracks = [:]
+            self.runID = runID
+        }
+        tracks[turn.id] = turn.track
     }
 
-    /// The turns of `turns` to break before (`ReviewParagraphs.group`): those still as they were when the break was
-    /// made (or, while `carryingOver`, with the same ID and track). Breaks whose turn is gone or changed are forgotten.
-    public mutating func active(in turns: [ProjectedTurn]) -> Set<String> {
-        guard !marks.isEmpty else { return [] }
-        var kept: [String: Mark] = [:]
-        for turn in turns {
-            guard let mark = marks[turn.id], mark.track == turn.track,
-                  carryingOver || mark.start == turn.start else { continue }
-            kept[turn.id] = Mark(track: turn.track, start: turn.start)
+    /// A word-fix revert starts: the runs it publishes keep the turns.
+    public mutating func beginCarryOver() { carryOvers += 1 }
+
+    /// A word-fix revert ended (however it ended): with `turns` of `runID` as they now are, the breaks are taken over
+    /// once more, then no longer carried over unless another revert is in flight.
+    public mutating func endCarryOver(turns: [ProjectedTurn], runID: String?) {
+        _ = active(in: turns, runID: runID)
+        carryOvers = max(0, carryOvers - 1)
+    }
+
+    /// The turns of `turns` (of run `runID`) to break before (`ReviewParagraphs.group`). A new run that is not carried
+    /// over drops every break; otherwise a break stays while a turn with its ID and track does.
+    public mutating func active(in turns: [ProjectedTurn], runID: String?) -> Set<String> {
+        guard !tracks.isEmpty else {
+            self.runID = runID
+            return []
         }
-        marks = kept
+        if runID != self.runID {
+            self.runID = runID
+            guard carryOvers > 0 else {
+                tracks = [:]
+                return []
+            }
+        }
+        var kept: [String: String] = [:]
+        for turn in turns where tracks[turn.id] == turn.track { kept[turn.id] = turn.track }
+        tracks = kept
         return Set(kept.keys)
     }
 }

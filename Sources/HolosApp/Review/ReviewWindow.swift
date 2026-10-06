@@ -64,8 +64,8 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate {
     /// The last action's error, until the next action.
     private var problem: String?
     private var query = ""
-    /// Where "Split Turn" broke a paragraph without splitting a turn: the window's view only, never saved; kept while
-    /// its turn is (a reverted word fix keeps the turns), dropped with it (a relabel).
+    /// Where "Split Turn" broke a paragraph without splitting a turn: the window's view only, never saved; kept with
+    /// its turn on its run and through this window's word-fix reverts, dropped by any other new run (a relabel).
     private var paragraphBreaks = ReviewParagraphBreaks()
     private var positioned = false
     /// The player state the sidebar and the footer last showed.
@@ -421,8 +421,8 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate {
 
     private func refresh() {
         let projection = review.projection
-        var paragraphs = ReviewParagraphs.group(projection.turns,
-                                                breaks: paragraphBreaks.active(in: projection.turns))
+        var paragraphs = ReviewParagraphs.group(
+            projection.turns, breaks: paragraphBreaks.active(in: projection.turns, runID: projection.runID))
         // A search shows the paragraphs with a matching turn, whole.
         if !query.isEmpty {
             let matching = Set(review.turns(matching: query).map(\.id))
@@ -875,7 +875,7 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate {
                 self.perform { review in try await review.split(turnID: turnID, at: word) }
             case .breakBefore(let turnID):
                 guard let turn = paragraph.turns.first(where: { $0.id == turnID }) else { return }
-                self.paragraphBreaks.insert(before: turn)
+                self.paragraphBreaks.insert(before: turn, runID: self.review.projection.runID)
                 self.refresh()
                 self.turnList.select([turnID], scroll: true)
             }
@@ -883,9 +883,9 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate {
     }
 
     /// Reverts a word fix. It publishes a new run with the same turns, whose estimated starts may move, so the
-    /// window's paragraph breaks are carried over by turn until it ends (then taken with the turns as they are).
+    /// window's paragraph breaks are carried over by turn until it (and any other revert in flight) ends.
     private func revertFix(_ word: WordRef) {
-        paragraphBreaks.carryingOver = true
+        paragraphBreaks.beginCarryOver()
         perform { [weak self] review in
             defer { self?.endBreakCarryOver() }
             try await review.revertWordFix(word)
@@ -893,8 +893,7 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate {
     }
 
     private func endBreakCarryOver() {
-        _ = paragraphBreaks.active(in: review.projection.turns)
-        paragraphBreaks.carryingOver = false
+        paragraphBreaks.endCarryOver(turns: review.projection.turns, runID: review.projection.runID)
         refresh()
     }
 

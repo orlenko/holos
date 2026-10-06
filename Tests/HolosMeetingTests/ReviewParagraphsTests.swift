@@ -180,33 +180,39 @@ private func paragraphWords(_ paragraph: ReviewParagraph, counts: [Int]) -> [[Re
 
 // MARK: - Window-only breaks
 
-@Test func aBreakOutlivesLabelsThatKeepTheTurnAndGoesWithAChangedTurn() {
+@Test func aBreakBelongsToItsRunAndGoesWithItsTurn() {
     let t1 = paragraphTurn("T1", "S1", 0, 2), t2 = paragraphTurn("T2", "S1", 2.5, 4)
     var breaks = ReviewParagraphBreaks()
-    breaks.insert(before: t2)
-    #expect(paragraphIDs(ReviewParagraphs.group([t1, t2], breaks: breaks.active(in: [t1, t2]))) == [["T1"], ["T2"]])
-    // A reverted word fix: a new run with the same turns (same IDs, tracks, starts). The break stays.
-    let republished = [paragraphTurn("T1", "S1", 0, 2), paragraphTurn("T2", "S1", 2.5, 4.1)]
-    #expect(breaks.active(in: republished) == ["T2"])
-    // A relabel: "T2" now names another turn. The break goes, and does not come back.
-    let relabelled = [paragraphTurn("T1", "S1", 0, 1), paragraphTurn("T2", "S1", 1.5, 4)]
-    #expect(breaks.active(in: relabelled).isEmpty)
-    #expect(breaks.active(in: [t1, t2]).isEmpty && breaks.isEmpty)
+    breaks.insert(before: t2, runID: "R1")
+    #expect(paragraphIDs(ReviewParagraphs.group([t1, t2], breaks: breaks.active(in: [t1, t2], runID: "R1")))
+        == [["T1"], ["T2"]])
+    // Within the run, it goes with its turn (here: T2 merged away), and does not come back.
+    #expect(breaks.active(in: [t1], runID: "R1").isEmpty)
+    #expect(breaks.active(in: [t1, t2], runID: "R1").isEmpty && breaks.isEmpty)
+    // A relabel: a new run whose "T2" has the same track and start is still another turn. The break goes.
+    breaks.insert(before: t2, runID: "R1")
+    #expect(breaks.active(in: [t1, t2], runID: "R2").isEmpty)
+    #expect(breaks.active(in: [t1, t2], runID: "R2").isEmpty)
 }
 
-@Test func aBreakIsCarriedOverByTurnWhileAWordFixIsReverted() {
+@Test func aBreakIsCarriedOverByTurnWhileWordFixesAreReverted() {
     var breaks = ReviewParagraphBreaks()
-    breaks.insert(before: paragraphTurn("T2", "S1", 2.4, 6))
-    // The revert republishes the same turns; T2's estimated start moves from 2.4 s to 3 s.
-    breaks.carryingOver = true
-    let republished = [paragraphTurn("T1", "S1", 0, 2.9), paragraphTurn("T2", "S1", 3, 6)]
-    #expect(breaks.active(in: republished) == ["T2"])
-    breaks.carryingOver = false
-    // Kept with its new start from then on; still forgotten when its turn changes after.
-    #expect(breaks.active(in: republished) == ["T2"])
-    #expect(breaks.active(in: [paragraphTurn("T1", "S1", 0, 1), paragraphTurn("T2", "S1", 1.5, 6)]).isEmpty)
-    // Carrying over keeps only a turn on the same track.
-    breaks.insert(before: paragraphTurn("T2", "S1", 3, 6))
-    breaks.carryingOver = true
-    #expect(breaks.active(in: [paragraphTurn("T2", "S1", 3, 6, track: "mic")]).isEmpty)
+    breaks.insert(before: paragraphTurn("T2", "S1", 2.4, 6), runID: "R1")
+    // Two reverts in flight; each republishes the same turns (T2's estimated start moves from 2.4 s to 3 s).
+    breaks.beginCarryOver()
+    breaks.beginCarryOver()
+    let first = [paragraphTurn("T1", "S1", 0, 2.9), paragraphTurn("T2", "S1", 3, 6)]
+    #expect(breaks.active(in: first, runID: "R2") == ["T2"])
+    // The first revert ends; the second still runs and publishes another run with the same turns.
+    breaks.endCarryOver(turns: first, runID: "R2")
+    let second = [paragraphTurn("T1", "S1", 0, 2.8), paragraphTurn("T2", "S1", 2.9, 6)]
+    #expect(breaks.active(in: second, runID: "R3") == ["T2"])
+    breaks.endCarryOver(turns: second, runID: "R3")
+    // No revert in flight: a further run (a relabel) drops it.
+    #expect(breaks.active(in: second, runID: "R3") == ["T2"])
+    #expect(breaks.active(in: second, runID: "R4").isEmpty)
+    // Carried over, a break keeps only a turn on the same track.
+    breaks.insert(before: paragraphTurn("T2", "S1", 3, 6), runID: "R4")
+    breaks.beginCarryOver()
+    #expect(breaks.active(in: [paragraphTurn("T2", "S1", 3, 6, track: "mic")], runID: "R5").isEmpty)
 }
