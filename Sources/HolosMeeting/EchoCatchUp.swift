@@ -1,5 +1,6 @@
 import Foundation
 import HolosCore
+import HolosStorage
 
 /// The app's catch-up of acoustic echo analyses (docs/meeting-design.md §5.11, "Catching up in the app"): every
 /// finished call whose analysis is needed (`EchoAnalysisStage.needed`: missing, or of other audio or an older analysis
@@ -60,8 +61,19 @@ public enum EchoCatchUpSchedule {
 
     /// Whether the meeting still needs its analysis (`EchoAnalysisStage.needed`), read again just before a run starts:
     /// a relabel, Recover or a run in Terminal may have made it since the scan.
+    /// Whether `voiceislocal session echo-analyze` has work to do on `session`: the analysis is needed
+    /// (`EchoAnalysisStage.needed`), or it is saved but the transcript files were not rewritten for it (a run cut short
+    /// after saving the mask, or one whose rewrite failed: `SessionExports.echoMaskIsCurrent`). Run again, the command
+    /// keeps the saved analysis and finishes the rest (the files, and the voice samples learned from the meeting).
     public static func needsAnalysis(session: URL) -> Bool {
-        EchoAnalysisStage.needed(session: session)
+        if EchoAnalysisStage.needed(session: session) { return true }
+        guard let manifest = try? SessionArchive.readManifest(at: session),
+              let meeting = try? SessionFiles.meetingInfo(session: session, manifest: manifest),
+              EchoAnalysisStage.applies(meeting: meeting, manifest: manifest),
+              !EchoAnalysisStage.renderTracks(manifest: manifest).isEmpty,
+              (try? SessionFiles.audioDeleted(session: session, sessionID: manifest.id)) == false,
+              case .current = EchoAnalysisStage.saved(session: session, manifest: manifest) else { return false }
+        return !SessionExports.echoMaskIsCurrent(session: session)
     }
 
     public struct Situation: Sendable, Equatable {

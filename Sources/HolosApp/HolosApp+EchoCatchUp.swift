@@ -34,11 +34,15 @@ final class EchoCatchUpAppState {
     var waitsForSummaryScan = false
     var timer: Timer?
 
-    /// Meetings whose run failed in this launch.
+    /// Meetings whose run failed, or ended partial, in this launch: not tried again before the next launch (a scan
+    /// that still finds them, as a partial run's transcript files out of step with the mask, would otherwise retry
+    /// them after every saved meeting).
     var failed: Set<String> {
         Set(problems.compactMap { id, end in
-            if case .failed = end { return id }
-            return nil
+            switch end {
+            case .failed, .partial: return id
+            default: return nil
+            }
         })
     }
 }
@@ -68,7 +72,6 @@ extension HolosAppDelegate {
             let found = await Task.detached { EchoCatchUpSchedule.scan(root: root) }.value
             guard let self else { return }
             self.meeting.echo.scanning = false
-            let first = !self.meeting.echo.scanned
             self.meeting.echo.scanned = true
             // A meeting analysed since the scan read it is checked again before its run starts.
             self.meeting.echo.queue = found
@@ -81,8 +84,8 @@ extension HolosAppDelegate {
             }
             self.updateEchoStates()
             self.scheduleEchoCatchUp()
-            // The automatic jobs held back until the queue was known go on (or keep waiting for a call it found).
-            if first {
+            // The automatic jobs held back while the queue was not known go on (or keep waiting for a call it found).
+            if !self.meeting.echo.scanning {
                 self.scheduleMeetingSummaries()
                 self.scheduleDeepTranscription()
             }
@@ -90,11 +93,12 @@ extension HolosAppDelegate {
     }
 
     /// Whether a queued meeting could be analysed now were no other job running (not in use, under review, failed in
-    /// this launch, or turned down for now), or the first scan of this launch has not ended (the queue is not known
-    /// yet): an automatic final transcript or summary then waits for it.
+    /// this launch, or turned down for now), or a scan has not ended (the first of the launch, or one after a meeting
+    /// was saved: the queue is not known yet): an automatic final transcript or summary then waits for it.
     func echoCatchUpReady() -> Bool {
         guard let controller = meeting.controller else { return false }
-        if !meeting.echo.scanned, meeting.controller?.root != nil { return true }
+        // A scan going on (the first of the launch, or one after a meeting was saved) may find a call to analyse.
+        if meeting.echo.scanning || (!meeting.echo.scanned && controller.root != nil) { return true }
         guard meeting.echo.running == nil, !meeting.echo.queue.isEmpty else { return false }
         let now = Date()
         if let retryAfter = meeting.echo.retryAfter, retryAfter > now { return false }
@@ -149,7 +153,8 @@ extension HolosAppDelegate {
             let needed = await Task.detached { EchoCatchUpSchedule.needsAnalysis(session: directory) }.value
             guard let self else { return }
             guard needed else {
-                self.echoCatchUpEnded(sessionID, end: .done)
+                // Nothing to do: a result from earlier in this launch (a partial run) stays in the list.
+                self.echoCatchUpEnded(sessionID, end: .done, keepsProblem: true)
                 return
             }
             // A meeting started while the files were read: it has the Mac to itself; this one stays queued.
@@ -208,7 +213,7 @@ extension HolosAppDelegate {
     /// The run on the meeting ended (`end`), or did not start (nil: it stays queued as it was). The meeting is let go
     /// of: a review opened meanwhile rereads it, so its labels and playback follow the new mask, and the next job is
     /// looked for (summaries first, so a Summarize Again goes before the next automatic job).
-    private func echoCatchUpEnded(_ sessionID: String, end: EchoCatchUpSchedule.RunEnd?) {
+    private func echoCatchUpEnded(_ sessionID: String, end: EchoCatchUpSchedule.RunEnd?, keepsProblem: Bool = false) {
         switch end {
         case .retryLater?:
             echoTurnedDown(sessionID)
@@ -217,7 +222,7 @@ extension HolosAppDelegate {
             meeting.echo.turnedDown[sessionID] = nil
             // Failed: the list says why, and it is not tried again in this launch. Partial: the list says what was
             // not brought in step.
-            meeting.echo.problems[sessionID] = end == .done ? nil : end
+            if !keepsProblem { meeting.echo.problems[sessionID] = end == .done ? nil : end }
         case nil:
             break
         }

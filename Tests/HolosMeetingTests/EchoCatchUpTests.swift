@@ -75,6 +75,31 @@ func theScanFindsCallsWithBothTracksAndNoSavedAnalysis() async throws {
             "The unfinished meeting waits for its own post-processing or Recover: \(unfinished.lastPathComponent)")
 }
 
+@Test(.timeLimit(.minutes(1)))
+func aCallWhoseFilesWereNotRewrittenForItsMaskIsFoundAgain() async throws {
+    let temp = try TemporaryDirectory("echo-catch-up")
+    defer { temp.remove() }
+    // A call with a transcript and its files, then an echo mask saved by a run cut short before it rewrote them.
+    let session = try await SessionFixtures.makeSession(in: temp.url, source: .microphoneAndSystem,
+                                                        audioSeconds: ["mic": 4, "system": 4], mode: .call,
+                                                        transcript: SessionFixtures.transcript([]))
+    try SessionExports.regenerate(session: session)
+    let manifest = try SessionArchive.readManifest(at: session)
+    let classes = [UInt8](repeating: AcousticEchoMask.FrameClass.echo.rawValue, count: 100)
+    let mask = try #require(AcousticEchoMask(classes: classes, echoLevels: classes.map { _ in 0 }))
+    try EchoMaskStore.write(EchoMaskRecord(
+        sessionID: manifest.id, audio: EchoMaskStore.audioKey(manifest: manifest), verdict: .echo,
+        frames: .init(count: 100, hopSeconds: AcousticEchoMask.hopSeconds,
+                      firstCentreSeconds: AcousticEchoMask.firstCentreSeconds,
+                      sha256: SessionExports.sha256(mask.bytes), echo: 100, local: 0)),
+        mask: mask, session: session)
+    #expect(!EchoAnalysisStage.needed(session: session), "The analysis itself is saved.")
+    #expect(EchoCatchUpSchedule.needsAnalysis(session: session), "Its transcript files are out of step with it.")
+    // What the command, run again, finishes: the files rewritten for the mask settle it.
+    try SessionExports.regenerate(session: session)
+    #expect(!EchoCatchUpSchedule.needsAnalysis(session: session))
+}
+
 // MARK: - When a run starts
 
 @Test func meetingsInUseUnderReviewFailedOrDelayedWaitAndTheNextReadyOneRuns() {
