@@ -1066,10 +1066,10 @@ extension MeetingsPane: NSMenuDelegate {
                                                 hasExport: hasExport(summary)) {
             switch open.action {
             case .open:
-                // What double-click and Return open; ↩ says so.
-                let item = add(open.title, #selector(openSelection), open.isEnabled)
-                item.keyEquivalent = "\r"
-                item.keyEquivalentModifierMask = []
+                // What double-click and Return open. No ↩ key equivalent: a context menu's items stay attached to the
+                // table, so an unmodified Return here would open the meeting from the search field or the rename
+                // editor too; the table handles Return itself (`table.onReturn`).
+                add(open.title, #selector(openSelection), open.isEnabled)
             case .review: add(open.title, #selector(review), open.isEnabled)
             case .transcriptFile: add(open.title, #selector(openTranscript), open.isEnabled)
             }
