@@ -150,15 +150,19 @@ public enum EchoMaskStore {
     }
 
     /// Writes the frames file (or removes a stale one), then the record, which names the frames by their hash.
-    /// Callers hold the session's processing lease.
+    /// Callers hold the session's processing lease and not the speaker lock: this takes it (§1.7 order: lease,
+    /// speakers, profiles), because the mask changes what the labels show. A writer that checks the labels and the echo
+    /// files under the speaker lock (a voice sample being published) then sees either both files before or both after.
     static func write(_ record: EchoMaskRecord, mask: AcousticEchoMask?, session: URL) throws {
-        try AtomicFile.ensurePrivateDirectory(directory(session))
-        if let mask {
-            try AtomicFile.write(mask.bytes, to: framesURL(session))
-        } else {
-            try AtomicFile.removeTree([folder, "frames.bin"], in: session)
+        try SessionArchive.withSpeakerLock(at: session) {
+            try AtomicFile.ensurePrivateDirectory(directory(session))
+            if let mask {
+                try AtomicFile.write(mask.bytes, to: framesURL(session))
+            } else {
+                try AtomicFile.removeTree([folder, "frames.bin"], in: session)
+            }
+            try AtomicFile.writeJSON(record, to: recordURL(session))
         }
-        try AtomicFile.writeJSON(record, to: recordURL(session))
     }
 }
 
@@ -337,21 +341,48 @@ final class RenderedEchoAudio: EchoAudioSource, @unchecked Sendable {
             AudioFileClose(opened)
             throw HolosError.io("Cannot read the prepared \(rendered.track) audio for the echo analysis.")
         }
-        file = opened
         let frames = Int(bytes / 2)
-        renderFrames = frames
         let rate = rendered.sampleRate
+        var spans: [Span] = []
         if rendered.timeMap.isEmpty {
             spans = [Span(session: 0, render: 0, count: frames)]
         } else {
-            spans = rendered.timeMap.map { span in
-                let render = Int((span.renderStart * rate).rounded())
-                let end = Int(((span.renderStart + span.duration) * rate).rounded())
-                return Span(session: Int((span.sessionStart * rate).rounded()), render: render,
-                            count: max(0, min(end, frames) - render))
+            for span in rendered.timeMap {
+                // Times come from the manifest: one far outside any meeting would trap when made an index.
+                guard let session = Self.sampleIndex(span.sessionStart, rate: rate),
+                      let render = Self.sampleIndex(span.renderStart, rate: rate),
+                      let end = Self.sampleIndex(span.renderStart + span.duration, rate: rate) else {
+                    AudioFileClose(opened)
+                    throw HolosError.invalidInput("The prepared \(rendered.track) audio's timing is out of range, so "
+                                                  + "its echo cannot be analysed.")
+                }
+                spans.append(Span(session: session, render: render, count: max(0, min(end, frames) - render)))
             }
         }
-        sampleCount = spans.map { $0.session + $0.count }.max() ?? 0
+        var count = 0
+        for span in spans {
+            let (end, overflow) = span.session.addingReportingOverflow(span.count)
+            guard !overflow, end <= Self.maxSamples else {
+                AudioFileClose(opened)
+                throw HolosError.invalidInput("The prepared \(rendered.track) audio's timing is out of range, so its "
+                                              + "echo cannot be analysed.")
+            }
+            count = max(count, end)
+        }
+        file = opened
+        renderFrames = frames
+        self.spans = spans
+        sampleCount = count
+    }
+
+    /// No meeting runs a month: a session time past this is damage, not audio.
+    static let maxSamples = 31 * 86_400 * EchoAnalysis.sampleRate
+
+    /// `seconds × rate` rounded, as a sample index; nil when it is not finite or not within ±`maxSamples`.
+    static func sampleIndex(_ seconds: Double, rate: Double) -> Int? {
+        let value = (seconds * rate).rounded()
+        guard value.isFinite, abs(value) <= Double(maxSamples) else { return nil }
+        return Int(value)
     }
 
     deinit { AudioFileClose(file) }

@@ -143,9 +143,11 @@ public enum SessionRecoveryCommand {
     /// vocabulary.json, postprocess.json, the speaker head or run) throws `unavailable` (schema rule 3, §1.6), with
     /// the archive recovery kept. `profiles` is passed to the post-processor (voice suggestions, PR10), and
     /// `languages` (a meeting in several languages, §4.14) and `wordFixes` (docs/design.md "Meeting word fixes") too.
+    /// `voiceSamples` recomputes the voice samples from this meeting when the pass saves an echo mask (§5.11).
     public static func run(_ request: Request, diarizer: (any SpeakerDiarizer)?, makeSpeech: LiveSpeechFactory? = nil,
                            freeSpace: any FreeSpaceProvider = VolumeFreeSpace(),
                            profiles: SpeakerProfileStore? = nil,
+                           voiceSamples: (any VoiceSampleExtractor)? = nil,
                            languages: LanguageDetectionDependencies = .live,
                            wordFixes: WordFixDependencies = .none,
                            progress: @escaping @Sendable (String) -> Void = { _ in },
@@ -158,6 +160,8 @@ public enum SessionRecoveryCommand {
         }
         let lease = try SessionArchive.acquireProcessingLease(at: session)
         defer { lease.release() }
+        // The echo analysis's files as Recover found them: a mask this pass saves changes the voice samples' input.
+        let echoBefore = MeetingPeopleCache.echoStamp(session)
 
         progress("Recovering the saved audio…")
         // Recovery rewrites `processing` to `interrupted`; the status before it decides whether a transcript saved
@@ -310,6 +314,18 @@ public enum SessionRecoveryCommand {
                 try SessionExports.regenerate(session: session, people: profiles)
             } catch let error where !(error is CancellationError) {
                 warnings.append("The transcript files were not rewritten: \(error.localizedDescription)")
+                exitCode = max(exitCode, 3)
+            }
+        }
+        // A mask saved by this pass (post-processing or the analysis above) changes which turns a voice sample from
+        // this meeting may use: brought in step as after an edit.
+        if let profiles, MeetingPeopleCache.echoStamp(session) != echoBefore {
+            do {
+                try await VoiceProfileService.refreshSamples(session: session, extractor: voiceSamples,
+                                                             store: profiles)
+            } catch let error where !(error is CancellationError) {
+                warnings.append("A voice sample learned from this meeting could not be updated: "
+                                + error.localizedDescription)
                 exitCode = max(exitCode, 3)
             }
         }

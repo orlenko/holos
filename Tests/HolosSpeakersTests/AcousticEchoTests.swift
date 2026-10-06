@@ -509,6 +509,19 @@ private func shownWords(_ turn: ProjectedTurn?) -> [Int] {
     #expect(!allEcho.speakers.contains { $0.id == "mic:me" })
 }
 
+@Test func hiddenEchoInsideATurnDoesNotCountAsTalkTime() throws {
+    // M's words are 0.3 s long every 0.4 s from 10 s. Plain: 10.0–13.9 s. With words 2–3 hidden: 10.0–10.7 s and
+    // 11.6–13.9 s, so 3.0 s, while the turn still runs from 10.0 to 13.9 s.
+    let (words, run) = channelCall()
+    let plain = view(run, words)
+    #expect(abs((plain.speakers.first { $0.id == "mic:me" }?.talkSeconds ?? 0) - 3.9) < 1e-9)
+    let masked = view(run, words, mask: echoInTheMiddle)
+    let turn = try #require(masked.turns.first { $0.track == "mic" })
+    #expect(abs(turn.end - turn.start - 3.9) < 1e-9)
+    // The sidebar and the Markdown and JSON exports read this.
+    #expect(abs((masked.speakers.first { $0.id == "mic:me" }?.talkSeconds ?? 0) - 3.0) < 1e-9)
+}
+
 @Test func editsOnATurnWithHiddenWordsWorkAsOnItsStoredWords() throws {
     let (words, run) = channelCall()
     let masked = view(run, words, mask: echoInTheMiddle)

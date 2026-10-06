@@ -7912,7 +7912,8 @@ genuinely local (the user, or people in the room) stays even while the call play
   a new run that holds the echo too), forget clean-up (it must reach every word a person owns)
   and evaluation scoring (diarization quality).
 - *Turns.* A turn keeps its ID and speaker and leaves out the words the mask flags; its start,
-  end and timing quality are those of the words left. A turn that loses every word is not
+  end and timing quality are those of the words left, and its talk time (sidebar, exports) is
+  the sum of its runs of shown words, without the echo between them. A turn that loses every word is not
   shown, and a speaker with no turn shown is not listed. Edits work as without echo: the words a
   split is chosen from are the words shown, each named by its place in its segment (`WordRef`),
   so the split lands at that word of the stored turn; assign and undo name the turn. The
@@ -7921,9 +7922,12 @@ genuinely local (the user, or people in the room) stays even while the call play
   with (`.generated.json` `echoMask`: the SHA-256 of the frames, none without a mask), and
   `SessionExports.filesState` calls them out of date when it is not the one the labels show now,
   so the app offers Update Transcript Files. Recover rewrites them whenever they are, whatever
-  else it did (`echoMaskIsCurrent`). The people cache and the summary schedule key on the
-  echo files' stamps, and a voice sample is published only if the echo files did not change
-  while it was computed.
+  else it did (`echoMaskIsCurrent`; a rewrite left pending counts as out of date). The people
+  cache and the summary schedule key on the echo files' stamps. The mask is saved under the
+  speaker lock (lease, then speakers, then profiles), and a voice sample is published only if
+  the echo files did not change while it was computed; after `echo-analyze` or a Recover saves
+  a mask, the meeting's voice samples are brought in step as after an edit
+  (`VoiceProfileService.refreshSamples`).
 - *Recognition.* Post-processing compares voices only for clusters the view lists with the mask
   (`RecognizeStage.withoutEcho`): a microphone cluster that is echo sounds like the far end and
   must not take a person's match from the system speaker. The mask exists by then (stage 4b).

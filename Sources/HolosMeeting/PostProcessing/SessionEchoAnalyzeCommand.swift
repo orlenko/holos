@@ -36,8 +36,11 @@ public enum SessionEchoAnalyzeCommand {
 
     /// Runs under the session's processing lease. Throws, with nothing changed, when the meeting is still recording,
     /// another process holds the lease, the audio was deleted, a saved analysis was written by a newer Voice is Local,
-    /// or the audio cannot be prepared (the next run tries again). `profiles` gives people's names to the exports.
+    /// or the audio cannot be prepared (the next run tries again). `profiles` gives people's names to the exports, and
+    /// after a new analysis is saved, the voice samples people have from this meeting are brought in step with what
+    /// the labels now show (`VoiceProfileService.refreshSamples`, as after an edit; `extractor` recomputes them).
     public static func run(_ request: Request, profiles: SpeakerProfileStore? = nil,
+                           extractor: (any VoiceSampleExtractor)? = nil,
                            freeSpace: any FreeSpaceProvider = VolumeFreeSpace(),
                            progress: @escaping @Sendable (String) -> Void = { _ in }) async throws -> Outcome {
         let session = request.session
@@ -46,9 +49,20 @@ public enum SessionEchoAnalyzeCommand {
         }
         let lease = try SessionArchive.acquireProcessingLease(at: session)
         defer { lease.release() }
-        return try await lease.withUse(for: session) {
+        var outcome = try await lease.withUse(for: session) {
             try analyze(request, profiles: profiles, freeSpace: freeSpace, progress: progress)
         }
+        if outcome.analysed, let profiles {
+            do {
+                try await VoiceProfileService.refreshSamples(session: session, extractor: extractor, store: profiles)
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                outcome.summary += " A voice sample learned from this meeting could not be updated ("
+                    + "\(error.localizedDescription)); run the command again with --force."
+            }
+        }
+        return outcome
     }
 
     private static func analyze(_ request: Request, profiles: SpeakerProfileStore?, freeSpace: any FreeSpaceProvider,

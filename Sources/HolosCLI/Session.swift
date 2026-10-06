@@ -129,7 +129,8 @@ struct Session: AsyncParsableCommand {
                                                          vocabulary: vocabulary)
             let outcome = try await SessionRecoveryCommand.run(
                 request, diarizer: noPostprocess ? nil : makeDiarizer(engineOverrides: [:]),
-                profiles: SpeakerProfileStore(), wordFixes: makeWordFixDependencies(),
+                profiles: SpeakerProfileStore(), voiceSamples: makeVoiceSampleExtractor(session: session),
+                wordFixes: makeWordFixDependencies(),
                 progress: Self.progressPrinter())
             if json {
                 let recovery = outcome.recovery

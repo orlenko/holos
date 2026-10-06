@@ -440,6 +440,108 @@ func transcriptFilesWrittenWithAnotherMaskAreOutOfDateAndRecoverRewritesThem() a
 }
 
 @Test(.timeLimit(.minutes(2)))
+func aMaskIsSavedOnlyUnderTheSpeakerLock() async throws {
+    // While someone holds the speaker lock (a voice sample checking the labels and the echo files before publishing
+    // it), no mask can land.
+    let temp = try TemporaryDirectory("echo")
+    defer { temp.remove() }
+    let call = CallTranscript()
+    let session = try await callSession(in: temp.url, audio: CallAudio.tracks(echo: true), transcript: call.transcript)
+    let manifest = try SessionArchive.readManifest(at: session)
+    try SessionArchive.withSpeakerLock(at: session) {
+        #expect(throws: HolosError.self) {
+            _ = try EchoAnalysisStage.analyze(session: session, manifest: manifest, microphone: nil, system: nil)
+        }
+    }
+    #expect(!SessionFixtures.exists(EchoMaskStore.recordURL(session)))
+    _ = try EchoAnalysisStage.analyze(session: session, manifest: manifest, microphone: nil, system: nil)
+    #expect(SessionFixtures.exists(EchoMaskStore.recordURL(session)))
+}
+
+/// Gives every turn the same embedding.
+private struct FixedVoice: VoiceSampleExtractor {
+    func turnEmbeddings(session: URL, track: String, turns: [TurnRef]) async throws -> [TurnEmbedding] {
+        turns.map { TurnEmbedding(turnID: $0.id, speechSeconds: $0.end - $0.start, vector: FloatVector([1, 0, 0])) }
+    }
+}
+
+@Test(.timeLimit(.minutes(2)))
+func aSavedMaskBringsTheMeetingsVoiceSamplesInStep() async throws {
+    // The user's microphone turn runs through the far end's echo. Its voice was learned before the echo was found;
+    // once it is, the turn's voice data covers echo, so the sample learned from it is not kept.
+    let temp = try TemporaryDirectory("echo")
+    defer { temp.remove() }
+    let store = SpeakerProfileStore(directory: temp.url.appendingPathComponent("Support/Speakers", isDirectory: true))
+    try store.update { $0.rememberVoices = true }
+    let call = CallTranscript()
+    let mixed = SessionFixtures.segment((0..<24).map { "mixw\($0)" }, track: "mic", start: 8.0, wordSeconds: 0.4)
+    let transcript = SessionFixtures.transcript(call.transcript.segments.filter { $0.track == "system" } + [mixed])
+    let session = try await callSession(in: temp.url, audio: CallAudio.tracks(echo: true), transcript: transcript)
+    try moveMicrophoneAudio(session, away: true)
+    _ = try await MeetingPostProcessor(diarizer: systemDiarizer(), freeSpace: FixedFreeSpace(.max))
+        .run(session: session, lease: nil)
+    try moveMicrophoneAudio(session, away: false)
+    let view = try SessionFixtures.view(session)
+    let me = try #require(view.turns.first { $0.track == "mic" }?.speakerID)
+    _ = try await VoiceProfileService.link(session: session, speakerID: me, to: .new(name: "Person A"), view: view,
+                                           learnVoice: true, extractor: FixedVoice(), store: store)
+    #expect(try store.load().profiles.flatMap(\.samples).count == 1)
+
+    let outcome = try await SessionEchoAnalyzeCommand.run(.init(session: session), profiles: store,
+                                                          extractor: FixedVoice(), freeSpace: FixedFreeSpace(.max))
+    #expect(outcome.verdict == .echo)
+    #expect(try store.load().profiles.flatMap(\.samples).isEmpty)
+    #expect(try store.load().profiles.map(\.displayName) == ["Person A"], "The person stays; only the sample goes.")
+}
+
+@Test(.timeLimit(.minutes(2)))
+func renderTimesFarOutsideAMeetingThrowInsteadOfTrapping() async throws {
+    let temp = try TemporaryDirectory("echo")
+    defer { temp.remove() }
+    let call = CallTranscript()
+    let session = try await callSession(in: temp.url, audio: CallAudio.tracks(echo: true), transcript: call.transcript)
+    let manifest = try SessionArchive.readManifest(at: session)
+    let rendered = try TrackRenderer.render(session: session, manifest: manifest, track: "mic",
+                                            to: temp.url.appendingPathComponent("mic.caf"))
+    var sane = rendered
+    sane.timeMap = [RenderSpan(renderStart: 0, sessionStart: 5, duration: 1)]
+    #expect(try RenderedEchoAudio(sane).sampleCount == 6 * EchoAnalysis.sampleRate)
+    let edge = Double(RenderedEchoAudio.maxSamples) / Double(EchoAnalysis.sampleRate)
+    for start in [1e15, -1e15, .infinity, .nan, edge] {
+        var damaged = rendered
+        damaged.timeMap = [RenderSpan(renderStart: 0, sessionStart: start, duration: 1)]
+        #expect(throws: HolosError.self, "session start \(start)") { _ = try RenderedEchoAudio(damaged) }
+    }
+    var longRender = rendered
+    longRender.timeMap = [RenderSpan(renderStart: 0, sessionStart: 0, duration: 1e300)]
+    #expect(throws: HolosError.self) { _ = try RenderedEchoAudio(longRender) }
+}
+
+@Test(.timeLimit(.minutes(2)))
+func anInterruptedRewriteWithoutAMaskIsNotCurrentAndRecoverFinishesIt() async throws {
+    // Headphones: no mask, so a pending record (which names no mask) matches "none" by its mask alone.
+    let temp = try TemporaryDirectory("echo")
+    defer { temp.remove() }
+    let call = CallTranscript()
+    let session = try await callSession(in: temp.url, audio: CallAudio.tracks(echo: false), transcript: call.transcript)
+    _ = try await MeetingPostProcessor(diarizer: systemDiarizer(), freeSpace: FixedFreeSpace(.max))
+        .run(session: session, lease: nil)
+    #expect(SessionExports.echoMaskIsCurrent(session: session))
+    let url = SessionPaths.generatedExports(session)
+    var record = try #require(try JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any])
+    record["pending"] = record["files"]
+    try JSONSerialization.data(withJSONObject: record).write(to: url)
+    #expect(!SessionExports.echoMaskIsCurrent(session: session))
+
+    let outcome = try await SessionRecoveryCommand.run(.init(session: session), diarizer: systemDiarizer(),
+                                                       freeSpace: FixedFreeSpace(.max))
+    #expect(outcome.warnings.isEmpty)
+    #expect(SessionExports.echoMaskIsCurrent(session: session))
+    let title = SessionCatalog.summary(session: session, jobState: .free).displayTitle
+    #expect(SessionExports.filesState(session: session, title: title) == .current)
+}
+
+@Test(.timeLimit(.minutes(2)))
 func anAnalysisPutOffForDiskSpaceIsMadeByRecover() async throws {
     let temp = try TemporaryDirectory("echo")
     defer { temp.remove() }

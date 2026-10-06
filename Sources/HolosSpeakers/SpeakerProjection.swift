@@ -846,7 +846,9 @@ extension SpeakerProjection {
                 if turn.start != source.start { cut = true }
                 if let speakerID = turn.speakerID {
                     turnCounts[speakerID, default: 0] += 1
-                    talk[speakerID, default: 0] += max(0, turn.end - turn.start)
+                    // A turn with hidden echo words talks only for the runs of words shown, not the echo between.
+                    let seconds = turn.spans == source.spans ? nil : shownSeconds(turn.spans, in: context.transcript)
+                    talk[speakerID, default: 0] += seconds ?? max(0, turn.end - turn.start)
                 }
                 projectedTurns.append(ProjectedTurn(
                     id: turn.id, track: turn.track, start: turn.start, end: turn.end, speakerID: turn.speakerID,
@@ -912,6 +914,18 @@ extension SpeakerProjection {
             let merges = mergeSuggestions(listed: projectedSpeakers, effectiveProfiles: effectiveProfiles,
                                           context: context)
             return (projectedSpeakers, projectedTurns, merges)
+        }
+
+        /// The talk time of a turn some of whose words are hidden: the sum of each shown span's time (a span is one run
+        /// of consecutive words), so hidden echo between them does not count. Nil when a span's word times cannot be
+        /// read; the turn's start-to-end time counts then.
+        private func shownSeconds(_ spans: [WordSpan], in transcript: Transcript) -> Double? {
+            var total = 0.0
+            for span in spans {
+                guard let words = SpanWords([span], in: transcript) else { return nil }
+                total += max(0, words.end - words.start)
+            }
+            return total
         }
 
         /// How `turn` shows with the mask of `context` (step 6): as it is; or, same ID and speaker, without its flagged

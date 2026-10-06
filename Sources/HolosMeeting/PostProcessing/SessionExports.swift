@@ -341,12 +341,14 @@ public enum SessionExports {
     }
 
     /// Whether the transcript files were written with the acoustic echo mask the labels show now (§5.11). False when
-    /// they were written with another (or with one that is gone) and when their record cannot be read; true without
-    /// transcript files (nothing to bring up to date). For passes that only need to rewrite the files for the mask
-    /// (Recover); the full check is `filesState`.
+    /// they were written with another (or with one that is gone), when their record cannot be read, and while a
+    /// rewrite that was interrupted is still recorded as pending (its record names no mask); true without transcript
+    /// files (nothing to bring up to date). For passes that only need to rewrite the files for the mask (Recover); the
+    /// full check is `filesState`.
     public static func echoMaskIsCurrent(session: URL) -> Bool {
         guard hasTranscriptFiles(session: session) else { return true }
-        guard let read = try? readRecordChecked(session: session), let record = read.record, !read.damaged else {
+        guard let read = try? readRecordChecked(session: session), let record = read.record, !read.damaged,
+              record.pending == nil else {
             return false
         }
         return record.echoMask == echoMaskIdentity(session: session)
