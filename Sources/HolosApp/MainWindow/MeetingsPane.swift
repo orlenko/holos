@@ -71,6 +71,10 @@ final class MeetingsPane: NSViewController, NSTableViewDataSource, NSTableViewDe
     private var deepQueuedAutomatically: Set<String> = []
     /// The meeting whose summary is being written now (`voiceislocal session summarize`).
     private var summarizing: String?
+    /// The app's echo catch-up (`EchoCatchUpSchedule`, §5.11): the queued meetings' badges by session ID, and how the
+    /// runs that did not finish in this launch ended (a badge and the status line say so).
+    private var echoStates: [String: String] = [:]
+    private var echoProblems: [String: EchoCatchUpSchedule.RunEnd] = [:]
     /// The meeting's menu: Make Final Transcript Now (true) and Cancel Final Transcript (false) (§4.16).
     var onDeepTranscription: ((_ runNow: Bool, SessionSummary) -> Void)?
     /// The meeting's menu: Summarize Again, and Cancel Summarize while that request waits or runs.
@@ -381,6 +385,15 @@ final class MeetingsPane: NSViewController, NSTableViewDataSource, NSTableViewDe
         updateButtons()
     }
 
+    /// The echo catch-up's queued meetings and its runs that did not finish (§5.11).
+    func update(echoStates: [String: String], problems: [String: EchoCatchUpSchedule.RunEnd]) {
+        guard echoStates != self.echoStates || problems != echoProblems else { return }
+        self.echoStates = echoStates
+        echoProblems = problems
+        reloadKeepingSelection()
+        updateButtons()
+    }
+
     /// The meeting whose summary is being written (§4.17), or nil.
     func update(summarizing: String?) {
         guard summarizing != self.summarizing else { return }
@@ -554,7 +567,7 @@ final class MeetingsPane: NSViewController, NSTableViewDataSource, NSTableViewDe
                 title: summary.displayTitle,
                 detail: MeetingListFormat.detailLine(summary, people: names, now: Date()),
                 summary: summaryText(summary),
-                badges: MeetingListFormat.badges(summary, livePhase: phase, working: working(summary)),
+                badges: badges(summary, livePhase: phase),
                 toolTip: toolTip(summary, isLive: isLive)))
             return cell
         }
@@ -567,10 +580,22 @@ final class MeetingsPane: NSViewController, NSTableViewDataSource, NSTableViewDe
         return text
     }
 
-    /// What a command, a final transcript, or the summary is doing to the meeting now.
+    /// What a command, a final transcript, the summary, or the echo catch-up is doing to the meeting now.
     private func working(_ summary: SessionSummary) -> String? {
         running[summary.id] ?? deepStates[summary.id] ?? (summarizing == summary.id ? "Writing summary…" : nil)
+            ?? echoStates[summary.id]
     }
+
+    /// The meeting's row badges (`MeetingListFormat.badges`).
+    func badges(_ summary: SessionSummary, livePhase: LiveMeetingPhase?) -> [MeetingListFormat.Badge] {
+        var echoFailed = false
+        if case .failed? = echoProblems[summary.id] { echoFailed = true }
+        return MeetingListFormat.badges(summary, livePhase: livePhase, working: working(summary),
+                                        echoNotRemoved: echoFailed)
+    }
+
+    /// The line under the buttons, about the selected meeting.
+    var statusText: String { statusLabel.stringValue }
 
     private func toolTip(_ summary: SessionSummary, isLive: Bool) -> String {
         var lines: [String] = []
@@ -669,6 +694,11 @@ final class MeetingsPane: NSViewController, NSTableViewDataSource, NSTableViewDe
             } else if let message = summary.labelMessage,
                       summary.speakerState != .labelled || summary.languageWork != nil {
                 parts.append(message)
+            }
+            // The echo catch-up did not finish on it in this launch: why, in the command's words.
+            if running[summary.id] == nil,
+               let problem = echoProblems[summary.id].flatMap(EchoCatchUpSchedule.problemText) {
+                parts.append(problem)
             }
             if PendingExports().contains(summary.id) {
                 parts.append("The transcript files are older than the speaker labels; open Review to update them.")

@@ -11,7 +11,8 @@ import Testing
     })
     #expect(responses[.deleteMeeting] == .close)
     #expect(responses[.cleanUp] == .unaffected, "Clean Up removes only derived/ renders, which a review never reads.")
-    for command in [ReviewMaintenance.Command.recover, .labelSpeakers, .deleteAudio, .automaticRelabel] {
+    for command in [ReviewMaintenance.Command.recover, .labelSpeakers, .deleteAudio, .automaticRelabel,
+                    .echoAnalysis] {
         guard case .readOnly(let banner)? = responses[command] else {
             Issue.record("\(command) must make the review read-only")
             continue

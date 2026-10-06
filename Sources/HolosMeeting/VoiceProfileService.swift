@@ -168,6 +168,22 @@ public enum VoiceProfileService {
         try await refreshSamples(session: session, extractor: makeExtractor(session), store: store)
     }
 
+    /// Whether `refreshSamplesIfLearned` has work on this meeting: somebody has a voice sample from it that the labels
+    /// now show differently (one would be recomputed or removed). Read only: nothing is extracted or saved. False when
+    /// nobody has a sample from it, or its labels or the people cannot be read. For passes that must notice a refresh
+    /// a stopped or failed run still owes (the echo catch-up, §5.11).
+    public static func samplesOutOfStep(session: URL, store: SpeakerProfileStore) -> Bool {
+        guard let database = try? store.load(), let sessionID = try? SessionArchive.readManifest(at: session).id,
+              database.profiles.contains(where: { $0.samples.contains { $0.sessionID == sessionID } }),
+              let snapshot = try? SpeakerSessionSnapshot.load(session: session), snapshot.journal.isComplete,
+              let run = snapshot.run, let projection = snapshot.projection,
+              let earlierRuns = try? earlierRunViews(database, snapshot: snapshot, headRunID: run.id) else {
+            return false
+        }
+        return !plan(database: database, snapshot: snapshot, run: run, projection: projection, enroll: [],
+                     earlierRuns: earlierRuns, extractorAvailable: true).isEmpty
+    }
+
     /// For an edit whose lines were saved but that then failed (`SpeakerEditor` or the caller's export rewrite threw
     /// `HolosError.incomplete`, so `needsSampleRefresh` may never have been seen): brings this meeting's samples in
     /// step as `refreshSamples` does, then throws `error`. When the refresh fails too, its reason is added to the

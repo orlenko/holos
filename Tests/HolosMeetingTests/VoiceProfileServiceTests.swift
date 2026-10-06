@@ -661,6 +661,30 @@ func refreshAfterAFailedSaveStillRecomputes() async throws {
 }
 
 @Test(.timeLimit(.minutes(1)))
+func samplesOutOfStepSaysWhetherARefreshHasWork() async throws {
+    let temp = try TemporaryDirectory("profiles")
+    defer { temp.remove() }
+    let store = profileStore(temp)
+    try store.update { $0.rememberVoices = true }
+    let (session, _) = try await profileSession(in: temp)
+    #expect(!VoiceProfileService.samplesOutOfStep(session: session, store: store), "Nobody has a sample from it.")
+    let t1 = profileUnit([1, 0.3, 0, 0, 0, 0, 0, 0])
+    let t3 = profileUnit([1, -0.3, 0, 0, 0, 0, 0, 0])
+    let extractor = ProfileFakeExtractor(vectors: ["T1": t1, "T3": t3])
+    _ = try await VoiceProfileService.link(
+        session: session, speakerID: "system:S1", to: .new(name: "Jim"), view: try SessionFixtures.view(session),
+        learnVoice: true, extractor: extractor, store: store)
+    #expect(!VoiceProfileService.samplesOutOfStep(session: session, store: store), "Learned from these labels.")
+    // An edit saved without the refresh (a run stopped or failed before it): the sample is owed one.
+    try SessionFixtures.appendEdits([.reassignTurns(turnIDs: ["T3"], to: "system:S2")], session: session)
+    let requests = extractor.requests.count
+    #expect(VoiceProfileService.samplesOutOfStep(session: session, store: store))
+    #expect(extractor.requests.count == requests, "Read only: nothing is extracted.")
+    try await VoiceProfileService.refreshSamples(session: session, extractor: extractor, store: store)
+    #expect(!VoiceProfileService.samplesOutOfStep(session: session, store: store))
+}
+
+@Test(.timeLimit(.minutes(1)))
 func sampleFromAnEarlierRunIsKeptWhenItCannotBeRelearned() async throws {
     let temp = try TemporaryDirectory("profiles")
     defer { temp.remove() }
