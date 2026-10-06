@@ -7720,7 +7720,11 @@ the disk.
   the microphone track at full volume in `AcousticEchoMask.localSpeechIntervals()` and at 0
   elsewhere, with 25 ms linear ramps (a fade in ends where an interval starts, inside its
   lead padding; a fade out starts where it ends; intervals closer than two ramps are
-  joined). The system track and any other track play as recorded. No analysis, one out of
+  joined). The echo is muted only where the system track plays: a call whose system chunks
+  are all unplayable has no system track and plays the microphone as recorded, and where
+  the system track has no audio the microphone is kept at full volume (the mask matches
+  the manifest, not what could be played). The system track and any other track play as
+  recorded. No analysis, one out of
   date, damaged, or written by a newer Voice is Local, and every other verdict (`noEcho`
   for headphones, `noSystemAudio`, `tooLong`) play the microphone as recorded. When the
   labels are reread (the window back from elsewhere) the volume is read again, and a

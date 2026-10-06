@@ -145,3 +145,19 @@ func echoMixBenchmark() {
     print("echo mix benchmark: \(volume.ramps.count) ramps; schedule \(schedule), mix \(build), "
           + "inputs \(mix?.inputParameters.count ?? 0)")
 }
+
+// MARK: - Where the system track plays
+
+@Test func theGapsInTheSystemAudioAreFound() {
+    #expect(ReviewEchoMute.uncovered(by: [], duration: 10) == [echoInterval(0, 10)])
+    #expect(ReviewEchoMute.uncovered(by: [0..<10], duration: 10).isEmpty)
+    // Unsorted and overlapping, with gaps at the start, between, and at the end; past the end is ignored.
+    #expect(ReviewEchoMute.uncovered(by: [6..<8, 1..<3, 2..<4, 9.5..<12], duration: 10)
+        == [echoInterval(0, 1), echoInterval(4, 6), echoInterval(8, 9.5)])
+    #expect(ReviewEchoMute.uncovered(by: [0..<4], duration: 0).isEmpty)
+}
+
+@Test func intervalsInAnyOrderGiveTheSameVolume() {
+    let sorted = [echoInterval(1, 2), echoInterval(5, 9)]
+    #expect(ReviewMicVolume.keeping(sorted.reversed(), duration: 20) == ReviewMicVolume.keeping(sorted, duration: 20))
+}

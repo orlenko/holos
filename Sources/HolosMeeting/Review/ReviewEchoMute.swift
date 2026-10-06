@@ -34,7 +34,7 @@ public struct ReviewMicVolume: Sendable, Equatable {
     /// The volume for a playback `duration` seconds long that keeps the microphone in `intervals` (session time, in
     /// start order; `AcousticEchoMask.localSpeechIntervals`) and silences it elsewhere.
     ///
-    /// Intervals are clipped to the playback; empty ones are dropped. Two closer than two ramps are joined (a dip
+    /// Intervals are sorted, clipped to the playback; empty ones are dropped. Two closer than two ramps are joined (a dip
     /// there would only be a click). A fade in ends where its interval starts (inside the mask's lead padding), and
     /// a fade out starts where it ends; both are shortened at the playback's start and end. An interval from 0 starts
     /// at full volume, and one that reaches the end never fades out. No interval: silent throughout.
@@ -42,7 +42,8 @@ public struct ReviewMicVolume: Sendable, Equatable {
                                ramp: Double = rampSeconds) -> ReviewMicVolume {
         guard duration.isFinite, duration > 0 else { return ReviewMicVolume(initial: 0, ramps: []) }
         var kept: [(start: Double, end: Double)] = []
-        for interval in intervals where interval.start.isFinite && interval.end.isFinite {
+        for interval in intervals.sorted(by: { $0.start < $1.start })
+            where interval.start.isFinite && interval.end.isFinite {
             let start = max(0, interval.start)
             let end = min(duration, interval.end)
             guard start < end else { continue }
@@ -94,8 +95,11 @@ public enum ReviewEchoMute {
     /// The microphone's volume for a playback `duration` seconds long, or nil (the microphone as recorded) unless the
     /// session's current echo analysis (`EchoMaskStore.current`) found echo: no analysis, one out of date or damaged,
     /// one by a newer Voice is Local, or a verdict other than `echo` (headphones, no system audio, too long) all play
-    /// the microphone as recorded. Reads files; call it off the main actor.
-    public static func micVolume(session: URL, manifest: SessionManifest, duration: Double) -> ReviewMicVolume? {
+    /// the microphone as recorded. It is kept at full volume where the playback has no system audio (`systemPlaced`,
+    /// session time, as `SessionAudioComposition.makePlayback` placed it): the echo is muted only where the call is
+    /// heard from the system track. Reads files; call it off the main actor.
+    public static func micVolume(session: URL, manifest: SessionManifest, duration: Double,
+                                 systemPlaced: [Range<Double>]) -> ReviewMicVolume? {
         let stored: EchoMaskStore.Stored?
         do {
             stored = try EchoMaskStore.current(session: session, manifest: manifest)
@@ -104,6 +108,22 @@ public enum ReviewEchoMute {
             return nil
         }
         guard let mask = stored?.mask else { return nil }
-        return ReviewMicVolume.keeping(mask.localSpeechIntervals(), duration: duration)
+        return ReviewMicVolume.keeping(mask.localSpeechIntervals() + uncovered(by: systemPlaced, duration: duration),
+                                       duration: duration)
+    }
+
+    /// The parts of [0, `duration`) that `covered` (any order, may overlap) leaves out. Pure.
+    static func uncovered(by covered: [Range<Double>], duration: Double) -> [AcousticEchoMask.Interval] {
+        guard duration.isFinite, duration > 0 else { return [] }
+        var gaps: [AcousticEchoMask.Interval] = []
+        var reached = 0.0
+        for range in covered.sorted(by: { $0.lowerBound < $1.lowerBound })
+            where range.lowerBound.isFinite && range.upperBound.isFinite {
+            if range.lowerBound > reached { gaps.append(.init(start: reached, end: min(range.lowerBound, duration))) }
+            reached = max(reached, range.upperBound)
+            if reached >= duration { break }
+        }
+        if reached < duration { gaps.append(.init(start: reached, end: duration)) }
+        return gaps.filter { $0.start < $0.end }
     }
 }

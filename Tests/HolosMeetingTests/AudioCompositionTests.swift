@@ -316,6 +316,37 @@ func playbackKeepsTheMicrophoneOnlyWhereItHasLocalSpeechWhenThereIsEcho() async 
 }
 
 @Test(.timeLimit(.minutes(1)))
+func playbackMutesTheEchoOnlyWhereTheSystemTrackPlays() async throws {
+    let temp = try TemporaryDirectory("composition")
+    defer { temp.remove() }
+    // System audio for the first 5 s of a 10 s call: past it, nothing else carries the call, so the microphone is
+    // kept at full volume there.
+    let session = try await SessionFixtures.makeSession(in: temp.url, source: .microphoneAndSystem,
+                                                        audioSeconds: ["mic": 10, "system": 5], mode: .call,
+                                                        transcript: nil)
+    let manifest = try SessionArchive.readManifest(at: session)
+    let mask = try #require(try compositionSaveMask(session, manifest: manifest, seconds: 10, local: 2...3))
+    let playback = try await SessionAudioComposition.makePlayback(session: session, manifest: manifest)
+    let duration = playback.composition.duration.seconds
+    let systemEnd = try #require(playback.systemPlaced?.last?.upperBound)
+    #expect(abs(systemEnd - 5) < 0.01)
+    let expected = ReviewMicVolume.keeping(
+        mask.localSpeechIntervals() + [AcousticEchoMask.Interval(start: systemEnd, end: duration)], duration: duration)
+    #expect(playback.micVolume == expected)
+    #expect(playback.micVolume?.ramps.last?.to == 1, "Full volume from the end of the system audio on.")
+
+    // The system chunks unplayable (here: gone): no system track, so the microphone plays as recorded although the
+    // mask still matches the manifest.
+    for chunk in manifest.chunks where chunk.track == "system" {
+        try FileManager.default.removeItem(at: session.appendingPathComponent(chunk.relativePath))
+    }
+    #expect(try EchoMaskStore.current(session: session, manifest: manifest)?.mask != nil)
+    let withoutSystem = try await SessionAudioComposition.makePlayback(session: session, manifest: manifest)
+    #expect(withoutSystem.systemPlaced == nil)
+    #expect(withoutSystem.micVolume == nil && withoutSystem.audioMix == nil)
+}
+
+@Test(.timeLimit(.minutes(1)))
 func playbackWithoutMicrophoneAudioHasNoMix() async throws {
     let temp = try TemporaryDirectory("composition")
     defer { temp.remove() }

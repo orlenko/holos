@@ -49,6 +49,8 @@ final class ReviewPlayer {
     /// The composition track of the microphone and the volume it plays at (nil: as recorded).
     private var micTrackID: CMPersistentTrackID?
     private(set) var micVolume: ReviewMicVolume?
+    /// Where the system track's audio is in the playback; nil without a system track (the echo is never muted then).
+    private(set) var systemPlaced: [Range<Double>]?
     /// Clips still to play after the current one, and where the current one stops.
     private var pendingClips: [ClosedRange<Double>] = []
     private var stopAt: Double?
@@ -162,6 +164,7 @@ final class ReviewPlayer {
         duration = 0
         micTrackID = nil
         micVolume = nil
+        systemPlaced = nil
         if state == .ready { state = .loading }
     }
 
@@ -186,6 +189,7 @@ final class ReviewPlayer {
         item.audioTimePitchAlgorithm = .spectral
         micTrackID = playback.micTrackID
         micVolume = playback.micVolume
+        systemPlaced = playback.systemPlaced
         item.audioMix = playback.audioMix
         let player = AVPlayer(playerItem: item)
         player.actionAtItemEnd = .pause

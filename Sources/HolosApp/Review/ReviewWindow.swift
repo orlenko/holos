@@ -192,10 +192,12 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate {
     /// The echo analysis may have changed meanwhile (`voiceislocal session echo-analyze`): the microphone's volume
     /// is read again and, when it changed, set on the playing item without rebuilding it.
     private func refreshMicVolume() async {
-        guard player.isReady else { return }
+        // Without system audio in the playback the echo is never muted.
+        guard player.isReady, let systemPlaced = player.systemPlaced else { return }
         let session = review.session, manifest = review.snapshot.manifest, duration = player.duration
         let volume = await Task.detached(priority: .utility) {
-            ReviewEchoMute.micVolume(session: session, manifest: manifest, duration: duration)
+            ReviewEchoMute.micVolume(session: session, manifest: manifest, duration: duration,
+                                     systemPlaced: systemPlaced)
         }.value
         guard !isClosing, player.isReady, manifest.chunks == loadedChunks else { return }
         player.setMicVolume(volume)
