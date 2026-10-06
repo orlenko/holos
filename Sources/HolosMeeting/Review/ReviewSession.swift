@@ -830,15 +830,14 @@ public struct ReviewWord: Sendable, Equatable {
         guard let segment = segments[first.segmentID] else {
             throw HolosError.invalidInput("Those words are no longer in the transcript; reload and try again.")
         }
-        let owners = indices.map { index in
-            projection.turns.firstIndex { turn in
-                turn.spans.contains { $0.segmentID == first.segmentID && $0.first <= index && index < $0.end }
-            }
+        func holds(_ turn: ProjectedTurn, _ index: Int) -> Bool {
+            turn.spans.contains { $0.segmentID == first.segmentID && $0.first <= index && index < $0.end }
         }
-        guard owners.allSatisfy({ $0 != nil }) else {
+        guard indices.allSatisfy({ index in projection.turns.contains { holds($0, index) } }) else {
             throw HolosError.invalidInput("Some of these words are not shown (hidden as echo); edit the words you see.")
         }
-        guard Set(owners).count == 1 else {
+        // One turn must hold every word (turns may overlap: two holding a word each is not one holding them all).
+        guard projection.turns.contains(where: { turn in indices.allSatisfy { holds(turn, $0) } }) else {
             throw HolosError.invalidInput("Words of two turns cannot be edited together yet; edit each turn's words "
                                           + "on its own.")
         }
@@ -1668,14 +1667,7 @@ public struct ReviewWord: Sendable, Equatable {
             Self.log.error("Session \(self.sessionID, privacy: .public): the speaker labels are not on the current transcript; a later close learns from the edits")
             return
         }
-        let sameTurn = { (segmentID: String, word: Int, neighbour: Int) -> Bool in
-            turns.contains { turn in
-                [word, neighbour].allSatisfy { index in
-                    turn.spans.contains { $0.segmentID == segmentID && $0.first <= index && index < $0.end }
-                }
-            }
-        }
-        let corrections = ReviewLearning.corrections(ReviewLearning.edits(in: current, sameTurn: sameTurn),
+        let corrections = ReviewLearning.corrections(ReviewLearning.edits(in: current, turns: turns.map(\.spans)),
                                                      teach: teach)
         guard !corrections.isEmpty else { return }
         // Only what this meeting has not taught yet: a correction deleted or changed in Corrections since stays so.

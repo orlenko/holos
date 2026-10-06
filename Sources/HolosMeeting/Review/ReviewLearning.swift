@@ -51,35 +51,43 @@ enum ReviewLearning {
 
     /// The `reviewEdit` fixes of `transcript` as edits: what the recognizer wrote, the words' shown text, and the shown
     /// words around them as context. In transcript order (segments by start, then track; fixes by position). An edit
-    /// back to what the recognizer wrote (a Revert) is left out. `sameTurn(segmentID, word, neighbour)` says whether a
-    /// neighbouring word may be context: shown in the same turn as the edited word (not another speaker's, not hidden
-    /// as echo), as an edit itself may only take in such words. Without it, no neighbour is.
-    static func edits(in transcript: Transcript,
-                      sameTurn: (_ segmentID: String, _ word: Int, _ neighbour: Int) -> Bool) -> [ReviewWordEdit] {
+    /// back to what the recognizer wrote (a Revert) is left out. `turns`: the shown turns' word spans (a word the echo
+    /// mask hides is in none). An edit is learned only when one turn holds all its words, and its context is taken
+    /// from that same turn only (never another speaker's word, nor hidden echo); turns may overlap, so a word in two
+    /// turns never joins them.
+    static func edits(in transcript: Transcript, turns: [[WordSpan]]) -> [ReviewWordEdit] {
         let ordered = transcript.segments.sorted { ($0.start, $0.track ?? "") < ($1.start, $1.track ?? "") }
         var edits: [ReviewWordEdit] = []
         for segment in ordered {
             let words = WordTiming.effectiveWords(of: segment)
             let utf16 = Array(segment.text.utf16)
+            func holds(_ turn: [WordSpan], _ word: Int) -> Bool {
+                turn.contains { $0.segmentID == segment.id && $0.first <= word && word < $0.end }
+            }
+            /// The one turn holding every word of `range`, nil when none does.
+            func turn(holding range: Range<Int>) -> [WordSpan]? {
+                turns.first { turn in range.allSatisfy { holds(turn, $0) } }
+            }
             // Only words edited together that one shown turn still holds: a relabel may since have put them in two
             // turns, and a correction learned from them would mix two speakers' words.
             let fixes = (segment.fixes ?? []).filter { fix in
                 fix.kind == .reviewEdit && fix.first >= 0 && fix.first < fix.end && fix.end <= words.count
-                    && (fix.first..<(fix.end - 1)).allSatisfy { sameTurn(segment.id, $0, $0 + 1) }
+                    && turn(holding: fix.first..<fix.end) != nil
             }.sorted { $0.first < $1.first }
             // Edits side by side in one turn ("bull" → "pull", then "requested" → "request") are one span: learned
             // apart, each would take the other's corrected word as what was heard beside it ("pull requested"), and
             // neither rule would match what the recognizer wrote ("bull requested").
             var spans: [[TranscriptWordFix]] = []
             for fix in fixes {
-                if let last = spans.last?.last, last.end == fix.first, sameTurn(segment.id, last.end - 1, fix.first) {
+                if let last = spans.last?.last, let start = spans.last?.first?.first, last.end == fix.first,
+                   turn(holding: start..<fix.end) != nil {
                     spans[spans.count - 1].append(fix)
                 } else {
                     spans.append([fix])
                 }
             }
             for span in spans {
-                guard let first = span.first?.first, let end = span.last?.end,
+                guard let first = span.first?.first, let end = span.last?.end, let owner = turn(holding: first..<end),
                       let meant = TranscriptWordEdit.shownText(of: segment, first: first, end: end) else { continue }
                 // What the recognizer wrote over the span: each edit's `heard`, with the text between them as it is
                 // (no space where the words had none).
@@ -94,8 +102,9 @@ enum ReviewLearning {
                 let heard = TranscriptWordEdit.cleaned(written)
                 let shown = TranscriptWordEdit.cleaned(meant)
                 guard heard != shown else { continue }
-                let before = context(first - 1, beside: first, in: segment, words: words, sameTurn: sameTurn)
-                let after = context(end, beside: end - 1, in: segment, words: words, sameTurn: sameTurn)
+                let inTurn = { (word: Int) in holds(owner, word) }
+                let before = context(first - 1, in: segment, words: words, inTurn: inTurn)
+                let after = context(end, in: segment, words: words, inTurn: inTurn)
                 edits.append(ReviewWordEdit(heard: heard, meant: shown, before: before?.shown, after: after?.shown,
                                             heardBefore: before?.heard, heardAfter: after?.heard))
             }
@@ -103,17 +112,16 @@ enum ReviewLearning {
         return edits
     }
 
-    /// Word `index` of `segment` as context beside the edited word `edited`, when it is shown in the same turn: its
-    /// shown text, and what the recognizer wrote there when a fix changed it (`heard`: nil when as shown). A word
-    /// under a fix (an automatic correction or term, a live correction) stands with its whole fix: "Claude" shown is
-    /// "cloud" heard, so a correction learned beside it matches the recognizer's text ("as cloud" → "ask Claude").
-    private static func context(_ index: Int, beside edited: Int, in segment: TranscriptSegment,
-                                words: [EffectiveWord],
-                                sameTurn: (String, Int, Int) -> Bool) -> (shown: String, heard: String?)? {
-        guard index >= 0, index < words.count, sameTurn(segment.id, edited, index) else { return nil }
+    /// Word `index` of `segment` as context, when the edit's own turn holds it (`inTurn`): its shown text, and what the
+    /// recognizer wrote there when a fix changed it (`heard`: nil when as shown). A word under a fix (an automatic
+    /// correction or term, a live correction) stands with its whole fix, when that turn holds it all: "Claude" shown
+    /// is "cloud" heard, so a correction learned beside it matches the recognizer's text ("as cloud" → "ask Claude").
+    private static func context(_ index: Int, in segment: TranscriptSegment, words: [EffectiveWord],
+                                inTurn: (Int) -> Bool) -> (shown: String, heard: String?)? {
+        guard index >= 0, index < words.count, inTurn(index) else { return nil }
         if let fix = (segment.fixes ?? []).first(where: { $0.first <= index && index < $0.end }),
            fix.kind != .reviewRevert,
-           (fix.first..<fix.end).allSatisfy({ sameTurn(segment.id, edited, $0) }),
+           (fix.first..<fix.end).allSatisfy(inTurn),
            let whole = TranscriptWordEdit.shownText(of: segment, first: fix.first, end: fix.end) {
             let shown = TranscriptWordEdit.cleaned(whole)
             let heard = TranscriptWordEdit.cleaned(fix.heard)

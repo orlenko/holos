@@ -7908,9 +7908,11 @@ shown, Otter-style.
     reverted is not there, so it teaches nothing. Edits side by side in one turn are one
     phrase: "bull" → "pull" then "requested" → "request" teaches "bull requested" → "pull
     request" (what the recognizer wrote, from each edit's `heard`), never "pull requested" or
-    "bull request", which would match nothing it wrote. Words edited together that a relabel
-    has since put in two turns are not learned (a correction would mix two speakers' words);
-    an edit beside them is learned on its own;
+    "bull request", which would match nothing it wrote. An edit (or such a phrase) is learned
+    only when one turn holds all its words, and its context comes from that same turn (turns
+    may overlap: two turns each holding some of the words are not one). Words edited together
+    that a relabel has since put in two turns are not learned (a correction would mix two
+    speakers' words); an edit beside them is learned on its own;
   - each is diffed as dictation's Learn does (`CorrectionList.learn`, the recognizer's words
     against the words' shown text, one shown word on each side as context so a lone
     dictionary word is learned only with its neighbour: "cloud now" and "cloud later" are two

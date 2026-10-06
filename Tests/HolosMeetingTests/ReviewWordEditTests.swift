@@ -751,7 +751,9 @@ func learningAgainAtTheNextCloseChangesNothingAndASecondOccurrenceIsAdded() asyn
                    TranscriptWordFix(first: 1, end: 2, heard: "cloud", kind: .correction, heardWords: 1)]
     var plain = SessionFixtures.segment(["we", "knew", "here"], track: "system", start: 10, wordSeconds: 1, id: "S2")
     plain.fixes = [TranscriptWordFix(first: 1, end: 2, heard: "new", kind: .reviewEdit, heardWords: 1)]
-    let edits = ReviewLearning.edits(in: SessionFixtures.transcript([fixed, plain]), sameTurn: { _, _, _ in true })
+    let edits = ReviewLearning.edits(in: SessionFixtures.transcript([fixed, plain]),
+                                     turns: [[WordSpan(segmentID: "S1", first: 0, end: 3)],
+                                             [WordSpan(segmentID: "S2", first: 0, end: 3)]])
     #expect(edits == [
         ReviewWordEdit(heard: "as", meant: "ask", after: "Claude", heardAfter: "cloud"),
         ReviewWordEdit(heard: "new", meant: "knew", before: "we", after: "here"),
@@ -760,6 +762,23 @@ func learningAgainAtTheNextCloseChangesNothingAndASecondOccurrenceIsAdded() asyn
     let learned = TranscriptEditLearning.corrections(heard: "as", meant: "ask", after: "Claude", heardAfter: "cloud",
                                                      isDictionaryWord: { _ in true })
     #expect(learned.map(\.heard) == ["as cloud"] && learned.map(\.meant) == ["ask Claude"])
+}
+
+@Test func anEditIsLearnedOnlyWhenOneTurnHoldsItAllAndTakesContextFromThatTurn() {
+    // Overlapping turns: A holds words 0–1, B holds 1–2, of each segment.
+    var across = SessionFixtures.segment(["we", "much", "Claude", "now"], track: "system", start: 0, wordSeconds: 1,
+                                         id: "S1")
+    across.fixes = [TranscriptWordFix(first: 0, end: 3, heard: "we more cloud", kind: .reviewEdit, heardWords: 3)]
+    var inside = SessionFixtures.segment(["ask", "Claude", "now", "please"], track: "system", start: 10, wordSeconds: 1,
+                                         id: "S2")
+    inside.fixes = [TranscriptWordFix(first: 1, end: 2, heard: "cloud", kind: .reviewEdit, heardWords: 1)]
+    let turns = ["S1", "S2"].flatMap { segment in
+        [[WordSpan(segmentID: segment, first: 0, end: 2)], [WordSpan(segmentID: segment, first: 1, end: 3)]]
+    }
+    let edits = ReviewLearning.edits(in: SessionFixtures.transcript([across, inside]), turns: turns)
+    // Words 0–2 are each in a turn, word by word, but no one turn holds them all: not learned. "cloud" is in both;
+    // the first turn holding it (A) gives its context: "ask" before it, nothing after (B's "now" is not A's).
+    #expect(edits == [ReviewWordEdit(heard: "cloud", meant: "Claude", before: "ask")])
 }
 
 @Test(.timeLimit(.minutes(1))) @MainActor

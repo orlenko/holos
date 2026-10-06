@@ -47,10 +47,14 @@ enum SessionWordEdit {
         try await publishing(session: session) { archive in
             let (current, snapshot) = try expectedState(session: session, transcriptID: expectedTranscriptID,
                                                         runID: expectedRunID)
+            // The one turn holding every requested word (turns may overlap; the first holding the first word may not
+            // hold the rest).
             guard let projection = snapshot.projection,
                   let turn = projection.turns.first(where: { turn in
-                      turn.spans.contains {
-                          $0.segmentID == request.segmentID && $0.first <= request.first && request.first < $0.end
+                      (request.first..<request.end).allSatisfy { word in
+                          turn.spans.contains {
+                              $0.segmentID == request.segmentID && $0.first <= word && word < $0.end
+                          }
                       }
                   }) else {
                 throw HolosError.invalidInput("Those words are not shown in the review any more; reload and try again.")
