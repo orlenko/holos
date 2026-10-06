@@ -28,8 +28,8 @@ extension Session {
             let session = try SessionLocator.resolve(path)
             let last = Mutex<String?>(nil)
             let outcome = try await SessionEchoAnalyzeCommand.run(
-                SessionEchoAnalyzeCommand.Request(session: session, force: force), profiles: SpeakerProfileStore(),
-                voiceSamples: { makeVoiceSampleExtractor(session: $0) },
+                SessionEchoAnalyzeCommand.Request(session: session, force: force), voiceSamples: cliVoiceSamples,
+                profiles: SpeakerProfileStore(),
                 progress: { message in
                     let isNew = last.withLock { previous in
                         guard previous != message else { return false }

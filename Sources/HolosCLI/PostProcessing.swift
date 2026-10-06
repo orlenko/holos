@@ -11,10 +11,14 @@ import HolosStorage
 /// The diarizer is `makeDiarizer(engineOverrides: options.engineOverrides)`. The people store
 /// (`SpeakerProfileStore()`) lets stage 7 suggest known people when "Remember voices" is on (PR10).
 func makeMeetingPostProcessor(options: PostProcessingOptions = .init()) -> MeetingPostProcessor {
-    MeetingPostProcessor(diarizer: makeDiarizer(engineOverrides: options.engineOverrides), options: options,
-                         profiles: SpeakerProfileStore(), wordFixes: makeWordFixDependencies(),
-                         voiceSamples: { makeVoiceSampleExtractor(session: $0) })
+    MeetingPostProcessor(voiceSamples: cliVoiceSamples,
+                         diarizer: makeDiarizer(engineOverrides: options.engineOverrides), options: options,
+                         profiles: SpeakerProfileStore(), wordFixes: makeWordFixDependencies())
 }
+
+/// The voice sample source every CLI pass that post-processes passes (docs/meeting-design.md §5.11):
+/// `makeVoiceSampleExtractor` for each session.
+let cliVoiceSamples = VoiceSampleSource.make { makeVoiceSampleExtractor(session: $0) }
 
 /// The meeting word-fix stage's inputs (docs/design.md "Meeting word fixes"): the user's corrections.json and
 /// words.json (in `HolosPaths.supportRoot`, so `HOLOS_SUPPORT_DIR` points them elsewhere), and Apple's on-device model

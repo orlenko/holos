@@ -59,7 +59,7 @@ func callPostProcessingLeavesEchoOut() async throws {
     defer { temp.remove() }
     let (session, echo, own) = try await echoCall(in: temp.url, othersInRoom: false)
     let diarizer = FakeDiarizer(outputs: ["system": SessionFixtures.alternatingOutput()])
-    let record = try await MeetingPostProcessor(diarizer: diarizer, freeSpace: FixedFreeSpace(.max))
+    let record = try await MeetingPostProcessor(voiceSamples: .none, diarizer: diarizer, freeSpace: FixedFreeSpace(.max))
         .run(session: session, lease: nil)
     #expect(record.state == .succeeded)
     let run = try SessionSpeakerStore.readRun(id: try #require(record.runID), session: session)
@@ -91,7 +91,7 @@ func hybridCallHidesTheEchoCluster() async throws {
         centroids: ["S1": FloatVector([1, 0, 0, 0, 0, 0, 0, 0]), "S2": FloatVector([0, 1, 0, 0, 0, 0, 0, 0])],
         windows: [], processingSeconds: 0)
     let diarizer = FakeDiarizer(outputs: ["system": SessionFixtures.alternatingOutput(), "mic": mic])
-    let record = try await MeetingPostProcessor(diarizer: diarizer, freeSpace: FixedFreeSpace(.max))
+    let record = try await MeetingPostProcessor(voiceSamples: .none, diarizer: diarizer, freeSpace: FixedFreeSpace(.max))
         .run(session: session, lease: nil)
     #expect(record.state == .succeeded)
     #expect(record.othersInRoom == true)

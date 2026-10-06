@@ -56,7 +56,8 @@ public enum SessionImportCommand {
     /// A labelling failure or cancellation does not throw; the session is kept and the outcome's exit code is 3.
     /// `profiles` is passed to the post-processor (voice suggestions, PR10), and `languages` (a meeting in several
     /// languages, §4.14) and `wordFixes` (docs/design.md "Meeting word fixes") too.
-    public static func run(_ request: Request, diarizer: (any SpeakerDiarizer)?,
+    public static func run(_ request: Request, voiceSamples: VoiceSampleSource,
+                           diarizer: (any SpeakerDiarizer)?,
                            makeSpeech: LiveSpeechFactory? = nil, timeouts: StopTimeouts = .standard,
                            freeSpace: any FreeSpaceProvider = VolumeFreeSpace(),
                            profiles: SpeakerProfileStore? = nil,
@@ -82,7 +83,8 @@ public enum SessionImportCommand {
             return Outcome(session: session, exitCode: 0, summary: nil, postProcessing: nil)
         }
         do {
-            let processor = MeetingPostProcessor(diarizer: diarizer, options: PostProcessingOptions(),
+            let processor = MeetingPostProcessor(voiceSamples: voiceSamples, diarizer: diarizer,
+                                                 options: PostProcessingOptions(),
                                                  freeSpace: freeSpace, profiles: profiles, languages: languages,
                                                  wordFixes: wordFixes)
             let record = try await processor.run(session: session, lease: lease, progress: labellingProgress)

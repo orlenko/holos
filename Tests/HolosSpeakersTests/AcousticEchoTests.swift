@@ -287,9 +287,9 @@ func aCallOfExactlyThirtySecondsHasThreeDelayWindows() throws {
 }
 
 @Test func theRobustFitOfTheLongestCallUsesABoundedNumberOfPairs() throws {
-    // 149 hours of windows every 30 s, drifting +5 ms/h, every 7th window far off: the slopes come from 512 windows
-    // (130,816 pairs instead of about 160 million), and the line is still found.
-    let count = 149 * 3_600 / 30
+    // 12 hours (the longest call analysed) of windows every 30 s, drifting +5 ms/h, every 7th window far off: the
+    // slopes come from 512 windows (130,816 pairs instead of about a million), and the line is still found.
+    let count = 12 * 3_600 / 30
     var windows = (0..<count).map { index -> EchoAnalysis.DelayWindow in
         let centre = 15 + Double(index) * 30
         return EchoAnalysis.DelayWindow(centre: centre, milliseconds: 46 + 5 * centre / 3_600, peakRatio: 100)

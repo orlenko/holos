@@ -34,7 +34,8 @@ public enum SessionLanguagesCommand {
 
     /// Throws, with nothing changed, when the languages are not a valid list, the session is still recording, or
     /// another process holds its processing lease.
-    public static func run(_ request: Request, diarizer: (any SpeakerDiarizer)?,
+    public static func run(_ request: Request, voiceSamples: VoiceSampleSource,
+                           diarizer: (any SpeakerDiarizer)?,
                            freeSpace: any FreeSpaceProvider = VolumeFreeSpace(),
                            profiles: SpeakerProfileStore? = nil,
                            languages: LanguageDetectionDependencies = .live,
@@ -46,7 +47,8 @@ public enum SessionLanguagesCommand {
         }
         let list = DictationLanguage.meetingLanguages(request.languages)
         let options = PostProcessingOptions(force: request.force, languages: list)
-        let processor = MeetingPostProcessor(diarizer: diarizer, options: options, freeSpace: freeSpace,
+        let processor = MeetingPostProcessor(voiceSamples: voiceSamples, diarizer: diarizer, options: options,
+                                             freeSpace: freeSpace,
                                              profiles: profiles, languages: languages, wordFixes: wordFixes)
         let record = try await processor.run(session: request.session, lease: nil, progress: progress)
         return Outcome(record: record, exitCode: SessionDiarizeCommand.exitCode(record.state),

@@ -40,8 +40,8 @@ public enum SessionEchoAnalyzeCommand {
     /// with `voiceSamples` the voice samples people have from this meeting are brought in step with what the labels
     /// now show (`VoiceProfileService.refreshSamples`, as after an edit): worked out from the files, so a mask an
     /// earlier pass saved without doing so is caught up too, and up-to-date samples cost nothing.
-    public static func run(_ request: Request, profiles: SpeakerProfileStore? = nil,
-                           voiceSamples: MeetingPostProcessor.VoiceSampleSource? = nil,
+    public static func run(_ request: Request, voiceSamples: VoiceSampleSource,
+                           profiles: SpeakerProfileStore? = nil,
                            freeSpace: any FreeSpaceProvider = VolumeFreeSpace(),
                            progress: @escaping @Sendable (String) -> Void = { _ in }) async throws -> Outcome {
         let session = request.session
@@ -53,9 +53,9 @@ public enum SessionEchoAnalyzeCommand {
         var outcome = try await lease.withUse(for: session) {
             try analyze(request, profiles: profiles, freeSpace: freeSpace, progress: progress)
         }
-        if outcome.verdict != nil, let profiles, let voiceSamples {
+        if outcome.verdict != nil, let profiles, let makeExtractor = voiceSamples.extractor {
             do {
-                try await VoiceProfileService.refreshSamples(session: session, extractor: voiceSamples(session),
+                try await VoiceProfileService.refreshSamples(session: session, extractor: makeExtractor(session),
                                                              store: profiles)
             } catch is CancellationError {
                 throw CancellationError()

@@ -165,7 +165,7 @@ func postProcessingSavesTheMaskAndTheViewHidesTheEcho() async throws {
     defer { temp.remove() }
     let call = CallTranscript()
     let session = try await callSession(in: temp.url, audio: CallAudio.tracks(echo: true), transcript: call.transcript)
-    let record = try await MeetingPostProcessor(diarizer: systemDiarizer(), freeSpace: FixedFreeSpace(.max))
+    let record = try await MeetingPostProcessor(voiceSamples: .none, diarizer: systemDiarizer(), freeSpace: FixedFreeSpace(.max))
         .run(session: session, lease: nil)
     #expect(record.state == .succeeded)
     #expect(record.stages.map(\.stage) == [.transcript, .render, .echo, .diarize, .align, .export])
@@ -190,7 +190,7 @@ func postProcessingSavesTheMaskAndTheViewHidesTheEcho() async throws {
     #expect(String(decoding: rendered, as: UTF8.self) == markdown)
 
     // A relabel of the same audio uses the saved analysis: no echo stage.
-    let again = try await MeetingPostProcessor(diarizer: systemDiarizer(), options: .init(force: true),
+    let again = try await MeetingPostProcessor(voiceSamples: .none, diarizer: systemDiarizer(), options: .init(force: true),
                                                freeSpace: FixedFreeSpace(.max)).run(session: session, lease: nil)
     #expect(again.stages.map(\.stage) == [.transcript, .render, .diarize, .align, .export])
     #expect(try shownMicSegments(session) == call.ownSegmentIDs)
@@ -202,7 +202,7 @@ func headphonesCallShowsEveryMicrophoneWord() async throws {
     defer { temp.remove() }
     let call = CallTranscript()
     let session = try await callSession(in: temp.url, audio: CallAudio.tracks(echo: false), transcript: call.transcript)
-    let record = try await MeetingPostProcessor(diarizer: systemDiarizer(), freeSpace: FixedFreeSpace(.max))
+    let record = try await MeetingPostProcessor(voiceSamples: .none, diarizer: systemDiarizer(), freeSpace: FixedFreeSpace(.max))
         .run(session: session, lease: nil)
     #expect(record.state == .succeeded)
     let manifest = try SessionArchive.readManifest(at: session)
@@ -222,7 +222,7 @@ func aCallWithoutSystemAudioNeedsNoAnalysis() async throws {
     let session = try await callSession(in: temp.url, audio: ["mic": CallAudio.tracks(echo: false)["mic"]!],
                                         transcript: SessionFixtures.transcript([mic]), othersInRoom: true)
     #expect(!EchoAnalysisStage.needed(session: session))
-    let record = try await MeetingPostProcessor(diarizer: FakeDiarizer(outputs: [:]), freeSpace: FixedFreeSpace(.max))
+    let record = try await MeetingPostProcessor(voiceSamples: .none, diarizer: FakeDiarizer(outputs: [:]), freeSpace: FixedFreeSpace(.max))
         .run(session: session, lease: nil)
     #expect(record.state == .succeeded)
     #expect(!record.stages.contains { $0.stage == .echo })
@@ -237,7 +237,7 @@ func echoIsFoundWhenNoTrackNeedsDiarizing() async throws {
     let call = CallTranscript()
     let micOnly = SessionFixtures.transcript(call.echoSegments + call.ownSegments)
     let session = try await callSession(in: temp.url, audio: CallAudio.tracks(echo: true), transcript: micOnly)
-    let record = try await MeetingPostProcessor(diarizer: systemDiarizer(), freeSpace: FixedFreeSpace(.max))
+    let record = try await MeetingPostProcessor(voiceSamples: .none, diarizer: systemDiarizer(), freeSpace: FixedFreeSpace(.max))
         .run(session: session, lease: nil)
     #expect(record.state == .succeeded)
     #expect(record.stages.first { $0.stage == .echo }?.result == .succeeded)
@@ -253,7 +253,7 @@ func anAnalysisThatFailedIsStillNeededAndTheNextPassMakesIt() async throws {
     let call = CallTranscript()
     let session = try await callSession(in: temp.url, audio: CallAudio.tracks(echo: true), transcript: call.transcript)
     try moveMicrophoneAudio(session, away: true)
-    let first = try await MeetingPostProcessor(diarizer: systemDiarizer(), freeSpace: FixedFreeSpace(.max))
+    let first = try await MeetingPostProcessor(voiceSamples: .none, diarizer: systemDiarizer(), freeSpace: FixedFreeSpace(.max))
         .run(session: session, lease: nil)
     #expect(first.stages.first { $0.stage == .echo }?.result == .failed)
     #expect(first.stages.first { $0.stage == .align }?.result == .succeeded)
@@ -262,7 +262,7 @@ func anAnalysisThatFailedIsStillNeededAndTheNextPassMakesIt() async throws {
     #expect(try SessionRecoveryCommand.currentLabels(session, transcriptID: call.transcript.id, canLabel: true) != nil,
             "The labels themselves are current; the analysis is owed by the files, not by this record.")
     try moveMicrophoneAudio(session, away: false)
-    let second = try await MeetingPostProcessor(diarizer: systemDiarizer(), options: .init(force: true),
+    let second = try await MeetingPostProcessor(voiceSamples: .none, diarizer: systemDiarizer(), options: .init(force: true),
                                                 freeSpace: FixedFreeSpace(.max)).run(session: session, lease: nil)
     #expect(second.stages.first { $0.stage == .echo }?.result == .succeeded)
     #expect(!EchoAnalysisStage.needed(session: session))
@@ -283,7 +283,7 @@ func editedLabelsKeepTheirFilesAndShowWithoutTheEcho() async throws {
         policies: ["mic": .channel(speakerID: "mic:me", displayName: "Me")])
     try SessionFixtures.appendEdits([.rename(speakerID: "system:S1", name: "Person A")], session: session)
     let before = speakerFiles(session)
-    let record = try await MeetingPostProcessor(diarizer: systemDiarizer(), freeSpace: FixedFreeSpace(.max))
+    let record = try await MeetingPostProcessor(voiceSamples: .none, diarizer: systemDiarizer(), freeSpace: FixedFreeSpace(.max))
         .run(session: session, lease: nil)
     #expect(record.stages.first { $0.stage == .echo }?.result == .succeeded)
     #expect(speakerFiles(session) == before)
@@ -331,7 +331,7 @@ func aMaskOfOtherAudioOrAnOlderVersionIsNotUsedAndANewerOneIsKept() async throws
     try AtomicFile.write(Data(unknownVerdict.utf8), to: EchoMaskStore.recordURL(session))
     #expect(throws: HolosError.self) { try EchoMaskStore.current(session: session, manifest: manifest) }
     let newerBytes = try Data(contentsOf: EchoMaskStore.recordURL(session))
-    let processed = try await MeetingPostProcessor(diarizer: systemDiarizer(), freeSpace: FixedFreeSpace(.max))
+    let processed = try await MeetingPostProcessor(voiceSamples: .none, diarizer: systemDiarizer(), freeSpace: FixedFreeSpace(.max))
         .run(session: session, lease: nil)
     #expect(!processed.stages.contains { $0.stage == .echo })
     #expect(try Data(contentsOf: EchoMaskStore.recordURL(session)) == newerBytes)
@@ -383,24 +383,24 @@ func recoverMakesAMissingAnalysisOncePerRun() async throws {
     let call = CallTranscript()
     let session = try await callSession(in: temp.url, audio: CallAudio.tracks(echo: true), transcript: call.transcript)
     try moveMicrophoneAudio(session, away: true)
-    _ = try await MeetingPostProcessor(diarizer: systemDiarizer(), freeSpace: FixedFreeSpace(.max))
+    _ = try await MeetingPostProcessor(voiceSamples: .none, diarizer: systemDiarizer(), freeSpace: FixedFreeSpace(.max))
         .run(session: session, lease: nil)
     try moveMicrophoneAudio(session, away: false)
     #expect(EchoAnalysisStage.needed(session: session))
 
-    let short = try await SessionRecoveryCommand.run(.init(session: session), diarizer: systemDiarizer(),
+    let short = try await SessionRecoveryCommand.run(.init(session: session), voiceSamples: .none, diarizer: systemDiarizer(),
                                                      freeSpace: FixedFreeSpace(0))
     #expect(short.warnings.filter { $0.contains("echo was not analysed") }.count == 1)
     #expect(short.exitCode == 3)
     #expect(EchoAnalysisStage.needed(session: session))
 
-    let outcome = try await SessionRecoveryCommand.run(.init(session: session), diarizer: systemDiarizer(),
+    let outcome = try await SessionRecoveryCommand.run(.init(session: session), voiceSamples: .none, diarizer: systemDiarizer(),
                                                        freeSpace: FixedFreeSpace(.max))
     #expect(outcome.postProcessing == nil, "The labels were current; only the analysis was owed.")
     #expect(outcome.summary.contains("Microphone echo found"))
     #expect(!EchoAnalysisStage.needed(session: session))
     #expect(!SessionFixtures.text(SessionPaths.export("md", in: session)).contains("heard0w0"))
-    let again = try await SessionRecoveryCommand.run(.init(session: session), diarizer: systemDiarizer(),
+    let again = try await SessionRecoveryCommand.run(.init(session: session), voiceSamples: .none, diarizer: systemDiarizer(),
                                                      freeSpace: FixedFreeSpace(.max))
     #expect(!again.summary.contains("Microphone echo found"))
 }
@@ -414,7 +414,7 @@ func transcriptFilesWrittenWithAnotherMaskAreOutOfDateAndRecoverRewritesThem() a
     let call = CallTranscript()
     let session = try await callSession(in: temp.url, audio: CallAudio.tracks(echo: true), transcript: call.transcript)
     try moveMicrophoneAudio(session, away: true)
-    _ = try await MeetingPostProcessor(diarizer: systemDiarizer(), freeSpace: FixedFreeSpace(.max))
+    _ = try await MeetingPostProcessor(voiceSamples: .none, diarizer: systemDiarizer(), freeSpace: FixedFreeSpace(.max))
         .run(session: session, lease: nil)
     try moveMicrophoneAudio(session, away: false)
     let title = { SessionCatalog.summary(session: session, jobState: .free).displayTitle }
@@ -428,7 +428,7 @@ func transcriptFilesWrittenWithAnotherMaskAreOutOfDateAndRecoverRewritesThem() a
     #expect(!SessionExports.echoMaskIsCurrent(session: session))
 
     // Recover has no analysis to make, and rewrites the files from what the files say.
-    let outcome = try await SessionRecoveryCommand.run(.init(session: session), diarizer: systemDiarizer(),
+    let outcome = try await SessionRecoveryCommand.run(.init(session: session), voiceSamples: .none, diarizer: systemDiarizer(),
                                                        freeSpace: FixedFreeSpace(.max))
     #expect(outcome.warnings.isEmpty)
     #expect(SessionExports.filesState(session: session, title: title()) == .current)
@@ -481,7 +481,7 @@ private func learnedBeforeTheEcho(in temp: TemporaryDirectory,
                                                 + (ownTurn ? [own] : []))
     let session = try await callSession(in: temp.url, audio: CallAudio.tracks(echo: true), transcript: transcript)
     try moveMicrophoneAudio(session, away: true)
-    _ = try await MeetingPostProcessor(diarizer: systemDiarizer(), freeSpace: FixedFreeSpace(.max))
+    _ = try await MeetingPostProcessor(voiceSamples: .none, diarizer: systemDiarizer(), freeSpace: FixedFreeSpace(.max))
         .run(session: session, lease: nil)
     try moveMicrophoneAudio(session, away: false)
     let view = try SessionFixtures.view(session)
@@ -504,8 +504,8 @@ func echoAnalyzeBringsTheMeetingsVoiceSamplesInStep() async throws {
     let temp = try TemporaryDirectory("echo")
     defer { temp.remove() }
     let (session, store) = try await learnedBeforeTheEcho(in: temp)
-    let outcome = try await SessionEchoAnalyzeCommand.run(.init(session: session), profiles: store,
-                                                          voiceSamples: { _ in FixedVoice() },
+    let outcome = try await SessionEchoAnalyzeCommand.run(.init(session: session), voiceSamples: fixedVoice,
+                                                          profiles: store,
                                                           freeSpace: FixedFreeSpace(.max))
     #expect(outcome.verdict == .echo)
     try expectSampleDropped(store)
@@ -520,8 +520,8 @@ func postProcessingThatSavesAMaskForEditedLabelsBringsTheSamplesInStep() async t
     let (session, store) = try await learnedBeforeTheEcho(in: temp)
     let headBefore = try SessionSpeakerStore.readHead(session: session)?.runID
     let outcome = try await SessionDiarizeCommand.run(
-        .init(session: session, options: PostProcessingOptions(keepTranscript: true)), diarizer: systemDiarizer(),
-        freeSpace: FixedFreeSpace(.max), profiles: store, voiceSamples: { _ in FixedVoice() })
+        .init(session: session, options: PostProcessingOptions(keepTranscript: true)), voiceSamples: fixedVoice,
+        diarizer: systemDiarizer(), freeSpace: FixedFreeSpace(.max), profiles: store)
     #expect(outcome.record.stages.contains { $0.stage == .echo && $0.result == .succeeded })
     #expect(try SessionSpeakerStore.readHead(session: session)?.runID == headBefore, "The edited labels were kept.")
     try expectSampleDropped(store)
@@ -535,12 +535,12 @@ func aMaskSavedWithoutUpdatingSamplesIsCaughtUpByTheNextPass() async throws {
     defer { temp.remove() }
     let (session, store) = try await learnedBeforeTheEcho(in: temp)
     _ = try await SessionDiarizeCommand.run(
-        .init(session: session, options: PostProcessingOptions(keepTranscript: true)), diarizer: systemDiarizer(),
-        freeSpace: FixedFreeSpace(.max), profiles: store)
+        .init(session: session, options: PostProcessingOptions(keepTranscript: true)), voiceSamples: .none,
+        diarizer: systemDiarizer(), freeSpace: FixedFreeSpace(.max), profiles: store)
     #expect(!EchoAnalysisStage.needed(session: session))
     #expect(try store.load().profiles.flatMap(\.samples).count == 1)
-    let outcome = try await SessionEchoAnalyzeCommand.run(.init(session: session), profiles: store,
-                                                          voiceSamples: { _ in FixedVoice() },
+    let outcome = try await SessionEchoAnalyzeCommand.run(.init(session: session), voiceSamples: fixedVoice,
+                                                          profiles: store,
                                                           freeSpace: FixedFreeSpace(.max))
     #expect(!outcome.analysed)
     try expectSampleDropped(store)
@@ -549,14 +549,34 @@ func aMaskSavedWithoutUpdatingSamplesIsCaughtUpByTheNextPass() async throws {
     defer { second.remove() }
     let (other, otherStore) = try await learnedBeforeTheEcho(in: second)
     _ = try await SessionDiarizeCommand.run(
-        .init(session: other, options: PostProcessingOptions(keepTranscript: true)), diarizer: systemDiarizer(),
-        freeSpace: FixedFreeSpace(.max), profiles: otherStore)
-    let recovered = try await SessionRecoveryCommand.run(.init(session: other), diarizer: systemDiarizer(),
-                                                         freeSpace: FixedFreeSpace(.max), profiles: otherStore,
-                                                         voiceSamples: { _ in FixedVoice() })
+        .init(session: other, options: PostProcessingOptions(keepTranscript: true)), voiceSamples: .none,
+        diarizer: systemDiarizer(), freeSpace: FixedFreeSpace(.max), profiles: otherStore)
+    let recovered = try await SessionRecoveryCommand.run(.init(session: other), voiceSamples: fixedVoice,
+                                                         diarizer: systemDiarizer(), freeSpace: FixedFreeSpace(.max),
+                                                         profiles: otherStore)
     #expect(recovered.warnings.isEmpty)
     try expectSampleDropped(otherStore)
 }
+
+@Test(.timeLimit(.minutes(2)))
+func aPassThatKeepsTheLabelsStillChecksTheEchoAndTheSamples() async throws {
+    // `session fix-words` with nothing to fix keeps the labels as they are (no labelling stages). It is still a pass
+    // that ends with labels: the missing analysis is made and the sample brought in step.
+    let temp = try TemporaryDirectory("echo")
+    defer { temp.remove() }
+    let (session, store) = try await learnedBeforeTheEcho(in: temp)
+    #expect(EchoAnalysisStage.needed(session: session))
+    let outcome = try await SessionWordFixesCommand.run(.init(session: session), voiceSamples: fixedVoice,
+                                                        diarizer: systemDiarizer(), freeSpace: FixedFreeSpace(.max),
+                                                        profiles: store, wordFixes: .none)
+    #expect(outcome.record.stages.contains { $0.stage == .align && $0.result == .skipped })
+    #expect(outcome.record.stages.contains { $0.stage == .echo && $0.result == .succeeded })
+    #expect(!EchoAnalysisStage.needed(session: session))
+    try expectSampleDropped(store)
+}
+
+/// `FixedVoice` for every session.
+private let fixedVoice = VoiceSampleSource.make { _ in FixedVoice() }
 
 /// Fails every extraction.
 private struct BrokenVoice: VoiceSampleExtractor {
@@ -574,18 +594,19 @@ func aSampleSyncThatFailsAfterTheMaskIsSavedIsRetriedByTheNextPass() async throw
     let (session, store) = try await learnedBeforeTheEcho(in: temp, ownTurn: true)
     let learned = try #require(try store.load().profiles.first?.samples.first)
     let keep = PostProcessingOptions(keepTranscript: true)
-    let first = try await SessionDiarizeCommand.run(.init(session: session, options: keep), diarizer: systemDiarizer(),
-                                                    freeSpace: FixedFreeSpace(.max), profiles: store,
-                                                    voiceSamples: { _ in BrokenVoice() })
+    let first = try await SessionDiarizeCommand.run(.init(session: session, options: keep),
+                                                    voiceSamples: .make { _ in BrokenVoice() },
+                                                    diarizer: systemDiarizer(), freeSpace: FixedFreeSpace(.max),
+                                                    profiles: store)
     let echo = try #require(first.record.stages.first { $0.stage == .echo })
     #expect(echo.result == .succeeded)
     #expect(echo.message?.contains("could not be updated") == true)
     #expect(!EchoAnalysisStage.needed(session: session))
     #expect(try store.load().profiles.first?.samples == [learned], "Left as it was.")
 
-    let second = try await SessionDiarizeCommand.run(.init(session: session, options: keep), diarizer: systemDiarizer(),
-                                                     freeSpace: FixedFreeSpace(.max), profiles: store,
-                                                     voiceSamples: { _ in FixedVoice() })
+    let second = try await SessionDiarizeCommand.run(.init(session: session, options: keep), voiceSamples: fixedVoice,
+                                                     diarizer: systemDiarizer(), freeSpace: FixedFreeSpace(.max),
+                                                     profiles: store)
     #expect(!second.record.stages.contains { $0.stage == .echo }, "No analysis left to make.")
     let refreshed = try #require(try store.load().profiles.first?.samples.first)
     #expect(refreshed.id == learned.id)
@@ -602,14 +623,14 @@ func aSampleFromAnEarlierRunWhoseTurnsAreNowEchoIsNotKept() async throws {
     let (session, store) = try await learnedBeforeTheEcho(in: temp)
     let firstRun = try SessionSpeakerStore.readHead(session: session)?.runID
     _ = try await SessionDiarizeCommand.run(
-        .init(session: session, options: PostProcessingOptions(force: true, keepTranscript: true)),
+        .init(session: session, options: PostProcessingOptions(force: true, keepTranscript: true)), voiceSamples: .none,
         diarizer: systemDiarizer(), freeSpace: FixedFreeSpace(.max), profiles: store)
     #expect(try SessionSpeakerStore.readHead(session: session)?.runID != firstRun)
     #expect(!EchoAnalysisStage.needed(session: session))
     #expect(try store.load().profiles.flatMap(\.samples).count == 1)
 
-    let outcome = try await SessionEchoAnalyzeCommand.run(.init(session: session), profiles: store,
-                                                          voiceSamples: { _ in FixedVoice() },
+    let outcome = try await SessionEchoAnalyzeCommand.run(.init(session: session), voiceSamples: fixedVoice,
+                                                          profiles: store,
                                                           freeSpace: FixedFreeSpace(.max))
     #expect(!outcome.analysed)
     try expectSampleDropped(store)
@@ -676,7 +697,7 @@ func anInterruptedRewriteWithoutAMaskIsNotCurrentAndRecoverFinishesIt() async th
     defer { temp.remove() }
     let call = CallTranscript()
     let session = try await callSession(in: temp.url, audio: CallAudio.tracks(echo: false), transcript: call.transcript)
-    _ = try await MeetingPostProcessor(diarizer: systemDiarizer(), freeSpace: FixedFreeSpace(.max))
+    _ = try await MeetingPostProcessor(voiceSamples: .none, diarizer: systemDiarizer(), freeSpace: FixedFreeSpace(.max))
         .run(session: session, lease: nil)
     #expect(SessionExports.echoMaskIsCurrent(session: session))
     let url = SessionPaths.generatedExports(session)
@@ -685,7 +706,7 @@ func anInterruptedRewriteWithoutAMaskIsNotCurrentAndRecoverFinishesIt() async th
     try JSONSerialization.data(withJSONObject: record).write(to: url)
     #expect(!SessionExports.echoMaskIsCurrent(session: session))
 
-    let outcome = try await SessionRecoveryCommand.run(.init(session: session), diarizer: systemDiarizer(),
+    let outcome = try await SessionRecoveryCommand.run(.init(session: session), voiceSamples: .none, diarizer: systemDiarizer(),
                                                        freeSpace: FixedFreeSpace(.max))
     #expect(outcome.warnings.isEmpty)
     #expect(SessionExports.echoMaskIsCurrent(session: session))
@@ -700,11 +721,11 @@ func anAnalysisPutOffForDiskSpaceIsMadeByRecover() async throws {
     let call = CallTranscript()
     let micOnly = SessionFixtures.transcript(call.echoSegments + call.ownSegments)
     let session = try await callSession(in: temp.url, audio: CallAudio.tracks(echo: true), transcript: micOnly)
-    let record = try await MeetingPostProcessor(diarizer: systemDiarizer(), options: .init(stopReason: .diskLow),
+    let record = try await MeetingPostProcessor(voiceSamples: .none, diarizer: systemDiarizer(), options: .init(stopReason: .diskLow),
                                                 freeSpace: FixedFreeSpace(.max)).run(session: session, lease: nil)
     #expect(!record.stages.contains { $0.stage == .echo })
     #expect(EchoAnalysisStage.needed(session: session))
-    let outcome = try await SessionRecoveryCommand.run(.init(session: session), diarizer: systemDiarizer(),
+    let outcome = try await SessionRecoveryCommand.run(.init(session: session), voiceSamples: .none, diarizer: systemDiarizer(),
                                                        freeSpace: FixedFreeSpace(.max))
     #expect(outcome.summary.contains("Microphone echo found"))
     #expect(try shownMicSegments(session) == call.ownSegmentIDs)
@@ -742,7 +763,7 @@ func echoAnalyzeChangesOnlyTheViewOfAnOldCall() async throws {
     let speakersBefore = speakerFiles(session)
     let transcriptBefore = try SessionFiles.currentTranscript(session: session)
 
-    let outcome = try await SessionEchoAnalyzeCommand.run(.init(session: session), freeSpace: FixedFreeSpace(.max))
+    let outcome = try await SessionEchoAnalyzeCommand.run(.init(session: session), voiceSamples: .none, freeSpace: FixedFreeSpace(.max))
     #expect(outcome.analysed)
     #expect(outcome.verdict == .echo)
     #expect(outcome.microphoneTurnsAfter == call.ownSegments.count)
@@ -761,9 +782,9 @@ func echoAnalyzeChangesOnlyTheViewOfAnOldCall() async throws {
     #expect(view.turns.first { $0.id == ownTurn.id }?.excludedFromEnrollment == true)
     #expect(!SessionFixtures.text(SessionPaths.export("md", in: session)).contains("heard1w2"))
 
-    let again = try await SessionEchoAnalyzeCommand.run(.init(session: session), freeSpace: FixedFreeSpace(.max))
+    let again = try await SessionEchoAnalyzeCommand.run(.init(session: session), voiceSamples: .none, freeSpace: FixedFreeSpace(.max))
     #expect(!again.analysed)
-    let forced = try await SessionEchoAnalyzeCommand.run(.init(session: session, force: true),
+    let forced = try await SessionEchoAnalyzeCommand.run(.init(session: session, force: true), voiceSamples: .none,
                                                          freeSpace: FixedFreeSpace(.max))
     #expect(forced.analysed)
     #expect(speakerFiles(session) == speakersBefore)
@@ -780,7 +801,7 @@ func theReviewSplitsAssignsAndUndoesATurnWithHiddenEchoAsItsStoredTurn() async t
     let mixed = SessionFixtures.segment((0..<24).map { "mixw\($0)" }, track: "mic", start: 8.0, wordSeconds: 0.4)
     let transcript = SessionFixtures.transcript(call.transcript.segments.filter { $0.track == "system" } + [mixed])
     let session = try await callSession(in: temp.url, audio: CallAudio.tracks(echo: true), transcript: transcript)
-    _ = try await MeetingPostProcessor(diarizer: systemDiarizer(), freeSpace: FixedFreeSpace(.max))
+    _ = try await MeetingPostProcessor(voiceSamples: .none, diarizer: systemDiarizer(), freeSpace: FixedFreeSpace(.max))
         .run(session: session, lease: nil)
     let run = try #require(try SpeakerSessionSnapshot.load(session: session).run)
     let stored = try #require(run.turns.first { $0.track == "mic" })
@@ -832,7 +853,7 @@ func recognitionDoesNotCompareAMicrophoneClusterThatIsEcho() async throws {
     let temp = try TemporaryDirectory("echo")
     defer { temp.remove() }
     let (session, _, run) = try await labelledOldCall(in: temp.url)
-    _ = try await SessionEchoAnalyzeCommand.run(.init(session: session), freeSpace: FixedFreeSpace(.max))
+    _ = try await SessionEchoAnalyzeCommand.run(.init(session: session), voiceSamples: .none, freeSpace: FixedFreeSpace(.max))
     let manifest = try SessionArchive.readManifest(at: session)
     let snapshot = try SpeakerSessionSnapshot.load(session: session)
     let clusters = run.speakers.flatMap(\.clusterIDs)
@@ -851,7 +872,7 @@ func recognitionDoesNotCompareAMicrophoneClusterThatIsEcho() async throws {
     let temp = try TemporaryDirectory("echo")
     defer { temp.remove() }
     let (session, _, run) = try await SessionFixtures.labelledSession(in: temp.url, track: "mic")
-    let outcome = try await SessionEchoAnalyzeCommand.run(.init(session: session), freeSpace: FixedFreeSpace(.max))
+    let outcome = try await SessionEchoAnalyzeCommand.run(.init(session: session), voiceSamples: .none, freeSpace: FixedFreeSpace(.max))
     #expect(outcome.verdict == nil)
     #expect(!SessionFixtures.exists(EchoMaskStore.directory(session)))
     #expect(try SessionSpeakerStore.readHead(session: session)?.runID == run.id)

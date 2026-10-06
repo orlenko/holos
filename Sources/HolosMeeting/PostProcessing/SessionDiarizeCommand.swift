@@ -43,12 +43,11 @@ public enum SessionDiarizeCommand {
     /// recording, or another process holds the lease. An adopted lease is released (its descriptor closed) when the
     /// run ends. `profiles` is passed to the post-processor (voice suggestions, PR10), and `languages` (a meeting
     /// in several languages, §4.14) and `wordFixes` (docs/design.md "Meeting word fixes") too.
-    public static func run(_ request: Request, diarizer: (any SpeakerDiarizer)?,
+    public static func run(_ request: Request, voiceSamples: VoiceSampleSource, diarizer: (any SpeakerDiarizer)?,
                            freeSpace: any FreeSpaceProvider = VolumeFreeSpace(),
                            profiles: SpeakerProfileStore? = nil,
                            languages: LanguageDetectionDependencies = .live,
                            wordFixes: WordFixDependencies = .none,
-                           voiceSamples: MeetingPostProcessor.VoiceSampleSource? = nil,
                            progress: @escaping @Sendable (PostProcessingProgress) -> Void = { _ in })
         async throws -> Outcome {
         let session = request.session
@@ -66,9 +65,9 @@ public enum SessionDiarizeCommand {
             try await waitForWriter(session, timeout: request.writerWait)
             lease = try SessionArchive.acquireProcessingLease(at: session)
         }
-        let processor = MeetingPostProcessor(diarizer: diarizer, options: request.options, freeSpace: freeSpace,
-                                             profiles: profiles, languages: languages, wordFixes: wordFixes,
-                                             voiceSamples: voiceSamples)
+        let processor = MeetingPostProcessor(voiceSamples: voiceSamples, diarizer: diarizer, options: request.options,
+                                             freeSpace: freeSpace,
+                                             profiles: profiles, languages: languages, wordFixes: wordFixes)
         let record = try await processor.run(session: session, lease: lease, progress: progress)
         return Outcome(record: record, exitCode: exitCode(record.state),
                        summary: summary(record, session: session))

@@ -139,7 +139,7 @@ private func sessionImporterCommand(_ file: URL, root: URL, speech: FakeSpeechFa
                                     postprocess: Bool = true) async throws -> SessionImportCommand.Outcome {
     try await SessionImportCommand.run(
         SessionImportCommand.Request(file: file, name: "Imported", root: root, locale: "en-CA", backend: .speech,
-                                     transcribe: transcribe, postprocess: postprocess),
+                                     transcribe: transcribe, postprocess: postprocess), voiceSamples: .none,
         diarizer: diarizer, makeSpeech: speech.factory, freeSpace: FixedFreeSpace(.max))
 }
 

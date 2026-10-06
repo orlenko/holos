@@ -96,7 +96,7 @@ func screenOCRDeadlineAbandonsHungRecognitionAndFencesLateResults() async throws
     let (temp, archive) = try await screenOCRBatchFixture(1)
     defer { temp.remove() }
     let calls = SharedValue(0)
-    let processor = MeetingPostProcessor(freeSpace: FixedFreeSpace(.max), wordFixes: .none,
+    let processor = MeetingPostProcessor(voiceSamples: .none, freeSpace: FixedFreeSpace(.max), wordFixes: .none,
         screenOCR: { _, _ in calls.update { $0 += 1 }; return screenOCRLine("ExampleTool") })
     let record = try await processor.run(session: archive.directory, lease: nil)
     #expect(calls.value == 1 && !record.stages.contains { $0.stage == .wordFixes })

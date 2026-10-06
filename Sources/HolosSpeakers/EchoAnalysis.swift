@@ -290,8 +290,8 @@ public enum EchoAnalysis {
     /// The Theil–Sen line: the median slope over every pair of windows with different centres (0 when there is no
     /// such pair), and the median intercept for it over every window. Up to about 29 % of the windows can be anywhere.
     /// The slopes come from at most `maximumSlopeWindows` windows spread evenly over the call (`slopeWindows`), so
-    /// memory stays bounded (a 149-hour call has about 18,000 windows, 160 million pairs); a call under about 4 hours
-    /// uses every window.
+    /// memory stays bounded (a 12-hour call, the longest analysed, has 1,440 windows, about a million pairs); a call
+    /// under about 4 hours uses every window.
     static func robustLine(_ windows: [DelayWindow]) -> (intercept: Double, slope: Double)? {
         guard !windows.isEmpty else { return nil }
         let sampled = slopeWindows(windows)

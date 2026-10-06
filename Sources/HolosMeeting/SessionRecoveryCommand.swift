@@ -145,10 +145,10 @@ public enum SessionRecoveryCommand {
     /// `languages` (a meeting in several languages, §4.14) and `wordFixes` (docs/design.md "Meeting word fixes") too.
     /// With `profiles`, `voiceSamples` brings the voice samples from this meeting in step with what the labels show
     /// (§5.11: an echo mask saved now or by an earlier pass changes which turns they may use).
-    public static func run(_ request: Request, diarizer: (any SpeakerDiarizer)?, makeSpeech: LiveSpeechFactory? = nil,
+    public static func run(_ request: Request, voiceSamples: VoiceSampleSource, diarizer: (any SpeakerDiarizer)?,
+                           makeSpeech: LiveSpeechFactory? = nil,
                            freeSpace: any FreeSpaceProvider = VolumeFreeSpace(),
                            profiles: SpeakerProfileStore? = nil,
-                           voiceSamples: MeetingPostProcessor.VoiceSampleSource? = nil,
                            languages: LanguageDetectionDependencies = .live,
                            wordFixes: WordFixDependencies = .none,
                            progress: @escaping @Sendable (String) -> Void = { _ in },
@@ -269,13 +269,12 @@ public enum SessionRecoveryCommand {
                     : "Speaker labels are up to date.")
             } else {
                 do {
-                    let processor = MeetingPostProcessor(diarizer: diarizer,
+                    let processor = MeetingPostProcessor(voiceSamples: voiceSamples, diarizer: diarizer,
                                                          options: PostProcessingOptions(
                                                              keepTranscript: keepTranscript,
                                                              reconcileLiveHints: keepTranscript),
                                                          freeSpace: freeSpace, profiles: profiles,
-                                                         languages: languages, wordFixes: wordFixes,
-                                                         voiceSamples: voiceSamples)
+                                                         languages: languages, wordFixes: wordFixes)
                     let result = try await processor.run(session: session, lease: lease) { progress($0.message) }
                     record = result
                     step(.postProcessed)
@@ -320,9 +319,9 @@ public enum SessionRecoveryCommand {
         // The voice samples from this meeting, brought in step as after an edit. Worked out from the files: a sample
         // whose inputs (the turns the labels show, with the echo mask saved by this pass or an earlier one) changed
         // is recomputed or removed, and one up to date is left alone, so this costs little when nothing changed.
-        if request.postProcess, let profiles, let voiceSamples {
+        if request.postProcess, let profiles, let makeExtractor = voiceSamples.extractor {
             do {
-                try await VoiceProfileService.refreshSamples(session: session, extractor: voiceSamples(session),
+                try await VoiceProfileService.refreshSamples(session: session, extractor: makeExtractor(session),
                                                              store: profiles)
             } catch let error where !(error is CancellationError) {
                 warnings.append("A voice sample learned from this meeting could not be updated: "

@@ -124,7 +124,7 @@ private func languageStageProcessor(_ speech: LanguageStageSpeech, options: Post
                                     installed: SharedValue<Set<String>> = SharedValue([
                                         languageStageEnglish, languageStageFrench, languageStageSpanish,
                                     ])) -> MeetingPostProcessor {
-    MeetingPostProcessor(diarizer: diarizer, options: options, freeSpace: FixedFreeSpace(.max),
+    MeetingPostProcessor(voiceSamples: .none, diarizer: diarizer, options: options, freeSpace: FixedFreeSpace(.max),
                          languages: languageStageDependencies(speech, installed: installed))
 }
 
@@ -249,7 +249,7 @@ func aMergeWhoseWordsWereFixedIsKeptOnTheNextRun() async throws {
         corrections: { CorrectionList(entries: [Correction(heard: "fr-18@fr", meant: "bonjour")]) },
         wordList: { WordList() }, model: { _ in .unavailable("unused") })
     func processor(_ options: PostProcessingOptions = .init()) -> MeetingPostProcessor {
-        MeetingPostProcessor(diarizer: FakeDiarizer(outputs: ["mic": SessionFixtures.alternatingOutput()]),
+        MeetingPostProcessor(voiceSamples: .none, diarizer: FakeDiarizer(outputs: ["mic": SessionFixtures.alternatingOutput()]),
                              options: options, freeSpace: FixedFreeSpace(.max),
                              languages: languageStageDependencies(speech), wordFixes: fixes)
     }
@@ -282,7 +282,7 @@ func languagesAskedForAFixedTranscriptOutliveANewFix() async throws {
     let installed = SharedValue<Set<String>>([languageStageEnglish])
     let corrections = SharedValue(CorrectionList(entries: [Correction(heard: "en-2@en", meant: "hello")]))
     func processor(_ options: PostProcessingOptions = .init()) -> MeetingPostProcessor {
-        MeetingPostProcessor(diarizer: FakeDiarizer(outputs: ["mic": SessionFixtures.alternatingOutput()]),
+        MeetingPostProcessor(voiceSamples: .none, diarizer: FakeDiarizer(outputs: ["mic": SessionFixtures.alternatingOutput()]),
                              options: options, freeSpace: FixedFreeSpace(.max),
                              languages: languageStageDependencies(speech, installed: installed),
                              wordFixes: WordFixDependencies(corrections: { corrections.value },
@@ -444,7 +444,7 @@ func aRebuildThatLeftAudioUntranscribedNeverStandsIn() async throws {
     let session = try await languageStageDeadMeeting(in: temp.url, coveredToEnd: false)
     let speech = LanguageStageSpeech.standard()
     let outcome = try await SessionRecoveryCommand.run(
-        SessionRecoveryCommand.Request(session: session, transcribe: false), diarizer: nil,
+        SessionRecoveryCommand.Request(session: session, transcribe: false), voiceSamples: .none, diarizer: nil,
         freeSpace: FixedFreeSpace(.max),
         languages: languageStageDependencies(speech, installed: SharedValue([languageStageFrench])))
     let rebuiltID = try #require(outcome.rebuild?.transcriptID)
@@ -550,7 +550,7 @@ func labelsEditedWhileTranscribingAreKept() async throws {
     }
     var dependencies = languageStageDependencies(speech)
     dependencies.makeSpeech = factory
-    let processor = MeetingPostProcessor(
+    let processor = MeetingPostProcessor(voiceSamples: .none, 
         diarizer: FakeDiarizer(outputs: ["mic": SessionFixtures.alternatingOutput()]),
         freeSpace: FixedFreeSpace(.max), languages: dependencies)
     let record = try await processor.run(session: session, lease: nil)
@@ -853,7 +853,7 @@ func echoInACallStaysEchoAcrossLanguages() async throws {
     ])
     var dependencies = languageStageDependencies(LanguageStageSpeech.standard())
     dependencies.makeSpeech = speech.factory
-    let processor = MeetingPostProcessor(
+    let processor = MeetingPostProcessor(voiceSamples: .none, 
         diarizer: FakeDiarizer(outputs: ["system": SessionFixtures.alternatingOutput()]),
         freeSpace: FixedFreeSpace(.max), languages: dependencies)
     let record = try await processor.run(session: session, lease: nil)
@@ -881,7 +881,7 @@ private func languageStageCommand(_ session: URL, _ languages: [String], force: 
                                       languageStageEnglish, languageStageFrench, languageStageSpanish,
                                   ])) async throws -> SessionLanguagesCommand.Outcome {
     try await SessionLanguagesCommand.run(
-        SessionLanguagesCommand.Request(session: session, languages: languages, force: force), diarizer: diarizer,
+        SessionLanguagesCommand.Request(session: session, languages: languages, force: force), voiceSamples: .none, diarizer: diarizer,
         freeSpace: FixedFreeSpace(.max), languages: languageStageDependencies(speech, installed: installed))
 }
 
@@ -1011,7 +1011,7 @@ func importRecordsLanguagesAndMergesThem() async throws {
     let root = temp.url.appendingPathComponent("Sessions", isDirectory: true)
     let outcome = try await SessionImportCommand.run(
         SessionImportCommand.Request(file: file, name: "Imported", root: root, locale: "en-CA", backend: .speech,
-                                     languages: ["en-CA", "fr-CA"]),
+                                     languages: ["en-CA", "fr-CA"]), voiceSamples: .none,
         diarizer: nil, makeSpeech: speech.factory, freeSpace: FixedFreeSpace(.max),
         languages: languageStageDependencies(speech))
     #expect(outcome.exitCode == 0)
@@ -1177,7 +1177,7 @@ func recoverRetriesALanguageTheRecordedTranscriptStoodIn() async throws {
     let request = SessionRecoveryCommand.Request(session: session, transcribe: false)
     func recover(_ steps: SharedValue<[SessionRecoveryCommand.Step]>) async throws -> SessionRecoveryCommand.Outcome {
         try await SessionRecoveryCommand.run(
-            request, diarizer: FakeDiarizer(outputs: ["mic": SessionFixtures.alternatingOutput()]),
+            request, voiceSamples: .none, diarizer: FakeDiarizer(outputs: ["mic": SessionFixtures.alternatingOutput()]),
             freeSpace: FixedFreeSpace(.max), languages: languageStageDependencies(speech, installed: installed),
             step: { step in steps.update { $0.append(step) } })
     }
@@ -1231,7 +1231,7 @@ func recoverSettlesWhileAMissedLanguageCannotBeDetected() async throws {
     let request = SessionRecoveryCommand.Request(session: session, transcribe: false)
     func recover(_ steps: SharedValue<[SessionRecoveryCommand.Step]>) async throws -> SessionRecoveryCommand.Outcome {
         try await SessionRecoveryCommand.run(
-            request, diarizer: FakeDiarizer(outputs: ["mic": SessionFixtures.alternatingOutput()]),
+            request, voiceSamples: .none, diarizer: FakeDiarizer(outputs: ["mic": SessionFixtures.alternatingOutput()]),
             freeSpace: FixedFreeSpace(.max), languages: languageStageDependencies(speech, installed: installed),
             step: { step in steps.update { $0.append(step) } })
     }
@@ -1283,7 +1283,7 @@ func recoverKeepsALanguagesMergeOfARebuildThatDidNotTranscribe() async throws {
     let speech = LanguageStageSpeech.standard()
     let dependencies = languageStageDependencies(speech)
     let rebuilt = try await SessionRecoveryCommand.run(
-        SessionRecoveryCommand.Request(session: session, transcribe: false), diarizer: nil,
+        SessionRecoveryCommand.Request(session: session, transcribe: false), voiceSamples: .none, diarizer: nil,
         freeSpace: FixedFreeSpace(.max), languages: dependencies)
     let rebuiltID = try #require(rebuilt.rebuild?.transcriptID)
 
@@ -1300,7 +1300,7 @@ func recoverKeepsALanguagesMergeOfARebuildThatDidNotTranscribe() async throws {
     // Recover with transcription reuses the rebuild instead of rebuilding over the merge.
     let replayed = SharedValue<Int>(0)
     let again = try await SessionRecoveryCommand.run(
-        SessionRecoveryCommand.Request(session: session), diarizer: nil,
+        SessionRecoveryCommand.Request(session: session), voiceSamples: .none, diarizer: nil,
         makeSpeech: { locale, backend, contextualStrings, onUpdate in
             replayed.update { $0 += 1 }
             return FakeSpeech(locale: locale, backend: backend, contextualStrings: contextualStrings,
@@ -1474,7 +1474,7 @@ func labelSpeakersDetectsAMissedLanguageWithoutSpeakerModels() async throws {
     func diarize(keepTranscript: Bool = false) async throws -> SessionDiarizeCommand.Outcome {
         try await SessionDiarizeCommand.run(
             SessionDiarizeCommand.Request(session: session,
-                                          options: PostProcessingOptions(keepTranscript: keepTranscript)),
+                                          options: PostProcessingOptions(keepTranscript: keepTranscript)), voiceSamples: .none,
             diarizer: nil, freeSpace: FixedFreeSpace(.max), languages: dependencies)
     }
 
@@ -1516,7 +1516,7 @@ func recoverWithTodaysVocabularyKeepsItsRebuildOverTheLanguagesStage() async thr
                               script: FakeSpeechScript(), onUpdate: onUpdate)
         }
     let failed = try await SessionRecoveryCommand.run(
-        request, diarizer: nil, makeSpeech: makeSpeech,
+        request, voiceSamples: .none, diarizer: nil, makeSpeech: makeSpeech,
         freeSpace: FixedFreeSpace(.max), languages: languageStageDependencies(speech))
     let rebuiltID = try #require(failed.rebuild?.transcriptID)
     #expect(failed.postProcessing?.state == .partial)
@@ -1528,7 +1528,7 @@ func recoverWithTodaysVocabularyKeepsItsRebuildOverTheLanguagesStage() async thr
     try AtomicFile.writeJSON(LiveHintFile(sessionID: sessionID, hints: [live]),
                              to: SessionPaths.liveHints(session))
     let outcome = try await SessionRecoveryCommand.run(
-        request, diarizer: nil, makeSpeech: makeSpeech,
+        request, voiceSamples: .none, diarizer: nil, makeSpeech: makeSpeech,
         freeSpace: FixedFreeSpace(.max), languages: languageStageDependencies(speech))
     #expect(outcome.rebuild?.reused == true)
     #expect(outcome.postProcessing != nil)
@@ -1548,7 +1548,7 @@ func recoverWithTodaysVocabularyKeepsItsRebuildOverTheLanguagesStage() async thr
     let plain = try await languageStageDeadMeeting(in: other.url, coveredToEnd: false)
     let plainSpeech = LanguageStageSpeech.standard()
     _ = try await SessionRecoveryCommand.run(
-        SessionRecoveryCommand.Request(session: plain, transcribe: false), diarizer: nil,
+        SessionRecoveryCommand.Request(session: plain, transcribe: false), voiceSamples: .none, diarizer: nil,
         freeSpace: FixedFreeSpace(.max), languages: languageStageDependencies(plainSpeech))
     #expect(!plainSpeech.locales.isEmpty)
 }

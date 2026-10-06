@@ -681,7 +681,7 @@ func inPersonSessionStillPostProcesses() async throws {
         in: temp.url, source: .microphone, audioSeconds: ["mic": 20], mode: .inPerson, othersInRoom: false,
         transcript: SessionFixtures.transcript(SessionFixtures.alternatingSegments(track: "mic")))
     let diarizer = FakeDiarizer(outputs: ["mic": SessionFixtures.alternatingOutput()])
-    let record = try await MeetingPostProcessor(diarizer: diarizer, freeSpace: FixedFreeSpace(.max))
+    let record = try await MeetingPostProcessor(voiceSamples: .none, diarizer: diarizer, freeSpace: FixedFreeSpace(.max))
         .run(session: session, lease: nil)
     #expect(record.state == .succeeded)
     let run = try SessionSpeakerStore.readRun(id: try #require(record.runID), session: session)

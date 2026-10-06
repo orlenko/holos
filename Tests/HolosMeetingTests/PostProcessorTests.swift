@@ -39,7 +39,7 @@ private func postProcessorFake(_ tracks: [String] = ["mic"], error: HolosError? 
 private func postProcessor(_ diarizer: (any SpeakerDiarizer)? = postProcessorFake(),
                            options: PostProcessingOptions = .init(),
                            freeSpace: any FreeSpaceProvider = FixedFreeSpace(.max)) -> MeetingPostProcessor {
-    MeetingPostProcessor(diarizer: diarizer, options: options, freeSpace: freeSpace)
+    MeetingPostProcessor(voiceSamples: .none, diarizer: diarizer, options: options, freeSpace: freeSpace)
 }
 
 private func postProcessorStage(_ record: PostProcessingRecord, _ stage: PostProcessingStage) -> StageOutcome? {
@@ -610,7 +610,7 @@ func diarizeAdoptsInheritedLease() async throws {
     #expect(try SessionArchive.isProcessing(at: session))
     let gated = GatedDiarizer(postProcessorFake())
     let request = SessionDiarizeCommand.Request(session: session, afterRecording: true, leaseDescriptor: inherited)
-    let task = Task { try await SessionDiarizeCommand.run(request, diarizer: gated, freeSpace: FixedFreeSpace(.max)) }
+    let task = Task { try await SessionDiarizeCommand.run(request, voiceSamples: .none, diarizer: gated, freeSpace: FixedFreeSpace(.max)) }
     #expect(await postProcessorEventually { gated.isWaiting })
     #expect(try SessionArchive.isProcessing(at: session), "The adopted lease is held while post-processing runs.")
     #expect(throws: HolosError.self) { try SessionArchive.acquireProcessingLease(at: session, retry: .zero) }
@@ -635,7 +635,7 @@ func diarizeRefusesForeignLeaseFd() async throws {
     let before = SessionFixtures.files(in: session)
     let request = SessionDiarizeCommand.Request(session: session, afterRecording: true, leaseDescriptor: inherited)
     let error = await #expect(throws: HolosError.self) {
-        try await SessionDiarizeCommand.run(request, diarizer: postProcessorFake(), freeSpace: FixedFreeSpace(.max))
+        try await SessionDiarizeCommand.run(request, voiceSamples: .none, diarizer: postProcessorFake(), freeSpace: FixedFreeSpace(.max))
     }
     #expect(error?.errorDescription == "The inherited lock is not this session's processing lease.")
     #expect(SessionFixtures.files(in: session) == before, "Nothing changes.")
@@ -650,7 +650,7 @@ func diarizeWithoutModelsChangesNothing() async throws {
     let (session, _) = try await postProcessorSession(in: temp.url)
     let before = SessionFixtures.files(in: session)
     let error = await #expect(throws: HolosError.self) {
-        try await SessionDiarizeCommand.run(SessionDiarizeCommand.Request(session: session), diarizer: nil)
+        try await SessionDiarizeCommand.run(SessionDiarizeCommand.Request(session: session), voiceSamples: .none, diarizer: nil)
     }
     #expect(error?.errorDescription == SpeakerAnalysis.modelsMissing)
     #expect(SessionFixtures.files(in: session) == before)
@@ -658,7 +658,7 @@ func diarizeWithoutModelsChangesNothing() async throws {
 
     // After a recording, a session without models still gets speaker-less exports (exit 0).
     let outcome = try await SessionDiarizeCommand.run(
-        SessionDiarizeCommand.Request(session: session, afterRecording: true), diarizer: nil)
+        SessionDiarizeCommand.Request(session: session, afterRecording: true), voiceSamples: .none, diarizer: nil)
     #expect(outcome.record.state == .succeeded)
     #expect(outcome.exitCode == 0)
     #expect(outcome.summary.hasPrefix("No speaker labels: speaker models are not installed."))
@@ -676,10 +676,10 @@ func diarizeExitCodesFollowTheState() async throws {
     let temp = try TemporaryDirectory("postprocess")
     defer { temp.remove() }
     let (session, _) = try await postProcessorSession(in: temp.url)
-    _ = try await SessionDiarizeCommand.run(SessionDiarizeCommand.Request(session: session),
+    _ = try await SessionDiarizeCommand.run(SessionDiarizeCommand.Request(session: session), voiceSamples: .none,
                                             diarizer: postProcessorFake(), freeSpace: FixedFreeSpace(.max))
     try SessionFixtures.appendEdits([.rename(speakerID: "mic:S1", name: "Jim")], session: session)
-    let refused = try await SessionDiarizeCommand.run(SessionDiarizeCommand.Request(session: session),
+    let refused = try await SessionDiarizeCommand.run(SessionDiarizeCommand.Request(session: session), voiceSamples: .none,
                                                       diarizer: postProcessorFake(), freeSpace: FixedFreeSpace(.max))
     #expect(refused.exitCode == 3)
     #expect(refused.summary.hasPrefix(SpeakerAnalysis.editedHead))
@@ -694,14 +694,14 @@ func diarizeAfterRecordingWaitsForTheWriter() async throws {
     let request = SessionDiarizeCommand.Request(session: recording.directory, afterRecording: true,
                                                 writerWait: .milliseconds(200))
     let error = await #expect(throws: HolosError.self) {
-        try await SessionDiarizeCommand.run(request, diarizer: postProcessorFake())
+        try await SessionDiarizeCommand.run(request, voiceSamples: .none, diarizer: postProcessorFake())
     }
     guard case .unavailable? = error else {
         Issue.record("Expected unavailable, got \(String(describing: error))")
         return
     }
     try await recording.finish(status: ArchiveStatus.complete)
-    let outcome = try await SessionDiarizeCommand.run(request, diarizer: postProcessorFake())
+    let outcome = try await SessionDiarizeCommand.run(request, voiceSamples: .none, diarizer: postProcessorFake())
     #expect(outcome.record.state == .skipped, "No transcript: nothing to label.")
     #expect(outcome.exitCode == 1)
 }

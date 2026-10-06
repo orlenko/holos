@@ -7894,8 +7894,8 @@ genuinely local (the user, or people in the room) stays even while the call play
 - *Storage.* `echo/mask.json` (`EchoMaskRecord`, schema 1: verdict, delay fit, frame counts,
   the SHA-256 of `echo/frames.bin`, analysis seconds) and `echo/frames.bin` (one class byte
   per frame, then one byte per frame of predicted echo level in 0.5 dB steps; about 450 KB
-  per hour). One limit sets the longest call: `EchoMaskStore.maximumFrames` (2^25 frames,
-  about 149 hours); the reader takes frames files up to it, and a longer call is not analysed
+  per hour). One limit sets the longest call: `EchoMaskStore.maximumSeconds` (12 hours, so
+  `maximumFrames` is 2.7 million); the reader takes frames files up to it, and a longer call is not analysed
   but saved with verdict `tooLong`, which hides nothing and counts as done. The record is
   keyed to the audio (`EvalStore.audioFingerprint` of the mic and system chunk lists, which
   include each chunk's SHA-256) and to `EchoAnalysis.version`; any other key is out of date
@@ -7931,8 +7931,11 @@ genuinely local (the user, or people in the room) stays even while the call play
   the echo files did not change while it was computed. A sample's freshness comes from the
   files: its input digest covers the turns the masked view lets it use, so
   `VoiceProfileService.refreshSamples` (as after an edit) recomputes or removes one whose turns
-  the mask changed and leaves the rest alone. Every post-processing pass (after the echo step,
-  before recognition, with the head the sample was learned from, no lock held), every Recover
+  the mask changed and leaves the rest alone. Every post-processing pass that ends with labels
+  runs the echo check and this sync once (`MeetingPostProcessor.checkEcho`: in stage 4b before
+  recognition, with the head the sample was learned from, or after labels that were kept or
+  left as they were; no lock held), every entry point names its `VoiceSampleSource` (`.none`
+  only where samples are left to a later pass), every Recover
   and every `echo-analyze` run it when they have a voice extractor, whether or not they saved a
   mask, so a sync that failed is retried by the next pass and nothing records it as done. A
   sample learned from an earlier run is kept when the new labels give none only while its own

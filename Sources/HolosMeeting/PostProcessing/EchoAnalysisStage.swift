@@ -58,11 +58,18 @@ public enum EchoMaskStore {
     private static let log = Logger(subsystem: "ca.orlenko.holos.app", category: "postprocess")
     static let folder = "echo"
     static let recordName = "echo/mask.json"
-    /// The longest mask kept, in frames: 2^25 frames of 16 ms, about 149 hours. The one limit on a call's length for
-    /// the analysis: the reader reads frames files up to this size (2 bytes a frame, about 450 KB an hour), and a
-    /// longer call is not analysed but saved as `tooLong`, which counts as done (`EchoAnalysisStage.analyze`). A
-    /// task-local value so tests can make it small.
-    @TaskLocal static var maximumFrames = 1 << 25
+    /// The longest call the echo analysis takes: 12 hours. The analysis holds every frame's powers and levels in
+    /// memory at once (2.7 million frames at 12 hours). Measured with the release CLI (`session echo-analyze`, peak
+    /// memory footprint): 115 MB for a 53-minute call and 133 MB for 1 h 47 min, about 20 MB more per hour, so about
+    /// 330 MB at 12 hours, which a Mac running Voice is Local holds comfortably. A longer call is not analysed
+    /// (`tooLong`).
+    static let maximumSeconds = 12 * 3_600
+
+    /// The longest mask kept, in frames (`maximumSeconds` of 16 ms frames): the one limit on a call's length for the
+    /// analysis. The reader reads frames files up to this size (2 bytes a frame, about 450 KB an hour), and a longer
+    /// call is not analysed but saved as `tooLong`, which counts as done (`EchoAnalysisStage.analyze`). A task-local
+    /// value so tests can make it small.
+    @TaskLocal static var maximumFrames = Int((Double(maximumSeconds) / AcousticEchoMask.hopSeconds).rounded())
 
     /// The bytes of a frames file of `maximumFrames`.
     static var maximumFramesBytes: Int { 2 * maximumFrames }

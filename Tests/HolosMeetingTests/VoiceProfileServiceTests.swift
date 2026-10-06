@@ -80,7 +80,7 @@ private func profileProcessedSession(in temp: TemporaryDirectory, store: Speaker
                                      forceVoiceData: Bool = false) async throws -> (URL, PostProcessingRecord) {
     let transcript = SessionFixtures.transcript(SessionFixtures.alternatingSegments(track: "mic"))
     let session = try await SessionFixtures.makeSession(in: temp.url, mode: .inPerson, transcript: transcript)
-    let processor = MeetingPostProcessor(diarizer: FakeDiarizer(outputs: ["mic": SessionFixtures.alternatingOutput()]),
+    let processor = MeetingPostProcessor(voiceSamples: .none, diarizer: FakeDiarizer(outputs: ["mic": SessionFixtures.alternatingOutput()]),
                                          options: PostProcessingOptions(forceVoiceData: forceVoiceData),
                                          freeSpace: FixedFreeSpace(.max), profiles: store)
     let record = try await processor.run(session: session, lease: nil)

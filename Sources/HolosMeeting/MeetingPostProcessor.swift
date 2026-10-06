@@ -61,6 +61,23 @@ public struct PostProcessingOptions: Sendable, Equatable {
     }
 }
 
+/// Where a pass gets a voice sample extractor for a session, to bring the voice samples people have from it in step
+/// with what the labels show (`VoiceProfileService.refreshSamples`, docs/meeting-design.md §5.11). Every entry point
+/// that post-processes names one (no default), so a pass that leaves samples alone says so: `.none`.
+public struct VoiceSampleSource: Sendable {
+    /// Nil: the pass leaves samples to the next one. A function returning nil: no extractor can be made (speaker
+    /// models not verified), and the samples that need recomputing are removed, as after an edit.
+    public let extractor: (@Sendable (URL) -> (any VoiceSampleExtractor)?)?
+
+    /// Leaves voice samples alone (tests, and passes without people).
+    public static let none = VoiceSampleSource(extractor: nil)
+
+    /// Makes the extractor for each session with `make`.
+    public static func make(_ make: @escaping @Sendable (URL) -> (any VoiceSampleExtractor)?) -> VoiceSampleSource {
+        VoiceSampleSource(extractor: make)
+    }
+}
+
 /// Speaker labelling and exports for a finished session (docs/meeting-design.md §4.7).
 ///
 /// Stages, in order: 0 checks and `postprocess.json` `running`; 1 `transcript` (the current revision); 1b
@@ -88,11 +105,7 @@ public struct MeetingPostProcessor: Sendable {
     let wordFixes: WordFixDependencies
     let deepTranscription: DeepTranscriptionDependencies
     let screenOCR: MeetingScreenOCR.Recognizer
-    let voiceSamples: VoiceSampleSource?
-
-    /// The voice sample extractor for a session (`VoiceProfileService.refreshSamples`); nil from it means none can be
-    /// made (the samples that need recomputing are removed, as after an edit).
-    public typealias VoiceSampleSource = @Sendable (URL) -> (any VoiceSampleExtractor)?
+    let voiceSamples: VoiceSampleSource
 
     /// `diarizer == nil` (speaker models not installed) gives speaker-less exports and the setup hint.
     /// `freeSpace` measures the volume before rendering. With `profiles` (PR10) whose "Remember voices" is on and
@@ -100,15 +113,15 @@ public struct MeetingPostProcessor: Sendable {
     /// exports show people's current names; without it nothing is recognized. `languages` transcribes and tells
     /// languages apart for a meeting in several (stage 1b); it is used only for such a meeting. `wordFixes` gives the
     /// corrections, word list and model of stage 1d; `.none` fixes nothing. `deepTranscription` gives the model and
-    /// prompt sources of the deep transcription pass, which runs only with `options.deepTranscribe`. With `profiles`
-    /// and `voiceSamples`, a saved echo mask brings the meeting's voice samples in step at once (§5.11); without
-    /// `voiceSamples` that is left to the next Recover or `echo-analyze`, which find it from the files.
-    public init(diarizer: (any SpeakerDiarizer)? = nil, options: PostProcessingOptions = .init(),
+    /// prompt sources of the deep transcription pass, which runs only with `options.deepTranscribe`. With `profiles`,
+    /// `voiceSamples` brings the meeting's voice samples in step on every pass that ends with labels (§5.11); with
+    /// `.none` that is left to the next pass that has one, which finds it from the files.
+    public init(voiceSamples: VoiceSampleSource, diarizer: (any SpeakerDiarizer)? = nil,
+                options: PostProcessingOptions = .init(),
                 freeSpace: any FreeSpaceProvider = VolumeFreeSpace(), profiles: SpeakerProfileStore? = nil,
                 languages: LanguageDetectionDependencies = .live, wordFixes: WordFixDependencies = .none,
                 deepTranscription: DeepTranscriptionDependencies = .none,
-                screenOCR: @escaping MeetingScreenOCR.Recognizer = { try MeetingScreenOCR.recognize($0, languages: $1) },
-                voiceSamples: VoiceSampleSource? = nil) {
+                screenOCR: @escaping MeetingScreenOCR.Recognizer = { try MeetingScreenOCR.recognize($0, languages: $1) }) {
         self.diarizer = diarizer; self.options = options; self.freeSpace = freeSpace; self.profiles = profiles
         self.languageDetection = languages; self.wordFixes = wordFixes; self.deepTranscription = deepTranscription
         self.screenOCR = screenOCR; self.voiceSamples = voiceSamples
@@ -315,7 +328,7 @@ public struct MeetingPostProcessor: Sendable {
         // Stages 2–7. Languages or word fixes asked for by name (`voiceislocal session languages`, `session
         // fix-words`) that left the transcript as it was also leave its speaker labels as they are, edited or not
         // (§4.14).
-        let speakers: SpeakerResult
+        var speakers: SpeakerResult
         let keepsExistingLabels = liveText.labelsPreserved || fixes.labelsPreserved
             || ((options.languages != nil || options.fixWords || options.deepTranscribe) && transcript.id == current?.id)
         if keepsExistingLabels,
@@ -331,6 +344,11 @@ public struct MeetingPostProcessor: Sendable {
         } else {
             speakers = try await labelSpeakers(session: session, manifest: manifest, transcript: transcript,
                                                recorder: recorder)
+        }
+        // Every path that ends with labels runs the echo check and the voice sample sync once, here when stage 4b did
+        // not (labels kept, or left as they were after a failure), before the exports are written (§5.11).
+        if !speakers.echoChecked {
+            speakers.echoChecked = try await checkEcho([], session: session, manifest: manifest, recorder: recorder)
         }
         // Once a new head is published, the exports are written from it before a cancellation is honoured, so the
         // head and the exports never disagree.
@@ -385,6 +403,8 @@ public struct MeetingPostProcessor: Sendable {
         var message: String?
         /// Stage 6 published a new head (`runID`).
         var published = false
+        /// `checkEcho` ran in this pass.
+        var echoChecked = false
     }
 
     /// Stages 2–7. Every failure is recorded as a stage outcome; only cancellation throws.
@@ -463,7 +483,7 @@ public struct MeetingPostProcessor: Sendable {
             result.problem = SpeakerAnalysis.editedHead
             // The edited labels stay as they are; a call's echo analysis is still made when it is missing, and their
             // view hides the echo from then on (§5.11).
-            try await analyzeEchoIfNeeded([], session: session, manifest: manifest, recorder: recorder)
+            result.echoChecked = try await checkEcho([], session: session, manifest: manifest, recorder: recorder)
             return result
         }
 
@@ -472,7 +492,7 @@ public struct MeetingPostProcessor: Sendable {
         var engine: DiarizationEngineInfo?
         if diarized.isEmpty {
             recorder.skip([.render, .diarize], SpeakerAnalysis.noTrackToLabel)
-            try await analyzeEchoIfNeeded([], session: session, manifest: manifest, recorder: recorder)
+            result.echoChecked = try await checkEcho([], session: session, manifest: manifest, recorder: recorder)
         } else if let diarizer {
             let audioDeleted: Bool
             do {
@@ -500,7 +520,7 @@ public struct MeetingPostProcessor: Sendable {
                 result.problem = failure.message
                 return result
             }
-            try await analyzeEchoIfNeeded(rendered, session: session, manifest: manifest, recorder: recorder)
+            result.echoChecked = try await checkEcho(rendered, session: session, manifest: manifest, recorder: recorder)
             let hint = SpeakerAnalysis.speakerHint(options: options, meeting: meeting, diarizedTracks: diarized.count)
             switch try await diarize(rendered, diarizer: diarizer, hint: hint, recorder: recorder) {
             case .success(let diarization):
@@ -635,13 +655,17 @@ public struct MeetingPostProcessor: Sendable {
     /// back: a failure saves nothing, so the analysis is still needed and the next pass tries again. The run is built
     /// without it: the labels' view hides the echo (`SpeakerSessionSnapshot`). Only cancellation throws.
     ///
-    /// Then, every pass, whether or not a mask was saved: the meeting's voice samples are brought in step with what the
-    /// labels show (`syncVoiceSamples`), before recognition and with the head they were learned from still current.
-    private func analyzeEchoIfNeeded(_ rendered: [RenderedTrack], session: URL, manifest: SessionManifest,
-                                     recorder: StageRecorder) async throws {
+    /// Then, whether or not a mask was saved: the meeting's voice samples are brought in step with what the labels
+    /// show (`syncVoiceSamples`), with no lock held.
+    ///
+    /// The one hook every pass that ends with labels runs, once (`run` checks `SpeakerResult.echoChecked`): in stage
+    /// 4b before recognition, with the head the samples were learned from still current, or after labels that were
+    /// kept or could not be made. Returns true, for `echoChecked`.
+    private func checkEcho(_ rendered: [RenderedTrack], session: URL, manifest: SessionManifest,
+                           recorder: StageRecorder) async throws -> Bool {
         guard options.stopReason != .diskLow, EchoAnalysisStage.needed(session: session) else {
             _ = try await syncVoiceSamples(session: session, manifest: manifest)
-            return
+            return true
         }
         let message = "Finding microphone echo…"
         let started = recorder.begin(.echo, track: "mic", message: message)
@@ -672,6 +696,7 @@ public struct MeetingPostProcessor: Sendable {
             recorder.end(.echo, .failed, error.localizedDescription, since: started)
             _ = try await syncVoiceSamples(session: session, manifest: manifest)
         }
+        return true
     }
 
     /// Brings the voice samples people have from this meeting in step with what the labels show
@@ -681,11 +706,11 @@ public struct MeetingPostProcessor: Sendable {
     /// sample source, and when nobody has a sample from this meeting. Returns why it failed (also logged), nil
     /// otherwise; only cancellation throws.
     private func syncVoiceSamples(session: URL, manifest: SessionManifest) async throws -> String? {
-        guard let profiles, let voiceSamples else { return nil }
+        guard let profiles, let makeExtractor = voiceSamples.extractor else { return nil }
         do {
             guard try profiles.load().profiles.contains(where: { $0.samples.contains { $0.sessionID == manifest.id } })
             else { return nil }
-            try await VoiceProfileService.refreshSamples(session: session, extractor: voiceSamples(session),
+            try await VoiceProfileService.refreshSamples(session: session, extractor: makeExtractor(session),
                                                          store: profiles)
             return nil
         } catch is CancellationError {
