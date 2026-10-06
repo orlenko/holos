@@ -7765,8 +7765,11 @@ the disk.
   recorded. No analysis, one out of
   date, damaged, or written by a newer Voice is Local, and every other verdict (`noEcho`
   for headphones, `noSystemAudio`, `tooLong`) play the microphone as recorded. When the
-  labels are reread (the window back from elsewhere) the volume is read again, and a
-  changed one replaces the item's mix in place, so playing goes on where it is. Ramps are
+  labels the window adopts come with another echo mask (`echoMaskIdentity`: a relabel in
+  the window, a reread, `session echo-analyze`), and when the labels are reread after the
+  window was elsewhere, the volume is read again, and a changed one replaces the item's
+  mix in place, so playing goes on where it is; a read that a newer one or a rebuilt
+  playback overtook is dropped. Ramps are
   added last first: AVFoundation keeps them sorted, and in time order 12,000 ramps took
   13 s to add, last first 13 ms (debug build).
 

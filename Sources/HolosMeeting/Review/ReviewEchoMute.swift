@@ -127,3 +127,24 @@ public enum ReviewEchoMute {
         return gaps.filter { $0.start < $0.end }
     }
 }
+
+/// Which echo mask the review's microphone volume was last read for: the labels' mask
+/// (`SpeakerSessionSnapshot.echoMaskIdentity`, nil without one). The window reads the volume again when the labels it
+/// adopts come with another mask, however they came (a relabel in the window, a reload, `session echo-analyze`).
+/// Pure.
+public struct ReviewEchoMaskFollow: Sendable, Equatable {
+    private var identity: String?
+
+    public init(identity: String? = nil) { self.identity = identity }
+
+    /// The playback was built (reading the mask itself) while the labels showed `identity`.
+    public mutating func reset(to identity: String?) { self.identity = identity }
+
+    /// The labels now show `identity`: true when it is another mask than the last one (the volume must be read
+    /// again); the same mask, or none again, is false.
+    public mutating func update(_ identity: String?) -> Bool {
+        guard identity != self.identity else { return false }
+        self.identity = identity
+        return true
+    }
+}

@@ -161,3 +161,26 @@ func echoMixBenchmark() {
     let sorted = [echoInterval(1, 2), echoInterval(5, 9)]
     #expect(ReviewMicVolume.keeping(sorted.reversed(), duration: 20) == ReviewMicVolume.keeping(sorted, duration: 20))
 }
+
+// MARK: - Following the labels' mask
+
+@Test func anotherMaskInTheLabelsReadsTheVolumeAgain() {
+    var follow = ReviewEchoMaskFollow()
+    // The playback was built while the labels had no mask.
+    follow.reset(to: nil)
+    let noneAgain = follow.update(nil)
+    #expect(!noneAgain, "No mask again: nothing to read.")
+    // A relabel in the window saved a mask, and the labels adopted it.
+    let saved = follow.update("sha-a")
+    let same = follow.update("sha-a")
+    #expect(saved)
+    #expect(!same, "The same mask: nothing to read.")
+    // The analysis was run again (another mask), then dropped.
+    let replaced = follow.update("sha-b")
+    let dropped = follow.update(nil)
+    #expect(replaced && dropped)
+    // A rebuilt playback reads the mask itself: the labels' mask at that time is taken as read.
+    follow.reset(to: "sha-c")
+    let rebuilt = follow.update("sha-c")
+    #expect(!rebuilt)
+}

@@ -78,6 +78,8 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate {
     private var shownNotices: [Notice] = []
     /// The manifest chunks playback was last built from.
     private var loadedChunks: [AudioChunkRecord] = []
+    /// The echo mask the microphone's volume was last read for: another one in the labels reads it again.
+    private var echoMaskFollow = ReviewEchoMaskFollow()
     private lazy var confirmAllItem = menuItem("Confirm All Suggestions", #selector(confirmAll))
     private lazy var findMoreItem = menuItem("Find More Speakers…", #selector(findMoreSpeakers))
     private lazy var microphoneItem = menuItem("Label Speakers on My Microphone…", #selector(labelMicrophoneSpeakers))
@@ -168,6 +170,7 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate {
     /// Rebuilds playback from the manifest as saved now (off when the audio was deleted).
     private func reloadPlayback() {
         loadedChunks = review.snapshot.manifest.chunks
+        echoMaskFollow.reset(to: review.snapshot.echoMaskIdentity)
         player.load(session: review.session, manifest: review.snapshot.manifest,
                     audioDeleted: review.snapshot.audioDeleted)
     }
@@ -437,6 +440,11 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate {
     }
 
     private func refresh() {
+        // Labels that came with another echo mask (a relabel here, a reload, `session echo-analyze`): the playing
+        // item's microphone volume follows it.
+        if echoMaskFollow.update(review.snapshot.echoMaskIdentity) {
+            Task { [weak self] in await self?.refreshMicVolume() }
+        }
         let projection = review.projection
         var paragraphs = ReviewParagraphs.group(
             projection.turns, breaks: paragraphBreaks.active(in: projection.turns, runID: projection.runID))
