@@ -156,8 +156,8 @@ public enum TranscriptRebuilder {
                     contextualStrings: strings, from: plan.from, makeSpeech: makeSpeech, timeouts: .standard)
             } catch {
                 if error is CancellationError || Task.isCancelled { throw CancellationError() }
-                let what = plan.track == "system" ? "system audio" : plan.track == "mic" ? "microphone audio" : plan.track
-                throw HolosError.incomplete("Could not transcribe the saved \(what) that live transcription missed: "
+                throw HolosError.incomplete("Could not transcribe the saved "
+                    + "\(SpeakerAnalysis.trackAudioLabel(plan.track)) that live transcription missed: "
                     + "\(error.localizedDescription) The transcript was not changed; try again, or use --no-transcribe "
                     + "to rebuild it from the saved phrases only.")
             }

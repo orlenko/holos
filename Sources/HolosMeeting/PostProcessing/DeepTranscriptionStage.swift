@@ -335,7 +335,7 @@ enum DeepTranscriptionStage {
                                                                 message: message))
                     }
             } catch let failure as RenderFailure {
-                throw StageFailure(message: "\(kept) The \(SpeakerAnalysis.trackLabel(track)) audio could not be "
+                throw StageFailure(message: "\(kept) The \(SpeakerAnalysis.trackAudioLabel(track)) could not be "
                     + "prepared: \(failure.underlying.localizedDescription)", result: .failed)
             }
             done += seconds
