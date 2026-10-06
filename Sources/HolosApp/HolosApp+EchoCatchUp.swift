@@ -34,11 +34,13 @@ final class EchoCatchUpAppState {
     var waitsForSummaryScan = false
     var timer: Timer?
 
-    /// Meetings whose run failed, or ended partial, in this launch: not tried again before the next launch (a scan
-    /// that still finds them, as a partial run's transcript files out of step with the mask, would otherwise retry
-    /// them after every saved meeting).
+    /// Meetings whose run ended in this launch, however it ended: queued again only at the next launch (a scan that
+    /// still finds one, as a partial run's transcript files or voice samples out of step with the mask, would
+    /// otherwise retry it after every saved meeting).
+    var ended: Set<String> = []
+    /// Meetings not tried again before the next launch: every run that ended in this launch.
     var failed: Set<String> {
-        Set(problems.compactMap { id, end in
+        ended.union(problems.compactMap { id, end in
             switch end {
             case .failed, .partial: return id
             default: return nil
@@ -69,7 +71,7 @@ extension HolosAppDelegate {
         }
         meeting.echo.scanning = true
         Task { [weak self] in
-            let found = await Task.detached { EchoCatchUpSchedule.scan(root: root) }.value
+            let found = await Task.detached { EchoCatchUpSchedule.scan(root: root, profiles: SpeakerProfileStore()) }.value
             guard let self else { return }
             self.meeting.echo.scanning = false
             self.meeting.echo.scanned = true
@@ -150,7 +152,9 @@ extension HolosAppDelegate {
         let directory = URL(fileURLWithPath: candidate.path)
         Task { [weak self] in
             // Made since the scan (a relabel, Recover, a run in Terminal), or deleted: nothing to run.
-            let needed = await Task.detached { EchoCatchUpSchedule.needsAnalysis(session: directory) }.value
+            let needed = await Task.detached {
+                EchoCatchUpSchedule.needsAnalysis(session: directory, profiles: SpeakerProfileStore())
+            }.value
             guard let self else { return }
             guard needed else {
                 // Nothing to do: a result from earlier in this launch (a partial run) stays in the list.
@@ -219,6 +223,7 @@ extension HolosAppDelegate {
             echoTurnedDown(sessionID)
         case .done?, .failed?, .partial?:
             meeting.echo.queue.removeAll { $0.sessionID == sessionID }
+            meeting.echo.ended.insert(sessionID)
             meeting.echo.turnedDown[sessionID] = nil
             // Failed: the list says why, and it is not tried again in this launch. Partial: the list says what was
             // not brought in step.

@@ -49,23 +49,26 @@ public enum EchoCatchUpSchedule {
     }
 
     /// Reads every meeting under `root` (`SessionCatalog.list`) and returns the ones that get the analysis, newest
-    /// first. Off the main actor: it reads each call's manifest and saved analysis.
-    public static func scan(root: URL) -> [Candidate] {
+    /// first (`needsAnalysis`, with `profiles` for the voice samples). Off the main actor: it reads each call's
+    /// manifest and saved analysis.
+    public static func scan(root: URL, profiles: SpeakerProfileStore? = nil) -> [Candidate] {
         select(SessionCatalog.list(root: root).map { summary in
             let finished = DeepTranscriptionSchedule.isFinished(summary.state, audioDeleted: summary.audioDeleted)
             return Found(candidate: Candidate(sessionID: summary.id, path: summary.directory.path,
                                               createdAt: summary.createdAt),
-                         finished: finished, needed: finished && needsAnalysis(session: summary.directory))
+                         finished: finished,
+                         needed: finished && needsAnalysis(session: summary.directory, profiles: profiles))
         })
     }
 
     /// Whether the meeting still needs its analysis (`EchoAnalysisStage.needed`), read again just before a run starts:
     /// a relabel, Recover or a run in Terminal may have made it since the scan.
     /// Whether `voiceislocal session echo-analyze` has work to do on `session`: the analysis is needed
-    /// (`EchoAnalysisStage.needed`), or it is saved but the transcript files were not rewritten for it (a run cut short
-    /// after saving the mask, or one whose rewrite failed: `SessionExports.echoMaskIsCurrent`). Run again, the command
-    /// keeps the saved analysis and finishes the rest (the files, and the voice samples learned from the meeting).
-    public static func needsAnalysis(session: URL) -> Bool {
+    /// (`EchoAnalysisStage.needed`), or it is saved but the transcript files were not rewritten for it
+    /// (`SessionExports.echoMaskIsCurrent`) or a voice sample learned from the meeting was not brought in step with it
+    /// (`VoiceProfileService.samplesOutOfStep`, with `profiles`): a run cut short after saving the mask, or one whose
+    /// rewrite or refresh failed. Run again, the command keeps the saved analysis and finishes the rest.
+    public static func needsAnalysis(session: URL, profiles: SpeakerProfileStore? = nil) -> Bool {
         if EchoAnalysisStage.needed(session: session) { return true }
         guard let manifest = try? SessionArchive.readManifest(at: session),
               let meeting = try? SessionFiles.meetingInfo(session: session, manifest: manifest),
@@ -73,7 +76,9 @@ public enum EchoCatchUpSchedule {
               !EchoAnalysisStage.renderTracks(manifest: manifest).isEmpty,
               (try? SessionFiles.audioDeleted(session: session, sessionID: manifest.id)) == false,
               case .current = EchoAnalysisStage.saved(session: session, manifest: manifest) else { return false }
-        return !SessionExports.echoMaskIsCurrent(session: session)
+        if !SessionExports.echoMaskIsCurrent(session: session) { return true }
+        guard let profiles else { return false }
+        return VoiceProfileService.samplesOutOfStep(session: session, store: profiles)
     }
 
     public struct Situation: Sendable, Equatable {

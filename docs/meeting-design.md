@@ -8053,7 +8053,8 @@ genuinely local (the user, or people in the room) stays even while the call play
   (`DeepTranscriptionSchedule.isFinished`) the command has work on
   (`EchoCatchUpSchedule.needsAnalysis`: the analysis is needed, `EchoAnalysisStage.needed`, or it
   is saved but the transcript files were not rewritten for it, `SessionExports.echoMaskIsCurrent`
-  false), newest first. Nothing about it is saved: a run a quit cut short leaves the analysis
+  false, or a voice sample learned from the meeting was not brought in step with it,
+  `VoiceProfileService.samplesOutOfStep`, read only), newest first. Nothing about it is saved: a run a quit cut short leaves the analysis
   missing, or the files out of step with it, so the next launch finds it again (run again, the
   command keeps a saved analysis and finishes the files and the voice samples). One meeting at a time, the app runs `voiceislocal session
   echo-analyze <path> --json` as a maintenance command (so the transcript files and the voice
@@ -8072,8 +8073,8 @@ genuinely local (the user, or people in the room) stays even while the call play
   meeting starts (the command has no cancellation; it ends in seconds). Meetings in use or under
   Review (open, opening or saving) wait and are tried every 30 s. A run turned down because
   another process held the meeting (or it records again) is tried again after 1, 2, 4… minutes,
-  at most 30; one that failed, or ended partial, is not tried again until the next launch, and a
-  run that finds nothing to do leaves that result in the list. The Meetings list shows
+  at most 30; a meeting whose run ended (done, failed or partial) is not tried again until the
+  next launch, and a run that finds nothing to do leaves an earlier result in the list. The Meetings list shows
   "Echo removal queued" on waiting meetings and "Removing echo…" (the meeting's use,
   `MeetingController.beginUsing`) on the one running; a failure shows "Echo not removed" and the
   selected meeting's status line says why in the command's words; exit 3 (saved, but the
