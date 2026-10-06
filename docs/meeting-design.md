@@ -7669,8 +7669,10 @@ public enum SessionAudioComposition {
   words: a word inside a turn splits that turn there (a `splitTurn` edit, undone as any
   other; its second part starts a row), and a word that already starts a turn only
   breaks the row before that turn, in this window (nothing is saved, so Undo has nothing
-  to take back; the break goes when the speakers are labelled again or the window
-  closes). While playing, the row of the turn being spoken is tinted, and a pause inside
+  to take back; the break is kept with its turn, through a reverted word fix, and goes
+  when that turn does: the speakers labelled again, or the window closed). After any
+  change, a row stays selected only if every turn of it was selected: a turn that joins a
+  selected row's paragraph clears that selection rather than widening it. While playing, the row of the turn being spoken is tinted, and a pause inside
   a row keeps it tinted with the last word spoken, so the tint and the scroll move a row
   at a time rather than every turn.
 - Playback bar (above the footer): Play/Pause, position / length, a scrubber, the speed

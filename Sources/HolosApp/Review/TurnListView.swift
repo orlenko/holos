@@ -441,8 +441,8 @@ final class TurnListView: NSView, NSTableViewDataSource, NSTableViewDelegate {
 
     // MARK: - Data
 
-    /// Shows `paragraphs`, keeping the selected turns' rows selected (by turn ID, after `resolve`) and reloading only
-    /// what changed when the rows are the same paragraphs.
+    /// Shows `paragraphs`, keeping the selected turns' rows selected (by turn ID, after `resolve`; never a row that
+    /// took in turns that were not selected) and reloading only what changed when the rows are the same paragraphs.
     func update(paragraphs newParagraphs: [ReviewParagraph], speakers newSpeakers: [ProjectedSpeaker],
                 people newPeople: [SpeakerProfile], editable newEditable: Bool,
                 hints newHints: [String: MeetingTurnHint] = [:], text: @escaping (ProjectedTurn) -> String,
@@ -469,7 +469,7 @@ final class TurnListView: NSView, NSTableViewDataSource, NSTableViewDelegate {
 
         guard oldParagraphs.map(\.id) == newParagraphs.map(\.id) else {
             table.reloadData()
-            select(selected, scroll: false)
+            restoreSelection(selected)
             return
         }
         var changed = IndexSet()
@@ -494,7 +494,19 @@ final class TurnListView: NSView, NSTableViewDataSource, NSTableViewDelegate {
             table.reloadData(forRowIndexes: changed, columnIndexes: IndexSet(integer: 0))
             if !resized.isEmpty { table.noteHeightOfRows(withIndexesChanged: resized) }
         }
-        if Set(selectedTurnIDs) != Set(selected) { select(selected, scroll: false) }
+        restoreSelection(selected)
+    }
+
+    /// Selects again the rows of the turns selected before an update, only rows all of whose turns were selected: a
+    /// row that took in other turns (a turn given to the speaker before it joins that paragraph) is not selected, so
+    /// the selection never grows to turns the reader did not choose.
+    private func restoreSelection(_ selected: [String]) {
+        let wanted = Set(selected)
+        let rows = IndexSet(Set(selected.compactMap { rowOf[$0] }).filter { row in
+            paragraphs[row].turnIDs.allSatisfy(wanted.contains)
+        })
+        guard rows != table.selectedRowIndexes else { return }
+        table.selectRowIndexes(rows, byExtendingSelection: false)
     }
 
     /// Every turn of the selected rows, in row order.

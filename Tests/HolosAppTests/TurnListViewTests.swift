@@ -141,15 +141,24 @@ struct TurnListViewTests {
         #expect(list.playingParagraphID == "T1")
     }
 
-    @Test func aTurnJoiningAParagraphKeepsTheSelectionOnItsTurns() {
+    @Test func aTurnJoiningAParagraphNeverWidensTheSelection() {
         let list = Self.list()
         list.select(["T3"], scroll: false)
-        // T3 given to S1: it joins the paragraph before it.
+        // T3 given to S1: it joins the paragraph before it. That row holds turns that were not selected, so the
+        // selection does not grow to them (a next assignment would move them too); it is cleared.
         var moved = Self.turns
         moved[2] = Self.turn("T3", "S1", 6, 8)
         Self.update(list, turns: moved)
         #expect(list.table.numberOfRows == 1)
-        #expect(list.selectedTurnIDs == ["T1", "T2", "T3"])
+        #expect(list.selectedTurnIDs.isEmpty)
+        // A selected row that keeps its turns stays selected through an update.
+        Self.update(list, turns: Self.turns)
+        list.select(["T1"], scroll: false)
+        #expect(list.selectedTurnIDs == ["T1", "T2"])
+        var renamed = Self.turns
+        renamed[2] = Self.turn("T3", "S2", 6, 8.5)
+        Self.update(list, turns: renamed)
+        #expect(list.selectedTurnIDs == ["T1", "T2"])
     }
 
     @Test func aPausedSeekFromAPauseToAPauseInAnotherParagraphReportsTheMove() {

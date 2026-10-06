@@ -177,3 +177,19 @@ private func paragraphWords(_ paragraph: ReviewParagraph, counts: [Int]) -> [[Re
     #expect(ReviewParagraphs.playingWord(in: paragraph, turnID: nil, at: 10.5, starts: starts) == 2)
     #expect(ReviewParagraphs.playingWord(in: paragraph, turnID: "T3", at: 11.5, starts: starts) == 4)
 }
+
+// MARK: - Window-only breaks
+
+@Test func aBreakOutlivesLabelsThatKeepTheTurnAndGoesWithAChangedTurn() {
+    let t1 = paragraphTurn("T1", "S1", 0, 2), t2 = paragraphTurn("T2", "S1", 2.5, 4)
+    var breaks = ReviewParagraphBreaks()
+    breaks.insert(before: t2)
+    #expect(paragraphIDs(ReviewParagraphs.group([t1, t2], breaks: breaks.active(in: [t1, t2]))) == [["T1"], ["T2"]])
+    // A reverted word fix: a new run with the same turns (same IDs, tracks, starts). The break stays.
+    let republished = [paragraphTurn("T1", "S1", 0, 2), paragraphTurn("T2", "S1", 2.5, 4.1)]
+    #expect(breaks.active(in: republished) == ["T2"])
+    // A relabel: "T2" now names another turn. The break goes, and does not come back.
+    let relabelled = [paragraphTurn("T1", "S1", 0, 1), paragraphTurn("T2", "S1", 1.5, 4)]
+    #expect(breaks.active(in: relabelled).isEmpty)
+    #expect(breaks.active(in: [t1, t2]).isEmpty && breaks.isEmpty)
+}

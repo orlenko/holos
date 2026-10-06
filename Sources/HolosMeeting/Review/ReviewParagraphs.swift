@@ -42,6 +42,40 @@ public enum ReviewParagraphSplit: Sendable, Equatable {
     case breakBefore(turnID: String)
 }
 
+/// The paragraph breaks "Split Turn" made in the window without splitting a turn (`ReviewParagraphSplit.breakBefore`),
+/// never saved. Each is kept with the turn it breaks before as it was (ID, track, start), so it outlives labels that
+/// keep their turns (a word fix reverted publishes a new run with the same turns) and goes with a turn that is gone or
+/// changed (a relabel gives turn IDs to other turns). Pure.
+public struct ReviewParagraphBreaks: Sendable, Equatable {
+    private struct Mark: Sendable, Equatable {
+        let track: String
+        let start: Double
+    }
+
+    private var marks: [String: Mark] = [:]
+
+    public init() {}
+
+    public var isEmpty: Bool { marks.isEmpty }
+
+    /// Breaks the paragraph before `turn`.
+    public mutating func insert(before turn: ProjectedTurn) {
+        marks[turn.id] = Mark(track: turn.track, start: turn.start)
+    }
+
+    /// The turns of `turns` to break before (`ReviewParagraphs.group`): those still as they were when the break was
+    /// made. Breaks whose turn is gone or changed are forgotten.
+    public mutating func active(in turns: [ProjectedTurn]) -> Set<String> {
+        guard !marks.isEmpty else { return [] }
+        var kept: [String: Mark] = [:]
+        for turn in turns {
+            if let mark = marks[turn.id], mark == Mark(track: turn.track, start: turn.start) { kept[turn.id] = mark }
+        }
+        marks = kept
+        return Set(kept.keys)
+    }
+}
+
 /// How the review shows turns as paragraphs (docs/meeting-design.md §5.10). Pure.
 ///
 /// A turn joins the paragraph before it when it has the same speaker and starts less than `gapSeconds` after the

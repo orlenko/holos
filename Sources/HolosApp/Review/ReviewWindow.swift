@@ -64,11 +64,9 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate {
     /// The last action's error, until the next action.
     private var problem: String?
     private var query = ""
-    /// Turns "Split Turn" broke a paragraph before without splitting a turn (`ReviewParagraphSplit.breakBefore`): the
-    /// window's view only, never saved, and dropped when the speakers are labelled again (turn IDs then name other
-    /// turns).
-    private var paragraphBreaks: Set<String> = []
-    private var paragraphBreaksRunID: String?
+    /// Where "Split Turn" broke a paragraph without splitting a turn: the window's view only, never saved; kept while
+    /// its turn is (a reverted word fix keeps the turns), dropped with it (a relabel).
+    private var paragraphBreaks = ReviewParagraphBreaks()
     private var positioned = false
     /// The player state the sidebar and the footer last showed.
     private var shownPlayerState = StateChangeTracker<ReviewPlayer.State>()
@@ -425,11 +423,8 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate {
 
     private func refresh() {
         let projection = review.projection
-        if projection.runID != paragraphBreaksRunID {
-            paragraphBreaks = []
-            paragraphBreaksRunID = projection.runID
-        }
-        var paragraphs = ReviewParagraphs.group(projection.turns, breaks: paragraphBreaks)
+        var paragraphs = ReviewParagraphs.group(projection.turns,
+                                                breaks: paragraphBreaks.active(in: projection.turns))
         // A search shows the paragraphs with a matching turn, whole.
         if !query.isEmpty {
             let matching = Set(review.turns(matching: query).map(\.id))
@@ -881,7 +876,8 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate {
             case .splitTurn(let turnID, let word):
                 self.perform { review in try await review.split(turnID: turnID, at: word) }
             case .breakBefore(let turnID):
-                self.paragraphBreaks.insert(turnID)
+                guard let turn = paragraph.turns.first(where: { $0.id == turnID }) else { return }
+                self.paragraphBreaks.insert(before: turn)
                 self.refresh()
                 self.turnList.select([turnID], scroll: true)
             }
