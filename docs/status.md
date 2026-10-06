@@ -738,7 +738,7 @@ Still requiring real-machine or user-data validation:
   keeps the recognizer's words for comparison. The model is asked one place at a time (at
   most 500 per run).
 - Deep transcription: English meetings only. A meeting in another language keeps Apple's
-  transcript unless `voiceislocal session deep-transcribe --force`, and meetings in several
+  transcript unless `voiceislocal session deep-transcribe --any-language`, and meetings in several
   languages are not transcribed again. Measured on a real 3.7 h board meeting, about 80 %
   French and 20 % English, against a reference transcript:
   - the Apple French and English merge: 37.3 % WER, 86.5 % of turns in the right language;

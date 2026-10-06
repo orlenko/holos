@@ -1048,7 +1048,7 @@ Face) uses the network.
   is skipped with the standard message unless `--force`. A transcript the model already
   made is kept unless `--force`.
 - *Languages.* English meetings only, for now: a meeting in another language keeps Apple's
-  transcript unless `--force`, and meetings in several languages are not transcribed again
+  transcript unless `--any-language`, and meetings in several languages are not transcribed again
   (Whisper's language detection cannot be limited to the meeting's languages). Tried on a real
   French and English meeting, Whisper did worse than Apple's speech recognition, in French
   above all (status.md).

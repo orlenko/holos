@@ -4785,10 +4785,14 @@ skips it.
    one language for now, so the transcript was kept." (WhisperKit can detect a language per
    window but not limit detection to the meeting's languages, so v1 does not try.) A base this
    model made already: `succeeded`, "The meeting was already transcribed with Whisper
-   large-v3 turbo.", unless `force`. A meeting in one language other than English (the
-   language of the transcript of step 1, else meeting.json's first, else the recording's):
-   `skipped`, "Deep transcription is tuned for English meetings; this meeting keeps Apple's
-   transcript.", unless `force` (to try it anyway). On a real 3.7 h meeting in French and
+   large-v3 turbo.", unless `force` (checked first: a deep transcript in another language,
+   made with `--any-language` or by an earlier version, is kept). A meeting in one language
+   other than English (the language of the transcript of step 1, else meeting.json's first,
+   else the recording's): `skipped`, "Deep transcription is tuned for English meetings; this
+   meeting keeps Apple's transcript.", unless `PostProcessingOptions.deepAnyLanguage`
+   (`session deep-transcribe --any-language`, to try it). `force` never lifts it, so the
+   app's Make Final Transcript Now (which passes `--force`) is checked again when it runs, and
+   the app never passes `--any-language`. On a real 3.7 h meeting in French and
    English, Whisper's French was worse than Apple's (status.md), so other languages wait for
    validation on real recordings; `DeepTranscriptionStage.languageProblem` holds both rules,
    and the command, the app's queue and Make Final Transcript Now ask it
@@ -4974,7 +4978,7 @@ carried over.
   single turns do not), as asking for it by name means; refused with an alert without the model,
   for a meeting that is not finished, or for one the pass does not transcribe (several
   languages, or one other than English: Make Final Transcript Now passes `--force`, so the app
-  checks first). A meeting queued
+  checks first, and the pass checks again when it runs). A meeting queued
   automatically offers it too (it upgrades the item, so it runs next whatever the power source).
   The request is reserved at once, before its languages are read off the main actor, and saved
   with the queue (`pending`; a quit meanwhile does not lose it: the languages are read again at
