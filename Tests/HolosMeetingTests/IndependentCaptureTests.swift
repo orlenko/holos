@@ -64,10 +64,6 @@ import Testing
     return capture
 }
 
-/// Time limits: swift-testing applies a parameterized test's limit to all of its cases together, and a test past it
-/// is cancelled, which ends every `eventually` at once with a misleading failure (seen on a loaded machine: a case
-/// "gave up" after 26 s of a 30 s wait). Parameterized tests here get minutes per case.
-///
 /// The limit a hung native call is given up after.
 private let independentHungLimit = Duration.milliseconds(30)
 
@@ -192,6 +188,35 @@ func deliberateStopSharingStillEndsTheMeeting() async throws {
     #expect(factory.made == 2)
 }
 
+/// Production makes a fresh native capture for every system attempt (`LiveMeetingCapture()`, unlike the factories
+/// here, which hand back their last native again): a start past its limit leaves system audio unavailable and starts
+/// no other stream while it hangs; once it returns it is stopped, and a fresh capture is tried, whose frames end the
+/// outage.
+@Test(.timeLimit(.minutes(1))) @MainActor
+func anOverLimitSystemStartIsRetriedWithAFreshCaptureAndAudioResumes() async throws {
+    let mic = IndependentNativeCapture(), slow = IndependentNativeCapture(), fresh = IndependentNativeCapture()
+    slow.startGate = true
+    let factory = IndependentNativeFactory([mic, slow, fresh])
+    let capture = isolatedCapture(factory, startLimit: independentHungLimit)
+    let heard = SharedValue<[String]>([])
+    let consumer = Task {
+        do { for try await audio in capture.frames { heard.update { $0.append(audio.track) } } }
+        catch { Issue.record("Unexpected error: \(error)") }
+    }
+    try await capture.start(CaptureRequest(source: .microphoneAndSystem))
+    #expect(await eventually { capture.unavailableTracks == ["system"] }, "The start ran past its limit.")
+    #expect(factory.made == 2, "No other stream is started while the abandoned start hangs.")
+    // The retry must succeed whenever it comes.
+    capture.startLimit = .seconds(3_600)
+    slow.releaseStart = true
+    #expect(await eventually { fresh.requests.count == 1 })
+    #expect(slow.stops >= 1, "The late start's capture is stopped before the retry.")
+    try fresh.emit("system", at: 1)
+    #expect(await eventually { heard.value.contains("system") && capture.unavailableTracks.isEmpty })
+    try await capture.stop()
+    await consumer.value
+}
+
 @Test(.timeLimit(.minutes(1))) @MainActor
 func lateSystemStartMustFinishCleanupBeforeRetrying() async throws {
     let mic = IndependentNativeCapture(), system = IndependentNativeCapture(), later = IndependentNativeCapture()
@@ -275,7 +300,7 @@ func failedSystemCleanupRetriesTheSameHandleBeforeStartingAnother() async throws
     await consumer.value
 }
 
-@Test(.timeLimit(.minutes(5)), arguments: ["stop", "pause", "sleep"]) @MainActor
+@Test(.timeLimit(.minutes(1)), arguments: ["stop", "pause", "sleep"]) @MainActor
 func neverHeardSystemTailIsSavedWithoutAnOutageWarning(action: String) async throws {
     let temp = try TemporaryDirectory()
     defer { temp.remove() }
@@ -313,7 +338,7 @@ func neverHeardSystemTailIsSavedWithoutAnOutageWarning(action: String) async thr
     #expect(!statuses.value.contains { $0.warnings.contains { $0.code.rawValue == "systemAudioUnavailable" } })
 }
 
-@Test(.timeLimit(.minutes(5)), arguments: [true, false], [true, false]) @MainActor
+@Test(.timeLimit(.minutes(1)), arguments: [true, false], [true, false]) @MainActor
 func knownSystemOutageDoesNotHideMicrophoneStallsOrSuggestSilence(micStalled: Bool, stallBeforeOutage: Bool) async throws {
     let temp = try TemporaryDirectory()
     defer { temp.remove() }
@@ -444,7 +469,7 @@ func successfulDelayedSystemStartRecordsItsLeadingGapWithoutAWarning() async thr
 
 private enum MissingSystemStop: CaseIterable, Sendable { case pause, sleep, pauseAndResume }
 
-@Test(.timeLimit(.minutes(10)), arguments: [GapReason.paused, .sleep, .captureRestarted, .deviceChanged], [true, false])
+@Test(.timeLimit(.minutes(1)), arguments: [GapReason.paused, .sleep, .captureRestarted, .deviceChanged], [true, false])
 @MainActor
 func resumedSystemPreservesOutageStateAndRecorderBoundary(reason: GapReason, unavailable: Bool) async throws {
     let temp = try TemporaryDirectory()
@@ -523,7 +548,7 @@ func resumedSystemPreservesOutageStateAndRecorderBoundary(reason: GapReason, una
     #expect(recovered.count == (unavailable ? 1 : 0))
 }
 
-@Test(.timeLimit(.minutes(5)), arguments: MissingSystemStop.allCases) @MainActor
+@Test(.timeLimit(.minutes(1)), arguments: MissingSystemStop.allCases) @MainActor
 private func missingSystemTailSurvivesPauseOrSleep(action: MissingSystemStop) async throws {
     let temp = try TemporaryDirectory()
     defer { temp.remove() }
@@ -588,7 +613,7 @@ private func missingSystemTailSurvivesPauseOrSleep(action: MissingSystemStop) as
     }
 }
 
-@Test(.timeLimit(.minutes(5)), arguments: [true, false]) @MainActor
+@Test(.timeLimit(.minutes(1)), arguments: [true, false]) @MainActor
 func initialSystemFailureMarksOnlyTheMissingSystemInterval(recovers: Bool) async throws {
     let temp = try TemporaryDirectory()
     defer { temp.remove() }
