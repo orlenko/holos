@@ -450,6 +450,7 @@ func leaseHandOffLeavesNoUnlockedGap() async throws {
     let temp = try TemporaryDirectory()
     defer { temp.remove() }
     let hookStarted = SharedValue(false)
+    let runEnded = SharedValue(false)
     let probeStarted = SharedValue(false)
     let probeDone = SharedValue(false)
     let hook: PostProcessHook = { session, _, _ in
@@ -478,14 +479,18 @@ func leaseHandOffLeavesNoUnlockedGap() async throws {
             samples += 1
             if !locked { unlocked += 1 }
             probeStarted.set(true)
-        } while !hookStarted.value
+        } while !hookStarted.value && !runEnded.value
         probeDone.set(true)
         return (samples, unlocked)
     }
     #expect(await eventually { probeStarted.value })
     stop.requestStop()
-    let outcome = try await run.value
+    // The probe also stops once the run has ended (a run that never called the hook), so it never outlives the test.
+    let ended = await run.result
+    runEnded.set(true)
     let result = await probe.value
+    let outcome = try ended.get()
+    #expect(hookStarted.value)
     #expect(result.samples > 0)
     #expect(result.unlocked == 0, "The session was left without any lock between stop and the hook.")
     #expect(outcome.postProcessing == fakeRecord(outcome.directory))

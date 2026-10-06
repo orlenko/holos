@@ -327,6 +327,9 @@ extension RecorderEnvironmentLoopTests {
         #expect(await eventually { hanging.inner.consumedFrames >= 3 && power.attached })
         power.post(.willSleep(token: 42))
         #expect(await eventually { power.allowed == [42] })
+        // Released here, pass or fail: a loop that waited for the stop then ends too, and the checks below report it
+        // (the time limit cannot end the run's unstructured task, nor would a `defer` run before `run.value`).
+        hold.open()
         #expect(abandonedAtAllow.value == true, "The loop waited for the capture stop, up to its limit.")
         #expect(stopHangsAtAllow.value == true, "…and no longer: the Mac is not held awake by a hung stop.")
         #expect(hanging.stopCalls == 1)

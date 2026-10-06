@@ -534,32 +534,43 @@ private func journalSyncs(_ counter: FileSyncCounter) -> Int { counter.count("ev
     }
 }
 
-@Test func longerGroupCommitIntervalDropsTheEarlierFlush() async throws {
+/// The earlier, shorter flush is replaced, and it never runs: the test waits past its deadline with a real timer. That
+/// needs the second event and the change of interval to come before the short interval ends; a loaded machine that
+/// misses it (seen as the earlier flush already done) gets a fresh archive and another try, so it never fails the test.
+/// Missing it twenty times in a row is reported.
+@Test(.timeLimit(.minutes(1))) func longerGroupCommitIntervalDropsTheEarlierFlush() async throws {
     let root = try temporaryRoot()
     defer { try? FileManager.default.removeItem(at: root) }
-    let writer = try archive(in: root)
-    let counter = FileSyncCounter()
-    try await AtomicFile.$fileSyncCounter.withValue(counter) {
-        // Told by the schedule, not by waiting out the shorter interval: no event can come later than its interval.
-        await writer.setJournalSync(.interval(seconds: 60))
-        try await writer.recordEvent(kind: "first", details: [:])
-        try await writer.recordEvent(kind: "second", details: [:])
-        #expect(journalSyncs(counter) == 1)
-        let before = await writer.journalScheduleForTesting()
-        await writer.setJournalSync(.interval(seconds: 3_600))
-        let after = await writer.journalScheduleForTesting()
-        #expect(after.pending && after.dirty)
-        // The flush pending for 60 s after the last sync is gone; the one left is due an hour after it.
-        if let lastSync = after.lastSync, let earlier = before.pendingDeadline, let deadline = after.pendingDeadline {
-            #expect(earlier == lastSync + .seconds(60))
-            #expect(deadline == lastSync + .seconds(3_600))
-        } else {
-            Issue.record("A flush is pending after the last sync.")
+    for _ in 0..<20 {
+        let attempt = root.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: attempt, withIntermediateDirectories: true)
+        let writer = try archive(in: attempt)
+        let counter = FileSyncCounter()
+        let checked = try await AtomicFile.$fileSyncCounter.withValue(counter) { () async throws -> Bool in
+            await writer.setJournalSync(.interval(seconds: 0.2))
+            try await writer.recordEvent(kind: "first", details: [:])
+            try await writer.recordEvent(kind: "second", details: [:])
+            let before = await writer.journalScheduleForTesting()
+            await writer.setJournalSync(.interval(seconds: 3_600))
+            let after = await writer.journalScheduleForTesting()
+            // Only the first event synced, and the 0.2 s flush was still pending when the interval changed.
+            guard journalSyncs(counter) == 1, let lastSync = after.lastSync, let earlier = before.pendingDeadline,
+                  earlier == lastSync + .seconds(0.2) else {
+                try await writer.finish(status: ArchiveStatus.complete)
+                return false
+            }
+            #expect(after.pending && after.dirty)
+            #expect(after.pendingDeadline == lastSync + .seconds(3_600))
+            // Past the earlier deadline: the replaced flush did not sync.
+            try await Task.sleep(until: earlier + .milliseconds(400), clock: .continuous)
+            #expect(journalSyncs(counter) == 1)
+            try await writer.finish(status: ArchiveStatus.complete)
+            #expect(journalSyncs(counter) == 2)
+            return true
         }
-        #expect(journalSyncs(counter) == 1)
-        try await writer.finish(status: ArchiveStatus.complete)
-        #expect(journalSyncs(counter) == 2)
+        if checked { return }
     }
+    Issue.record("The machine never recorded two events and changed the interval within 0.2 s.")
 }
 
 @Test func hugeGroupCommitIntervalIsClamped() async throws {
