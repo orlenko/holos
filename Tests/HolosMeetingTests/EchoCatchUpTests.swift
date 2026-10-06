@@ -153,6 +153,77 @@ func aCallWhoseFilesWereNotRewrittenForItsMaskIsFoundAgain() async throws {
     // Saved, but the transcript files or a voice sample were not brought in step.
     #expect(EchoCatchUpSchedule.runEnded(code: 3, summary: "Saved. The transcript files could not be rewritten.",
                                          errors: "") == .partial("Saved. The transcript files could not be rewritten."))
+    // Another background job held the lock (one started a moment before, or one left running from before a
+    // relaunch): tried again later, never a failure.
+    #expect(EchoCatchUpSchedule.runEnded(code: 1, summary: nil,
+                                         errors: "Error: \(DeepTranscriptionLock.busyMessage)\n") == .retryLater)
+    // Stopped by the app for a meeting: stays queued. Only an exit the signal caused counts; one the signal reached
+    // after the run had ended ends as it did, and a signal the app did not send is a failure.
+    #expect(EchoCatchUpSchedule.runEnded(code: 143, preempted: true, summary: nil,
+                                         errors: SessionEchoAnalyzeCommand.cancellationMessage) == .stopped)
+    #expect(EchoCatchUpSchedule.runEnded(code: 0, preempted: true, summary: "Done.", errors: "") == .done)
+    #expect(EchoCatchUpSchedule.runEnded(code: 3, preempted: true, summary: "Saved.", errors: "") == .partial("Saved."))
+    #expect(EchoCatchUpSchedule.runEnded(code: 143, summary: nil, errors: "")
+        == .failed("The command stopped unexpectedly (signal 15)."))
+}
+
+@Test func aRunStoppedForAMeetingStaysQueuedAndRunsAgainOnceTheMeetingIsSaved() {
+    // A runs; a meeting starts, so the app stops it (SIGTERM) and keeps it queued: it is neither failed nor delayed,
+    // and waits only for the meeting.
+    let queue = [candidate("A", hoursAgo: 1), candidate("B", hoursAgo: 2)]
+    #expect(EchoCatchUpSchedule.next(queue, .init(now: base)) == .run(candidate("A", hoursAgo: 1)))
+    let end = EchoCatchUpSchedule.runEnded(code: DeepTranscriptionSchedule.terminatedExitCode, preempted: true,
+                                           summary: nil, errors: "")
+    #expect(end == .stopped)
+    #expect(EchoCatchUpSchedule.problemText(end) == nil, "The list says nothing about it.")
+    #expect(EchoCatchUpSchedule.stateTexts(queue, running: nil, failed: [])["A"] == EchoCatchUpSchedule.queuedText)
+    #expect(EchoCatchUpSchedule.next(queue, .init(meetingBusy: true, now: base)) == .wait)
+    #expect(EchoCatchUpSchedule.next(queue, .init(now: base)) == .run(candidate("A", hoursAgo: 1)))
+}
+
+@Test(.timeLimit(.minutes(1)))
+func anEchoAnalysisLeftRunningFromBeforeARelaunchHoldsTheNextOneBack() async throws {
+    let temp = try TemporaryDirectory("echo-catch-up")
+    defer { temp.remove() }
+    let first = try await meeting(in: temp.url, tracks: ["mic", "system"])
+    let second = try await meeting(in: temp.url, tracks: ["mic", "system"])
+    let firstID = try SessionArchive.readManifest(at: first).id
+    let secondID = try SessionArchive.readManifest(at: second).id
+    let lock = temp.url.appendingPathComponent("deep-transcription.lock")
+    // The run the app started on the first meeting before it was quit still holds the lock (another descriptor of
+    // this process stands for that process: `flock` locks belong to the open file).
+    let survivor = DeepTranscriptionLock.Holder(pid: 4_242, sessionID: firstID, force: false,
+                                                kind: DeepTranscriptionLock.Holder.echoKind)
+    let held = try #require(try DeepTranscriptionLock.take(survivor, at: lock))
+    let state = DeepTranscriptionLock.state(at: lock)
+    #expect(state == .held(survivor))
+    #expect(!state.isDeepPass, "Not shown as another final transcript.")
+    #expect(SessionCatalog.jobInProgress(state, sessionID: firstID)
+        == "The call's echo is being removed from this meeting.")
+    #expect(SessionCatalog.jobInProgress(state, sessionID: secondID) == nil)
+
+    // The relaunched app finds the first busy (its lease) and the second needing work, and starts nothing while the
+    // lock is held.
+    let queue = [EchoCatchUpSchedule.Candidate(sessionID: secondID, path: second.path, createdAt: base)]
+    #expect(EchoCatchUpSchedule.next(queue, .init(otherJobRunning: state != .free, now: base)) == .wait)
+    // A run that starts anyway (the lock taken a moment after the app looked) is refused with nothing changed, and
+    // tried again later.
+    await #expect {
+        _ = try await SessionEchoAnalyzeCommand.run(.init(session: second, jobLock: lock), voiceSamples: .none,
+                                                    freeSpace: FixedFreeSpace(.max))
+    } throws: { error in
+        error.localizedDescription == DeepTranscriptionLock.busyMessage
+    }
+    #expect(EchoAnalysisStage.needed(session: second))
+    #expect(EchoCatchUpSchedule.runEnded(code: 1, summary: nil,
+                                         errors: "Error: \(DeepTranscriptionLock.busyMessage)\n") == .retryLater)
+
+    // Once the first run ends, the second goes ahead, holding the lock as an echo analysis while it runs.
+    held.release()
+    _ = try await SessionEchoAnalyzeCommand.run(.init(session: second, jobLock: lock), voiceSamples: .none,
+                                                freeSpace: FixedFreeSpace(.max))
+    #expect(!EchoAnalysisStage.needed(session: second))
+    #expect(DeepTranscriptionLock.state(at: lock) == .free, "Let go of when the run ends.")
 }
 
 @Test func aMeetingTurnedDownWaitsLongerEachTimeAndAFailureIsTriedOncePerLaunch() {
@@ -185,6 +256,7 @@ func aCallWhoseFilesWereNotRewrittenForItsMaskIsFoundAgain() async throws {
     #expect(EchoCatchUpSchedule.stateTexts(queue, running: "A", failed: ["C"]) == ["B": "Echo removal queued"])
     #expect(EchoCatchUpSchedule.problemText(.done) == nil)
     #expect(EchoCatchUpSchedule.problemText(.retryLater) == nil)
+    #expect(EchoCatchUpSchedule.problemText(.stopped) == nil)
     #expect(EchoCatchUpSchedule.problemText(.failed("The audio is damaged")) == "The call's echo was not removed from this meeting. The audio is damaged. Voice is Local tries "
         + "again the next time it starts.")
     #expect(EchoCatchUpSchedule.problemText(.partial("The transcript files could not be rewritten."))?

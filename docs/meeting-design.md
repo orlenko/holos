@@ -4930,8 +4930,10 @@ carried over.
 - *One pass at a time* (`DeepTranscriptionLock`). `session deep-transcribe` takes an exclusive
   `flock` on `<supportRoot>/deep-transcription.lock` for its whole life and writes `{pid,
   sessionID, force}` into it once it holds it; a second pass finds it held (it retries for 2 s,
-  since a probe holds it for an instant) and exits 1 with "Another final transcript is being
-  made…". The kernel lets go of the lock when the process ends, however it ends.
+  since a probe holds it for an instant) and exits 1 with "Another final transcript, meeting
+  summary or echo analysis is running…". The kernel lets go of the lock when the process ends,
+  however it ends. `session summarize` (§4.17, `kind` `summary`) and `session echo-analyze`
+  (§5.11, `kind` `echo`) hold the same lock.
 - *The app manages only its own pass.* A lock held by any other process (a pass started in
   Terminal, or one the app started before it was quit, since maintenance commands are
   detached) only means "busy": the app starts nothing while it is held, checks again every
@@ -5329,8 +5331,8 @@ name of any length, or of characters carrying any number of combining marks, lea
 every part room for the words. `session list --json` leaves summaries out (`SessionSummary`
 does not encode `generatedSummary`). For
 its whole life it holds the deep transcription lock (§4.16), with
-`kind` `summary` in what it writes there: one summary or final transcript runs at a time on this
-Mac, and one started before an app relaunch is seen as busy (the app never adopts or signals a
+`kind` `summary` in what it writes there: one summary, final transcript or echo analysis (§5.11) runs at a time
+on this Mac, and one started before an app relaunch is seen as busy (the app never adopts or signals a
 job it did not start; Review waits only for a deep pass). Another holder makes it exit 1 as
 `busy`. Ctrl-C or SIGTERM cancels it: before the save nothing is written (`cancelled`); the save
 (summary.json, then the exports) is never cut short. summary.json is written with
@@ -8045,7 +8047,18 @@ genuinely local (the user, or people in the room) stays even while the call play
 - *Existing meetings.* `voiceislocal session echo-analyze <id|path> [--force] [--json]`
   (`SessionEchoAnalyzeCommand`) saves the analysis and rewrites the transcript files through
   the projection. Nothing else changes: speaker labels, edits, the transcript and its word
-  fixes stay as they are on disk.
+  fixes stay as they are on disk. For its whole life it holds the background job lock (§4.16,
+  `kind` `echo`; `Request.jobLock`), so it runs alone with final transcripts and summaries, and a
+  run that outlived the app that started it is seen as busy after a relaunch; another holder
+  makes it exit 1 with the lock's busy message, nothing changed. Post-processing and Recover make
+  the analysis in-process without the lock, as before (a final transcript's own post-processing
+  runs under its pass's lock). Ctrl-C or SIGTERM cancels it (exit 143 for SIGTERM, "Stopped. Run
+  the command again to finish…"): before it starts, and before or while the voice samples are
+  recomputed (minutes on a long call); the analysis and the transcript rewrite, seconds, are not
+  cut short. What it leaves is read as done or owed: the mask is saved in one step under the
+  speaker lock, an interrupted export rewrite stays `pending` (`SessionExports.echoMaskIsCurrent`
+  false), and the samples are saved together or not at all (`samplesOutOfStep` true), so the
+  next run, or the app's next scan, finishes it.
 - *Catching up in the app.* Calls recorded before the analysis existed (or whose analysis
   failed) get it without a command (`EchoCatchUpSchedule`, `HolosApp+EchoCatchUp.swift`; no
   setting: about 5 s per hour of audio). At launch and after each meeting is saved the app
@@ -8063,16 +8076,24 @@ genuinely local (the user, or people in the room) stays even while the call play
   shares the one-job-at-a-time rule of final transcripts and summaries (§4.16, §4.17): nothing
   starts while a meeting starts, records or saves, while this app makes a final transcript or a
   summary, or while any process holds the background job lock; while it runs neither of them
-  starts (it takes no lock itself: a job started in Terminal is not held back, and the meeting's
-  processing lease keeps the two off the same meeting). Priority: a Make Final Transcript Now
+  starts. The command holds that lock itself (`kind` `echo`), so a run the app started before it
+  was quit (maintenance commands are detached and keep running) holds the relaunched app's queue
+  back instead of running beside it, as does one started in Terminal; the Meetings list says
+  "The call's echo is being removed from this meeting." for its meeting
+  (`SessionCatalog.jobInProgress`), Rename waits for it, and it never counts as another final
+  transcript (`isDeepPass`). A run refused by the lock (taken a moment after the app looked) is
+  tried again later (`retryLater`), never a failure. Priority: a Make Final Transcript Now
   that is ready (or has its languages read) and a Summarize Again the summary scan going on may
   start go first; the echo analysis goes before automatic final transcripts and automatic
   summaries, which wait while a queued meeting is ready for it and while a scan goes on (the
   first of the launch, or one after a meeting was saved: the queue is not known yet); each scan's
-  end looks for them again. A run is not stopped when a
-  meeting starts (the command has no cancellation; it ends in seconds). Meetings in use or under
+  end looks for them again. When a meeting starts (records or saves) while this app's run goes
+  on, the child is stopped by its spawn pid (SIGTERM) and stays queued (`RunEnd.stopped`, only
+  when the signal ended it: exit 143), neither failed nor delayed, so it runs again once the
+  meeting is saved and finishes what the stopped run left; a run another process started is left
+  alone. Meetings in use or under
   Review (open, opening or saving) wait and are tried every 30 s. A run turned down because
-  another process held the meeting (or it records again) is tried again after 1, 2, 4… minutes,
+  another process held the meeting or the lock (or it records again) is tried again after 1, 2, 4… minutes,
   at most 30; a meeting whose run ended (done, failed or partial) is not tried again until the
   next launch, and a run that finds nothing to do leaves an earlier result in the list. The Meetings list shows
   "Echo removal queued" on waiting meetings and "Removing echo…" (the meeting's use,

@@ -5,6 +5,7 @@ import HolosCore
 @testable import HolosMeeting
 import HolosSpeakers
 import HolosStorage
+import Synchronization
 import Testing
 
 // The acoustic echo analysis in post-processing, Recover and `voiceislocal session echo-analyze`, and the labels'
@@ -785,6 +786,67 @@ func aSampleSyncThatFailsAfterTheMaskIsSavedIsRetriedByTheNextPass() async throw
     let refreshed = try #require(try store.load().profiles.first?.samples.first)
     #expect(refreshed.id == learned.id)
     #expect(refreshed.inputDigest != learned.inputDigest, "Recomputed from the user's own turn alone.")
+}
+
+/// Says it was asked for a voice, then waits until its task is cancelled (a long call's voice sample recomputed).
+private final class StalledVoice: VoiceSampleExtractor {
+    private let asked = Mutex(false)
+
+    var wasAsked: Bool { asked.withLock { $0 } }
+
+    func turnEmbeddings(session: URL, track: String, turns: [TurnRef]) async throws -> [TurnEmbedding] {
+        asked.withLock { $0 = true }
+        try await Task.sleep(for: .seconds(3_600))
+        return []
+    }
+}
+
+@Test(.timeLimit(.minutes(2)))
+func echoAnalyzeStoppedForAMeetingLeavesWhatItDidNotFinishForTheNextRun() async throws {
+    // The app stops its run (SIGTERM, which cancels the command's task) when a meeting starts. On a long call the
+    // voice samples are the long part: stopped there, the mask and the transcript files are saved, the sample is as
+    // it was, the job lock is let go of, and the catch-up still finds the meeting, so the next run finishes it.
+    let temp = try TemporaryDirectory("echo")
+    defer { temp.remove() }
+    let (session, store) = try await learnedBeforeTheEcho(in: temp, ownTurn: true)
+    let learned = try #require(try store.load().profiles.first?.samples.first)
+    let id = try SessionArchive.readManifest(at: session).id
+    let lock = temp.url.appendingPathComponent("deep-transcription.lock")
+
+    // Stopped before it starts: nothing is done.
+    let early = Task {
+        withUnsafeCurrentTask { $0?.cancel() }
+        return try await SessionEchoAnalyzeCommand.run(.init(session: session, jobLock: lock),
+                                                       voiceSamples: fixedVoice, profiles: store,
+                                                       freeSpace: FixedFreeSpace(.max))
+    }
+    await #expect(throws: CancellationError.self) { try await early.value }
+    #expect(EchoAnalysisStage.needed(session: session))
+
+    let voice = StalledVoice()
+    let run = Task {
+        try await SessionEchoAnalyzeCommand.run(.init(session: session, jobLock: lock),
+                                                voiceSamples: .make { _ in voice }, profiles: store,
+                                                freeSpace: FixedFreeSpace(.max))
+    }
+    #expect(await eventually { voice.wasAsked })
+    #expect(DeepTranscriptionLock.state(at: lock) == .held(DeepTranscriptionLock.Holder(
+        pid: getpid(), sessionID: id, force: false, kind: DeepTranscriptionLock.Holder.echoKind)),
+            "Held for the whole run, the voice samples included.")
+    run.cancel()
+    await #expect(throws: CancellationError.self) { try await run.value }
+    #expect(DeepTranscriptionLock.state(at: lock) == .free)
+    #expect(!EchoAnalysisStage.needed(session: session), "The mask was saved before the samples.")
+    #expect(SessionExports.echoMaskIsCurrent(session: session), "So were the transcript files.")
+    #expect(try store.load().profiles.first?.samples == [learned], "Left as it was.")
+    #expect(EchoCatchUpSchedule.needsAnalysis(session: session, profiles: store), "Still owed: found again.")
+
+    let again = try await SessionEchoAnalyzeCommand.run(.init(session: session, jobLock: lock), voiceSamples: fixedVoice,
+                                                        profiles: store, freeSpace: FixedFreeSpace(.max))
+    #expect(!again.analysed)
+    #expect(again.exitCode == 0)
+    #expect(try store.load().profiles.first?.samples.first?.inputDigest != learned.inputDigest)
+    #expect(!EchoCatchUpSchedule.needsAnalysis(session: session, profiles: store))
 }
 
 @Test(.timeLimit(.minutes(2)))

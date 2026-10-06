@@ -603,8 +603,8 @@ public enum SessionRenameCommand {
         SessionExports.hasTranscriptFiles(session: session)
     }
 
-    /// Why the meeting cannot be renamed now, or nil: it records or saves, or a final transcript or a summary of it is
-    /// being made.
+    /// Why the meeting cannot be renamed now, or nil: it records or saves, or a final transcript, a summary or an echo
+    /// analysis of it is being made.
     static func busyReason(session: URL, id: String, jobLock: URL) -> String? {
         switch RecorderChannel.liveness(session: session) {
         case .capturing: return "This meeting is being recorded; rename it once it is saved."
@@ -614,9 +614,13 @@ public enum SessionRenameCommand {
         if case .held(let holder) = DeepTranscriptionLock.state(at: jobLock) {
             guard let holder else { return DeepTranscriptionLock.busyMessage }
             if holder.sessionID.caseInsensitiveCompare(id) == .orderedSame {
-                return holder.isSummary
-                    ? "A summary of this meeting is being written; rename it when that is done."
-                    : "A final transcript of this meeting is being made; rename it when that is done."
+                if holder.isSummary {
+                    return "A summary of this meeting is being written; rename it when that is done."
+                }
+                if holder.isEcho {
+                    return "The call's echo is being removed from this meeting; rename it when that is done."
+                }
+                return "A final transcript of this meeting is being made; rename it when that is done."
             }
         }
         return nil

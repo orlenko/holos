@@ -85,7 +85,8 @@ public enum EchoCatchUpSchedule {
         /// A meeting is starting, recording, or saving: it has the Mac to itself.
         public var meetingBusy: Bool
         /// Another background job runs: this app's final transcript or summary, or any process's
-        /// (`DeepTranscriptionLock` held). One at a time.
+        /// (`DeepTranscriptionLock` held, also by an echo analysis that outlived the app that started it). One at a
+        /// time.
         public var otherJobRunning: Bool
         /// Work the user asked for is about to start (Make Final Transcript Now ready to run, or a Summarize Again the
         /// summary scan going on may start): it goes first.
@@ -147,17 +148,24 @@ public enum EchoCatchUpSchedule {
         /// Exit 3: the analysis was saved (so it is no longer needed), but the transcript files or a voice sample were
         /// not brought in step; the command's summary says which, for the Meetings list.
         case partial(String)
-        /// Turned down for now: another process held the meeting, or it records again. Stays queued, tried again
-        /// after `retryDelay`.
+        /// Turned down for now: another process held the meeting, it records again, or another background job held
+        /// the lock (`DeepTranscriptionLock.busyMessage`). Stays queued, tried again after `retryDelay`.
         case retryLater
+        /// Stopped by the app for a meeting (SIGTERM): stays queued, as it was, and runs again once the meeting is
+        /// saved; what it did not finish is still found (`needsAnalysis`).
+        case stopped
     }
 
-    /// What a run that exited with `code` comes to. `summary` is the command's `--json` summary, `errors` its error
-    /// output. A run the app did not see end (a quit) is not reported: the files say the
-    /// analysis is still needed at the next launch.
-    public static func runEnded(code: Int32, summary: String?, errors: String) -> RunEnd {
+    /// What a run that exited with `code` comes to. `preempted`: the app signalled it because a meeting started; only
+    /// an exit the signal caused (`DeepTranscriptionSchedule.terminatedExitCode`, as the command's cancellation and a
+    /// killed process both report it) is `stopped`, so a run the signal reached after it had ended ends as it did.
+    /// `summary` is the command's `--json` summary, `errors` its error output. A run the app did not see end (a quit) is
+    /// not reported: the files say the analysis is still needed at the next launch.
+    public static func runEnded(code: Int32, preempted: Bool = false, summary: String?, errors: String) -> RunEnd {
         if code == 0 { return .done }
-        if code == 1, errors.contains("processing this session") || errors.contains("still recording") {
+        if preempted, code == DeepTranscriptionSchedule.terminatedExitCode { return .stopped }
+        if code == 1, errors.contains("processing this session") || errors.contains("still recording")
+            || errors.contains(DeepTranscriptionLock.busyMessage) {
             return .retryLater
         }
         if code == 3 { return .partial(summary ?? "") }
@@ -192,7 +200,7 @@ public enum EchoCatchUpSchedule {
             return text.isEmpty ? "" : " " + (text.hasSuffix(".") ? text : text + ".")
         }
         switch end {
-        case .done, .retryLater:
+        case .done, .retryLater, .stopped:
             return nil
         case .failed(let reason):
             return "The call's echo was not removed from this meeting.\(sentence(reason)) Voice is Local tries again "

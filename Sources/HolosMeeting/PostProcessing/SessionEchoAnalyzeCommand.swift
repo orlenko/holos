@@ -13,8 +13,14 @@ public enum SessionEchoAnalyzeCommand {
         public var session: URL
         /// Analyse again even when the saved analysis is of this audio.
         public var force: Bool
+        /// The background-job lock held for the whole run (`DeepTranscriptionLock`, kind `echo`): the command passes
+        /// `DeepTranscriptionLock.url`, so it runs alone with final transcripts and summaries on this Mac, and a run
+        /// that outlived the app that started it is seen as busy after a relaunch. Nil takes none (tests).
+        public var jobLock: URL?
 
-        public init(session: URL, force: Bool = false) { self.session = session; self.force = force }
+        public init(session: URL, force: Bool = false, jobLock: URL? = nil) {
+            self.session = session; self.force = force; self.jobLock = jobLock
+        }
     }
 
     public struct Outcome: Sendable, Equatable, Encodable {
@@ -37,17 +43,42 @@ public enum SessionEchoAnalyzeCommand {
         public var exitCode: Int32 = 0
     }
 
-    /// Runs under the session's processing lease. Throws, with nothing changed, when the meeting is still recording,
+    /// What the command says when Ctrl-C or SIGTERM stopped it (`run` threw `CancellationError`).
+    public static let cancellationMessage = "Stopped. Run the command again to finish: an analysis already saved is "
+        + "kept, and the transcript files and voice samples are brought in step with it."
+
+    /// Runs under the background-job lock (`Request.jobLock`) and the session's processing lease. Throws, with nothing
+    /// changed, when another job holds the lock (`DeepTranscriptionLock.busyMessage`), the meeting is still recording,
     /// another process holds the lease, the audio was deleted, a saved analysis was written by a newer Voice is Local,
     /// or the audio cannot be prepared (the next run tries again). `profiles` gives people's names to the exports, and
     /// with `voiceSamples` the voice samples people have from this meeting are brought in step with what the labels
     /// now show (`VoiceProfileService.refreshSamples`, as after an edit): worked out from the files, so a mask an
     /// earlier pass saved without doing so is caught up too, and up-to-date samples cost nothing.
+    ///
+    /// Cancelled (Ctrl-C, or SIGTERM when the app needs the Mac for a meeting), it throws `CancellationError`: before
+    /// it starts, or before the voice samples (whose recomputing can take minutes on a long call), and while they are
+    /// extracted. The analysis and the transcript rewrite before that are short and not cut short; each leaves files
+    /// a later run reads as done or still owed (the mask saved in one step; the exports recorded `pending` until all
+    /// are written; the samples saved together, or not at all), so `EchoCatchUpSchedule.needsAnalysis` still finds
+    /// what was not finished.
     public static func run(_ request: Request, voiceSamples: VoiceSampleSource,
                            profiles: SpeakerProfileStore? = nil,
                            freeSpace: any FreeSpaceProvider = VolumeFreeSpace(),
                            progress: @escaping @Sendable (String) -> Void = { _ in }) async throws -> Outcome {
         let session = request.session
+        var held: DeepTranscriptionLock.Taken?
+        if let jobLock = request.jobLock {
+            let sessionID = (try? SessionArchive.readManifest(at: session).id)
+                ?? session.deletingPathExtension().lastPathComponent
+            guard let taken = try DeepTranscriptionLock.take(
+                DeepTranscriptionLock.Holder(pid: getpid(), sessionID: sessionID, force: request.force,
+                                             kind: DeepTranscriptionLock.Holder.echoKind), at: jobLock) else {
+                throw HolosError.unavailable(DeepTranscriptionLock.busyMessage)
+            }
+            held = taken
+        }
+        defer { held?.release() }
+        try Task.checkCancellation()
         if try SessionArchive.isActive(at: session) {
             throw HolosError.unavailable("This meeting is still recording. Stop it before analysing its echo.")
         }
@@ -57,6 +88,8 @@ public enum SessionEchoAnalyzeCommand {
             try analyze(request, profiles: profiles, freeSpace: freeSpace, progress: progress)
         }
         if outcome.verdict != nil, let profiles, let makeExtractor = voiceSamples.extractor {
+            // Stopped now, the samples are still out of step with the saved mask: the next run brings them in step.
+            try Task.checkCancellation()
             do {
                 try await VoiceProfileService.refreshSamplesIfLearned(session: session, makeExtractor: makeExtractor,
                                                                       store: profiles)
