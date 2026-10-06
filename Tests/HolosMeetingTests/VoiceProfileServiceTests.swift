@@ -136,7 +136,10 @@ func rememberOffMeansNoVoiceDataAndNoRecognition() async throws {
     let temp = try TemporaryDirectory("profiles")
     defer { temp.remove() }
     let store = profileStore(temp)
-    try store.update { $0.profiles = [profilePerson("JIM", "Jim", vector: profileAxis(0))] }
+    try store.update {
+        $0.profiles = [profilePerson("JIM", "Jim", vector: profileAxis(0))]
+        $0.rememberVoices = false
+    }
     let (session, record) = try await profileProcessedSession(in: temp, store: store)
     #expect(record.state == .succeeded)
     let recognize = try #require(record.stages.last { $0.stage == .recognize })
@@ -276,6 +279,7 @@ func linkWithoutRememberKeepsTheName() async throws {
     let temp = try TemporaryDirectory("profiles")
     defer { temp.remove() }
     let store = profileStore(temp)
+    try store.update { $0.rememberVoices = false }
     let (session, run) = try await profileSession(in: temp)
     let extractor = ProfileFakeExtractor()
     _ = try await VoiceProfileService.link(
@@ -669,6 +673,7 @@ func sampleFromAnEarlierRunIsKeptWhenItCannotBeRelearned() async throws {
     old.inputDigest = "old"
     try store.update {
         $0.profiles = [SpeakerProfile(id: "JIM", displayName: "Jim", embeddingModel: profileModel, samples: [old])]
+        $0.rememberVoices = false
     }
     let extractor = ProfileFakeExtractor()
     try await VoiceProfileService.refreshSamples(session: session, extractor: extractor, store: store)

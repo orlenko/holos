@@ -27,14 +27,35 @@ private func profileSample(session: String = UUID().uuidString) -> VoiceprintSam
                      embedding: FloatVector([1, 0, 0]), condition: .call, weak: false, addedAt: profileDate)
 }
 
-@Test func missingStoreLoadsEmptyWithRememberOff() throws {
+@Test func missingStoreLoadsEmptyWithRememberOn() throws {
     let root = try profileRoot()
     defer { try? FileManager.default.removeItem(at: root) }
     let store = SpeakerProfileStore(directory: root.appendingPathComponent("Speakers"))
     let database = try store.load()
     #expect(database == SpeakerProfileDatabase())
-    #expect(!database.rememberVoices)
+    #expect(database.rememberVoices, "On for new installs.")
     #expect(!FileManager.default.fileExists(atPath: store.directory.path), "Loading creates nothing.")
+
+    // The first write of a fresh store saves the default.
+    try store.update { $0.profiles = [SpeakerProfile(displayName: "Jim")] }
+    let saved = try JSONSerialization.jsonObject(with: Data(contentsOf: store.databaseURL)) as? [String: Any]
+    #expect(saved?["rememberVoices"] as? Bool == true)
+}
+
+/// A store an earlier build saved (when the default was off) keeps the setting it has, through reads and writes.
+@Test(arguments: [false, true])
+func existingStoreKeepsItsRememberSetting(_ remember: Bool) throws {
+    let root = try profileRoot()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let store = SpeakerProfileStore(directory: root.appendingPathComponent("Speakers"))
+    try store.update { _ in }  // creates the private folder
+    let legacy = Data(#"{"schemaVersion": 1, "rememberVoices": \#(remember), "profiles": []}"#.utf8)
+    try AtomicFile.write(legacy, to: store.databaseURL)
+    #expect(try store.load().rememberVoices == remember)
+    try store.update { $0.profiles = [SpeakerProfile(displayName: "Maria")] }
+    let saved = try JSONSerialization.jsonObject(with: Data(contentsOf: store.databaseURL)) as? [String: Any]
+    #expect(saved?["rememberVoices"] as? Bool == remember)
+    #expect(try store.load().rememberVoices == remember)
 }
 
 @Test(.timeLimit(.minutes(1)))

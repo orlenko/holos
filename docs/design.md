@@ -1115,8 +1115,11 @@ transcript files get the summary, key points and action items (Markdown and JSON
 method, files and measurements.
 
 Every action stays: double-click or Return opens (the live transcript, Review, or the
-transcript preview), ⌫ is Delete Meeting…, the buttons below the list, and the row's menu, which
-now has Open, Live Transcript, Review…, Open Transcript, Show in Finder, Save Transcript As…,
+transcript preview), ⌫ is Delete Meeting…, the buttons below the list, and the row's menu. The menu
+starts with the item double-click and Return use, named for what it opens (Open Live Transcript,
+Open Review, or Open Transcript; no Return key equivalent, which would fire from other fields), then Review… and Show Transcript File (the preview)
+unless that first item already does the same (`MeetingOpenPolicy.menuItems`), so no two items do
+one thing. After them come Show in Finder, Save Transcript As…,
 Rename… and Use Generated Title, Summarize (Again), Make Final Transcript Now / Cancel Final Transcript, Recover…, Label
 Speakers, Delete Audio… and Delete Meeting…, each enabled as its button is. Right-clicking a
 row selects it.
@@ -1349,11 +1352,13 @@ decision 2 in the [meeting-recording plan](meeting-recording-plan.md); details i
 - **Names are not biometric.** Linking a speaker to a person creates or reuses that
   person whatever the settings, so names carry across meetings; each meeting also keeps
   the name it was given as its own edit.
-- **Voiceprints are opt-in and come only from confirmed labels.** With "Remember
-  voices" on (off by default), naming a speaker with voice learning on stores one
-  sample per person and meeting: the mean embedding of that speaker's clear turns,
-  extracted on demand. Post-processing never stores voice embeddings; nothing is
-  inferred from unconfirmed speakers or automatic matches.
+- **Voiceprints come only from confirmed labels.** "Remember voices" is on for new
+  installs (user decision, 2026-10-06: naming people is the point of labelling them);
+  an existing setting is kept, so a store saved off stays off. With it on, naming a speaker with voice learning on
+  (the review window's box follows the setting) stores one sample per person and
+  meeting: the mean embedding of that speaker's clear turns, extracted on demand.
+  Post-processing never stores voice embeddings; nothing is inferred from unconfirmed
+  speakers or automatic matches.
 - **Recognition only suggests** ("Maybe Jim — Confirm") until thresholds are calibrated
   on the user's own confirmed meetings; suggestions never appear in exports.
 - **Storage and control.** Samples live only in Application Support/Holos/Speakers

@@ -116,7 +116,8 @@ public struct SpeakerProfileStore: Sendable {
 
     // MARK: - Database
 
-    /// The database; a missing file (or folder) gives an empty one with "Remember voices" off. A file written by a
+    /// The database; a missing file (or folder) gives an empty one with "Remember voices" on (the default for new
+    /// installs; an existing store keeps the setting it has, whatever it is). A file written by a
     /// newer Holos is refused (`unavailable`); a damaged one (not JSON, or JSON that breaks a `validate` rule, such as
     /// a repeated ID) throws `invalidInput` and is never overwritten.
     public func load() throws -> SpeakerProfileDatabase {

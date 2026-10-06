@@ -175,7 +175,7 @@ several unrelated external APIs. The coordinator owns shared contract changes.
 - **Accept:** Renaming does not rerun inference; timing survives word/turn splits;
   a new diarization revision does not silently discard human edits; reference
   meetings meet the agreed speaker-attribution bar. Cross-session identity only as
-  opt-in suggestions from voices the user confirmed (voice profiles,
+  suggestions from voices the user confirmed ("Remember voices", on for new installs; voice profiles,
   [meeting-design.md](meeting-design.md) §4.10): no automatic names until thresholds
   are calibrated on the user's own meetings, and names carry across meetings without
   any voiceprint.

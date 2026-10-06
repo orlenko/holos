@@ -41,6 +41,54 @@ public enum MeetingOpenPolicy {
         return hasExport ? .transcript : .none
     }
 
+    /// An item of the meeting's menu that opens something.
+    public struct MenuItem: Sendable, Equatable {
+        public enum Action: Sendable, Equatable {
+            /// What double-click and Return open (`target`).
+            case open
+            /// Review (Name Speakers).
+            case review
+            /// The Quick Look preview of exports/transcript.md.
+            case transcriptFile
+        }
+
+        public var action: Action
+        public var title: String
+        public var isEnabled: Bool
+
+        public init(_ action: Action, _ title: String, isEnabled: Bool) {
+            self.action = action; self.title = title; self.isEnabled = isEnabled
+        }
+    }
+
+    /// The title of the menu item that opens `target`, naming what it opens; nil for `.none` (nothing opens).
+    public static func openTitle(_ target: Target) -> String? {
+        switch target {
+        case .live: "Open Live Transcript"
+        case .review: "Open Review"
+        case .transcript: "Open Transcript"
+        case .none: nil
+        }
+    }
+
+    /// The meeting menu's items that open something, each doing something different: first the item double-click
+    /// and Return use, titled by what it opens (`openTitle`; none when nothing opens); then Review… unless that item
+    /// already opens Review, and Show Transcript File (the preview) unless that item already shows it. Review… and
+    /// Show Transcript File are enabled as their buttons are (`canReview`, `hasExport`).
+    public static func menuItems(_ summary: SessionSummary, liveSessionID: String?, inUse: Bool,
+                                 hasExport: Bool) -> [MenuItem] {
+        let target = target(summary, liveSessionID: liveSessionID, inUse: inUse, hasExport: hasExport)
+        var items: [MenuItem] = []
+        if let title = openTitle(target) { items.append(MenuItem(.open, title, isEnabled: true)) }
+        if target != .review {
+            items.append(MenuItem(.review, "Review…", isEnabled: canReview(summary, inUse: inUse)))
+        }
+        if target != .transcript {
+            items.append(MenuItem(.transcriptFile, "Show Transcript File", isEnabled: hasExport))
+        }
+        return items
+    }
+
     /// The Meetings list: live meetings first, then the rest in the catalog's order (newest first).
     public static func ordered(_ sessions: [SessionSummary], liveSessionID: String?) -> [SessionSummary] {
         sessions.filter { isLive($0, liveSessionID: liveSessionID) }

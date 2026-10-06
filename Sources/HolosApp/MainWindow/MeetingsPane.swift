@@ -1038,9 +1038,11 @@ final class PreviewingWindow: NSWindow {
 // MARK: - The meeting's menu
 
 extension MeetingsPane: NSMenuDelegate {
-    /// The row clicked, which becomes the selection: Open, Live Transcript, Review…, Open Transcript, Show in Finder,
-    /// Save Transcript As…; Rename… (⌘R), while the user's name hides a generated title Use Generated Title, and after
-    /// a rename whose transcript files could not be rewritten Update Transcript Files;
+    /// The row clicked, which becomes the selection: the item double-click and Return use, named for what it opens
+    /// (Open Live Transcript, Open Review, or Open Transcript), then Review… and Show Transcript File unless that item
+    /// already does the same (`MeetingOpenPolicy.menuItems`), Show in Finder, Save Transcript As…; Rename… (⌘R),
+    /// while the user's name hides a generated title Use Generated Title, and after a rename whose transcript files
+    /// could not be rewritten Update Transcript Files;
     /// Summarize Again; Make Final Transcript Now (also for a meeting queued automatically, which
     /// it upgrades), and Cancel Final Transcript while it is queued or running; Recover…, Label Speakers, Delete
     /// Audio…, Delete Meeting…. Each is enabled as its button is.
@@ -1051,17 +1053,27 @@ extension MeetingsPane: NSMenuDelegate {
             table.selectRowIndexes(IndexSet(integer: table.clickedRow), byExtendingSelection: false)
         }
         let enabled = enabledActions(summary)
-        func add(_ title: String, _ action: Selector, _ isEnabled: Bool) {
+        @discardableResult
+        func add(_ title: String, _ action: Selector, _ isEnabled: Bool) -> NSMenuItem {
             let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
             item.target = self
             item.isEnabled = isEnabled
             menu.addItem(item)
+            return item
         }
         let isLive = MeetingOpenPolicy.isLive(summary, liveSessionID: liveSessionID)
-        add("Open", #selector(openSelection), openTarget(summary) != .none || enabled.contains(.openTranscript))
-        if isLive { add("Live Transcript", #selector(showLiveTranscript), true) }
-        add("Review…", #selector(review), canReview(summary))
-        add("Open Transcript", #selector(openTranscript), enabled.contains(.openTranscript))
+        for open in MeetingOpenPolicy.menuItems(summary, liveSessionID: liveSessionID, inUse: running[summary.id] != nil,
+                                                hasExport: hasExport(summary)) {
+            switch open.action {
+            case .open:
+                // What double-click and Return open. No ↩ key equivalent: a context menu's items stay attached to the
+                // table, so an unmodified Return here would open the meeting from the search field or the rename
+                // editor too; the table handles Return itself (`table.onReturn`).
+                add(open.title, #selector(openSelection), open.isEnabled)
+            case .review: add(open.title, #selector(review), open.isEnabled)
+            case .transcriptFile: add(open.title, #selector(openTranscript), open.isEnabled)
+            }
+        }
         add("Show in Finder", #selector(showInFinder), enabled.contains(.showInFinder))
         add("Save Transcript As…", #selector(saveTranscript), enabled.contains(.saveTranscript))
 

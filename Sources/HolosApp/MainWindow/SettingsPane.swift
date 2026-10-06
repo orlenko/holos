@@ -283,10 +283,9 @@ final class SettingsPane: NSViewController, MainSectionContent, NSSearchFieldDel
         let searchWidth = search.widthAnchor.constraint(equalToConstant: 340)
         searchWidth.priority = .defaultHigh
 
-        // A hairline where the page scrolls under the search field.
-        let separator = NSBox()
-        separator.boxType = .separator
-        separator.translatesAutoresizingMaskIntoConstraints = false
+        // A hairline where the page scrolls under the search field; one point high (`hairline`): in some windows a
+        // separator without a height took all the page's.
+        let separator = NSBox.hairline()
 
         let root = NSView()
         root.addSubview(search)
@@ -298,10 +297,6 @@ final class SettingsPane: NSViewController, MainSectionContent, NSSearchFieldDel
             searchWidth,
             search.topAnchor.constraint(equalTo: root.topAnchor, constant: 14),
             separator.topAnchor.constraint(equalTo: search.bottomAnchor, constant: 10),
-            // A separator box has no height of its own: without this, the space between the search field and the
-            // bottom was split between it and the page at random, and in some windows the box took all of it (drawn
-            // as a vertical line, since it was taller than wide) and left the page no height at all.
-            separator.heightAnchor.constraint(equalToConstant: 1),
             separator.leadingAnchor.constraint(equalTo: root.leadingAnchor),
             separator.trailingAnchor.constraint(equalTo: root.trailingAnchor),
             scroll.topAnchor.constraint(equalTo: separator.bottomAnchor),
@@ -482,8 +477,8 @@ final class SettingsPane: NSViewController, MainSectionContent, NSSearchFieldDel
         addRow(.speakerModels, "Speaker labels", to: grid)
         addRow(.deepTranscriptionModel, "Final transcript", to: grid)
         addRow(.people, "Remember voices", to: grid)
-        set(.people, .pending, "Whether Voice is Local remembers the voices of people you name is set in People, "
-            + "with each person's samples.", button: "Open People")
+        set(.people, .pending, "On for new installs: Voice is Local learns the voices of people you name, on this Mac, "
+            + "and suggests them in later meetings. Turn it off or forget voices in People.", button: "Open People")
         rows[.people]?.icon.image = NSImage(systemSymbolName: "person.2", accessibilityDescription: nil)
         rows[.people]?.icon.contentTintColor = .secondaryLabelColor
 

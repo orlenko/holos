@@ -155,8 +155,7 @@ final class HistoryPane: NSViewController, MainSectionContent, NSTableViewDataSo
         let footerRow = NSStackView(views: [footer, NSView(), clearButton])
         footerRow.alignment = .centerY
         footerRow.edgeInsets = NSEdgeInsets(top: 8, left: 16, bottom: 10, right: 16)
-        let separator = NSBox()
-        separator.boxType = .separator
+        let separator = NSBox.hairline()
 
         let root = NSStackView(views: [split, separator, footerRow])
         root.orientation = .vertical
@@ -694,8 +693,7 @@ final class HistoryDetailView: NSView {
         header.orientation = .vertical
         header.alignment = .leading
         header.spacing = 2
-        let separator = NSBox()
-        separator.boxType = .separator
+        let separator = NSBox.hairline()
         for view in [header, audioRow, comparison, text, restHeading, rest, heardHeading, heard, separator, grid,
                      buttons] {
             content.addArrangedSubview(view)

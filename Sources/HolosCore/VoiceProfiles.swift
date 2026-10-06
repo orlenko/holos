@@ -1,6 +1,6 @@
 import Foundation
 
-// People and their opt-in voiceprints (docs/meeting-design.md §4.10, PR10). Names are not biometric; voiceprints are.
+// People and their voiceprints (docs/meeting-design.md §4.10, PR10). Names are not biometric; voiceprints are.
 // A person (`SpeakerProfile`) exists whether or not "Remember voices" is on, so names carry across meetings; a
 // voiceprint reaches disk only as a `VoiceprintSample` of a person the user confirmed with voice learning on.
 // Stored in `<support>/Speakers/profiles.json` by `SpeakerProfileStore` (HolosStorage).
@@ -90,7 +90,8 @@ public struct SpeakerProfileDatabase: Codable, Sendable, Equatable {
 
     /// 1.
     public var schemaVersion: Int
-    /// Off by default. Governs voice samples, per-session voice data, and recognition. Never names.
+    /// On in a new store; an existing store keeps the value it has. Governs voice samples, per-session voice data,
+    /// and recognition. Never names.
     public var rememberVoices: Bool
     /// Counts the store writes of forgets (`VoiceProfileService.perform`). Voice sample work started before a
     /// forget and published after it would put back what the forget removed, and comparing the samples cannot see
@@ -115,7 +116,7 @@ public struct SpeakerProfileDatabase: Codable, Sendable, Equatable {
     /// while this is set and nothing is calibrated.
     public var calibrationResetAt: Date?
 
-    public init(schemaVersion: Int = SpeakerProfileDatabase.currentSchemaVersion, rememberVoices: Bool = false,
+    public init(schemaVersion: Int = SpeakerProfileDatabase.currentSchemaVersion, rememberVoices: Bool = true,
                 calibratedThresholds: RecognitionThresholds? = nil, calibratedModel: EmbeddingModelID? = nil,
                 profiles: [SpeakerProfile] = [], calibrationResetAt: Date? = nil, forgetEpoch: Int? = nil,
                 mergedInto: [String: String]? = nil) {

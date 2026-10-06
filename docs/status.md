@@ -162,8 +162,9 @@ thumbnail timeline, and a larger local-model benchmark are follow-ups.
 - People and voices (wave 4): `speakers link <session> <speaker> <person|new:NAME>` (and
   `speakers me`) links a speaker to a person and names it, so names carry across
   meetings with or without voiceprints; `speakers reject` says a speaker is not a person
-  in that meeting. "Remember voices" is off by default (`people remember on|off|status
-  [--forget]`, or the People window): with it on, `link --learn-voice` learns one voice
+  in that meeting. "Remember voices" is on for new installs since 2026-10-06; an
+  existing setting is kept (`people remember on|off|status [--forget]`, or the People
+  window): with it on, `link --learn-voice` learns one voice
   sample per person and meeting from the confirmed speaker's clear turns only (2 s or
   longer, not overlapped, not reassigned, split, or excluded; an outlier pass drops
   turns far from the rest), extracted on demand by a fresh FluidAudio pass (the app runs
@@ -294,7 +295,7 @@ thumbnail timeline, and a larger local-model benchmark are follow-ups.
   (and before Voice is Local quits); a hand-edited export is moved aside and the footer says so.
   Playback uses the saved chunks at their session times (off after Delete Audio). The
   footer box "Learn voices of people I name in this meeting" decides whether naming learns
-  a voice. Delete Meeting can also forget the voice samples learned from that meeting.
+  a voice; it starts checked while Remember voices is on (on for new installs). Delete Meeting can also forget the voice samples learned from that meeting.
 - `voices list` and `say` provide native voice discovery (with each voice's quality, and a
   hint to download Premium voices when none is installed), playback, and `.m4a`, `.wav`,
   or `.caf` export. Text comes from arguments or UTF-8 stdin. `--voice` takes a name as
@@ -488,7 +489,14 @@ thumbnail timeline, and a larger local-model benchmark are follow-ups.
   scrolls up ("Jump to Live"). After the stop it shows the saving progress, then offers
   Open Review or Open Transcript. The separate Live Transcript window is gone. Unit-tested
   (volatile to final, echo hiding, following, what opens) and rendered offscreen in light
-  and dark; not yet seen in a real meeting.
+  and dark. In the first real meeting (2026-10-06) it stayed blank although the recorder
+  journaled its words live: the hairline under the header had no height of its own and, in
+  a tall window, took all the height and left the transcript none (as in Settings before).
+  Fixed; `LiveMeetingViewTests` opens a recording's live transcript in the real main window
+  at five sizes, feeds it a journal shaped like that meeting's, and checks the words are read
+  and the transcript has the height. Every separator line in the app is now made by
+  `NSBox.hairline()` (1 pt high), and `HairlineTests` fails on a separator box made any
+  other way. Not yet seen again in a real meeting.
 - Reading section (docs/design.md "Reading section"): the main window's Reading (⌘5) makes
   the `voiceislocal read` file in the app. A New reading card takes an `https://` link or a
   document (typed, pasted with ⌘V, dropped anywhere on the section, or chosen; several files
