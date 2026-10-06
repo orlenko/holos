@@ -231,24 +231,40 @@ public enum EchoAnalysis {
     }
 
     /// The line through the confident windows, refitted on those that agree with it.
+    ///
+    /// Two starts are refined and the one more windows agree with wins (the robust one on a tie): a robust (Theil–Sen)
+    /// line, since one far-off window would pull a least-squares line so far that no window agrees with it; and a
+    /// constant delay at the median, since with few windows one outlier at an end still tilts the Theil–Sen slope
+    /// (four windows, one 200 ms off, give a slope no window agrees with).
     static func fitDelay(_ windows: [DelayWindow]) -> DelayFit {
         let confident = windows.filter { $0.peakRatio > confidentPeakRatio }
         var result = DelayFit(windows: windows.count, confidentWindows: confident.count, agreeingWindows: 0)
-        // The first line is robust (Theil–Sen): one far-off window would pull a least-squares line so far that no
-        // window agrees with it and the refits have nothing to start from.
-        guard confident.count >= minimumAgreeingWindows, var line = robustLine(confident) else { return result }
+        guard confident.count >= minimumAgreeingWindows, let robust = robustLine(confident) else { return result }
         func agrees(_ window: DelayWindow, _ line: (intercept: Double, slope: Double)) -> Bool {
             abs(window.milliseconds - (line.intercept + line.slope * window.centre)) < agreementMilliseconds
         }
-        for _ in 0..<lineRefits {
-            let kept = confident.filter { agrees($0, line) }
-            guard kept.count >= 2, let refit = fitLine(kept) else { break }
-            line = refit
+        func refined(_ start: (intercept: Double, slope: Double)) -> (line: (intercept: Double, slope: Double), agreeing: Int) {
+            var line = start
+            for _ in 0..<lineRefits {
+                let kept = confident.filter { agrees($0, line) }
+                guard kept.count >= 2, let refit = fitLine(kept) else { break }
+                line = refit
+            }
+            return (line, confident.filter { agrees($0, line) }.count)
         }
-        result.agreeingWindows = confident.filter { agrees($0, line) }.count
-        result.startMilliseconds = line.intercept
-        result.driftMillisecondsPerHour = line.slope * 3_600
+        var best = refined(robust)
+        let constant = refined((median(confident.map(\.milliseconds)), 0))
+        if constant.agreeing > best.agreeing { best = constant }
+        result.agreeingWindows = best.agreeing
+        result.startMilliseconds = best.line.intercept
+        result.driftMillisecondsPerHour = best.line.slope * 3_600
         return result
+    }
+
+    static func median(_ values: [Double]) -> Double {
+        let sorted = values.sorted()
+        let middle = sorted.count / 2
+        return sorted.isEmpty ? 0 : sorted.count % 2 == 1 ? sorted[middle] : (sorted[middle - 1] + sorted[middle]) / 2
     }
 
     /// Least-squares line of delay (ms) against window centre (s); a flat line when every centre is the same.
@@ -272,11 +288,6 @@ public enum EchoAnalysis {
     /// such pair), and the median intercept for it. Up to about 29 % of the windows can be anywhere.
     static func robustLine(_ windows: [DelayWindow]) -> (intercept: Double, slope: Double)? {
         guard !windows.isEmpty else { return nil }
-        func median(_ values: [Double]) -> Double {
-            let sorted = values.sorted()
-            let middle = sorted.count / 2
-            return sorted.count % 2 == 1 ? sorted[middle] : (sorted[middle - 1] + sorted[middle]) / 2
-        }
         var slopes: [Double] = []
         for first in windows.indices {
             for second in windows.indices where second > first && windows[second].centre != windows[first].centre {
@@ -796,7 +807,9 @@ public enum EchoAnalysis {
             ratio[frame] = residual - mic
             aboveFloor[frame] = mic - micFloor[frame]
             residualAboveFloor[frame] = residual - micFloor[frame]
-            echoLevel[frame] = echo - mic
+            // No microphone sound at all (a gap in the recording) or no predicted echo is no evidence of echo: with
+            // both zero the two levels would be equal and a quiet word there would read as explained.
+            echoLevel[frame] = powers.microphone[frame] > 0 && powers.echo[frame] > 0 ? echo - mic : -.infinity
             let systemActive = Double(powers.system[frame]) > systemFloor[frame] * 10
             dominated[frame] = systemActive && aboveFloor[frame] > activeAboveFloorDB && echoLevel[frame] > echoDominatedDB
         }

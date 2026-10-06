@@ -121,18 +121,23 @@ public enum SpeakerRunBuilder {
     /// transcript's estimated times again could move), and every cluster and speaker ID stays. `transcript` must be
     /// the run's (`run.transcriptID`).
     ///
-    /// - Words already in `run.droppedWords` are not judged again. The new drops are listed under
-    ///   `EchoFilter.acousticReason` (added to an entry with that reason when there is one).
-    /// - A microphone turn loses its echo words and is cut where they were, as in `build`; a turn left with no word
-    ///   goes; the pieces keep the turn's speaker, cluster and score, and take the time and timing quality of their
-    ///   words. Turns of other tracks are unchanged.
+    /// - The text filter's drops stay as they are. Every other microphone word is judged by the mask: the run's
+    ///   earlier `EchoFilter.acousticReason` drops too, so a mask computed again (a new analysis version, `--force`,
+    ///   or no echo found, `acousticEcho` nil) can give back words an older one took. The `acousticReason` entry
+    ///   lists exactly the mask's drops now (none: no entry).
+    /// - A microphone turn loses its new echo words and is cut where they were, as in `build`; a turn left with no
+    ///   word goes; the pieces keep the turn's speaker, cluster and score, and take the time and timing quality of
+    ///   their words. Turns of other tracks are unchanged.
+    /// - Words given back, which no turn holds, get the speaker the run's stored diarization gives them (the label
+    ///   `build` gave them before they were dropped; unknown speaker for a cluster the run does not list) and form
+    ///   turns of their own, by `build`'s turn rules, between the turns around them.
     /// - Echo clusters, as in `build`: a diarized microphone cluster that loses words to the mask and then has at
     ///   least `EchoFilter.echoClusterShare` of its labelled words dropped is not listed; its remaining turns become
     ///   unknown speaker, and other turns stop naming it among their overlaps. Its labelled words are those of its
-    ///   turns plus its words dropped before, which no turn holds, labelled by the run's stored diarization.
+    ///   turns plus its words in no turn (dropped, or given back), labelled by the run's stored diarization. A cluster
+    ///   hidden before is not listed again.
     /// - Turns are numbered T1… again in (start, track) order and speakers listed again (`build`'s rules).
-    /// - Nothing to drop (no mask, or a mask that flags no word) returns the run as it is, with the new `id` and
-    ///   `createdAt`.
+    /// - Nothing to drop or give back returns the run as it is, with the new `id` and `createdAt`.
     ///
     /// Tracks, offsets, alignment and engine are the run's. No voice data: the run's embedding windows were never
     /// stored.
@@ -141,14 +146,20 @@ public enum SpeakerRunBuilder {
         var rebuilt = run
         rebuilt.id = id
         rebuilt.createdAt = createdAt
-        guard let acousticEcho else { return rebuilt }
-        let alreadyDropped = EchoFilter.words(in: run.droppedWords.flatMap(\.spans))
-        let newSpans = EchoFilter.acousticEchoSpans(transcript: transcript, mask: acousticEcho,
-                                                    excluding: alreadyDropped)
-        let echo = EchoFilter.words(in: newSpans)
-        guard !echo.isEmpty else { return rebuilt }
+        let textDropped = EchoFilter.words(in: run.droppedWords.filter { $0.reason != EchoFilter.acousticReason }
+            .flatMap(\.spans))
+        let earlier = EchoFilter.words(in: run.droppedWords.filter { $0.reason == EchoFilter.acousticReason }
+            .flatMap(\.spans))
+        let acousticSpans = acousticEcho.map {
+            EchoFilter.acousticEchoSpans(transcript: transcript, mask: $0, excluding: textDropped)
+        } ?? []
+        let acoustic = EchoFilter.words(in: acousticSpans)
+        let echo = acoustic.subtracting(earlier)
+        let restored = earlier.subtracting(acoustic)
+        guard !echo.isEmpty || !restored.isEmpty else { return rebuilt }
         let microphone = EchoFilter.microphoneTrack
-        let hidden = echoClusters(run, transcript: transcript, newEcho: echo, alreadyDropped: alreadyDropped)
+        let hidden = echoClusters(run, transcript: transcript, newEcho: echo,
+                                  alreadyDropped: textDropped.union(earlier.intersection(acoustic)), restored: restored)
 
         var effective: [String: [EffectiveWord]] = [:]
         for segment in transcript.segments where effective[segment.id] == nil {
@@ -190,6 +201,7 @@ public enum SpeakerRunBuilder {
                 turns.append(kept)
             }
         }
+        turns += restoredTurns(run, transcript: transcript, restored: restored, hidden: hidden)
         if !hidden.isEmpty {
             // A hidden cluster is in no `speakers` entry, so no turn may still be overlapped with it.
             for index in turns.indices where turns[index].otherClusters.contains(where: hidden.contains) {
@@ -215,18 +227,64 @@ public enum SpeakerRunBuilder {
         rebuilt.turns = turns
         rebuilt.speakers = makeSpeakers(turns: turns, channelSpeakers: channelSpeakers)
         if let index = rebuilt.droppedWords.firstIndex(where: { $0.reason == EchoFilter.acousticReason }) {
-            let all = EchoFilter.words(in: rebuilt.droppedWords[index].spans).union(echo)
-            rebuilt.droppedWords[index].spans = spans(of: Array(all), in: transcript)
-        } else {
-            rebuilt.droppedWords.append(DroppedWords(spans: newSpans, reason: EchoFilter.acousticReason))
+            if acousticSpans.isEmpty {
+                rebuilt.droppedWords.remove(at: index)
+            } else {
+                rebuilt.droppedWords[index].spans = acousticSpans
+            }
+        } else if !acousticSpans.isEmpty {
+            rebuilt.droppedWords.append(DroppedWords(spans: acousticSpans, reason: EchoFilter.acousticReason))
         }
         return rebuilt
     }
 
+    /// Turns for microphone words `rebuild` gives back: each run of such words with no other microphone word between
+    /// them, labelled by the run's stored diarization (a cluster in `hidden` or not listed by the run becomes unknown
+    /// speaker) and cut into turns by `SpeakerAlignment.buildTurns`.
+    private static func restoredTurns(_ run: DiarizationRun, transcript: Transcript, restored: Set<WordRef>,
+                                      hidden: Set<String>) -> [SpeakerTurn] {
+        let microphone = EchoFilter.microphoneTrack
+        guard !restored.isEmpty, let diarization = run.tracks.first(where: { $0.track == microphone }) else {
+            return []
+        }
+        if case .skipped = diarization.policy { return [] }
+        let owner = untrackedSegmentOwner(transcript: transcript, tracks: run.tracks.map { ($0.track, $0.policy) })
+        let aligned = SpeakerAlignment.assignWords(segments: transcript.segments, track: microphone,
+                                                   includeUntracked: owner == microphone, diarization: diarization,
+                                                   parameters: run.alignment.parameters)
+        var listed = Set(run.speakers.flatMap(\.clusterIDs)).subtracting(hidden)
+        if case .channel(let speakerID, _) = diarization.policy { listed.insert(speakerID) }
+        var turns: [SpeakerTurn] = []
+        var group: [AlignedWord] = []
+        func flush() {
+            if !group.isEmpty {
+                turns += SpeakerAlignment.buildTurns(group, parameters: run.alignment.parameters,
+                                                     policy: diarization.policy)
+            }
+            group = []
+        }
+        for var word in aligned {
+            guard restored.contains(word.ref) else {
+                flush()
+                continue
+            }
+            if case .diarized = diarization.policy {
+                if let label = word.label, !listed.contains(label) {
+                    word.label = nil
+                    word.coveredSeconds = 0
+                }
+                word.overlapClusters = word.overlapClusters.filter(listed.contains)
+            }
+            group.append(word)
+        }
+        flush()
+        return turns
+    }
+
     /// The diarized microphone clusters `rebuild` hides: each that loses a word to `newEcho` and then has at least
-    /// `EchoFilter.echoClusterShare` of its labelled words dropped.
+    /// `EchoFilter.echoClusterShare` of its labelled words dropped (words given back, `restored`, count as labelled).
     private static func echoClusters(_ run: DiarizationRun, transcript: Transcript, newEcho: Set<WordRef>,
-                                     alreadyDropped: Set<WordRef>) -> Set<String> {
+                                     alreadyDropped: Set<WordRef>, restored: Set<WordRef>) -> Set<String> {
         let microphone = EchoFilter.microphoneTrack
         guard let diarization = run.tracks.first(where: { $0.track == microphone }),
               case .diarized = diarization.policy else { return [] }
@@ -249,10 +307,14 @@ public enum SpeakerRunBuilder {
         let aligned = SpeakerAlignment.assignWords(segments: transcript.segments, track: microphone,
                                                    includeUntracked: owner == microphone, diarization: diarization,
                                                    parameters: run.alignment.parameters)
-        for word in aligned where alreadyDropped.contains(word.ref) {
+        for word in aligned {
             guard let label = word.label else { continue }
-            labelled[label, default: 0] += 1
-            echoed[label, default: 0] += 1
+            if alreadyDropped.contains(word.ref) {
+                labelled[label, default: 0] += 1
+                echoed[label, default: 0] += 1
+            } else if restored.contains(word.ref) {
+                labelled[label, default: 0] += 1
+            }
         }
         // The tolerance keeps an exact share (3 of 5 is 60 %) from missing the threshold by rounding.
         return losing.filter { cluster in
@@ -278,17 +340,6 @@ public enum SpeakerRunBuilder {
             }
         }
         return spans
-    }
-
-    /// `spans(of:)` of `words` in transcript order (segments as listed, then word index).
-    private static func spans(of words: [WordRef], in transcript: Transcript) -> [WordSpan] {
-        var order: [String: Int] = [:]
-        for (index, segment) in transcript.segments.enumerated() where order[segment.id] == nil {
-            order[segment.id] = index
-        }
-        return spans(of: words.sorted {
-            (order[$0.segmentID] ?? .max, $0.word) < (order[$1.segmentID] ?? .max, $1.word)
-        })
     }
 
     /// Words, turns, speakers and dropped words of `tracks` (diarized tracks with their final segments): the

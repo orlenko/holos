@@ -26,7 +26,8 @@ public enum SpeakerEditReplay {
     /// Each edit's turns are the old projection's turns just before it (edits before it applied). They map to the new
     /// projection's turns that hold any of their words:
     /// - `reassignTurns` and `newSpeaker` carry only when each such new turn holds nothing but words of the listed
-    ///   turns, so no other words change speaker;
+    ///   turns, so no other words change speaker; a `newSpeaker` that cannot carry its turns still makes the speaker,
+    ///   without turns, when a later edit names it;
     /// - `excludeFromEnrollment` carries to every such turn (keeping more out of voice learning is safe);
     /// - `splitTurn` splits the new turn holding the split word; when that word already starts a turn there is
     ///   nothing to do (not dropped either).
@@ -39,8 +40,15 @@ public enum SpeakerEditReplay {
         var newView = SpeakerProjection.make(run: newRun, transcript: transcript, edits: [], recognition: nil,
                                              profileNames: [:])
         var result = Result()
-        for edit in edits where edit.baseRunID == oldRun.id && effectiveIDs.contains(edit.id) {
-            let mapped = map(edit.action, old: oldView, new: newView)
+        let replayed = edits.filter { $0.baseRunID == oldRun.id && effectiveIDs.contains($0.id) }
+        for (position, edit) in replayed.enumerated() {
+            var mapped = map(edit.action, old: oldView, new: newView)
+            // A speaker made on turns that are all echo now is still made, without turns, when a later edit names it
+            // (a system turn given to it, its name): those edits must not lose their speaker.
+            if case .dropped = mapped, case .newSpeaker(let speakerID, let name, _) = edit.action,
+               replayed[(position + 1)...].contains(where: { names($0.action, speakerID) }) {
+                mapped = .action(.newSpeaker(speakerID: speakerID, name: name, turnIDs: []))
+            }
             oldView = oldView.applying(edit.action, editID: edit.id)
             switch mapped {
             case .inEffect:
@@ -109,6 +117,16 @@ public enum SpeakerEditReplay {
             mapped.append(turn.id)
         }
         return mapped.isEmpty ? nil : mapped
+    }
+
+    /// Whether `action` refers to the speaker `speakerID`.
+    private static func names(_ action: SpeakerEditAction, _ speakerID: String) -> Bool {
+        switch action {
+        case .rename(let id, _), .linkProfile(let id, _), .rejectProfile(let id, _): id == speakerID
+        case .merge(let from, let into): from == speakerID || into == speakerID
+        case .reassignTurns(_, let to): to == speakerID
+        case .newSpeaker, .splitTurn, .excludeFromEnrollment, .revert: false
+        }
     }
 
     /// A turn's words in span order.

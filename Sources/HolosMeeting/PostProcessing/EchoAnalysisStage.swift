@@ -113,7 +113,11 @@ public enum EchoMaskStore {
             log.error("Session \(manifest.id, privacy: .public): echo/frames.bin is missing or does not match echo/mask.json")
             return nil
         }
-        return Stored(record: record, mask: mask)
+        // The summary counts are the mask's own, never the file's (which may be anything).
+        var checked = record
+        checked.frames?.echo = mask.classes.filter { $0 == AcousticEchoMask.FrameClass.echo.rawValue }.count
+        checked.frames?.local = mask.classes.filter { $0 == AcousticEchoMask.FrameClass.local.rawValue }.count
+        return Stored(record: checked, mask: mask)
     }
 
     /// Writes the frames file (or removes a stale one), then the record, which names the frames by their hash.
@@ -210,10 +214,12 @@ enum EchoAnalysisStage {
         switch record.verdict {
         case .echo:
             let delay = record.delay?.milliseconds(at: 0).map { String(format: "%.1f ms", $0) } ?? "some time"
-            guard let frames = record.frames, frames.echo + frames.local > 0 else {
+            // In floating point, so counts read from a file can never overflow.
+            guard let frames = record.frames, frames.echo >= 0, frames.local >= 0,
+                  Double(frames.echo) + Double(frames.local) > 0 else {
                 return "Microphone echo found, \(delay) behind the call."
             }
-            let share = Int((Double(frames.echo) / Double(frames.echo + frames.local) * 100).rounded())
+            let share = Int((Double(frames.echo) / (Double(frames.echo) + Double(frames.local)) * 100).rounded())
             return "Microphone echo found, \(delay) behind the call: \(share) % of the microphone's sound is echo."
         case .noEcho:
             return "The microphone did not pick up the call (headphones?), so nothing was taken out as echo."

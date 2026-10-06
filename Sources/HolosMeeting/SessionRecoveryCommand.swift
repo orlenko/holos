@@ -362,11 +362,12 @@ public enum SessionRecoveryCommand {
             let message = saved.problems.map(\.localizedDescription).joined(separator: " ")
             log.error("Speaker files are unusable and will be replaced: \(message, privacy: .private)")
         }
-        // A failed echo analysis (§5.11) leaves the record `succeeded`, as the labels were still made, but they keep
-        // the call's echo: they are not current, so Recover runs post-processing again and the analysis is retried.
+        // An echo analysis that failed or could not run (§5.11; no disk space) leaves the record `succeeded`, as the
+        // labels were still made, but they keep the call's echo: they are not current, so Recover runs
+        // post-processing again and the analysis is retried. The stage is recorded only when it ran or was owed.
         guard let record = saved.record,
               record.state == .succeeded || (record.state == .partial && speakerStagesSettled(record)),
-              !record.stages.contains(where: { $0.stage == .echo && $0.result == .failed }),
+              !record.stages.contains(where: { $0.stage == .echo && $0.result != .succeeded }),
               record.transcriptID == transcriptID else {
             return nil
         }

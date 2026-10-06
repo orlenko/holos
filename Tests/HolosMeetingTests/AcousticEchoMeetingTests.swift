@@ -213,6 +213,84 @@ func anUnreadableMicrophoneCostsOnlyTheMask() async throws {
 }
 
 @Test(.timeLimit(.minutes(2)))
+func anEchoAnalysisThatFailedIsRetriedAfterTheLabelsAreEdited() async throws {
+    // The first run cannot read the microphone, so its echo is not found; the user then names a speaker. The next run
+    // keeps the edited labels but takes the echo out of them, keeping the name.
+    let temp = try TemporaryDirectory("echo")
+    defer { temp.remove() }
+    let call = CallTranscript()
+    let session = try await callSession(in: temp.url, audio: CallAudio.tracks(echo: true), transcript: call.transcript)
+    let manifest = try SessionArchive.readManifest(at: session)
+    let micChunks = manifest.chunks.filter { $0.track == "mic" }.map { session.appendingPathComponent($0.relativePath) }
+    for chunk in micChunks {
+        try FileManager.default.moveItem(at: chunk, to: chunk.appendingPathExtension("away"))
+    }
+    let first = try await MeetingPostProcessor(diarizer: systemDiarizer(), freeSpace: FixedFreeSpace(.max))
+        .run(session: session, lease: nil)
+    #expect(first.stages.first { $0.stage == .echo }?.result == .failed)
+    for chunk in micChunks {
+        try FileManager.default.moveItem(at: chunk.appendingPathExtension("away"), to: chunk)
+    }
+    try SessionFixtures.appendEdits([.rename(speakerID: "system:S1", name: "Person A")], session: session)
+
+    let second = try await MeetingPostProcessor(diarizer: systemDiarizer(), freeSpace: FixedFreeSpace(.max))
+        .run(session: session, lease: nil)
+    #expect(second.state == .partial)
+    #expect(second.stages.first { $0.stage == .echo }?.result == .succeeded)
+    let snapshot = try SpeakerSessionSnapshot.load(session: session)
+    #expect(snapshot.run?.id == second.runID)
+    #expect(snapshot.run?.droppedWords == [DroppedWords(spans: call.echoSpans, reason: EchoFilter.acousticReason)])
+    #expect(snapshot.projection?.speakers.first { $0.id == "system:S1" }?.name == "Person A")
+    #expect(!SessionFixtures.text(SessionPaths.export("md", in: session)).contains("heard0w0"))
+    // Settled now: Recover leaves it.
+    #expect(try SessionRecoveryCommand.currentLabels(session, transcriptID: call.transcript.id, canLabel: true) != nil)
+    // And with the analysis saved, a later run finds nothing more to do.
+    let third = try await MeetingPostProcessor(diarizer: systemDiarizer(), freeSpace: FixedFreeSpace(.max))
+        .run(session: session, lease: nil)
+    #expect(third.runID == second.runID)
+    #expect(!third.stages.contains { $0.stage == .echo })
+}
+
+@Test(.timeLimit(.minutes(2)))
+func anEchoAnalysisPutOffForDiskSpaceIsNotSettled() async throws {
+    // No track to diarize and a stop for low disk space: the analysis is put off, and Recover tries again later.
+    let temp = try TemporaryDirectory("echo")
+    defer { temp.remove() }
+    let call = CallTranscript()
+    let micOnly = SessionFixtures.transcript(call.echoSegments + call.ownSegments)
+    let session = try await callSession(in: temp.url, audio: CallAudio.tracks(echo: true), transcript: micOnly)
+    let record = try await MeetingPostProcessor(diarizer: systemDiarizer(), options: .init(stopReason: .diskLow),
+                                                freeSpace: FixedFreeSpace(.max)).run(session: session, lease: nil)
+    #expect(record.stages.first { $0.stage == .echo }?.result == .skipped)
+    #expect(!SessionFixtures.exists(EchoMaskStore.recordURL(session)))
+    #expect(try SessionRecoveryCommand.currentLabels(session, transcriptID: micOnly.id, canLabel: true) == nil)
+}
+
+@Test(.timeLimit(.minutes(2)))
+func damagedSummaryCountsInTheRecordAreNotTrusted() async throws {
+    let temp = try TemporaryDirectory("echo")
+    defer { temp.remove() }
+    let session = try await callSession(in: temp.url, audio: CallAudio.tracks(echo: true),
+                                        transcript: CallTranscript().transcript)
+    let manifest = try SessionArchive.readManifest(at: session)
+    let mask = try #require(AcousticEchoMask(classes: [1, 1, 2], echoLevels: [0, 0, 0]))
+    let record = EchoMaskRecord(sessionID: manifest.id, audio: EchoMaskStore.audioKey(manifest: manifest),
+                                verdict: .echo,
+                                frames: .init(count: 3, hopSeconds: 0.016, firstCentreSeconds: 0.032,
+                                              sha256: SessionExports.sha256(mask.bytes), echo: .max, local: .max))
+    try EchoMaskStore.write(record, mask: mask, session: session)
+    let stored = try #require(try EchoMaskStore.current(session: session, manifest: manifest))
+    #expect(stored.record.frames?.echo == 2)
+    #expect(stored.record.frames?.local == 1)
+    #expect(EchoAnalysisStage.message(stored.record).contains("67 %"))
+    // Even a record whose counts were never checked makes a sentence, not a trap.
+    #expect(!EchoAnalysisStage.message(record).isEmpty)
+    var negative = record
+    negative.frames?.echo = -5
+    #expect(!EchoAnalysisStage.message(negative).isEmpty)
+}
+
+@Test(.timeLimit(.minutes(2)))
 func echoIsFoundWhenNoTrackNeedsDiarizing() async throws {
     // The microphone is "Me" and the system track has no words (its recognition failed): no track is diarized, and
     // the microphone's echo is still found.
@@ -429,6 +507,30 @@ func echoAnalyzeReplacesNothingWhenTheJournalChangesMeanwhile() async throws {
         #expect(try SessionSpeakerStore.readHead(session: session)?.runID == run.id)
         #expect(try Data(contentsOf: journalURL) == before + line)
     }
+}
+
+@Test(.timeLimit(.minutes(2)))
+func echoAnalyzeWritesTheFilesAnEarlierRunCouldNot() async throws {
+    // The first run publishes the new labels but cannot write the transcript files (a file stands where the exports
+    // folder goes). The next run finds the labels up to date and still writes the files.
+    let temp = try TemporaryDirectory("echo")
+    defer { temp.remove() }
+    let (session, _, run) = try await labelledOldCall(in: temp.url)
+    let exports = SessionPaths.exports(session)
+    try? FileManager.default.removeItem(at: exports)
+    try Data("in the way".utf8).write(to: exports)
+    let first = try await SessionEchoAnalyzeCommand.run(.init(session: session), freeSpace: FixedFreeSpace(.max))
+    #expect(first.runID != nil)
+    #expect(first.summary.contains("could not be rewritten"))
+    #expect(try SessionSpeakerStore.readHead(session: session)?.runID != run.id)
+
+    try FileManager.default.removeItem(at: exports)
+    let second = try await SessionEchoAnalyzeCommand.run(.init(session: session), freeSpace: FixedFreeSpace(.max))
+    #expect(second.runID == nil)
+    #expect(!second.summary.contains("could not be rewritten"))
+    let markdown = SessionFixtures.text(SessionPaths.export("md", in: session))
+    #expect(markdown.contains("own0w0"))
+    #expect(!markdown.contains("heard0w0"))
 }
 
 @Test func echoAnalyzeLeavesAnInPersonMeetingAlone() async throws {

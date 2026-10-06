@@ -100,29 +100,81 @@ public enum SessionEchoAnalyzeCommand {
         outcome.analysisSeconds = stored.record.seconds
         let found = EchoAnalysisStage.message(stored.record)
 
-        // The labels, rebuilt on their own diarization with the mask. The journal's length is taken before the
-        // snapshot reads it, so a line appended in between (even one this build cannot read) is caught at the publish.
-        let journalBytes = try journalLength(session)
-        let snapshot = try SpeakerSessionSnapshot.load(session: session)
-        guard let run = snapshot.run, let projection = snapshot.projection else {
+        progress("Rebuilding the speaker labels…")
+        guard let relabel = try applyMask(stored.mask, session: session, profiles: profiles, found: found) else {
             outcome.summary = found + " The meeting has no speaker labels yet; labelling its speakers (voiceislocal "
                 + "session diarize) will use the analysis."
             return outcome
         }
+        outcome.microphoneTurnsBefore = relabel.before.turns.filter { $0.track == EchoFilter.microphoneTrack }.count
+        let head = relabel.after ?? relabel.before
+        outcome.microphoneTurnsAfter = head.turns.filter { $0.track == EchoFilter.microphoneTrack }.count
+        outcome.acousticEchoWords = acousticWords(head)
+        outcome.keptEdits = relabel.carried.edits.count
+        outcome.droppedEdits = relabel.carried.droppedEditIDs.count
+
+        // Also when the labels did not change: an earlier run may have published them and then failed to write the
+        // files (the rewrite only writes files that differ).
+        progress("Writing transcript files…")
+        var exportsNote = ""
+        do {
+            let names = profiles.map { VoiceProfileService.profileNames(store: $0) } ?? [:]
+            _ = try SessionExports.regenerate(session: session, profileNames: names,
+                                              applyRecognition: profiles.map {
+                                                  VoiceProfileService.recognitionAllowed(store: $0)
+                                              } ?? true)
+        } catch {
+            exportsNote = " The transcript files could not be rewritten (\(error.localizedDescription)); Update "
+                + "Transcript Files in the app writes them."
+        }
+        guard let rebuilt = relabel.after else {
+            outcome.summary = found + (stored.mask == nil ? " The speaker labels were left as they are."
+                : " The speaker labels already leave that echo out. Nothing else changed.") + exportsNote
+            return outcome
+        }
+        log.notice("Session \(manifest.id, privacy: .public): speaker labels rebuilt without acoustic echo (run \(rebuilt.id, privacy: .public))")
+        outcome.runID = rebuilt.id
+        let edits = outcome.keptEdits + outcome.droppedEdits
+        let editsNote = edits == 0 ? ""
+            : " Kept \(outcome.keptEdits) of \(edits) speaker \(edits == 1 ? "edit" : "edits")"
+                + (outcome.droppedEdits > 0
+                    ? "; \(outcome.droppedEdits) no longer \(outcome.droppedEdits == 1 ? "applies" : "apply") to the "
+                        + "new turns." : ".")
+        outcome.summary = found + " Rebuilt the speaker labels (run \(rebuilt.id.prefix(8))…): "
+            + "\(outcome.microphoneTurnsBefore ?? 0) → \(outcome.microphoneTurnsAfter ?? 0) microphone turns, "
+            + "\(outcome.acousticEchoWords) words left out as echo." + editsNote + exportsNote
+        return outcome
+    }
+
+    /// What `applyMask` found and did.
+    struct Relabel {
+        /// The head run before.
+        var before: DiarizationRun
+        /// The head run published, nil when the mask changed nothing.
+        var after: DiarizationRun?
+        var carried: SpeakerEditReplay.Result
+    }
+
+    /// Takes the echo `mask` finds (nil: no echo) out of the head run's own turns (`SpeakerRunBuilder.rebuild`) and,
+    /// when that changes them, publishes the result with the head's edits carried (`SpeakerEditReplay`) and its voice
+    /// suggestions copied. Nil when the meeting has no usable labels. The caller holds the processing lease; also
+    /// used by post-processing for a call whose labels were edited (§5.11). Throws, with nothing written, when the
+    /// speaker edits cannot all be read or the labels change meanwhile; `found` starts those messages.
+    static func applyMask(_ mask: AcousticEchoMask?, session: URL, profiles: SpeakerProfileStore?,
+                          found: String) throws -> Relabel? {
+        // The journal's length is taken before the snapshot reads it, so a line appended in between (even one this
+        // build cannot read) is caught at the publish.
+        let journalBytes = try journalLength(session)
+        let snapshot = try SpeakerSessionSnapshot.load(session: session)
+        guard let run = snapshot.run, let projection = snapshot.projection else { return nil }
         guard snapshot.journal.isComplete else {
             throw HolosError.incomplete(found + " The speaker edits cannot all be read, so the speaker labels were "
                                         + "not rebuilt; the analysis is saved.")
         }
-        progress("Rebuilding the speaker labels…")
-        let rebuilt = SpeakerRunBuilder.rebuild(run, transcript: snapshot.transcript, acousticEcho: stored.mask)
-        outcome.microphoneTurnsBefore = run.turns.filter { $0.track == EchoFilter.microphoneTrack }.count
+        let rebuilt = SpeakerRunBuilder.rebuild(run, transcript: snapshot.transcript, acousticEcho: mask)
         guard rebuilt.turns != run.turns || rebuilt.droppedWords != run.droppedWords
             || rebuilt.speakers != run.speakers else {
-            outcome.microphoneTurnsAfter = outcome.microphoneTurnsBefore
-            outcome.acousticEchoWords = acousticWords(run)
-            outcome.summary = found + (stored.mask == nil ? " The speaker labels were left as they are."
-                : " The speaker labels already leave that echo out. Nothing else changed.")
-            return outcome
+            return Relabel(before: run, after: nil, carried: SpeakerEditReplay.Result())
         }
         let carried = SpeakerEditReplay.carry(edits: snapshot.journal.edits, effective: projection.appliedEditIDs,
                                               from: run, to: rebuilt, transcript: snapshot.transcript)
@@ -142,35 +194,7 @@ public enum SessionEchoAnalyzeCommand {
             if let profiles { carryRecognition(from: run, to: rebuilt, session: session, store: profiles) }
             try SessionSpeakerStore.writeHead(SpeakerHead(runID: rebuilt.id), session: session)
         }
-        log.notice("Session \(manifest.id, privacy: .public): speaker labels rebuilt without acoustic echo (run \(rebuilt.id, privacy: .public))")
-        outcome.runID = rebuilt.id
-        outcome.microphoneTurnsAfter = rebuilt.turns.filter { $0.track == EchoFilter.microphoneTrack }.count
-        outcome.acousticEchoWords = acousticWords(rebuilt)
-        outcome.keptEdits = carried.edits.count
-        outcome.droppedEdits = carried.droppedEditIDs.count
-
-        progress("Writing transcript files…")
-        var exportsNote = ""
-        do {
-            let names = profiles.map { VoiceProfileService.profileNames(store: $0) } ?? [:]
-            _ = try SessionExports.regenerate(session: session, profileNames: names,
-                                              applyRecognition: profiles.map {
-                                                  VoiceProfileService.recognitionAllowed(store: $0)
-                                              } ?? true)
-        } catch {
-            exportsNote = " The transcript files could not be rewritten (\(error.localizedDescription)); Update "
-                + "Transcript Files in the app writes them."
-        }
-        let edits = outcome.keptEdits + outcome.droppedEdits
-        let editsNote = edits == 0 ? ""
-            : " Kept \(outcome.keptEdits) of \(edits) speaker \(edits == 1 ? "edit" : "edits")"
-                + (outcome.droppedEdits > 0
-                    ? "; \(outcome.droppedEdits) no longer \(outcome.droppedEdits == 1 ? "applies" : "apply") to the "
-                        + "new turns." : ".")
-        outcome.summary = found + " Rebuilt the speaker labels (run \(rebuilt.id.prefix(8))…): "
-            + "\(outcome.microphoneTurnsBefore ?? 0) → \(outcome.microphoneTurnsAfter ?? 0) microphone turns, "
-            + "\(outcome.acousticEchoWords) words left out as echo." + editsNote + exportsNote
-        return outcome
+        return Relabel(before: run, after: rebuilt, carried: carried)
     }
 
     /// Renders both tracks to `derived/`, analyses them, saves `echo/`, and deletes `derived/`.
