@@ -4591,17 +4591,22 @@ keyframes). Hot-plug (`ScreenDisplayRoster`, pure): every two seconds the captur
 compares the display layout (connected IDs, the main display, and which display mirrors
 which: `CGGetActiveDisplayList`, `CGMainDisplayID`, `CGDisplayMirrorsDisplay`, cheap
 calls) with that of the last complete refresh, and only when they differ, or a stream
-stops with an error, asks ScreenCaptureKit again and starts or stops streams. A refresh
-whose query fails, or whose snapshot still leaves out a display CoreGraphics already
+stops with an error, asks ScreenCaptureKit again and starts or stops streams.
+CoreGraphics is the truth for what is connected: a display the ScreenCaptureKit snapshot
+still lists after CoreGraphics dropped it counts as gone. A refresh whose query fails, or whose snapshot still leaves out a display CoreGraphics already
 reports (mid-reconfiguration), records no layout, so that display is not missed for
 good: a later poll tries again after 4, 8, 16, 32, then every 60 seconds
 (`pollsBeforeRetry`). Each display's stream starts in its own task, registered before
 its platform start returns, so one slow or hung start holds up neither the other
 displays nor hot-plug, and a meeting stopped (or a display capped or unplugged) during
 it stops that stream at once; frames it still delivers are fenced by the ended capture
-generation. ScreenCaptureKit holds a stream's output and delegate weakly, so the
-capture keeps each display's output for as long as its stream may run. This was chosen over the
-display-reconfiguration callback because the recorder is a command-line process without
+generation. Each stream is one object (`ScreenDisplayStream`) holding its control, its
+output (ScreenCaptureKit holds a stream's output and delegate weakly, so the capture
+keeps it for as long as the stream may run), its phase, and whether it broke while
+starting; callbacks name it by a token, so nothing an old stream of a display does
+touches a newer one. Stops are requested without waiting, all at once when the meeting
+stops, so one stalled platform stop never leaves another stream running or holds up a
+refresh. This was chosen over the display-reconfiguration callback because the recorder is a command-line process without
 an AppKit run loop, and polling a list of IDs needs nothing from the window server
 beyond the call. A disconnected display's stream ends; its last keyframe's interval
 already ends at its last observed sample and a change that had not settled is dropped,
@@ -4609,15 +4614,17 @@ so nothing claims it was seen while gone. A stream that fails while its display 
 connected is not restarted (no loop); once that display is seen gone, it was a
 disconnect after all and is captured again if it returns. The capture as a whole fails
 ("captureFailed", as with one display) only when no display captures and one is
-connected but failing, or none could be started at all; every display gone (the lid
-closed on the last one) waits for one to return.
+connected but failing, or none could be started at all; while snapshots still leave out
+a display CoreGraphics reports, a capture that has not started a stream yet waits, for
+at most five such refreshes (about a minute). Every display gone after one was captured
+(the lid closed on the last one) waits for one to return.
 
 One serial utility queue, shared by every display's stream, samples each display at
 most 0.5 fps, with no cursor or audio. Each stream delivers its display's pixels
 scaled so neither side exceeds 2560 (`ScreenContextStore.maximumImageDimension`; 5K →
 2560×1440, about point resolution, so slide text stays legible to OCR). Each sample is
-copied through one software CIContext per capture, shared by the displays. A 160×90 grayscale fingerprint (drawn with high interpolation quality)
-has 16×9 tiles. At least 6 pixels changing by 20/255 within a tile makes it changed.
+copied through one software CIContext per capture, shared by the displays. A 160×90
+grayscale fingerprint (drawn with high interpolation quality) has 16×9 tiles. At least 6 pixels changing by 20/255 within a tile makes it changed.
 A sample becomes a keyframe when at least 10% of the tiles (15) both differ from the
 last retained frame and are unchanged since the previous sample (`settledChange`): a
 new slide or a finished scroll settles one sample later (or at the next idle sample,
@@ -4640,17 +4647,23 @@ half the size, before the per-frame cap can end the capture (`ScreenFrameEncodin
 
 Private `screen/context.json` records UUID keyframes, observed session-time intervals,
 their display, JPEG byte totals, and optional OCR lines with normalized bottom-left boxes
-and confidence. The display (`display`: `id`, `number`, `isMain`) is an additive field
-and `schemaVersion` stays 1: a keyframe without it, saved before all displays were
-captured, reads as the main display. Each keyframe also records its JPEG size (`bytes`,
-additive), so each display's share of the caps is exact after a reconnect (kept in
-memory) or a recorder restart (rebuilt from the keyframes; one saved without a size
-counts as the meeting's average). Each display's keyframes follow one another without
-overlapping; different displays' overlap in time, so a build from before this change
-refuses a multi-display record as invalid times (it never shows a wrong timeline).
+and confidence. Each keyframe names its display (`display`: `id`, `number`, `isMain`)
+and its JPEG size (`bytes`), so each display's share of the caps is exact after a
+reconnect (kept in memory) or a recorder restart (rebuilt from the keyframes; one saved
+without a size counts as the meeting's average). A keyframe without a display, saved
+before all displays were captured, reads as the main display. A record whose keyframes
+carry either field is written with `schemaVersion` 2; this build reads 1 and 2. A build
+from before displays were named reads only 1 and refuses a version-2 file as written by
+a newer version, leaving it alone (its OCR and Review report the refusal; recording and
+transcripts are unaffected), rather than rewriting it without the fields it does not
+know, after which every snapshot would read as the main display's. A record without
+them (one saved before, even after this build recognized its text) stays at 1, so an
+older build can still read it. Each display's keyframes follow one another without
+overlapping; different displays' overlap in time.
 `screen/<UUID>.jpg` is owner-only. Caps are 1000 keyframes, 1 MiB per JPEG, and 256 MiB
 total JPEGs, shared by all displays (`ScreenStoragePolicy`, pure): each display beyond
-the first holds back a tenth of either cap (at most three tenths) for the others. Once
+the first (counting only displays whose stream has delivered a sample, so a stream still
+starting, or hung starting, reserves nothing) holds back a tenth of either cap (at most three tenths) for the others. Once
 the meeting has used the rest (90% with two displays; 80% then 90% with three), the
 busiest display stops: the one that saved the most keyframes (the most bytes when the
 byte cap is the nearer), so a call's video or a scrolled document stops before the

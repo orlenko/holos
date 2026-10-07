@@ -161,3 +161,36 @@ func keyframeSizesAreBoundedOnRead() async throws {
         #expect((read?.frames.first?.bytes == bytes) == valid)
     }
 }
+
+/// A record whose keyframes name their display or size is written as version 2, which a build from before displays
+/// were named refuses (and leaves alone) rather than rewriting it without those fields; one without them stays 1.
+@Test(.timeLimit(.minutes(1)))
+func recordsThatNameDisplaysAreWrittenAsVersionTwo() async throws {
+    let (root, archive) = try await screenStoreFixture()
+    defer { try? FileManager.default.removeItem(at: root) }
+    func written() throws -> Int? {
+        let data = try #require(try AtomicFile.readIfPresent(ScreenContextStore.manifest(archive.directory), maxBytes: 1 << 20))
+        return (try JSONSerialization.jsonObject(with: data) as? [String: Any])?["schemaVersion"] as? Int
+    }
+    let legacy = ScreenContextRecord(sessionID: archive.id, frames: [ScreenKeyframe(start: 1, end: 2, lines: [])])
+    try ScreenContextStore.write(legacy, session: archive.directory)
+    #expect(try written() == 1)
+    #expect(try ScreenContextStore.read(session: archive.directory, sessionID: archive.id) == legacy)
+    // `--screen main` after the main display changed: two displays that never overlap.
+    let named = ScreenContextRecord(sessionID: archive.id, frames: [
+        ScreenKeyframe(start: 1, end: 2, display: ScreenDisplay(id: 4, number: 1, isMain: true), bytes: 10),
+        ScreenKeyframe(start: 3, end: 4, display: ScreenDisplay(id: 7, number: 2, isMain: true), bytes: 10),
+    ])
+    try ScreenContextStore.write(named, session: archive.directory)
+    #expect(try written() == 2)
+    #expect(try ScreenContextStore.read(session: archive.directory, sessionID: archive.id) == named)
+    // A version this build does not know is refused, not read as damaged or rewritten.
+    let newer = Data("{\"schemaVersion\":3,\"sessionID\":\"\(archive.id)\",\"frames\":[]}".utf8)
+    try FileManager.default.removeItem(at: ScreenContextStore.manifest(archive.directory))
+    try AtomicFile.create(newer, at: ScreenContextStore.manifest(archive.directory))
+    #expect(throws: (any Error).self) { try ScreenContextStore.read(session: archive.directory, sessionID: archive.id) }
+    #expect(throws: (any Error).self) {
+        try ScreenContextStore.update(session: archive.directory, sessionID: archive.id) { $0.ocrID = "x" }
+    }
+    #expect(try AtomicFile.readIfPresent(ScreenContextStore.manifest(archive.directory), maxBytes: 1 << 20) == newer)
+}

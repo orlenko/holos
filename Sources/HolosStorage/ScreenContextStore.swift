@@ -63,7 +63,14 @@ public struct ScreenKeyframe: Codable, Sendable, Equatable {
 }
 
 public struct ScreenContextRecord: Codable, Sendable, Equatable {
-    public var schemaVersion = 1
+    /// The version written: 2 once a keyframe names its display or size, 1 otherwise. A build from before displays
+    /// were named (it reads only 1) refuses a version-2 file as "written by a newer version" and leaves it alone:
+    /// its OCR or Review would otherwise rewrite the file without the fields it does not know, and every snapshot
+    /// would then read as the main display's. A record without those fields (one saved before, even after this
+    /// build recognized its text) stays at 1, so an older build can still read it.
+    public var schemaVersion: Int {
+        frames.contains { $0.display != nil || $0.bytes != nil } ? 2 : 1
+    }
     public var sessionID: String
     public var frames: [ScreenKeyframe]
     public var imageBytes = 0
@@ -75,6 +82,32 @@ public struct ScreenContextRecord: Codable, Sendable, Equatable {
     public var failure: String?
     public init(sessionID: String, frames: [ScreenKeyframe] = [], failure: String? = nil) {
         self.sessionID = sessionID; self.frames = frames; self.failure = failure
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case schemaVersion, sessionID, frames, imageBytes, captureID, ocrID, failure
+    }
+
+    /// `schemaVersion` is checked before decoding (`ScreenContextStore.read`) and follows from the keyframes.
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        sessionID = try container.decode(String.self, forKey: .sessionID)
+        frames = try container.decode([ScreenKeyframe].self, forKey: .frames)
+        imageBytes = try container.decodeIfPresent(Int.self, forKey: .imageBytes) ?? 0
+        captureID = try container.decodeIfPresent(String.self, forKey: .captureID)
+        ocrID = try container.decodeIfPresent(String.self, forKey: .ocrID)
+        failure = try container.decodeIfPresent(String.self, forKey: .failure)
+    }
+
+    public func encode(to encoder: any Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(schemaVersion, forKey: .schemaVersion)
+        try container.encode(sessionID, forKey: .sessionID)
+        try container.encode(frames, forKey: .frames)
+        try container.encode(imageBytes, forKey: .imageBytes)
+        try container.encodeIfPresent(captureID, forKey: .captureID)
+        try container.encodeIfPresent(ocrID, forKey: .ocrID)
+        try container.encodeIfPresent(failure, forKey: .failure)
     }
 
     /// Evidence only while the frame was actually observed, never across a pause or capture failure.
@@ -154,7 +187,7 @@ public enum ScreenContextStore {
 
     public static func read(session: URL, sessionID: String) throws -> ScreenContextRecord? {
         guard let data = try AtomicFile.readIfPresent(manifest(session), maxBytes: 16 << 20) else { return nil }
-        let record = try SchemaVersion.decode(ScreenContextRecord.self, from: data, current: 1, name: "screen/context.json")
+        let record = try SchemaVersion.decode(ScreenContextRecord.self, from: data, current: 2, name: "screen/context.json")
         guard record.sessionID == sessionID, record.frames.count <= maximumFrames,
               record.imageBytes >= 0, record.imageBytes <= maximumTotalImageBytes else {
             throw HolosError.invalidInput("Screen context belongs to another session or has too many frames.")
