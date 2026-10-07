@@ -894,7 +894,11 @@ public struct ReviewWord: Sendable, Equatable {
         }) else {
             throw HolosError.invalidInput("That word was not fixed automatically.")
         }
-        try await enqueue(.revertWordFix(word), optimistic: [])
+        // `word` is of the words shown (`segments`, after `movesRead` moves): a word change saved but not reread yet
+        // moves it, so the revert follows every move from there.
+        let op = queued(.revertWordFix(word), optimistic: [])
+        op.movesSeen = movesRead
+        try await wait(for: op)
     }
 
     /// Replaces shown words with `text` (docs/meeting-design.md §5.10, "Editing words"): `words` are consecutive words

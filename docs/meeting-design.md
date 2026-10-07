@@ -7754,7 +7754,8 @@ shown, Otter-style.
   each). The field's edit such a close took is held on the window until it is queued, so a
   quit meanwhile closes the review with it. A Split Turn sheet's word follows a word edit
   saved while the sheet was open (`split(seenMoves:)`), and is refused when the edit replaced
-  it. Quitting starts every review
+  it; a Revert's word likewise follows every word change saved since the words it was asked
+  on were read. Quitting starts every review
   window's close at once (`ReviewQuit.closeAll`), so each queues its open field's edit before
   any slow close (another window's voice sync) is waited for; when the closes cannot finish
   within the quit's limit, an edit not saved yet is logged with what was typed. A maintenance

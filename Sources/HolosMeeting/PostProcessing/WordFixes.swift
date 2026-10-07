@@ -240,11 +240,14 @@ public enum WordFixes {
                                           kind: replacement.kind, heardWords: heardWords,
                                           deleted: replacement.deleted))
             }
-            if timed, let given = replacement.words, leading.isEmpty, trailing.isEmpty {
-                // The words are given (a revert's, the recognizer's own): never split again at the spaces.
+            if timed, let given = replacement.words,
+               given.allSatisfy({ $0.utf16Range(within: replacement.text.utf16.count) != nil }) {
+                // The words are given (a revert's, the recognizer's own; an edit's as the other revision has them):
+                // never split again at the spaces. They are of `text`, placed after whatever the region keeps before
+                // it (a recognizer's word range that began with a space).
                 for word in given {
                     var placed = word
-                    placed.utf16Offset += start
+                    placed.utf16Offset += start + leading.count
                     words.append(placed)
                 }
                 nextWord = region.words.upperBound

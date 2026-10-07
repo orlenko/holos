@@ -924,6 +924,27 @@ func aWordMoveAcrossTwoTurnsIsRefusedWhereverItIsRead() async throws {
 }
 
 @Test(.timeLimit(.minutes(1))) @MainActor
+func aRevertAskedBeforeAnEditsRereadRevertsTheWordShown() async throws {
+    let temp = try TemporaryDirectory("review")
+    defer { temp.remove() }
+    // "we met Claude", "Claude" an automatic fix of "cloud".
+    let session = try await wordEditFixedCloudSession(temp, words: ["we", "met", "cloud"])
+    let review = try await wordEditOpen(session)
+    let claude = wordEditRefs(review, "T1", [2])[0]
+    // "we" becomes "we all"; Revert is asked on "Claude" as still shown (word 2) after that edit saved, before the
+    // window reread it: it follows the edit's move to word 3.
+    let revert = SharedValue<Task<Void, any Error>?>(nil)
+    review.beforeWordChangeReread = {
+        review.beforeWordChangeReread = nil
+        revert.set(Task { @MainActor in try await review.revertWordFix(claude) })
+    }
+    try await review.editWords(wordEditRefs(review, "T1", [0]), to: "we all")
+    try await #require(revert.value).value
+    #expect(try wordEditCurrent(session).segments[0].text == "we all met cloud")
+    await review.close()
+}
+
+@Test(.timeLimit(.minutes(1))) @MainActor
 func aSplitChosenBeforeAWordEditSavedFollowsItsWord() async throws {
     let temp = try TemporaryDirectory("review")
     defer { temp.remove() }

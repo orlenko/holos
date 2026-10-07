@@ -625,6 +625,20 @@ private let editEchoMask: AcousticEchoMask = {
     #expect(next.transcript.segments[0].text == "你好世界 拜拜")
 }
 
+@Test func anAutomaticFixEditedBackOverSpacedWordRangesLeavesTheSegmentEditable() async throws {
+    // Apple's recognizer: " 你好" carries the space before it. "你好世界" was fixed to "你好地球", then edited back.
+    let base = editTranscript([editRanged("ok 你好世界 再见", [(0, 2), (2, 3), (5, 2), (7, 3)])])
+    let fixed = try await editFixed(base, [Correction(heard: "你好世界", meant: "你好地球")])
+    #expect(fixed.segments[0].text == "ok 你好地球 再见")
+    let back = try #require(try TranscriptWordEdit.editing(editRequest(1, 2, "你好世界"), in: fixed, base: base))
+    let edited = try #require(back.base)
+    #expect(WordTiming.effectiveWords(of: back.transcript.segments[0]).count
+        == WordTiming.effectiveWords(of: edited.segments[0]).count)
+    let next = try #require(try TranscriptWordEdit.editing(editRequest(2, 3, "拜拜"), in: back.transcript,
+                                                           base: edited))
+    #expect(next.transcript.segments[0].text == "ok 你好世界 拜拜")
+}
+
 @Test func aWordThatReadsOtherwiseThanItsTextIsDamaged() {
     // "one two three", with "two" pointing one character on: its range reads "wo ".
     var segment = editRanged("one two three", [(0, 3), (4, 3), (8, 5)])
