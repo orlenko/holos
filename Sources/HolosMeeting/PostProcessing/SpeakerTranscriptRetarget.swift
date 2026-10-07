@@ -336,7 +336,9 @@ enum SpeakerTranscriptRetarget {
         init(from old: Transcript, to new: Transcript, move: ReviewWordMove) throws {
             let changed = HolosError.invalidInput("The edited transcript does not match the speaker labels' words.")
             let oldSegments = Dictionary(old.segments.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+            // The move names a segment both revisions have (one naming none would be ignored, its numbers unchecked).
             guard Set(oldSegments.keys) == Set(new.segments.map(\.id)), old.segments.count == new.segments.count,
+                  oldSegments[move.segmentID] != nil,
                   move.replaced.lowerBound == move.replacement.lowerBound, move.replaced.lowerBound >= 0 else {
                 throw changed
             }
@@ -362,6 +364,14 @@ enum SpeakerTranscriptRetarget {
                     // hours to map, and is refused as damaged.
                     let pairs = move.replaced.count.multipliedReportingOverflow(by: move.replacement.count)
                     guard !pairs.overflow, pairs.partialValue <= Self.maximumMovePairs else { throw changed }
+                    // Every word outside the move reads the same in both revisions: a move whose numbers point
+                    // elsewhere (damaged) would give the words around it to the wrong turns.
+                    guard oldWords[..<move.replaced.lowerBound].map(\.text)
+                            == newWords[..<move.replacement.lowerBound].map(\.text),
+                          oldWords[move.replaced.upperBound...].map(\.text)
+                            == newWords[move.replacement.upperBound...].map(\.text) else {
+                        throw changed
+                    }
                     let replacedRefs = move.replaced.map(ref)
                     owners = newWords.indices.map { index in
                         if index < move.replacement.lowerBound { return [ref(index)] }
@@ -369,7 +379,8 @@ enum SpeakerTranscriptRetarget {
                         return [ref(index - move.replacement.count + move.replaced.count)]
                     }
                 } else {
-                    guard newWords.count == oldWords.count else { throw changed }
+                    // Every other segment is as it was.
+                    guard newWords.map(\.text) == oldWords.map(\.text) else { throw changed }
                     owners = newWords.indices.map { [ref($0)] }
                 }
                 mapped[segment.id] = Segment(old: oldWords, new: newWords, owners: owners)

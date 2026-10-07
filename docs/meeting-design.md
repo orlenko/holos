@@ -7751,7 +7751,10 @@ shown, Otter-style.
   (`ReviewCloseGate`), so nothing typed is lost to a failed save. It waits the same way for
   edits handed over a moment before and still saving (Return, then ⌘W), and stays open when
   one of them is not saved (the footer says every edit not saved, with what was typed in
-  each). Quitting starts every review
+  each). The field's edit such a close took is held on the window until it is queued, so a
+  quit meanwhile closes the review with it. A Split Turn sheet's word follows a word edit
+  saved while the sheet was open (`split(seenMoves:)`), and is refused when the edit replaced
+  it. Quitting starts every review
   window's close at once (`ReviewQuit.closeAll`), so each queues its open field's edit before
   any slow close (another window's voice sync) is waited for; when the closes cannot finish
   within the quit's limit, an edit not saved yet is logged with what was typed. A maintenance
@@ -7998,7 +8001,8 @@ shown, Otter-style.
     the text, never backwards), so no damaged offset or length can overflow or trap. A word
     move in the event log is read only as written ("3-5", two unsigned decimal numbers; never
     empty; at most a million replaced × replacement word pairs, far more than any edit of one
-    turn; its replaced words all of the same turns, checked wherever a move is mapped): a
+    turn; its replaced words all of the same turns, checked wherever a move is mapped; a
+    segment both revisions have, every word outside it reading the same in both): a
     malformed one makes the event damaged, refused rather than read another way. An automatic
     fix's words in the unfixed revision must hold what it matched (`heardFits`: its `heard`
     starts in the first and ends in the last), so word counts that are wrong but add up never

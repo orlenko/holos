@@ -417,12 +417,19 @@ public enum TranscriptWordEdit {
 
     /// Each of `words` (word indices of segment `segmentID`) belongs to the same turns (`turns`: their word spans).
     public static func sameOwners(_ words: some Collection<Int>, segmentID: String, turns: [[WordSpan]]) -> Bool {
-        let owners = words.map { word in
+        func owners(_ word: Int) -> Set<Int> {
             Set(turns.indices.filter { index in
                 turns[index].contains { $0.segmentID == segmentID && $0.first <= word && word < $0.end }
             })
         }
-        return Set(owners).count <= 1
+        // Word by word, stopping at the first that differs (nothing is built for the whole range).
+        var first: Set<Int>?
+        for word in words {
+            let these = owners(word)
+            if let first, first != these { return false }
+            if first == nil { first = these }
+        }
+        return true
     }
 
     /// An edit refused because it takes in words corrected while the meeting was recording (`liveCorrection`, whose live

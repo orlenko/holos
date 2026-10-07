@@ -849,7 +849,22 @@ public struct ReviewWord: Sendable, Equatable {
 
     /// Splits a turn before `word` (a word of the turn other than its first). Never inside words edited together here
     /// (a `reviewEdit` mark): their edit, and its Revert, belong to one turn.
-    public func split(turnID: String, at word: WordRef) async throws {
+    ///
+    /// `seenMoves`: how many of `wordMoves` `word` follows (the Split Turn sheet's, as it opened): a word edit saved
+    /// since moves it there first, as an edit field's words; one that replaced it refuses the split.
+    public func split(turnID: String, at word: WordRef, seenMoves: Int? = nil) async throws {
+        var word = word
+        let seen = seenMoves ?? movesRead
+        if seen != movesRead {
+            let moves = seen < movesRead ? wordMoves[seen..<movesRead]
+                : ArraySlice(wordMoves[movesRead..<min(seen, wordMoves.count)].reversed().map(\.inverse))
+            let followed = Self.follow([word], through: moves)
+            guard !followed.replaced, let moved = followed.refs.first else {
+                throw HolosError.invalidInput("That word was edited while the split was being chosen; choose where to "
+                                              + "split again.")
+            }
+            word = moved
+        }
         if let segment = segments[word.segmentID], (segment.fixes ?? []).contains(where: {
             $0.kind == .reviewEdit && $0.first < word.word && word.word < $0.end
         }) {

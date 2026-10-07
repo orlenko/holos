@@ -143,6 +143,8 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, Clo
     /// Word edits the field handed over that are still saving (`editWords`): each ends with why it was not saved, nil
     /// when it was. A close by hand waits for them too.
     private var pendingWordEdits: [UUID: Task<String?, Never>] = [:]
+    /// The field's edit a close by hand took and has not queued yet (it waits for the edits before it).
+    private var heldOpenEdit: OpenWordEdit?
     private var splitSheet: SplitSheet?
     private var assignSignature: [String] = []
     private var refreshScheduled = false
@@ -1005,6 +1007,8 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, Clo
         }
         let sheet = SplitSheet(words: Array(words.joined()), turnStarts: turnStarts,
                                onPlay: { [weak self] seconds in self?.play(from: seconds) })
+        // A word edit saved while the sheet is open moves its words: the split follows them (`split(seenMoves:)`).
+        let movesSeen = review.wordMoves.count
         splitSheet = sheet
         window.beginSheet(sheet.panel) { [weak self] response in
             guard let self else { return }
@@ -1013,7 +1017,7 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, Clo
                   let split = ReviewParagraphs.split(paragraph, words: words, at: index) else { return }
             switch split {
             case .splitTurn(let turnID, let word):
-                self.perform { review in try await review.split(turnID: turnID, at: word) }
+                self.perform { review in try await review.split(turnID: turnID, at: word, seenMoves: movesSeen) }
             case .breakBefore(let turnID):
                 guard let turn = paragraph.turns.first(where: { $0.id == turnID }) else { return }
                 self.paragraphBreaks.insert(before: turn, runID: self.review.projection.runID)
@@ -1433,6 +1437,8 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, Clo
     func windowShouldClose(_ sender: NSWindow) -> Bool {
         guard sender === window, closeTask == nil else { return true }
         let open: OpenWordEdit? = closeGate.saving ? nil : turnList.takeOpenWordEdit()
+        // Held until it is queued: a quit meanwhile closes the review with it (`beginClosing`).
+        if open != nil { heldOpenEdit = open }
         let pending: [Task<String?, Never>] = closeGate.saving ? [] : Array(pendingWordEdits.values)
         let outcome = CloseSaveOutcome()
         let save: () async -> String? = { [weak self] in
@@ -1461,7 +1467,9 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, Clo
         for edit in pending {
             if let refusal = await edit.value { refusals.append(refusal) }
         }
-        if let open {
+        // Unless the window's close took it meanwhile (quitting), which queues it itself.
+        if open != nil, closeTask == nil, let open = heldOpenEdit {
+            heldOpenEdit = nil
             let refusal = await saveTypedEdit(open.words, text: open.text, movesSeen: open.movesSeen)
             outcome.openRefusal = refusal
             if let refusal { refusals.append(refusal) }
@@ -1472,6 +1480,8 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, Clo
     /// A close by hand stopped because an edit was not saved: the open field's edit opens again with what was typed (an
     /// edit handed over before did so itself), and the footer says every edit not saved.
     private func keepAfterFailedClose(_ open: OpenWordEdit?, outcome: CloseSaveOutcome, message: String) {
+        // Quitting closed the window meanwhile: its close saves (or logs) what is left.
+        guard closeTask == nil else { return }
         if let open, let refusal = outcome.openRefusal {
             if !turnList.editingWords { turnList.editingWords = true }
             turnList.reopenWordEdit(open.words, typed: open.text, message: refusal)
@@ -1505,8 +1515,11 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, Clo
         player.invalidate()
         review.onChange = nil
         let review = self.review
-        // AppKit ends no editing when a window closes: an open edit field's text is saved (and learned) by the close.
-        let typed = turnList.takeOpenWordEdit().map { open in
+        // AppKit ends no editing when a window closes: an open edit field's text is saved (and learned) by the close,
+        // as is one a close by hand took from the field and has not queued yet (quitting came first).
+        let open = turnList.takeOpenWordEdit() ?? heldOpenEdit
+        heldOpenEdit = nil
+        let typed = open.map { open in
             ReviewSession.TypedEdit(words: open.words.map(\.ref), text: open.text, seenMoves: open.movesSeen,
                                     expected: open.words.map(\.shown))
         }

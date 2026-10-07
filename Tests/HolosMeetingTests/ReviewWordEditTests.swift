@@ -900,9 +900,54 @@ func aWordMoveAcrossTwoTurnsIsRefusedWhereverItIsRead() async throws {
         try SpeakerTranscriptRetarget.plan(session: session, from: snapshot, to: edited,
                                            move: ReviewWordMove(segmentID: "S1", replaced: 1..<3, replacement: 1..<3))
     }
+    // A move naming a segment the transcript does not have, with numbers past any count: refused, never walked.
+    #expect(throws: HolosError.self) {
+        try SpeakerTranscriptRetarget.plan(session: session, from: snapshot, to: edited,
+                                           move: ReviewWordMove(segmentID: "nowhere", replaced: 0..<Int.max,
+                                                                replacement: 0..<Int.max))
+    }
+    // In range, but the words around it do not match: "two" became "TWO plus", the move says words 2–3.
+    var changed = snapshot.transcript
+    changed.id = UUID().uuidString
+    changed.segments[0] = SessionFixtures.segment(["one", "TWO", "plus", "three", "four"], track: "system", start: 0,
+                                                  wordSeconds: 1, id: "S1")
+    #expect(throws: HolosError.self) {
+        try SpeakerTranscriptRetarget.plan(session: session, from: snapshot, to: changed,
+                                           move: ReviewWordMove(segmentID: "S1", replaced: 2..<3, replacement: 2..<4))
+    }
+    #expect(try SpeakerTranscriptRetarget.plan(session: session, from: snapshot, to: changed,
+                                               move: ReviewWordMove(segmentID: "S1", replaced: 1..<2,
+                                                                    replacement: 1..<3)) != nil)
     #expect(try SpeakerTranscriptRetarget.plan(session: session, from: snapshot, to: edited,
                                                move: ReviewWordMove(segmentID: "S1", replaced: 0..<2,
                                                                     replacement: 0..<2)) != nil)
+}
+
+@Test(.timeLimit(.minutes(1))) @MainActor
+func aSplitChosenBeforeAWordEditSavedFollowsItsWord() async throws {
+    let temp = try TemporaryDirectory("review")
+    defer { temp.remove() }
+    let session = try await wordEditSession(in: temp, [
+        WordEditTurn(speaker: "system:S1", start: 0, words: ["one", "two", "three", "four"]),
+    ])
+    let review = try await wordEditOpen(session)
+    // The Split Turn sheet opens; meanwhile "one" becomes "one and more", moving every later word by two.
+    let seen = review.wordMoves.count
+    let shown = review.words(of: "T1")
+    try await review.editWords([shown[0].ref], to: "one and more")
+    // Split before "four" as the sheet showed it: before "four", never before what is now its old index ("more").
+    try await review.split(turnID: "T1", at: shown[3].ref, seenMoves: seen)
+    let turns = review.projection.turns.sorted { $0.start < $1.start }
+    #expect(turns.count == 2)
+    #expect(review.words(of: turns[1]).map(\.text) == ["four"])
+    // A word an edit replaced since: refused.
+    let again = review.wordMoves.count
+    let words = review.words(of: turns[0])
+    try await review.editWords([words[3].ref], to: "TWO")
+    await #expect(throws: HolosError.self) {
+        try await review.split(turnID: turns[0].id, at: words[3].ref, seenMoves: again)
+    }
+    await review.close()
 }
 
 @Test(.timeLimit(.minutes(1))) @MainActor
