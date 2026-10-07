@@ -4608,8 +4608,11 @@ error callback, a sample, its stop) is checked against the stream's identity (ob
 token) and phase, so an ended stream is never started or registered again and nothing it
 does reaches the receiver; the capture fails ("captureFailed", as with one display) when
 no stream could be started at all (the display query failed, no stream could be made,
-or every platform start failed) or when the last stream still starting or running ends
-with an error; and `stop()` is final. Each stream is one object
+or every platform start failed) or when the last stream still starting or running ends,
+by an error or a cap (a cap can remove the last stream when another display failed while
+the capping keyframe was being saved), all decided in one place, keeping an outcome the
+receiver already recorded (the storage limit, a storage failure); and `stop()` is
+final. Each stream is one object
 (`ScreenDisplayStream`) holding its control, its output (ScreenCaptureKit holds a
 stream's output and delegate weakly, so the capture keeps it for as long as the stream
 may run), its token and its phase. Each stream starts in its own task, registered before

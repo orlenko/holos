@@ -947,3 +947,60 @@ func screenTwoDisplayPipelineBenchmark() async throws {
         try await archive.finish(status: ArchiveStatus.audioOnly)
     }
 }
+
+@Test(.timeLimit(.minutes(1))) @MainActor
+func aCapThatEndsTheLastStreamAfterAnErrorEndsTheCaptureWithAnOutcome() async throws {
+    // A's keyframe that reaches 90% of the shared cap is being encoded when B fails: the receiver still counts B and
+    // caps A, so the cap removes the last stream. The capture must end with a recorded outcome, not "capturing".
+    let (root, archive) = try await screenCaptureFixture()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let a = ScreenDisplay(id: 9, number: 1, isMain: true)
+    let earlier = (0..<897).map { ScreenKeyframe(start: Double($0), end: Double($0), display: a, bytes: 2) }
+    try ScreenContextStore.write(ScreenContextRecord(sessionID: archive.id, frames: earlier), session: archive.directory)
+    let holding = Mutex(false), entered = Mutex(false)
+    let gate = DispatchSemaphore(value: 0)
+    let system = FakeScreenSystem([candidate(9, x: 0, main: true), candidate(5, x: 1920)])
+    let capture = MeetingScreenCapture(permissionCheck: { true }, system: system, encoder: { _ in
+        if holding.withLock({ $0 }) { entered.withLock { $0 = true }; gate.wait() }
+        return Data([0xFF, 0xD8])
+    })
+    capture.start(.display, session: archive.directory, origin: 0)
+    await capture.settle()
+    let outputA = try #require(system.outputs[9]), outputB = try #require(system.outputs[5])
+    let white = try screenCaptureImage(gray: 1), black = try screenCaptureImage(gray: 0)
+    await deliver(outputA.receiver, image: white, time: 1000, display: a, stream: outputA.stream)          // 898
+    await deliver(outputB.receiver, image: white, time: 1001, display: outputB.display, stream: outputB.stream) // 899
+    await deliver(outputA.receiver, image: black, time: 1002, display: a, stream: outputA.stream)          // pending
+    holding.withLock { $0 = true }
+    let saving = Task.detached {
+        await deliver(outputA.receiver, time: 1003, status: .idle, display: a, stream: outputA.stream)   // 900: held
+    }
+    #expect(try await polled { entered.withLock { $0 } })
+    capture.streamStopped(5)                                     // B fails while A's keyframe is being saved
+    #expect(capture.capturing == [9])
+    gate.signal()
+    await saving.value
+    #expect(try await polled { capture.capturing.isEmpty }, "the cap removed A, the last stream")
+    await capture.settle()
+    await deliver(outputA.receiver, time: 1005, status: .idle, display: a, stream: outputA.stream)  // flushes the queue
+    let record = try #require(try ScreenContextStore.read(session: archive.directory, sessionID: archive.id))
+    #expect(record.failure == "captureFailed" && record.captureID == nil, "not left saying it is capturing")
+    await capture.stop()
+    try await archive.finish(status: ArchiveStatus.audioOnly)
+}
+
+@Test(.timeLimit(.minutes(1)))
+func aStorageLimitAlreadyRecordedIsKeptWhenTheCaptureEnds() async throws {
+    let (root, archive) = try await screenCaptureFixture()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let frames = (0..<ScreenContextStore.maximumFrames).map {
+        ScreenKeyframe(start: Double($0), end: Double($0), display: mainDisplay, bytes: 2)
+    }
+    try ScreenContextStore.write(ScreenContextRecord(sessionID: archive.id, frames: frames), session: archive.directory)
+    let receiver = ScreenFrameReceiver(session: archive.directory, origin: 0)
+    await deliver(receiver, image: try screenCaptureImage(gray: 1), time: 1001)  // over the cap: storageLimit
+    receiver.failed()                                                          // then the last stream ends
+    await receiver.close()
+    #expect(try ScreenContextStore.read(session: archive.directory, sessionID: archive.id)?.failure == "storageLimit")
+    try await archive.finish(status: ArchiveStatus.audioOnly)
+}

@@ -124,8 +124,9 @@ public enum ScreenCapturePlan {
 ///    is checked against the stream's identity (object or token) and phase: a stream that has ended is never
 ///    started or registered again, and nothing it does reaches the receiver.
 /// 3. The capture fails ("captureFailed", as with one display) when no stream could be started at all, or when the
-///    last stream still starting or running ends with an error. Storage limits are decided by the receiver under its
-///    lock from its current record.
+///    last stream still starting or running ends, by an error or a cap; every path decides this in one place
+///    (`failIfNothingCaptures`). Storage limits are decided by the receiver under its lock from its current record,
+///    and an outcome it already recorded (the storage limit, a storage failure) is kept.
 /// 4. `stop()` is final: from the moment it begins nothing starts, registers or fails, and every stream, starting or
 ///    running, is asked to stop without one stop waiting for another.
 @MainActor public final class MeetingScreenCapture {
@@ -144,12 +145,16 @@ public enum ScreenCapturePlan {
     /// Stream errors handled (tests wait for them).
     private(set) var streamErrors = 0
 
+    /// Encodes kept frames (synthetic tests hold it to stage a race).
+    private let encoder: @Sendable (CGImage) throws -> Data
+
     public convenience init(permissionCheck: @escaping @MainActor () -> Bool = { CGPreflightScreenCaptureAccess() }) {
         self.init(permissionCheck: permissionCheck, system: LiveScreenCaptureSystem())
     }
 
-    init(permissionCheck: @escaping @MainActor () -> Bool, system: any ScreenCaptureSystem) {
-        self.permissionCheck = permissionCheck; self.system = system
+    init(permissionCheck: @escaping @MainActor () -> Bool, system: any ScreenCaptureSystem,
+         encoder: @escaping @Sendable (CGImage) throws -> Data = ScreenFrameEncoding.jpeg) {
+        self.permissionCheck = permissionCheck; self.system = system; self.encoder = encoder
     }
 
     public func start(_ target: ScreenCaptureTarget, session: URL, origin: Double) {
@@ -158,7 +163,7 @@ public enum ScreenCapturePlan {
             Task { @MainActor in await self?.stop() }
         }, onDisplayCapped: { [weak self] id in
             Task { @MainActor in self?.capped(id) }
-        })
+        }, encoder: encoder)
         self.receiver = receiver
         guard permissionCheck() else { receiver.failed(); return }
         initial = Task { [weak self] in
@@ -212,7 +217,6 @@ public enum ScreenCapturePlan {
             guard !stopped, streams[id] === stream, stream.phase == .starting else { return }
             Self.log.error("Display \(stream.display.number, privacy: .public) could not be captured")
             end(stream, receiver)
-            failIfNothingCaptures(receiver)
             return
         }
         // Stopped, capped or broken while starting: the stop came before the platform had a stream to stop, so it is
@@ -225,18 +229,20 @@ public enum ScreenCapturePlan {
         Self.log.info("Capturing display \(stream.display.number, privacy: .public) of the meeting")
     }
 
-    /// No stream is starting or running: none could be started, or the last one ended with an error. The capture
-    /// fails as one display's did.
+    /// The one terminal decision: no stream is starting or running (none could be started, or the last one ended
+    /// by an error or a cap), and the meeting has not stopped. The capture fails as one display's did; an outcome the
+    /// receiver already recorded (the storage limit, a storage failure) is kept.
     private func failIfNothingCaptures(_ receiver: ScreenFrameReceiver) {
         if !stopped, streams.isEmpty { receiver.failed() }
     }
 
-    /// Ends one display's stream for the rest of the capture: its samples are ignored from now on, and the platform
-    /// is asked to stop it.
+    /// Ends one display's stream for the rest of the capture (an error, a failed start, or a cap): its samples are
+    /// ignored from now on, the platform is asked to stop it, and, if it was the last, the capture ends.
     private func end(_ stream: ScreenDisplayStream, _ receiver: ScreenFrameReceiver?) {
         streams[stream.display.id] = nil
         receiver?.end(stream.display.id)
         requestStop(stream)
+        if let receiver { failIfNothingCaptures(receiver) }
     }
 
     /// Asks the platform to stop a stream without waiting: one stalled stop never holds up another stream's. The
@@ -272,7 +278,6 @@ public enum ScreenCapturePlan {
         guard !stopped, let stream = streams[id], stream.token == token else { return }
         Self.log.info("Display \(stream.display.number, privacy: .public) stopped; its screen capture ended")
         end(stream, receiver)
-        if let receiver { failIfNothingCaptures(receiver) }
     }
 
     /// The shared caps stopped this display (the busiest); the others go on.
@@ -560,7 +565,8 @@ final class ScreenFrameReceiver: Sendable {
             // dropped.
             value.record = try? ScreenContextStore.update(session: session, sessionID: record.sessionID) {
                 guard $0.captureID == self.captureID else { return }
-                if let failure { $0.failure = failure }
+                // An outcome already recorded (the storage limit, a storage failure) says why it ended; it is kept.
+                if let failure, $0.failure == nil { $0.failure = failure }
                 $0.captureID = nil
             }
         }
