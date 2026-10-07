@@ -145,6 +145,10 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, Clo
     private var pendingWordEdits: [UUID: Task<String?, Never>] = [:]
     /// The field's edit a close by hand took and has not queued yet (it waits for the edits before it).
     private var heldOpenEdit: OpenWordEdit?
+
+    /// Words can be edited in the window now: the review allows it, and no close by hand is saving the edits before
+    /// it closes (no field opens meanwhile, so nothing typed then can be left behind by the close).
+    private var canEditWordsNow: Bool { review.canEditWords && !closeGate.saving }
     private var splitSheet: SplitSheet?
     private var assignSignature: [String] = []
     private var refreshScheduled = false
@@ -680,11 +684,11 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, Clo
         microphoneItem.isEnabled = editable
         undoItem.isEnabled = editable && review.canUndo
         // Read-only (a command holds the review): edit mode can still be left, not entered.
-        editButton.isEnabled = review.canEditWords || turnList.editingWords
+        editButton.isEnabled = canEditWordsNow || turnList.editingWords
         // Why words cannot be edited (the transcript changed after labelling, or speaker changes cannot be read): the
         // button's tooltip says so before edit mode is entered, and in edit mode (no field opens) the banner does.
         editButton.toolTip = review.wordEditingBlocked ?? Self.editWordsHelp
-        turnList.canEditWords = review.canEditWords
+        turnList.canEditWords = canEditWordsNow
         let blockedMessages = [ReviewSession.labelAgainFirst, ReviewSession.speakerChangesUnreadable,
                                ReviewSession.baseUnreadable].map(\.localizedDescription)
         if turnList.editingWords, let blocked = review.wordEditingBlocked {
@@ -1042,7 +1046,7 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, Clo
     /// Edit Words (the toolbar toggle, ⌘E): on only while the review is editable (not while a command holds it
     /// read-only); off always.
     @objc private func toggleEditMode() {
-        let next = Self.editModeAfterToggle(on: turnList.editingWords, editable: review.canEditWords)
+        let next = Self.editModeAfterToggle(on: turnList.editingWords, editable: canEditWordsNow)
         if next == turnList.editingWords {
             NSSound.beep()
             editButton.state = next ? .on : .off
@@ -1448,7 +1452,11 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, Clo
         let keep: (String) -> Void = { [weak self] message in
             self?.keepAfterFailedClose(open, outcome: outcome, message: message)
         }
-        return closeGate.shouldClose(typed: open != nil || !pending.isEmpty, save: save, close: close, keep: keep)
+        let closesNow = closeGate.shouldClose(typed: open != nil || !pending.isEmpty, save: save, close: close,
+                                              keep: keep)
+        // Saving first: no field opens until the window closes, or stays open (`canEditWordsNow`).
+        if !closesNow { refreshToolbar() }
+        return closesNow
     }
 
     /// The open field's edit as `TurnListView.takeOpenWordEdit` hands it over.
@@ -1482,6 +1490,8 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, Clo
     private func keepAfterFailedClose(_ open: OpenWordEdit?, outcome: CloseSaveOutcome, message: String) {
         // Quitting closed the window meanwhile: its close saves (or logs) what is left.
         guard closeTask == nil else { return }
+        // Fields may open again (the close by hand ended).
+        refreshToolbar()
         if let open, let refusal = outcome.openRefusal {
             if !turnList.editingWords { turnList.editingWords = true }
             turnList.reopenWordEdit(open.words, typed: open.text, message: refusal)

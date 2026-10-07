@@ -56,16 +56,30 @@ extension TranscriptWordFix {
     func heardFits(words: [EffectiveWord], range: Range<Int>, text: [UInt16]) -> Bool {
         let needle = Array(heard.utf16)
         guard !needle.isEmpty, !range.isEmpty, range.lowerBound >= 0, range.upperBound <= words.count,
-              needle.count <= text.count,
               let first = words[range.lowerBound].utf16Range(within: text.count),
-              let last = words[range.upperBound - 1].utf16Range(within: text.count) else { return false }
-        // Starts within the first word, ends within the last (never past the text: compared by subtraction).
-        let latestStart = min(first.upperBound - 1, text.count - needle.count)
-        guard first.lowerBound <= latestStart else { return false }
-        for start in first.lowerBound...latestStart {
-            let end = start + needle.count
-            guard end > last.lowerBound, end <= last.upperBound else { continue }
-            if text[start..<end].elementsEqual(needle) { return true }
+              let last = words[range.upperBound - 1].utf16Range(within: text.count),
+              first.lowerBound < last.upperBound, needle.count <= last.upperBound - first.lowerBound else { return false }
+        // Every occurrence within the words' extent, in one pass (Knuth–Morris–Pratt: linear in the extent and
+        // `heard`, whatever damaged text they hold), one starting within the first word and ending within the last.
+        var border = Array(repeating: 0, count: needle.count)
+        var length = 0
+        if needle.count > 1 {
+            for index in 1..<needle.count {
+                while length > 0, needle[index] != needle[length] { length = border[length - 1] }
+                if needle[index] == needle[length] { length += 1 }
+                border[index] = length
+            }
+        }
+        var matched = 0
+        for position in first.lowerBound..<last.upperBound {
+            while matched > 0, text[position] != needle[matched] { matched = border[matched - 1] }
+            if text[position] == needle[matched] { matched += 1 }
+            if matched == needle.count {
+                let end = position + 1
+                let start = end - needle.count
+                if start < first.upperBound, end > last.lowerBound { return true }
+                matched = border[matched - 1]
+            }
         }
         return false
     }

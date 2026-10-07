@@ -683,6 +683,25 @@ private let editEchoMask: AcousticEchoMask = {
     #expect(reverted.segments[0].text == "one two Beta")
 }
 
+@Test(.timeLimit(.minutes(1))) func anAutomaticFixsHeardTextIsFoundInOnePass() {
+    // A damaged base: one word of 400,000 "a"s, and a fix that says it heard 199,999 "a"s then a "b" there. Looked for
+    // at every offset this would be some 10¹¹ comparisons; found in one pass it is not there.
+    let long = String(repeating: "a", count: 400_000)
+    let words = [EffectiveWord(text: long, start: 0, end: 1, utf16Offset: 0, utf16Length: 400_000, estimated: false)]
+    let fix = TranscriptWordFix(first: 0, end: 1, heard: String(repeating: "a", count: 199_999) + "b",
+                                kind: .correction, heardWords: 1)
+    #expect(!fix.heardFits(words: words, range: 0..<1, text: Array(long.utf16)))
+    // As written, it is found: starting in the first word, ending in the last.
+    let text = Array("as cloud now".utf16)
+    let sound = [EffectiveWord(text: "as", start: 0, end: 1, utf16Offset: 0, utf16Length: 2, estimated: false),
+                 EffectiveWord(text: "cloud", start: 1, end: 2, utf16Offset: 3, utf16Length: 5, estimated: false),
+                 EffectiveWord(text: "now", start: 2, end: 3, utf16Offset: 9, utf16Length: 3, estimated: false)]
+    let cloud = TranscriptWordFix(first: 1, end: 2, heard: "cloud", kind: .correction, heardWords: 1)
+    #expect(cloud.heardFits(words: sound, range: 1..<2, text: text))
+    #expect(!cloud.heardFits(words: sound, range: 1..<3, text: text), "It does not reach the last word.")
+    #expect(!cloud.heardFits(words: sound, range: 0..<2, text: text), "It does not start in the first word.")
+}
+
 @Test func aWordMoveIsReadOnlyAsItIsWritten() {
     #expect(SessionWordEdit.parseRange("3-5") == 3..<5 && SessionWordEdit.parseRange("0-0") == 0..<0)
     for damaged in ["-1-2", "1--2", "3-", "-5", "3-5-7", "+3-5", " 3-5", "3-5 ", "5-3", "3_5", "٣-٥", "",

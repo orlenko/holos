@@ -1444,6 +1444,20 @@ func aSegmentWithOverlappingMarksIsRefusedBeforeAnyFieldOpens() async throws {
     await review.close()
 }
 
+@Test(.timeLimit(.minutes(1))) func manyEditsSideBySideAreLearnedInOnePass() {
+    // 60,000 words, each edited on its own and side by side, in one turn: one span, read without rechecking the span
+    // as it grows (which took billions of checks).
+    let count = 60_000
+    var segment = SessionFixtures.segment(Array(repeating: "b", count: count), track: "system", start: 0,
+                                          wordSeconds: 0.01, id: "S1")
+    segment.fixes = (0..<count).map { TranscriptWordFix(first: $0, end: $0 + 1, heard: "a", kind: .reviewEdit,
+                                                         heardWords: 1) }
+    let edits = ReviewLearning.edits(in: SessionFixtures.transcript([segment]),
+                                     turns: [[WordSpan(segmentID: "S1", first: 0, end: count)]])
+    #expect(edits.count == 1)
+    #expect(edits.first?.meant.split(separator: " ").count == count)
+}
+
 @Test func aFixTheTurnHoldsOnlyPartOfGivesNoContext() {
     // "as newark": "newark" fixed automatically to "New York", then "as" edited to "ask"; the labels split the fix,
     // "as New" in one turn and "York" in the next.

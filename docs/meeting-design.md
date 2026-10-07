@@ -7752,7 +7752,7 @@ shown, Otter-style.
   edits handed over a moment before and still saving (Return, then ⌘W), and stays open when
   one of them is not saved (the footer says every edit not saved, with what was typed in
   each). The field's edit such a close took is held on the window until it is queued, so a
-  quit meanwhile closes the review with it. A Split Turn sheet's word follows a word edit
+  quit meanwhile closes the review with it, and no field opens while such a close waits. A Split Turn sheet's word follows a word edit
   saved while the sheet was open (`split(seenMoves:)`), and is refused when the edit replaced
   it; a Revert's word likewise follows every word change saved since the words it was asked
   on were read. Quitting starts every review
@@ -8006,8 +8006,10 @@ shown, Otter-style.
     segment both revisions have, every word outside it reading the same in both): a
     malformed one makes the event damaged, refused rather than read another way. An automatic
     fix's words in the unfixed revision must hold what it matched (`heardFits`: its `heard`
-    starts in the first and ends in the last), so word counts that are wrong but add up never
-    put a fix over other words. The
+    starts in the first and ends in the last, found in one linear pass), so word counts that
+    are wrong but add up never put a fix over other words. Every walk over a segment's words
+    (a turn's words, close-time learning) reads the segment once and looks words up by index,
+    so a very long or crafted segment never takes more than linear time. The
     turns are the labels on the transcript as it is then: labels the window could not reread
     after an edit are read again at close; when that fails, or the labels read are still on
     another transcript (a speaker head owed, or the transcript changed under them), nothing
