@@ -88,16 +88,49 @@ public enum VoiceEnrollment {
         return "venroll1:" + FingerprintSHA256.hexDigest(Array(parts.joined(separator: "|").utf8))
     }
 
-    /// A digest of the audio a sample of `speakerIDs` is learned from: the speakers and each candidate turn's track
-    /// and times, without the run, the turn IDs, or the words. A word change retargets the labels to a new run and
-    /// moves word indices, so `inputDigest` changes; this one changes only when the audio asked about does.
-    public static func audioDigest(speakerIDs: [String], projection: SpeakerProjection) -> String {
-        let speakers = Set(speakerIDs).sorted()
-        func text(_ value: String) -> String { "\(value.unicodeScalars.count):\(value)" }
-        let turns = candidateTurns(for: speakers, projection: projection)
-            .map { "turn=\(text($0.track));\($0.start)-\($0.end)" }.sorted()
-        let parts = ["speakers=" + speakers.map(text).joined(separator: ",")] + turns
-        return "vaudio1:" + FingerprintSHA256.hexDigest(Array(parts.joined(separator: "|").utf8))
+    /// The audio a sample of `speakers` is learned from: the speakers and each candidate turn's track and times, without
+    /// the run, the turn IDs, or the words. A word change retargets the labels to a new run and moves word indices, so
+    /// `inputDigest` changes; these change only when the audio asked about does (`same`).
+    public struct AudioInputs: Sendable, Equatable {
+        public struct Turn: Sendable, Equatable {
+            public var track: String
+            public var start: Double
+            public var end: Double
+
+            public init(track: String, start: Double, end: Double) {
+                self.track = track; self.start = start; self.end = end
+            }
+        }
+
+        public var speakers: [String]
+        /// By track, then start, then end.
+        public var turns: [Turn]
+
+        public init(speakers: [String], turns: [Turn]) {
+            self.speakers = Set(speakers).sorted()
+            self.turns = turns.sorted { ($0.track, $0.start, $0.end) < ($1.track, $1.start, $1.end) }
+        }
+
+        public init(speakerIDs: [String], projection: SpeakerProjection) {
+            self.init(speakers: speakerIDs, turns: candidateTurns(for: speakerIDs, projection: projection).map {
+                Turn(track: $0.track, start: $0.start, end: $0.end)
+            })
+        }
+
+        /// How far apart two times of the same audio may be: a microsecond, as the meeting's voice cache compares turn
+        /// times (`MeetingVoiceCache`).
+        public static let tolerance = 1e-6
+
+        /// The same audio: the same speakers and turns, each time within `tolerance` (a time worked out again from the
+        /// same words, 6.719999999999999 for 6.72, is the same audio; a turn moved by 50 ms is not). Never compared by
+        /// a hash of the times, which round-off would change.
+        public func same(as other: AudioInputs) -> Bool {
+            speakers == other.speakers && turns.count == other.turns.count
+                && zip(turns, other.turns).allSatisfy { mine, theirs in
+                    mine.track == theirs.track && abs(mine.start - theirs.start) <= Self.tolerance
+                        && abs(mine.end - theirs.end) <= Self.tolerance
+                }
+        }
     }
 
     /// The selection a voice sample extractor makes from a fresh diarization pass of one track (§4.10): for each

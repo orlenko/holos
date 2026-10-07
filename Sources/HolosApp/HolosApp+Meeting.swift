@@ -1139,8 +1139,10 @@ extension HolosAppDelegate: NSMenuDelegate {
         // All start closing at once: a slow close (a voice sync) never keeps another window's typed words unsaved.
         if !(await ReviewQuit.closeAll(windows, limit: limit)) {
             Self.meetingLog.error("Quitting before \(windows.count, privacy: .public) review windows finished saving")
+            // Every word edit not saved, each with what was typed: those Return or Tab handed over and still saving,
+            // and the one the field held at the close (closing queued it with the others).
             for window in windows {
-                if let typed = window.review.unsavedEditAtClose {
+                for typed in window.review.unsavedWordEdits {
                     Self.meetingLog.error("Quitting before a word edit was saved (what was typed: \(typed, privacy: .private))")
                 }
             }

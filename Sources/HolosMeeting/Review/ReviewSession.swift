@@ -182,14 +182,14 @@ public struct ReviewWord: Sendable, Equatable {
     /// has its own repair). The review is held read-only until a reread finds the labels on the current transcript;
     /// `.reload` repairs the head first (`repairOwedHead`).
     private var owedHead: (transcriptID: String, runID: String, revert: Bool)?
-    /// The edit an open field held when the review began closing (`close(typed:)`).
-    private var closingEdit: Operation?
-
-    /// What was typed in the edit field open when the review began closing, while that edit is not saved yet; nil
-    /// once it is saved or refused, or when no field was open. Quitting logs it when it cannot wait any longer.
-    public var unsavedEditAtClose: String? {
-        guard let op = closingEdit, !op.finished, case .editWords(let request, _) = op.kind else { return nil }
-        return TranscriptWordEdit.cleaned(request.text)
+    /// What was typed in every word edit not saved yet, in the order they were queued: those handed over by Return or
+    /// Tab and still waiting or saving, and the one the field held when the review began closing. Quitting logs them
+    /// all when it cannot wait any longer, so no edit is dropped without what was typed.
+    public var unsavedWordEdits: [String] {
+        queue.compactMap { op in
+            guard !op.finished, case .editWords(let request, _) = op.kind else { return nil }
+            return TranscriptWordEdit.cleaned(request.text)
+        }
     }
 
     /// The corrections one word edit teaches (the app: `TranscriptEditLearning`).
@@ -1442,7 +1442,6 @@ public struct ReviewWord: Sendable, Equatable {
             do {
                 typedEdit = try queuedWordEdit(typed.words, to: typed.text, seenMoves: typed.seenMoves,
                                                expecting: typed.expected, seenEpoch: typed.seenEpoch)
-                closingEdit = typedEdit
             } catch {
                 Self.log.error("Session \(self.sessionID, privacy: .public): the edit open at close was not saved (\(ProcessSpawner.logCategory(error), privacy: .public))")
             }

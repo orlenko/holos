@@ -1109,7 +1109,9 @@ public enum VoiceProfileService {
                earlierRuns.sameLabelling.contains(runID) {
                 switch retargetedSampleInputs(existing, earlierRuns) {
                 case .learnedFrom(let audio):
-                    if audio == VoiceEnrollment.audioDigest(speakerIDs: speakerIDs, projection: projection) { continue }
+                    if audio.same(as: VoiceEnrollment.AudioInputs(speakerIDs: speakerIDs, projection: projection)) {
+                        continue
+                    }
                 case .changed:
                     break
                 case .unknown:
@@ -1163,8 +1165,8 @@ public enum VoiceProfileService {
     enum RetargetedInputs: Equatable {
         /// Its provenance cannot be read: the run or its words cannot be read, or the sample has no input digest.
         case unknown
-        /// The audio (`VoiceEnrollment.audioDigest`) of the view that gives the sample's own input digest.
-        case learnedFrom(String)
+        /// The audio (`VoiceEnrollment.AudioInputs`) of the view that gives the sample's own input digest.
+        case learnedFrom(VoiceEnrollment.AudioInputs)
         /// Its run can be read, but no view of it gives the sample's input digest: its inputs changed since it was
         /// learned (an echo mask that is neither none nor the current one, speaker changes since).
         case changed
@@ -1178,7 +1180,7 @@ public enum VoiceProfileService {
         guard let view = views.first(where: {
             VoiceEnrollment.inputDigest(speakerIDs: sample.speakerIDs, projection: $0) == digest
         }) else { return .changed }
-        return .learnedFrom(VoiceEnrollment.audioDigest(speakerIDs: sample.speakerIDs, projection: view))
+        return .learnedFrom(VoiceEnrollment.AudioInputs(speakerIDs: sample.speakerIDs, projection: view))
     }
 
     /// `EarlierRunViews` for the samples of `database` from `snapshot`'s meeting: which runs keep the head's labelling,

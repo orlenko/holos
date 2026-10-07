@@ -7895,7 +7895,9 @@ shown, Otter-style.
   edit's mark exempts its words from echo filtering only when it lies within its segment. Quitting starts every review
   window's close at once (`ReviewQuit.closeAll`), so each queues its open field's edit before
   any slow close (another window's voice sync) is waited for; when the closes cannot finish
-  within the quit's limit, an edit not saved yet is logged with what was typed. A maintenance
+  within the quit's limit, every word edit not saved yet is logged with what was typed (as
+  private): those Return or Tab handed over and still waiting or saving, and the one the
+  field held at the close (`ReviewSession.unsavedWordEdits`). A maintenance
   command that makes the review read-only does the same: the open field's edit is queued
   before the pause and waited for; when it is refused, the footer says why, with what was
   typed (`ReviewSession.pause(typed:)`). So does any other turn to read-only with the field
@@ -7923,9 +7925,11 @@ shown, Otter-style.
   it the undo can never be made, and put back it would block every undo before it). A word
   edit's new run records the labelling it keeps (`DiarizationRun.labelling`): voices learned
   from the run before are that labelling's own, never kept as an earlier labelling's. Such a
-  voice is compared by the audio it was learned from (`VoiceEnrollment.audioDigest`: the
+  voice is compared by the audio it was learned from (`VoiceEnrollment.AudioInputs`: the
   speakers and their qualifying turns' tracks and times, read from the run it was learned
-  from when that run still gives its input digest): the same audio keeps it as it is, also
+  from when that run still gives its input digest; times compared within a microsecond,
+  never by a hash, so a time worked out again from the same words, 6.719999999999999 for
+  6.72, is the same audio): the same audio keeps it as it is, also
   with the audio deleted; other audio recomputes or removes it, as for the head's own. The run
   is read through the current echo mask and, with one, without it (a sample learned before
   the echo was found): a mask found since that cuts a turn the sample was learned from is

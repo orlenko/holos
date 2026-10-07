@@ -24,9 +24,11 @@ private struct WordEditTurn {
 /// them); `audioSeconds`: the audio written (by default up to the last word).
 private func wordEditSession(in temp: TemporaryDirectory, _ specs: [WordEditTurn],
                              apple: Bool = false, fixes: [TranscriptWordFix]? = nil, wordSeconds: Double = 1,
-                             audioSeconds: Double? = nil) async throws -> URL {
+                             audioSeconds: Double? = nil, untimed: Bool = false) async throws -> URL {
     let segments = specs.enumerated().map { index, spec -> TranscriptSegment in
         var segment = SessionFixtures.segment(spec.words, track: "system", start: spec.start, wordSeconds: wordSeconds)
+        // `untimed`: the recognizer timed no word; their times are spread over the segment.
+        if untimed { segment.words = [] }
         // `fixes`: the first segment's marks.
         if index == 0 { segment.fixes = fixes }
         if apple {
@@ -64,10 +66,14 @@ private func wordEditSession(in temp: TemporaryDirectory, _ specs: [WordEditTurn
                 spans.append(WordSpan(segmentID: segment.id, first: word, end: word + 1))
             }
         }
-        return SpeakerTurn(id: "T\(index + 1)", track: "system", start: spec.start,
-                           end: spec.start + Double(spec.words.count) * wordSeconds, speakerID: spec.speaker,
-                           clusterID: spec.speaker, spans: spans, overlap: false, otherClusters: [],
-                           assignmentScore: 1, timing: .measured)
+        // Untimed: the turn's times are its words' spread times, as labelling gives them.
+        let spread = WordTiming.effectiveWords(of: segment)
+        return SpeakerTurn(id: "T\(index + 1)", track: "system",
+                           start: untimed ? spread.map(\.start).min() ?? spec.start : spec.start,
+                           end: untimed ? spread.map(\.end).max() ?? spec.start
+                               : spec.start + Double(spec.words.count) * wordSeconds,
+                           speakerID: spec.speaker, clusterID: spec.speaker, spans: spans, overlap: false,
+                           otherClusters: [], assignmentScore: 1, timing: untimed ? .estimated : .measured)
     }
     let clusters = speakers.map { ClusterSummary(clusterID: $0.id, track: "system", speechSeconds: 10) }
     var run = DiarizationRun(sessionID: manifest.id, transcriptID: transcript.id, engine: .fake,
@@ -899,6 +905,56 @@ func aWordEditAfterTheAudioIsDeletedKeepsTheVoicesItDidNotChange() async throws 
             #expect(alice.samples == [learned], "undigested: \(undigested)")
         }
     }
+}
+
+/// An untimed three-word turn spanning 0–6.72 s: a word replaced by two spreads the words again, and the turn's end
+/// worked out again may differ from the labelling's by round-off alone (6.719999999999999 against 6.72). That is the
+/// same audio: with the audio deleted, the voice learned from it is kept. A turn moved by 50 ms is other audio.
+@Test(.timeLimit(.minutes(1))) @MainActor
+func roundOffInATurnsTimesIsTheSameAudioAndKeepsItsVoice() async throws {
+    let temp = try TemporaryDirectory("review")
+    defer { temp.remove() }
+    let session = try await wordEditSession(in: temp, [
+        WordEditTurn(speaker: "system:S1", start: 0, words: ["ask", "cloud", "now"]),
+        WordEditTurn(speaker: "system:S2", start: 8, words: ["then", "we", "go"]),
+    ], wordSeconds: 2.24, untimed: true)
+    // The labelling's end for the turn, worked out its own way: one unit in the last place short of the words' end.
+    var labelled = try SessionSpeakerStore.readRun(
+        id: try #require(try SessionSpeakerStore.readHead(session: session)?.runID), session: session)
+    labelled.id = UUID().uuidString
+    labelled.turns[0].end = labelled.turns[0].end.nextDown
+    try SessionArchive.withSpeakerLock(at: session) {
+        try SessionSpeakerStore.writeRun(labelled, session: session)
+        try SessionSpeakerStore.writeHead(SpeakerHead(runID: labelled.id), session: session)
+    }
+    let store = SpeakerProfileStore(directory: temp.url.appendingPathComponent("Support/Speakers"))
+    try store.update { $0.rememberVoices = true }
+    _ = try await VoiceProfileService.link(session: session, speakerID: "system:S1", to: .new(name: "Alice"),
+                                           view: try SessionFixtures.view(session), learnVoice: true,
+                                           extractor: WordEditVoice(), store: store)
+    let learned = try #require(try store.load().profiles.first?.samples.first)
+    let before = try #require(try SpeakerSessionSnapshot.load(session: session).run?.turns.first)
+    let lease = try SessionArchive.acquireProcessingLease(at: session)
+    try SessionDeletion.deleteAudio(session: session, lease: lease)
+    lease.release()
+
+    let review = try await wordEditOpen(session)
+    try await review.editWords(wordEditRefs(review, "T1", [1]), to: "Claude AI")
+    await review.close()
+    let after = try #require(try SpeakerSessionSnapshot.load(session: session).run?.turns.first)
+    #expect(abs(after.end - before.end) <= VoiceEnrollment.AudioInputs.tolerance)
+    #expect(after.end != before.end, "The end worked out again differs by round-off.")
+    try await VoiceProfileService.refreshSamples(session: session, extractor: WordEditVoice(), store: store)
+    #expect(try store.load().profiles.first?.samples == [learned], "The same audio: kept.")
+
+    // The comparison itself: 6.719999999999999 against 6.72 is the same audio; 50 ms later is not.
+    let turn = { (start: Double, end: Double) in
+        VoiceEnrollment.AudioInputs(speakers: ["system:S1"], turns: [.init(track: "system", start: start, end: end)])
+    }
+    #expect(turn(0, 6.719999999999999).same(as: turn(0, 6.72)))
+    #expect(6.719999999999999 != 6.72, "Raw times differ: a hash of them would.")
+    #expect(!turn(0, 6.72).same(as: turn(0.05, 6.77)))
+    #expect(!turn(0, 6.72).same(as: turn(0, 6.77)))
 }
 
 @Test(.timeLimit(.minutes(1))) @MainActor
@@ -2112,16 +2168,48 @@ func whatWasTypedIsKnownUntilTheEditOpenAtCloseIsSaved() async throws {
         entered.update { $0 += 1 }
         for await _ in stream {}
     }
-    #expect(review.unsavedEditAtClose == nil)
+    #expect(review.unsavedWordEdits.isEmpty)
     let closing = Task { await review.close(typed: .init(words: wordEditRefs(review, "T1", [1]), text: "Claude",
                                                     seenMoves: review.wordMoves.count)) }
     // While the edit saves, quitting can still say what was typed (it logs it when it cannot wait).
     #expect(await eventually { entered.value == 1 })
-    #expect(review.unsavedEditAtClose == "Claude")
+    #expect(review.unsavedWordEdits == ["Claude"])
     release.finish()
     await closing.value
-    #expect(review.unsavedEditAtClose == nil)
+    #expect(review.unsavedWordEdits.isEmpty)
     #expect(try wordEditCurrent(session).segments[0].text == "ask Claude now")
+}
+
+/// Return, then Tab, then a quit while the first still saves: every edit not saved is known with what was typed (the
+/// two handed over and the one the field held at the close), so a quit that cannot wait logs them all.
+@Test(.timeLimit(.minutes(1))) @MainActor
+func everyWordEditNotSavedYetIsKnownWithWhatWasTyped() async throws {
+    let temp = try TemporaryDirectory("review")
+    defer { temp.remove() }
+    let session = try await wordEditSession(in: temp, [
+        WordEditTurn(speaker: "system:S1", start: 0, words: ["ask", "cloud", "now", "please"]),
+    ])
+    let review = try await wordEditOpen(session)
+    let (stream, release) = AsyncStream<Void>.makeStream()
+    let entered = SharedValue(0)
+    review.beforeEdit = {
+        entered.update { $0 += 1 }
+        for await _ in stream {}
+    }
+    let seen = review.wordMoves.count
+    let first = Task { try await review.editWords(wordEditRefs(review, "T1", [1]), to: "Claude", seenMoves: seen) }
+    #expect(await eventually { entered.value == 1 })
+    let second = Task { try await review.editWords(wordEditRefs(review, "T1", [2]), to: "today", seenMoves: seen) }
+    #expect(await eventually { review.unsavedWordEdits.count == 2 })
+    let closing = Task { await review.close(typed: .init(words: wordEditRefs(review, "T1", [3]), text: "thanks",
+                                                    seenMoves: seen)) }
+    #expect(await eventually { review.unsavedWordEdits == ["Claude", "today", "thanks"] })
+    release.finish()
+    _ = try await first.value
+    _ = try await second.value
+    await closing.value
+    #expect(review.unsavedWordEdits.isEmpty)
+    #expect(try wordEditCurrent(session).segments[0].text == "ask Claude today thanks")
 }
 
 @Test(.timeLimit(.minutes(1))) @MainActor
