@@ -1275,8 +1275,9 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, NSM
     /// The second part's speaker pop-up after a split (`TurnListView.focusSpeaker`); a search hiding its row is cleared
     /// first, as Next Uncertain clears one hiding where it goes.
     private func focusSpeaker(startingAt word: WordRef, turnID: String? = nil, splitOf: String? = nil) {
-        // The person went on to edit another word meanwhile: the field keeps the keyboard.
-        guard turnList.wordEdit == nil else { return }
+        // The person went on typing meanwhile (another word, a speaker's name, a search): it keeps the keyboard, and
+        // the search is not cleared under it.
+        guard !turnList.typingElsewhere else { return }
         if turnList.focusSpeaker(startingAt: word, turnID: turnID, splitOf: splitOf) { return }
         guard !query.isEmpty else { return }
         query = ""

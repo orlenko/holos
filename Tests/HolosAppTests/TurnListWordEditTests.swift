@@ -741,6 +741,13 @@ struct TurnListWordEditTests {
         #expect(!list.focusSpeaker(startingAt: beta.ref))
         #expect(opened.count == 1 && list.wordEdit != nil && list.editField.stringValue == "Alp")
         list.cancelWordEdit()
+        // Any other text field with the keyboard (a speaker's name being typed in the sidebar, say): the same.
+        let name = NSTextField(frame: NSRect(x: 0, y: 0, width: 100, height: 22))
+        list.addSubview(name)
+        #expect(list.window?.makeFirstResponder(name) == true)
+        #expect(list.typingElsewhere)
+        #expect(!list.focusSpeaker(startingAt: beta.ref) && opened.count == 1)
+        name.removeFromSuperview()
         #expect(!list.focusSpeaker(startingAt: WordRef(segmentID: "T9", word: 0)), "No row starts there.")
     }
 

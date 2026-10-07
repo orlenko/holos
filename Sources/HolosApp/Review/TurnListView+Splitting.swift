@@ -127,6 +127,13 @@ extension TurnListView {
         return false
     }
 
+    /// Whether the keyboard is in a text field (a word's edit field, a speaker's name, the search field): a split that
+    /// finishes then opens no pop-up, which would end that editing (saving a word half typed, dropping a name not yet
+    /// saved).
+    var typingElsewhere: Bool {
+        wordEdit != nil || (window?.firstResponder as? NSText)?.isFieldEditor == true
+    }
+
     /// The turn of row `paragraphID` its word `index` belongs to.
     func turnID(ofWordAt index: Int, in paragraphID: String) -> String? {
         guard let paragraph = paragraphs.first(where: { $0.id == paragraphID }) else { return nil }
@@ -141,9 +148,8 @@ extension TurnListView {
     /// there with that turn (a search may hide it).
     @discardableResult
     func focusSpeaker(startingAt word: WordRef, turnID: String? = nil, splitOf: String? = nil) -> Bool {
-        // A field opened since the split was asked (the split took a while): never pulled away from it, which would
-        // save what is half typed there.
-        guard wordEdit == nil else { return false }
+        // Typing elsewhere since the split was asked (the split took a while): never pulled away from it.
+        guard !typingElsewhere else { return false }
         let starting = paragraphs.indices.filter { paragraphWords(paragraphs[$0]).words.first?.ref == word }
         let chosen = starting.first { row in
             let first = paragraphs[row].turns[0].id
