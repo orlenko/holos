@@ -3814,8 +3814,8 @@ public struct SpeakerProfileDatabase: Codable, Sendable, Equatable {
     compared on the same track only (room and call audio sound different). A candidate
     gets "Maybe Jim" when Jim's voice is the nearest within `suggestMaxDistance` and no
     other named person is within `ambiguityMargin` (0.05) of it, unless it rejected Jim.
-    A turn gets "⚠ Jim?" when it is within `turnHintMaxDistance` of Jim and at least
-    `turnHintMinMargin` (0.15) closer to Jim than to the rest of its own speaker (its
+    A turn gets "Jim (suggested)" when it is within `turnHintMaxDistance` of Jim and at
+    least `turnHintMinMargin` (0.15) closer to Jim than to the rest of its own speaker (its
     speaker's voice without it), its speaker is not Jim's, has not rejected Jim, and is not
     already suggested as Jim.
   - *Thresholds* (`MeetingVoiceThresholds.derived`): `suggestMaxDistance` is recognition's
@@ -3838,9 +3838,9 @@ public struct SpeakerProfileDatabase: Codable, Sendable, Equatable {
     recording. Confirm links the person (learning the voice when the footer box is on);
     Not Jim saves `rejectProfile`, so Jim is not suggested again, even after reopening;
     Confirm All links every shown suggestion in one batch
-    (`VoiceProfileService.confirmAll(suggestions:)`). "⚠ Jim?" in a turn row gives that
-    turn to Jim's speaker in one click (`acceptTurnHint`). Suggestions are worked out
-    again on every change of the shown labels, so they appear as soon as the name is saved.
+    (`VoiceProfileService.confirmAll(suggestions:)`). "Jim (suggested)", first in a turn
+    row's speaker pop-up, gives that turn to Jim's speaker in one choice
+    (`acceptTurnHint`). Suggestions are worked out again on every change of the shown labels, so they appear as soon as the name is saved.
   - *Automatic merge* ("Merge Matching Voices Automatically" in the Speakers menu, a
     UserDefaults setting, off by default): after a name is given and the queue is idle,
     every suggestion within `mergeMaxDistance` with at least 10 s of speech on both sides
@@ -7765,8 +7765,8 @@ public enum SessionAudioComposition {
 │ [Next Uncertain ⌘']  [Assign to… ▾]  [Split Turn]  [Speakers ▾]        [🔍 Search]  [Export ▾] │
 ├──────────────────────────────┬───────────────────────────────────────────────────────────────┤
 │ SPEAKERS  [Confirm All (3)]  │ 01:12:03  [Jim ▾]         We should move the vote to next week. │
-│ [Jim            ▾]    41:12  │ 01:12:40  [Speaker 3 ▾] ⚠ overlap  Agreed, but the budget…      │
-│   "We should move the vote…" │ 01:13:05  [Unknown ▾] ⚠  …                                     │
+│ [Jim            ▾]    41:12  │ 01:12:40  [Speaker 3 ▾]   Agreed, but the budget…               │
+│   "We should move the vote…" │ 01:13:05  [Unknown ▾]     …                                     │
 │   ▶ Play samples             │                                                               │
 │ [Speaker 3      ▾]    22:03  │                                                               │
 │   Maybe Maria [Confirm] [Not Maria]                                                          │
@@ -7785,10 +7785,10 @@ public enum SessionAudioComposition {
   Confirm / Not Maria, "Jim (auto)" with Not Jim once calibrated, "This is me", Merge
   into… Speakers with no turns are hidden (except user-created ones).
 - Turn row: timestamp button (plays from there), speaker pop-up (all speakers, known
-  people, "Unknown", "New Speaker…"), warning glyph for uncertain turns, text
-  (wrapping; a plain click on a word selects the turn and plays from that word, with the
-  pointing hand over the text; ⇧/⌘ clicks, double clicks, and drags only select).
-  Multi-select with ⇧/⌘.
+  people, "Unknown", "New Speaker…"; first "Jim (suggested)" when a turn of the row
+  sounds like Jim, below), text right after the pop-up (wrapping; a plain click on a
+  word selects the turn and plays from that word, with the pointing hand over the text;
+  ⇧/⌘ clicks, double clicks, and drags only select). Multi-select with ⇧/⌘.
 - Paragraphs (`ReviewParagraphs`, HolosMeeting; pure): the transcript reads like a
   document, so a row is a paragraph of consecutive turns rather than one turn. A turn
   joins the row before it when it has the same speaker and starts less than
@@ -7797,11 +7797,17 @@ public enum SessionAudioComposition {
   unknown-speaker turns join only on the same track (as in the exports), so an unknown
   microphone turn never joins a named or unknown system-audio one. The second part of a
   split ("T5/…") and a turn without a known start begin a row. A row shows its first
-  turn's time, one speaker pop-up, its turns' texts joined with spaces, and ⚠ when any
-  of its turns is uncertain ("overlap" when one of those overlaps); "⚠ Jim?" names the
-  row's first turn that sounds like Jim and gives that turn alone (that turn's own warning
-  gives way to it; a warning of the row's other turns shows under it). Rows are only how
-  turns are shown: edits still name turns, and the journal and exports are unchanged
+  turn's time, one speaker pop-up, and its turns' texts joined with spaces. Nothing on
+  the row marks an uncertain turn (the pop-up already says "Unknown" where no speaker was
+  found; a column of warnings beside it only repeated that): Next Uncertain finds them,
+  and the pop-up's VoiceOver label says "Speaker, uncertain" when any of the row's turns
+  is uncertain ("Speaker, overlap" when one of those overlaps), with why in its help and
+  tooltip. When a turn of the row sounds like Jim, the pop-up lists "Jim (suggested)"
+  first ("Jim (suggested for the part from 01:12:40)" in a row of several turns), named
+  for the row's first such turn; choosing it gives that turn alone to Jim
+  (`acceptTurnHint`), whatever else is selected, and VoiceOver hears "sounds like Jim" on
+  the pop-up (that turn's own uncertainty gives way to it; the row's other turns' stays).
+  Rows are only how turns are shown: edits still name turns, and the journal and exports are unchanged
   (Markdown and text already merge a speaker's consecutive turns into blocks, §4.11).
   Everything per word works across a row's turns: clicking a word, the word playing and
   following it, word-fix underlines, tooltips and Revert, VoiceOver's per-word actions.
@@ -7847,9 +7853,9 @@ public enum SessionAudioComposition {
 - Voices within the meeting (§4.10): while the window is open it works out every turn's
   voice once ("Comparing voices…"); after a speaker is named, other speakers with that
   voice show "Maybe Jim" (Confirm / Not Jim, in Confirm All (n)), and a turn inside
-  another speaker that sounds like Jim shows "⚠ Jim?" in its warning column, which gives
-  it to Jim in one click. Speakers menu: "Merge Matching Voices Automatically" (off by
-  default).
+  another speaker that sounds like Jim lists "Jim (suggested)" first in its speaker
+  pop-up, which gives it to Jim in one choice. Speakers menu: "Merge Matching Voices
+  Automatically" (off by default).
 - Status line in plain words: "5 changes · 2 could not be applied (show)", "Your edited
   transcript.md was kept as edited-20260923-171200.md", "The transcript changed after
   speakers were labelled. [Label Again]", and "Audio deleted; playback is off."
@@ -8382,7 +8388,7 @@ whose review is open or still opening):
 | `ReviewParagraphsTests` | synthetic turns | rows by speaker, 3 s gap, unknown by track, split parts and breaks; Split Turn on a row: split or break; the word playing |
 | `reviewAssigningAParagraphMovesEveryTurnOfItAndUndoRestoresIt` | assign a two-turn row; undo | one `reassignTurns` of both turns; rows join; undo restores turns and rows |
 | `reviewSplittingInsideAParagraphStartsOneThatUndoJoinsAgain` | split inside a row's first turn; undo | the second part starts a row with the next turn; undo joins them |
-| `TurnListViewTests` (HolosAppTests) | the list laid out offscreen | rows joined, word click, fixes and VoiceOver, selection, pop-up and hint, tint through a pause |
+| `TurnListViewTests` (HolosAppTests) | the list laid out offscreen | rows joined, word click, fixes and VoiceOver, selection, pop-up and hint, tint through a pause; no warning column: the hint first in the pop-up ("Jim (suggested)") gives its turn alone, uncertain and overlap rows only in VoiceOver and Next Uncertain, the text right after the pop-up |
 | `TranscriptWordEditTests` | hand-built transcripts | one word, more and fewer words, deletion into a neighbour, a fixed transcript's base edited too (word fixes made again give the same words), a fix taken whole, untimed words, refusals, exact restore, shown words to stored indices with hidden echo, an edited word never hidden as echo |
 | `TranscriptEditLearningTests` (HolosCoreTests) | heard/meant pairs | corrections learned with a neighbour; deletions, punctuation, and case changes skipped unless a proper noun; terms offered; often-heard-as |
 | `ReviewWordEditTests` | fixture sessions | edit, learn, speaker edits before and after, undo in order and exactly; edit and deletion inside a paragraph; refusals across turns, segments, hidden words; word fixes made again keep an edit |

@@ -290,9 +290,9 @@ timeline and a larger local-model benchmark are follow-ups.
   list that reads like a document (consecutive turns of one speaker less than 3 s apart
   are one paragraph row; its speaker pop-up and 1–9 act on every turn of it) with a
   play-from-here time button, a speaker pop-up (speakers, known people, Unknown, New
-  Speaker…), and ⚠ when a turn of the row is uncertain; Next Uncertain (⌘'), 1–9 to
-  assign the selection, Split Turn (inside a turn it splits that turn; where a turn
-  already starts it only breaks the paragraph, in the window), search, Find More Speakers (a relabel with a minimum of one
+  Speaker…; a voice match first, "Jim (suggested)"), uncertain rows marked only for
+  VoiceOver; Next Uncertain (⌘'), 1–9 to assign the selection, Split Turn (inside a turn
+  it splits that turn; where a turn already starts it only breaks the paragraph, in the window), search, Find More Speakers (a relabel with a minimum of one
   more speaker than found; names carry over, turn-level changes do not), Label Speakers on
   My Microphone for calls, Label Again after the transcript changed, Undo (⌘Z, the
   window's own changes, newest first), and Export (Save As… Markdown, text, JSON; Copy as

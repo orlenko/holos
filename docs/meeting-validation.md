@@ -233,7 +233,7 @@ the **Name Speakers — <name>…** line at the top of the menu after a meeting.
 lists the speakers (name field, talk time, the start of their two longest turns, **▶ Play
 samples**, **This is me**, **Merge into…**, and "Maybe Maria" suggestions with **Confirm** /
 **Not Maria**); the right side lists the turns (time button that plays from there, speaker
-pop-up, ⚠ for uncertain turns, text whose words play from where you click them). The
+pop-up, a voice match first in it, text whose words play from where you click them). The
 playback bar above the footer has Play/Pause, the position, a scrubber, the speed, and who is
 speaking. Keys: Space (or K) plays or pauses and ←/→ (or J/L) move 5 seconds, ⌘←/⌘→ go to
 the previous/next turn (all of these anywhere except while typing in a field), ↑/↓ move, 1–9
@@ -344,8 +344,8 @@ call usually has one; otherwise **Find More Speakers…** on a two-person meetin
    Confirm All counts it, and speakers of other people show nothing. **Confirm** gives it
    the name; **Not Jim** removes the suggestion, and it stays removed after closing and
    reopening the review.
-3. **Mixed speakers.** Where Jim's turns were given to another speaker, the turn row shows
-   "⚠ Jim?" instead of the uncertainty warning. Pass: clicking it gives that turn to Jim at
+3. **Mixed speakers.** Where Jim's turns were given to another speaker, the turn row's
+   speaker pop-up lists "Jim (suggested)" first. Pass: choosing it gives that turn to Jim at
    once, and ⌘Z takes it back.
 4. **Names save at once.** With Remember voices on and the footer box checked, name a
    person. Pass: the name shows and saves at once ("saved <time>"), "Learning voices…"
