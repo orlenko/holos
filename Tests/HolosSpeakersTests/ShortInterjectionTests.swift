@@ -17,14 +17,15 @@ private struct Line {
     var speaker: String?
     var text: String
     var track = "system"
-    var editedFirstWord = false
+    /// A word fix of this kind on the first word.
+    var firstWordFix: TranscriptWordFixKind?
     /// Every character a timed word, as for a language written without spaces.
     var wordPerCharacter = false
 }
 
 private func line(_ id: String, _ start: Double, _ speaker: String?, _ text: String, track: String = "system",
-                  edited: Bool = false) -> Line {
-    Line(id: id, start: start, speaker: speaker, text: text, track: track, editedFirstWord: edited)
+                  fix: TranscriptWordFixKind? = nil) -> Line {
+    Line(id: id, start: start, speaker: speaker, text: text, track: track, firstWordFix: fix)
 }
 
 private let wordSeconds = 0.4
@@ -39,8 +40,7 @@ private func segment(_ line: Line) -> TranscriptSegment {
                                utf16Offset: line.text.utf16.distance(from: line.text.startIndex, to: token.startIndex),
                                utf16Length: token.utf16.count))
     }
-    let fixes = line.editedFirstWord
-        ? [TranscriptWordFix(first: 0, end: 1, heard: "yes", kind: .reviewEdit)] : nil
+    let fixes = line.firstWordFix.map { [TranscriptWordFix(first: 0, end: 1, heard: "yes", kind: $0)] }
     return TranscriptSegment(id: "seg-\(line.id)", start: line.start, end: words.last?.end ?? line.start,
                              text: line.text, words: words, track: line.track, fixes: fixes)
 }
@@ -138,14 +138,22 @@ private let meeting: [Line] = [
 }
 
 @Test func turnsTheUserWorkedOnAreNeverTouched() {
-    // Edited in Review (a word fix of kind reviewEdit): kept as it is.
-    let edited = projection([
+    // Edited in Review, a fix reverted there, or corrected while recording: kept as it is.
+    for kind in [TranscriptWordFixKind.reviewEdit, .reviewRevert, .liveCorrection] {
+        let edited = projection([
+            line("T1", 0, "S1", "That is all."),
+            line("T2", 1.5, nil, "Yeah.", fix: kind),
+            line("T3", 3, "S2", "Okay then, next."),
+        ])
+        #expect(edited.interjections.isEmpty, "\(kind.rawValue)")
+        #expect(edited.shownTurns.map(\.id) == ["T1", "T2", "T3"])
+    }
+    // An automatic word fix is not the user's: still hidden.
+    let automatic = projection([
         line("T1", 0, "S1", "That is all."),
-        line("T2", 1.5, nil, "Yeah.", edited: true),
-        line("T3", 3, "S2", "Okay then, next."),
+        line("T2", 1.5, nil, "Yeah.", fix: .correction),
     ])
-    #expect(edited.interjections.isEmpty)
-    #expect(edited.shownTurns.map(\.id) == ["T1", "T2", "T3"])
+    #expect(automatic.interjections == ["T2": .hidden])
     // Assigned to the unknown speaker by the user: kept.
     let assigned = projection([
         line("T1", 0, "S1", "That is all."),
@@ -317,6 +325,22 @@ private let meeting: [Line] = [
     #expect(!ShortInterjections.endsSentence("but they"))
     #expect(!ShortInterjections.endsSentence("they said,"))
     #expect(!ShortInterjections.endsSentence(""))
+}
+
+@Test func damagedSpansAreCountedWithoutTrapping() {
+    #expect(ShortInterjections.recognizerWords([WordSpan(segmentID: "s", first: 0, end: 3)], atMost: 8))
+    #expect(!ShortInterjections.recognizerWords([WordSpan(segmentID: "s", first: 0, end: 9)], atMost: 8))
+    #expect(!ShortInterjections.recognizerWords([WordSpan(segmentID: "s", first: .min, end: .max)], atMost: 8))
+    #expect(!ShortInterjections.recognizerWords([WordSpan(segmentID: "s", first: 0, end: 5),
+                                                  WordSpan(segmentID: "s", first: 5, end: .max)], atMost: 8))
+    #expect(ShortInterjections.recognizerWords([WordSpan(segmentID: "s", first: 5, end: 2)], atMost: 8))
+    // A turn of such a span is left alone (and nothing traps).
+    let turn = ProjectedTurn(id: "T1", track: "system", start: 0, end: 1, speakerID: nil, clusterID: nil,
+                             spans: [WordSpan(segmentID: "missing", first: .min, end: .max)], overlap: false,
+                             otherClusters: [], assignmentScore: 0, timing: .measured, reassigned: false,
+                             modified: false, excludedFromEnrollment: false, uncertain: true)
+    let transcript = Transcript(id: "T", source: "system", locale: "en-CA", backend: .speech)
+    #expect(ShortInterjections.classify([turn], transcript: transcript).isEmpty)
 }
 
 @Test func withoutShortUnknownTurnsTheShownTurnsAreTheTurns() {

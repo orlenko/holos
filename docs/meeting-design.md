@@ -7841,7 +7841,8 @@ public enum SessionAudioComposition {
   speaker pop-up. The state is per meeting (`ReviewSpeakersPaneMemory`: the IDs of the
   meetings whose pane is hidden, at most 500, in the app's defaults), so a meeting opens
   as it was left and a new meeting opens with the pane. Hiding it while a name is being
-  typed there ends that field first (the window's field editor is found by its delegate).
+  typed there ends that field first (the window's field editor is found by its delegate),
+  also when the divider is dragged to the edge.
 - Short interjections (`ShortInterjections`, HolosSpeakers; pure, deterministic):
   presentation only, in the one view the list and the exports read. `SpeakerProjection`
   decides them after the echo mask (§4.9 step 7) into `interjections` and `shownTurns`;
@@ -7854,7 +7855,9 @@ public enum SessionAudioComposition {
   did not assign (named by a `reassignTurns` edit in effect, Unknown included: choosing
   Unknown for an attached turn changes no stored speaker, yet it is saved, since
   `SpeakerEditor` compares `shownTurns` too, and keeps the turn unknown until undone),
-  split (`modified`), or edit a word of (a `reviewEdit` fix). Named speakers' turns are never candidates. Its neighbours are the turns just
+  split (`modified`), or change a word of (a `reviewEdit` or `reviewRevert` fix made in
+  Review, or a `liveCorrection` made while recording; automatic word fixes do not count).
+  Spans from damaged files are counted without trapping (`recognizerWords`). Named speakers' turns are never candidates. Its neighbours are the turns just
   before and after it on its own track. In order:
   1. *Hidden* when every word is a filler or backchannel of the meeting's languages
      (`Transcript.languages`, else `locale`): in any language mm, hmm, mhm, mm-hmm, ok,

@@ -17,7 +17,8 @@ public enum ShortInterjection: Sendable, Equatable {
 /// `maxWords` words in its text split at spaces, and at most `maxRecognizerWords` words the recognizer timed (a
 /// language written without spaces, such as Chinese, is held to that count), and never one
 /// the user worked on: assigned (named by an applied `reassignTurns` edit, "Unknown" included, so choosing Unknown for
-/// an attached turn keeps it unknown; or `reassigned`), split (`modified`), or with a word edited in Review. Its neighbours
+/// an attached turn keeps it unknown; or `reassigned`), split (`modified`), or with a word the user changed
+/// (`userChangedWords`: edited or reverted in Review, corrected while recording). Its neighbours
 /// are the turns just before and after it on its own track. In order:
 /// 1. **Hidden** when every word is a filler or backchannel of the meeting's languages (`isFillerOnly`). Fillers are
 ///    never attached: a stretched "umm" heard as "an" says nothing in anyone's sentence.
@@ -76,11 +77,12 @@ public enum ShortInterjections {
         for (index, turn) in turns.enumerated() where turn.speakerID == nil && !turn.reassigned && !turn.modified
             && !assigned.contains(turn.id) {
             // Both counts (the recognizer's, which is cheap, first).
-            guard turn.spans.reduce(0, { $0 + max(0, $1.end - $1.first) }) <= maxRecognizerWords else { continue }
+            guard Self.recognizerWords(turn.spans, atMost: maxRecognizerWords) else { continue }
             let tokens = Self.tokens(words.text(of: turn.spans))
             guard !tokens.isEmpty, tokens.count <= maxWords else { continue }
-            let editedWords = edited ?? EchoFilter.reviewEditedWords(in: transcript)
+            let editedWords = edited ?? Self.userChangedWords(in: transcript)
             edited = editedWords
+            // The spans are short here (the count above), so walking their words is cheap.
             if !editedWords.isEmpty, turn.spans.contains(where: { span in
                 (max(0, span.first)..<max(max(0, span.first), span.end)).contains {
                     editedWords.contains(WordRef(segmentID: span.segmentID, word: $0))
@@ -102,6 +104,36 @@ public enum ShortInterjections {
             }
         }
         return result
+    }
+
+    /// The spans name at most `limit` words, counted without trapping on spans from damaged files (`first` past `end`,
+    /// bounds near `Int.min` or `Int.max`): an empty or backwards span counts nothing, one too long or overflowing ends
+    /// the count.
+    static func recognizerWords(_ spans: [WordSpan], atMost limit: Int) -> Bool {
+        var count = 0
+        for span in spans {
+            let (length, overflow) = span.end.subtractingReportingOverflow(span.first)
+            if overflow || length > limit - count { return false }
+            count += max(0, length)
+        }
+        return true
+    }
+
+    /// The words the user changed: typed in Review (`reviewEdit`), restored by reverting a fix there
+    /// (`reviewRevert`), or corrected while the meeting recorded (`liveCorrection`). Marks outside their segment's
+    /// words count for nothing.
+    static func userChangedWords(in transcript: Transcript) -> Set<WordRef> {
+        let kinds: Set<TranscriptWordFixKind> = [.reviewEdit, .reviewRevert, .liveCorrection]
+        var refs = Set<WordRef>()
+        for segment in transcript.segments {
+            let fixes = (segment.fixes ?? []).filter { kinds.contains($0.kind) }
+            guard !fixes.isEmpty else { continue }
+            let count = WordTiming.effectiveWords(of: segment).count
+            for fix in fixes where fix.first >= 0 && fix.first < fix.end && fix.end <= count {
+                for word in fix.first..<fix.end { refs.insert(WordRef(segmentID: segment.id, word: word)) }
+            }
+        }
+        return refs
     }
 
     /// `second` starts at most `gapSeconds` after `first` ends, and at most `overlapSeconds` before. False when a time

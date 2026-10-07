@@ -1461,8 +1461,12 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, NSM
         return (responder as? NSView)?.isDescendant(of: pane) ?? false
     }
 
-    /// The pane was hidden or shown (also by dragging the divider): remembered for this meeting.
+    /// The pane was hidden or shown (also by dragging the divider): remembered for this meeting. Hidden by a drag with a
+    /// name being typed there, the field ends now, so nothing typed goes to a field out of sight.
     private func speakersHiddenChanged(_ hidden: Bool) {
+        if hidden, Self.isEditing(in: sidebar, responder: window.firstResponder) {
+            window.makeFirstResponder(turnList.table)
+        }
         ReviewSpeakersPaneMemory().setHidden(hidden, sessionID: sessionID)
         refreshSpeakersButton()
     }

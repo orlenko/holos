@@ -43,6 +43,18 @@ struct ReviewPanesTests {
         #expect(reported == [true, false])
     }
 
+    @Test func draggingTheDividerToTheEdgeHidesThePaneAndSaysSo() {
+        let list = NSView()
+        let panes = Self.panes(speakers: NSView(), list: list)
+        var reported: [Bool] = []
+        panes.onSpeakersHiddenChange = { reported.append($0) }
+        panes.splitView.setPosition(0, ofDividerAt: 0)
+        panes.view.layoutSubtreeIfNeeded()
+        #expect(panes.speakersHidden)
+        #expect(reported == [true])
+        #expect(list.frame.width == panes.view.frame.width)
+    }
+
     @Test func thePaneOpensHiddenWhenItWasLeftHidden() {
         let panes = Self.panes(speakers: NSView(), list: NSView(), hidden: true)
         #expect(panes.speakersHidden)
