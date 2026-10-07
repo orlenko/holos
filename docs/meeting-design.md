@@ -4588,14 +4588,19 @@ displays connected at the start are numbered by arrangement (left to right, then
 bottom); one connected later takes the next number, and a display that comes back
 keeps its number, also across a recorder restart (numbers are read back from the saved
 keyframes). Hot-plug (`ScreenDisplayRoster`, pure): every two seconds the capture
-compares the connected display IDs and the main display (`CGGetActiveDisplayList`,
-`CGMainDisplayID`, cheap calls) with those of the last successful refresh, and only when
-they differ, or a stream stops with an error, asks ScreenCaptureKit again and starts or
-stops streams. A refresh whose query fails forgets that layout, so a display connected
-then is not missed for good: a later poll tries again after 4, 8, 16, 32, then every 60
-seconds (`pollsBeforeRetry`). A stream is registered before its platform start returns,
-so a meeting stopped (or a display capped) during a slow or hung start stops that stream
-at once; frames it still delivers are fenced by the ended capture generation. This was chosen over the
+compares the display layout (connected IDs, the main display, and which display mirrors
+which: `CGGetActiveDisplayList`, `CGMainDisplayID`, `CGDisplayMirrorsDisplay`, cheap
+calls) with that of the last complete refresh, and only when they differ, or a stream
+stops with an error, asks ScreenCaptureKit again and starts or stops streams. A refresh
+whose query fails, or whose snapshot still leaves out a display CoreGraphics already
+reports (mid-reconfiguration), records no layout, so that display is not missed for
+good: a later poll tries again after 4, 8, 16, 32, then every 60 seconds
+(`pollsBeforeRetry`). Each display's stream starts in its own task, registered before
+its platform start returns, so one slow or hung start holds up neither the other
+displays nor hot-plug, and a meeting stopped (or a display capped or unplugged) during
+it stops that stream at once; frames it still delivers are fenced by the ended capture
+generation. ScreenCaptureKit holds a stream's output and delegate weakly, so the
+capture keeps each display's output for as long as its stream may run. This was chosen over the
 display-reconfiguration callback because the recorder is a command-line process without
 an AppKit run loop, and polling a list of IDs needs nothing from the window server
 beyond the call. A disconnected display's stream ends; its last keyframe's interval
