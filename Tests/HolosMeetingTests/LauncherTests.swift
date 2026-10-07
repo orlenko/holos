@@ -78,6 +78,22 @@ private func launcherMode(_ url: URL) -> mode_t? {
     #expect(try HolosJSON.decoder().decode(MeetingStartSettings.self, from: unknown).name == "Synthetic")
 }
 
+/// `--screen display` is every display now (what the app passes); `--screen main` is the main display alone, as
+/// `display` was before; `off` is no target.
+@Test func theRecorderIsToldWhichDisplaysToCapture() throws {
+    let root = URL(fileURLWithPath: "/tmp/test")
+    for target in ScreenCaptureTarget.allCases {
+        let settings = MeetingStartSettings(name: "Synthetic", source: .microphone, screen: target)
+        let args = ChildProcessLauncher.arguments(settings, sessionID: "id", root: root, vocabularyFile: nil)
+        let index = try #require(args.firstIndex(of: "--screen"))
+        #expect(ScreenCaptureTarget(rawValue: args[index + 1]) == target)
+        #expect(try HolosJSON.decoder().decode(MeetingStartSettings.self,
+            from: HolosJSON.encoder().encode(settings)).screen == target)
+    }
+    #expect(ScreenCaptureTarget.allCases.map(\.rawValue) + ["off"] == ["display", "main", "off"])
+    #expect(ScreenCaptureTarget(rawValue: "off") == nil)
+}
+
 @Test func screenSettingIsOffForNewInstallsAndOnForTheOldWindowOffer() throws {
     func defaults() throws -> (UserDefaults, String) {
         let suite = "holos-screen-preference-\(UUID().uuidString)"

@@ -487,7 +487,7 @@ final class SettingsPane: NSViewController, MainSectionContent, NSSearchFieldDel
                 keywords: ["system sound", "computer audio", "calls", "zoom", "video"],
                 views: [recordSystemAudioToggle, detail], focus: recordSystemAudioToggle)
         addItem(.meetings, MeetingScreenText.settingTitle, caption: screenDetail.stringValue,
-                keywords: ["screen", "screenshot", "display", "slides", "capture"],
+                keywords: ["screen", "screenshot", "display", "displays", "monitor", "slides", "capture"],
                 views: [screenCaptureToggle, screenDetail], focus: screenCaptureToggle)
         addItem(.meetings, deepTranscriptionToggle.title, caption: deepDetail.stringValue,
                 keywords: ["whisper", "final transcript", "accuracy", "transcribe again"],

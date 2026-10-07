@@ -5,6 +5,7 @@ import HolosCore
 import HolosStorage
 import ImageIO
 import ScreenCaptureKit
+import Synchronization
 import Testing
 
 private func screenCaptureFixture() async throws -> (URL, SessionArchive) {
@@ -33,11 +34,15 @@ private func screenCaptureImage(black rectangles: [CGRect]) throws -> CGImage {
     return try #require(context.makeImage())
 }
 
+/// The display of a single-display synthetic capture.
+private let mainDisplay = ScreenDisplay(id: 1, number: 1, isMain: true)
+
 private func deliver(_ receiver: ScreenFrameReceiver, image: CGImage? = nil, time: Double,
-                     status: SCFrameStatus = .complete) async {
+                     status: SCFrameStatus = .complete, display: ScreenDisplay = mainDisplay,
+                     stream: UUID? = nil) async {
     await withCheckedContinuation { continuation in
         receiver.queue.async {
-            receiver.receive(image, at: time, status: status.rawValue)
+            receiver.receive(image, at: time, status: status.rawValue, from: display, stream: stream)
             continuation.resume()
         }
     }
@@ -297,4 +302,705 @@ func screenFiveKFrameCPUBenchmark() throws {
         + "downscale+JPEG \(String(format: "%.1f", encode * 1000)) ms CPU per kept frame; "
         + "\(bytes / samples / 1024) KiB per JPEG; 2560×1440 buffer copy "
         + "\(String(format: "%.1f", convert * 1000)) ms CPU per sample")
+}
+
+// MARK: - All displays
+
+private func candidate(_ id: CGDirectDisplayID, x: CGFloat, y: CGFloat = 0, main: Bool = false) -> ScreenDisplayCandidate {
+    ScreenDisplayCandidate(id: id, frame: CGRect(x: x, y: y, width: 1920, height: 1080), isMain: main)
+}
+
+@Test func displaysAreNumberedByArrangementAndKeepTheirNumberAfterARestart() {
+    // Main in the middle, one to its left, one above it: left to right, then top to bottom.
+    let first = ScreenDisplayNumbering.number([candidate(9, x: 0, main: true), candidate(5, x: -1920),
+                                               candidate(7, x: 0, y: -1080)], known: [])
+    #expect(first.map(\.id) == [5, 7, 9] && first.map(\.number) == [1, 2, 3])
+    #expect(first.map(\.isMain) == [false, false, true])
+    // A new capture epoch (after a pause): the keyframes saved so far keep 5's and 9's numbers, 7 is gone, and 3
+    // (connected meanwhile, at the far left) takes the next number, not the first place.
+    let again = ScreenDisplayNumbering.number([candidate(9, x: 0, main: true), candidate(5, x: -1920),
+                                               candidate(3, x: -3840)], known: first)
+    #expect(again.map(\.id) == [5, 9, 3] && again.map(\.number) == [1, 3, 4])
+}
+
+@Test func displayNumbersStayWithinWhatTheStoreAccepts() {
+    let known = [ScreenDisplay(id: 1, number: ScreenContextStore.maximumDisplays, isMain: true)]
+    let displays = ScreenDisplayNumbering.number([candidate(1, x: 0, main: true), candidate(2, x: 1920)], known: known)
+    #expect(displays.map(\.id) == [1], "a 65th display in one meeting is not captured")
+}
+
+@Test func theMainTargetCapturesOnlyTheMainDisplay() {
+    let displays = [candidate(5, x: -1920), candidate(9, x: 0, main: true)]
+    #expect(ScreenCapturePlan.displays(displays, for: .display).map(\.id) == [5, 9])
+    #expect(ScreenCapturePlan.displays(displays, for: .main).map(\.id) == [9])
+    #expect(ScreenCapturePlan.displays([candidate(5, x: 0)], for: .main).map(\.id) == [5], "the first while reconfiguring")
+    #expect(ScreenCapturePlan.displays([], for: .main).isEmpty)
+}
+
+@Test func screenTargetsAreTheRecorderArgumentsAndOffIsNoTarget() {
+    #expect(ScreenCaptureTarget(rawValue: "display") == .display)
+    #expect(ScreenCaptureTarget(rawValue: "main") == .main)
+    #expect(ScreenCaptureTarget(rawValue: "off") == nil)
+    #expect(ScreenCaptureTarget.allCases.map(\.rawValue) == ["display", "main"])
+}
+
+@Test func sharedCapsStopTheBusiestDisplayFirstThenTheRest() {
+    let main = ScreenDisplay(id: 1, number: 1, isMain: true), call = ScreenDisplay(id: 2, number: 2, isMain: false)
+    let slides = ScreenDisplay(id: 3, number: 3, isMain: false)
+    func usage(_ display: ScreenDisplay, _ keyframes: Int, _ bytes: Int = 0) -> ScreenStoragePolicy.Usage {
+        .init(display: display, keyframes: keyframes, bytes: bytes)
+    }
+    // One display: only the cap itself ends it, as before.
+    #expect(ScreenStoragePolicy.displaysToStop([usage(main, 999)], frames: 999, bytes: 0).isEmpty)
+    // Two: the busiest stops once 90% of either cap is used, the quieter one runs on to the cap.
+    let two = [usage(main, 120), usage(call, 779)]
+    #expect(ScreenStoragePolicy.displaysToStop(two, frames: 899, bytes: 0).isEmpty)
+    #expect(ScreenStoragePolicy.displaysToStop(two, frames: 900, bytes: 0) == [2])
+    #expect(ScreenStoragePolicy.displaysToStop([usage(main, 120)], frames: 999, bytes: 0).isEmpty)
+    #expect(ScreenStoragePolicy.full(frames: 1000, bytes: 0) && ScreenStoragePolicy.full(frames: 0, bytes: 256 << 20))
+    #expect(!ScreenStoragePolicy.full(frames: 999, bytes: (256 << 20) - 1))
+    // Near the byte cap, the display with the most bytes is the busiest even with fewer keyframes.
+    let bytes = [usage(main, 300, 60 << 20), usage(call, 100, 180 << 20)]
+    #expect(ScreenStoragePolicy.displaysToStop(bytes, frames: 400, bytes: 240 << 20) == [2])
+    #expect(ScreenStoragePolicy.displaysToStop(bytes, frames: 900, bytes: 100 << 20) == [1])
+    // Three: one stops at 80%, the next at 90%, the last at the cap.
+    let three = [usage(main, 100), usage(call, 500), usage(slides, 200)]
+    #expect(ScreenStoragePolicy.displaysToStop(three, frames: 799, bytes: 0).isEmpty)
+    #expect(ScreenStoragePolicy.displaysToStop(three, frames: 800, bytes: 0) == [2])
+    #expect(ScreenStoragePolicy.displaysToStop([usage(main, 100), usage(slides, 200)], frames: 900, bytes: 0) == [3])
+    // On a tie the main display stays, then the lower number.
+    #expect(ScreenStoragePolicy.displaysToStop([usage(main, 5), usage(call, 5), usage(slides, 5)],
+                                               frames: 950, bytes: 0) == [3, 2])
+    // Never more than three tenths held back: five displays stop two at 70%.
+    let five = (1...5).map { usage(ScreenDisplay(id: UInt32($0), number: $0, isMain: $0 == 1), $0) }
+    #expect(ScreenStoragePolicy.displaysToStop(five, frames: 699, bytes: 0).isEmpty)
+    #expect(ScreenStoragePolicy.displaysToStop(five, frames: 700, bytes: 0) == [5, 4])
+}
+
+@Test(.timeLimit(.minutes(1)))
+func eachDisplayKeepsItsOwnRetainedFrameAndAllWriteOneTimeline() async throws {
+    let (root, archive) = try await screenCaptureFixture()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let side = ScreenDisplay(id: 2, number: 2, isMain: false)
+    let receiver = ScreenFrameReceiver(session: archive.directory, origin: 0)
+    let white = try screenCaptureImage(gray: 1), black = try screenCaptureImage(gray: 0)
+    await deliver(receiver, image: white, time: 1)                    // main: kept at once
+    await deliver(receiver, image: black, time: 2, display: side)     // side: its own first frame, kept at once
+    await deliver(receiver, image: black, time: 3)                    // main: a new slide, pending
+    await deliver(receiver, image: white, time: 4, display: side)     // side: a change of its own, pending
+    await deliver(receiver, image: black, time: 5)                    // main: settled, from 3
+    await deliver(receiver, time: 6, status: .idle, display: side)    // side: settled, from 4 to 6
+    await deliver(receiver, image: white, time: 7, display: side)     // side: unchanged, extends its own frame only
+    await deliver(receiver, time: 8, status: .suspended)              // main: a gap; side is unaffected
+    await deliver(receiver, time: 9, status: .idle, display: side)
+    await receiver.close()
+    let record = try #require(try ScreenContextStore.read(session: archive.directory, sessionID: archive.id))
+    #expect(record.frames.map(\.start) == [1, 2, 3, 4], "one timeline, in start order")
+    #expect(record.frames.map(\.end) == [1, 2, 5, 9])
+    #expect(record.frames.map { $0.display?.number } == [1, 2, 1, 2])
+    #expect(record.displays.map(\.number) == [1, 2] && record.displayLabel(record.frames[1]) == "Display 2")
+    let images = try FileManager.default.contentsOfDirectory(atPath: ScreenContextStore.directory(archive.directory).path)
+        .filter { $0.hasSuffix(".jpg") }
+    #expect(images.count == 4)
+    try await archive.finish(status: ArchiveStatus.audioOnly)
+}
+
+@Test(.timeLimit(.minutes(1)))
+func anEndedDisplayStopsAtItsLastObservation() async throws {
+    let (root, archive) = try await screenCaptureFixture()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let side = ScreenDisplay(id: 2, number: 2, isMain: false)
+    let receiver = ScreenFrameReceiver(session: archive.directory, origin: 0)
+    let white = try screenCaptureImage(gray: 1), black = try screenCaptureImage(gray: 0)
+    receiver.begin(side)
+    await deliver(receiver, image: white, time: 1, display: side)
+    await deliver(receiver, image: white, time: 3, display: side)
+    await deliver(receiver, image: black, time: 5, display: side)     // a change that never settles
+    receiver.end(side.id)                                             // unplugged: its stream ended
+    await deliver(receiver, image: black, time: 7, display: side)     // a late sample of the ended stream
+    await deliver(receiver, time: 9, status: .idle, display: side)
+    await deliver(receiver, image: black, time: 9)                    // the main display goes on
+    await deliver(receiver, image: white, time: 20, display: side)    // still nothing from the ended one
+    await receiver.close()
+    let record = try #require(try ScreenContextStore.read(session: archive.directory, sessionID: archive.id))
+    let sideFrames = record.frames.filter { $0.display?.id == side.id }
+    #expect(sideFrames.map(\.start) == [1] && sideFrames.map(\.end) == [3],
+            "its interval closes at its last observation; nothing claims it was seen afterwards")
+    #expect(record.frames.count == 2)
+    try await archive.finish(status: ArchiveStatus.audioOnly)
+}
+
+@Test(.timeLimit(.minutes(1)))
+func theBusiestDisplayStopsAtTheSharedCapAndTheQuietOneRunsToTheEnd() async throws {
+    let (root, archive) = try await screenCaptureFixture()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let call = ScreenDisplay(id: 1, number: 1, isMain: true), slides = ScreenDisplay(id: 2, number: 2, isMain: false)
+    // 898 keyframes of the call's display already saved earlier in the meeting.
+    let earlier = (0..<898).map { ScreenKeyframe(start: Double($0), end: Double($0), display: call) }
+    try ScreenContextStore.write(ScreenContextRecord(sessionID: archive.id, frames: earlier), session: archive.directory)
+    let capped = Mutex<[UInt32]>([]), failures = Mutex(0)
+    let receiver = ScreenFrameReceiver(session: archive.directory, origin: 0,
+                                       onFailure: { failures.withLock { $0 += 1 } },
+                                       onDisplayCapped: { id in capped.withLock { $0.append(id) } },
+                                       encoder: { _ in Data([0xFF, 0xD8]) })
+    receiver.begin(call)
+    receiver.begin(slides)
+    let white = try screenCaptureImage(gray: 1), black = try screenCaptureImage(gray: 0)
+    await deliver(receiver, image: black, time: 999, display: call)      // the call's stream delivers: 899
+    await deliver(receiver, image: white, time: 1000, display: slides)   // the 900th keyframe: 90% of the cap
+    #expect(capped.withLock { $0 } == [call.id], "the busier display stops; the slides keep coming")
+    await deliver(receiver, image: black, time: 1001, display: call)     // ignored from now on
+    // The slides' display saves the remaining 100 keyframes: a new slide every other sample.
+    var time = 1002.0
+    for slide in 0..<100 {
+        await deliver(receiver, image: slide % 2 == 0 ? black : white, time: time, display: slides)
+        await deliver(receiver, time: time + 1, status: .idle, display: slides)
+        time += 2
+    }
+    #expect(failures.withLock { $0 } == 0)
+    await deliver(receiver, image: black, time: time, display: slides)
+    await deliver(receiver, time: time + 1, status: .idle, display: slides)  // over the cap: everything stops
+    await receiver.close()
+    let record = try #require(try ScreenContextStore.read(session: archive.directory, sessionID: archive.id))
+    #expect(record.frames.count == ScreenContextStore.maximumFrames && record.failure == "storageLimit")
+    #expect(record.frames.filter { $0.display == slides }.count == 101)
+    #expect(record.frames.filter { $0.display == call }.count == 899)
+    #expect(failures.withLock { $0 } == 1 && capped.withLock { $0 } == [call.id])
+    try await archive.finish(status: ArchiveStatus.audioOnly)
+}
+
+@Test(.timeLimit(.minutes(1)))
+func sharedCapsCountEachDisplaysOwnBytesAfterARestart() async throws {
+    let (root, archive) = try await screenCaptureFixture()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let a = ScreenDisplay(id: 1, number: 1, isMain: true), b = ScreenDisplay(id: 2, number: 2, isMain: false)
+    // Earlier in the meeting: A 150 keyframes of 1 MiB, B 600 small ones (75 MiB in all).
+    let mebibyte = ScreenContextStore.maximumImageBytes, small = (75 << 20) / 600
+    let earlier = (0..<150).map { ScreenKeyframe(start: Double($0), end: Double($0), display: a, bytes: mebibyte) }
+        + (0..<600).map { ScreenKeyframe(start: Double($0), end: Double($0), display: b, bytes: small) }
+    // One timeline, in start order (`sorted` is stable, so each display's own keyframes stay in order).
+    var record = ScreenContextRecord(sessionID: archive.id, frames: earlier.sorted { $0.start < $1.start })
+    record.imageBytes = 150 * mebibyte + 600 * small
+    try ScreenContextStore.write(record, session: archive.directory)
+    let capped = Mutex<[UInt32]>([])
+    // A recorder restart: a new receiver rebuilds each display's bytes from the saved keyframes.
+    let receiver = ScreenFrameReceiver(session: archive.directory, origin: 0,
+                                       onDisplayCapped: { id in capped.withLock { $0.append(id) } },
+                                       encoder: { _ in Data(count: ScreenContextStore.maximumImageBytes) })
+    receiver.begin(a)
+    receiver.begin(b)
+    let white = try screenCaptureImage(gray: 1), black = try screenCaptureImage(gray: 0)
+    await deliver(receiver, image: white, time: 999, display: a)  // A's stream delivers: 151 MiB
+    var time = 1000.0
+    for slide in 0..<6 where capped.withLock({ $0.isEmpty }) {  // B's slides: 1 MiB each, to 90% of 256 MiB
+        await deliver(receiver, image: slide % 2 == 0 ? white : black, time: time, display: b)
+        await deliver(receiver, time: time + 1, status: .idle, display: b)
+        time += 2
+    }
+    await receiver.close()
+    #expect(capped.withLock { $0 } == [a.id], "A used 151 MiB to B's about 80: A is the busiest by bytes")
+    let saved = try #require(try ScreenContextStore.read(session: archive.directory, sessionID: archive.id))
+    #expect(saved.frames.filter { $0.display == b }.allSatisfy { $0.bytes != nil })
+    try await archive.finish(status: ArchiveStatus.audioOnly)
+}
+
+@Test(.timeLimit(.minutes(1)))
+func aStreamStillStartingTakesNoShareOfTheCaps() async throws {
+    let (root, archive) = try await screenCaptureFixture()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let hung = ScreenDisplay(id: 1, number: 1, isMain: true), slides = ScreenDisplay(id: 2, number: 2, isMain: false)
+    let earlier = (0..<899).map { ScreenKeyframe(start: Double($0), end: Double($0), display: slides, bytes: 2) }
+    try ScreenContextStore.write(ScreenContextRecord(sessionID: archive.id, frames: earlier), session: archive.directory)
+    let capped = Mutex<[UInt32]>([])
+    let receiver = ScreenFrameReceiver(session: archive.directory, origin: 0,
+                                       onDisplayCapped: { id in capped.withLock { $0.append(id) } },
+                                       encoder: { _ in Data([0xFF, 0xD8]) })
+    receiver.begin(hung)                                             // its platform start never returns
+    receiver.begin(slides)
+    await deliver(receiver, image: try screenCaptureImage(gray: 1), time: 1000, display: slides)  // 90% of the cap
+    await receiver.close()
+    #expect(capped.withLock { $0 }.isEmpty, "the only display capturing is not stopped to make room for a hung one")
+    try await archive.finish(status: ArchiveStatus.audioOnly)
+}
+
+@Test(.timeLimit(.minutes(1)))
+func aSampleWithAnotherStreamsTokenNeverTouchesTheDisplay() async throws {
+    let (root, archive) = try await screenCaptureFixture()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let side = ScreenDisplay(id: 2, number: 2, isMain: false)
+    let receiver = ScreenFrameReceiver(session: archive.directory, origin: 0)
+    let white = try screenCaptureImage(gray: 1), black = try screenCaptureImage(gray: 0)
+    let ours = UUID(), other = UUID()
+    receiver.begin(side, stream: ours)
+    await deliver(receiver, image: white, time: 1, display: side, stream: ours)
+    await deliver(receiver, time: 2, status: .suspended, display: side, stream: other)  // not this display's stream
+    await deliver(receiver, time: 3, status: .idle, display: side, stream: ours)
+    await deliver(receiver, image: black, time: 4, display: side, stream: other)
+    await deliver(receiver, image: black, time: 6, display: side, stream: other)
+    await receiver.close()
+    let record = try #require(try ScreenContextStore.read(session: archive.directory, sessionID: archive.id))
+    #expect(record.frames.map(\.start) == [1], "no snapshot from another stream")
+    #expect(record.frames.map(\.end) == [3], "another stream's suspended sample did not end the coverage")
+    try await archive.finish(status: ArchiveStatus.audioOnly)
+}
+
+/// ScreenCaptureKit, scripted: the displays it lists at the start, and how each stream behaves.
+@MainActor private final class FakeScreenSystem: ScreenCaptureSystem {
+    var connected: [ScreenDisplayCandidate]
+    /// Displays whose stream cannot be made.
+    var failing: Set<CGDirectDisplayID> = []
+    /// How many of the next queries fail.
+    var failingQueries = 0
+    /// Displays whose platform start throws (after `whileStarting`).
+    var failingStarts: Set<CGDirectDisplayID> = []
+    /// Runs inside a stream's start, before it returns.
+    var whileStarting: ((ScreenDisplay) async -> Void)?
+    /// Runs inside a stream's stop, after the stop was asked for.
+    var whileStopping: ((ScreenDisplay) async -> Void)?
+    private(set) var queries = 0
+    private(set) var started: [ScreenDisplay] = []
+    private(set) var stopped: [CGDirectDisplayID] = []
+    /// Held weakly, as ScreenCaptureKit holds a stream's output and delegate: only the capture keeps them alive.
+    private var weakOutputs: [CGDirectDisplayID: WeakOutput] = [:]
+    var outputs: [CGDirectDisplayID: ScreenDisplayOutput] { weakOutputs.compactMapValues(\.output) }
+
+    init(_ connected: [ScreenDisplayCandidate]) { self.connected = connected }
+
+    func displays() async throws -> [ScreenDisplayCandidate] {
+        queries += 1
+        if failingQueries > 0 {
+            failingQueries -= 1
+            throw HolosError.unavailable("Synthetic: no shareable content.")
+        }
+        return connected
+    }
+    func stream(for display: ScreenDisplay, output: ScreenDisplayOutput) throws -> any ScreenStreamControl {
+        if failing.contains(display.id) { throw HolosError.unavailable("Synthetic stream failure.") }
+        started.append(display)
+        weakOutputs[display.id] = WeakOutput(output: output)
+        return FakeStream(start: { [weak self] in
+                              await self?.whileStarting?(display)
+                              if self?.failingStarts.contains(display.id) == true {
+                                  throw HolosError.unavailable("Synthetic start failure.")
+                              }
+                          },
+                          stop: { [weak self] in
+                              self?.stopped.append(display.id)
+                              await self?.whileStopping?(display)
+                          })
+    }
+}
+
+private struct WeakOutput { weak var output: ScreenDisplayOutput? }
+
+@MainActor private final class FakeStream: ScreenStreamControl {
+    private let onStart: () async throws -> Void
+    private let onStop: () async -> Void
+    init(start: @escaping () async throws -> Void, stop: @escaping () async -> Void) { onStart = start; onStop = stop }
+    func start() async throws { try await onStart() }
+    func stop() async { await onStop() }
+}
+
+/// Holds fake streams' starts or stops until the test opens it.
+@MainActor private final class Gate {
+    private var waiting: [CheckedContinuation<Void, Never>] = []
+    private var opened = false
+    func wait() async {
+        guard !opened else { return }
+        await withCheckedContinuation { waiting.append($0) }
+    }
+    func open() {
+        opened = true
+        for continuation in waiting { continuation.resume() }
+        waiting = []
+    }
+}
+
+/// Polls a bounded number of times for a condition another task brings about; no assertion on time.
+@MainActor private func polled(_ condition: () -> Bool) async throws -> Bool {
+    for _ in 0..<20_000 where !condition() { try await Task.sleep(for: .milliseconds(5)) }
+    return condition()
+}
+
+@Test(.timeLimit(.minutes(1))) @MainActor
+func eachDisplayConnectedAtTheStartGetsOneStreamForTheWholeCapture() async throws {
+    let (root, archive) = try await screenCaptureFixture()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let system = FakeScreenSystem([candidate(9, x: 0, main: true), candidate(5, x: 1920)])
+    let capture = MeetingScreenCapture(permissionCheck: { true }, system: system)
+    capture.start(.display, session: archive.directory, origin: 0)
+    await capture.settle()
+    #expect(system.started == [ScreenDisplay(id: 9, number: 1, isMain: true), ScreenDisplay(id: 5, number: 2, isMain: false)])
+    #expect(capture.capturing == [5, 9])
+    let white = try screenCaptureImage(gray: 1)
+    for output in system.outputs.values {
+        await deliver(output.receiver, image: white, time: Double(output.display.number), display: output.display,
+                      stream: output.stream)
+    }
+    // 5 is unplugged: its stream reports an error and ends for good; 9 goes on. A display plugged in now (7) is not
+    // looked for: ScreenCaptureKit is asked once, at the start.
+    system.connected = [candidate(9, x: 0, main: true), candidate(7, x: 1920)]
+    capture.streamStopped(5)
+    await capture.settle()
+    #expect(capture.capturing == [9] && system.stopped == [5] && system.queries == 1)
+    #expect(system.started.count == 2, "nothing is restarted or added")
+    await capture.stop()
+    #expect(Set(system.stopped) == [5, 9])
+    let record = try #require(try ScreenContextStore.read(session: archive.directory, sessionID: archive.id))
+    #expect(record.frames.map { $0.display?.number } == [1, 2] && record.failure == nil && record.captureID == nil)
+    try await archive.finish(status: ArchiveStatus.audioOnly)
+}
+
+@Test(.timeLimit(.minutes(1))) @MainActor
+func theCaptureFailsWhenNothingStartsOrTheLastStreamEnds() async throws {
+    func record(_ archive: SessionArchive) throws -> ScreenContextRecord? {
+        try ScreenContextStore.read(session: archive.directory, sessionID: archive.id)
+    }
+    // The last of two streams ending with an error (a laptop-only setup whose lid closed counts too).
+    let (root, archive) = try await screenCaptureFixture()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let system = FakeScreenSystem([candidate(9, x: 0, main: true), candidate(5, x: 1920)])
+    let capture = MeetingScreenCapture(permissionCheck: { true }, system: system)
+    capture.start(.display, session: archive.directory, origin: 0)
+    await capture.settle()
+    capture.streamStopped(5)
+    #expect(try record(archive)?.failure == nil, "the other display still captures")
+    capture.streamStopped(9)
+    await capture.stop()
+    #expect(try record(archive)?.failure == "captureFailed" && record(archive)?.captureID == nil)
+
+    // No stream could be made, a platform start failed for the only display, or the display query failed.
+    var others: [(URL, SessionArchive)] = []
+    defer { for (url, _) in others { try? FileManager.default.removeItem(at: url) } }
+    let setups: [@MainActor (FakeScreenSystem) -> Void] = [{ $0.failing = [9] }, { $0.failingStarts = [9] },
+                                                            { $0.failingQueries = 1 }]
+    for setup in setups {
+        let fixture = try await screenCaptureFixture()
+        others.append(fixture)
+        let fake = FakeScreenSystem([candidate(9, x: 0, main: true)])
+        setup(fake)
+        let failing = MeetingScreenCapture(permissionCheck: { true }, system: fake)
+        failing.start(.display, session: fixture.1.directory, origin: 0)
+        await failing.settle()
+        await failing.stop()
+        #expect(try record(fixture.1)?.failure == "captureFailed")
+    }
+    try await archive.finish(status: ArchiveStatus.audioOnly)
+    for (_, other) in others { try await other.finish(status: ArchiveStatus.audioOnly) }
+}
+
+@Test(.timeLimit(.minutes(1))) @MainActor
+func theMainTargetCapturesTheMainDisplayAtTheStartAndACappedDisplayStaysStopped() async throws {
+    let (root, archive) = try await screenCaptureFixture()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let system = FakeScreenSystem([candidate(9, x: 0, main: true), candidate(5, x: 1920)])
+    let main = MeetingScreenCapture(permissionCheck: { true }, system: system)
+    main.start(.main, session: archive.directory, origin: 0)
+    await main.settle()
+    #expect(main.capturing == [9] && system.started.map(\.id) == [9])
+    await main.stop()
+
+    let all = FakeScreenSystem([candidate(9, x: 0, main: true), candidate(5, x: 1920)])
+    let capture = MeetingScreenCapture(permissionCheck: { true }, system: all)
+    capture.start(.display, session: archive.directory, origin: 0)
+    await capture.settle()
+    let output = try #require(all.outputs[5])
+    capture.capped(5)
+    await capture.settle()
+    #expect(capture.capturing == [9] && all.stopped == [5])
+    await deliver(output.receiver, image: try screenCaptureImage(gray: 1), time: 50, display: output.display,
+                  stream: output.stream)
+    #expect(try ScreenContextStore.read(session: archive.directory, sessionID: archive.id)?.frames.isEmpty == true,
+            "a capped display's samples are not taken")
+    await capture.stop()
+    #expect(try ScreenContextStore.read(session: archive.directory, sessionID: archive.id)?.failure == nil)
+    try await archive.finish(status: ArchiveStatus.audioOnly)
+}
+
+@Test(.timeLimit(.minutes(1))) @MainActor
+func aStreamThatBreaksWhileStartingIsNotTakenForARunningOne() async throws {
+    let (root, archive) = try await screenCaptureFixture()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let system = FakeScreenSystem([candidate(9, x: 0, main: true), candidate(5, x: 1920)])
+    let capture = MeetingScreenCapture(permissionCheck: { true }, system: system)
+    system.whileStarting = { display in
+        if display.id == 5 { capture.streamStopped(5) }
+    }
+    capture.start(.display, session: archive.directory, origin: 0)
+    await capture.settle()
+    #expect(capture.capturing == [9] && system.started.map(\.id) == [9, 5])
+    #expect(system.stopped.contains(5), "stopped again once its start returned")
+    await capture.stop()
+    #expect(try ScreenContextStore.read(session: archive.directory, sessionID: archive.id)?.failure == nil)
+    try await archive.finish(status: ArchiveStatus.audioOnly)
+}
+
+@Test(.timeLimit(.minutes(1))) @MainActor
+func aStartQueuedBehindAStopOrAnErrorNeverRuns() async throws {
+    let (root, archive) = try await screenCaptureFixture()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let system = FakeScreenSystem([candidate(9, x: 0, main: true), candidate(5, x: 1920), candidate(7, x: 3840)])
+    var asked: [CGDirectDisplayID] = []
+    let capture = MeetingScreenCapture(permissionCheck: { true }, system: system)
+    // 9 starts first; inside its start 5's stream errors and the meeting stops, before 5's and 7's start tasks run.
+    system.whileStarting = { display in
+        asked.append(display.id)
+        guard display.id == 9 else { return }
+        capture.streamStopped(5)
+        await capture.stop()
+    }
+    capture.start(.display, session: archive.directory, origin: 0)
+    await capture.settle()
+    #expect(asked == [9], "neither the ended stream of 5 nor 7 after stop was started")
+    #expect(Set(system.stopped) == [5, 7, 9])
+    try await archive.finish(status: ArchiveStatus.audioOnly)
+}
+
+@Test(.timeLimit(.minutes(1))) @MainActor
+func aHungStartHoldsUpNoOtherDisplay() async throws {
+    let (root, archive) = try await screenCaptureFixture()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let system = FakeScreenSystem([candidate(5, x: -1920), candidate(9, x: 0, main: true)])
+    let gate = Gate()
+    system.whileStarting = { display in if display.id == 5 { await gate.wait() } }
+    let capture = MeetingScreenCapture(permissionCheck: { true }, system: system)
+    capture.start(.display, session: archive.directory, origin: 0)
+    #expect(try await polled { capture.capturing == [9] }, "display 9 starts though 5 (numbered first) hangs")
+    gate.open()
+    await capture.settle()
+    #expect(capture.capturing == [5, 9])
+    await capture.stop()
+    #expect(Set(system.stopped) == [5, 9])
+    try await archive.finish(status: ArchiveStatus.audioOnly)
+}
+
+@Test(.timeLimit(.minutes(1))) @MainActor
+func everyStreamIsAskedToStopThoughOneStopStalls() async throws {
+    let (root, archive) = try await screenCaptureFixture()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let system = FakeScreenSystem([candidate(9, x: 0, main: true), candidate(5, x: 1920), candidate(7, x: 3840)])
+    let gate = Gate()
+    system.whileStopping = { _ in await gate.wait() }               // every platform stop stalls
+    let capture = MeetingScreenCapture(permissionCheck: { true }, system: system)
+    capture.start(.display, session: archive.directory, origin: 0)
+    await capture.settle()
+    capture.streamStopped(7)                                        // an error's stop stalls, and returns at once
+    #expect(capture.capturing == [5, 9])
+    let stopping = Task { await capture.stop() }
+    #expect(try await polled { Set(system.stopped) == [5, 7, 9] }, "each stream got its stop request")
+    gate.open()
+    await stopping.value
+    try await archive.finish(status: ArchiveStatus.audioOnly)
+}
+
+@Test(.timeLimit(.minutes(1))) @MainActor
+func aMeetingStoppedDuringASlowStreamStartStopsThatStreamToo() async throws {
+    let (root, archive) = try await screenCaptureFixture()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let system = FakeScreenSystem([candidate(9, x: 0, main: true), candidate(5, x: 1920)])
+    let gate = Gate()
+    let (entered, enter) = AsyncStream.makeStream(of: Void.self)
+    system.whileStarting = { display in
+        guard display.id == 5 else { return }
+        enter.yield()
+        await gate.wait()
+    }
+    let capture = MeetingScreenCapture(permissionCheck: { true }, system: system)
+    capture.start(.display, session: archive.directory, origin: 0)
+    var iterator = entered.makeAsyncIterator()
+    _ = await iterator.next()                                  // 5's platform start is pending
+    let output = try #require(system.outputs[5])
+    await capture.stop()
+    #expect(Set(system.stopped) == [5, 9], "the pending stream is stopped with the meeting, not when its start returns")
+    gate.open()
+    await capture.settle()
+    #expect(capture.capturing.isEmpty)
+    // A frame the platform still delivers is fenced: the capture generation has ended.
+    await deliver(output.receiver, image: try screenCaptureImage(gray: 1), time: 5, display: output.display,
+                  stream: output.stream)
+    #expect(try ScreenContextStore.read(session: archive.directory, sessionID: archive.id)?.frames.isEmpty == true)
+    try await archive.finish(status: ArchiveStatus.audioOnly)
+}
+
+@Test(.timeLimit(.minutes(1))) @MainActor
+func theCaptureKeepsEachStreamsOutputAliveWhileItRuns() async throws {
+    // ScreenCaptureKit holds outputs weakly; so does this fake. Frames must still arrive once the refresh is over.
+    let (root, archive) = try await screenCaptureFixture()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let system = FakeScreenSystem([candidate(9, x: 0, main: true), candidate(5, x: 1920)])
+    let capture = MeetingScreenCapture(permissionCheck: { true }, system: system)
+    capture.start(.main, session: archive.directory, origin: 0)
+    await capture.settle()
+    autoreleasepool {}
+    await Task.yield()
+    do {
+        let output = try #require(system.outputs[9], "the running stream's output is still alive")
+        await deliver(output.receiver, image: try screenCaptureImage(gray: 1), time: 1, display: output.display,
+                      stream: output.stream)
+    }
+    #expect(try ScreenContextStore.read(session: archive.directory, sessionID: archive.id)?.frames.count == 1)
+    await capture.stop()
+    #expect(system.outputs.isEmpty, "released once its stream stopped")
+    try await archive.finish(status: ArchiveStatus.audioOnly)
+}
+
+@Test(.timeLimit(.minutes(1))) @MainActor
+func aStreamThatErrorsWhileItsStartHangsIsRetiredAtOnce() async throws {
+    let (root, archive) = try await screenCaptureFixture()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let system = FakeScreenSystem([candidate(9, x: 0, main: true)])
+    let gate = Gate()
+    system.whileStarting = { _ in await gate.wait() }               // the start never returns (until the end)
+    let capture = MeetingScreenCapture(permissionCheck: { true }, system: system)
+    capture.start(.display, session: archive.directory, origin: 0)
+    await capture.initial?.value
+    capture.streamStopped(9)                                  // its error arrives while the start hangs
+    #expect(system.stopped == [9] || capture.capturing.isEmpty)
+    await capture.stop()
+    #expect(system.stopped.contains(9), "the broken stream was asked to stop")
+    #expect(try ScreenContextStore.read(session: archive.directory, sessionID: archive.id)?.failure == "captureFailed",
+            "nothing else captures: the capture says it failed")
+    gate.open()                                                      // the late start return is ignored
+    await capture.settle()
+    #expect(capture.capturing.isEmpty)
+    try await archive.finish(status: ArchiveStatus.audioOnly)
+}
+
+/// Two displays' pipelines on synthetic 2560×1440 frames, as the streams deliver them: each sample drawn into a BGRA
+/// pixel buffer, copied through the receiver's software CIContext path, diffed, and (for kept frames) encoded and
+/// written to a temporary archive. One display shows a slide that changes every other sample (a busy display), the
+/// other holds still (idle samples). Prints process CPU per sample and the peak memory footprint above the start;
+/// no timing or memory assertion. Nothing is captured from the real screen.
+@Test(.enabled(if: ProcessInfo.processInfo.environment["HOLOS_SCREEN_BENCHMARK"] == "1"))
+func screenTwoDisplayPipelineBenchmark() async throws {
+    func cpu() -> Double {
+        var usage = rusage(); getrusage(RUSAGE_SELF, &usage)
+        return Double(usage.ru_utime.tv_sec + usage.ru_stime.tv_sec)
+            + Double(usage.ru_utime.tv_usec + usage.ru_stime.tv_usec) / 1_000_000
+    }
+    func footprint() -> Int {
+        var info = task_vm_info_data_t()
+        var count = mach_msg_type_number_t(MemoryLayout<task_vm_info_data_t>.size / MemoryLayout<integer_t>.size)
+        let result = withUnsafeMutablePointer(to: &info) {
+            $0.withMemoryRebound(to: integer_t.self, capacity: Int(count)) {
+                task_info(mach_task_self_, task_flavor_t(TASK_VM_INFO), $0, &count)
+            }
+        }
+        return result == KERN_SUCCESS ? Int(info.phys_footprint) : 0
+    }
+    func buffer(_ image: CGImage) throws -> CVPixelBuffer {
+        var buffer: CVPixelBuffer?
+        CVPixelBufferCreate(nil, image.width, image.height, kCVPixelFormatType_32BGRA, nil, &buffer)
+        let pixels = try #require(buffer)
+        CVPixelBufferLockBaseAddress(pixels, [])
+        defer { CVPixelBufferUnlockBaseAddress(pixels, []) }
+        let context = try #require(CGContext(data: CVPixelBufferGetBaseAddress(pixels), width: image.width,
+            height: image.height, bitsPerComponent: 8, bytesPerRow: CVPixelBufferGetBytesPerRow(pixels),
+            space: CGColorSpace(name: CGColorSpace.sRGB)!,
+            bitmapInfo: CGImageAlphaInfo.noneSkipFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue))
+        context.draw(image, in: CGRect(x: 0, y: 0, width: image.width, height: image.height))
+        return pixels
+    }
+    let slides = try (0..<4).map { try buffer(try #require(syntheticDisplay(width: 2560, height: 1440, offset: $0 * 45))) }
+    let still = try buffer(try #require(syntheticDisplay(width: 2560, height: 1440, lines: 20)))
+    let converter = CIContext(options: [.useSoftwareRenderer: true])
+    func sample(_ pixels: CVPixelBuffer) -> CGImage? {
+        let input = CIImage(cvPixelBuffer: pixels)
+        return converter.createCGImage(input, from: input.extent)
+    }
+    // The first pass warms the CIContext and the JPEG encoder and is not printed; then one busy display alone, a busy
+    // one beside a still one (a call beside slides that hold), and two busy ones (the worst case).
+    for (name, displays, bothBusy) in [("warm-up", 1, false), ("one busy display", 1, false),
+                                       ("busy + still display", 2, false), ("two busy displays", 2, true)] {
+        let (root, archive) = try await screenCaptureFixture()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let busy = ScreenDisplay(id: 1, number: 1, isMain: true), quiet = ScreenDisplay(id: 2, number: 2, isMain: false)
+        let receiver = ScreenFrameReceiver(session: archive.directory, origin: 0)
+        let rounds = 40
+        let baseline = footprint()
+        var peak = baseline
+        let start = cpu()
+        for round in 0..<rounds {
+            let time = Double(round * 2)
+            await deliver(receiver, image: sample(slides[(round / 2) % slides.count]), time: time, display: busy)
+            if displays == 2 {
+                if bothBusy {
+                    await deliver(receiver, image: sample(slides[(round / 2 + 1) % slides.count]), time: time,
+                                  display: quiet)
+                } else if round == 0 {
+                    await deliver(receiver, image: sample(still), time: time, display: quiet)
+                } else {
+                    await deliver(receiver, time: time, status: .idle, display: quiet)
+                }
+            }
+            peak = max(peak, footprint())
+        }
+        let spent = cpu() - start
+        await receiver.close()
+        let record = try #require(try ScreenContextStore.read(session: archive.directory, sessionID: archive.id))
+        if name == "warm-up" { try await archive.finish(status: ArchiveStatus.audioOnly); continue }
+        print("Synthetic 2560×1440, \(name), \(rounds) samples each: "
+            + "\(String(format: "%.1f", spent / Double(rounds) * 1000)) ms CPU per two-second round "
+            + "(\(String(format: "%.2f", spent / Double(rounds) / 2 * 100)) % of one core); "
+            + "\(record.frames.count) keyframes, \(record.imageBytes / max(1, record.frames.count) / 1024) KiB each; "
+            + "peak footprint +\((peak - baseline) / (1 << 20)) MiB")
+        try await archive.finish(status: ArchiveStatus.audioOnly)
+    }
+}
+
+@Test(.timeLimit(.minutes(1))) @MainActor
+func aCapThatEndsTheLastStreamAfterAnErrorEndsTheCaptureWithAnOutcome() async throws {
+    // A's keyframe that reaches 90% of the shared cap is being encoded when B fails: the receiver still counts B and
+    // caps A, so the cap removes the last stream. The capture must end with a recorded outcome, not "capturing".
+    let (root, archive) = try await screenCaptureFixture()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let a = ScreenDisplay(id: 9, number: 1, isMain: true)
+    let earlier = (0..<897).map { ScreenKeyframe(start: Double($0), end: Double($0), display: a, bytes: 2) }
+    try ScreenContextStore.write(ScreenContextRecord(sessionID: archive.id, frames: earlier), session: archive.directory)
+    let holding = Mutex(false), entered = Mutex(false)
+    let gate = DispatchSemaphore(value: 0)
+    let system = FakeScreenSystem([candidate(9, x: 0, main: true), candidate(5, x: 1920)])
+    let capture = MeetingScreenCapture(permissionCheck: { true }, system: system, encoder: { _ in
+        if holding.withLock({ $0 }) { entered.withLock { $0 = true }; gate.wait() }
+        return Data([0xFF, 0xD8])
+    })
+    capture.start(.display, session: archive.directory, origin: 0)
+    await capture.settle()
+    let outputA = try #require(system.outputs[9]), outputB = try #require(system.outputs[5])
+    let white = try screenCaptureImage(gray: 1), black = try screenCaptureImage(gray: 0)
+    await deliver(outputA.receiver, image: white, time: 1000, display: a, stream: outputA.stream)          // 898
+    await deliver(outputB.receiver, image: white, time: 1001, display: outputB.display, stream: outputB.stream) // 899
+    await deliver(outputA.receiver, image: black, time: 1002, display: a, stream: outputA.stream)          // pending
+    holding.withLock { $0 = true }
+    let saving = Task.detached {
+        await deliver(outputA.receiver, time: 1003, status: .idle, display: a, stream: outputA.stream)   // 900: held
+    }
+    #expect(try await polled { entered.withLock { $0 } })
+    capture.streamStopped(5)                                     // B fails while A's keyframe is being saved
+    #expect(capture.capturing == [9])
+    gate.signal()
+    await saving.value
+    #expect(try await polled { capture.capturing.isEmpty }, "the cap removed A, the last stream")
+    await capture.settle()
+    await deliver(outputA.receiver, time: 1005, status: .idle, display: a, stream: outputA.stream)  // flushes the queue
+    let record = try #require(try ScreenContextStore.read(session: archive.directory, sessionID: archive.id))
+    #expect(record.failure == "captureFailed" && record.captureID == nil, "not left saying it is capturing")
+    await capture.stop()
+    try await archive.finish(status: ArchiveStatus.audioOnly)
+}
+
+@Test(.timeLimit(.minutes(1)))
+func aStorageLimitAlreadyRecordedIsKeptWhenTheCaptureEnds() async throws {
+    let (root, archive) = try await screenCaptureFixture()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let frames = (0..<ScreenContextStore.maximumFrames).map {
+        ScreenKeyframe(start: Double($0), end: Double($0), display: mainDisplay, bytes: 2)
+    }
+    try ScreenContextStore.write(ScreenContextRecord(sessionID: archive.id, frames: frames), session: archive.directory)
+    let receiver = ScreenFrameReceiver(session: archive.directory, origin: 0)
+    await deliver(receiver, image: try screenCaptureImage(gray: 1), time: 1001)  // over the cap: storageLimit
+    receiver.failed()                                                          // then the last stream ends
+    await receiver.close()
+    #expect(try ScreenContextStore.read(session: archive.directory, sessionID: archive.id)?.failure == "storageLimit")
+    try await archive.finish(status: ArchiveStatus.audioOnly)
 }

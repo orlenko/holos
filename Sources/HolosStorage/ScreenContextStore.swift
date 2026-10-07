@@ -17,18 +17,60 @@ public struct ScreenTextLine: Codable, Sendable, Equatable {
     }
 }
 
+/// The display a keyframe came from, as the meeting knows it (docs/meeting-design.md §4.15). The same physical display
+/// keeps its number for the whole meeting, also in the recorder's next capture epoch (after a pause, say).
+public struct ScreenDisplay: Codable, Sendable, Equatable, Hashable {
+    /// The `CGDirectDisplayID`: stable for one physical display while it stays connected, and usually across a
+    /// reconnect.
+    public var id: UInt32
+    /// 1 and up, for this meeting: the displays connected when capture began are numbered by their arrangement (left
+    /// to right, then top to bottom); one connected later takes the next number.
+    public var number: Int
+    /// The main display (the one with the menu bar) when its capture began.
+    public var isMain: Bool
+
+    public init(id: UInt32, number: Int, isMain: Bool) {
+        self.id = id; self.number = number; self.isMain = isMain
+    }
+
+    /// "Main display", or "Display 2". With more than one main display in a meeting (the main one changed), "Display
+    /// 2, main" keeps them apart.
+    public func label(severalMain: Bool = false) -> String {
+        guard isMain else { return "Display \(number)" }
+        return severalMain ? "Display \(number), main" : "Main display"
+    }
+}
+
 public struct ScreenKeyframe: Codable, Sendable, Equatable {
     public var id: String
     public var start: Double
     public var end: Double
     public var lines: [ScreenTextLine]?
-    public init(id: String = UUID().uuidString, start: Double, end: Double, lines: [ScreenTextLine]? = nil) {
-        self.id = id; self.start = start; self.end = end; self.lines = lines
+    /// Where the snapshot came from; nil in a meeting captured before all displays were (only the main display was
+    /// then), which `source` reads as the main display.
+    public var display: ScreenDisplay?
+    /// The JPEG's size, so the shared caps know each display's share exactly in the recorder's next capture epoch;
+    /// nil for a keyframe saved before keyframes said.
+    public var bytes: Int?
+    public init(id: String = UUID().uuidString, start: Double, end: Double, lines: [ScreenTextLine]? = nil,
+                display: ScreenDisplay? = nil, bytes: Int? = nil) {
+        self.id = id; self.start = start; self.end = end; self.lines = lines; self.display = display
+        self.bytes = bytes
     }
+
+    /// The display the snapshot came from; the main display for a keyframe saved before keyframes said.
+    public var source: ScreenDisplay { display ?? ScreenDisplay(id: 0, number: 1, isMain: true) }
 }
 
 public struct ScreenContextRecord: Codable, Sendable, Equatable {
-    public var schemaVersion = 1
+    /// The version written: 2 once a keyframe names its display or size, 1 otherwise. A build from before displays
+    /// were named (it reads only 1) refuses a version-2 file as "written by a newer version" and leaves it alone:
+    /// its OCR or Review would otherwise rewrite the file without the fields it does not know, and every snapshot
+    /// would then read as the main display's. A record without those fields (one saved before, even after this
+    /// build recognized its text) stays at 1, so an older build can still read it.
+    public var schemaVersion: Int {
+        frames.contains { $0.display != nil || $0.bytes != nil } ? 2 : 1
+    }
     public var sessionID: String
     public var frames: [ScreenKeyframe]
     public var imageBytes = 0
@@ -40,6 +82,38 @@ public struct ScreenContextRecord: Codable, Sendable, Equatable {
     public var failure: String?
     public init(sessionID: String, frames: [ScreenKeyframe] = [], failure: String? = nil) {
         self.sessionID = sessionID; self.frames = frames; self.failure = failure
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case schemaVersion, sessionID, frames, imageBytes, captureID, ocrID, failure
+    }
+
+    /// `schemaVersion` is checked before decoding (`ScreenContextStore.read`) and follows from the keyframes.
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        // Required, as before the version followed from the keyframes: a file without a readable version is damaged.
+        let version = try container.decode(Int.self, forKey: .schemaVersion)
+        guard (1...ScreenContextStore.schemaVersion).contains(version) else {
+            throw DecodingError.dataCorruptedError(forKey: .schemaVersion, in: container,
+                                                   debugDescription: "Unsupported screen context schema version.")
+        }
+        sessionID = try container.decode(String.self, forKey: .sessionID)
+        frames = try container.decode([ScreenKeyframe].self, forKey: .frames)
+        imageBytes = try container.decodeIfPresent(Int.self, forKey: .imageBytes) ?? 0
+        captureID = try container.decodeIfPresent(String.self, forKey: .captureID)
+        ocrID = try container.decodeIfPresent(String.self, forKey: .ocrID)
+        failure = try container.decodeIfPresent(String.self, forKey: .failure)
+    }
+
+    public func encode(to encoder: any Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(schemaVersion, forKey: .schemaVersion)
+        try container.encode(sessionID, forKey: .sessionID)
+        try container.encode(frames, forKey: .frames)
+        try container.encode(imageBytes, forKey: .imageBytes)
+        try container.encodeIfPresent(captureID, forKey: .captureID)
+        try container.encodeIfPresent(ocrID, forKey: .ocrID)
+        try container.encodeIfPresent(failure, forKey: .failure)
     }
 
     /// Evidence only while the frame was actually observed, never across a pause or capture failure.
@@ -57,6 +131,39 @@ public struct ScreenContextRecord: Codable, Sendable, Equatable {
         return result
     }
 
+    /// The displays the keyframes came from, by first appearance; one for a meeting captured on one display (or
+    /// before keyframes named their display).
+    public var displays: [ScreenDisplay] {
+        var seen: Set<UInt32> = [], result: [ScreenDisplay] = []
+        for frame in frames where seen.insert(frame.display?.id ?? 0).inserted { result.append(frame.source) }
+        return result
+    }
+
+    /// Which display a keyframe came from, for Review: nil when the meeting has one display, so nothing extra shows.
+    public func displayLabel(_ frame: ScreenKeyframe) -> String? {
+        guard displays.count > 1 else { return nil }
+        return frame.source.label(severalMain: severalMainDisplays)
+    }
+
+    /// `displayLabel` of every keyframe, in order, working out the displays once.
+    public var displayLabels: [String?] {
+        guard displays.count > 1 else { return frames.map { _ in nil } }
+        let severalMain = severalMainDisplays
+        return frames.map { $0.source.label(severalMain: severalMain) }
+    }
+
+    /// More than one display was the main one in some keyframe (the main display changed during the meeting, say
+    /// across a pause), so "Main display" alone would not tell them apart.
+    private var severalMainDisplays: Bool {
+        Set(frames.filter(\.source.isMain).map { $0.display?.id ?? 0 }).count > 1
+    }
+
+    /// Where a new keyframe starting at `start` goes: after every keyframe that starts no later, so the shared
+    /// timeline stays in start order while displays' intervals overlap.
+    public func insertionIndex(start: Double) -> Int {
+        (frames.lastIndex { $0.start <= start }).map { $0 + 1 } ?? 0
+    }
+
     /// Suggestions for user review; this API does not add anything to the word list.
     public func candidates(excluding known: [String], from start: Double, to end: Double) -> [String] {
         let known = Set(known.map { $0.lowercased() })
@@ -67,9 +174,13 @@ public struct ScreenContextRecord: Codable, Sendable, Equatable {
 }
 
 public enum ScreenContextStore {
+    /// The newest `screen/context.json` version this build reads (`ScreenContextRecord.schemaVersion`).
+    public static let schemaVersion = 2
     public static let maximumFrames = 1_000
     public static let maximumImageBytes = 1 << 20
     public static let maximumTotalImageBytes = 256 << 20
+    /// The highest display number a keyframe may carry: far more displays than one Mac drives, still bounded on read.
+    public static let maximumDisplays = 64
     /// Snapshots are of the whole display, downscaled so neither side exceeds this: about point resolution on a 5K
     /// display, so slide text stays legible to OCR.
     public static let maximumImageDimension = 2560
@@ -84,16 +195,22 @@ public enum ScreenContextStore {
 
     public static func read(session: URL, sessionID: String) throws -> ScreenContextRecord? {
         guard let data = try AtomicFile.readIfPresent(manifest(session), maxBytes: 16 << 20) else { return nil }
-        let record = try SchemaVersion.decode(ScreenContextRecord.self, from: data, current: 1, name: "screen/context.json")
+        let record = try SchemaVersion.decode(ScreenContextRecord.self, from: data, current: schemaVersion, name: "screen/context.json")
         guard record.sessionID == sessionID, record.frames.count <= maximumFrames,
               record.imageBytes >= 0, record.imageBytes <= maximumTotalImageBytes else {
             throw HolosError.invalidInput("Screen context belongs to another session or has too many frames.")
         }
-        var lastEnd = 0.0, ids: Set<String> = []
+        // Each display's keyframes follow one another without overlapping; different displays' overlap in time. A
+        // keyframe without a display (saved before keyframes said) is the main display's.
+        // All of them are listed in start order: Review lists them so, and new keyframes are inserted by start.
+        var lastEnd: [UInt32?: Double] = [:], lastStart = 0.0, ids: Set<String> = []
         for frame in record.frames {
             _ = try image(frame.id, session: session)
+            let display = frame.display?.id
             guard ids.insert(frame.id).inserted, frame.start.isFinite, frame.end.isFinite,
-                  frame.start >= lastEnd, frame.end >= frame.start,
+                  frame.start >= lastEnd[display, default: 0], frame.start >= lastStart, frame.end >= frame.start,
+                  (frame.display?.number).map({ (1...maximumDisplays).contains($0) }) ?? true,
+                  frame.bytes.map({ (0...maximumImageBytes).contains($0) }) ?? true,
                   (frame.lines?.count ?? 0) <= 256 else {
                 throw HolosError.invalidInput("Screen context has invalid times or text.")
             }
@@ -103,7 +220,8 @@ public enum ScreenContextStore {
                     throw HolosError.invalidInput("Screen context has invalid text bounds.")
                 }
             }
-            lastEnd = frame.end
+            lastEnd[display] = frame.end
+            lastStart = frame.start
         }
         return record
     }

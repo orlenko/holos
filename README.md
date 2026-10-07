@@ -123,18 +123,23 @@ labelling drops the microphone's echo of it (below); nothing warns about it.
 Screen capture during meetings is optional and off by default. Turn on **Capture the
 screen during meetings (slides, shared screens) to improve transcripts** in Settings ›
 Meetings; the start panel's **Capture screen** box begins checked then and can be
-unchecked for one meeting. The whole main display is captured, without Voice is
-Local's own windows; other displays are not. Notifications and anything else on the
-main display are included. Everything stays on this Mac. Screen & System Audio
-Recording permission must already be granted; without it the box is dimmed, and a
-capture failure never stops the audio. `voiceislocal record start --screen display`
-does the same from the command line. Changed snapshots (a change counts once it holds
-still, so a moving video is skipped) are saved locally at up to one sample every two
-seconds, at most 2560 pixels wide. OCR runs
-on this Mac after recording stops; no language-model correction runs during recording.
-Recorder/recovery OCR batches are limited to eight frames and five seconds of waiting;
-unfinished frames stay saved. **Screen Text…** in Review shows timestamped OCR and
-unverified word-list candidates, and **Recognize Next Batch** continues unfinished OCR.
+unchecked for one meeting. Every display connected when the capture starts is captured,
+without Voice is Local's own windows; one unplugged stops being captured. The displays
+are chosen again whenever the capture restarts during the meeting (after a pause,
+sleep, or an audio device change), so a display plugged in mid-meeting is captured
+from then on, or from the next meeting. Notifications and anything else on the displays are included. Everything
+stays on this Mac. Screen & System Audio Recording permission must already be granted;
+without it the box is dimmed, and a capture failure never stops the audio.
+`voiceislocal record start --screen display` does the same from the command line
+(`--screen main` captures the main display only, chosen again when the capture restarts). Changed snapshots (a change counts
+once it holds still, so a moving video is skipped) are saved locally at up to one sample
+every two seconds per display, at most 2560 pixels wide. The displays share the storage
+limits (1000 snapshots, 256 MiB); near them the busiest display stops first, so a
+quieter one with slides keeps going. OCR runs on this Mac after recording stops; no
+language-model correction runs during recording. Recorder/recovery OCR batches are
+limited to eight frames and five seconds of waiting; unfinished frames stay saved.
+**Screen Text…** in Review shows timestamped OCR (and which display, when there were
+several) and unverified word-list candidates, and **Recognize Next Batch** continues unfinished OCR.
 They are never added automatically. Nearby OCR can support an existing word-list
 question, but is not proof that a term was spoken. Delete Audio removes both snapshots
 and their OCR. A thumbnail timeline is not implemented yet.

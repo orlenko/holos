@@ -222,3 +222,28 @@ func screenSyntheticOCRAndDiffBenchmark() throws {
     for _ in 0..<1000 { _ = ScreenFrameDifference.meaningful(fingerprint, comparedWith: fingerprint) }
     print("Synthetic diff: 1000 frames; elapsed=\(diffStart.duration(to: .now))")
 }
+
+/// Keyframes of two displays overlap in time; OCR goes keyframe by keyframe and keeps each one's display, and
+/// nearby text comes from both displays.
+@Test(.timeLimit(.minutes(1)))
+func screenOCRReadsEveryDisplaysKeyframes() async throws {
+    let (temp, archive) = try await screenOCRBatchFixture(0)
+    defer { temp.remove() }
+    let main = ScreenDisplay(id: 4, number: 1, isMain: true), side = ScreenDisplay(id: 7, number: 2, isMain: false)
+    let frames = [ScreenKeyframe(start: 0, end: 20, display: main), ScreenKeyframe(start: 5, end: 8, display: side),
+                  ScreenKeyframe(start: 10, end: 15, display: side)]
+    try ScreenContextStore.write(ScreenContextRecord(sessionID: archive.id, frames: frames), session: archive.directory)
+    let bytes = NSMutableData()
+    let destination = try #require(CGImageDestinationCreateWithData(bytes, UTType.jpeg.identifier as CFString, 1, nil))
+    CGImageDestinationAddImage(destination, try screenOCRImage(), nil)
+    #expect(CGImageDestinationFinalize(destination))
+    for frame in frames { try AtomicFile.create(bytes as Data, at: ScreenContextStore.image(frame.id, session: archive.directory)) }
+    let texts = SharedValue(["Roadmap", "Agenda", "Budget"])
+    let recognizer: MeetingScreenOCR.Recognizer = { _, _ in screenOCRLine(texts.update { $0.removeFirst() }) }
+    let done = try await MeetingScreenOCR.processBounded(session: archive.directory, sessionID: archive.id,
+        languages: ["en-CA"], timeout: .seconds(30), maximumFrames: 8, recognizer: recognizer)
+    let record = try #require(try ScreenContextStore.read(session: archive.directory, sessionID: archive.id))
+    #expect(done && record.frames.map { $0.display?.number } == [1, 2, 2])
+    #expect(record.frames.compactMap { $0.lines?.first?.text } == ["Roadmap", "Agenda", "Budget"])
+    #expect(record.words(from: 6, to: 7) == ["Roadmap", "Agenda"])
+}
