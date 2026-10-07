@@ -45,8 +45,8 @@ final class WordEditField: NSTextField {
         layer?.zPosition = 10
         setAccessibilityLabel("Edit words")
         setAccessibilityHelp("Return saves, Option-Return saves and adds it to the word list, Tab saves and edits the "
-                             + "next word, Escape cancels. Return with the cursor at the start, nothing changed, splits "
-                             + "the turn there.")
+                             + "next word, Escape cancels. With nothing changed, Return with the cursor at the start "
+                             + "splits the turn before the word, and at the end, after it.")
     }
 
     convenience init() { self.init(frame: .zero) }

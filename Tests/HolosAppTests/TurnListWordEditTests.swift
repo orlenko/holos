@@ -669,6 +669,15 @@ struct TurnListWordEditTests {
         #expect(list.editField.currentEditor()?.selectedRange == NSRange(location: 0, length: 0))
         press(list, #selector(NSResponder.insertNewline(_:)))
         #expect(requests.count == 2 && requests.last?.after == false && requests.last?.word == beta.ref)
+        // Its word replaced by an edit saved meanwhile: the field opens over the words that replaced it, with their
+        // own text, the caret where Return found it, and why.
+        list.cancelWordEdit()
+        var messages: [String?] = []
+        list.onEditMessage = { messages.append($0) }
+        #expect(list.reopenField(at: beta.ref, atEnd: true, message: "Not split."))
+        #expect(list.wordEdit?.words.map(\.ref) == [beta.ref] && list.editField.stringValue == "beta")
+        #expect(list.editField.currentEditor()?.selectedRange == NSRange(location: 4, length: 0))
+        #expect(messages.last == "Not split.")
     }
 
     /// Outside edit mode, a word's context menu offers Split Turn Here (no sheet): before that word. Not on a row's

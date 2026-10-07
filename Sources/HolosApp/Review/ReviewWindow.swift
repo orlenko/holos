@@ -1155,23 +1155,27 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, Clo
                 do {
                     second = try await review.split(turnID: turnID, at: word, seenMoves: movesSeen, seenEpoch: epoch)
                 } catch let error where !(error is CancellationError) {
-                    if let field, let self {
-                        await review.reload()
-                        self.refresh()
-                        if !self.turnList.editingWords { self.setEditMode(true) }
-                        let text = field.field.text
-                        self.turnList.reopenWordEdit(field.field.words, typed: text,
-                                                     message: error.localizedDescription, movesSeen: field.movesSeen,
-                                                     wordsEpoch: epoch,
-                                                     caret: field.atEnd ? (text as NSString).length : 0)
+                    guard let self else { throw error }
+                    // Saved, but its labels could not be reread (`incomplete`): the split stands, so its second part
+                    // gets its pop-up as any; the footer says what failed after it.
+                    if case HolosError.incomplete = error {
+                        if focus {
+                            self.refresh()
+                            let moved = ReviewSession.follow([word],
+                                                             through: review.shownWordMoves.dropFirst(movesSeen ?? 0))
+                            self.focusSpeaker(startingAt: moved.refs.first ?? word,
+                                              splitOf: review.resolvedTurnID(turnID))
+                        }
+                        throw error
                     }
+                    if let field { await self.restoreSplitField(field, epoch: epoch, why: error.localizedDescription) }
                     throw error
                 }
                 guard focus, let self else { return }
                 self.refresh()
                 // Where the word is now (an edit saved before the split ran may have moved it), in the part split
-                // from `turnID`.
-                self.focusSpeaker(startingAt: second, splitOf: turnID)
+                // from `turnID` (its saved ID: a part made by a split still saving had a temporary one).
+                self.focusSpeaker(startingAt: second, splitOf: review.resolvedTurnID(turnID))
             }
         case .breakBefore(let turnID):
             guard let turn = review.projection.turns.first(where: { $0.id == turnID }) else { return }
@@ -1182,6 +1186,26 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, Clo
                 focusSpeaker(startingAt: first.ref, turnID: turnID)
             }
         }
+    }
+
+    /// A split asked from the field and refused once queued: once the labels are read again (a row the refused split
+    /// showed for a moment is gone by then), the field opens again over its words with the caret where Return found
+    /// it and why; when an edit saved meanwhile replaced its word, over the words that replaced it (nothing was typed
+    /// in it, so their own text is what it shows).
+    private func restoreSplitField(_ field: (field: ReviewSplitRequest.Field, movesSeen: Int, atEnd: Bool), epoch: Int,
+                                   why: String) async {
+        await review.reload()
+        refresh()
+        if !turnList.editingWords { setEditMode(true) }
+        let text = field.field.text
+        if turnList.reopenWordEdit(field.field.words, typed: text, message: why, movesSeen: field.movesSeen,
+                                   wordsEpoch: epoch, caret: field.atEnd ? (text as NSString).length : 0) {
+            return
+        }
+        guard epoch == review.wordsEpoch, let word = field.atEnd ? field.field.words.last : field.field.words.first
+        else { return }
+        let moved = ReviewSession.follow([word.ref], through: review.shownWordMoves.dropFirst(field.movesSeen))
+        if let ref = moved.refs.first { turnList.reopenField(at: ref, atEnd: field.atEnd, message: why) }
     }
 
     /// The second part's speaker pop-up after a split (`TurnListView.focusSpeaker`); a search hiding its row is cleared
@@ -1842,7 +1866,8 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, Clo
 final class EditModeBanner: NSView {
     static let usual = "Editing — click a word to change it. ⇧-click or drag for more words of the same turn. Return "
         + "saves, ⌥Return saves and adds it to the word list, Tab saves and edits the next word, Esc cancels. "
-        + "Return at the start of a word (← first) splits the turn there. Space still plays and pauses."
+        + "Return at the start of a word (← first) splits the turn before it; at its end (→ first), after it. Space "
+        + "still plays and pauses."
     let label = NSTextField(wrappingLabelWithString: EditModeBanner.usual)
 
     override init(frame: NSRect) {
