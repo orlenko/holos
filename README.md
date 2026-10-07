@@ -149,12 +149,12 @@ and their OCR. A thumbnail timeline is not implemented yet.
 speakers on the left (a name field that suggests known people, talk time, the start of
 their longest turns, Play samples, This is me, Merge into…, and "Maybe Maria" suggestions to
 confirm or reject, or Confirm All at once), turns on the right (a time button that plays
-from there, a speaker pop-up, and ⚠ for uncertain turns). Space plays and pauses, 1–9 give
-the selected turns to that speaker, ⌘' jumps to the next uncertain turn, and ⌘Z undoes the
-window's changes one at a time; Split Turn, search (⌘F), Find More Speakers (a relabel that
-asks for one more speaker and keeps the names), and Export (Save As… Markdown, text, or
-JSON; Copy as Markdown) complete it. Changes save as you make them and the transcript files
-follow a moment later; a change made from an outdated view (another window or a command)
+from there, a speaker pop-up that lists a voice match first as "Jim (suggested)", and the
+text). Space plays and pauses, 1–9 give the selected turns to that speaker, ⌘' jumps to
+the next uncertain turn, and ⌘Z undoes the window's changes one at a time; Split Turn,
+search (⌘F), Find More Speakers (a relabel that asks for one more speaker and keeps the
+names), and Export (Save As… Markdown, text, or JSON; Copy as Markdown) complete it.
+Changes save as you make them and the transcript files follow a moment later; a change made from an outdated view (another window or a command)
 is refused and the window shows the current labels. The footer box "Learn voices of people
 I name in this meeting" decides whether naming a person also learns their voice; it starts
 checked while Remember voices is on (on for new installs). Delete
