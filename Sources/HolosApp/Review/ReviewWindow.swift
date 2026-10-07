@@ -576,7 +576,8 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, Clo
             guard let self else { return }
             // The word is where `resolveSplit` found it just now, among the words shown: a word edit saved before the
             // split runs moves it from there; words changed elsewhere since it was chosen still refuse it.
-            self.applySplit(split, movesSeen: self.review.shownWordMoves.count, epoch: request.wordsEpoch, focus: true)
+            self.applySplit(split, movesSeen: self.review.shownWordMoves.count, epoch: request.wordsEpoch, focus: true,
+                            field: request.field.map { ($0, request.movesSeen) })
         }
         turnList.resolveSplit = { [weak self] request in
             self?.resolveSplit(request) ?? .refused("The review is closing.")
@@ -1137,11 +1138,25 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, Clo
     /// words changed elsewhere refuse it, `epoch`), or the row breaks before a turn it holds (this window only). With
     /// `focus` (Return at a word's start, Split Turn Here), the second part's row is selected and its speaker pop-up
     /// opens, so it can be given its speaker at once (`TurnListView.focusSpeaker`).
-    private func applySplit(_ split: ReviewParagraphSplit, movesSeen: Int?, epoch: Int, focus: Bool) {
+    /// `field`: the edit field Return asked from (its words and text, and the word moves they follow): refused once
+    /// queued (an edit saved meanwhile changed what the split can do), the field opens again over its words, saying
+    /// why, as before Return.
+    private func applySplit(_ split: ReviewParagraphSplit, movesSeen: Int?, epoch: Int, focus: Bool,
+                            field: (field: ReviewSplitRequest.Field, movesSeen: Int)? = nil) {
         switch split {
         case .splitTurn(let turnID, let word):
             perform { [weak self] review in
-                try await review.split(turnID: turnID, at: word, seenMoves: movesSeen, seenEpoch: epoch)
+                do {
+                    try await review.split(turnID: turnID, at: word, seenMoves: movesSeen, seenEpoch: epoch)
+                } catch let error where !(error is CancellationError) {
+                    if let field, let self {
+                        if !self.turnList.editingWords { self.setEditMode(true) }
+                        self.turnList.reopenWordEdit(field.field.words, typed: field.field.text,
+                                                     message: error.localizedDescription, movesSeen: field.movesSeen,
+                                                     wordsEpoch: epoch)
+                    }
+                    throw error
+                }
                 guard focus, let self else { return }
                 self.refresh()
                 self.focusSpeaker(startingAt: word)

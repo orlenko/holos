@@ -9,6 +9,14 @@ struct ReviewSplitRequest: Equatable {
     var after: Bool
     var movesSeen: Int
     var wordsEpoch: Int
+    /// The edit field's words and text when Return asked for the split: the field opens again over them, saying
+    /// why, when the split is then refused (an edit saved meanwhile changed what it can do).
+    var field: Field?
+
+    struct Field: Equatable {
+        var words: [ReviewWord]
+        var text: String
+    }
 }
 
 /// What a split request makes (`TurnListView.resolveSplit`): the split, or why there is none.
@@ -52,7 +60,8 @@ extension TurnListView {
         guard selection.length == 0, selection.location == 0 || selection.location == length else { return false }
         let atStart = selection.location == 0
         let request = ReviewSplitRequest(word: atStart ? first.ref : last.ref, after: !atStart,
-                                         movesSeen: target.movesSeen, wordsEpoch: target.wordsEpoch)
+                                         movesSeen: target.movesSeen, wordsEpoch: target.wordsEpoch,
+                                         field: .init(words: target.words, text: typed))
         switch resolveSplit?(request) {
         case .split(let split)?:
             cancelWordEdit()

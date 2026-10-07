@@ -583,7 +583,9 @@ struct TurnListWordEditTests {
         press(list, #selector(NSResponder.insertNewline(_:)))
         let beta = try #require(TurnListViewTests.words["T1"]?[1])
         // The request names the field's own word, with the moves and epoch the field follows: the review follows them.
-        #expect(requests == [ReviewSplitRequest(word: beta.ref, after: false, movesSeen: 0, wordsEpoch: 0)])
+        // With the field's words and text, for the window to open it again if the split is refused once queued.
+        #expect(requests == [ReviewSplitRequest(word: beta.ref, after: false, movesSeen: 0, wordsEpoch: 0,
+                                                field: .init(words: [beta], text: "beta"))])
     }
 
     /// Outside edit mode, a word's context menu offers Split Turn Here (no sheet): before that word. Not on a row's
@@ -603,6 +605,10 @@ struct TurnListWordEditTests {
         _ = (item.target as AnyObject?)?.perform(action, with: item)
         let beta = try #require(TurnListViewTests.words["T1"]?[1])
         #expect(splits == [.splitTurn(turnID: "T1", at: beta.ref)])
+        // In edit mode the menu offers no split: Return at a word's start does it, and a field open on another word
+        // is never left behind.
+        list.editingWords = true
+        #expect(!menu(1).items.contains { $0.title == "Split Turn Here" })
     }
 
     /// After a split, the second part's row is selected and its speaker pop-up opens, so its speaker can be chosen at

@@ -209,7 +209,8 @@ final class TurnTableView: NSTableView {
             item.representedObject = WordFixChoice(word.ref)
             menu.addItem(item)
         }
-        if let word, let offer = splitOffer?(row, word) {
+        // Not in edit mode, where Return at a word's start splits: a field open on another word is never left behind.
+        if !editingWords, let word, let offer = splitOffer?(row, word) {
             let item = NSMenuItem(title: "Split Turn Here", action: #selector(splitHere(_:)), keyEquivalent: "")
             item.target = self
             item.representedObject = offer.choice
