@@ -702,6 +702,20 @@ private let editEchoMask: AcousticEchoMask = {
     #expect(!cloud.heardFits(words: sound, range: 0..<2, text: text), "It does not start in the first word.")
 }
 
+@Test func aFixThatMatchedUntimedPunctuationLeavesTheSegmentEditable() throws {
+    // "hello. next", timed as "hello" and "next" (the period untimed); "hello." was corrected to "Hi!".
+    let base = editTranscript([editRanged("hello. next", [(0, 5), (7, 4)])])
+    var fixedSegment = editRanged("Hi! next", [(0, 3), (4, 4)])
+    fixedSegment.fixes = [TranscriptWordFix(first: 0, end: 1, heard: "hello.", kind: .correction, heardWords: 1)]
+    var fixed = editTranscript([fixedSegment])
+    fixed.fixedFrom = base.id
+    // What it matched runs past the timed "hello" into the period, never into "next": it fits.
+    #expect(fixedSegment.fixes![0].heardFits(words: WordTiming.effectiveWords(of: base.segments[0]), range: 0..<1,
+                                             text: Array(base.segments[0].text.utf16)))
+    let next = try #require(try TranscriptWordEdit.editing(editRequest(1, 2, "then"), in: fixed, base: base))
+    #expect(next.transcript.segments[0].text == "Hi! then")
+}
+
 @Test func aWordMoveIsReadOnlyAsItIsWritten() {
     #expect(SessionWordEdit.parseRange("3-5") == 3..<5 && SessionWordEdit.parseRange("0-0") == 0..<0)
     for damaged in ["-1-2", "1--2", "3-", "-5", "3-5-7", "+3-5", " 3-5", "3-5 ", "5-3", "3_5", "٣-٥", "",

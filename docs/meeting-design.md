@@ -8012,7 +8012,8 @@ shown, Otter-style.
     so repeated text elsewhere never passes for it): a
     malformed one makes the event damaged, refused rather than read another way. An automatic
     fix's words in the unfixed revision must hold what it matched (`heardFits`: its `heard`
-    starts in the first and ends in the last, found in one linear pass), so word counts that
+    touches the first and the last, and no word around them, untimed punctuation it matched
+    included: "hello." over the timed "hello"; found in one linear pass), so word counts that
     are wrong but add up never put a fix over other words. Every walk over a segment's words
     (a turn's words, close-time learning) reads the segment once and looks words up by index,
     so a very long or crafted segment never takes more than linear time. The

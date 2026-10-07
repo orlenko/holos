@@ -50,17 +50,33 @@ extension TranscriptWordFix {
     }
 
     /// Whether an automatic fix (`correction`, `term`) lies over unfixed words `range` as it took them: its `heard`
-    /// (the text it matched, as the recognizer wrote it) occurs in `text` starting in the first of them and ending in
-    /// the last, since a fix takes the whole words it touches and touches each. A recorded word count that is wrong
-    /// (damaged, even when the counts of a segment's fixes still add up) puts the range elsewhere and fails it.
+    /// (the text it matched, as the recognizer wrote it) occurs in `text` touching the first of them and the last, and
+    /// no word around them, since a fix takes the whole words it touches and touches each. What it matched may take in
+    /// text the recognizer did not time around them ("hello." over the timed "hello", a quote before a word). A
+    /// recorded word count that is wrong (damaged, even when the counts of a segment's fixes still add up) puts the
+    /// range elsewhere and fails it.
     func heardFits(words: [EffectiveWord], range: Range<Int>, text: [UInt16]) -> Bool {
         let needle = Array(heard.utf16)
         guard !needle.isEmpty, !range.isEmpty, range.lowerBound >= 0, range.upperBound <= words.count,
               let first = words[range.lowerBound].utf16Range(within: text.count),
               let last = words[range.upperBound - 1].utf16Range(within: text.count),
-              first.lowerBound < last.upperBound, needle.count <= last.upperBound - first.lowerBound else { return false }
-        // Every occurrence within the words' extent, in one pass (Knuth–Morris–Pratt: linear in the extent and
-        // `heard`, whatever damaged text they hold), one starting within the first word and ending within the last.
+              first.lowerBound < last.upperBound else { return false }
+        // Between the word before and the word after (or the text's ends).
+        var lower = 0
+        if range.lowerBound > 0 {
+            guard let before = words[range.lowerBound - 1].utf16Range(within: text.count),
+                  before.upperBound <= first.lowerBound else { return false }
+            lower = before.upperBound
+        }
+        var upper = text.count
+        if range.upperBound < words.count {
+            guard let after = words[range.upperBound].utf16Range(within: text.count),
+                  after.lowerBound >= last.upperBound else { return false }
+            upper = after.lowerBound
+        }
+        guard needle.count <= upper - lower else { return false }
+        // Every occurrence there, in one pass (Knuth–Morris–Pratt: linear in that text and `heard`, whatever damaged
+        // text they hold), one touching the first word and the last.
         var border = Array(repeating: 0, count: needle.count)
         var length = 0
         if needle.count > 1 {
@@ -71,13 +87,16 @@ extension TranscriptWordFix {
             }
         }
         var matched = 0
-        for position in first.lowerBound..<last.upperBound {
+        for position in lower..<upper {
             while matched > 0, text[position] != needle[matched] { matched = border[matched - 1] }
             if text[position] == needle[matched] { matched += 1 }
             if matched == needle.count {
                 let end = position + 1
                 let start = end - needle.count
-                if start < first.upperBound, end > last.lowerBound { return true }
+                // Touches the first word and the last.
+                if start < first.upperBound, end > first.lowerBound, start < last.upperBound, end > last.lowerBound {
+                    return true
+                }
                 matched = border[matched - 1]
             }
         }
