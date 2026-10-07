@@ -78,8 +78,8 @@ enum SessionWordEdit {
 
     /// Everything `run` makes before it writes: the edit (`edited`, on the head's labels in `snapshot`) and the speaker
     /// labels retargeted onto it (`SpeakerTranscriptRetarget.plan`, which reads the session but writes nothing). The
-    /// review's field check runs this as a dry run on the transcript and labels it shows (`ReviewSession.wordEditRefusal`),
-    /// so it refuses exactly what a save would, with the same message. Nil when the text would not change.
+    /// review's field check makes `edited` in memory (`ReviewSession.wordEditRefusal`); only the save makes the plan.
+    /// Nil when the text would not change.
     static func planned(_ request: TranscriptWordEdit.Request, in current: Transcript, base: Transcript?,
                         snapshot: SpeakerSessionSnapshot, session: URL, now: Date = Date()) throws
         -> (result: TranscriptWordEdit.Result, plan: SpeakerTranscriptRetarget.Plan)? {

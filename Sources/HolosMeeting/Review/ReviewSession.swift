@@ -314,6 +314,10 @@ public struct ReviewWord: Sendable, Equatable {
             throw HolosError.unavailable(loaded.snapshot.runProblem
                 ?? "This meeting's speakers are not labelled yet. Label its speakers first.")
         }
+        // The word checks are read with the labels the review opens on (later reads run in the background).
+        let opened = loaded.snapshot
+        wordChecks = try await Self.detached { WordChecks.read(opened, session: session) }
+        wordChecksReads = 1
         self.session = session
         self.profiles = profiles
         self.maintenance = maintenance
@@ -372,9 +376,7 @@ public struct ReviewWord: Sendable, Equatable {
         if !snapshot.journal.isComplete { return Self.speakerChangesUnreadable.localizedDescription }
         if !baseReadable { return Self.baseUnreadable.localizedDescription }
         // Two segments sharing an ID: which words are meant cannot be told (`hasRepeatedSegmentIDs`).
-        if TranscriptWordEdit.hasRepeatedSegmentIDs(snapshot.transcript) {
-            return TranscriptWordEdit.damagedMarks.localizedDescription
-        }
+        if readyChecks?.repeatedIDs == true { return TranscriptWordEdit.damagedMarks.localizedDescription }
         return nil
     }
 
@@ -382,20 +384,103 @@ public struct ReviewWord: Sendable, Equatable {
         "The transcript revision this one was fixed from cannot be read (missing or damaged), so words cannot be "
             + "edited or fixes reverted here: what the recognizer wrote under each fix is kept there.")
 
-    /// The unfixed revision the transcript shown was fixed from (`fixedFrom`), read once per labels read (`adopt`
-    /// clears it): every word edit and revert needs it. Nil inside when it cannot be read.
-    private var unfixedRead: (id: String, base: Transcript?)?
-
-    private func unfixedBase() -> Transcript? {
-        guard let id = snapshot.transcript.fixedFrom else { return nil }
-        if let read = unfixedRead, read.id == id { return read.base }
-        let base = try? SessionFiles.transcript(id: id, session: session)
-        unfixedRead = (id, base)
-        return base
+    /// The transcript shown is unfixed, or the revision it was fixed from can be read (`WordChecks`; until they are read
+    /// for the labels shown, taken as readable: the save reads it and says so).
+    private var baseReadable: Bool {
+        snapshot.transcript.fixedFrom == nil || readyChecks.map { !$0.baseUnreadable } ?? true
     }
 
-    /// The transcript shown is unfixed, or the revision it was fixed from can be read.
-    private var baseReadable: Bool { snapshot.transcript.fixedFrom == nil || unfixedBase() != nil }
+    /// What the word checks need of the whole meeting, read once per labels read, off the main actor
+    /// (`WordChecks.read`, started by `adopt`; the review opens with them read): the unfixed revision the transcript
+    /// was fixed from, whether a segment ID is used twice, and whether the labels can be mapped by time across the
+    /// whole transcript (what every revert's labels need: a segment damaged anywhere refuses it). A click then reads
+    /// no file and makes no plan (`wordEditRefusal`, `revertRefusal`).
+    struct WordChecks: Sendable {
+        /// The labels read these are for (`key(of:)`).
+        var key: String
+        /// The revision the transcript was fixed from; nil when it is unfixed, or when it cannot be read
+        /// (`baseUnreadable`).
+        var base: Transcript?
+        var baseUnreadable = false
+        var repeatedIDs = false
+        /// Why no automatic fix can be reverted: the labels' plan onto the transcript itself, mapped by time as a
+        /// revert's is (`SpeakerTranscriptRetarget.plan`: a damaged segment anywhere, fix counts that do not hold, a
+        /// speaker change that cannot be carried over), refused. Nil when it is made.
+        var revertRefusal: String?
+
+        nonisolated static func key(of snapshot: SpeakerSessionSnapshot) -> String {
+            "\(snapshot.transcript.id)\u{1f}\(snapshot.run?.id ?? "")\u{1f}\(snapshot.journal.edits.count)"
+        }
+
+        /// Reads files and walks every turn: off the main actor only.
+        nonisolated static func read(_ snapshot: SpeakerSessionSnapshot, session: URL) -> WordChecks {
+            var checks = WordChecks(key: key(of: snapshot))
+            if let id = snapshot.transcript.fixedFrom {
+                checks.base = try? SessionFiles.transcript(id: id, session: session)
+                checks.baseUnreadable = checks.base == nil
+            }
+            checks.repeatedIDs = TranscriptWordEdit.hasRepeatedSegmentIDs(snapshot.transcript)
+            do {
+                if try SpeakerTranscriptRetarget.plan(session: session, from: snapshot, to: snapshot.transcript,
+                                                      unfixed: checks.base, voiceData: false) == nil {
+                    checks.revertRefusal = SessionWordFixRevert.labelsNotKept.localizedDescription
+                }
+            } catch {
+                checks.revertRefusal = error.localizedDescription
+            }
+            return checks
+        }
+
+        /// The revision the transcript was fixed from, as a save reads it; nil when it is unfixed. Throws
+        /// `baseUnreadable` when it cannot be read.
+        func shownBase(fixed: Bool) throws -> Transcript? {
+            guard fixed else { return nil }
+            guard let base else { throw ReviewSession.baseUnreadable }
+            return base
+        }
+    }
+
+    /// The word checks for the labels shown; nil while they are being read (a click then opens a field, and the save
+    /// decides).
+    private var wordChecks: WordChecks?
+    /// The read of `wordChecks` running for the labels shown.
+    private var wordChecksRead: Task<Void, Never>?
+    /// How many times the word checks were read (tests: once per labels read, never per click).
+    private(set) var wordChecksReads = 0
+
+    private var readyChecks: WordChecks? {
+        wordChecks.flatMap { $0.key == WordChecks.key(of: snapshot) ? $0 : nil }
+    }
+
+    /// Reads the word checks for the labels shown off the main actor; they apply once read, if the labels are still
+    /// those (`readyChecks`), and the window is told.
+    private func readWordChecks() {
+        let snapshot = self.snapshot
+        let session = self.session
+        let key = WordChecks.key(of: snapshot)
+        wordChecksRead?.cancel()
+        // Not ready until read again: the unfixed revision may be back, gone, or another, with the same labels.
+        wordChecks = nil
+        wordChecksReads += 1
+        wordChecksRead = Task { [weak self] in
+            let read = await Task.detached(priority: .userInitiated) {
+                WordChecks.read(snapshot, session: session)
+            }.value
+            // A later read (the labels read again meanwhile) cancelled this one.
+            guard let self, !Task.isCancelled, WordChecks.key(of: self.snapshot) == key else { return }
+            self.wordChecks = read
+            self.checks.removeAll()
+            self.notify()
+        }
+    }
+
+    /// Returns once the word checks for the labels shown are read (tests, and anything that must not race them).
+    func wordChecksSettled() async {
+        while let running = wordChecksRead {
+            await running.value
+            if wordChecksRead == running { break }
+        }
+    }
 
     public nonisolated static let labelAgainFirst = HolosError.invalidInput(
         "The transcript changed after speakers were labelled, so words cannot be edited here yet. Use Label Again "
@@ -406,40 +491,44 @@ public struct ReviewWord: Sendable, Equatable {
             + "cannot be edited here: the speaker labels could not be kept on the edited words.")
 
     /// Why words `refs` (consecutive words of one segment) cannot be edited, known before a field opens over them; nil
-    /// when an edit can be tried. It is the save itself, made as a dry run on the transcript and labels shown and the
-    /// revision it was fixed from (`wordEditRequest`, then `SessionWordEdit.planned`, which `SessionWordEdit.run` makes:
-    /// the edit and the labels retargeted onto it, nothing written), with a placeholder for the text: whatever the save
-    /// refuses for these words, this refuses with the same message (a word corrected while recording, overlapping
-    /// turns, an older or newer fix, a damaged revision, labels that cannot be kept across it). Only what depends
-    /// on the text typed (a deletion's neighbour) is known at the save alone. Made once per selection and labels read
-    /// (`checks`).
+    /// when an edit can be tried. It is the save's own checks, made as a dry run in memory on the transcript and labels
+    /// shown (`wordEditRequest`, then `SessionWordEdit.edited`, which `SessionWordEdit.run` makes), with the unfixed
+    /// revision read for these labels (`WordChecks`) and a placeholder for the text: whatever they refuse for these
+    /// words, this refuses with the same message (a word corrected while recording, overlapping turns, an older or
+    /// newer fix, a damaged revision). It reads no file and makes no plan of the labels: what only the labels' plan, or
+    /// the text typed (a deletion's neighbour), can refuse is known at the save, which keeps what was typed. Nil while
+    /// the word checks are being read (the save decides). Made once per selection and labels read (`checks`).
     public func wordEditRefusal(_ refs: [WordRef]) -> String? {
-        guard let first = refs.first else { return nil }
+        guard let first = refs.first, let ready = readyChecks else { return nil }
         let indices = refs.map(\.word)
         let key = "edit\u{1f}\(first.segmentID)\u{1f}\(indices.min() ?? 0)\u{1f}\(indices.max() ?? 0)\u{1f}\(indices.count)"
         return checked(key) {
             var (request, segment) = try wordEditRequest(refs, text: "")
             request.text = Self.placeholder(over: segment, first: request.first, end: request.end)
-            _ = try SessionWordEdit.planned(request, in: snapshot.transcript, base: try shownBase(),
-                                            snapshot: snapshot, session: session)
+            _ = try SessionWordEdit.edited(request, in: snapshot.transcript,
+                                           base: try ready.shownBase(fixed: snapshot.transcript.fixedFrom != nil),
+                                           projection: snapshot.projection)
         }
     }
 
     /// Why the fix on `word` cannot be reverted, known before Revert is offered (context menu, VoiceOver) and checked
-    /// again when it is asked for; nil when it can be tried. It is the revert itself, made as a dry run on the
-    /// transcript and labels shown (`SessionWordFixRevert.planned`, which the revert makes: the revert and the labels
-    /// retargeted onto it, nothing written; for a Review edit, the edit back to
-    /// what the recognizer wrote, made as `wordEditRefusal` makes one), so it refuses exactly what the revert would,
-    /// with the same message. Made once per word and labels read (`checks`).
+    /// again when it is asked for; nil when it can be tried. It is the revert's own checks, made as a dry run in memory
+    /// on the transcript shown (`SessionWordFixRevert.reverted`, which the revert makes; for a Review edit, the edit
+    /// back to what the recognizer wrote, made as `wordEditRefusal` makes one), then what the labels refuse across the
+    /// whole transcript (`WordChecks.revertRefusal`, read once per labels read), so it refuses what the revert would,
+    /// with the same message. No file is read and no plan made here. Nil while the word checks are being read. Made
+    /// once per word and labels read (`checks`).
     public func revertRefusal(_ word: WordRef) -> String? {
-        checked("revert\u{1f}\(word.segmentID)\u{1f}\(word.word)") {
+        guard let ready = readyChecks else { return nil }
+        let fixed = snapshot.transcript.fixedFrom != nil
+        return checked("revert\u{1f}\(word.segmentID)\u{1f}\(word.word)") {
             if let segment = segments[word.segmentID], let edit = (segment.fixes ?? []).first(where: {
                 $0.kind == .reviewEdit && $0.first <= word.word && word.word < $0.end
             }) {
                 let refs = (edit.first..<edit.end).map { WordRef(segmentID: word.segmentID, word: $0) }
                 let (request, _) = try wordEditRequest(refs, text: edit.heard, verbatim: true)
-                _ = try SessionWordEdit.planned(request, in: snapshot.transcript, base: try shownBase(),
-                                                snapshot: snapshot, session: session)
+                _ = try SessionWordEdit.edited(request, in: snapshot.transcript, base: try ready.shownBase(fixed: fixed),
+                                               projection: snapshot.projection)
                 return
             }
             // As `revertWordFix` asks before it queues the revert.
@@ -448,8 +537,8 @@ public struct ReviewWord: Sendable, Equatable {
             }) else {
                 throw Self.notFixedAutomatically
             }
-            _ = try SessionWordFixRevert.planned(word, in: snapshot.transcript, to: try shownBase(),
-                                                 snapshot: snapshot, session: session)
+            _ = try SessionWordFixRevert.reverted(word, in: snapshot.transcript, to: try ready.shownBase(fixed: fixed))
+            if let refusal = ready.revertRefusal { throw HolosError.invalidInput(refusal) }
         }
     }
 
@@ -470,14 +559,6 @@ public struct ReviewWord: Sendable, Equatable {
         }
         checks[key] = .some(refusal)
         return refusal
-    }
-
-    /// The revision the transcript shown was fixed from, as a save reads it; nil when the transcript is unfixed.
-    /// Throws `baseUnreadable` when it cannot be read.
-    private func shownBase() throws -> Transcript? {
-        guard snapshot.transcript.fixedFrom != nil else { return nil }
-        guard let base = unfixedBase() else { throw Self.baseUnreadable }
-        return base
     }
 
     /// Text that changes words `[first, end)` of `segment` for a dry run: one word unlike what they show.
@@ -1212,6 +1293,8 @@ public struct ReviewWord: Sendable, Equatable {
     public func reload() async {
         guard !closed else { return }
         _ = try? await enqueue(.reload, optimistic: [])
+        // Read again on request: the word checks too (off the main actor), before it returns.
+        await wordChecksSettled()
     }
 
     /// What the window's open edit field holds, handed over when it closes for a pause or the window's close: its
@@ -2860,9 +2943,10 @@ public struct ReviewWord: Sendable, Equatable {
             }
         }
         snapshot = fresh
-        // Labels read again: whether the unfixed revision can be read is checked again (it may be back, or gone).
-        unfixedRead = nil
+        // Labels read again: the word checks are read again, off the main actor (the unfixed revision may be back, or
+        // gone, or another).
         checks.removeAll()
+        readWordChecks()
         if let projection = fresh.projection { savedProjection = projection }
         savedVersion += 1
         reloadProblem = nil

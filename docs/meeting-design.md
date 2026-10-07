@@ -7806,12 +7806,19 @@ shown, Otter-style.
   compares the `wordsEpoch` the field opened under, never the review's at the time of the
   save. The check before a field opens (`ReviewSession.wordEditRefusal`) and before Revert is
   offered (`revertRefusal`) is the save itself made as a dry run, on the transcript shown and
-  the revision it was fixed from, with nothing written: the edit's request checks and
-  `SessionWordEdit.planned` (what `SessionWordEdit.run` makes before it writes: the edit, with
-  a placeholder for the text, and the speaker labels retargeted onto it,
-  `SpeakerTranscriptRetarget.plan`), and `SessionWordFixRevert.planned` (the same for the
-  revert; for a Review edit, the edit back to its `heard`). So a revert the labels cannot be
-  mapped across (another segment damaged) is not offered either. Whatever the save would refuse (a damaged revision or a segment ID used
+  the revision it was fixed from, in memory: the edit's request checks and
+  `SessionWordEdit.edited` (what `SessionWordEdit.run` makes, with a placeholder for the
+  text), and `SessionWordFixRevert.reverted` (the same for the revert; for a Review edit, the
+  edit back to its `heard`). What needs the whole meeting is read once per labels read, off
+  the main actor (`ReviewSession.WordChecks`): the unfixed revision, whether a segment ID is
+  used twice, and the labels' plan onto the transcript itself, mapped by time as a revert's
+  is (so a revert the labels cannot be mapped across, another segment damaged, is not
+  offered). A click reads no file and makes no plan: a meeting of 30,000 words in 1,000 turns
+  answers at once. While the checks are being read (after any change, for a moment), fields
+  open and Revert is offered, and the save, which makes the full plan, decides, keeping what
+  was typed when it refuses. Mapping the labels is linear in the words: each turn's spans are
+  mapped through an index of the words' owners made once (`Mapping.spansAllowingEmpty`), and
+  a segment the change left as it was keeps its words' owners without a time mapping. Whatever the save would refuse (a damaged revision or a segment ID used
   twice, `TranscriptWordEdit.structureRefusal`; a word corrected while recording; a fix a
   newer version wrote; an automatic fix whose count of recognizer words does not hold what it
   matched, older or modern; overlapping turns), the check refuses with the same message,

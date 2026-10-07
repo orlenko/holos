@@ -19,11 +19,13 @@ private struct WordEditTurn {
 /// A finished call whose head run has one turn per spec (T1, T2, … in time order), each on a segment of its own whose
 /// words start a second apart and last 0.8 s.
 /// With `apple`, every word but a segment's first carries the space before it in its range and text (" cloud"), as
-/// Apple's speech recognition reports words.
+/// Apple's speech recognition reports words. `wordSeconds`: how far apart words start (and the turns' times with
+/// them); `audioSeconds`: the audio written (by default up to the last word).
 private func wordEditSession(in temp: TemporaryDirectory, _ specs: [WordEditTurn],
-                             apple: Bool = false, fixes: [TranscriptWordFix]? = nil) async throws -> URL {
+                             apple: Bool = false, fixes: [TranscriptWordFix]? = nil, wordSeconds: Double = 1,
+                             audioSeconds: Double? = nil) async throws -> URL {
     let segments = specs.enumerated().map { index, spec -> TranscriptSegment in
-        var segment = SessionFixtures.segment(spec.words, track: "system", start: spec.start, wordSeconds: 1)
+        var segment = SessionFixtures.segment(spec.words, track: "system", start: spec.start, wordSeconds: wordSeconds)
         // `fixes`: the first segment's marks.
         if index == 0 { segment.fixes = fixes }
         if apple {
@@ -39,7 +41,7 @@ private func wordEditSession(in temp: TemporaryDirectory, _ specs: [WordEditTurn
         return segment
     }
     let transcript = SessionFixtures.transcript(segments)
-    let total = (specs.map { $0.start + Double($0.words.count) }.max() ?? 0) + 1
+    let total = audioSeconds ?? (specs.map { $0.start + Double($0.words.count) * wordSeconds }.max() ?? 0) + 1
     let session = try await SessionFixtures.makeSession(in: temp.url, source: .system, audioSeconds: ["system": total],
                                                         mode: .call, transcript: transcript)
     let manifest = try SessionArchive.readManifest(at: session)
@@ -62,7 +64,7 @@ private func wordEditSession(in temp: TemporaryDirectory, _ specs: [WordEditTurn
             }
         }
         return SpeakerTurn(id: "T\(index + 1)", track: "system", start: spec.start,
-                           end: spec.start + Double(spec.words.count), speakerID: spec.speaker,
+                           end: spec.start + Double(spec.words.count) * wordSeconds, speakerID: spec.speaker,
                            clusterID: spec.speaker, spans: spans, overlap: false, otherClusters: [],
                            assignmentScore: 1, timing: .measured)
     }
@@ -2192,6 +2194,7 @@ func anEditBesideAnOlderUnspacedFixIsRefusedSayingWhy() async throws {
     // Its automatic fix's Revert is not offered either (it would fail once asked), and is refused if asked.
     let fixedWord = wordEditRefs(review, "T1", [0])[0]
     #expect(review.words(of: "T1")[0].fix?.kind == .correction)
+    await review.wordChecksSettled()
     #expect(review.revertRefusal(fixedWord) == TranscriptWordEdit.olderFix.localizedDescription)
     let revert = await #expect(throws: HolosError.self) { try await review.revertWordFix(fixedWord) }
     #expect(revert?.localizedDescription == TranscriptWordEdit.olderFix.localizedDescription)
@@ -2250,6 +2253,44 @@ func wordsAreReadOnlyWhileTheRevisionTheTranscriptWasFixedFromCannotBeRead() asy
     #expect(review.canEditWords)
     try await review.editWords(wordEditRefs(review, "T1", [0]), to: "Ask")
     #expect(try wordEditCurrent(session).segments[0].text == "Ask more Claude now")
+    await review.close()
+}
+
+/// A meeting of 30,000 words in 1,000 turns: what a click checks before a field opens reads no file and makes no plan
+/// of the labels. The word checks are read once when the review opens, and once more after an edit (in the
+/// background), never per click.
+@Test(.timeLimit(.minutes(2))) @MainActor
+func theChecksBeforeAFieldOpensReadNoFileAndMakeNoPlanOnALargeMeeting() async throws {
+    let temp = try TemporaryDirectory("review")
+    defer { temp.remove() }
+    let specs = (0..<1_000).map { turn in
+        WordEditTurn(speaker: turn % 2 == 0 ? "system:S1" : "system:S2", start: Double(turn) * 0.4,
+                     words: (0..<30).map { "w\(turn)n\($0)" })
+    }
+    let session = try await wordEditSession(in: temp, specs, wordSeconds: 0.01, audioSeconds: 5)
+    let review = try await wordEditOpen(session)
+    #expect(review.wordChecksReads == 1)
+    let plans = SharedValue(0)
+    func clickThrough() {
+        SpeakerTranscriptRetarget.$planStarted.withValue({ plans.update { $0 += 1 } }) {
+            for turn in stride(from: 1, through: 1_000, by: 37) {
+                for word in 0..<4 {
+                    #expect(review.wordEditRefusal(wordEditRefs(review, "T\(turn)", [word])) == nil)
+                    #expect(review.wordEditRefusal(wordEditRefs(review, "T\(turn)", [word, word + 1])) == nil)
+                }
+            }
+        }
+    }
+    clickThrough()
+    #expect(plans.value == 0, "No plan of the labels for a click.")
+    #expect(review.wordChecksReads == 1, "Nothing read again for a click.")
+    // An edit (its save makes the plan, as always): the checks are read once more, in the background.
+    try await review.editWords(wordEditRefs(review, "T500", [3]), to: "hello")
+    await review.wordChecksSettled()
+    #expect(review.wordChecksReads == 2)
+    plans.set(0)
+    clickThrough()
+    #expect(plans.value == 0 && review.wordChecksReads == 2)
     await review.close()
 }
 
@@ -2319,6 +2360,8 @@ func theChecksBeforeAnEditOrRevertRefuseWhatTheSaveRefuses() async throws {
         }
         // The revert, made as the window makes it (no check before it).
         let fixed = wordEditRefs(review, "T1", [2])[0]
+        // The refused save read the labels again: its word checks are read before the Revert check uses them.
+        await review.wordChecksSettled()
         let revertCheck = review.revertRefusal(fixed)
         let runID = try #require(try SessionSpeakerStore.readHead(session: session)?.runID)
         do {

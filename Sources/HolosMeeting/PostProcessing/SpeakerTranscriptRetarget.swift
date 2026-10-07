@@ -12,6 +12,8 @@ enum SpeakerTranscriptRetarget {
     /// Test hook: called once head.json names the new run, before anything after it; throwing is a failure after the
     /// rename (a folder sync).
     @TaskLocal static var afterHeadWritten: (@Sendable () throws -> Void)?
+    /// Test hook: called each time `plan` starts (a plan reads files and walks every turn).
+    @TaskLocal static var planStarted: (@Sendable () -> Void)?
 
     struct Plan {
         var run: DiarizationRun
@@ -29,8 +31,13 @@ enum SpeakerTranscriptRetarget {
     ///
     /// `undo`: `move` takes an edit back (`SessionWordEdit.restore`), whose mark is in the transcript it is made from;
     /// otherwise an edit's mark is in the new one.
+    ///
+    /// `unfixed`: the revision the transcripts were fixed from, when the caller has read it (else it is read here);
+    /// `voiceData`: false leaves the voice data out of the plan (a check that publishes nothing).
     static func plan(session: URL, from snapshot: SpeakerSessionSnapshot, to transcript: Transcript,
-                     move: ReviewWordMove? = nil, undo: Bool = false, now: Date = Date()) throws -> Plan? {
+                     move: ReviewWordMove? = nil, undo: Bool = false, now: Date = Date(),
+                     unfixed: Transcript? = nil, voiceData readsVoiceData: Bool = true) throws -> Plan? {
+        planStarted?()
         guard let oldRun = snapshot.run, let projection = snapshot.projection,
               oldRun.transcriptID == snapshot.transcript.id else { return nil }
         guard snapshot.journal.isComplete else {
@@ -39,8 +46,8 @@ enum SpeakerTranscriptRetarget {
         // Mapped by the words each automatic fix replaced (`heardWords`): counts that are wrong but add up would move
         // words between speakers, so they are checked against the unfixed revision first, when it can be read.
         if move == nil {
-            try checkFixCounts(snapshot.transcript, session: session)
-            try checkFixCounts(transcript, session: session)
+            try checkFixCounts(snapshot.transcript, session: session, unfixed: unfixed)
+            try checkFixCounts(transcript, session: session, unfixed: unfixed)
         }
         let mapping = try move.map { try Mapping(from: snapshot.transcript, to: transcript, move: $0, undo: undo) }
             ?? Mapping(from: snapshot.transcript, to: transcript)
@@ -92,7 +99,8 @@ enum SpeakerTranscriptRetarget {
         var recognition = snapshot.recognition
         recognition?.runID = run.id
         recognition?.createdAt = now
-        var voiceData = try? SessionSpeakerStore.readVoiceData(runID: oldRun.id, session: session)
+        var voiceData: SessionVoiceData?
+        if readsVoiceData { voiceData = try? SessionSpeakerStore.readVoiceData(runID: oldRun.id, session: session) }
         voiceData?.runID = run.id
         voiceData?.createdAt = now
         return Plan(run: run, edits: edits, recognition: recognition, voiceData: voiceData)
@@ -276,11 +284,11 @@ enum SpeakerTranscriptRetarget {
     /// Refuses (as damaged) a fixed `transcript` whose automatic fixes' recorded word counts do not lie over what they
     /// matched in its unfixed revision (`WordFixes.originalWordRanges`, `heardFits`). Nothing is checked when the
     /// revision cannot be read, or for a segment with an older fix (no recorded count: counted by its spaces, as before).
-    private static func checkFixCounts(_ transcript: Transcript, session: URL) throws {
+    private static func checkFixCounts(_ transcript: Transcript, session: URL, unfixed: Transcript?) throws {
         let automatic = { (fix: TranscriptWordFix) in fix.kind == .correction || fix.kind == .term }
         guard let baseID = transcript.fixedFrom,
               transcript.segments.contains(where: { ($0.fixes ?? []).contains(where: automatic) }),
-              let base = try? SessionFiles.transcript(id: baseID, session: session),
+              let base = unfixed?.id == baseID ? unfixed : (try? SessionFiles.transcript(id: baseID, session: session)),
               !TranscriptWordEdit.hasRepeatedSegmentIDs(base) else { return }
         let baseSegments = Dictionary(base.segments.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         for segment in transcript.segments {
@@ -313,6 +321,25 @@ enum SpeakerTranscriptRetarget {
 
         var segments: [String: Segment]
         var order: [String]
+        /// `owners` turned round, made once (`index`): the new words each old word owns, each segment's place in
+        /// `order`, and how many old words of each segment any new word names. Mapping a turn's spans reads only its
+        /// own words, so mapping every turn is linear in the words.
+        private var owned: [WordRef: [WordRef]] = [:]
+        private var place: [String: Int] = [:]
+        private var ownedEnd: [String: Int] = [:]
+
+        private mutating func index() {
+            for (position, segmentID) in order.enumerated() where place[segmentID] == nil {
+                place[segmentID] = position
+                guard let segment = segments[segmentID] else { continue }
+                for (word, owners) in segment.owners.enumerated() {
+                    for owner in owners {
+                        owned[owner, default: []].append(WordRef(segmentID: segmentID, word: word))
+                        ownedEnd[owner.segmentID] = max(ownedEnd[owner.segmentID] ?? 0, owner.word + 1)
+                    }
+                }
+            }
+        }
 
         init(from old: Transcript, to new: Transcript) throws {
             // Read from disk: a segment whose words or marks cannot be trusted (`TranscriptWordEdit.isDamaged`) is never
@@ -346,6 +373,17 @@ enum SpeakerTranscriptRetarget {
                     }
                     return found
                 }
+                // Segments the change left as they were: each word is its own owner (mapping them by time, word
+                // against word, would take as long as the segment's words squared).
+                if before == group {
+                    for segment in group {
+                        let words = WordTiming.effectiveWords(of: segment)
+                        mapped[segment.id] = Segment(old: words, new: words, owners: words.indices.map {
+                            [WordRef(segmentID: segment.id, word: $0)]
+                        })
+                    }
+                    continue
+                }
                 if try Self.mapIndividually(before: before, after: group,
                                             commonBase: oldBase == newBase, into: &mapped) {
                     continue
@@ -373,6 +411,7 @@ enum SpeakerTranscriptRetarget {
             }
             segments = mapped
             order = new.segments.map(\.id)
+            index()
         }
 
         /// A Review word edit's (or its undo's) mapping: in `move`'s segment, words before the replaced ones keep their
@@ -445,6 +484,7 @@ enum SpeakerTranscriptRetarget {
             }
             segments = mapped
             order = new.segments.map(\.id)
+            index()
         }
 
         /// True when every piece maps in its own word space. A cross-piece correction deliberately makes the
@@ -511,23 +551,26 @@ enum SpeakerTranscriptRetarget {
             return result
         }
 
+        /// The new words owned by a word of `spans` (old words), as spans in transcript order. Only the spans' own
+        /// words are read (`owned`), each within the old words some new word names (a span read from disk can hold
+        /// any numbers).
         func spansAllowingEmpty(_ spans: [WordSpan]) -> [WordSpan] {
-            var result: [WordSpan] = []
-            for segmentID in order {
-                guard let segment = segments[segmentID] else { continue }
-                let indices = segment.owners.indices.filter { index in
-                    segment.owners[index].contains { owner in
-                        spans.contains { span in
-                            span.segmentID == owner.segmentID && span.first <= owner.word && owner.word < span.end
-                        }
-                    }
+            var found = Set<WordRef>()
+            for span in spans {
+                let end = min(span.end, ownedEnd[span.segmentID] ?? 0)
+                let first = max(span.first, 0)
+                guard first < end else { continue }
+                for word in first..<end {
+                    for new in owned[WordRef(segmentID: span.segmentID, word: word)] ?? [] { found.insert(new) }
                 }
-                for index in indices {
-                    if let last = result.last, last.segmentID == segmentID, last.end == index {
-                        result[result.count - 1].end = index + 1
-                    } else {
-                        result.append(WordSpan(segmentID: segmentID, first: index, end: index + 1))
-                    }
+            }
+            let ordered = found.sorted { (place[$0.segmentID] ?? 0, $0.word) < (place[$1.segmentID] ?? 0, $1.word) }
+            var result: [WordSpan] = []
+            for word in ordered {
+                if let last = result.last, last.segmentID == word.segmentID, last.end == word.word {
+                    result[result.count - 1].end = word.word + 1
+                } else {
+                    result.append(WordSpan(segmentID: word.segmentID, first: word.word, end: word.word + 1))
                 }
             }
             return result
