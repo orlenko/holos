@@ -293,7 +293,7 @@ enum EchoAnalysisStage {
         }
         var renders: [String: RenderedTrack] = [:]
         for track in tracks {
-            progress(track == "system" ? "Preparing the system audio…" : "Preparing the microphone audio…")
+            progress("Preparing the \(SpeakerAnalysis.trackAudioLabel(track))…")
             renders[track] = try TrackRenderer.render(session: session, manifest: manifest, track: track,
                                                       to: SessionPaths.render(track: track, in: session))
         }

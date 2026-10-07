@@ -188,6 +188,35 @@ func deliberateStopSharingStillEndsTheMeeting() async throws {
     #expect(factory.made == 2)
 }
 
+/// Production makes a fresh native capture for every system attempt (`LiveMeetingCapture()`, unlike the factories
+/// here, which hand back their last native again): a start past its limit leaves system audio unavailable and starts
+/// no other stream while it hangs; once it returns it is stopped, and a fresh capture is tried, whose frames end the
+/// outage.
+@Test(.timeLimit(.minutes(1))) @MainActor
+func anOverLimitSystemStartIsRetriedWithAFreshCaptureAndAudioResumes() async throws {
+    let mic = IndependentNativeCapture(), slow = IndependentNativeCapture(), fresh = IndependentNativeCapture()
+    slow.startGate = true
+    let factory = IndependentNativeFactory([mic, slow, fresh])
+    let capture = isolatedCapture(factory, startLimit: independentHungLimit)
+    let heard = SharedValue<[String]>([])
+    let consumer = Task {
+        do { for try await audio in capture.frames { heard.update { $0.append(audio.track) } } }
+        catch { Issue.record("Unexpected error: \(error)") }
+    }
+    try await capture.start(CaptureRequest(source: .microphoneAndSystem))
+    #expect(await eventually { capture.unavailableTracks == ["system"] }, "The start ran past its limit.")
+    #expect(factory.made == 2, "No other stream is started while the abandoned start hangs.")
+    // The retry must succeed whenever it comes.
+    capture.startLimit = .seconds(3_600)
+    slow.releaseStart = true
+    #expect(await eventually { fresh.requests.count == 1 })
+    #expect(slow.stops >= 1, "The late start's capture is stopped before the retry.")
+    try fresh.emit("system", at: 1)
+    #expect(await eventually { heard.value.contains("system") && capture.unavailableTracks.isEmpty })
+    try await capture.stop()
+    await consumer.value
+}
+
 @Test(.timeLimit(.minutes(1))) @MainActor
 func lateSystemStartMustFinishCleanupBeforeRetrying() async throws {
     let mic = IndependentNativeCapture(), system = IndependentNativeCapture(), later = IndependentNativeCapture()
@@ -366,6 +395,10 @@ func aDroppedRecoveryFrameRetainsItsSystemOnlyBoundary() async throws {
     let factory = IndependentNativeFactory([mic, first, resumed])
     let capture = IndependentMeetingCapture(bufferCapacity: 1, makeCapture: { factory.make() })
     capture.retryDelay = .milliseconds(2)
+    // Nothing here hangs: limits a loaded machine never reaches (as `isolatedCapture`'s), so no start or stop that
+    // must succeed races one.
+    capture.startLimit = .seconds(30)
+    capture.stopLimit = .seconds(30)
     var iterator = capture.frames.makeAsyncIterator()
     try await capture.start(CaptureRequest(source: .microphoneAndSystem))
     #expect(await eventually { first.requests.count == 1 })
@@ -401,8 +434,9 @@ func successfulDelayedSystemStartRecordsItsLeadingGapWithoutAWarning() async thr
     let mic = IndependentNativeCapture(), system = IndependentNativeCapture()
     system.startGate = true
     let capture = isolatedCapture(IndependentNativeFactory([mic, system]))
-    // The gate is released explicitly, not by a wall-clock timing assertion.
-    capture.startLimit = .seconds(30)
+    // The gate is released explicitly, not by a wall-clock timing assertion, and never abandoned before that
+    // however late it comes (see `resumedSystemPreservesOutageStateAndRecorderBoundary`).
+    capture.startLimit = .seconds(3_600)
     let stop = ManualStopSource(), clock = ManualSessionClock(0)
     let statuses = SharedValue<[RecorderStatus]>([])
     let dependencies = recorderDependencies(captures: FakeCaptureFactory(), stop: stop, clock: clock,
@@ -446,7 +480,10 @@ func resumedSystemPreservesOutageStateAndRecorderBoundary(reason: GapReason, una
     let nextMic = IndependentNativeCapture(), nextSystem = IndependentNativeCapture()
     nextSystem.startGate = true
     let next = isolatedCapture(IndependentNativeFactory([nextMic, nextSystem]))
-    next.startLimit = .seconds(30)
+    // The gated system start must succeed whenever the test releases it, however late on a loaded machine: past
+    // the limit it would be abandoned, and its retry gets the same (already finished) native, so system audio would
+    // never resume. The test's time limit ends a hang.
+    next.startLimit = .seconds(3_600)
     let made = SharedValue<Int>(0), statuses = SharedValue<[RecorderStatus]>([])
     let stop = ManualStopSource(), clock = ManualSessionClock(0), power = RecorderFakePower()
     var dependencies = recorderDependencies(captures: FakeCaptureFactory(), stop: stop, clock: clock,

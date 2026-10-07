@@ -28,8 +28,8 @@ struct Record: AsyncParsableCommand {
 
                 Meetings started from Voice is Local record the system default input and system audio with \
                 --others-in-room (--source mic --microphone default when system audio is off in Settings › Meetings \
-                or not allowed), and with --screen display when "Capture screen" is checked in the start panel. \
-                The defaults here are unchanged for scripts. With mic+system, speaker \
+                or not allowed), and with --screen display (every display) when "Capture screen" is checked in the \
+                start panel. The defaults here are unchanged for scripts. With mic+system, speaker \
                 labelling leaves the microphone's echo of the system audio out of the labelled transcript.
                 """)
         @Option(help: "Session display name (default: Meeting).") var name: String?
@@ -60,11 +60,14 @@ struct Record: AsyncParsableCommand {
         @Option(help: "How many people are expected to speak (1-20), a hint for speaker labelling.") var expectedSpeakers: Int?
         @Option(help: "A JSON file of names and terms to recognize ({\"schemaVersion\": 1, \"strings\": [...]}); it is deleted once read.")
         var vocabularyFile: String?
-        enum Screen: String, ExpressibleByArgument, CaseIterable { case off, display }
+        enum Screen: String, ExpressibleByArgument, CaseIterable { case off, display, main }
         @Option(help: """
-            Capture the screen for on-device OCR after the recording (slides, shared screens): display (the main \
-            display, without Voice is Local's own windows; needs Screen Recording permission) or off. Changed \
-            frames only, at most one every two seconds; deleted with the meeting audio.
+            Capture the screen for on-device OCR after the recording (slides, shared screens): display (every \
+            connected display, without Voice is Local's own windows; needs Screen Recording permission), main (the \
+            main display only), or off. The displays are chosen when the capture starts and again whenever it \
+            restarts (after a pause, sleep, or an audio device change), so a display connected later, or a new main \
+            display, is captured from then on. Changed frames only, at most one every two seconds per display; \
+            deleted with the meeting audio.
             """)
         var screen: Screen = .off
 
@@ -104,7 +107,7 @@ struct Record: AsyncParsableCommand {
                                            microphone: microphone.flatMap(MicrophoneSelection.init(argument:))
                                                ?? RecordingOptions.microphone(for: source),
                                            languages: languages,
-                                           screen: screen == .display ? .display : nil,
+                                           screen: ScreenCaptureTarget(rawValue: screen.rawValue),
                                            nameSource: name == nil || defaultName ? .default : .user)
             let dependencies = RecordingDependencies.live(stop: SignalStopController(), reporter: ConsoleReporter(),
                 postProcess: noPostprocess || recordOnly ? nil : recordingPostProcessHook())

@@ -118,9 +118,10 @@ public enum MeetingListFormat {
 
     /// The badges of a meeting, most important first: the live phase (`livePhase`, for the meeting the app follows),
     /// what a command or final transcript is doing (`working`), then the meeting's state, its audio, and its speaker
-    /// labels when they need attention.
-    public static func badges(_ summary: SessionSummary, livePhase: LiveMeetingPhase?, working: String?)
-        -> [Badge] {
+    /// labels when they need attention, and a call whose echo could not be removed in this launch (`echoNotRemoved`,
+    /// `EchoCatchUpSchedule`).
+    public static func badges(_ summary: SessionSummary, livePhase: LiveMeetingPhase?, working: String?,
+                              echoNotRemoved: Bool = false) -> [Badge] {
         var badges: [Badge] = []
         switch livePhase {
         case .recording?: badges.append(Badge("● Recording", .live))
@@ -156,6 +157,7 @@ public enum MeetingListFormat {
             }
         }
         if summary.languageWork != nil { badges.append(Badge("Language missing", .warning)) }
+        if echoNotRemoved, working == nil { badges.append(Badge("Echo not removed", .warning)) }
         return badges
     }
 

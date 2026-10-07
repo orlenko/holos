@@ -56,7 +56,7 @@ let package = Package(
             "-Xlinker", "-sectcreate", "-Xlinker", "__TEXT", "-Xlinker", "__info_plist", "-Xlinker", cliInfoPlist,
         ])]),
         .testTarget(name: "HolosCoreTests", dependencies: ["HolosCore"]),
-        .testTarget(name: "HolosAppTests", dependencies: ["HolosApp", "HolosCore", "HolosMeeting"]),
+        .testTarget(name: "HolosAppTests", dependencies: ["HolosApp", "HolosCore", "HolosMeeting", "HolosStorage"]),
         .testTarget(name: "HolosStorageTests", dependencies: ["HolosStorage", "HolosCore"]),
         .testTarget(name: "HolosSpeechTests", dependencies: ["HolosSpeech", "HolosCore"]),
         .testTarget(name: "HolosSynthesisTests", dependencies: ["HolosSynthesis", "HolosCore"]),

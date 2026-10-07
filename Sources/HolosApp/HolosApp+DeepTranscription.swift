@@ -176,7 +176,7 @@ extension HolosAppDelegate {
     // MARK: - Queue
 
     /// After a meeting is saved and its own post-processing ended: queued when the setting is on, the model
-    /// installed, and the meeting in one language. Its summary is looked for once that is decided (§4.17), so a
+    /// installed, and the pass transcribes the meeting (one language, English). Its summary is looked for once that is decided (§4.17), so a
     /// meeting about to get a final transcript is summarized after it, not before.
     func queueDeepTranscriptionAfterMeeting(sessionID: String) {
         guard DeepTranscriptionAppState.enabled, meeting.deep.model == "installed", let root = meeting.controller?.root,
@@ -186,9 +186,11 @@ extension HolosAppDelegate {
         }
         let activation = meeting.deep.activation
         meeting.deep.deciding.insert(sessionID)
-        // Reading the languages can mean decoding a long meeting's transcript: off the main actor.
+        // Reading the language can mean decoding a long meeting's transcript: off the main actor.
         Task { [weak self] in
-            let languages = await Task.detached { Self.languageCount(directory) }.value
+            let transcribable = await Task.detached {
+                SessionDeepTranscribeCommand.languageProblem(session: directory) == nil
+            }.value
             defer {
                 self?.meeting.deep.deciding.remove(sessionID)
                 self?.scheduleMeetingSummaries()
@@ -198,7 +200,7 @@ extension HolosAppDelegate {
             // cancelled it) while it was read.
             guard let self, self.meeting.deep.activation == activation, DeepTranscriptionSchedule.queuesAfterMeeting(
                 enabled: DeepTranscriptionAppState.enabled, modelInstalled: self.meeting.deep.model == "installed",
-                languages: languages, queued: self.meeting.deep.queue.contains(sessionID),
+                transcribable: transcribable, queued: self.meeting.deep.queue.contains(sessionID),
                 considered: self.meeting.deep.considered.contains(sessionID)) else { return }
             self.meeting.deep.queue.enqueue(sessionID: sessionID, path: directory.path, at: Date())
             self.meeting.deep.consider(sessionID)
@@ -209,7 +211,8 @@ extension HolosAppDelegate {
 
     /// Once per launch, with the setting on and the model installed: queues the meetings that finished while the app
     /// was closed (in child-recorder mode a recorder saves and post-processes on its own after the app quits),
-    /// started since the setting was turned on, in one language, with no deep transcript, and not queued before.
+    /// started since the setting was turned on, that the pass transcribes (one language, English), with no deep
+    /// transcript, and not queued before.
     func reconcileDeepTranscription() {
         guard DeepTranscriptionAppState.enabled, meeting.deep.model == "installed",
               let root = meeting.controller?.root, let since = DeepTranscriptionAppState.enabledSince else {
@@ -232,7 +235,8 @@ extension HolosAppDelegate {
                             sessionID: summary.id, path: summary.directory.path, createdAt: summary.createdAt,
                             finished: DeepTranscriptionSchedule.isFinished(summary.state,
                                                                            audioDeleted: summary.audioDeleted),
-                            languages: Self.languageCount(summary.directory),
+                            transcribable: SessionDeepTranscribeCommand.languageProblem(session: summary.directory)
+                                == nil,
                             hasDeepTranscript: Self.hasDeepTranscript(summary.directory))
                     }
                     .sorted { $0.createdAt < $1.createdAt }
@@ -278,22 +282,21 @@ extension HolosAppDelegate {
         checkRunNowLanguages(sessionID: summary.id, directory: summary.directory, name: summary.name)
     }
 
-    /// Reads the languages of a reserved Run Now request off the main actor, then queues it (one language) or leaves
-    /// the meeting as it was with an alert (several). Cancelled meanwhile, nothing happens.
+    /// Reads the language of a reserved Run Now request off the main actor, then queues it (the pass transcribes it:
+    /// one language, English) or leaves the meeting as it was with an alert saying why (several languages, or another
+    /// language: Run Now passes `--force`, so the pass would not refuse it). Cancelled meanwhile, nothing happens.
     private func checkRunNowLanguages(sessionID: String, directory: URL, name: String?) {
         Task { [weak self] in
-            let languages = await Task.detached { Self.languageCount(directory) }.value
+            let problem = await Task.detached { SessionDeepTranscribeCommand.languageProblem(session: directory) }.value
             guard let self, self.meeting.deep.queue.isPending(sessionID) else { return }
-            let accepted = languages <= 1
+            let accepted = problem == nil
             self.meeting.deep.queue.resolveRunNow(sessionID, accepted: accepted)
             if accepted { self.meeting.deep.retryAfter = nil }
             self.updateDeepStates()
             self.scheduleDeepTranscription()
             guard !accepted else { return }
             let shown = name ?? (try? SessionArchive.readManifest(at: directory).name) ?? "The meeting"
-            self.showDeepAlert("“\(Self.short(shown))” is in several languages.",
-                               "Deep transcription handles meetings in one language for now; its transcript stays as it "
-                                   + "is.")
+            self.showDeepAlert("“\(Self.short(shown))” keeps its transcript.", problem ?? "")
         }
     }
 
@@ -320,8 +323,8 @@ extension HolosAppDelegate {
         }
         guard let controller = meeting.controller, let maintenance = meeting.maintenance else { return }
         // Another process's pass holds the lock: wait for it (checked again every 30 s). One at a time on this Mac.
-        // A meeting summary shares the lock (§4.17), this app's own while it starts too: wait for it, without saying
-        // another final transcript runs.
+        // A meeting summary and an echo analysis share the lock (§4.17, §5.11), this app's own while it starts too
+        // (before the command takes it): wait for them, without saying another final transcript runs.
         if meeting.deep.running == nil {
             let lock = DeepTranscriptionLock.state()
             let other = lock.isDeepPass
@@ -329,7 +332,7 @@ extension HolosAppDelegate {
                 meeting.deep.otherPassRunning = other
                 updateDeepStates()
             }
-            if lock != .free || meeting.summaries.running != nil { return }
+            if lock != .free || meeting.summaries.running != nil || meeting.echo.running != nil { return }
         }
         if let retryAfter = meeting.deep.retryAfter, retryAfter > Date() { return }
         meeting.deep.retryAfter = nil
@@ -357,6 +360,12 @@ extension HolosAppDelegate {
         // it goes on, the pass waits for its end (`meetingSummaryScanEnded`).
         if !item.runNow, meeting.summaries.scanning, !meeting.summaries.requests.isEmpty {
             meeting.deep.waitsForSummaryScan = true
+            return
+        }
+        // A call's missing echo analysis goes before an automatic pass: it takes seconds and fixes the meeting's
+        // playback and labels now (§5.11). A pass asked for from the menu does not wait for it.
+        if !item.runNow, echoCatchUpReady() {
+            scheduleEchoCatchUp()
             return
         }
         // Marked running before the meeting is taken: taking it schedules again (`onSessionsInUseChanged`), which must
@@ -421,7 +430,7 @@ extension HolosAppDelegate {
             if item?.runNow == true, code != 0, lateCancel == nil {
                 failure = DeepTranscriptionSchedule.failureText(code: code, record: record, errors: errorText)
             }
-            // Done, refused (exit 1: no model, deleted audio, several languages), partial (3), or cancelled: off the
+            // Done, refused (exit 1: no model, deleted audio, its language), partial (3), or cancelled: off the
             // queue either way. Only a pass the app did not see end (a quit, a crash) stays queued, and runs again
             // from the start at the next launch. Off the queue before the meeting is let go of, since letting go
             // schedules the next pass.
@@ -435,8 +444,9 @@ extension HolosAppDelegate {
         meeting.meetingsPane?.refresh()
         updateDeepStates()
         // The final transcript is a new transcript: its summary follows (§4.17). Looked for first, so a summary the
-        // user asked for goes before the next automatic pass (which waits for the scan).
+        // user asked for goes before the next automatic job (which waits for the scan).
         scheduleMeetingSummaries()
+        scheduleEchoCatchUp()
         scheduleDeepTranscription()
         // Review asked for while the pass worked on the meeting.
         if let review = meeting.deep.reviewAfterPass.removeValue(forKey: sessionID) {
@@ -548,22 +558,6 @@ extension HolosAppDelegate {
 
     // MARK: - Helpers
 
-    /// The most languages the meeting names: meeting.json's, or its current transcript's (`session languages` can
-    /// merge several without changing meeting.json); 1 when neither names any or can be read.
-    nonisolated static func languageCount(_ directory: URL) -> Int {
-        var count = 1
-        if let data = try? AtomicFile.readIfPresent(SessionPaths.meetingInfo(directory), maxBytes: 1 << 20),
-           let info = try? HolosJSON.decoder().decode(MeetingInfo.self, from: data) {
-            count = max(count, DictationLanguage.meetingLanguages(info.languages ?? []).count)
-        }
-        if let id = try? SessionArchive.currentTranscriptID(at: directory),
-           let data = try? AtomicFile.readIfPresent(SessionPaths.transcript(id, in: directory), maxBytes: 256 << 20),
-           let transcript = try? HolosJSON.decoder().decode(Transcript.self, from: data) {
-            count = max(count, DictationLanguage.meetingLanguages(transcript.languages ?? []).count)
-        }
-        return count
-    }
-
     /// Review asked for (from any entry point: Meetings, the menu bar's Name Speakers) while a deep transcription
     /// pass works on the meeting: this app's own (its `sessionsInUse` entry), or another process's (the lock's
     /// holder). Review would load a transcript and labels the pass is about to replace, so it waits: the alert says
@@ -572,7 +566,7 @@ extension HolosAppDelegate {
         let own = meeting.controller?.sessionsInUse[sessionID] == Self.deepRunningText
             && meeting.deep.running?.sessionID == sessionID
         var other = false
-        if !own, case .held(let holder?) = DeepTranscriptionLock.state(), !holder.isSummary {
+        if !own, case .held(let holder?) = DeepTranscriptionLock.state(), holder.isDeepPass {
             other = holder.sessionID == sessionID
         }
         guard own || other else { return false }

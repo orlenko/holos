@@ -87,6 +87,8 @@ final class MeetingAppState {
     let deep = DeepTranscriptionAppState()
     /// Meeting titles and summaries (docs/meeting-design.md §4.17).
     let summaries = MeetingSummaryAppState()
+    /// The acoustic echo analysis of calls that miss it (docs/meeting-design.md §5.11, "Catching up in the app").
+    let echo = EchoCatchUpAppState()
 }
 
 extension HolosAppDelegate: NSMenuDelegate {
@@ -116,10 +118,11 @@ extension HolosAppDelegate: NSMenuDelegate {
         controller.onSessionsInUseChanged = { [weak self, weak controller] in
             guard let controller else { return }
             self?.meeting.meetingsPane?.update(running: controller.sessionsInUse)
-            // A meeting another command let go of may be the next deep transcription's, or the next summary's.
-            // Summaries are looked for first, so a Summarize Again waiting goes before the next automatic pass (which
-            // waits for that scan).
+            // A meeting another command let go of may be the next deep transcription's, the next summary's, or the
+            // next echo analysis's. Summaries are looked for first, so a Summarize Again waiting goes before the next
+            // automatic job (which waits for that scan); the echo analysis goes before an automatic final transcript.
             self?.scheduleMeetingSummaries()
+            self?.scheduleEchoCatchUp()
             self?.scheduleDeepTranscription()
         }
         // Reviews open, opening, or still saving after they closed: the automatic relabel leaves those meetings alone.
@@ -137,6 +140,7 @@ extension HolosAppDelegate: NSMenuDelegate {
         refreshSpeakerModels()
         setUpDeepTranscription()
         setUpMeetingSummaries()
+        setUpEchoCatchUp()
         Task { [weak self] in await self?.promptAboutInterruptedRecordings() }
     }
 
@@ -161,9 +165,11 @@ extension HolosAppDelegate: NSMenuDelegate {
             rebuildMenu()
         }
         meeting.meetingsPane?.update(meetingState: state)
-        // A meeting needs the Mac: a final transcript or a summary in progress is stopped and runs again afterwards.
+        // A meeting needs the Mac: a final transcript, a summary or an echo analysis in progress is stopped and runs
+        // again afterwards.
         deepTranscriptionMeetingStateChanged()
         meetingSummaryMeetingStateChanged()
+        echoCatchUpMeetingStateChanged()
     }
 
     private func handleMeetingEffect(_ effect: MeetingEffect) {
@@ -175,8 +181,10 @@ extension HolosAppDelegate: NSMenuDelegate {
             meeting.notice = nil
             meeting.meetingsPane?.refresh()
             // The meeting's own post-processing ran in the recorder: the final transcript can follow (§4.16), and its
-            // title and summary once that is decided (§4.17).
+            // title and summary once that is decided (§4.17). Its echo analysis was made then too, unless it failed:
+            // the meetings are looked at again (§5.11).
             queueDeepTranscriptionAfterMeeting(sessionID: sessionID)
+            scanEchoCatchUp()
         case .offerNaming, .clearNamingOffer:
             // `MeetingController.namingOffer` changed; the menu and the status item show it.
             break
@@ -667,6 +675,7 @@ extension HolosAppDelegate: NSMenuDelegate {
         pane.update(meetingState: controller.state)
         meeting.meetingsPane = pane
         updateDeepStates()
+        updateEchoStates()
         return pane
     }
 
@@ -1074,10 +1083,10 @@ extension HolosAppDelegate: NSMenuDelegate {
         }
     }
 
-    /// A command from Meetings or the interrupted prompt ended (or never started): its use of the meeting ends
-    /// (`MeetingController.endUsing`, so Meetings stops showing it and the naming offer is derived again), and a
-    /// review of the meeting reads the meeting again and is editable.
-    private func maintenanceFinished(_ sessionID: String) {
+    /// A command from Meetings, the interrupted prompt, or the echo catch-up ended (or never started): its use of the
+    /// meeting ends (`MeetingController.endUsing`, so Meetings stops showing it and the naming offer is derived
+    /// again), and a review of the meeting reads the meeting again and is editable.
+    func maintenanceFinished(_ sessionID: String) {
         let hold = meeting.maintenanceOn.removeValue(forKey: sessionID)
         meeting.controller?.endUsing(sessionID)
         if let hold { reviewsTakeBack(sessionID, after: hold) }

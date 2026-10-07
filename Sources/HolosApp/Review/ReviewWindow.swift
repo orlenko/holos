@@ -155,6 +155,8 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, Clo
     private var shownNotices: [Notice] = []
     /// The manifest chunks playback was last built from.
     private var loadedChunks: [AudioChunkRecord] = []
+    /// The echo mask the microphone's volume was last read for: another one in the labels reads it again.
+    private var echoMaskFollow = ReviewEchoMaskFollow()
     private lazy var confirmAllItem = menuItem("Confirm All Suggestions", #selector(confirmAll))
     private lazy var findMoreItem = menuItem("Find More Speakers…", #selector(findMoreSpeakers))
     private lazy var microphoneItem = menuItem("Label Speakers on My Microphone…", #selector(labelMicrophoneSpeakers))
@@ -269,7 +271,24 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, Clo
             if deleted != playerSaysDeleted || self.review.snapshot.manifest.chunks != self.loadedChunks
                 || (!deleted && !self.player.hasAudio) {
                 self.reloadPlayback()
+            } else {
+                await self.refreshMicVolume()
             }
+        }
+    }
+
+    /// The echo analysis may have changed meanwhile (`voiceislocal session echo-analyze`): the microphone's volume
+    /// is read again and, when it changed, set on the playing item without rebuilding it.
+    private func refreshMicVolume() async {
+        // Without system audio in the playback the echo is never muted.
+        guard player.isReady, let systemPlaced = player.systemPlaced else { return }
+        let session = review.session, manifest = review.snapshot.manifest, duration = player.duration
+        // The player drops the result when a newer refresh or a rebuilt playback came meanwhile.
+        await player.refreshMicVolume {
+            await Task.detached(priority: .utility) {
+                ReviewEchoMute.micVolume(session: session, manifest: manifest, duration: duration,
+                                         systemPlaced: systemPlaced)
+            }.value
         }
     }
 
@@ -537,6 +556,11 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, Clo
     }
 
     private func refresh() {
+        // Labels that came with another echo mask (a relabel here, a reload, `session echo-analyze`): the playing
+        // item's microphone volume follows it.
+        if echoMaskFollow.update(review.snapshot.echoMaskIdentity, playerReady: player.isReady) {
+            Task { [weak self] in await self?.refreshMicVolume() }
+        }
         let projection = review.projection
         // A run a word edit or its undo published keeps the turns, and with them the window's paragraph breaks.
         let runID = projection.runID
@@ -605,6 +629,11 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, Clo
         // Every change of the player's state (loading, ready, off and why) redraws what depends on it: the sidebar's
         // play buttons and the footer's "Playback is off" notice.
         if shownPlayerState.update(player.state) {
+            // A new player: its playback read the echo mask while it was built (possibly before the labels adopted
+            // another one), so the microphone's volume is read once more against the labels' mask now.
+            if player.isReady, echoMaskFollow.playerBecameReady(labels: review.snapshot.echoMaskIdentity) {
+                Task { [weak self] in await self?.refreshMicVolume() }
+            }
             sidebar.update(rows: sidebarRows(), people: review.knownPeople(), editable: review.isEditable,
                            suggestions: review.suggestionCount)
             refreshFooter()

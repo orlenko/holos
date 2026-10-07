@@ -283,10 +283,9 @@ final class SettingsPane: NSViewController, MainSectionContent, NSSearchFieldDel
         let searchWidth = search.widthAnchor.constraint(equalToConstant: 340)
         searchWidth.priority = .defaultHigh
 
-        // A hairline where the page scrolls under the search field.
-        let separator = NSBox()
-        separator.boxType = .separator
-        separator.translatesAutoresizingMaskIntoConstraints = false
+        // A hairline where the page scrolls under the search field; one point high (`hairline`): in some windows a
+        // separator without a height took all the page's.
+        let separator = NSBox.hairline()
 
         let root = NSView()
         root.addSubview(search)
@@ -298,10 +297,6 @@ final class SettingsPane: NSViewController, MainSectionContent, NSSearchFieldDel
             searchWidth,
             search.topAnchor.constraint(equalTo: root.topAnchor, constant: 14),
             separator.topAnchor.constraint(equalTo: search.bottomAnchor, constant: 10),
-            // A separator box has no height of its own: without this, the space between the search field and the
-            // bottom was split between it and the page at random, and in some windows the box took all of it (drawn
-            // as a vertical line, since it was taller than wide) and left the page no height at all.
-            separator.heightAnchor.constraint(equalToConstant: 1),
             separator.leadingAnchor.constraint(equalTo: root.leadingAnchor),
             separator.trailingAnchor.constraint(equalTo: root.trailingAnchor),
             scroll.topAnchor.constraint(equalTo: separator.bottomAnchor),
@@ -468,7 +463,8 @@ final class SettingsPane: NSViewController, MainSectionContent, NSSearchFieldDel
             After a meeting is saved, its audio is transcribed again with a larger model, prompted with your word \
             list and people's names, and the result replaces the transcript (the one before is kept). It runs on AC \
             power, one meeting at a time; on battery it waits for the power adapter. Right-click a meeting for Make \
-            Final Transcript Now or Cancel. Meetings in several languages keep their transcript.
+            Final Transcript Now or Cancel. It is tuned for English meetings; meetings in other languages, or in \
+            several, keep their transcript.
             """)
         meetingSummariesToggle.target = self
         meetingSummariesToggle.action = #selector(buttonPressed(_:))
@@ -482,8 +478,8 @@ final class SettingsPane: NSViewController, MainSectionContent, NSSearchFieldDel
         addRow(.speakerModels, "Speaker labels", to: grid)
         addRow(.deepTranscriptionModel, "Final transcript", to: grid)
         addRow(.people, "Remember voices", to: grid)
-        set(.people, .pending, "Whether Voice is Local remembers the voices of people you name is set in People, "
-            + "with each person's samples.", button: "Open People")
+        set(.people, .pending, "On for new installs: Voice is Local learns the voices of people you name, on this Mac, "
+            + "and suggests them in later meetings. Turn it off or forget voices in People.", button: "Open People")
         rows[.people]?.icon.image = NSImage(systemSymbolName: "person.2", accessibilityDescription: nil)
         rows[.people]?.icon.contentTintColor = .secondaryLabelColor
 
@@ -491,7 +487,7 @@ final class SettingsPane: NSViewController, MainSectionContent, NSSearchFieldDel
                 keywords: ["system sound", "computer audio", "calls", "zoom", "video"],
                 views: [recordSystemAudioToggle, detail], focus: recordSystemAudioToggle)
         addItem(.meetings, MeetingScreenText.settingTitle, caption: screenDetail.stringValue,
-                keywords: ["screen", "screenshot", "display", "slides", "capture"],
+                keywords: ["screen", "screenshot", "display", "displays", "monitor", "slides", "capture"],
                 views: [screenCaptureToggle, screenDetail], focus: screenCaptureToggle)
         addItem(.meetings, deepTranscriptionToggle.title, caption: deepDetail.stringValue,
                 keywords: ["whisper", "final transcript", "accuracy", "transcribe again"],

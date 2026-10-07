@@ -322,6 +322,14 @@ private func listed(name: String, source: MeetingNameSource, generated: String?)
         #expect(await rename(session, "Weekly sync", lock: lock).message.contains("final transcript of this meeting"))
         try unchanged()
     }
+    do {
+        let held = try #require(try DeepTranscriptionLock.take(
+            DeepTranscriptionLock.Holder(pid: getpid(), sessionID: id, force: false,
+                                         kind: DeepTranscriptionLock.Holder.echoKind), at: lock))
+        defer { held.release() }
+        #expect(await rename(session, "Weekly sync", lock: lock).message.contains("echo is being removed"))
+        try unchanged()
+    }
     // A job on another meeting does not hold this one.
     do {
         let held = try #require(try DeepTranscriptionLock.take(
@@ -889,6 +897,11 @@ private func listed(name: String, source: MeetingNameSource, generated: String?)
     let deep = SessionCatalog.summary(
         session: session, jobState: .held(DeepTranscriptionLock.Holder(pid: 1, sessionID: id, force: false)))
     #expect(deep.jobInProgress?.contains("final transcript") == true)
+    let echo = SessionCatalog.summary(
+        session: session, jobState: .held(DeepTranscriptionLock.Holder(pid: 1, sessionID: id, force: false,
+                                                                       kind: DeepTranscriptionLock.Holder.echoKind)))
+    #expect(echo.jobInProgress == "The call's echo is being removed from this meeting.")
+    #expect(!MeetingActionPolicy.renames(echo))
     // Another meeting's job leaves this one alone.
     let other = SessionCatalog.summary(
         session: session, jobState: .held(DeepTranscriptionLock.Holder(pid: 1, sessionID: "OTHER", force: false)))

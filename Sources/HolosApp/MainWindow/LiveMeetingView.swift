@@ -112,9 +112,8 @@ final class LiveMeetingViewController: NSViewController, NSTextViewDelegate {
         bar.alignment = .centerY
         bar.translatesAutoresizingMaskIntoConstraints = false
 
-        let separator = NSBox()
-        separator.boxType = .separator
-        separator.translatesAutoresizingMaskIntoConstraints = false
+        // One point high (`hairline`): in tall windows a separator without a height took all the transcript's.
+        let separator = NSBox.hairline()
 
         textView.isEditable = false
         textView.isSelectable = true
@@ -211,6 +210,9 @@ final class LiveMeetingViewController: NSViewController, NSTextViewDelegate {
     }
 
     var preferredFirstResponder: NSView { textView }
+
+    /// The transcript text shown now (tests).
+    var shownText: String { textView.string }
 
     // MARK: - Updates
 

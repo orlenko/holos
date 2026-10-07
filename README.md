@@ -123,18 +123,23 @@ labelling drops the microphone's echo of it (below); nothing warns about it.
 Screen capture during meetings is optional and off by default. Turn on **Capture the
 screen during meetings (slides, shared screens) to improve transcripts** in Settings ›
 Meetings; the start panel's **Capture screen** box begins checked then and can be
-unchecked for one meeting. The whole main display is captured, without Voice is
-Local's own windows; other displays are not. Notifications and anything else on the
-main display are included. Everything stays on this Mac. Screen & System Audio
-Recording permission must already be granted; without it the box is dimmed, and a
-capture failure never stops the audio. `voiceislocal record start --screen display`
-does the same from the command line. Changed snapshots (a change counts once it holds
-still, so a moving video is skipped) are saved locally at up to one sample every two
-seconds, at most 2560 pixels wide. OCR runs
-on this Mac after recording stops; no language-model correction runs during recording.
-Recorder/recovery OCR batches are limited to eight frames and five seconds of waiting;
-unfinished frames stay saved. **Screen Text…** in Review shows timestamped OCR and
-unverified word-list candidates, and **Recognize Next Batch** continues unfinished OCR.
+unchecked for one meeting. Every display connected when the capture starts is captured,
+without Voice is Local's own windows; one unplugged stops being captured. The displays
+are chosen again whenever the capture restarts during the meeting (after a pause,
+sleep, or an audio device change), so a display plugged in mid-meeting is captured
+from then on, or from the next meeting. Notifications and anything else on the displays are included. Everything
+stays on this Mac. Screen & System Audio Recording permission must already be granted;
+without it the box is dimmed, and a capture failure never stops the audio.
+`voiceislocal record start --screen display` does the same from the command line
+(`--screen main` captures the main display only, chosen again when the capture restarts). Changed snapshots (a change counts
+once it holds still, so a moving video is skipped) are saved locally at up to one sample
+every two seconds per display, at most 2560 pixels wide. The displays share the storage
+limits (1000 snapshots, 256 MiB); near them the busiest display stops first, so a
+quieter one with slides keeps going. OCR runs on this Mac after recording stops; no
+language-model correction runs during recording. Recorder/recovery OCR batches are
+limited to eight frames and five seconds of waiting; unfinished frames stay saved.
+**Screen Text…** in Review shows timestamped OCR (and which display, when there were
+several) and unverified word-list candidates, and **Recognize Next Batch** continues unfinished OCR.
 They are never added automatically. Nearby OCR can support an existing word-list
 question, but is not proof that a term was spoken. Delete Audio removes both snapshots
 and their OCR. A thumbnail timeline is not implemented yet.
@@ -151,7 +156,8 @@ asks for one more speaker and keeps the names), and Export (Save As… Markdown,
 JSON; Copy as Markdown) complete it. Changes save as you make them and the transcript files
 follow a moment later; a change made from an outdated view (another window or a command)
 is refused and the window shows the current labels. The footer box "Learn voices of people
-I name in this meeting" decides whether naming a person also learns their voice. Delete
+I name in this meeting" decides whether naming a person also learns their voice; it starts
+checked while Remember voices is on (on for new installs). Delete
 Meeting can also forget the voice samples learned from that meeting. See the
 [meeting validation guide](docs/meeting-validation.md) for the manual checks.
 
@@ -304,12 +310,20 @@ prompted with the meeting's name, your word list and the names of the people you
 real 53-minute call it halved the word error rate of the live transcript (20.9 % to 11–14 %
 against a cloud reference; 14.6 % as built) and got about twice as many word-list terms right
 (63 of 82 against 31); it takes about 8–11 minutes per hour of audio on an M4 Pro. Nothing leaves the Mac; the model itself is a
-one-time download of about 1.6 GB:
+one-time download of about 1.6 GB.
+
+It is for English meetings only, for now. On a real 3.7-hour board meeting in French and
+English, Whisper did worse than Apple's speech recognition (48.8 % word error rate against
+37.3 % for the merge of Apple's French and English transcriptions, and 49.1 % against 46.4 %
+in French alone), so a meeting in another language keeps Apple's transcript, and meetings in
+several languages are not transcribed again. `--any-language` tries a meeting in another
+language anyway, as an experiment:
 
 ```sh
 voiceislocal setup --whisper                       # download and check the model (resumes if interrupted)
 voiceislocal session deep-transcribe <session>     # transcribe a finished meeting again
 voiceislocal session deep-transcribe <session> --force   # again, or over edited speaker labels
+voiceislocal session deep-transcribe <session> --any-language   # a meeting in another language (experimental)
 voiceislocal eval local <session> --backend whisper      # the same, as a candidate for eval compare
 ```
 
@@ -319,15 +333,17 @@ version of the transcript (the one before is kept); live corrections, word fixes
 labels (names carry over) and the transcript files follow as after a recording. It exits 0
 when done, 3 when the files were written but the meeting was not transcribed again (edited
 speaker labels without `--force`, a failure) or speaker labelling was skipped, and 1 when
-nothing could be done (no model, deleted audio, or a meeting in several languages, which is
-not supported yet).
+nothing could be done (no model, deleted audio, a meeting in another language without
+`--any-language`, or one in several languages, which is not supported).
 
 In the app, Settings › Meetings downloads the model and turns on "Deep transcription after
-meetings": each saved meeting is then transcribed again on AC power, one at a time (on
-battery it waits for the power adapter). The Meetings list shows "Final transcript queued" or
+meetings": each saved English meeting is then transcribed again on AC power, one at a time (on
+battery it waits for the power adapter); a meeting in another language keeps Apple's
+transcript. The Meetings list shows "Final transcript queued" or
 "… in progress…"; right-click a meeting for Make Final Transcript Now (which also labels
-speakers again; names carry over) or Cancel Final Transcript. Meetings saved while the app is
-closed are queued the next time it opens.
+speakers again; names carry over; for an English meeting only, checked again when it runs) or
+Cancel Final Transcript. Meetings saved while the app is closed are queued the next time it
+opens.
 
 ### Meeting titles and summaries
 
@@ -504,8 +520,8 @@ once `session summarize` made them. No export contains voice data.
 People and voices: `voiceislocal speakers link <session> <speaker> <person|new:NAME>` links a
 speaker to a person (`voiceislocal speakers me` to you), which also names the speaker, so the
 name carries across meetings; `voiceislocal speakers reject` says a speaker is not someone in
-that meeting. Names never need a voiceprint. Remembering voices is opt-in and off by
-default (`voiceislocal people remember on|off|status`, or the People window): with it on,
+that meeting. Names never need a voiceprint. Remembering voices is on for new
+installs; an existing setting is kept (`voiceislocal people remember on|off|status`, or the People window): with it on,
 `link --learn-voice` learns the person's voice from that speaker's clear turns (only do
 this for people who agreed; voiceprints are biometric data), and later meetings suggest
 them as "Maybe Jim" in `voiceislocal speakers list` and the review window. Suggestions are never

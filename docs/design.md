@@ -1050,12 +1050,14 @@ Face) uses the network.
   speaker labels are respected as the other text-changing stages respect them: the pass
   is skipped with the standard message unless `--force`. A transcript the model already
   made is kept unless `--force`.
-- *Languages.* Meetings in several languages are not transcribed again yet: Whisper's
-  language detection cannot be limited to the meeting's languages, so the pass says so and
-  keeps the merged transcript.
+- *Languages.* English meetings only, for now: a meeting in another language keeps Apple's
+  transcript unless `--any-language`, and meetings in several languages are not transcribed again
+  (Whisper's language detection cannot be limited to the meeting's languages). Tried on a real
+  French and English meeting, Whisper did worse than Apple's speech recognition, in French
+  above all (status.md).
 - *In the app.* Settings › Meetings offers the model's download (1.6 GB) and "Deep
-  transcription after meetings", off until the model is installed. When on, each meeting in
-  one language is queued once it is saved and transcribed again on AC power, one at a time
+  transcription after meetings", off until the model is installed. When on, each English
+  meeting is queued once it is saved and transcribed again on AC power, one at a time
   (on battery it waits for the power adapter); the queue survives a quit or crash, and an
   interrupted pass starts over. The Meetings list shows "Final transcript queued", "… waits
   for power" or "… in progress…"; a meeting's right-click menu offers Make Final Transcript
@@ -1118,8 +1120,11 @@ transcript files get the summary, key points and action items (Markdown and JSON
 method, files and measurements.
 
 Every action stays: double-click or Return opens (the live transcript, Review, or the
-transcript preview), ⌫ is Delete Meeting…, the buttons below the list, and the row's menu, which
-now has Open, Live Transcript, Review…, Open Transcript, Show in Finder, Save Transcript As…,
+transcript preview), ⌫ is Delete Meeting…, the buttons below the list, and the row's menu. The menu
+starts with the item double-click and Return use, named for what it opens (Open Live Transcript,
+Open Review, or Open Transcript; no Return key equivalent, which would fire from other fields), then Review… and Show Transcript File (the preview)
+unless that first item already does the same (`MeetingOpenPolicy.menuItems`), so no two items do
+one thing. After them come Show in Finder, Save Transcript As…,
 Rename… and Use Generated Title, Summarize (Again), Make Final Transcript Now / Cancel Final Transcript, Recover…, Label
 Speakers, Delete Audio… and Delete Meeting…, each enabled as its button is. Right-clicking a
 row selects it.
@@ -1352,11 +1357,13 @@ decision 2 in the [meeting-recording plan](meeting-recording-plan.md); details i
 - **Names are not biometric.** Linking a speaker to a person creates or reuses that
   person whatever the settings, so names carry across meetings; each meeting also keeps
   the name it was given as its own edit.
-- **Voiceprints are opt-in and come only from confirmed labels.** With "Remember
-  voices" on (off by default), naming a speaker with voice learning on stores one
-  sample per person and meeting: the mean embedding of that speaker's clear turns,
-  extracted on demand. Post-processing never stores voice embeddings; nothing is
-  inferred from unconfirmed speakers or automatic matches.
+- **Voiceprints come only from confirmed labels.** "Remember voices" is on for new
+  installs (user decision, 2026-10-06: naming people is the point of labelling them);
+  an existing setting is kept, so a store saved off stays off. With it on, naming a speaker with voice learning on
+  (the review window's box follows the setting) stores one sample per person and
+  meeting: the mean embedding of that speaker's clear turns, extracted on demand.
+  Post-processing never stores voice embeddings; nothing is inferred from unconfirmed
+  speakers or automatic matches.
 - **Recognition only suggests** ("Maybe Jim — Confirm") until thresholds are calibrated
   on the user's own confirmed meetings; suggestions never appear in exports.
 - **Storage and control.** Samples live only in Application Support/Holos/Speakers

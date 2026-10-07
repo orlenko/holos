@@ -3,12 +3,13 @@ import AppKit
 /// The words of Settings › Meetings' screen row and the start panel's "Capture screen" (docs/meeting-design.md §4.15).
 enum MeetingScreenText {
     static let settingTitle = "Capture the screen during meetings (slides, shared screens) to improve transcripts"
-    static let settingCaption = "Everything stays on this Mac. The main display is saved when it changes, its text "
-        + "is read on this Mac after the recording, and images and text are deleted with the meeting audio. "
+    static let settingCaption = "Everything stays on this Mac. Every connected display is saved "
+        + "when it changes, its text is read on this Mac after the recording, and images and text are deleted with "
+        + "the meeting audio. "
         + "Voice is Local's own windows are left out; notifications are not. Needs Screen & System Audio Recording."
     static let choiceTitle = "Capture screen"
-    static let choiceNote = "The main display, without Voice is Local's own windows. Read on this Mac after the "
-        + "recording; deleted with the audio."
+    static let choiceNote = "Every connected display, without Voice is Local's own windows. Read on this Mac "
+        + "after the recording; deleted with the audio."
     static let choiceNeedsPermission = "Needs Screen & System Audio Recording permission (Settings › Permissions)."
 }
 
@@ -28,7 +29,7 @@ enum MeetingScreenText {
         note.font = .systemFont(ofSize: 11); note.textColor = .secondaryLabelColor
         note.preferredMaxLayoutWidth = 320
         toggle.target = self; toggle.action = #selector(changed)
-        toggle.toolTip = "Saves the main display when it changes, so text on slides and shared screens can help the "
+        toggle.toolTip = "Saves each display when it changes, so text on slides and shared screens can help the "
             + "transcript. Settings › Meetings sets whether new meetings start with it on."
         addArrangedSubview(toggle); addArrangedSubview(note)
     }

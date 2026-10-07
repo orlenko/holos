@@ -48,16 +48,21 @@ public struct PostProcessingOptions: Sendable, Equatable {
     /// live corrections, word fixes, and speakers. `force` with it transcribes again a transcript the model already
     /// made and replaces one whose speaker labels were edited. `keepTranscript` skips the stage.
     public var deepTranscribe: Bool
+    /// With `deepTranscribe`: transcribe a meeting in one language other than English too
+    /// (`voiceislocal session deep-transcribe --any-language`, for trying it; the app never sets it). Unlike `force`,
+    /// which only makes it transcribe again.
+    public var deepAnyLanguage: Bool
 
     public init(speakers: SpeakerCountHint? = nil, force: Bool = false, keepDerived: Bool = false,
                 othersInRoom: Bool? = nil, engineOverrides: [String: String] = [:], forceVoiceData: Bool = false,
                 stopReason: StopReason? = nil, languages: [String]? = nil, keepTranscript: Bool = false,
-                reconcileLiveHints: Bool = false, fixWords: Bool = false, deepTranscribe: Bool = false) {
+                reconcileLiveHints: Bool = false, fixWords: Bool = false, deepTranscribe: Bool = false,
+                deepAnyLanguage: Bool = false) {
         self.speakers = speakers; self.force = force; self.keepDerived = keepDerived
         self.othersInRoom = othersInRoom; self.engineOverrides = engineOverrides
         self.forceVoiceData = forceVoiceData; self.stopReason = stopReason; self.languages = languages
         self.keepTranscript = keepTranscript; self.reconcileLiveHints = reconcileLiveHints
-        self.fixWords = fixWords; self.deepTranscribe = deepTranscribe
+        self.fixWords = fixWords; self.deepTranscribe = deepTranscribe; self.deepAnyLanguage = deepAnyLanguage
     }
 }
 
@@ -295,7 +300,8 @@ public struct MeetingPostProcessor: Sendable {
             ? DeepTranscriptionStage.Outcome(transcript: merged)
             : try await DeepTranscriptionStage.run(
                 DeepTranscriptionStage.Request(session: session, manifest: manifest, transcript: merged, lease: lease,
-                                               requested: true, force: options.force, freeSpace: freeSpace),
+                                               requested: true, force: options.force,
+                                               anyLanguage: options.deepAnyLanguage, freeSpace: freeSpace),
                 dependencies: deepTranscription, recorder: recorder)
         guard let recognized = deep.transcript else {
             let message = deep.problem ?? "This meeting has no transcript, so there is nothing to label."
@@ -623,7 +629,7 @@ public struct MeetingPostProcessor: Sendable {
                         recorder: StageRecorder) throws -> Result<[RenderedTrack], StageFailure> {
         let first = tracks.first ?? "mic"
         let started = recorder.begin(.render, track: first,
-                                     message: "Preparing \(SpeakerAnalysis.trackLabel(first)) audio…")
+                                     message: SpeakerAnalysis.preparingMessage(first))
         let seconds = tracks.reduce(0) { $0 + TrackRenderer.renderedSeconds(manifest: manifest, track: $1) }
         var allowed = options.stopReason != .diskLow
         if allowed {
@@ -642,7 +648,7 @@ public struct MeetingPostProcessor: Sendable {
         var rendered: [RenderedTrack] = []
         do {
             for track in tracks {
-                let message = "Preparing \(SpeakerAnalysis.trackLabel(track)) audio…"
+                let message = SpeakerAnalysis.preparingMessage(track)
                 recorder.progress(.render, track: track, fraction: 0, message: message)
                 let journal = recorder.journal
                 rendered.append(try TrackRenderer.render(

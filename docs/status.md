@@ -7,16 +7,21 @@ Hardware-facing and cross-app acceptance remain pending.
 
 Opt-in meeting screen context is implemented: one Settings checkbox (off for new
 installs, on for users of the earlier window offer) and a per-meeting "Capture screen"
-box; the whole main display without Voice is Local's own windows (no window picker,
-no other displays); low-rate JPEGs of changes that hold still, at most 2560 pixels;
+box; every display connected when the capture starts (one stream each for the whole
+capture; the displays are chosen again whenever the capture restarts, after a pause,
+sleep or an audio device change, or at the next meeting; shared caps that
+stop the busiest display first; `--screen main` for the main display alone) without Voice is Local's own windows (no window picker);
+low-rate JPEGs of changes that hold still, at most 2560 pixels;
 post-stop on-device Vision OCR, read-only timed text and vocabulary candidates in
 Review, and bounded OCR context for existing word-list questions. Screen evidence is
 removed with audio; no new live LLM step is added. `record start --screen display`
 is the CLI form. Synthetic frame (including 5K)/lifecycle/storage/OCR tests, a 5K CPU
 probe, and offscreen light/dark previews of the Settings row and the start panel row
-cover the implementation. Real ScreenCaptureKit permission, own-window exclusion,
-pause/restart, and end-to-end UI acceptance checks remain pending. "All displays", the
-thumbnail timeline, and a larger local-model benchmark are follow-ups.
+cover the implementation, with fake displays for stream failures and stop races and a
+synthetic two-display pipeline benchmark. Real ScreenCaptureKit permission, own-window
+exclusion, real multi-display capture, pause/restart, and end-to-end UI acceptance checks
+remain pending. Display hot-plug (branch `meetings/screen-hotplug-wip`), the thumbnail
+timeline and a larger local-model benchmark are follow-ups.
 
 ## Available now
 
@@ -162,8 +167,9 @@ thumbnail timeline, and a larger local-model benchmark are follow-ups.
 - People and voices (wave 4): `speakers link <session> <speaker> <person|new:NAME>` (and
   `speakers me`) links a speaker to a person and names it, so names carry across
   meetings with or without voiceprints; `speakers reject` says a speaker is not a person
-  in that meeting. "Remember voices" is off by default (`people remember on|off|status
-  [--forget]`, or the People window): with it on, `link --learn-voice` learns one voice
+  in that meeting. "Remember voices" is on for new installs since 2026-10-06; an
+  existing setting is kept (`people remember on|off|status [--forget]`, or the People
+  window): with it on, `link --learn-voice` learns one voice
   sample per person and meeting from the confirmed speaker's clear turns only (2 s or
   longer, not overlapped, not reassigned, split, or excluded; an outlier pass drops
   turns far from the rest), extracted on demand by a fresh FluidAudio pass (the app runs
@@ -207,10 +213,16 @@ thumbnail timeline, and a larger local-model benchmark are follow-ups.
   turns shown from about 600 to about 100 per meeting, hiding under 2.5 % of the user's own
   words; it takes about 2 s per hour of audio (about 5 s with preparing both tracks). A
   meeting whose analysis is missing (labelled before this version, or a pass that failed) gets
-  it from the next relabel or Recover, or at once with
+  it in the background from the app, newest first, one meeting at a time between the other
+  background jobs ("Removing echo…" in Meetings; a failure is tried again at the next launch;
+  a run going when a meeting starts is stopped and runs again after it; the command holds the
+  background job lock, so a run left going over an app relaunch holds the others back),
+  or from the next relabel or Recover, or at once with
   `voiceislocal session echo-analyze <id>`; nothing stored besides `echo/` and the transcript
-  files changes. Muting the echo in review playback and joining fragments into paragraphs are
-  not done yet. Nothing warns when a call plays on the laptop speakers: the `echoRisk`
+  files changes. Review playback mutes the echo: with an echo verdict, the microphone plays
+  only where it has speech of its own (25 ms fades), and as recorded otherwise
+  (headphones, no analysis); the review shows a speaker's consecutive turns as paragraphs.
+  Nothing warns when a call plays on the laptop speakers: the `echoRisk`
   warning, its output-route check, and the start panel's orange line were removed with
   the one meeting mode (below); the menu ignores an `echoRisk` left in `status.json` by an
   older recorder.
@@ -292,7 +304,7 @@ thumbnail timeline, and a larger local-model benchmark are follow-ups.
   (and before Voice is Local quits); a hand-edited export is moved aside and the footer says so.
   Playback uses the saved chunks at their session times (off after Delete Audio). The
   footer box "Learn voices of people I name in this meeting" decides whether naming learns
-  a voice. Delete Meeting can also forget the voice samples learned from that meeting.
+  a voice; it starts checked while Remember voices is on (on for new installs). Delete Meeting can also forget the voice samples learned from that meeting.
 - `voices list` and `say` provide native voice discovery (with each voice's quality, and a
   hint to download Premium voices when none is installed), playback, and `.m4a`, `.wav`,
   or `.caf` export. Text comes from arguments or UTF-8 stdin. `--voice` takes a name as
@@ -486,7 +498,14 @@ thumbnail timeline, and a larger local-model benchmark are follow-ups.
   scrolls up ("Jump to Live"). After the stop it shows the saving progress, then offers
   Open Review or Open Transcript. The separate Live Transcript window is gone. Unit-tested
   (volatile to final, echo hiding, following, what opens) and rendered offscreen in light
-  and dark; not yet seen in a real meeting.
+  and dark. In the first real meeting (2026-10-06) it stayed blank although the recorder
+  journaled its words live: the hairline under the header had no height of its own and, in
+  a tall window, took all the height and left the transcript none (as in Settings before).
+  Fixed; `LiveMeetingViewTests` opens a recording's live transcript in the real main window
+  at five sizes, feeds it a journal shaped like that meeting's, and checks the words are read
+  and the transcript has the height. Every separator line in the app is now made by
+  `NSBox.hairline()` (1 pt high), and `HairlineTests` fails on a separator box made any
+  other way. Not yet seen again in a real meeting.
 - Reading section (docs/design.md "Reading section"): the main window's Reading (⌘5) makes
   the `voiceislocal read` file in the app. A New reading card takes an `https://` link or a
   document (typed, pasted with ⌘V, dropped anywhere on the section, or chosen; several files
@@ -727,8 +746,19 @@ Still requiring real-machine or user-data validation:
   not). `eval local` applies the same fixes to its candidate by default; `--no-word-fixes`
   keeps the recognizer's words for comparison. The model is asked one place at a time (at
   most 500 per run).
-- Deep transcription: meetings in several languages are not transcribed again yet; accuracy was
-  measured on one meeting; the app's queue, Settings row and menu have not been seen on screen.
+- Deep transcription: English meetings only. A meeting in another language keeps Apple's
+  transcript unless `voiceislocal session deep-transcribe --any-language`, and meetings in several
+  languages are not transcribed again. Measured on a real 3.7 h board meeting, about 80 %
+  French and 20 % English, against a reference transcript:
+  - the Apple French and English merge: 37.3 % WER, 86.5 % of turns in the right language;
+  - Apple French only: 46.4 %;
+  - Whisper forced to French: 49.1 %;
+  - Whisper choosing French or English passage by passage (a closed attempt): 48.8 %, 77 % of
+    turns in the right language (75 of 331 French turns written in English).
+  On the French turns kept in French, Whisper scored 39.0 % against Apple's 29.1 %. Synthetic
+  speech had predicted the opposite, so other languages wait for validation on real
+  recordings. English accuracy was measured on one meeting. The app's queue, Settings row and
+  menu have not been seen on screen.
 - Live transcript: selecting a finalized phrase while recording can correct its text or name
   its speaker. The app saves a timed hint, carries text into the final/replayed transcript,
   learns safe correction pairs, keeps a shared pair until the last confirming live edit is

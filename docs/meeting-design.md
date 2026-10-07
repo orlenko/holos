@@ -26,7 +26,7 @@ stops and reports it; it does not edit a file owned by another PR.
 | # | Decision | Where it shows up |
 |---|---|---|
 | 1 | FluidAudio 0.17.1, pinned, checksummed, credited | §4.8, PR7a, `THIRD_PARTY_NOTICES.md`, About panel (PR4) |
-| 2 | Remember voices: opt-in, only from confirmed labels, with forget and export | §4.10, PR10. Voice embeddings are stored only as profile samples of people the user confirmed with voice learning on, extracted on demand (§4.10); post-processing never persists them; names are not voiceprints and are always kept |
+| 2 | Remember voices: only from confirmed labels, with forget and export; on for new installs since 2026-10-06 ("if I label words with names, that's the whole point"); an existing setting is kept | §4.10, PR10. Voice embeddings are stored only as profile samples of people the user confirmed with voice learning on, extracted on demand (§4.10); post-processing never persists them; names are not voiceprints and are always kept |
 | 3 | Int16 audio now; AAC compaction later | PR2a (`AudioChunkWriter`); system audio is also recorded mono (§4.5) |
 | 4 | Recorder = bundled `holos` CLI child of the app; in-process fallback allowed | §4.1, §4.6, PR4 (`RecorderLauncher` with both implementations) |
 | 5 | Sleep < 15 min resumes, else finalize at the sleep point | §4.4, PR2b. Refinement to confirm: sleep that starts while *paused* keeps the meeting paused (§9 Q1) |
@@ -3366,7 +3366,8 @@ public struct SpeakerProfile: Codable, Sendable, Equatable, Identifiable {
 
 public struct SpeakerProfileDatabase: Codable, Sendable, Equatable {
     public var schemaVersion: Int                // 1
-    /// Off by default. Governs voice samples, per-session voice data, and recognition. Never names.
+    /// On in a new store; an existing store keeps its value. Governs voice samples, per-session voice data, and
+    /// recognition. Never names.
     public var rememberVoices: Bool
     /// Set by `holos people calibrate --apply`; `likely` exists only when this is set, and only for runs of
     /// `calibratedModel`.
@@ -3382,7 +3383,9 @@ public struct SpeakerProfileDatabase: Codable, Sendable, Equatable {
 - **Store.** `SpeakerProfileStore` (HolosStorage) at `HolosPaths.speakerProfiles`
   (`<support>/Speakers/`, 0700, excluded from Time Machine with
   `URLResourceValues.isExcludedFromBackup`; `profiles.json` 0600). `load()` returns an
-  empty database (`rememberVoices: false`) when the file is missing.
+  empty database (`rememberVoices: true`, the default for new installs since
+  2026-10-06) when the file is missing; an existing `profiles.json` keeps the value it
+  has, so a store saved off, by the user or under the earlier off default, stays off.
   `update(_ body: (inout SpeakerProfileDatabase) throws -> T)` takes `profiles.lock`
   (2 s), reads, mutates, validates (unique IDs, one sample per session per profile,
   one `isSelf`, finite sample values, and calibrated thresholds that are finite, in
@@ -4549,7 +4552,12 @@ panel. After trying it, the user (2026-10-03): the window-only design "does not 
 in practice. Full screen is the practical way - we are doing it to help with the
 dictation, not to steal data", and the per-meeting window list "is impractical. Full
 screen recording is the real deal". Nothing leaves the Mac: there is no online model.
-The capture is now of the whole main display; the window picker is gone.
+The capture is now of the whole display; the window picker is gone. It began with the
+main display only; the user often has the call or the slides on a second monitor, so every
+display connected when the capture starts is now captured (option A, "all displays",
+approved 2026-10-06). The first version of #101 also followed displays plugged in or
+out mid-meeting; review kept finding races in that state machine, so the owner split it
+off (branch `meetings/screen-hotplug-wip`): hot-plug is a possible follow-up.
 
 *Setting and start panel.* Settings › Meetings has one checkbox, "Capture the screen
 during meetings (slides, shared screens) to improve transcripts" (UserDefaults
@@ -4562,28 +4570,83 @@ once the setting is saved (`MeetingScreenPreference`). The start panel's Screen 
 one checkbox, "Capture screen", checked as Settings says, for this meeting only; the
 last meeting's choice is not remembered. Without the permission the box is unchecked
 and dimmed and says what is missing; Start is never blocked by it. The app passes
-`--screen display` to the recorder; `voiceislocal record start --screen display|off`
-(default off) is the CLI form. A saved `screenWindow` from PR #71 decodes as no capture.
+`--screen display` (every display) to the recorder; `voiceislocal record start --screen
+display|main|off` (default off) is the CLI form, where `main` is the main display alone (what
+`display` meant before all displays were captured). A saved `screenWindow` from PR #71
+decodes as no capture. The Settings caption says "every connected display", the start panel's
+note "every connected display": a display plugged in mid-meeting is captured once the
+capture restarts in that meeting, so the text does not promise it is left out.
 
-*What is captured.* One ScreenCaptureKit display filter on the main display
-(`CGMainDisplayID`, the one with the menu bar; the first listed display if the main one
-is missing), `excludingApplications` Voice is Local itself: `ca.orlenko.holos.app`,
+*What is captured.* One ScreenCaptureKit stream per display, each with a display filter
+`excludingApplications` Voice is Local itself: `ca.orlenko.holos.app`,
 `ca.orlenko.holos.cli`, the current process, and the current bundle identifier
-(`ScreenCapturePlan.excluded`), so the live transcript, Review, and the menu are never
-read back into the meeting's context. App exclusion covers windows opened later. Other
-displays are not captured: a filter covers one display, and several would need one
-stream and one retained-frame state per display writing one timeline, which is not
-cheap; "All displays" is a follow-up. If the app is not running (a CLI-only
+(`ScreenCapturePlan.excluded`, applied to every display's filter), so the live transcript,
+Review, and the menu are never read back into the meeting's context, whichever display
+they are on. App exclusion covers windows opened later. A display that mirrors another
+(`CGDisplayMirrorsDisplay`) is left out, since its snapshots would repeat. With
+`--screen main` there is one stream, on the display that is main when the capture starts
+(`CGMainDisplayID`, the one with the menu bar; the first listed display if the main one
+is missing); it does not follow a later change of main display within that capture, but a
+restart of the capture (pause, sleep, an audio device change) takes the display that is main then. If the app is not running (a CLI-only
 recording), there is nothing of it to exclude. Desktop notifications and everything
-else on the main display are captured. Permission must already be granted;
-capture failures are optional-evidence failures and never invalidate saved audio.
+else on the displays are captured. Permission must already be granted; capture failures
+are optional-evidence failures and never invalidate saved audio.
 
-One serial utility queue samples at most 0.5 fps, with no cursor or audio. The stream
-delivers the display's pixels scaled so neither side exceeds 2560
-(`ScreenContextStore.maximumImageDimension`; 5K → 2560×1440, about point resolution, so
-slide text stays legible to OCR). Each sample is copied through one software CIContext
-per capture. A 160×90 grayscale fingerprint (drawn with high interpolation quality)
-has 16×9 tiles. At least 6 pixels changing by 20/255 within a tile makes it changed.
+*Displays.* ScreenCaptureKit is asked once, when the capture starts, which displays
+there are (`SCShareableContent`, mirrors left out); each gets one stream for the whole
+capture. Every display has its own retained frame and pending change
+(`ScreenFrameReceiver`), so one display's video never settles or breaks another's
+slide; all of them write one timeline, kept in start order, in `screen/context.json`.
+Each keyframe records its display (`ScreenDisplay`): the `CGDirectDisplayID`, a number
+for the meeting, and whether it was the main display when its stream began. Displays
+are numbered by arrangement (left to right, then top to bottom;
+`ScreenDisplayNumbering`); a display the meeting's saved keyframes already name keeps
+its number when the recorder starts a new capture epoch (resuming after a pause or
+sleep, or after an audio device change), which asks again, and one new by then takes the
+next number. A display whose stream ends (unplugged or broken; the capture does not tell
+them apart) is not captured again in that epoch: its last keyframe's interval already
+ends at its last observed sample and a change that had not settled is dropped, so
+nothing claims it was seen afterwards. A display plugged in during the meeting is not
+captured until the next capture epoch (the displays are chosen again whenever the
+capture restarts: resuming after a pause or sleep, an audio device change) or the next
+meeting; the README and Settings text say so rather than promising it stays out. Following displays mid-epoch
+(polling `CGGetActiveDisplayList`, restarting streams) is a possible follow-up.
+
+The capture keeps four invariants (`MeetingScreenCapture`'s documentation): the set of
+streams is decided once, at the start, and afterwards streams only end (an error, a cap,
+`stop()`); every asynchronous step of a stream (its start beginning and returning, an
+error callback, a sample, its stop) is checked against the stream's identity (object or
+token) and phase, so an ended stream is never started or registered again and nothing it
+does reaches the receiver; the capture fails ("captureFailed", as with one display) when
+no stream could be started at all (the display query failed, no stream could be made,
+or every platform start failed) or when the last stream still starting or running ends,
+by an error or a cap (a cap can remove the last stream when another display failed while
+the capping keyframe was being saved), all decided in one place, keeping an outcome the
+receiver already recorded (the storage limit, a storage failure); and `stop()` is
+final. Each stream is one object
+(`ScreenDisplayStream`) holding its control, its output (ScreenCaptureKit holds a
+stream's output and delegate weakly, so the capture keeps it for as long as the stream
+may run), its token and its phase. Each stream starts in its own task, registered before
+its platform start returns, so one slow or hung start holds up no other display, and a
+meeting stopped (or a display capped or broken) during it stops that stream at once; a
+late start return is stopped again, and frames it still delivers are fenced. Stops are
+requested without waiting, all at once when the meeting stops, so one stalled platform
+stop never leaves another stream running.
+
+*Every display unplugged.* Unplugging displays is not told apart from a broken stream:
+when the last remaining stream ends with an error (the lid closed on a laptop with no
+external display, or every external display unplugged with the lid closed), the capture
+fails with "captureFailed" ("Screen capture unavailable; audio continues"), exactly as a
+single-display capture does when its stream ends. Audio goes on, and the next capture
+epoch (resuming after the sleep that usually follows) or the next meeting asks for the
+displays again. A single-display meeting behaves as before all displays were captured.
+
+One serial utility queue, shared by every display's stream, samples each display at
+most 0.5 fps, with no cursor or audio. Each stream delivers its display's pixels
+scaled so neither side exceeds 2560 (`ScreenContextStore.maximumImageDimension`; 5K →
+2560×1440, about point resolution, so slide text stays legible to OCR). Each sample is
+copied through one software CIContext per capture, shared by the displays. A 160×90
+grayscale fingerprint (drawn with high interpolation quality) has 16×9 tiles. At least 6 pixels changing by 20/255 within a tile makes it changed.
 A sample becomes a keyframe when at least 10% of the tiles (15) both differ from the
 last retained frame and are unchanged since the previous sample (`settledChange`): a
 new slide or a finished scroll settles one sample later (or at the next idle sample,
@@ -4605,11 +4668,37 @@ JPEG quality is 0.65; a frame above 1 MiB is encoded again at 0.5 and 0.35, then
 half the size, before the per-frame cap can end the capture (`ScreenFrameEncoding`).
 
 Private `screen/context.json` records UUID keyframes, observed session-time intervals,
-JPEG byte totals, and optional OCR lines with normalized bottom-left boxes and
-confidence. `screen/<UUID>.jpg` is owner-only. Caps are 1000 keyframes, 1 MiB per
-JPEG, and 256 MiB total JPEGs. Metadata is bounded on read. Atomic no-follow reads and
-safe tree deletion protect against planted links. Capture generations fence old
-callbacks before image creation; metadata changes use the existing speaker lock off
+their display, JPEG byte totals, and optional OCR lines with normalized bottom-left boxes
+and confidence. Each keyframe names its display (`display`: `id`, `number`, `isMain`)
+and its JPEG size (`bytes`), so each display's share of the caps is exact after a
+reconnect (kept in memory) or a recorder restart (rebuilt from the keyframes; one saved
+without a size counts as the meeting's average). A keyframe without a display, saved
+before all displays were captured, reads as the main display. A record whose keyframes
+carry either field is written with `schemaVersion` 2; this build reads 1 and 2, and a
+file without a readable version is refused as damaged. A build
+from before displays were named reads only 1 and refuses a version-2 file as written by
+a newer version, leaving it alone (its OCR and Review report the refusal; recording and
+transcripts are unaffected), rather than rewriting it without the fields it does not
+know, after which every snapshot would read as the main display's. A record without
+them (one saved before, even after this build recognized its text) stays at 1, so an
+older build can still read it. Each display's keyframes follow one another without
+overlapping; different displays' overlap in time, but every keyframe is listed in start
+order (new ones are inserted by start, and a record out of order is refused as damaged),
+which Review's list and the insertion rely on.
+`screen/<UUID>.jpg` is owner-only. Caps are 1000 keyframes, 1 MiB per JPEG, and 256 MiB
+total JPEGs, shared by all displays (`ScreenStoragePolicy`, pure): each display beyond
+the first (counting only displays whose stream has delivered a sample, so a stream still
+starting, or hung starting, reserves nothing) holds back a tenth of either cap (at most three tenths) for the others. Once
+the meeting has used the rest (90% with two displays; 80% then 90% with three), the
+busiest display stops: the one that saved the most keyframes (the most bytes when the
+byte cap is the nearer), so a call's video or a scrolled document stops before the
+quieter slides; on a tie the main display stays. The last display runs to the cap
+itself, which ends the capture and says so ("Screen capture stopped: storage limit"),
+as with one display. A display stopped for the caps is not started again in that
+capture; after a recorder restart it would be stopped again at its next keyframe.
+Metadata is bounded on read. Atomic no-follow reads and safe tree deletion protect
+against planted links. Capture generations (one for all displays) fence old callbacks
+before image creation; metadata changes use the existing speaker lock off
 the main actor. Delete Audio holds that same lock for the tombstone and removal of
 `screen/`, so abandoned callbacks cannot recreate deleted evidence.
 
@@ -4632,8 +4721,13 @@ characters. OCR is quoted as untrusted data, never instructions or spoken eviden
 Unknown OCR tokens are read-only user-review candidates, not automatic vocabulary
 or transcript edits. No Foundation Models or other LLM call is added during recording.
 Review's Screen Text sheet selects timestamped OCR and seeks without starting
-playback. An unreadable word list disables candidate filtering, not saved OCR display.
-A thumbnail timeline is an explicit follow-up.
+playback; when the meeting captured more than one display, each snapshot says which
+("0:12–0:40 · Display 2", "Main display"; "Display 2, main" once more than one display
+was main in some keyframe, as when the main display changed across a pause),
+and a single-display meeting shows nothing extra. OCR and the word-list questions work
+per keyframe, so they need nothing per display: OCR lines near a word come from
+whichever displays were observed then. An unreadable word list disables candidate
+filtering, not saved OCR display. A thumbnail timeline is an explicit follow-up.
 
 Default tests use invented pixels, fake OCR/model responses, and temporary archives;
 no permission, screen, microphone, private data, network, or installed speech models.
@@ -4655,14 +4749,27 @@ re-encoding (`denseFramesAreReencodedSmallerInsteadOfEndingTheCapture`), and a 5
 is stored at 2560×1440 within the caps (`fiveKFramesAreStoredWithinTheDimensionAndByteBounds`).
 At ~250 KiB per frame the 256 MiB total allows about a thousand keyframes, the frame
 cap; a meeting that reaches either stops screen capture and says so, and audio goes on.
+`screenTwoDisplayPipelineBenchmark` (same switch) feeds synthetic 2560×1440 frames
+through pixel buffers, the software CIContext copy, the per-display state, JPEG encoding
+and a temporary archive, without any stream. On Koza (M5, 16 GB), debug build, three
+runs: one busy display (a new slide every other sample) 20–21 ms process CPU per
+two-second round (about 1% of one core), +28 MiB peak footprint; a busy display beside
+a still one (idle samples) 22–24 ms, +28–29 MiB; two busy displays 43–47 ms (about 2.2%
+of one core), +42–43 MiB, at about 307 KiB per JPEG. Unverified: ScreenCaptureKit's and
+the window server's own work and buffer pools for each extra stream (outside this
+process's CPU and footprint), and real multi-display capture and what ScreenCaptureKit
+does when a display is unplugged, which no test runs.
 `scripts/preview-screen-choice.swift` renders the Settings row and the start panel's
 Screen row (checked, unchecked, no permission) offscreen in light and dark appearances
 without launching Holos. Manual checks still required: granted/denied permission, that
 Voice is Local's own windows (live transcript, Review, menu) are absent from saved
 snapshots, desktop notifications, a video call next to a shared slide, scrolling,
-pause/restart, audio-only survival of capture failure, deletion, a second display
-(not captured), and the full start, Settings, recording indicator, and Review UI in
-both appearances. These checks must not be run by agents against the user's running
+pause/restart, audio-only survival of capture failure, deletion, two displays (both
+captured, Voice is Local's windows absent from each, Screen Text labels), unplugging a
+display during a meeting (its stream ends, the other goes on) and plugging one in (not
+captured until the next epoch or meeting), mirroring, closing the lid on a laptop with
+an external display, `--screen main`, the shared caps on a long meeting, and the full start, Settings, recording indicator, and Review UI in both
+appearances. These checks must not be run by agents against the user's running
 app or real meeting content.
 
 ### 4.16 Deep transcription after meetings
@@ -4789,7 +4896,18 @@ skips it.
    one language for now, so the transcript was kept." (WhisperKit can detect a language per
    window but not limit detection to the meeting's languages, so v1 does not try.) A base this
    model made already: `succeeded`, "The meeting was already transcribed with Whisper
-   large-v3 turbo.", unless `force`. Edited speaker labels of the current transcript:
+   large-v3 turbo.", unless `force` (checked first: a deep transcript in another language,
+   made with `--any-language` or by an earlier version, is kept). A meeting in one language
+   other than English (the language of the transcript of step 1, else meeting.json's first,
+   else the recording's): `skipped`, "Deep transcription is tuned for English meetings; this
+   meeting keeps Apple's transcript.", unless `PostProcessingOptions.deepAnyLanguage`
+   (`session deep-transcribe --any-language`, to try it). `force` never lifts it, so the
+   app's Make Final Transcript Now (which passes `--force`) is checked again when it runs, and
+   the app never passes `--any-language`. On a real 3.7 h meeting in French and
+   English, Whisper's French was worse than Apple's (status.md), so other languages wait for
+   validation on real recordings; `DeepTranscriptionStage.languageProblem` holds both rules,
+   and the command, the app's queue and Make Final Transcript Now ask it
+   (`SessionDeepTranscribeCommand.languageProblem`). Edited speaker labels of the current transcript:
    `skipped` with "Speaker labels were edited, so the meeting was not transcribed again. …
    run voiceislocal session deep-transcribe with --force." (checked again under the
    publication's locks). Deleted audio, no audio, the model not installed, an unreadable
@@ -4923,8 +5041,10 @@ carried over.
 - *One pass at a time* (`DeepTranscriptionLock`). `session deep-transcribe` takes an exclusive
   `flock` on `<supportRoot>/deep-transcription.lock` for its whole life and writes `{pid,
   sessionID, force}` into it once it holds it; a second pass finds it held (it retries for 2 s,
-  since a probe holds it for an instant) and exits 1 with "Another final transcript is being
-  made…". The kernel lets go of the lock when the process ends, however it ends.
+  since a probe holds it for an instant) and exits 1 with "Another final transcript, meeting
+  summary or echo analysis is running…". The kernel lets go of the lock when the process ends,
+  however it ends. `session summarize` (§4.17, `kind` `summary`) and `session echo-analyze`
+  (§5.11, `kind` `echo`) hold the same lock.
 - *The app manages only its own pass.* A lock held by any other process (a pass started in
   Terminal, or one the app started before it was quit, since maintenance commands are
   detached) only means "busy": the app starts nothing while it is held, checks again every
@@ -4969,13 +5089,16 @@ carried over.
   (relabels speakers): it runs next, also on battery, with `--force`, so a transcript the model
   made before is made again and edited speaker labels are replaced (names carry over, edits of
   single turns do not), as asking for it by name means; refused with an alert without the model,
-  for a meeting that is not finished, or for one in several languages. A meeting queued
+  for a meeting that is not finished, or for one the pass does not transcribe (several
+  languages, or one other than English: Make Final Transcript Now passes `--force`, so the app
+  checks first, and the pass checks again when it runs). A meeting queued
   automatically offers it too (it upgrades the item, so it runs next whatever the power source).
   The request is reserved at once, before its languages are read off the main actor, and saved
   with the queue (`pending`; a quit meanwhile does not lose it: the languages are read again at
   the next launch): the meeting is not started meanwhile (a queued automatic item would run
   without `--force`), shows as queued, and is considered; a Cancel meanwhile ends the
-  reservation, and a refusal (several languages) leaves the meeting as it was.
+  reservation, and a refusal (its language) leaves the meeting as it was. The automatic queue
+  takes only meetings the pass transcribes (`transcribable`).
   While a meeting is queued or the app's own pass runs on it, Cancel Final Transcript (SIGTERM: the command cancels and says whether the new
   transcript was already published).
 - *Tests.* `DeepTranscriptionQueueTests` (order and run-now upgrade, saving and damaged data,
@@ -5026,7 +5149,7 @@ download and load check, resume after a failed load, removal, the prompt rows an
 speech (rendered by the system synthesizer to a file, never played) in a session end to end;
 `HOLOS_DEEP_MEASURE_SESSION=<copy of a session>` prints the level measurements above, `HOLOS_DEEP_COMPARE_SESSION=<copy that deep-transcribe ran on>` the word-time agreement and uncovered stretches, and `HOLOS_DEEP_PROBE_SESSION=<copy>` (with `HOLOS_DEEP_PROBE_PROMPT`) the coverage of ten minutes of one track.
 
-**Follow-ups.** Meetings in several languages. A notification when a final transcript
+**Follow-ups.** Languages other than English, once validated on real recordings; meetings in several languages. A notification when a final transcript
 is ready. Measuring the vocabulary terms the pass gets
 right against a cloud reference on more meetings (`eval local --backend whisper`, then `eval
 compare`), now that the prompt is checked chunk by chunk. Upstream reports for the three
@@ -5319,8 +5442,8 @@ name of any length, or of characters carrying any number of combining marks, lea
 every part room for the words. `session list --json` leaves summaries out (`SessionSummary`
 does not encode `generatedSummary`). For
 its whole life it holds the deep transcription lock (§4.16), with
-`kind` `summary` in what it writes there: one summary or final transcript runs at a time on this
-Mac, and one started before an app relaunch is seen as busy (the app never adopts or signals a
+`kind` `summary` in what it writes there: one summary, final transcript or echo analysis (§5.11) runs at a time
+on this Mac, and one started before an app relaunch is seen as busy (the app never adopts or signals a
 job it did not start; Review waits only for a deep pass). Another holder makes it exit 1 as
 `busy`. Ctrl-C or SIGTERM cancels it: before the save nothing is written (`cancelled`); the save
 (summary.json, then the exports) is never cut short. summary.json is written with
@@ -5357,7 +5480,9 @@ one running (it is made again afterwards). Work the user asked for goes before a
 queues: when a final transcript or a summary ends, or a command lets a meeting go, summaries are looked for
 first, and an automatic final
 transcript waits for that scan while a Summarize Again is pending; an automatic summary waits while a Make Final
-Transcript Now pass is ready to run or has its languages read (`Situation.askedForPassWaiting`); automatic work keeps its order. A Summarize
+Transcript Now pass is ready to run or has its languages read (`Situation.askedForPassWaiting`); automatic work keeps its order.
+The app's echo catch-up (§5.11, "Catching up in the app") goes after asked-for work and before automatic final
+transcripts and summaries. A Summarize
 Again request is dropped for a missing
 meeting only when no folder holds it, whatever the folder is named (`SessionCatalog.hasSession`: the sessions
 folder listed and every folder's manifest, a regular file of at most 1 MiB never followed, read for its `id`), not when the scan could not read it. After a meeting is saved, the scan waits until the final
@@ -6183,7 +6308,7 @@ public struct StopTimeouts: Sendable, Equatable {
 holos record start [--name N] [--source mic|system|mic+system] [--app BUNDLE] [--duration S]
                    [--record-only] [--no-postprocess] [--directory D] [--locale L] [--backend B]
                    [--session-id UUID] [--no-live-text] [--others-in-room] [--expected-speakers N]
-                   [--vocabulary-file FILE] [--screen display|off]
+                   [--vocabulary-file FILE] [--screen display|main|off]
 holos record status [--directory D] [--json]
 holos record stop <session-id> [--directory D] [--no-wait]
 holos record pause <session-id> [--directory D] [--no-wait]
@@ -7479,7 +7604,7 @@ public enum VoiceProfileService {
 **CLI.**
 
 ```
-holos people list [--json]                 # "Remember voices: off" header, then one line per person
+holos people list [--json]                 # "Remember voices: on" header, then one line per person
 holos people remember on|off|status [--forget]
 holos people rename <person> <name>
 holos people merge <person> <into-person>
@@ -7554,6 +7679,9 @@ setting.
 | `forgetAllRemovesVoiceFilesKeepsNames` | forgetAll | every `speakers/voice/` gone; profiles remain with 0 samples |
 | `forgetSessionRemovesItsSamples` | forget(sessionID:) | only that meeting's samples gone |
 | `rememberOffWithForget` | `setRemember(false, forgetExisting: true)` | samples and voice files gone; names remain |
+| `missingStoreLoadsEmptyWithRememberOn` | no `profiles.json` | on; the first write saves `rememberVoices: true` |
+| `existingStoreKeepsItsRememberSetting` | a store saved off, and one saved on | each keeps its value through reads and writes |
+| `learnVoicesFollowsTheRememberSetting` | review window on a fresh store, then on a store saved off | footer box starts on, then off |
 | `profileStoreIsPrivateLockedAndNotBackedUp` | two concurrent updates | both applied; 0600 / 0700; `isExcludedFromBackup` |
 | `peopleExportOmitsEmbeddingsByDefault` | export | no `embedding` keys |
 | `calibrationNeedsThreeMeetings` | 2 meetings with links | `--apply` refused |
@@ -8140,6 +8268,26 @@ the disk.
   inserted (`TrackPlacement`), so a chunk that is missing, unreadable, shorter than the
   manifest says, whose track or time range cannot be loaded, or that AVFoundation
   refuses leaves only its own time silent and never shortens the next chunk.
+- Echo-free playback (`SessionAudioComposition.makePlayback`, `ReviewEchoMute`,
+  `ReviewMicVolume`): when the call's current echo analysis found echo (§5.11,
+  `EchoMaskStore.current` with verdict `echo`), the player item gets an audio mix that plays
+  the microphone track at full volume in `AcousticEchoMask.localSpeechIntervals()` and at 0
+  elsewhere, with 25 ms linear ramps (a fade in ends where an interval starts, inside its
+  lead padding; a fade out starts where it ends; intervals closer than two ramps are
+  joined). The echo is muted only where the system track plays: a call whose system chunks
+  are all unplayable has no system track and plays the microphone as recorded, and where
+  the system track has no audio the microphone is kept at full volume (the mask matches
+  the manifest, not what could be played). The system track and any other track play as
+  recorded. No analysis, one out of
+  date, damaged, or written by a newer Voice is Local, and every other verdict (`noEcho`
+  for headphones, `noSystemAudio`, `tooLong`) play the microphone as recorded. When the
+  labels the window adopts come with another echo mask (`echoMaskIdentity`: a relabel in
+  the window, a reread, `session echo-analyze`), and when the labels are reread after the
+  window was elsewhere, the volume is read again, and a changed one replaces the item's
+  mix in place, so playing goes on where it is; a read that a newer one or a rebuilt
+  playback overtook is dropped. Ramps are
+  added last first: AVFoundation keeps them sorted, and in time order 12,000 ramps took
+  13 s to add, last first 13 ms (debug build).
 
 **Reviews and maintenance** (`ReviewMaintenance`, one rule for every command on a meeting
 whose review is open or still opening):
@@ -8211,6 +8359,9 @@ whose review is open or still opening):
 | `TranscriptEditLearningTests` (HolosCoreTests) | heard/meant pairs | corrections learned with a neighbour; deletions, punctuation, and case changes skipped unless a proper noun; terms offered; often-heard-as |
 | `ReviewWordEditTests` | fixture sessions | edit, learn, speaker edits before and after, undo in order and exactly; edit and deletion inside a paragraph; refusals across turns, segments, hidden words; word fixes made again keep an edit |
 | `TurnListWordEditTests` (HolosAppTests) | the list laid out offscreen | word clicks play or edit by mode; Return, ⌥Return, Esc, Tab, ⇧Tab; selection kept in one turn; only Esc drops what was typed (mode off, a search filtering the row away, words gone, read-only: queued as an edit); VoiceOver "Edit"; Revert offered per segment (`revertRefusal`); the field follows its words |
+| `ReviewEchoMuteTests` | local-speech intervals (edges, joins, from 0, past the end, none) | the volume schedule; a mix on the microphone track only, read back as scheduled |
+| `playbackKeepsTheMicrophoneOnlyWhereItHasLocalSpeechWhenThereIsEcho` | a call with an echo mask, then `noEcho`, then other audio | a mix on the microphone track only with an echo mask; none otherwise |
+| `ReviewPlayerTests` (HolosAppTests) | a playback with and without a volume; a changed volume | the item's mix follows it, replaced in place |
 
 **Manual.** H14 and H20 in §7.
 
@@ -8398,9 +8549,66 @@ genuinely local (the user, or people in the room) stays even while the call play
 - *Existing meetings.* `voiceislocal session echo-analyze <id|path> [--force] [--json]`
   (`SessionEchoAnalyzeCommand`) saves the analysis and rewrites the transcript files through
   the projection. Nothing else changes: speaker labels, edits, the transcript and its word
-  fixes stay as they are on disk.
-- *Playback (later).* `AcousticEchoMask.localSpeechIntervals()` gives the microphone's own
-  speech: local frames, gaps under 300 ms merged, padded 64 ms before and 200 ms after.
+  fixes stay as they are on disk. For its whole life it holds the background job lock (§4.16,
+  `kind` `echo`; `Request.jobLock`), so it runs alone with final transcripts and summaries, and a
+  run that outlived the app that started it is seen as busy after a relaunch; another holder
+  makes it exit 1 with the lock's busy message, nothing changed. Post-processing and Recover make
+  the analysis in-process without the lock, as before (a final transcript's own post-processing
+  runs under its pass's lock). Ctrl-C or SIGTERM cancels it (exit 143 for SIGTERM, "Stopped. Run
+  the command again to finish…"): before it starts, and before or while the voice samples are
+  recomputed (minutes on a long call); the analysis and the transcript rewrite, seconds, are not
+  cut short. What it leaves is read as done or owed: the mask is saved in one step under the
+  speaker lock, an interrupted export rewrite stays `pending` (`SessionExports.echoMaskIsCurrent`
+  false), and the samples are saved together or not at all (`samplesOutOfStep` true), so the
+  next run, or the app's next scan, finishes it.
+- *Catching up in the app.* Calls recorded before the analysis existed (or whose analysis
+  failed) get it without a command (`EchoCatchUpSchedule`, `HolosApp+EchoCatchUp.swift`; no
+  setting: about 5 s per hour of audio). At launch and after each meeting is saved the app
+  reads the sessions folder off the main actor and queues every finished meeting
+  (`DeepTranscriptionSchedule.isFinished`) the command has work on
+  (`EchoCatchUpSchedule.needsAnalysis`: the analysis is needed, `EchoAnalysisStage.needed`, or it
+  is saved but the transcript files were not rewritten for it, `SessionExports.echoMaskIsCurrent`
+  false, or a voice sample learned from the meeting was not brought in step with it,
+  `VoiceProfileService.samplesOutOfStep`, read only), newest first. Nothing about it is saved: a run a quit cut short leaves the analysis
+  missing, or the files out of step with it, so the next launch finds it again (run again, the
+  command keeps a saved analysis and finishes the files and the voice samples). One meeting at a time, the app runs `voiceislocal session
+  echo-analyze <path> --json` as a maintenance command (so the transcript files and the voice
+  samples learned from the meeting follow, exactly as the command does them), after reading
+  `needed` once more (a relabel, Recover or a run in Terminal may have made it since). It
+  shares the one-job-at-a-time rule of final transcripts and summaries (§4.16, §4.17): nothing
+  starts while a meeting starts, records or saves, while this app makes a final transcript or a
+  summary, or while any process holds the background job lock; while it runs neither of them
+  starts. The command holds that lock itself (`kind` `echo`), so a run the app started before it
+  was quit (maintenance commands are detached and keep running) holds the relaunched app's queue
+  back instead of running beside it, as does one started in Terminal; the Meetings list says
+  "The call's echo is being removed from this meeting." for its meeting
+  (`SessionCatalog.jobInProgress`), Rename waits for it, and it never counts as another final
+  transcript (`isDeepPass`). A run refused by the lock (taken a moment after the app looked) is
+  tried again later (`retryLater`), never a failure. Priority: a Make Final Transcript Now
+  that is ready (or has its languages read) and a Summarize Again the summary scan going on may
+  start go first; the echo analysis goes before automatic final transcripts and automatic
+  summaries, which wait while a queued meeting is ready for it and while a scan goes on (the
+  first of the launch, or one after a meeting was saved: the queue is not known yet); each scan's
+  end looks for them again. When a meeting starts (records or saves) while this app's run goes
+  on, the child is stopped by its spawn pid (SIGTERM) and stays queued (`RunEnd.stopped`, only
+  when the signal ended it: exit 143), neither failed nor delayed, so it runs again once the
+  meeting is saved and finishes what the stopped run left; a run another process started is left
+  alone. Meetings in use or under
+  Review (open, opening or saving) wait and are tried every 30 s. A run turned down because
+  another process held the meeting or the lock (or it records again) is tried again after 1, 2, 4… minutes,
+  at most 30; a meeting whose run ended (done, failed or partial) is not tried again until the
+  next launch, and a run that finds nothing to do leaves an earlier result in the list. The Meetings list shows
+  "Echo removal queued" on waiting meetings and "Removing echo…" (the meeting's use,
+  `MeetingController.beginUsing`) on the one running; a failure shows "Echo not removed" and the
+  selected meeting's status line says why in the command's words; exit 3 (saved, but the
+  transcript files or a voice sample not brought in step) says so in the status line. A run
+  holds the meeting as a maintenance command does (`ReviewMaintenance.Command.echoAnalysis`): a
+  Review opened while it runs opens read-only and, when it ends, rereads the labels, so the
+  window takes the new mask (`ReviewEchoMaskFollow`) and its microphone volume follows; one that
+  finished opening after the run ended rereads the meeting too (`maintenanceEnded`).
+- *Playback.* `AcousticEchoMask.localSpeechIntervals()` gives the microphone's own
+  speech: local frames, gaps under 300 ms merged, padded 64 ms before and 200 ms after. The
+  review window plays the microphone only there (§5.10, echo-free playback).
 
 Validation. Synthetic tests (`Tests/HolosSpeakersTests/AcousticEchoTests.swift`,
 `Tests/HolosMeetingTests/AcousticEchoMeetingTests.swift`): the delay to within 1 ms (also an

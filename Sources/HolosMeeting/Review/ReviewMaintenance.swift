@@ -8,7 +8,7 @@ import Foundation
 /// - When a command starts, a review still opening is waited for first. Delete Meeting then closes the review (its
 ///   changes saved) before the meeting moves; a review that finishes opening while the deletion runs is closed
 ///   before it is shown. Every other command that changes what the review reads (Recover, Label Speakers, Delete
-///   Audio, the automatic relabel) makes the review read-only with a banner: its queued changes are saved and the
+///   Audio, the automatic relabel, the app's echo catch-up) makes the review read-only with a banner: its queued changes are saved and the
 ///   transcript files written before the command starts, playback stops, and the audio composition is dropped.
 ///   `ReviewSession.pause` and the window do this; a review that finishes opening while the command runs opens
 ///   read-only.
@@ -19,6 +19,9 @@ import Foundation
 public enum ReviewMaintenance {
     public enum Command: Sendable, Equatable, CaseIterable {
         case recover, labelSpeakers, deleteAudio, deleteMeeting, automaticRelabel, cleanUp
+        /// The app's catch-up run of `voiceislocal session echo-analyze` (§5.11): it starts only on a meeting no review
+        /// holds, so it affects a review opened while it runs.
+        case echoAnalysis
     }
 
     public enum Response: Sendable, Equatable {
@@ -49,6 +52,7 @@ public enum ReviewMaintenance {
         case .recover: .readOnly(banner: "Voice is Local is recovering this meeting.")
         case .labelSpeakers, .automaticRelabel: .readOnly(banner: "Voice is Local is labelling this meeting's speakers.")
         case .deleteAudio: .readOnly(banner: "Voice is Local is deleting this meeting's audio.")
+        case .echoAnalysis: .readOnly(banner: "Voice is Local is removing the call's echo from this meeting.")
         }
     }
 
