@@ -33,7 +33,8 @@ enum ReviewLearning {
             }.flatMap { TranscriptWordEdit.isDamaged($0) ? nil : $0 }
             let baseWords = baseSegment.map(WordTiming.effectiveWords(of:))
             let bounds = baseWords.flatMap {
-                TranscriptWordEdit.baseBounds(fixes: segment.fixes ?? [], current: words, base: $0)
+                TranscriptWordEdit.baseBounds(fixes: segment.fixes ?? [], current: words, base: $0,
+                                              baseText: Array((baseSegment?.text ?? "").utf16))
             }
             /// What the recognizer wrote over `fix`, the same extent its shown text has (`shown`: punctuation the
             /// recognizer did not time included): from the unfixed segment for an automatic fix; else its `heard`

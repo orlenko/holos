@@ -593,12 +593,18 @@ public struct ReviewWord: Sendable, Equatable {
     public func words(of turn: ProjectedTurn) -> [ReviewWord] {
         if let cached = wordCache[turn.id], cached.spans == turn.spans { return cached.words }
         var words: [ReviewWord] = []
+        // Each segment's words, text and fixes are walked once (a segment can hold many thousands of words).
+        let turnSpans = projection.turns.map(\.spans)
         for span in turn.spans {
             guard let segment = segments[span.segmentID] else { continue }
             let effective = WordTiming.effectiveWords(of: segment)
             guard span.first >= 0, span.first < span.end, span.end <= effective.count else { continue }
+            let utf16 = Array(segment.text.utf16)
+            func shown(_ first: Int, _ end: Int) -> String? {
+                TranscriptWordEdit.shownText(first: first, end: end, words: effective, utf16: utf16)
+            }
             // A segment with a damaged mark shows none (no Revert is offered; its marks cannot be trusted), and its
-            // words are not edited (`wordEditRefusal` says why).
+            // words are not edited (`wordEditRefusal` says why). Marks never overlap otherwise.
             let damaged = TranscriptWordEdit.isDamaged(segment)
             // Automatic fixes, and edits made here that changed what the recognizer wrote (an edit back to it is not
             // marked as a change).
@@ -606,26 +612,33 @@ public struct ReviewWord: Sendable, Equatable {
                 if fix.kind == .correction || fix.kind == .term { return true }
                 guard fix.kind == .reviewEdit else { return false }
                 // As shown, with the punctuation the recognizer did not time ("Hello." edited to "Hello?" is a change).
-                let shown = TranscriptWordEdit.shownText(of: segment, first: fix.first, end: fix.end)
-                return shown.map { TranscriptWordEdit.cleaned(fix.heard) != TranscriptWordEdit.cleaned($0) } ?? true
+                return shown(fix.first, fix.end).map {
+                    TranscriptWordEdit.cleaned(fix.heard) != TranscriptWordEdit.cleaned($0)
+                } ?? true
             }
-            for index in span.first..<span.end {
-                let word = effective[index]
-                let fix = fixes.first { $0.first <= index && index < $0.end }
+            // Each word of the span's fix, and whether each fix can be reverted here, worked out once per fix.
+            var fixOf: [Int: Int] = [:]
+            var revertibleFix: [Bool] = []
+            for (number, fix) in fixes.enumerated() {
+                for index in max(fix.first, span.first)..<max(min(fix.end, span.end), max(fix.first, span.first)) {
+                    fixOf[index] = number
+                }
                 // Words edited together are reverted together, by one edit: only while this turn shows them all.
                 // Their Revert is refused too when overlapping turns hold only some of them (it could not be undone
                 // exactly), as any edit of them is.
-                let revertible = fix.map { fix in
-                    fix.kind != .reviewEdit || ((fix.first..<fix.end).allSatisfy { word in
-                        turn.spans.contains { $0.segmentID == span.segmentID && $0.first <= word && word < $0.end }
-                    } && TranscriptWordEdit.sameOwners(Self.takingInMarks([fix.first, fix.end - 1], of: segment),
-                                                       segmentID: span.segmentID,
-                                                       turns: projection.turns.map(\.spans)))
-                } ?? true
+                // (Marks never overlap here, so an edit of the fix's words takes in that fix alone.)
+                revertibleFix.append(fix.kind != .reviewEdit || ((fix.first..<fix.end).allSatisfy { word in
+                    turn.spans.contains { $0.segmentID == span.segmentID && $0.first <= word && word < $0.end }
+                } && TranscriptWordEdit.sameOwners(fix.first..<fix.end, segmentID: span.segmentID,
+                                                   turns: turnSpans)))
+            }
+            for index in span.first..<span.end {
+                let word = effective[index]
+                let number = fixOf[index]
                 words.append(ReviewWord(ref: WordRef(segmentID: span.segmentID, word: index), text: word.text,
-                                        start: word.start, fix: fix, revertible: revertible,
-                                        shown: TranscriptWordEdit.shownText(of: segment, first: index,
-                                                                            end: index + 1)))
+                                        start: word.start, fix: number.map { fixes[$0] },
+                                        revertible: number.map { revertibleFix[$0] } ?? true,
+                                        shown: shown(index, index + 1)))
             }
         }
         wordCache[turn.id] = (turn.spans, words)
@@ -1497,15 +1510,22 @@ public struct ReviewWord: Sendable, Equatable {
         if !sameLabels, let current = snapshot.run?.id, let asked = op.runID {
             sameLabels = keepsTurns(of: asked, in: current)
         }
+        // A word edit's undo needs its own transcript current (`undoWordEdit`): once another change replaced it (a
+        // revert saved while the undo waited), it can never be made, and put back it would block every undo before it.
+        let stillUndoable = { (edit: WordEditUndo?) in
+            edit.map { self.snapshot.transcript.id == self.currentStandIn(for: $0.edited) } ?? true
+        }
         switch target {
         case .saved(let entry):
-            guard sameLabels else { return }
+            guard sameLabels, stillUndoable(entry.wordEdit) else { return }
             let index = undoStack.firstIndex { $0.order > entry.order } ?? undoStack.endIndex
             undoStack.insert(entry, at: index)
         case .operation(let earlier):
             // The earlier change stays in effect on disk, so it is shown again and can be undone again.
             earlier.undone = false
-            guard !earlier.savedUnreloaded, earlier.savedUndoable, sameLabels else { return }
+            guard !earlier.savedUnreloaded, earlier.savedUndoable, sameLabels, stillUndoable(earlier.wordEdit) else {
+                return
+            }
             pushUndo(earlier.batches, wordEdit: earlier.wordEdit)
         }
         Self.log.info("Session \(self.sessionID, privacy: .public): an undo failed; the change can be undone again")

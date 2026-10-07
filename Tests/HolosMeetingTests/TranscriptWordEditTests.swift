@@ -636,6 +636,39 @@ private let editEchoMask: AcousticEchoMask = {
     }
 }
 
+@Test func wordCountsThatAddUpButPutAFixElsewhereAreDamaged() throws {
+    // Base "one two three four"; fixed "Alpha Beta": "one two" made "Alpha", "three four" made "Beta". The recorded
+    // counts 3 and 1 add up to the base's four words, but put "Alpha" over "one two three".
+    let base = editSegment(["one", "two", "three", "four"])
+    var fixed = editSegment(["Alpha", "Beta"])
+    let sound = [TranscriptWordFix(first: 0, end: 1, heard: "one two", kind: .correction, heardWords: 2),
+                 TranscriptWordFix(first: 1, end: 2, heard: "three four", kind: .correction, heardWords: 2)]
+    let wrong = [TranscriptWordFix(first: 0, end: 1, heard: "one two", kind: .correction, heardWords: 3),
+                 TranscriptWordFix(first: 1, end: 2, heard: "three four", kind: .correction, heardWords: 1)]
+    let current = WordTiming.effectiveWords(of: fixed)
+    let baseWords = WordTiming.effectiveWords(of: base)
+    let baseText = Array(base.text.utf16)
+    #expect(TranscriptWordEdit.baseBounds(fixes: sound, current: current, base: baseWords, baseText: baseText)
+        == [0, 2, 4])
+    #expect(TranscriptWordEdit.baseBounds(fixes: wrong, current: current, base: baseWords, baseText: baseText) == nil)
+    #expect(WordFixes.originalWordRanges(fixes: sound, currentWords: current, originalWords: baseWords,
+                                         originalText: baseText) == [0..<2, 2..<4])
+    #expect(WordFixes.originalWordRanges(fixes: wrong, currentWords: current, originalWords: baseWords,
+                                         originalText: baseText).isEmpty)
+    // Reverting "Alpha" with the wrong counts is refused, never restoring "one two three".
+    fixed.fixes = wrong
+    var fixedTranscript = editTranscript([fixed])
+    let baseTranscript = editTranscript([base])
+    fixedTranscript.fixedFrom = baseTranscript.id
+    #expect(throws: HolosError.self) {
+        try WordFixes.reverting(WordRef(segmentID: "S1", word: 0), in: fixedTranscript, to: baseTranscript)
+    }
+    fixed.fixes = sound
+    fixedTranscript.segments = [fixed]
+    let reverted = try WordFixes.reverting(WordRef(segmentID: "S1", word: 0), in: fixedTranscript, to: baseTranscript)
+    #expect(reverted.segments[0].text == "one two Beta")
+}
+
 @Test func aWordMoveIsReadOnlyAsItIsWritten() {
     #expect(SessionWordEdit.parseRange("3-5") == 3..<5 && SessionWordEdit.parseRange("0-0") == 0..<0)
     for damaged in ["-1-2", "1--2", "3-", "-5", "3-5-7", "+3-5", " 3-5", "3-5 ", "5-3", "3_5", "٣-٥", "",
@@ -672,9 +705,11 @@ private let editEchoMask: AcousticEchoMask = {
         // No overflow counting it against the base, nor building word origins from it.
         let base = editSegment(["ask", "cloud", "now"])
         #expect(TranscriptWordEdit.baseBounds(fixes: [damaged], current: WordTiming.effectiveWords(of: segment),
-                                              base: WordTiming.effectiveWords(of: base)) == nil)
+                                              base: WordTiming.effectiveWords(of: base),
+                                              baseText: Array(base.text.utf16)) == nil)
         #expect(WordFixes.originalWordRanges(fixes: [damaged], currentWords: WordTiming.effectiveWords(of: segment),
-                                             originalWords: WordTiming.effectiveWords(of: base)).isEmpty)
+                                             originalWords: WordTiming.effectiveWords(of: base),
+                                             originalText: Array(base.text.utf16)).isEmpty)
         #expect(throws: HolosError.self) {
             try TranscriptWordEdit.editing(editRequest(0, 1, "as"), in: editTranscript([segment]), base: nil)
         }

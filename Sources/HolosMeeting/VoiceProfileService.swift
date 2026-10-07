@@ -1075,7 +1075,9 @@ public enum VoiceProfileService {
                                             database: database)
             let digest = VoiceEnrollment.inputDigest(speakerIDs: speakerIDs, projection: projection)
             if let existing, existing.inputDigest == digest { continue }
-            let fromEarlierRun = existing.map { builtFromEarlierRun($0, headRunID: run.id) } ?? false
+            let fromEarlierRun = existing.map {
+                builtFromEarlierRun($0, headRunID: run.id, sameLabelling: earlierRuns.sameLabelling)
+            } ?? false
             let keepable = fromEarlierRun && existing.map { earlierSampleHolds($0, earlierRuns) } == true
             let turns = VoiceEnrollment.candidateTurns(for: speakerIDs, projection: projection)
             let canLearn = database.rememberVoices && !snapshot.audioDeleted && extractorAvailable && model != nil
@@ -1093,10 +1095,12 @@ public enum VoiceProfileService {
         return plans
     }
 
-    /// Whether `sample` was computed from a run other than the head (its generation names another run ID).
-    static func builtFromEarlierRun(_ sample: VoiceprintSample, headRunID: String) -> Bool {
+    /// Whether `sample` was computed from an earlier labelling: a run other than the head (its generation names another
+    /// run ID) that does not keep the head's labelling (`sameLabelling`: a word change only retargeted it).
+    static func builtFromEarlierRun(_ sample: VoiceprintSample, headRunID: String,
+                                    sameLabelling: Set<String> = []) -> Bool {
         guard let runID = sourceRunID(sample) else { return false }
-        return runID != headRunID
+        return runID != headRunID && !sameLabelling.contains(runID)
     }
 
     /// The run `sample` was computed from (its generation is "<runID>:<edits length>").
@@ -1110,20 +1114,39 @@ public enum VoiceProfileService {
     struct EarlierRunViews {
         var mask: AcousticEchoMask?
         var views: [String: SpeakerProjection?] = [:]
+        /// Runs other than the head that keep its labelling (`DiarizationRun.labelling`: a word change retargeted
+        /// them, same turns and edits): a sample from one is the head's own, recomputed or removed when its inputs
+        /// change, never kept as an earlier labelling's.
+        var sameLabelling: Set<String> = []
     }
 
-    /// `EarlierRunViews` for the samples of `database` from `snapshot`'s meeting. Only with a mask: without one
-    /// nothing can have turned into echo, and an earlier-run sample is kept as before.
+    /// `EarlierRunViews` for the samples of `database` from `snapshot`'s meeting: which runs keep the head's labelling,
+    /// and the views of the others. Views only with a mask: without one nothing can have turned into echo, and an
+    /// earlier-run sample is kept as before.
     static func earlierRunViews(_ database: SpeakerProfileDatabase, snapshot: SpeakerSessionSnapshot,
                                 headRunID: String) throws -> EarlierRunViews {
         var result = EarlierRunViews(mask: snapshot.projection?.acousticEcho)
-        guard result.mask != nil else { return result }
+        let headLabelling = snapshot.run.map { $0.labelling ?? $0.id } ?? headRunID
+        var seen: Set<String> = []
         for sample in database.profiles.flatMap(\.samples) where sample.sessionID == snapshot.manifest.id {
-            guard let runID = sourceRunID(sample), runID != headRunID, !result.views.keys.contains(runID) else {
+            guard let runID = sourceRunID(sample), runID != headRunID, seen.insert(runID).inserted else { continue }
+            let run: DiarizationRun
+            do {
+                run = try SessionSpeakerStore.readRun(id: runID, session: snapshot.session)
+            } catch {
+                // Unknown: an earlier labelling's, as before. With a mask, one that cannot be read (gone, damaged) is
+                // not kept; any other failure stops the learning, as before.
+                guard result.mask != nil else { continue }
+                guard SessionFiles.isDamage(error) else { throw error }
+                result.views[runID] = .some(nil)
                 continue
             }
+            if (run.labelling ?? run.id) == headLabelling {
+                result.sameLabelling.insert(runID)
+                continue
+            }
+            guard result.mask != nil else { continue }
             do {
-                let run = try SessionSpeakerStore.readRun(id: runID, session: snapshot.session)
                 let transcript = try SessionFiles.transcript(id: run.transcriptID, session: snapshot.session)
                 result.views[runID] = SpeakerProjection.make(run: run, transcript: transcript,
                                                              edits: snapshot.journal.edits, recognition: nil,

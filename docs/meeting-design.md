@@ -7776,7 +7776,13 @@ shown, Otter-style.
   the table (`WordEditField.hitTest`, outside `wordsFrame`), which extends the selection; a
   plain click there edits the field's text. A head made elsewhere that lands between an
   edit's save and its reread empties the undo stack and gives that edit no undo entry either
-  (`Operation.overtaken`). An automatic fix's Revert is offered (context menu, VoiceOver) only
+  (`Operation.overtaken`). An undo that fails can be asked again while the labels are still
+  this window's own (the same run, or one its word changes retargeted), and, for a word
+  edit's undo, while that edit's transcript is still current (once another change replaced
+  it the undo can never be made, and put back it would block every undo before it). A word
+  edit's new run records the labelling it keeps (`DiarizationRun.labelling`): voices learned
+  from the run before are that labelling's own, recomputed or removed when the speakers
+  change, never kept as an earlier labelling's. An automatic fix's Revert is offered (context menu, VoiceOver) only
   where its segment allows it (`ReviewSession.revertRefusal`: no damaged mark, no older fix
   that cannot be counted), and refused before it is queued otherwise. Space still plays and pauses outside the field; the
   timestamp buttons still play. Every word has a VoiceOver action "Edit “word”", which turns
@@ -7992,7 +7998,11 @@ shown, Otter-style.
     the text, never backwards), so no damaged offset or length can overflow or trap. A word
     move in the event log is read only as written ("3-5", two unsigned decimal numbers; never
     empty; at most a million replaced × replacement word pairs, far more than any edit of one
-    turn): a malformed one makes the event damaged, refused rather than read another way. The
+    turn; its replaced words all of the same turns, checked wherever a move is mapped): a
+    malformed one makes the event damaged, refused rather than read another way. An automatic
+    fix's words in the unfixed revision must hold what it matched (`heardFits`: its `heard`
+    starts in the first and ends in the last), so word counts that are wrong but add up never
+    put a fix over other words. The
     turns are the labels on the transcript as it is then: labels the window could not reread
     after an edit are read again at close; when that fails, or the labels read are still on
     another transcript (a speaker head owed, or the transcript changed under them), nothing

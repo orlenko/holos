@@ -48,6 +48,27 @@ extension TranscriptWordFix {
         }
         return count > 0 && count <= available ? count : nil
     }
+
+    /// Whether an automatic fix (`correction`, `term`) lies over unfixed words `range` as it took them: its `heard`
+    /// (the text it matched, as the recognizer wrote it) occurs in `text` starting in the first of them and ending in
+    /// the last, since a fix takes the whole words it touches and touches each. A recorded word count that is wrong
+    /// (damaged, even when the counts of a segment's fixes still add up) puts the range elsewhere and fails it.
+    func heardFits(words: [EffectiveWord], range: Range<Int>, text: [UInt16]) -> Bool {
+        let needle = Array(heard.utf16)
+        guard !needle.isEmpty, !range.isEmpty, range.lowerBound >= 0, range.upperBound <= words.count,
+              needle.count <= text.count,
+              let first = words[range.lowerBound].utf16Range(within: text.count),
+              let last = words[range.upperBound - 1].utf16Range(within: text.count) else { return false }
+        // Starts within the first word, ends within the last (never past the text: compared by subtraction).
+        let latestStart = min(first.upperBound - 1, text.count - needle.count)
+        guard first.lowerBound <= latestStart else { return false }
+        for start in first.lowerBound...latestStart {
+            let end = start + needle.count
+            guard end > last.lowerBound, end <= last.upperBound else { continue }
+            if text[start..<end].elementsEqual(needle) { return true }
+        }
+        return false
+    }
 }
 
 public enum WordFixes {
@@ -359,7 +380,8 @@ public enum WordFixes {
         let fix = fixes[target]
         guard TranscriptWordEdit.isSound(fix, wordCount: currentWords.count) else { return nil }
         let words = WordTiming.effectiveWords(of: segment)
-        let ranges = originalWordRanges(fixes: fixes, currentWords: currentWords, originalWords: words)
+        let ranges = originalWordRanges(fixes: fixes, currentWords: currentWords, originalWords: words,
+                                        originalText: Array(segment.text.utf16))
         guard ranges.indices.contains(target), let wordRange = ranges[target],
               let first = wordRange.first, let last = wordRange.last else { return nil }
         return characterRange(of: TranscriptWordFix(first: first, end: last + 1, heard: fix.heard, kind: fix.kind),
@@ -370,7 +392,7 @@ public enum WordFixes {
     /// covers; all words between marks are unchanged. That makes the correspondence stable even when an untimed
     /// segment redistributes its estimated times, and avoids guessing among repeated substrings.
     static func originalWordRanges(fixes: [TranscriptWordFix], currentWords: [EffectiveWord],
-                                   originalWords: [EffectiveWord]) -> [Range<Int>?] {
+                                   originalWords: [EffectiveWord], originalText: [UInt16]) -> [Range<Int>?] {
         let ordered = fixes.indices.sorted { (fixes[$0].first, fixes[$0].end) < (fixes[$1].first, fixes[$1].end) }
         var result = Array<Range<Int>?>(repeating: nil, count: fixes.count)
         var current = 0
@@ -394,6 +416,11 @@ public enum WordFixes {
                 ? fix.end - fix.first
                 : fix.heardWordCount(within: left)
             guard let count = counted, count > 0, count <= left else { return [] }
+            // An automatic fix's words must hold what it matched (`heardFits`), or its count is wrong.
+            if fix.kind == .correction || fix.kind == .term,
+               !fix.heardFits(words: originalWords, range: original..<(original + count), text: originalText) {
+                return []
+            }
             result[index] = original..<(original + count)
             current = fix.end
             original += count

@@ -35,8 +35,17 @@ enum SpeakerTranscriptRetarget {
         }
         let mapping = try move.map { try Mapping(from: snapshot.transcript, to: transcript, move: $0) }
             ?? Mapping(from: snapshot.transcript, to: transcript)
+        // Every word a move replaces belongs to the same turns (an edit is refused otherwise), so each replacement word
+        // takes exactly those turns. Checked here for every path that maps by a move, a recovery reading it from the
+        // event log included: a damaged one would give words to turns that never held them.
+        if let move, !TranscriptWordEdit.sameOwners(move.replaced, segmentID: move.segmentID,
+                                                    turns: projection.turns.map(\.spans)) {
+            throw TranscriptWordEdit.overlappingTurns
+        }
         var run = oldRun
         run.id = UUID().uuidString
+        // The same labelling, on other words: what was learned from the run before still holds (`labelling`).
+        run.labelling = oldRun.labelling ?? oldRun.id
         run.createdAt = now
         run.transcriptID = transcript.id
         run.turns = try oldRun.turns.map { turn in

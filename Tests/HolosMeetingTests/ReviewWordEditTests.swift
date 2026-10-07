@@ -803,6 +803,37 @@ func aWordEditEventWithADamagedMoveIsDamagedNeverReadAnotherWay() async throws {
 }
 
 @Test(.timeLimit(.minutes(1))) @MainActor
+func aVoiceLearnedBeforeAWordEditIsTheLabellingsOwnNeverAnEarlierOnes() async throws {
+    let temp = try TemporaryDirectory("review")
+    defer { temp.remove() }
+    let session = try await wordEditSession(in: temp, [
+        WordEditTurn(speaker: "system:S1", start: 0, words: ["ask", "cloud", "now"]),
+    ])
+    let labelled = try #require(try SessionSpeakerStore.readHead(session: session)?.runID)
+    let review = try await wordEditOpen(session)
+    // Two word edits: each retargets the head to a new run of the same labelling.
+    try await review.editWords(wordEditRefs(review, "T1", [1]), to: "Claude")
+    try await review.editWords(wordEditRefs(review, "T1", [2]), to: "today")
+    await review.close()
+    let snapshot = try SpeakerSessionSnapshot.load(session: session)
+    let head = try #require(snapshot.run)
+    #expect(head.id != labelled && head.labelling == labelled)
+    // A voice learned from the run before the edits is the head's labelling's: recomputed or removed when the
+    // speakers change, never kept as an earlier labelling's.
+    let sample = VoiceprintSample(sessionID: snapshot.manifest.id, sessionName: "x", speakerIDs: ["system:S1"],
+                                  speechSeconds: 30, embedding: FloatVector([1, 0]), condition: .room, weak: false,
+                                  generation: "\(labelled):0")
+    let database = SpeakerProfileDatabase(rememberVoices: true, profiles: [
+        SpeakerProfile(id: "P1", displayName: "Jim", samples: [sample]),
+    ])
+    let earlier = try VoiceProfileService.earlierRunViews(database, snapshot: snapshot, headRunID: head.id)
+    #expect(earlier.sameLabelling == [labelled])
+    #expect(!VoiceProfileService.builtFromEarlierRun(sample, headRunID: head.id,
+                                                     sameLabelling: earlier.sameLabelling))
+    #expect(VoiceProfileService.builtFromEarlierRun(sample, headRunID: head.id), "Without it, as a relabel.")
+}
+
+@Test(.timeLimit(.minutes(1))) @MainActor
 func aDamagedWordMoveFromTheJournalIsRefusedNeverCounted() async throws {
     let temp = try TemporaryDirectory("review")
     defer { temp.remove() }
@@ -827,6 +858,91 @@ func aDamagedWordMoveFromTheJournalIsRefusedNeverCounted() async throws {
     #expect(try SpeakerTranscriptRetarget.plan(session: session, from: snapshot, to: edited,
                                                move: ReviewWordMove(segmentID: segment, replaced: 1..<2,
                                                                     replacement: 1..<2)) != nil)
+}
+
+@Test(.timeLimit(.minutes(1))) @MainActor
+func aWordMoveAcrossTwoTurnsIsRefusedWhereverItIsRead() async throws {
+    let temp = try TemporaryDirectory("review")
+    defer { temp.remove() }
+    // One segment of four words, two turns of two words each.
+    let segment = SessionFixtures.segment(["one", "two", "three", "four"], track: "system", start: 0, wordSeconds: 1,
+                                          id: "S1")
+    let transcript = SessionFixtures.transcript([segment])
+    let session = try await SessionFixtures.makeSession(in: temp.url, source: .system, audioSeconds: ["system": 5],
+                                                        mode: .call, transcript: transcript)
+    let manifest = try SessionArchive.readManifest(at: session)
+    let speakers = ["system:S1", "system:S2"].enumerated().map {
+        SessionSpeaker(id: $1, ordinal: $0 + 1, provenance: .diarizer, clusterIDs: [$1])
+    }
+    func turn(_ id: String, _ speaker: String, _ words: Range<Int>) -> SpeakerTurn {
+        SpeakerTurn(id: id, track: "system", start: Double(words.lowerBound), end: Double(words.upperBound),
+                    speakerID: speaker, clusterID: speaker,
+                    spans: [WordSpan(segmentID: "S1", first: words.lowerBound, end: words.upperBound)],
+                    overlap: false, otherClusters: [], assignmentScore: 1, timing: .measured)
+    }
+    let run = DiarizationRun(sessionID: manifest.id, transcriptID: transcript.id, engine: .fake,
+                             alignment: AlignmentInfo(version: 1, parameters: .v1),
+                             tracks: [TrackDiarization(track: "system", policy: .diarized, clusters: speakers.map {
+                                 ClusterSummary(clusterID: $0.id, track: "system", speechSeconds: 2)
+                             })],
+                             speakers: speakers,
+                             turns: [turn("T1", "system:S1", 0..<2), turn("T2", "system:S2", 2..<4)])
+    try SessionArchive.withSpeakerLock(at: session) {
+        try SessionSpeakerStore.writeRun(run, session: session)
+        try SessionSpeakerStore.writeHead(SpeakerHead(runID: run.id), session: session)
+    }
+    let snapshot = try SpeakerSessionSnapshot.load(session: session)
+    var edited = snapshot.transcript
+    edited.id = UUID().uuidString
+    // A move over "two three" (one word of each turn), as a damaged event-log entry could hold: refused, so the
+    // recovered labels never give a word to a turn that did not hold it.
+    #expect(throws: HolosError.self) {
+        try SpeakerTranscriptRetarget.plan(session: session, from: snapshot, to: edited,
+                                           move: ReviewWordMove(segmentID: "S1", replaced: 1..<3, replacement: 1..<3))
+    }
+    #expect(try SpeakerTranscriptRetarget.plan(session: session, from: snapshot, to: edited,
+                                               move: ReviewWordMove(segmentID: "S1", replaced: 0..<2,
+                                                                    replacement: 0..<2)) != nil)
+}
+
+@Test(.timeLimit(.minutes(1))) @MainActor
+func aLongSegmentsWordsAreReadInOnePass() async throws {
+    let temp = try TemporaryDirectory("review")
+    defer { temp.remove() }
+    // 40,000 words in one segment and one turn, a hundredth of a second each: each word's shown text and fix are read
+    // without walking the whole segment again (which made a long segment take hours).
+    var text = ""
+    var timed: [TimedWord] = []
+    for index in 0..<40_000 {
+        if !text.isEmpty { text += " " }
+        let word = "w\(index)"
+        timed.append(TimedWord(text: word, start: Double(index) / 100, end: Double(index) / 100 + 0.009,
+                               utf16Offset: text.utf16.count, utf16Length: word.utf16.count))
+        text += word
+    }
+    let segment = TranscriptSegment(id: "S1", start: 0, end: 400, text: text, words: timed, track: "system")
+    let transcript = SessionFixtures.transcript([segment])
+    let session = try await SessionFixtures.makeSession(in: temp.url, source: .system, audioSeconds: ["system": 401],
+                                                        mode: .call, transcript: transcript)
+    let manifest = try SessionArchive.readManifest(at: session)
+    let speaker = SessionSpeaker(id: "system:S1", ordinal: 1, provenance: .diarizer, clusterIDs: ["system:S1"])
+    let run = DiarizationRun(
+        sessionID: manifest.id, transcriptID: transcript.id, engine: .fake,
+        alignment: AlignmentInfo(version: 1, parameters: .v1),
+        tracks: [TrackDiarization(track: "system", policy: .diarized,
+                                  clusters: [ClusterSummary(clusterID: speaker.id, track: "system", speechSeconds: 400)])],
+        speakers: [speaker],
+        turns: [SpeakerTurn(id: "T1", track: "system", start: 0, end: 400, speakerID: speaker.id, clusterID: speaker.id,
+                            spans: [WordSpan(segmentID: "S1", first: 0, end: 40_000)], overlap: false,
+                            otherClusters: [], assignmentScore: 1, timing: .measured)])
+    try SessionArchive.withSpeakerLock(at: session) {
+        try SessionSpeakerStore.writeRun(run, session: session)
+        try SessionSpeakerStore.writeHead(SpeakerHead(runID: run.id), session: session)
+    }
+    let review = try await wordEditOpen(session)
+    let words = review.words(of: "T1")
+    #expect(words.count == 40_000 && words.last?.shown == "w39999")
+    await review.close()
 }
 
 @Test(.timeLimit(.minutes(1))) @MainActor
@@ -953,6 +1069,39 @@ func anUndoThatFailsAfterTheEditItWaitedForCanBeAskedAgain() async throws {
     try saved.write(to: file)
     await #expect(throws: Never.self, "the second undo") { try await review.undo() }
     #expect(try wordEditCurrent(session).segments[0].text == "ask cloud now")
+    await review.close()
+}
+
+@Test(.timeLimit(.minutes(1))) @MainActor
+func anEditsUndoThatCanNoLongerBeMadeNeverBlocksTheUndosBeforeIt() async throws {
+    let temp = try TemporaryDirectory("review")
+    defer { temp.remove() }
+    // "ask more Claude now", "Claude" an automatic fix of "cloud". A rename, then "ask" edited to "Ask".
+    let session = try await wordEditFixedCloudSession(temp)
+    let review = try await wordEditOpen(session)
+    try await review.apply([.rename(speakerID: "system:S1", name: "Ann")])
+    try await review.editWords(wordEditRefs(review, "T1", [0]), to: "Ask")
+    // Reverting "Claude" while ⌘Z waits behind it: the revert makes another transcript current, so the edit's undo
+    // (which needs its own) fails.
+    let (stream, release) = AsyncStream<Void>.makeStream()
+    let entered = SharedValue(0)
+    review.beforeEdit = {
+        entered.update { $0 += 1 }
+        for await _ in stream {}
+    }
+    let revert = Task { try await review.revertWordFix(wordEditRefs(review, "T1", [2])[0]) }
+    #expect(await eventually { entered.value == 1 })
+    let undo = Task { try await review.undo() }
+    #expect(await eventually { review.queuedOperations == 2 })
+    review.beforeEdit = nil
+    release.finish()
+    try await revert.value
+    await #expect(throws: (any Error).self) { try await undo.value }
+    #expect(try wordEditCurrent(session).segments[0].text == "Ask more cloud now")
+    // Not put back: the next ⌘Z takes back the rename, as it would have without the failed undo.
+    #expect(review.canUndo)
+    try await review.undo()
+    #expect(review.speaker("system:S1")?.name != "Ann")
     await review.close()
 }
 

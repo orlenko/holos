@@ -190,7 +190,9 @@ public enum TranscriptWordEdit {
         // The unfixed revision is written too: one that cannot be trusted is never edited, nor read from.
         if let baseSegment, isDamaged(baseSegment) { throw damagedMarks }
         let baseWords = baseSegment.map(WordTiming.effectiveWords(of:))
-        let bounds = baseWords.flatMap { baseBounds(fixes: fixes, current: words, base: $0) }
+        let bounds = baseWords.flatMap {
+            baseBounds(fixes: fixes, current: words, base: $0, baseText: Array((baseSegment?.text ?? "").utf16))
+        }
         /// A fix's `heard` with its recognizer words (`heardWordCount`; a damaged count is refused, never added up).
         func recorded(_ fix: TranscriptWordFix) throws -> (text: String, words: Int) {
             guard let count = fix.heardWordCount() else { throw damagedMarks }
@@ -328,9 +330,14 @@ public enum TranscriptWordEdit {
 
     /// The text words `[first, end)` of `segment` show (`extent`): what an edit field over them starts with.
     public static func shownText(of segment: TranscriptSegment, first: Int, end: Int) -> String? {
-        let words = WordTiming.effectiveWords(of: segment)
+        shownText(first: first, end: end, words: WordTiming.effectiveWords(of: segment),
+                  utf16: Array(segment.text.utf16))
+    }
+
+    /// `shownText(of:first:end:)` with the segment's effective words and text already read, for a caller asking about
+    /// many words of one segment (each read of them walks the whole segment).
+    static func shownText(first: Int, end: Int, words: [EffectiveWord], utf16: [UInt16]) -> String? {
         guard first >= 0, first < end, end <= words.count else { return nil }
-        let utf16 = Array(segment.text.utf16)
         let range = extent(of: first..<end, words: words, utf16: utf16)
         guard !range.isEmpty else { return nil }
         return String(decoding: utf16[range], as: UTF16.self)
@@ -398,7 +405,7 @@ public enum TranscriptWordEdit {
             return false
         }
         return baseBounds(fixes: fixes, current: WordTiming.effectiveWords(of: segment),
-                          base: WordTiming.effectiveWords(of: base)) == nil
+                          base: WordTiming.effectiveWords(of: base), baseText: Array(base.text.utf16)) == nil
     }
 
     /// An edit refused because its words do not all belong to the same speaker turns (turns that overlap hold some of
@@ -438,7 +445,8 @@ public enum TranscriptWordEdit {
                                     newWords: [TimedWord]?, now: Date) throws -> Transcript {
         guard let index = base.segments.firstIndex(where: { $0.id == segment.id }),
               let bounds = baseBounds(fixes: segment.fixes ?? [], current: words,
-                                      base: WordTiming.effectiveWords(of: base.segments[index])) else {
+                                      base: WordTiming.effectiveWords(of: base.segments[index]),
+                                      baseText: Array(base.segments[index].text.utf16)) else {
             // An automatic fix saved by an earlier version, without the count of words it replaced, is counted by the
             // spaces in what was heard: wrong for text without spaces between its words ("你好世界").
             let older = (segment.fixes ?? []).contains {
@@ -475,8 +483,11 @@ public enum TranscriptWordEdit {
 
     /// For each word boundary `0...current.count` of a fixed segment, the boundary in its unfixed `base` segment; -1
     /// inside a mark. An automatic fix took `heardWordCount` base words; a Review revert, a live correction, and a
-    /// Review edit occupy their own words in the base too. Nil when the unmarked words do not match.
-    static func baseBounds(fixes: [TranscriptWordFix], current: [EffectiveWord], base: [EffectiveWord]) -> [Int]? {
+    /// Review edit occupy their own words in the base too. Nil when the unmarked words do not match, or an automatic
+    /// fix's words do not hold what it matched (`heardFits` in `baseText`, the unfixed segment's text: its recorded
+    /// count is wrong).
+    static func baseBounds(fixes: [TranscriptWordFix], current: [EffectiveWord], base: [EffectiveWord],
+                           baseText: [UInt16]) -> [Int]? {
         var bounds = Array(repeating: -1, count: current.count + 1)
         var word = 0
         var baseWord = 0
@@ -499,7 +510,10 @@ public enum TranscriptWordEdit {
             let count: Int
             switch fix.kind {
             case .correction, .term:
-                guard let heard = fix.heardWordCount(within: left) else { return nil }
+                guard let heard = fix.heardWordCount(within: left),
+                      fix.heardFits(words: base, range: baseWord..<(baseWord + heard), text: baseText) else {
+                    return nil
+                }
                 count = heard
             case .reviewRevert, .liveCorrection, .reviewEdit: count = fix.end - fix.first
             default: return nil

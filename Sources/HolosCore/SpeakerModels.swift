@@ -390,6 +390,11 @@ public struct DiarizationRun: Codable, Sendable, Equatable, Identifiable {
     public var speakers: [SessionSpeaker]
     public var turns: [SpeakerTurn]
     public var droppedWords: [DroppedWords]
+    /// The run this one keeps the labelling of: a change to the words (a word fix, a Review edit or its undo, a
+    /// revert) retargets the head to a new run with the same turns, speakers and edits. The first run of that
+    /// labelling; nil for a run that is a labelling of its own (diarized, labelled again). Left out of the file when
+    /// nil, so older runs read as before; an older Voice is Local ignores it.
+    public var labelling: String? = nil
 
     public init(schemaVersion: Int = 1, id: String = UUID().uuidString, sessionID: String,
                 createdAt: Date = Date(), transcriptID: String, engine: DiarizationEngineInfo?,
