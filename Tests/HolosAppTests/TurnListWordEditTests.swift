@@ -154,6 +154,25 @@ struct TurnListWordEditTests {
         #expect(list.wordEdit?.words.map(\.shown) == ["beta"] && list.editField.stringValue == "Beta")
     }
 
+    /// The words were changed elsewhere while the field was open (`wordsEpoch`): the same place may hold other words
+    /// reading the same, so the field closes saying what was typed, and nothing is saved.
+    @Test func aFieldOpenWhenWordsChangeElsewhereClosesSayingWhatWasTyped() {
+        let (list, saved) = editingList()
+        var messages: [String?] = []
+        list.onEditMessage = { messages.append($0) }
+        list.editingWords = true
+        list.table.handleWordClick(row: 0, word: 1, through: 1, extend: false)
+        list.editField.stringValue = "Beta"
+        list.wordsEpoch = 1
+        update(list, words: TurnListViewTests.words, moves: [])
+        #expect(list.wordEdit == nil && saved().isEmpty)
+        #expect(messages.last == TurnListView.changedElsewhere + " What you typed: “Beta”.")
+        // A field opened after is followed as usual.
+        list.table.handleWordClick(row: 0, word: 1, through: 1, extend: false)
+        update(list, words: TurnListViewTests.words, moves: [])
+        #expect(list.wordEdit?.words.map(\.text) == ["beta"])
+    }
+
     /// A save refused or failed after Return: the field opens again over the words with what was typed.
     @Test func aRefusedSaveOpensTheFieldAgainWithWhatWasTyped() throws {
         let (list, saved) = editingList()

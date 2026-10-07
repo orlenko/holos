@@ -7757,7 +7757,10 @@ shown, Otter-style.
   it; a Revert's word likewise follows every word change saved since the words it was asked
   on were read. The window's list follows only the word moves the words shown are after
   (`shownWordMoves`): a move saved but not reread yet is not shown, and an open field never
-  follows it onto the word that has its index now. Quitting starts every review
+  follows it onto the word that has its index now. Words changed elsewhere (a transcript this
+  window did not make: `wordsEpoch`) have no word moves at all, so a field open across such a
+  change closes saying what was typed (nothing saved), and a Split Turn sheet opened before
+  it is refused. Quitting starts every review
   window's close at once (`ReviewQuit.closeAll`), so each queues its open field's edit before
   any slow close (another window's voice sync) is waited for; when the closes cannot finish
   within the quit's limit, an edit not saved yet is logged with what was typed. A maintenance
@@ -8014,7 +8017,9 @@ shown, Otter-style.
     fix's words in the unfixed revision must hold what it matched (`heardFits`: its `heard`
     touches the first and the last, and no word around them, untimed punctuation it matched
     included: "hello." over the timed "hello"; found in one linear pass), so word counts that
-    are wrong but add up never put a fix over other words. Every walk over a segment's words
+    are wrong but add up never put a fix over other words; mapping speaker labels by those
+    counts (a word fix run, no word move) checks them the same way when the unfixed revision
+    can be read, and refuses them when they are wrong. Every walk over a segment's words
     (a turn's words, close-time learning) reads the segment once and looks words up by index,
     so a very long or crafted segment never takes more than linear time. The
     turns are the labels on the transcript as it is then: labels the window could not reread

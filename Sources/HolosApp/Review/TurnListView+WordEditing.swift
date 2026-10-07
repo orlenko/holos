@@ -19,6 +19,8 @@ struct WordEditTarget: Equatable {
     var movesSeen: Int
     /// Each word as shown (`TurnListView.shownText(of:)`), which it must still read as when it is followed.
     var wordTexts: [String] = []
+    /// `ReviewSession.wordsEpoch` when the field opened: words changed elsewhere since cannot be followed.
+    var wordsEpoch = 0
 }
 
 /// The field over the words being edited: the turn text's font, a bezel, and no wrapping.
@@ -79,6 +81,8 @@ extension TurnListView: NSTextFieldDelegate {
 
     static let selectionStopped = "A selection stays within one segment of one speaker turn for now, so it stops "
         + "there. Edit the rest on its own."
+    static let changedElsewhere = "The words were changed elsewhere while you edited them; nothing was saved. Click "
+        + "them again."
     static let editedAcrossTurns = "These words were edited together and are now in two speaker turns, so they can be "
         + "neither edited nor reverted here; the other words of each turn can."
 
@@ -161,7 +165,8 @@ extension TurnListView: NSTextFieldDelegate {
                 .trimmingCharacters(in: .whitespacesAndNewlines)
             ?? all[range].map(\.text).joined(separator: " ")
         wordEdit = WordEditTarget(paragraphID: paragraph.id, range: range, anchor: anchor, words: Array(all[range]),
-                                  shown: shown, movesSeen: wordMoves.count, wordTexts: all[range].map(shownText(of:)))
+                                  shown: shown, movesSeen: wordMoves.count, wordTexts: all[range].map(shownText(of:)),
+                                  wordsEpoch: wordsEpoch)
         editField.stringValue = shown
         if editField.superview !== table { table.addSubview(editField) }
         positionEditField(row: row, range: range)
@@ -256,6 +261,16 @@ extension TurnListView: NSTextFieldDelegate {
     /// (`keepWordEdit`), never lost.
     func followWordEdit() {
         guard let target = wordEdit else { return }
+        // The words were changed elsewhere since the field opened (no word move says where its words went): the same
+        // place may now hold other words reading the same. The field closes, saying what was typed; nothing is saved.
+        guard target.wordsEpoch == wordsEpoch else {
+            let typed = editField.stringValue
+            closeEditField()
+            let changed = TranscriptWordEdit.cleaned(typed) != TranscriptWordEdit.cleaned(target.shown)
+            onEditMessage?(changed ? Self.changedElsewhere + " What you typed: “\(TranscriptWordEdit.cleaned(typed))”."
+                                   : Self.changedElsewhere)
+            return
+        }
         guard editingWords, editable, canEditWords,
               let row = paragraphs.firstIndex(where: { $0.id == target.paragraphID }) else {
             keepWordEdit()

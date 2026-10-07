@@ -33,6 +33,12 @@ enum SpeakerTranscriptRetarget {
         guard snapshot.journal.isComplete else {
             throw HolosError.invalidInput("The speaker edits cannot all be read, so the labels cannot be kept.")
         }
+        // Mapped by the words each automatic fix replaced (`heardWords`): counts that are wrong but add up would move
+        // words between speakers, so they are checked against the unfixed revision first, when it can be read.
+        if move == nil {
+            try checkFixCounts(snapshot.transcript, session: session)
+            try checkFixCounts(transcript, session: session)
+        }
         let mapping = try move.map { try Mapping(from: snapshot.transcript, to: transcript, move: $0) }
             ?? Mapping(from: snapshot.transcript, to: transcript)
         // Every word a move replaces belongs to the same turns (an edit is refused otherwise), so each replacement word
@@ -260,6 +266,31 @@ enum SpeakerTranscriptRetarget {
         let overlap = max(0, min(old.end, new.end) - max(old.start, new.start))
         let distance = abs((old.start + old.end) / 2 - middle)
         return (overlap, -distance, -index)
+    }
+
+    /// Refuses (as damaged) a fixed `transcript` whose automatic fixes' recorded word counts do not lie over what they
+    /// matched in its unfixed revision (`WordFixes.originalWordRanges`, `heardFits`). Nothing is checked when the
+    /// revision cannot be read, or for a segment with an older fix (no recorded count: counted by its spaces, as before).
+    private static func checkFixCounts(_ transcript: Transcript, session: URL) throws {
+        let automatic = { (fix: TranscriptWordFix) in fix.kind == .correction || fix.kind == .term }
+        guard let baseID = transcript.fixedFrom,
+              transcript.segments.contains(where: { ($0.fixes ?? []).contains(where: automatic) }),
+              let base = try? SessionFiles.transcript(id: baseID, session: session),
+              !TranscriptWordEdit.hasRepeatedSegmentIDs(base) else { return }
+        let baseSegments = Dictionary(base.segments.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        for segment in transcript.segments {
+            let fixes = segment.fixes ?? []
+            guard fixes.contains(where: automatic),
+                  !fixes.contains(where: { automatic($0) && $0.heardWords == nil }),
+                  let baseSegment = baseSegments[segment.id] else { continue }
+            let ranges = WordFixes.originalWordRanges(fixes: fixes, currentWords: WordTiming.effectiveWords(of: segment),
+                                                      originalWords: WordTiming.effectiveWords(of: baseSegment),
+                                                      originalText: Array(baseSegment.text.utf16))
+            guard !ranges.isEmpty else {
+                throw HolosError.invalidInput("The transcript's word fixes do not match the transcript they were fixed "
+                                              + "from, so speaker labels cannot be kept.")
+            }
+        }
     }
 
     private struct Mapping {

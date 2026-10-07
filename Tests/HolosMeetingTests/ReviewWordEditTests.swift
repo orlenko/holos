@@ -1077,6 +1077,50 @@ func aWordMoveTooLargeForAnyEditIsRefusedNeverMapped() async throws {
 }
 
 @Test(.timeLimit(.minutes(1))) @MainActor
+func fixCountsThatAddUpButPutAFixElsewhereNeverMoveLabels() async throws {
+    let temp = try TemporaryDirectory("review")
+    defer { temp.remove() }
+    // The unfixed revision "one two three four"; the fixed one "Alpha Beta" ("one two" and "three four").
+    let session = try await wordEditSession(in: temp, [
+        WordEditTurn(speaker: "system:S1", start: 0, words: ["one", "two", "three", "four"]),
+    ])
+    let base = try wordEditCurrent(session)
+    let segmentID = base.segments[0].id
+    for (counts, damaged) in [((2, 2), false), ((3, 1), true)] {
+        var fixed = base
+        fixed.id = UUID().uuidString
+        fixed.fixedFrom = base.id
+        fixed.segments[0] = SessionFixtures.segment(["Alpha", "Beta"], track: "system", start: 0, wordSeconds: 2,
+                                                    id: segmentID)
+        fixed.segments[0].fixes = [
+            TranscriptWordFix(first: 0, end: 1, heard: "one two", kind: .correction, heardWords: counts.0),
+            TranscriptWordFix(first: 1, end: 2, heard: "three four", kind: .correction, heardWords: counts.1),
+        ]
+        try await SessionFixtures.saveTranscript(fixed, in: session)
+        var run = try SessionSpeakerStore.readRun(
+            id: try #require(try SessionSpeakerStore.readHead(session: session)?.runID), session: session)
+        run.id = UUID().uuidString
+        run.transcriptID = fixed.id
+        run.turns[0].spans = [WordSpan(segmentID: segmentID, first: 0, end: 2)]
+        try SessionArchive.withSpeakerLock(at: session) {
+            try SessionSpeakerStore.writeRun(run, session: session)
+            try SessionSpeakerStore.writeHead(SpeakerHead(runID: run.id), session: session)
+        }
+        let snapshot = try SpeakerSessionSnapshot.load(session: session)
+        var next = fixed
+        next.id = UUID().uuidString
+        // The word-fix stage maps the labels by those counts (no word move): refused when they are wrong.
+        if damaged {
+            #expect(throws: HolosError.self) {
+                try SpeakerTranscriptRetarget.plan(session: session, from: snapshot, to: next)
+            }
+        } else {
+            #expect(try SpeakerTranscriptRetarget.plan(session: session, from: snapshot, to: next) != nil)
+        }
+    }
+}
+
+@Test(.timeLimit(.minutes(1))) @MainActor
 func aWordMoveIsWhereTheEditsMarkIsNeverOnRepeatedTextElsewhere() async throws {
     let temp = try TemporaryDirectory("review")
     defer { temp.remove() }
@@ -1123,6 +1167,45 @@ func aWordMoveIsWhereTheEditsMarkIsNeverOnRepeatedTextElsewhere() async throws {
     let spans = Dictionary(uniqueKeysWithValues: plan.run.turns.map { ($0.id, $0.spans) })
     #expect(spans["T1"] == [WordSpan(segmentID: "S1", first: 0, end: 2)])
     #expect(spans["T2"] == [WordSpan(segmentID: "S1", first: 2, end: 3)])
+}
+
+@Test(.timeLimit(.minutes(1))) @MainActor
+func wordsChangedElsewhereAreCountedAndNeverFollowed() async throws {
+    let temp = try TemporaryDirectory("review")
+    defer { temp.remove() }
+    let session = try await wordEditSession(in: temp, [
+        WordEditTurn(speaker: "system:S1", start: 0, words: ["one", "go", "go"]),
+    ])
+    let review = try await wordEditOpen(session)
+    // The window's own edit: no count (its word move says where words went).
+    try await review.editWords(wordEditRefs(review, "T1", [0]), to: "One")
+    #expect(review.wordsEpoch == 0)
+    let epoch = review.wordsEpoch
+    let shown = review.words(of: "T1")
+    // Another process turns "One" into "One more" and labels again; the window reads it: counted.
+    var changed = try wordEditCurrent(session)
+    changed.id = UUID().uuidString
+    changed.segments[0] = SessionFixtures.segment(["One", "more", "go", "go"], track: "system", start: 0,
+                                                  wordSeconds: 1, id: changed.segments[0].id)
+    try await SessionFixtures.saveTranscript(changed, in: session)
+    var run = try SessionSpeakerStore.readRun(id: try #require(try SessionSpeakerStore.readHead(session: session)?.runID),
+                                              session: session)
+    run.id = UUID().uuidString
+    run.transcriptID = changed.id
+    run.turns[0].spans = [WordSpan(segmentID: changed.segments[0].id, first: 0, end: 4)]
+    try SessionArchive.withSpeakerLock(at: session) {
+        try SessionSpeakerStore.writeRun(run, session: session)
+        try SessionSpeakerStore.writeHead(SpeakerHead(runID: run.id), session: session)
+    }
+    await review.reload()
+    #expect(review.wordsEpoch == epoch + 1)
+    // A split chosen before (at the second "go", word 2 then) is refused, never made at what is word 2 now.
+    await #expect(throws: HolosError.self) {
+        try await review.split(turnID: "T1", at: shown[2].ref, seenMoves: review.shownWordMoves.count,
+                               seenEpoch: epoch)
+    }
+    #expect(review.projection.turns.count == 1)
+    await review.close()
 }
 
 @Test(.timeLimit(.minutes(1))) @MainActor
@@ -1548,6 +1631,18 @@ func aSegmentWithOverlappingMarksIsRefusedBeforeAnyFieldOpens() async throws {
         try TranscriptWordEdit.editing(TranscriptWordEdit.Request(segmentID: "S1", first: 0, end: 1, text: "hi"),
                                        in: transcript, base: nil)
     }
+    // An unfixed revision with "S1" twice gives no context: which one the recognizer's words are in cannot be told.
+    var current = SessionFixtures.segment(["ask", "Claude"], track: "system", start: 0, wordSeconds: 1, id: "S1")
+    current.fixes = [TranscriptWordFix(first: 0, end: 1, heard: "as", kind: .reviewEdit, heardWords: 1),
+                     TranscriptWordFix(first: 1, end: 2, heard: "cloud", kind: .correction, heardWords: 1)]
+    var fixed = SessionFixtures.transcript([current])
+    let base = SessionFixtures.transcript([
+        SessionFixtures.segment(["ask", "cloud!"], track: "system", start: 0, wordSeconds: 1, id: "S1"),
+        SessionFixtures.segment(["ask", "cloud."], track: "system", start: 5, wordSeconds: 1, id: "S1"),
+    ])
+    fixed.fixedFrom = base.id
+    let edits = ReviewLearning.edits(in: fixed, turns: [[WordSpan(segmentID: "S1", first: 0, end: 2)]], base: base)
+    #expect(edits.allSatisfy { $0.heardAfter != "cloud!" && $0.heardAfter != "cloud." })
 }
 
 @Test(.timeLimit(.minutes(1))) func manyEditsSideBySideAreLearnedInOnePass() {

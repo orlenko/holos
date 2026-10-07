@@ -247,6 +247,13 @@ public struct ReviewWord: Sendable, Equatable {
     /// words are not shown yet); followed by the field, it would put the field on the word that has its index now.
     public var shownWordMoves: [ReviewWordMove] { Array(wordMoves.prefix(movesRead)) }
 
+    /// How many transcripts this window has read that it did not make (another process changed the words: a word fix
+    /// run, a recovery). Their changes have no word moves, so words chosen before one cannot be followed onto the
+    /// words as they are now: an edit field opened before it is not put back on its words (`TurnListView`).
+    public private(set) var wordsEpoch = 0
+    /// The transcripts this window's own word changes made current (edits, their undos, reverts).
+    private var ownTranscripts: Set<String> = []
+
     /// Applied optimistic edit IDs → the queued change that made them, for counting changes.
     private var optimisticOwner: [String: ObjectIdentifier] = [:]
     private var exportTimer: Task<Void, Never>?
@@ -862,7 +869,13 @@ public struct ReviewWord: Sendable, Equatable {
     ///
     /// `seenMoves`: how many of `wordMoves` `word` follows (the Split Turn sheet's, as it opened): a word edit saved
     /// since moves it there first, as an edit field's words; one that replaced it refuses the split.
-    public func split(turnID: String, at word: WordRef, seenMoves: Int? = nil) async throws {
+    ///
+    /// `seenEpoch`: `wordsEpoch` when the sheet opened: words changed elsewhere since cannot be followed, and refuse it.
+    public func split(turnID: String, at word: WordRef, seenMoves: Int? = nil, seenEpoch: Int? = nil) async throws {
+        if let seenEpoch, seenEpoch != wordsEpoch {
+            throw HolosError.invalidInput("The words were changed elsewhere while the split was being chosen; choose "
+                                          + "where to split again.")
+        }
         var word = word
         let seen = seenMoves ?? movesRead
         if seen != movesRead {
@@ -1820,6 +1833,7 @@ public struct ReviewWord: Sendable, Equatable {
             committed: { [weak self] (published: SessionWordEdit.Outcome??) in
                 guard let self, let saved = published ?? nil else { return }
                 self.turnKeepingRuns[saved.runID] = runID
+                self.ownTranscripts.insert(saved.transcriptID)
                 // The span is exactly the selection unless it took in words around it (its move then differs). What
                 // was heard holding deleted words (an earlier deletion taken in) is no "often heard as" either.
                 let exact = saved.move == saved.labelsMove && !saved.holdsDeleted
@@ -1868,6 +1882,7 @@ public struct ReviewWord: Sendable, Equatable {
                     // expects.
                     self.restoredCopies[edit.previous] = restored.transcriptID
                     self.turnKeepingRuns[restored.runID] = runID
+                    self.ownTranscripts.insert(restored.transcriptID)
                 }
                 self.wordMoves.append(edit.move.inverse)
                 self.refuseQueuedSplits(in: edit.segmentID)
@@ -2081,6 +2096,7 @@ public struct ReviewWord: Sendable, Equatable {
     /// word move (the fix's words became the recognizer's own), a queued split in the segment is refused, and word
     /// edits' undo entries go (each needs its own transcript current, which it no longer is).
     private func revertCommitted(_ published: SessionWordFixRevert.Outcome) {
+        if let transcriptID = published.transcriptID { ownTranscripts.insert(transcriptID) }
         wordMoves.append(published.move)
         refuseQueuedSplits(in: published.move.segmentID)
         undoStack.removeAll { $0.wordEdit != nil }
@@ -2794,6 +2810,8 @@ public struct ReviewWord: Sendable, Equatable {
             segments = Self.segmentIndex(fresh.transcript)
             // Read after every word change saved so far: their moves are in it.
             movesRead = wordMoves.count
+            // Words this window did not change: nothing chosen before can be followed onto them (`wordsEpoch`).
+            if !ownTranscripts.contains(fresh.transcript.id) { wordsEpoch += 1 }
             textCache.removeAll()
             wordCache.removeAll()
         }

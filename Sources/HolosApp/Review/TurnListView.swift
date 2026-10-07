@@ -513,6 +513,8 @@ final class TurnListView: NSView, NSTableViewDataSource, NSTableViewDelegate {
     var wordEdit: WordEditTarget?
     /// A ⇧-click is on its way: the field losing the keyboard to the table does not save (the selection grows).
     var extendingWordEdit = false
+    /// `ReviewSession.wordsEpoch` as of the last update: a field opened before it changed is not put back on its words.
+    var wordsEpoch = 0
     /// The field's text selection when a ⇧-click came, restored when the selection cannot grow.
     var selectionBeforeExtension: NSRange?
     /// The field over the words being edited.

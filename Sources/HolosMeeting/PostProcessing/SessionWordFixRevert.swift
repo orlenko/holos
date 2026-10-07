@@ -17,6 +17,8 @@ enum SessionWordFixRevert {
     struct Outcome: Sendable, Equatable {
         var runID: String
         var move: ReviewWordMove
+        /// The transcript the revert made current.
+        var transcriptID: String? = nil
     }
 
     @discardableResult
@@ -107,7 +109,7 @@ enum SessionWordFixRevert {
                 }
                 let move = ReviewWordMove(segmentID: word.segmentID, replaced: fixed.first..<fixed.end,
                                           replacement: restored.first..<restored.end)
-                let published = Outcome(runID: plan.run.id, move: move)
+                let published = Outcome(runID: plan.run.id, move: move, transcriptID: reverted.id)
                 try Task.checkCancellation()
                 try SpeakerTranscriptRetarget.stage(plan, session: session)
                 let counts = WordFixes.Counts(reverted)

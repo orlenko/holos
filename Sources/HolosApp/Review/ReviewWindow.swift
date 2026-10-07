@@ -550,6 +550,8 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, Clo
             paragraphs = paragraphs.filter { $0.turnIDs.contains(where: matching.contains) }
         }
         let people = review.knownPeople()
+        // Words changed elsewhere since a field opened: it is not put back on them (`TurnListView.followWordEdit`).
+        turnList.wordsEpoch = review.wordsEpoch
         turnList.update(paragraphs: paragraphs, speakers: projection.speakers, people: people,
                         editable: review.isEditable,
                         hints: review.profiles == nil ? [:] : review.voiceMatches.turnHints,
@@ -1013,6 +1015,7 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, Clo
                                onPlay: { [weak self] seconds in self?.play(from: seconds) })
         // A word edit saved while the sheet is open moves its words: the split follows them (`split(seenMoves:)`).
         let movesSeen = review.shownWordMoves.count
+        let epoch = review.wordsEpoch
         splitSheet = sheet
         window.beginSheet(sheet.panel) { [weak self] response in
             guard let self else { return }
@@ -1021,7 +1024,9 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, Clo
                   let split = ReviewParagraphs.split(paragraph, words: words, at: index) else { return }
             switch split {
             case .splitTurn(let turnID, let word):
-                self.perform { review in try await review.split(turnID: turnID, at: word, seenMoves: movesSeen) }
+                self.perform { review in
+                    try await review.split(turnID: turnID, at: word, seenMoves: movesSeen, seenEpoch: epoch)
+                }
             case .breakBefore(let turnID):
                 guard let turn = paragraph.turns.first(where: { $0.id == turnID }) else { return }
                 self.paragraphBreaks.insert(before: turn, runID: self.review.projection.runID)
