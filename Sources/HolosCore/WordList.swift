@@ -198,6 +198,50 @@ public struct WordList: Codable, Sendable, Equatable {
         key(phrase) != key(term) && phrase.count <= maximumLength && phrase.contains { $0.isLetter || $0.isNumber }
     }
 
+    /// A term as typed in a sentence (a Review edit's text), each word without the sentence's punctuation around it:
+    /// "GitHub," → "GitHub", "“Claude.”" → "Claude", while "C#", "C++", ".NET" and "Node.js" stay as they are
+    /// (`termWord`). Nil when no letter or digit is left.
+    public static func typedTerm(_ text: String) -> String? {
+        let term = cleaned(text.split(whereSeparator: \.isWhitespace).map { termWord(String($0)) }.joined(separator: " "))
+        return term?.contains { $0.isLetter || $0.isNumber } == true ? term : nil
+    }
+
+    /// One word of a typed term without the sentence's punctuation around it: opening and closing quotes and brackets,
+    /// a trailing comma, semicolon or colon, and a trailing ".", "!", "?" or "…" only when the rest of the word is
+    /// plain (letters, digits, apostrophes, hyphens: "Claude." but not "Node.js." nor "e.g.") or follows a closing quote
+    /// or bracket ("(Claude).", "“Node.js”."), each stripped in turn in whatever order they come. What belongs to the
+    /// word stays: "#", "+", a leading dot, punctuation inside it.
+    public static func termWord(_ word: String) -> String {
+        let opening: Set<Character> = ["\"", "'", "“", "‘", "«", "(", "[", "{", "¿", "¡"]
+        let closing: Set<Character> = ["\"", "'", "”", "’", "»", ")", "]", "}"]
+        let separating: Set<Character> = [",", ";", ":"]
+        let ending: Set<Character> = [".", "!", "?", "…"]
+        var characters = Substring(word)
+        while let first = characters.first, opening.contains(first) { characters.removeFirst() }
+        func plain(_ rest: Substring) -> Bool {
+            !rest.isEmpty && rest.allSatisfy { $0.isLetter || $0.isNumber || $0 == "'" || $0 == "’" || $0 == "-" }
+        }
+        while let last = characters.last {
+            if closing.contains(last) || separating.contains(last) {
+                characters.removeLast()
+            } else if ending.contains(last) {
+                var rest = characters.dropLast()
+                while let previous = rest.last, ending.contains(previous) { rest = rest.dropLast() }
+                // After a closing quote or bracket (or a comma), the mark ends the sentence, never the word:
+                // "(Claude)." and "“Claude”." lose it, and then the wrapper, whatever the order.
+                if let previous = rest.last, closing.contains(previous) || separating.contains(previous) {
+                    characters = rest
+                    continue
+                }
+                guard plain(rest) else { break }
+                characters = rest
+            } else {
+                break
+            }
+        }
+        return String(characters)
+    }
+
     /// `text` trimmed, with each run of whitespace (line breaks too) made one space; nil when nothing is left.
     public static func cleaned(_ text: String) -> String? {
         let term = text.split(whereSeparator: \.isWhitespace).joined(separator: " ")

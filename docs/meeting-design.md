@@ -3774,7 +3774,14 @@ public struct SpeakerProfileDatabase: Codable, Sendable, Equatable {
     serves voice learning). On the user's 53-minute meeting a pass took about 30 s per
     track (debug build). The extractor is asked about each turn with its exact span
     (`T12@723.5-731.25`), so a vector is always of the times the cache keeps it against,
-    even when a split changes the turn while the pass runs. The app passes the spans on the
+    even when a split changes the turn while the pass runs. A word edit keeps the turns (its
+    run is retargeted): what the cache holds for turns at the same times stays; when it moved
+    a turn worth a voice (an untimed segment spreads its words again), the voices are worked
+    out again on the new run, a pass running replaced (what it would store is at the old
+    times, never served). Whenever the labels shown change once a pass has ended (an undo puts
+    back a turn a split cut while the pass ran), the voices are those the cache holds for the
+    turns at their times now; a saved turn worth a voice that no pass covered at its times
+    sends a new pass. The app passes the spans on the
     child's stdin, one per line (`speakers embed --turns - …`), from a 0600 temporary file it
     unlinks before the child starts: a 3-hour meeting has thousands of turns, and one argv
     entry holding them all could pass `ARG_MAX`. The other helper commands the app runs take
@@ -4903,7 +4910,9 @@ skips it.
    (`SessionDeepTranscribeCommand.languageProblem`). Edited speaker labels of the current transcript:
    `skipped` with "Speaker labels were edited, so the meeting was not transcribed again. …
    run voiceislocal session deep-transcribe with --force." (checked again under the
-   publication's locks). Deleted audio, no audio, the model not installed, an unreadable
+   publication's locks). Words changed in Review (an edit, or an automatic fix reverted:
+   `TranscriptWordEdit.hasReviewEdits`) are kept the same way unless forced, here and in the
+   languages stage. Deleted audio, no audio, the model not installed, an unreadable
    vocabulary.json or words.json: the transcript is kept and the record says why.
 3. *Prompt* (`DeepTranscriptionPrompt`, pure). "<meeting name>. <term>, <term>, …." with the
    word list's terms and the names of the people the app knows; the ones this meeting's
@@ -7826,7 +7835,7 @@ public enum SessionAudioComposition {
   start of the playing one first), ⌘→ next turn — anywhere in the window except while
   typing in a text field (with keyboard navigation on, Space presses a focused button
   instead); Return in the turn list plays the selected turn; ↑/↓ move selection; 1–9 assign the selection to the speaker
-  with that ordinal; ⌘' next uncertain; ⌘Z undo; ⌘F search; ⌘E export menu.
+  with that ordinal; ⌘' next uncertain; ⌘Z undo; ⌘F search; ⌘E edit mode (Editing words, below); ⇧⌘E export menu.
 - Menu "Speakers": Confirm All Suggestions, Find More Speakers… (explains that names
   carry over and turn-level changes do not), Label Speakers on My Microphone (call
   recordings recorded without "others in the room").
@@ -7853,6 +7862,419 @@ public enum SessionAudioComposition {
 - Heavy work (snapshot load, edits, export regeneration) runs off the main actor (§1.3).
 - The footer is redrawn on every change of the player's state (loading, ready, off and
   why), so "Playback is off: …" shows as soon as a first build fails.
+
+**Editing words** (edit mode, 2026-10-06): fix misheard words and names where the text is
+shown, Otter-style.
+
+- *Mode.* "Edit Words" (a toggle in the toolbar, ⌘E; Export moves to ⇧⌘E) turns edit
+  mode on: a tinted banner says "Editing — click a word to change it…" and the turn list
+  is tinted. Off, a word click plays from it as before. On, a word click does not seek: it
+  opens a field over the word, prefilled with it and selected. ⇧-click or a drag in the
+  same row extends the selection, keeping what was typed in the field; it stops at the end of
+  the word's turn and segment (the
+  banner says so), since v1 edits one segment of one turn at a time. Return saves, ⌥Return
+  saves and adds the new text to the word list, Tab saves and edits the next word, ⇧Tab
+  the previous one, Esc cancels. Closing the window (or quitting) with the field open saves
+  what it holds, before the close learns from the edits. Closed by hand (its close button,
+  ⌘W), the window stays open until that edit is saved, and stays open when it is not (a full
+  disk, a refusal): the field opens again with what was typed and the footer says why
+  (`ReviewCloseGate`), so nothing typed is lost to a failed save. It waits the same way for
+  edits handed over a moment before and still saving (Return, then ⌘W), and stays open when
+  one of them is not saved. No field opens while it waits, so each edit not saved is kept;
+  once the window stays open, the first one's field opens with what was typed and why, and
+  the footer says the others, each with what was typed (`ReviewCloseRecovery`). Any edit not
+  saved whose field cannot open again (a Tab past it, its words not shown, a close waiting)
+  stays in the footer with what was typed (`UnsavedWordEdits`): the next edit never clears
+  it; it leaves when "Edit Again" opens its field (the field's from then on: saved, or
+  cancelled with Esc) or when it is dismissed. Edits refused or failed while a quit closes
+  the review are logged with what was typed (private), timeout or not
+  (`failedWordEditsAtClose`). The field's edit such a close took is held on the window until it is queued, so a
+  quit meanwhile closes the review with it, and no field opens while such a close waits. A Split Turn sheet's word follows a word edit
+  saved while the sheet was open (`split(seenMoves:)`), and is refused when the edit replaced
+  it; a Revert's word likewise follows every word change saved since the words it was asked
+  on were read. The window's list follows only the word moves the words shown are after
+  (`shownWordMoves`): a move saved but not reread yet is not shown, and an open field never
+  follows it onto the word that has its index now. Words changed elsewhere (a transcript this
+  window did not make: `wordsEpoch`) have no word moves at all, so a field open across such a
+  change closes saying what was typed (nothing saved), and a Split Turn sheet opened before
+  it is refused; an edit handed over (or held by a close) carries it too, and is refused
+  when the words were changed elsewhere meanwhile. A field opened again after a failed save
+  follows its words through the moves saved since, never across such a change. A Review
+  edit's mark exempts its words from echo filtering only when it lies within its segment. Quitting starts every review
+  window's close at once (`ReviewQuit.closeAll`), so each queues its open field's edit before
+  any slow close (another window's voice sync) is waited for; when the closes cannot finish
+  within the quit's limit, every word edit not saved yet is logged with what was typed (as
+  private): those Return or Tab handed over and still waiting or saving, and the one the
+  field held at the close (`ReviewSession.unsavedWordEdits`). Return and Tab hand the edit to
+  the review's queue before anything else runs (`queueWordEdit`), so a quit right after
+  finds it there and the close saves it. A maintenance
+  command that makes the review read-only does the same: the open field's edit is queued
+  before the pause and waited for; when it is refused, the footer says why, with what was
+  typed (`ReviewSession.pause(typed:)`). So does any other turn to read-only with the field
+  open (Tab saved an edit whose labels could not be reread, `reloadProblem`): the field's edit
+  is queued (`editWords(whileUnread:)`) and waits for the reread as the changes before it do;
+  it is checked against the words shown when it was asked for (the transcript read before the
+  unreread change), following that change's word move. When it is refused, the field opens
+  again with what was typed, or the banner says it. The rule is general: only Esc drops what
+  was typed. However else the field closes (edit mode turned off, a search filtering its row
+  away, its words moved or gone, the review turned read-only), its text is queued as an edit
+  (`TurnListView.keepWordEdit`), and the review's queue keeps it, saves it, or refuses it
+  saying what was typed. A queued field edit, on every path (save, pause, close), carries its
+  words' text as the field showed them, untimed punctuation included (`ReviewWord.shown`,
+  `editWords(expecting:)`): a change made elsewhere and read since that kept a word's place
+  but changed it ("Hello." to "Hello?") refuses the edit, saying what was typed, never writing
+  over it. A ⇧-click that cannot grow the field (onto a word that cannot be edited) leaves the
+  field as it was, with what was typed and its selection, and the banner says why. The field is
+  at least 90 pt wide, so it can lie over the next words: a ⇧-click there passes through it to
+  the table (`WordEditField.hitTest`, outside `wordsFrame`), which extends the selection; a
+  plain click there edits the field's text. A head made elsewhere that lands between an
+  edit's save and its reread empties the undo stack and gives that edit no undo entry either
+  (`Operation.overtaken`). An undo that fails can be asked again while the labels are still
+  this window's own (the same run, or one its word changes retargeted), and, for a word
+  edit's undo, while that edit's transcript is still current (once another change replaced
+  it the undo can never be made, and put back it would block every undo before it). A word
+  edit's new run records the labelling it keeps (`DiarizationRun.labelling`): voices learned
+  from the run before are that labelling's own, never kept as an earlier labelling's. Such a
+  voice is compared by the audio it was learned from (`VoiceEnrollment.AudioInputs`: the
+  speakers and their qualifying turns' tracks and times, read from the run it was learned
+  from when that run still gives its input digest; times compared within a microsecond,
+  never by a hash, so a time worked out again from the same words, 6.719999999999999 for
+  6.72, is the same audio): the same audio keeps it as it is, also
+  with the audio deleted; other audio recomputes or removes it, as for the head's own. The run
+  is read through the current echo mask and, with one, without it (a sample learned before
+  the echo was found): a mask found since that cuts a turn the sample was learned from is
+  other audio. When the run can be read but no view of it gives the sample's input digest,
+  its inputs changed: it is learned again, or removed (Remember voices off too), and the echo
+  catch-up's check (`samplesOutOfStep`) reports it. Only when its provenance cannot be read
+  (the run or its words cannot be read, a sample with no input digest) is it kept unless it
+  can be learned again, or the person has no qualifying turn left. A
+  word change keeps a turn's times when its words keep theirs (`Mapping.sameTimes`): a
+  labelling may time a turn otherwise than by its words, and a voice was learned from those
+  times. Every save of a field's edit (Return, Tab, a close, a pause, a turn to read-only)
+  compares the `wordsEpoch` the field opened under, never the review's at the time of the
+  save. The check before a field opens (`ReviewSession.wordEditRefusal`) and before Revert is
+  offered (`revertRefusal`) is the save itself made as a dry run, on the transcript shown and
+  the revision it was fixed from, in memory: the edit's request checks and
+  `SessionWordEdit.edited` (what `SessionWordEdit.run` makes, with a placeholder for the
+  text), and `SessionWordFixRevert.reverted` (the same for the revert; for a Review edit, the
+  edit back to its `heard`). What needs the whole meeting is read once per labels read, off
+  the main actor (`ReviewSession.WordChecks`): the unfixed revision, whether a segment ID is
+  used twice, and the labels' plan onto the transcript itself, mapped by time as a revert's
+  is (so a revert the labels cannot be mapped across, another segment damaged, is not
+  offered). A click reads no file and makes no plan: a meeting of 30,000 words in 1,000 turns
+  answers at once. Reads are coalesced: one at a time; the labels read again while one runs
+  make exactly one more once it ends, for the labels then (never one per reread). A review
+  closed meanwhile cancels its read, which stops at the next segment, turn, or speaker edit. While the checks are being read (after any change, for a moment), fields
+  open and Revert is offered, and the save, which makes the full plan, decides, keeping what
+  was typed when it refuses. Mapping the labels is linear in the words: each turn's spans are
+  mapped through an index of the words' owners made once (`Mapping.spansAllowingEmpty`), and
+  a segment the change left as it was keeps its words' owners without a time mapping. Whatever the save would refuse (a damaged revision or a segment ID used
+  twice, `TranscriptWordEdit.structureRefusal`; a word corrected while recording; a fix a
+  newer version wrote; an automatic fix whose count of recognizer words does not hold what it
+  matched, older or modern; overlapping turns), the check refuses with the same message,
+  before anything is typed. Only what depends on the text typed (where a deletion goes) is
+  known at the save alone. Each result is kept per selection (or word) until the labels are
+  read again or the labels shown change, so clicks stay cheap. A Review edit's `heard` is
+  what the recognizer wrote as it was, whitespace and line breaks included (only trimmed):
+  its Revert writes that back exactly (`Request.verbatim`), while learning and the menus
+  read it with each run of whitespace one space. Space still plays and pauses outside the field; the
+  timestamp buttons still play. Every word has a VoiceOver action "Edit “word”", which turns
+  edit mode on and opens the field; it is offered only while words can be edited (not after
+  the transcript changed under the labels), and reports failure when no field opened. An edited word is dotted-underlined like a fixed word
+  ("You changed “heard”"), and its Revert ("Revert to “heard”") is another edit back to what
+  the recognizer wrote; an edit is a change when its text as shown differs from what was
+  heard, punctuation included ("Hello." → "Hello?"). A live hint replayed later (recovery)
+  never marks or changes words edited in Review: the hint is skipped. Words edited together that a relabel (Find More Speakers, Label
+  Speakers on My Microphone) has since put in two turns offer no Revert (menu or VoiceOver)
+  and open no field (an edit takes in the whole mark, across the turns, and would be
+  refused; a selection stops before them); their tooltip and the banner say so, and that the
+  other words of each turn can be edited (`ReviewWord.revertible`). Relabels are not stopped
+  from splitting them. Revert (of an edit or of an automatic fix) is offered only while words
+  can be edited, since otherwise it would be refused. Words known not to be editable open no
+  field either, and the banner says why (`ReviewSession.wordEditRefusal`, the save as a dry
+  run): a word corrected while the meeting was recording, words that do not all belong to the
+  same speaker turns (overlapping turns hold only some of them: the new words would belong to
+  every turn of every word replaced, and the undo could not give each back to its own;
+  checked on everything an edit takes in), a segment with an automatic fix that cannot be
+  counted. A save refused or failed after Return never loses what was typed: the field opens
+  again over the words with it (when they still read the same and no other field is open),
+  and the message says what was typed in any case, also for a queued edit refused later.
+  ⌥Return's word-list term is added once the edit is saved, also when the labels could not be
+  refreshed after it. ⌘E turns the mode on only while words can be edited
+  (`ReviewSession.canEditWords`): the review is editable (no command holds it read-only), its
+  labels were made on the current transcript (after the transcript changed, the banner says
+  to use Label Again first), every speaker change can be read (a damaged or newer line in
+  the journal: each edit carries them all over, so it would be refused), and the revision the
+  transcript was fixed from (`fixedFrom`) can be read (every edit and revert reads what the
+  recognizer wrote there; checked once per labels read, `baseUnreadable`). The Edit Words
+  button's tooltip, and the banner in edit mode, say which; no field opens. It always turns
+  it off.
+- *The words' text.* An edit replaces, and the field starts with, the text the words show
+  in the transcript and the exports (`TranscriptWordEdit.shownText`): from the first word's
+  offset to the next word's, without the whitespace at either end. So punctuation the
+  recognizer did not time goes with its word ("Hello" timed in "Hello." shows and is edited as
+  "Hello."), and the space Apple's recognizer puts at the front of a word's range (" cloud")
+  stays in place ("ask Claude now", never "askClaude now"), in the base revision too.
+- *The open field* follows its words. Tab opens the next word's field before the save of the
+  last one ends; every saved edit and undo records how it moved its segment's words
+  (`ReviewWordMove`: the selected word indices and what replaced them, the rest shifted; the
+  words a span took in around the selection, the rest of a fix or a deletion's neighbour, keep
+  their own place), the field maps its words through the moves since it opened (a word merged
+  by a deletion, whose time changed, is found all the same), and so does a queued edit when it
+  runs. The words must still read the same as shown (a neighbour a deletion merged into loses
+  the space Apple put at the front of its range, and is the same word), and a word a move
+  replaced is never followed onto
+  another word: the field closes and the banner shows what was typed (a queued edit is refused
+  saying it). While the labels could not be reread after a change, every queued change (a word
+  edit, a rename, an assignment, an undo) waits; only the reread (a reload) and the transcript
+  files run ahead; a relabel runs only once the changes queued before it have (its labels
+  would make them stale), and the changes run after the reread. After the column width or the row heights change, the field
+  is put back over its words.
+- *What an edit is.* `ReviewSession.editWords(refs, to: text)`: shown words (stored
+  `WordRef`s, so a word the echo mask hides is never named, §5.11) of one segment, in a row,
+  replaced by any text: more or fewer words, or nothing (a deletion). The refs must be
+  consecutive stored indices of words shown in one projected turn; hidden echo words between
+  them, another segment, or another turn refuse the edit with a message. The span grows to
+  whole word-fix marks it touches (a mark is never split), and a deletion is merged into the
+  next word of the same turn (else the previous one; each judged with the marks it would take
+  in, so one whose fix runs out of the turn, or holds a live correction, gives way to the
+  other), so the deleted words keep provenance
+  and time: "I um think" with "um" deleted is "I think" whose "think" was heard as "um
+  think". Deleting every word of a segment, and touching a live correction (`liveCorrection`,
+  whose live hint would no longer match), are refused in v1. Whitespace in the new text
+  collapses to single spaces; an edit that changes nothing saves nothing.
+- *Revisions* (`TranscriptWordEdit`, pure; `SessionWordEdit`, published). The edit is a fix
+  of a new kind, `reviewEdit`, whose `heard` is what the recognizer wrote over the whole span,
+  exactly as the text had it, so a Revert writes it back unchanged ("你好世界" stays without a
+  space, "hello — there" keeps its dash): unmarked words as shown, the text between pieces as
+  it is, an automatic fix it absorbed the recognizer's words it stands for in the base (the
+  punctuation outside the phrase it matched included, so "Claude." edited and reverted is
+  "cloud." again), a Review revert's restored words as shown. How many recognizer words that
+  is goes beside it (`TranscriptWordFix.heardWords`, recorded only when it is not the count of
+  whitespace-separated tokens of `heard`), so `heard` stays in the unfixed word space every
+  provenance map uses (`WordFixStage.wordOrigins`, `SpeakerTranscriptRetarget.origins`: its
+  original word count is `heardWords`, else `tokens(heard)`; `WordFixes.originalWordRanges`:
+  like a live correction, the base already holds it). Every Review edit, automatic fix
+  (correction, term), and live correction written from this version on records `heardWords`
+  (for an automatic fix or a live correction, the words it touched: "你好世界" over two timed
+  words, "type c" in "“type c”" over two, "hello — there" over two; a live correction across
+  language pieces adds those of a deleted piece it carries), the one source of truth. An older fix without it is counted by the whitespace-separated
+  tokens of its `heard`, as before. The count is read only through
+  `TranscriptWordFix.heardWordCount(within:)`, nil when it cannot be right (not positive, more
+  words than `heard` has characters, more than the words left where it stands; compared
+  without adding, so a damaged `Int.max` never overflows); a fix whose recorded count is not
+  right is not sound (`isSound`), like a mark past its segment's words. *Limit:* an older automatic fix over text without spaces
+  between its words (Chinese, Japanese) is then counted wrong, and an edit in its segment is
+  refused with "This segment has a word fix made by an earlier version of Voice is Local,
+  which edits cannot work around yet" (`TranscriptWordEdit.olderFix`); its Revert fails as it
+  did before this version. No write counts words by splitting text at its spaces: an edit and
+  an automatic fix record the words they replaced (`heardWords`) and are their mark's words;
+  the Revert of an automatic fix brings back the recognizer's own words from the base, with
+  their text, times, and boundaries ("你好世界" is "你好" and "世界" again), and a revert kept
+  on a new base keeps the words already there; the Revert of an edit is another edit. The
+  edit is made in both layers:
+  - the unfixed base `B` (`current.fixedFrom`, or the current transcript when it has none)
+    gets a new revision `B′` with the edit marked `reviewEdit` (its new words as `C′` has
+    them, so both count the edit's words alike even where one would keep the recognizer's
+    words for the same text and the other split it anew), `fixedFrom` nil and
+    `liveCorrectedFrom` = `B.liveCorrectedFrom ?? B.id` (the stable word space retargeting
+    compares);
+  - a fixed current transcript `C` gets `C′`: `C` with the same edit, `fixedFrom = B′.id`;
+    its other fixes stay where they are.
+  An edited span keeps the original span's start and end: in a timed segment its new words
+  share that time evenly (`WordFixes.applying`); an untimed segment stays untimed, so its
+  words keep estimated times. Because the edit lives in the base, every later word-fix pass
+  starts from `B′` and keeps it (a `reviewEdit` mark is never replaced by a correction or a
+  term). Deep transcription and language detection refuse to replace a transcript that
+  holds Review edits unless forced, as for edited speaker labels (the edits are then lost).
+- *Publication* follows `SessionWordFixRevert`: the processing lease, the writer lock, then
+  the speaker lock; the current transcript and head run must be the ones the window showed;
+  the words must still be shown in the head's projection (echo mask included); the speaker
+  run is retargeted (`SpeakerTranscriptRetarget.plan`: turns keep their IDs, effective edits
+  are replayed with their IDs and batches) and staged. An edit's words map by index, never by
+  time (`labelsMove`: the edited span, with any neighbour a deletion merged into, and its
+  replacement): every other word keeps its exact owner, and the replacement words take the
+  edited turn; recognizer timings of neighbouring words can overlap across speakers, and a
+  time mapping gave such a word to both turns. Automatic word-fix stages still map by time.
+  `B′` is saved as a revision with a `transcriptEdited` event (`transcriptID`, `base`,
+  `segment`), then `C′`'s `transcriptEdited` event (also `replaced` and `replacement`, the
+  move, which a repair maps by), then `C′` becomes current, then the new head. `unfixedID` follows
+  `transcriptEdited` like `wordsFixed`. A head that could not be published is repaired from
+  the old head as a revert's is. When that repair fails too (after an edit, its undo, or an
+  automatic fix's revert), the head is owed: the window
+  stays read-only with a banner saying so, Reload repairs it first, and no reread (Reload, a
+  relabel) resumes the review until the labels are on the current transcript (labels made on
+  the words as they were would make the edit's undo fail and Label Again drop turn edits);
+  when the app quits in between, post-processing repairs it
+  first (`SessionWordEdit.repairPendingHead`, before any stage may replace the transcript or
+  relabel over the old head, the only copy of the turn edits). Every Review change that moves
+  the transcript pointer (an edit, its undo, an automatic fix's revert) records `headFrom`,
+  the transcript it was made from, in its journal event, so the head it owes is found
+  whatever the event's kind (an edit's word move maps the labels; a revert's map by time).
+  Exports are regenerated
+  `exportDelay` later; the summary is no longer current (its key holds the transcript ID).
+  Speaker labels, speaker edits, and the window's paragraph breaks survive (a run an edit or
+  its undo published is known to keep the turns, `ReviewSession.keepsTurns`; the labels
+  reread afterwards are the edit's own only when their run is that one, so a relabel saved
+  elsewhere in between is a change made elsewhere); the playback
+  and highlight mapping is rebuilt from the new segments. What the window keeps of a
+  committed edit (its undo, its word move) is recorded as soon as the transcript is current,
+  even when the labels cannot be reread then, or when saving the transcript failed after its
+  pointer was renamed into place (the head is then owed, as above); an edit, its undo, and an
+  automatic fix's revert all save through `TranscriptPointerSave`, which reports such a save
+  as committed, never as a refusal. Split Turn is refused
+  inside words edited together, so their edit and its Revert stay in one turn.
+- *Undo.* An edit is one entry of the window's undo, among speaker changes; it keeps the undo
+  history (the retargeted run keeps every edit ID and batch). An automatic fix's Revert is not
+  undoable, but it is this window's own change too: its run keeps the speaker changes' undo,
+  changes queued while it saves follow its word move (an edit of the reverted words is
+  refused, saying what was typed), and the word edits' undo entries go (each needs its own
+  transcript current). Undoing an edit
+  publishes a copy of `C` (new ID; `fixedFrom` still names `B`, so `B′` is left unused) with
+  the head retargeted again by the inverse move: the text, words, timing, and fixes are
+  exactly `C`'s, every word is back with its owner, and speaker edits made since carry over. It is refused when the current transcript is no longer the
+  edit's `C′` (or the copy an undo made of it); once a reread finds the labels on a
+  transcript that is no longer current (another process replaced it), the word edits' undo
+  entries are dropped, so undo reaches the speaker changes before them. A speaker split waiting in the queue whose
+  word is in the edited segment is refused (its word index may have moved).
+- *Echo.* Words under a `reviewEdit` mark are never echo (`EchoFilter.reviewEditedWords`):
+  the acoustic mask never hides them, and the text filter of a new run (Find More Speakers,
+  Label Again) neither drops them nor lets a run pass through them (they stay in the sequence,
+  matching nothing, even an edit with no letters such as "…"), so correcting "write" to "right"
+  beside the call's "that sounds right", or "rarely" to "really" in "I rarely think so" beside
+  its "I think so", hides nothing. The person read and confirmed them. Their ranges are read
+  only within their segment's words.
+- *Learning* (`ReviewLearning`, `TranscriptEditLearning`; the app's learner). Corrections are
+  learned when a review closes (also when the app quits, which closes its reviews), from
+  every word you edited in that meeting; an existing correction for the same phrase is kept.
+  Nothing is learned while editing, so nothing is ever taken back. What each meeting's closes
+  taught is kept in corrections.json itself, beside the rules (`CorrectionList.reviewTaught`,
+  meeting ID → its lessons, one value per phrase), and written in the same atomic save as the
+  rules under the list's lock: a rule and the record that the meeting taught it can never
+  disagree, so no close stopped part way needs repairing. A close teaches only what the
+  meeting has not taught, so a correction you delete or change in Corrections (which removes
+  or changes the rule, never the record) is not taught again by the meeting:
+  - the edits are every `reviewEdit` fix of the transcript as it is then; an edit undone or
+    reverted is not there, so it teaches nothing. Edits side by side in one turn are one
+    phrase: "bull" → "pull" then "requested" → "request" teaches "bull requested" → "pull
+    request" (what the recognizer wrote, from each edit's `heard`), never "pull requested" or
+    "bull request", which would match nothing it wrote. Only edits that change words are
+    joined: one changing only punctuation or case ("Hello." → "Hello?") is learned on its own
+    and stands beside the other as it is now shown, so "Hello. cloud" → "Hello? Claude" never
+    teaches ". cloud" → "? Claude". An edit (or such a phrase) is learned
+    only when one turn holds all its words, and its context comes from that same turn (turns
+    may overlap: two turns each holding some of the words are not one), across segments too:
+    at a segment's edge, the context is the turn's word beside it in the segment its spans go
+    on in (a one-word segment inside a longer turn has context), never across hidden echo.
+    Words edited together
+    that a relabel has since put in two turns are not learned (a correction would mix two
+    speakers' words); an edit beside them is learned on its own;
+  - each is diffed as dictation's Learn does (`CorrectionList.learn`, the recognizer's words
+    against the words' shown text, one shown word on each side as context so a lone
+    dictionary word is learned only with its neighbour: "cloud now" and "cloud later" are two
+    phrases). A neighbour is context only when it is shown in the edited word's own turn, as
+    an edit itself may take in: never the next speaker's word at a turn boundary, nor a word
+    hidden as echo; without such a neighbour the rule learns as it does without context. A
+    neighbour under a fix (automatic, live) stands with its whole fix, and the heard side
+    takes what the recognizer wrote there: beside "cloud" fixed to "Claude", "as" → "ask"
+    teaches "as cloud" → "ask Claude", which matches the recognizer's text. Both sides cover the
+    same characters: an automatic fix's heard side is the unfixed revision's text over the
+    extent shown ("cloud." beside "Claude.", the period untimed); when that cannot be read,
+    its `heard` only if its shown text is just its words, else no context. A fix the edit's
+    turn holds only part of gives no context on that side (corrected text never stands for
+    what was heard: "as New" beside "newark" made "New York" would match nothing), nor does a
+    damaged one (its words out of the segment's, `TranscriptWordEdit.isSound`, the one check
+    every walk over a fix's words makes first; it is never read). Two marks over the same word
+    (each in range on its own) are damaged too: each word has at most one fix. So is a word
+    whose range does not fit the text, starts before the previous word ends, has a boundary
+    inside a character written as a surrogate pair, or reads otherwise than the word's text
+    (`TranscriptWordEdit.isDamaged`). A transcript with two segments under one ID is damaged
+    as a whole (`hasRepeatedSegmentIDs`: which words are meant cannot be told): no word of it
+    is edited, and close-time learning reads nothing from it. A damaged
+    segment shows no marks and none of its words is edited or reverted: the refusal comes before
+    a field opens (`wordEditRefusal`, with the reason in the banner), before any range is
+    walked. Close-time learning skips it, and reads no context from a damaged unfixed
+    revision; editing and reverting refuse a damaged unfixed revision. A fix of a kind a newer
+    version wrote is never read as what the recognizer wrote: learning reads the editor's kinds
+    only (`TranscriptWordEdit.editableKinds`, and a live correction), and skips a segment
+    where an edit holds or stands beside such a fix. Every word range read
+    from disk is made one way (`utf16Range(offset:length:within:)`: by subtraction, never past
+    the text, never backwards), so no damaged offset or length can overflow or trap. A word
+    move in the event log is read only as written ("3-5", two unsigned decimal numbers; never
+    empty; at most a million replaced × replacement word pairs, far more than any edit of one
+    turn; its replaced words all of the same turns, checked wherever a move is mapped; a
+    segment both revisions have, every word outside it reading the same in both; the edit's
+    `reviewEdit` mark exactly over its new words, or, for an undo (the event says `"undo":
+    "1"`), over the words it replaces, each direction checked on its own side, so repeated text
+    or an older mark elsewhere never passes for it): a
+    malformed one makes the event damaged, refused rather than read another way. An automatic
+    fix's words in the unfixed revision must hold what it matched (`heardFits`: its `heard`
+    touches the first and the last, and no word around them, untimed punctuation it matched
+    included: "hello." over the timed "hello"; found in one linear pass), so word counts that
+    are wrong but add up never put a fix over other words; mapping speaker labels by those
+    counts (a word fix run, no word move) checks them the same way when the unfixed revision
+    can be read, and refuses them when they are wrong. Every walk over a segment's words
+    (a turn's words, close-time learning) reads the segment once and looks words up by index,
+    so a very long or crafted segment never takes more than linear time; learning indexes the
+    turns' spans by segment once and skips segments with no edit. Mapping speaker labels by
+    time refuses a transcript with a damaged segment or a segment ID used twice. The
+    turns are the labels on the transcript as it is then: labels the window could not reread
+    after an edit are read again at close; when that fails, or the labels read are still on
+    another transcript (a speaker head owed, or the transcript changed under them), nothing
+    is learned at this close (logged; a later close learns the same edits);
+  - the pairs go to `corrections.json`, the list Corrections (⌘2) shows
+    (`CorrectionList.learnFromReview`, then `learnReplacingTaught`): a lesson the meeting
+    taught already (same phrase and value) is skipped; a phrase the list lacks is added; one still
+    holding the value this meeting taught it takes the new one (the word re-edited from
+    "Claude" to "Claudia"); one holding anything else keeps it (an external or another
+    meeting's choice wins; within one close, the first in the meeting); nothing is removed.
+    Only what the close put in the list (added, or replacing the meeting's own earlier value)
+    is recorded as taught, one value per phrase; a rule the list already held unchanged is not
+    the meeting's, so a later re-edit there never overwrites it. A write that fails (logged)
+    changes neither the rules nor the record, so the meeting's next review close makes it
+    again, since the edits stay in the transcript. Dictation and Corrections read only the
+    rules. An older Voice is Local reads the file as before (it ignores the record) and, if it
+    saves the list, drops the record: the meetings could then teach a rule deleted since
+    again. `review-learned.json`, which only builds of this change's development wrote, is
+    ignored (never shipped, so nothing to migrate);
+  - the write is one step under the meeting's speaker lock, off the main actor. The labels
+    are read again in it (transcript, head run, speaker-change journal) and must give the
+    edits the corrections were made from (the corrections are those edits taught by the app's
+    rule, which needs the main actor's spell checker, so the edits, not the rule, are derived
+    again): a replacement, a relabel, or a speaker change (a split) since teaches nothing at
+    this close (logged; the next close learns from the labels as they are then). Then
+    corrections.json is read, changed (rules and record), and saved once under its own lock
+    (taken inside the speaker lock; nothing takes them the other way round). The app takes the
+    list again afterwards;
+  - nothing is learned from a deletion, a punctuation-only change, or a case-only change
+    (decided on the edited words alone: a context word's own fix never makes "Hello" →
+    "Hello," teach "Hello cloud" → "Hello, Claude"), unless the case change makes a proper noun (a word whose lowercase is not a dictionary
+    word: "github" → "GitHub"), which teaches only the casing, never punctuation changed with
+    it ("github," → "GitHub." teaches "github" → "GitHub"); words split or joined ("everyday" → "every day") are a real
+    change;
+  - when the new text looks like a name or term (a word that is not a dictionary word, has a
+    capital inside it, or a content word the edit capitalized: each word compared with the
+    heard word it stands for, so "APPLE" → "Apple" is not, and the second of "Apple apple" →
+    "Apple Apple" is), the window offers "Add
+    “Claude” to the word list, often heard as “cloud”?" (Add / Not Now); ⌥Return adds it
+    without asking. Both keep the punctuation that belongs to the term and drop the
+    sentence's (`WordList.typedTerm`): "C#", "C++", ".NET", "Node.js" stay; "GitHub," and
+    "Claude." lose the comma and period (a final period only when the rest of the word is
+    plain, so "e.g." keeps it, or follows a closing quote or bracket: "(Claude)." and
+    "“Claude”." give "Claude", "(Node.js)." gives "Node.js"). What was heard is cleaned the same way before it is compared
+    with the term, so a case-only change ("c#" → "C#") gives no "often heard as", never the
+    broader "c". Nor is what was heard over words holding a deletion ("Clyde" edited over a
+    word "um" was merged into would give "um cloud"): the term may still be offered, with no
+    "often heard as" (`Result.holdsDeleted`). The term is what was typed, never words the edit took in around it
+    ("Yorkshire", not "New Yorkshire", when only "York" of an automatic "New York" was
+    edited), and "often heard as" is given only when the recognizer's text for exactly those
+    words is known. "Often heard as" is the recognizer's text unless it is the term itself in
+    another case;
+  - a word-list term added from the offer stays (an explicit action). A correction learned
+    stays until removed in Corrections.
+- *Not in v1.* Editing while the meeting records (Review opens after it), spanning segments
+  or turns, deleting a whole segment, editing over a live correction, redo, and showing the
+  edit before it is saved (the field closes and the row updates once saved).
 
 **Saving, undo, and rereading** (`ReviewSession`): what the window shows always matches
 the disk.
@@ -7961,6 +8383,10 @@ whose review is open or still opening):
 | `reviewAssigningAParagraphMovesEveryTurnOfItAndUndoRestoresIt` | assign a two-turn row; undo | one `reassignTurns` of both turns; rows join; undo restores turns and rows |
 | `reviewSplittingInsideAParagraphStartsOneThatUndoJoinsAgain` | split inside a row's first turn; undo | the second part starts a row with the next turn; undo joins them |
 | `TurnListViewTests` (HolosAppTests) | the list laid out offscreen | rows joined, word click, fixes and VoiceOver, selection, pop-up and hint, tint through a pause |
+| `TranscriptWordEditTests` | hand-built transcripts | one word, more and fewer words, deletion into a neighbour, a fixed transcript's base edited too (word fixes made again give the same words), a fix taken whole, untimed words, refusals, exact restore, shown words to stored indices with hidden echo, an edited word never hidden as echo |
+| `TranscriptEditLearningTests` (HolosCoreTests) | heard/meant pairs | corrections learned with a neighbour; deletions, punctuation, and case changes skipped unless a proper noun; terms offered; often-heard-as |
+| `ReviewWordEditTests` | fixture sessions | edit, learn, speaker edits before and after, undo in order and exactly; edit and deletion inside a paragraph; refusals across turns, segments, hidden words; word fixes made again keep an edit |
+| `TurnListWordEditTests` (HolosAppTests) | the list laid out offscreen | word clicks play or edit by mode; Return, ⌥Return, Esc, Tab, ⇧Tab; selection kept in one turn; only Esc drops what was typed (mode off, a search filtering the row away, words gone, read-only: queued as an edit); VoiceOver "Edit"; Revert offered per segment (`revertRefusal`); the field follows its words |
 | `ReviewEchoMuteTests` | local-speech intervals (edges, joins, from 0, past the end, none) | the volume schedule; a mix on the microphone track only, read back as scheduled |
 | `playbackKeepsTheMicrophoneOnlyWhereItHasLocalSpeechWhenThereIsEcho` | a call with an echo mask, then `noEcho`, then other audio | a mix on the microphone track only with an echo mask; none otherwise |
 | `ReviewPlayerTests` (HolosAppTests) | a playback with and without a volume; a changed volume | the item's mix follows it, replaced in place |

@@ -384,11 +384,17 @@ public enum LiveHints {
                     already += 1
                     continue
                 }
+                // Words edited in Review since are the person's newer choice: replay never marks or changes them.
+                if overlapsReviewEdit(range, in: working) {
+                    unmatched += 1
+                    continue
+                }
                 // Replay may independently produce the text the person requested. It still needs live provenance:
                 // without the mark, the automatic word-fix stage can replace the person's explicit choice. Replace
                 // an overlapping older mark, but keep the replay's text and word timings exactly as they are.
                 working.marks.removeAll { $0.range.overlaps(range) }
-                working.marks.append(.init(range: range, heard: replacement, kind: .liveCorrection))
+                working.marks.append(.init(range: range, heard: replacement, kind: .liveCorrection,
+                                           heardWords: wordsTouched(range, in: segment)))
                 working.marks.sort { $0.range.lowerBound < $1.range.lowerBound }
                 let marked = WordFixes.finished(working, segment: segment)
                 if marked != segment {
@@ -417,7 +423,8 @@ public enum LiveHints {
                let range = characterRange(heardFound.found.match.words, matching: heardFound.heard,
                                           in: result.segments[heardFound.found.match.segment]) {
                 let changed = WordFixes.applying([
-                    .init(range: range, text: replacement, kind: .liveCorrection, heard: heardFound.heard),
+                    .init(range: range, text: replacement, kind: .liveCorrection, heard: heardFound.heard,
+                          heardWords: wordsTouched(range, in: result.segments[heardFound.found.match.segment])),
                 ], to: working)
                 let segment = WordFixes.finished(changed,
                                                  segment: result.segments[heardFound.found.match.segment])
@@ -558,11 +565,11 @@ public enum LiveHints {
                                        in segment: TranscriptSegment) -> Range<Int>? {
         let effective = WordTiming.effectiveWords(of: segment)
         guard !words.isEmpty, words.lowerBound >= 0, words.upperBound <= effective.count else { return nil }
-        let first = effective[words.lowerBound]
-        let last = effective[words.upperBound - 1]
-        let range = first.utf16Offset..<(last.utf16Offset + last.utf16Length)
-        guard range.lowerBound >= 0, range.lowerBound < range.upperBound,
-              range.upperBound <= segment.text.utf16.count else { return nil }
+        // The words' ranges as read from disk, checked before any is added up (`utf16Range`).
+        guard let first = effective[words.lowerBound].utf16Range(within: segment.text.utf16.count),
+              let last = effective[words.upperBound - 1].utf16Range(within: segment.text.utf16.count),
+              first.lowerBound < last.upperBound else { return nil }
+        let range = first.lowerBound..<last.upperBound
         let displayed = displayed.trimmingCharacters(in: .whitespacesAndNewlines)
         let length = displayed.utf16.count
         guard length >= range.count, length <= segment.text.utf16.count else { return range }
@@ -603,6 +610,20 @@ public enum LiveHints {
         return expandedLower.utf16Offset(in: segment.text)..<expandedUpper.utf16Offset(in: segment.text)
     }
 
+    /// `range` touches words edited in Review (a `reviewEdit` mark): a live hint replayed later (recovery) must leave
+    /// them, the person's newer choice, as they are, neither marking nor changing them.
+    private static func overlapsReviewEdit(_ range: Range<Int>, in working: WordFixes.Working) -> Bool {
+        working.marks.contains { $0.kind == .reviewEdit && $0.range.overlaps(range) }
+    }
+
+    /// How many of `segment`'s words `range` touches: the words a live correction there replaces, recorded as its
+    /// `heardWords`.
+    private static func wordsTouched(_ range: Range<Int>, in segment: TranscriptSegment) -> Int {
+        WordTiming.effectiveWords(of: segment).filter { word in
+            word.utf16Range(within: segment.text.utf16.count)?.overlaps(range) == true
+        }.count
+    }
+
     private static func applyingAcrossSegments(_ match: Match, replacement: String, matchedText: String,
                                                provenance: String,
                                                to transcript: Transcript,
@@ -614,28 +635,41 @@ public enum LiveHints {
         guard let ranges = characterRanges(of: match, matching: matchedText, in: transcript),
               replacements.count == match.parts.count,
               provenances.count == match.parts.count else { return nil }
+        // How many words each piece replaces, carried with its provenance (`heardWords`: never counted by the spaces
+        // in what was heard, which text without spaces between its words does not show).
+        var consumed = match.parts.indices.map { index in
+            wordsTouched(ranges[index], in: transcript.segments[match.parts[index].segment])
+        }
         // An empty replacement deletes a whole language piece, which has no resulting word on which to keep a fix
         // mark. Carry that piece's provenance into the next surviving replacement (or the last one for a trailing
         // deletion), so speaker retargeting can still see every consumed word in the combined piece family.
         var carried: [String] = []
+        var carriedWords = 0
         for index in replacements.indices {
             if replacements[index].isEmpty {
                 if !provenances[index].isEmpty { carried.append(provenances[index]) }
+                carriedWords += consumed[index]
                 provenances[index] = ""
-            } else if !carried.isEmpty {
+                consumed[index] = 0
+            } else if !carried.isEmpty || carriedWords > 0 {
                 provenances[index] = (carried + [provenances[index]]).filter { !$0.isEmpty }.joined(separator: " ")
+                consumed[index] += carriedWords
                 carried = []
+                carriedWords = 0
             }
         }
-        if !carried.isEmpty, let last = replacements.lastIndex(where: { !$0.isEmpty }) {
+        if !carried.isEmpty || carriedWords > 0, let last = replacements.lastIndex(where: { !$0.isEmpty }) {
             provenances[last] = ([provenances[last]] + carried).filter { !$0.isEmpty }.joined(separator: " ")
+            consumed[last] += carriedWords
         }
         var result = transcript
         for index in match.parts.indices {
             let part = match.parts[index]
             let segment = result.segments[part.segment]
             let range = ranges[index]
-            guard var working = WordFixes.Working(segment, preservingExistingFixes: true) else {
+            // Words edited in Review since are the person's newer choice: the whole hint is skipped.
+            guard var working = WordFixes.Working(segment, preservingExistingFixes: true),
+                  !overlapsReviewEdit(range, in: working) else {
                 return nil
             }
             let heard = provenances[index].isEmpty ? text(in: range, of: segment) : provenances[index]
@@ -647,13 +681,15 @@ public enum LiveHints {
                 }
                 working.marks.removeAll { $0.range.overlaps(range) }
                 if !replacements[index].isEmpty {
-                    working.marks.append(.init(range: range, heard: heard, kind: .liveCorrection))
+                    working.marks.append(.init(range: range, heard: heard, kind: .liveCorrection,
+                                               heardWords: consumed[index]))
                     working.marks.sort { $0.range.lowerBound < $1.range.lowerBound }
                 }
             } else {
                 working.marks.removeAll { $0.range.overlaps(range) }
                 working = WordFixes.applying([
-                    .init(range: range, text: replacements[index], kind: .liveCorrection, heard: heard),
+                    .init(range: range, text: replacements[index], kind: .liveCorrection, heard: heard,
+                          heardWords: consumed[index]),
                 ], to: working)
             }
             result.segments[part.segment] = WordFixes.finished(working, segment: segment)

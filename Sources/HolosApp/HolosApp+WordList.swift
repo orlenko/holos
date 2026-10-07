@@ -70,6 +70,35 @@ extension HolosAppDelegate {
         return parts.joined(separator: " ")
     }
 
+    /// The "often heard as" phrases of `term` in the word list (read again if it changed), nil when it does not have it:
+    /// a meeting's Review offers a term it lacks.
+    func wordListHeardAs(_ term: String) -> [String]? {
+        refreshWordList()
+        return wordList.heardAs(of: term)
+    }
+
+    /// Adds `term` from a meeting's Review (`WordListSource.review`), with `heardAs` as an "often heard as" phrase;
+    /// returns what happened, for the review's footer.
+    func addReviewTerm(_ term: String, heardAs: String?) -> String {
+        let result: (WordList.AddOutcome, WordList.HeardAsChange?)
+        do {
+            result = try changeWordList { list in
+                let outcome = list.add(term, source: .review)
+                return (outcome, heardAs.flatMap { list.addHeardAs([$0], to: term) })
+            }
+        } catch {
+            return "Could not save the word list: \(error.localizedDescription)"
+        }
+        let heard = result.1.flatMap { $0.added.first ?? $0.unchanged.first }.map { ", often heard as “\($0)”" } ?? ""
+        switch result.0 {
+        case .added(let added): return "Added “\(added)” to the word list\(heard)."
+        case .duplicate(let existing): return "“\(existing)” is in the word list\(heard)."
+        case .empty: return "Nothing to add to the word list."
+        case .tooLong: return "“\(term)” is longer than \(WordList.maximumLength) characters, so it was not added."
+        case .full: return "The word list is full (\(WordList.maximumTerms) terms), so “\(term)” was not added."
+        }
+    }
+
     /// Adds `terms`; returns what happened, for the Corrections section, and the terms that were not added and are not
     /// listed (too long, the list full, or all of them when the list could not be saved), to leave in the field.
     func addWords(_ terms: [String]) -> WordListView.AddResult {

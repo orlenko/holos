@@ -30,6 +30,53 @@ private func hint(_ segment: TranscriptSegment, words: Range<Int>, action: LiveH
     #expect(outcome.transcript.segments[0].words[1].start == segment.words[1].start)
     #expect(outcome.transcript.segments[0].words.last?.end == segment.words.last?.end)
     #expect(outcome.transcript.segments[0].fixes?.last?.kind == .liveCorrection)
+    #expect(outcome.transcript.segments[0].fixes?.last?.heardWords == 3, "The words it replaced are recorded.")
+}
+
+@Test func aLiveCorrectionRecordsTheWordsItReplacedNotTheSpacesInWhatWasHeard() {
+    // "say hello — there now", timed as "say", "hello", "there", "now": the dash is no word.
+    let text = "say hello — there now"
+    let ranges = [(0, 3), (4, 5), (12, 5), (18, 3)]
+    let utf16 = Array(text.utf16)
+    let segment = TranscriptSegment(id: "dash", start: 0, end: 4, text: text, words: ranges.enumerated().map { index, range in
+        TimedWord(text: String(decoding: utf16[range.0..<(range.0 + range.1)], as: UTF16.self),
+                  start: Double(index), end: Double(index) + 0.8, utf16Offset: range.0, utf16Length: range.1)
+    }, track: "mic")
+    let live = LiveHint(id: "H-dash", at: SessionFixtures.date, segmentID: "dash", track: "mic", firstWord: 1,
+                        endWord: 3, start: 1, end: 2.8, heard: "hello — there", action: .replaceText("hi there"))
+    let outcome = LiveHints.applyingText([live], to: SessionFixtures.transcript([segment]))
+    #expect(outcome.applied == 1)
+    #expect(outcome.transcript.segments[0].text == "say hi there now")
+    let fix = outcome.transcript.segments[0].fixes?.first
+    #expect(fix?.kind == .liveCorrection && fix?.heard == "hello — there")
+    #expect(fix?.heardWords == 2, "Two words, though what was heard has three tokens.")
+}
+
+@Test func aReplayedLiveHintNeverChangesOrMarksWordsEditedInReview() {
+    // Live: "send" → "share". Later edited in Review too (the mark is the person's newer choice), then the hint is
+    // replayed (recovery): it finds "share" shown, and would have marked it as its own.
+    let live = SessionFixtures.segment(["please", "send", "the", "deck"], track: "system", start: 4, id: "live")
+    var edited = SessionFixtures.segment(["please", "share", "the", "deck"], track: "system", start: 4, id: "live")
+    edited.fixes = [TranscriptWordFix(first: 1, end: 2, heard: "send", kind: .reviewEdit, heardWords: 1)]
+    let one = LiveHints.applyingText([hint(live, words: 1..<2, action: .replaceText("share"))],
+                                     to: SessionFixtures.transcript([edited]))
+    #expect(one.applied == 0)
+    #expect(one.transcript.segments == [edited], "The Review edit stays as it is.")
+
+    // Across language pieces: "send the latest deck" → "share this doc.", with "doc." edited in Review since.
+    let sentence = SessionFixtures.segment(["please", "send", "the", "latest", "deck"], track: "mic", start: 2,
+                                           id: "sentence")
+    let liveHint = hint(sentence, words: 1..<5, action: .replaceText("share this doc."), id: "H1")
+    let first = LanguageMerge.piece(of: sentence, first: 0, end: 3, language: "en-CA")
+    let second = LanguageMerge.piece(of: sentence, first: 3, end: 5, language: "fr-CA")
+    let applied = LiveHints.applyingText([liveHint], to: SessionFixtures.transcript([first, second])).transcript
+    var reviewed = applied
+    reviewed.segments[1].fixes = [TranscriptWordFix(first: 0, end: 1, heard: "latest deck", kind: .reviewEdit,
+                                                    heardWords: 2)]
+    reviewed.segments[0].fixes = nil
+    let replayed = LiveHints.applyingText([liveHint], to: reviewed)
+    #expect(replayed.applied == 0)
+    #expect(replayed.transcript.segments == reviewed.segments, "Neither piece is marked or changed.")
 }
 
 @Test func liveTextHintSurvivesReplayChangingTheSegmentID() {
@@ -125,7 +172,7 @@ private func hint(_ segment: TranscriptSegment, words: Range<Int>, action: LiveH
     #expect(outcome.unmatched == 0)
     #expect(outcome.transcript.segments[0].text == "share share")
     #expect(outcome.transcript.segments[0].fixes == [
-        TranscriptWordFix(first: 0, end: 1, heard: "send", kind: .liveCorrection),
+        TranscriptWordFix(first: 0, end: 1, heard: "send", kind: .liveCorrection, heardWords: 1),
     ])
 }
 
@@ -145,10 +192,10 @@ private func hint(_ segment: TranscriptSegment, words: Range<Int>, action: LiveH
     #expect(applied.transcript.segments.map(\.language) == ["en-CA", "fr-CA"])
     #expect(applied.transcript.segments.map(\.text) == ["please share this ", "doc."])
     #expect(applied.transcript.segments[0].fixes == [
-        TranscriptWordFix(first: 1, end: 3, heard: "send the", kind: .liveCorrection),
+        TranscriptWordFix(first: 1, end: 3, heard: "send the", kind: .liveCorrection, heardWords: 2),
     ])
     #expect(applied.transcript.segments[1].fixes == [
-        TranscriptWordFix(first: 0, end: 1, heard: "latest deck", kind: .liveCorrection),
+        TranscriptWordFix(first: 0, end: 1, heard: "latest deck", kind: .liveCorrection, heardWords: 2),
     ])
     #expect(repeated.applied == 0)
     #expect(repeated.alreadyApplied == 1)
@@ -185,7 +232,7 @@ private func hint(_ segment: TranscriptSegment, words: Range<Int>, action: LiveH
         [WordSpan(segmentID: second.id, first: 0, end: 2)], from: original, to: corrected)
 
     #expect(corrected.segments[0].fixes == [
-        TranscriptWordFix(first: 0, end: 1, heard: "turn this into summary", kind: .liveCorrection),
+        TranscriptWordFix(first: 0, end: 1, heard: "turn this into summary", kind: .liveCorrection, heardWords: 4),
     ])
     #expect(moved == [WordSpan(segmentID: first.id, first: 0, end: 1)])
 }
@@ -211,7 +258,7 @@ private func hint(_ segment: TranscriptSegment, words: Range<Int>, action: LiveH
     #expect(applied.unmatched == 0)
     #expect(applied.transcript.segments.map(\.text) == ["alpha beta ", "gamma"])
     #expect(applied.transcript.segments[0].fixes == [
-        TranscriptWordFix(first: 0, end: 2, heard: "one two — —", kind: .liveCorrection),
+        TranscriptWordFix(first: 0, end: 2, heard: "one two — —", kind: .liveCorrection, heardWords: 2),
     ])
     #expect(repeated.applied == 0)
     #expect(repeated.alreadyApplied == 1)
@@ -254,7 +301,7 @@ private func hint(_ segment: TranscriptSegment, words: Range<Int>, action: LiveH
     #expect(first.transcript.segments[0].text == "share the doc")
     #expect(first.transcript.segments[0].words == corrected.words)
     #expect(first.transcript.segments[0].fixes == [
-        TranscriptWordFix(first: 0, end: 3, heard: "share the doc", kind: .liveCorrection),
+        TranscriptWordFix(first: 0, end: 3, heard: "share the doc", kind: .liveCorrection, heardWords: 3),
     ])
     #expect(second.applied == 0)
     #expect(second.alreadyApplied == 1)
@@ -296,7 +343,7 @@ private func hint(_ segment: TranscriptSegment, words: Range<Int>, action: LiveH
     #expect(outcome.applied == 1)
     #expect(outcome.transcript.segments[0].text == "share this document")
     #expect(outcome.transcript.segments[0].fixes == [
-        TranscriptWordFix(first: 0, end: 3, heard: "send the deck", kind: .liveCorrection),
+        TranscriptWordFix(first: 0, end: 3, heard: "send the deck", kind: .liveCorrection, heardWords: 3),
     ])
     #expect(LiveHints.originalHeard(for: second, among: [first]) == "send the deck")
     #expect(LiveHints.correctionLearningState(for: second, among: [first])
@@ -376,7 +423,7 @@ private func hint(_ segment: TranscriptSegment, words: Range<Int>, action: LiveH
     #expect(outcome.unmatched == 0)
     #expect(outcome.transcript.segments[0].text == "sent")
     #expect(outcome.transcript.segments[0].fixes == [
-        TranscriptWordFix(first: 0, end: 1, heard: "share doc", kind: .liveCorrection),
+        TranscriptWordFix(first: 0, end: 1, heard: "share doc", kind: .liveCorrection, heardWords: 2),
     ])
     #expect(try SpeakerTranscriptRetarget.owners(
         from: intermediate, to: outcome.transcript.segments[0], commonBase: true).count == 1)
@@ -410,7 +457,7 @@ private func hint(_ segment: TranscriptSegment, words: Range<Int>, action: LiveH
     #expect(preserved.segments[0].text == "one two three four right")
     #expect(preserved.segments[0].fixes == [
         .init(first: 0, end: 4, heard: "alpha", kind: .liveCorrection),
-        .init(first: 4, end: 5, heard: "wrong", kind: .correction),
+        .init(first: 4, end: 5, heard: "wrong", kind: .correction, heardWords: 1),
     ])
 }
 
@@ -427,7 +474,7 @@ private func hint(_ segment: TranscriptSegment, words: Range<Int>, action: LiveH
 
     #expect(preserved.segments[0].text == "one two three four Claude")
     #expect(preserved.segments[0].fixes?.last ==
-        .init(first: 4, end: 5, heard: "cloud", kind: .term))
+        .init(first: 4, end: 5, heard: "cloud", kind: .term, heardWords: 1))
 }
 
 @Test func anUntimedReviewRevertFollowsAPrecedingLiveWordInsertion() {

@@ -1268,6 +1268,31 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
         })
     }
 
+    /// The corrections a word edit saved in a meeting's Review teaches (`TranscriptEditLearning`; none for a trivial
+    /// edit).
+    func reviewEditCorrections(_ edit: ReviewWordEdit) -> [Correction] {
+        let dictionaryWord: (String) -> Bool = { word in
+            NSSpellChecker.shared.checkSpelling(of: word.lowercased(), startingAt: 0).location == NSNotFound
+        }
+        return TranscriptEditLearning.corrections(heard: edit.heard, meant: edit.meant, before: edit.before,
+                                                  after: edit.after, heardBefore: edit.heardBefore,
+                                                  heardAfter: edit.heardAfter, isDictionaryWord: dictionaryWord)
+    }
+
+    /// How a review's close changes the list Corrections shows (`ReviewSession.correctionsWriter`): corrections.json
+    /// loaded, changed, and saved under its file lock, off the main actor (the review runs it inside the meeting's
+    /// speaker lock). Nil while the list cannot be written (corrections.json unreadable).
+    func reviewCorrectionsWriter() -> ReviewSession.CorrectionsUpdate? {
+        guard correctionsWritable else { return nil }
+        let url = CorrectionList.defaultURL
+        return { change in _ = try CorrectionList.update(at: url) { try change(&$0) } }
+    }
+
+    /// A review's close wrote corrections.json: the list is taken again.
+    func reviewCorrectionsWritten() {
+        reloadCorrectionsIfChanged()
+    }
+
     /// A manual Add; one that resolves a declined swap also keeps the edit that swap came from, as Learn
     /// does, unless a newer dictation or kept edit has replaced the text it was edited from.
     private func addCorrection(_ correction: Correction, resolving edit: DeclinedCorrectionQueue.PendingEdit?)

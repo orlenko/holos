@@ -1016,6 +1016,15 @@ extension HolosAppDelegate: NSMenuDelegate {
             self.setDockPresence(false, for: dockKey)
         }
         window.onRelabel = { [weak self] running in self?.reviewRelabelChanged(sessionID, running: running) }
+        // Word edits in Review teach corrections and offer word-list terms (docs/meeting-design.md §5.10).
+        // Learned when the window closes, from every word edited in the meeting; existing corrections are kept.
+        window.review.correctionsToLearn = { [weak self] edit in self?.reviewEditCorrections(edit) ?? [] }
+        window.review.correctionsWriter = { [weak self] in self?.reviewCorrectionsWriter() }
+        window.review.correctionsWritten = { [weak self] in self?.reviewCorrectionsWritten() }
+        window.wordListHeardAs = { [weak self] term in self?.wordListHeardAs(term) }
+        window.addWordListTerm = { [weak self] term, heardAs in
+            self?.addReviewTerm(term, heardAs: heardAs) ?? "The word list is not available."
+        }
         meeting.reviewWindows[sessionID] = window
         watchReviewTitles()
         setDockPresence(true, for: dockKey)
@@ -1127,11 +1136,24 @@ extension HolosAppDelegate: NSMenuDelegate {
     private func closeReviews(_ windows: [ReviewWindow], limit: Duration = .seconds(10)) async {
         guard !windows.isEmpty else { return }
         meeting.quitting = true
-        let closing = Task { @MainActor in
-            for window in windows { await window.closeAndWait() }
+        // All start closing at once: a slow close (a voice sync) never keeps another window's typed words unsaved.
+        let finished = await ReviewQuit.closeAll(windows, limit: limit)
+        // Word edits that were refused or failed while closing, timeout or not: their windows are gone, so they are
+        // logged with what was typed.
+        for window in windows {
+            for failed in window.review.failedWordEditsAtClose {
+                Self.meetingLog.error("Quitting after a word edit was not saved (\(failed.reason, privacy: .private); what was typed: \(failed.typed, privacy: .private))")
+            }
         }
-        if !(await waitAtMost(limit, for: closing)) {
+        if !finished {
             Self.meetingLog.error("Quitting before \(windows.count, privacy: .public) review windows finished saving")
+            // Every word edit not saved, each with what was typed: those Return or Tab handed over and still saving,
+            // and the one the field held at the close (closing queued it with the others).
+            for window in windows {
+                for typed in window.review.unsavedWordEdits {
+                    Self.meetingLog.error("Quitting before a word edit was saved (what was typed: \(typed, privacy: .private))")
+                }
+            }
             // Their voice work stops now, so no child process outlives the app with a render of the audio.
             for window in windows { window.review.stopBackgroundWork() }
         }

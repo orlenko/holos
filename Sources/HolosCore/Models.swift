@@ -70,6 +70,10 @@ public struct TranscriptWordFixKind: OpenStringCode {
     public static let reviewRevert = TranscriptWordFixKind("reviewRevert")
     /// A correction made against a finalized phrase while its meeting was still recording.
     public static let liveCorrection = TranscriptWordFixKind("liveCorrection")
+    /// Words the person typed in Review's edit mode (docs/meeting-design.md §5.10, "Editing words"). `heard` is what
+    /// the recognizer wrote over the whole edited span; like a live correction, the edit is in the unfixed base too,
+    /// so automatic word fixes never replace it.
+    public static let reviewEdit = TranscriptWordFixKind("reviewEdit")
 }
 
 /// Words of a segment that the meeting word-fix stage changed (docs/design.md "Meeting word fixes"): what the
@@ -82,9 +86,20 @@ public struct TranscriptWordFix: Codable, Sendable, Equatable {
     /// The text the recognizer wrote there. For `reviewRevert`, the automatic replacement the person rejected.
     public var heard: String
     public var kind: TranscriptWordFixKind
+    /// How many recognizer words `heard` stands for ("你好世界" for two timed words, "hello — there" for two, "type c"
+    /// in "“type c”" for two). Recorded on every Review edit and automatic fix written from this version on; nil on
+    /// older fixes (and on reverts and live corrections, which occupy their own words), whose count is `heard`'s
+    /// whitespace-separated tokens.
+    public var heardWords: Int?
+    /// A Review edit that deleted words (merged into a neighbour, so `heard` holds the deleted words with it), or that
+    /// took in such a deletion: it teaches no correction (it would make dictation drop a word everywhere). Nil
+    /// otherwise, so other fixes encode as before.
+    public var deleted: Bool?
 
-    public init(first: Int, end: Int, heard: String, kind: TranscriptWordFixKind) {
-        self.first = first; self.end = end; self.heard = heard; self.kind = kind
+    public init(first: Int, end: Int, heard: String, kind: TranscriptWordFixKind, heardWords: Int? = nil,
+                deleted: Bool? = nil) {
+        self.first = first; self.end = end; self.heard = heard; self.kind = kind; self.heardWords = heardWords
+        self.deleted = deleted
     }
 }
 

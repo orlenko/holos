@@ -44,8 +44,46 @@ public struct CorrectionList: Codable, Sendable, Equatable {
 
     public private(set) var entries: [Correction] = []
 
+    /// What each meeting's review closes taught (`learnFromReview`), by meeting ID: one value per heard phrase. Kept in
+    /// corrections.json beside the rules and written in the same save, so a rule and the record that the meeting
+    /// taught it can never disagree. Only review learning reads it: dictation and Corrections use `entries`. Deleting a
+    /// rule in Corrections leaves its lesson here, so the meeting never teaches it again. Absent from files no meeting
+    /// taught anything into (older files decode with none); an older Voice is Local ignores it when reading, and a
+    /// save by one drops it (its meetings may then teach a deleted rule again).
+    public private(set) var reviewTaught: [String: [Correction]]? = nil
+
     public init(entries: [Correction] = []) {
         for entry in entries { add(entry) }
+    }
+
+    /// What meeting `meeting`'s review closes taught (`reviewTaught`); empty when nothing.
+    public func taught(byMeeting meeting: String) -> [Correction] { reviewTaught?[meeting] ?? [] }
+
+    /// Learns what meeting `meeting`'s word edits teach (a review window closing) and records it as the meeting's, in
+    /// this one value (so one save writes both):
+    /// - a lesson the meeting taught already (same heard phrase and value) is never taught again, whether or not the
+    ///   list still holds it (deleted in Corrections, it stays deleted);
+    /// - otherwise `learnReplacingTaught`: a phrase the list lacks is added; one still holding the value this meeting
+    ///   taught takes the new one; one holding anything else (an external or another meeting's value, or the same
+    ///   value set before) keeps it, and is not recorded as the meeting's.
+    /// Returns what was put in the list, recorded as the meeting's (one value per phrase, the later replacing).
+    @discardableResult
+    public mutating func learnFromReview(_ learned: [Correction], meeting: String) -> [Correction] {
+        var taught = taught(byMeeting: meeting)
+        // Phrase and value kept apart (never joined into one string, where decoded text could make two lessons one).
+        let known = Set(taught.map { Correction(heard: Self.key($0.heard), meant: $0.meant) })
+        let new = learned.filter { !known.contains(Correction(heard: Self.key($0.heard), meant: $0.meant)) }
+        let applied = learnReplacingTaught(new, taught: taught)
+        guard !applied.isEmpty else { return [] }
+        for correction in applied {
+            let key = Self.key(correction.heard)
+            taught.removeAll { Self.key($0.heard) == key }
+            taught.append(correction)
+        }
+        var all = reviewTaught ?? [:]
+        all[meeting] = taught
+        reviewTaught = all
+        return applied
     }
 
     /// `<supportRoot>/corrections.json`, beside `words.json`: Application Support/Holos, or `HOLOS_SUPPORT_DIR` when
@@ -106,6 +144,64 @@ public struct CorrectionList: Codable, Sendable, Equatable {
 
     public mutating func remove(_ correction: Correction) {
         entries.removeAll { $0 == correction }
+    }
+
+    /// What one heard phrase is known by: lowercased, trimmed, whitespace collapsed. The list holds one entry per key.
+    public static func key(_ heard: String) -> String {
+        normalized(heard.trimmingCharacters(in: .whitespacesAndNewlines))
+    }
+
+    /// The entry for heard phrase `key` (`key(_:)`), nil when there is none.
+    public func entry(forKey key: String) -> Correction? {
+        entries.last { Self.normalized($0.heard) == key }
+    }
+
+    /// Makes `correction` the entry for heard phrase `key`, or removes it (nil).
+    public mutating func set(_ correction: Correction?, forKey key: String) {
+        entries.removeAll { Self.normalized($0.heard) == key }
+        if let correction { add(correction) }
+    }
+
+    /// Learns `learned` (what a meeting's word edits teach, when a review window closes) keeping what the list has: a
+    /// heard phrase it lacks is added; one it has keeps its correction (an earlier or another choice wins). Nothing is
+    /// removed, so learning the same again changes nothing. Returns what was added.
+    @discardableResult
+    public mutating func learnKeepingExisting(_ learned: [Correction]) -> [Correction] {
+        var added: [Correction] = []
+        for correction in learned {
+            let key = Self.key(correction.heard)
+            guard !key.isEmpty, entry(forKey: key) == nil else { continue }
+            let before = entries.count
+            add(correction)
+            if entries.count > before { added.append(correction) }
+        }
+        return added
+    }
+
+    /// Learns what a meeting's word edits teach as `learnKeepingExisting` does, except that a phrase still holding the
+    /// value this meeting taught it before (`taught`: its earlier lessons) takes the new one: the meeting's later edit
+    /// wins over its own earlier one ("Claude", re-edited to "Claudia"), never over a value set elsewhere. Returns what
+    /// this call put in the list (added, or replacing the meeting's own earlier value): the meeting's to record as
+    /// taught. A phrase the list already held with the same value is left out too: that rule is not the meeting's, so
+    /// a later re-edit there never overwrites it.
+    @discardableResult
+    public mutating func learnReplacingTaught(_ learned: [Correction], taught: [Correction]) -> [Correction] {
+        var applied: [Correction] = []
+        for correction in learned {
+            let key = Self.key(correction.heard)
+            guard !key.isEmpty else { continue }
+            if let existing = entry(forKey: key) {
+                guard existing.meant != correction.meant,
+                      taught.contains(where: { Self.key($0.heard) == key && $0.meant == existing.meant }) else {
+                    continue
+                }
+                set(correction, forKey: key)
+            } else {
+                add(correction)
+            }
+            if entry(forKey: key)?.meant == correction.meant { applied.append(correction) }
+        }
+        return applied
     }
 
     /// Reconciles rules introduced by live editing with the rules its latest edits still confirm. `managed` is every

@@ -1077,7 +1077,10 @@ public enum VoiceProfileService {
     /// moved a turn it holds to someone else. A sample built from an earlier run (the meeting was labelled again) is
     /// different: that run can no longer be edited, so its turns are still the ones the user confirmed. It is replaced
     /// by a sample learned from the new labels, and otherwise kept while its own turns still hold
-    /// (`earlierSampleHolds`: an acoustic echo mask can make them echo, §5.11); when they do not, it is removed.
+    /// (`earlierSampleHolds`: an acoustic echo mask can make them echo, §5.11); when they do not, it is removed. A
+    /// sample built from a run a word change retargeted (the head's labelling) is the head's own, compared by audio
+    /// (`retargetedSampleInputs`): unchanged audio keeps it, and a provenance that cannot be read keeps it unless it can
+    /// be learned again; inputs shown to have changed have it learned again, or removed.
     private static func plan(database: SpeakerProfileDatabase, snapshot: SpeakerSessionSnapshot, run: DiarizationRun,
                              projection: SpeakerProjection, enroll: Set<String>, earlierRuns: EarlierRunViews,
                              extractorAvailable: Bool) -> [SamplePlan] {
@@ -1091,9 +1094,30 @@ public enum VoiceProfileService {
                                             database: database)
             let digest = VoiceEnrollment.inputDigest(speakerIDs: speakerIDs, projection: projection)
             if let existing, existing.inputDigest == digest { continue }
-            let fromEarlierRun = existing.map { builtFromEarlierRun($0, headRunID: run.id) } ?? false
-            let keepable = fromEarlierRun && existing.map { earlierSampleHolds($0, earlierRuns) } == true
+            let fromEarlierRun = existing.map {
+                builtFromEarlierRun($0, headRunID: run.id, sameLabelling: earlierRuns.sameLabelling)
+            } ?? false
+            var keepable = fromEarlierRun && existing.map { earlierSampleHolds($0, earlierRuns) } == true
             let turns = VoiceEnrollment.candidateTurns(for: speakerIDs, projection: projection)
+            // Learned from a run a word change retargeted: its input digest names that run, so it differs from the
+            // head's whatever the change was. Kept as it is when the audio it was learned from is the head's. When its
+            // provenance cannot be read, kept unless it can be learned again, or the person has no qualifying turn
+            // left. When it can be read and shows other inputs (an echo mask found since cuts a turn it was learned
+            // from, speaker changes since), it is learned again, or removed when it cannot be, Remember voices off
+            // too, as the head's own sample would be.
+            if let existing, let runID = sourceRunID(existing), runID != run.id,
+               earlierRuns.sameLabelling.contains(runID) {
+                switch retargetedSampleInputs(existing, earlierRuns) {
+                case .learnedFrom(let audio):
+                    if audio.same(as: VoiceEnrollment.AudioInputs(speakerIDs: speakerIDs, projection: projection)) {
+                        continue
+                    }
+                case .changed:
+                    break
+                case .unknown:
+                    keepable = !speakerIDs.isEmpty && !turns.isEmpty
+                }
+            }
             let canLearn = database.rememberVoices && !snapshot.audioDeleted && extractorAvailable && model != nil
                 && (profile.embeddingModel == nil || profile.embeddingModel == model)
             let action: SamplePlan.Action
@@ -1109,10 +1133,12 @@ public enum VoiceProfileService {
         return plans
     }
 
-    /// Whether `sample` was computed from a run other than the head (its generation names another run ID).
-    static func builtFromEarlierRun(_ sample: VoiceprintSample, headRunID: String) -> Bool {
+    /// Whether `sample` was computed from an earlier labelling: a run other than the head (its generation names another
+    /// run ID) that does not keep the head's labelling (`sameLabelling`: a word change only retargeted it).
+    static func builtFromEarlierRun(_ sample: VoiceprintSample, headRunID: String,
+                                    sameLabelling: Set<String> = []) -> Bool {
         guard let runID = sourceRunID(sample) else { return false }
-        return runID != headRunID
+        return runID != headRunID && !sameLabelling.contains(runID)
     }
 
     /// The run `sample` was computed from (its generation is "<runID>:<edits length>").
@@ -1126,20 +1152,75 @@ public enum VoiceProfileService {
     struct EarlierRunViews {
         var mask: AcousticEchoMask?
         var views: [String: SpeakerProjection?] = [:]
+        /// Runs other than the head that keep its labelling (`DiarizationRun.labelling`: a word change retargeted
+        /// them, same turns and edits): a sample from one is the head's own, recomputed or removed when its inputs
+        /// change, never kept as an earlier labelling's.
+        var sameLabelling: Set<String> = []
+        /// The views of the `sameLabelling` runs whose words can be read (with the edits based on each): through
+        /// `mask`, and, with a mask, without one too (a sample learned before the echo was found).
+        var retargeted: [String: [SpeakerProjection]] = [:]
     }
 
-    /// `EarlierRunViews` for the samples of `database` from `snapshot`'s meeting. Only with a mask: without one
-    /// nothing can have turned into echo, and an earlier-run sample is kept as before.
+    /// What a sample learned from a run of the head's labelling was learned from (`retargetedSampleInputs`).
+    enum RetargetedInputs: Equatable {
+        /// Its provenance cannot be read: the run or its words cannot be read, or the sample has no input digest.
+        case unknown
+        /// The audio (`VoiceEnrollment.AudioInputs`) of the view that gives the sample's own input digest.
+        case learnedFrom(VoiceEnrollment.AudioInputs)
+        /// Its run can be read, but no view of it gives the sample's input digest: its inputs changed since it was
+        /// learned (an echo mask that is neither none nor the current one, speaker changes since).
+        case changed
+    }
+
+    /// What `sample`, learned from a run of the head's labelling, was learned from: the audio of that run's view
+    /// (through the current mask, else without one: learned before the echo was found) that gives its input digest.
+    static func retargetedSampleInputs(_ sample: VoiceprintSample, _ earlier: EarlierRunViews) -> RetargetedInputs {
+        guard let runID = sourceRunID(sample), let views = earlier.retargeted[runID], let digest = sample.inputDigest
+        else { return .unknown }
+        guard let view = views.first(where: {
+            VoiceEnrollment.inputDigest(speakerIDs: sample.speakerIDs, projection: $0) == digest
+        }) else { return .changed }
+        return .learnedFrom(VoiceEnrollment.AudioInputs(speakerIDs: sample.speakerIDs, projection: view))
+    }
+
+    /// `EarlierRunViews` for the samples of `database` from `snapshot`'s meeting: which runs keep the head's labelling,
+    /// and the views of the others. Views only with a mask: without one nothing can have turned into echo, and an
+    /// earlier-run sample is kept as before.
     static func earlierRunViews(_ database: SpeakerProfileDatabase, snapshot: SpeakerSessionSnapshot,
                                 headRunID: String) throws -> EarlierRunViews {
         var result = EarlierRunViews(mask: snapshot.projection?.acousticEcho)
-        guard result.mask != nil else { return result }
+        let headLabelling = snapshot.run.map { $0.labelling ?? $0.id } ?? headRunID
+        var seen: Set<String> = []
         for sample in database.profiles.flatMap(\.samples) where sample.sessionID == snapshot.manifest.id {
-            guard let runID = sourceRunID(sample), runID != headRunID, !result.views.keys.contains(runID) else {
+            guard let runID = sourceRunID(sample), runID != headRunID, seen.insert(runID).inserted else { continue }
+            let run: DiarizationRun
+            do {
+                run = try SessionSpeakerStore.readRun(id: runID, session: snapshot.session)
+            } catch {
+                // Unknown: an earlier labelling's, as before. With a mask, one that cannot be read (gone, damaged) is
+                // not kept; any other failure stops the learning, as before.
+                guard result.mask != nil else { continue }
+                guard SessionFiles.isDamage(error) else { throw error }
+                result.views[runID] = .some(nil)
                 continue
             }
+            if (run.labelling ?? run.id) == headLabelling {
+                result.sameLabelling.insert(runID)
+                // Its views, so a sample learned from it can be checked against the head's audio
+                // (`retargetedSampleInputs`): through the mask, and without it (learned before the echo was found);
+                // none when its words cannot be read.
+                do {
+                    let transcript = try SessionFiles.transcript(id: run.transcriptID, session: snapshot.session)
+                    let masks: [AcousticEchoMask?] = result.mask == nil ? [nil] : [result.mask, nil]
+                    result.retargeted[runID] = masks.map { mask in
+                        SpeakerProjection.make(run: run, transcript: transcript, edits: snapshot.journal.edits,
+                                               recognition: nil, profileNames: [:], acousticEcho: mask)
+                    }
+                } catch let error where SessionFiles.isDamage(error) {}
+                continue
+            }
+            guard result.mask != nil else { continue }
             do {
-                let run = try SessionSpeakerStore.readRun(id: runID, session: snapshot.session)
                 let transcript = try SessionFiles.transcript(id: run.transcriptID, session: snapshot.session)
                 result.views[runID] = SpeakerProjection.make(run: run, transcript: transcript,
                                                              edits: snapshot.journal.edits, recognition: nil,

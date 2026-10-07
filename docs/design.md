@@ -1001,7 +1001,10 @@ words with the on-device model:
    Speakers); an explicitly requested `session fix-words` checks all words again. If the
    transcript pointer is saved but publishing its mapped speaker head fails, Review retries
    that publication from the still-current old head; a later automatic pass does the same
-   before it may relabel or export.
+   before it may relabel or export. Words the person types in Review's edit mode are a
+   `reviewEdit` fix made in the unfixed base as well (docs/meeting-design.md §5.10, "Editing
+   words"), so every later pass keeps them and never replaces them; their Revert is another
+   edit back to what the recognizer wrote.
 7. *Evaluation.* `eval apply --add-vocabulary`: where a reviewed passage replaced local
    real words by a term of the word list or a marked one (local "cloud", cloud "Claude"),
    the pair, without the neighbour a correction is learned with, is proposed and added as

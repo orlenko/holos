@@ -9,6 +9,11 @@ import HolosStorage
 enum SpeakerTranscriptRetarget {
     @TaskLocal static var beforePublishHead: (@Sendable () throws -> Void)?
     @TaskLocal static var afterPublishHead: (@Sendable () -> Void)?
+    /// Test hook: called once head.json names the new run, before anything after it; throwing is a failure after the
+    /// rename (a folder sync).
+    @TaskLocal static var afterHeadWritten: (@Sendable () throws -> Void)?
+    /// Test hook: called each time `plan` starts (a plan reads files and walks every turn).
+    @TaskLocal static var planStarted: (@Sendable () -> Void)?
 
     struct Plan {
         var run: DiarizationRun
@@ -18,22 +23,56 @@ enum SpeakerTranscriptRetarget {
     }
 
     /// A complete replacement for the current head, or nil when there is no usable head to preserve.
+    ///
+    /// `move`: the word change is a Review word edit (or its undo) that moved these words and no others. Words are then
+    /// mapped by index, not by time: every other word keeps its exact owner, and the replacement words take the owner of
+    /// the words they replace (one turn). Recognizer timings of neighbouring words can overlap across speakers, so
+    /// mapping an edit's words by time could give an untouched word to another turn as well.
+    ///
+    /// `undo`: `move` takes an edit back (`SessionWordEdit.restore`), whose mark is in the transcript it is made from;
+    /// otherwise an edit's mark is in the new one.
+    ///
+    /// `unfixed`: the revision the transcripts were fixed from, when the caller has read it (else it is read here);
+    /// `voiceData`: false leaves the voice data out of the plan (a check that publishes nothing).
     static func plan(session: URL, from snapshot: SpeakerSessionSnapshot, to transcript: Transcript,
-                     now: Date = Date()) throws -> Plan? {
+                     move: ReviewWordMove? = nil, undo: Bool = false, now: Date = Date(),
+                     unfixed: Transcript? = nil, voiceData readsVoiceData: Bool = true) throws -> Plan? {
+        planStarted?()
         guard let oldRun = snapshot.run, let projection = snapshot.projection,
               oldRun.transcriptID == snapshot.transcript.id else { return nil }
         guard snapshot.journal.isComplete else {
             throw HolosError.invalidInput("The speaker edits cannot all be read, so the labels cannot be kept.")
         }
-        let mapping = try Mapping(from: snapshot.transcript, to: transcript)
+        // Mapped by the words each automatic fix replaced (`heardWords`): counts that are wrong but add up would move
+        // words between speakers, so they are checked against the unfixed revision first, when it can be read.
+        if move == nil {
+            try checkFixCounts(snapshot.transcript, session: session, unfixed: unfixed)
+            try checkFixCounts(transcript, session: session, unfixed: unfixed)
+        }
+        let mapping = try move.map { try Mapping(from: snapshot.transcript, to: transcript, move: $0, undo: undo) }
+            ?? Mapping(from: snapshot.transcript, to: transcript)
+        // Every word a move replaces belongs to the same turns (an edit is refused otherwise), so each replacement word
+        // takes exactly those turns. Checked here for every path that maps by a move, a recovery reading it from the
+        // event log included: a damaged one would give words to turns that never held them.
+        if let move, !TranscriptWordEdit.sameOwners(move.replaced, segmentID: move.segmentID,
+                                                    turns: projection.turns.map(\.spans)) {
+            throw TranscriptWordEdit.overlappingTurns
+        }
         var run = oldRun
         run.id = UUID().uuidString
+        // The same labelling, on other words: what was learned from the run before still holds (`labelling`).
+        run.labelling = oldRun.labelling ?? oldRun.id
         run.createdAt = now
         run.transcriptID = transcript.id
+        // Cancellation is checked per segment (`Mapping`), turn, and speaker edit: a plan of a long meeting stops soon
+        // when nothing will use it.
         run.turns = try oldRun.turns.map { turn in
+            try Task.checkCancellation()
             var moved = turn
             moved.spans = try mapping.spans(turn.spans, turnID: turn.id)
             let timing = try mapping.timing(of: moved.spans, turnID: turn.id)
+            // Words of the same times: the same audio, and the times the labelling gave it stay.
+            if mapping.sameTimes(turn.spans, moved.spans) { return moved }
             moved.start = timing.start
             moved.end = timing.end
             moved.timing = timing.quality
@@ -49,6 +88,7 @@ enum SpeakerTranscriptRetarget {
                                           profileNames: [:])
         var edits: [SpeakerEdit] = []
         for old in snapshot.journal.edits where old.baseRunID == oldRun.id && effective.contains(old.id) {
+            try Task.checkCancellation()
             let action = try mapping.action(old.action)
             let expected = view.fingerprint(for: action)
             let staleBefore = view.staleEdits.count
@@ -63,7 +103,8 @@ enum SpeakerTranscriptRetarget {
         var recognition = snapshot.recognition
         recognition?.runID = run.id
         recognition?.createdAt = now
-        var voiceData = try? SessionSpeakerStore.readVoiceData(runID: oldRun.id, session: session)
+        var voiceData: SessionVoiceData?
+        if readsVoiceData { voiceData = try? SessionSpeakerStore.readVoiceData(runID: oldRun.id, session: session) }
         voiceData?.runID = run.id
         voiceData?.createdAt = now
         return Plan(run: run, edits: edits, recognition: recognition, voiceData: voiceData)
@@ -85,6 +126,7 @@ enum SpeakerTranscriptRetarget {
     static func publishHead(_ plan: Plan, session: URL, now: Date = Date()) throws {
         try beforePublishHead?()
         try SessionSpeakerStore.writeHead(SpeakerHead(runID: plan.run.id, updatedAt: now), session: session)
+        try afterHeadWritten?()
         afterPublishHead?()
     }
 
@@ -200,8 +242,9 @@ enum SpeakerTranscriptRetarget {
             let replacementCount = fix.end - fix.first
             let originalCount: Int
             switch fix.kind {
-            case .correction, .term, .liveCorrection:
-                originalCount = WordFixes.tokens(of: Array(fix.heard.utf16)).count
+            case .correction, .term, .liveCorrection, .reviewEdit:
+                // A damaged count is refused below (nil), never multiplied.
+                originalCount = fix.heardWordCount() ?? 0
             case .reviewRevert:
                 originalCount = replacementCount
             default:
@@ -242,7 +285,36 @@ enum SpeakerTranscriptRetarget {
         return (overlap, -distance, -index)
     }
 
+    /// Refuses (as damaged) a fixed `transcript` whose automatic fixes' recorded word counts do not lie over what they
+    /// matched in its unfixed revision (`WordFixes.originalWordRanges`, `heardFits`). Nothing is checked when the
+    /// revision cannot be read, or for a segment with an older fix (no recorded count: counted by its spaces, as before).
+    private static func checkFixCounts(_ transcript: Transcript, session: URL, unfixed: Transcript?) throws {
+        let automatic = { (fix: TranscriptWordFix) in fix.kind == .correction || fix.kind == .term }
+        guard let baseID = transcript.fixedFrom,
+              transcript.segments.contains(where: { ($0.fixes ?? []).contains(where: automatic) }),
+              let base = unfixed?.id == baseID ? unfixed : (try? SessionFiles.transcript(id: baseID, session: session)),
+              !TranscriptWordEdit.hasRepeatedSegmentIDs(base) else { return }
+        let baseSegments = Dictionary(base.segments.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        for segment in transcript.segments {
+            let fixes = segment.fixes ?? []
+            guard fixes.contains(where: automatic),
+                  !fixes.contains(where: { automatic($0) && $0.heardWords == nil }),
+                  let baseSegment = baseSegments[segment.id] else { continue }
+            let ranges = WordFixes.originalWordRanges(fixes: fixes, currentWords: WordTiming.effectiveWords(of: segment),
+                                                      originalWords: WordTiming.effectiveWords(of: baseSegment),
+                                                      originalText: Array(baseSegment.text.utf16))
+            guard !ranges.isEmpty else {
+                throw HolosError.invalidInput("The transcript's word fixes do not match the transcript they were fixed "
+                                              + "from, so speaker labels cannot be kept.")
+            }
+        }
+    }
+
     private struct Mapping {
+        /// The most replaced × replacement word pairs a word move may map (`init(from:to:move:)`): a million, far more
+        /// than any edit of one turn's words.
+        static let maximumMovePairs = 1_000_000
+
         struct Segment {
             var old: [EffectiveWord]
             var new: [EffectiveWord]
@@ -253,8 +325,36 @@ enum SpeakerTranscriptRetarget {
 
         var segments: [String: Segment]
         var order: [String]
+        /// `owners` turned round, made once (`index`): the new words each old word owns, each segment's place in
+        /// `order`, and how many old words of each segment any new word names. Mapping a turn's spans reads only its
+        /// own words, so mapping every turn is linear in the words.
+        private var owned: [WordRef: [WordRef]] = [:]
+        private var place: [String: Int] = [:]
+        private var ownedEnd: [String: Int] = [:]
+
+        private mutating func index() {
+            for (position, segmentID) in order.enumerated() where place[segmentID] == nil {
+                place[segmentID] = position
+                guard let segment = segments[segmentID] else { continue }
+                for (word, owners) in segment.owners.enumerated() {
+                    for owner in owners {
+                        owned[owner, default: []].append(WordRef(segmentID: segmentID, word: word))
+                        ownedEnd[owner.segmentID] = max(ownedEnd[owner.segmentID] ?? 0, owner.word + 1)
+                    }
+                }
+            }
+        }
 
         init(from old: Transcript, to new: Transcript) throws {
+            // Read from disk: a segment whose words or marks cannot be trusted (`TranscriptWordEdit.isDamaged`) is never
+            // mapped (combining language pieces offsets their marks, which a damaged one could overflow), nor a
+            // transcript with a segment ID used twice.
+            guard !TranscriptWordEdit.hasRepeatedSegmentIDs(old), !TranscriptWordEdit.hasRepeatedSegmentIDs(new),
+                  !old.segments.contains(where: TranscriptWordEdit.isDamaged),
+                  !new.segments.contains(where: TranscriptWordEdit.isDamaged) else {
+                throw HolosError.invalidInput("The transcript's words or word fixes are damaged, so speaker labels "
+                                              + "cannot be kept.")
+            }
             let oldBase = old.liveCorrectedFrom ?? old.fixedFrom ?? old.id
             let newBase = new.liveCorrectedFrom ?? new.fixedFrom ?? new.id
             let oldSegments = Dictionary(old.segments.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
@@ -270,12 +370,24 @@ enum SpeakerTranscriptRetarget {
                 }
             }
             for group in groups {
+                try Task.checkCancellation()
                 let before = try group.map { segment -> TranscriptSegment in
                     guard let found = oldSegments[segment.id] else {
                         throw HolosError.invalidInput(
                             "The fixed transcript changed its segments, so speaker labels cannot be kept.")
                     }
                     return found
+                }
+                // Segments the change left as they were: each word is its own owner (mapping them by time, word
+                // against word, would take as long as the segment's words squared).
+                if before == group {
+                    for segment in group {
+                        let words = WordTiming.effectiveWords(of: segment)
+                        mapped[segment.id] = Segment(old: words, new: words, owners: words.indices.map {
+                            [WordRef(segmentID: segment.id, word: $0)]
+                        })
+                    }
+                    continue
                 }
                 if try Self.mapIndividually(before: before, after: group,
                                             commonBase: oldBase == newBase, into: &mapped) {
@@ -304,6 +416,81 @@ enum SpeakerTranscriptRetarget {
             }
             segments = mapped
             order = new.segments.map(\.id)
+            index()
+        }
+
+        /// A Review word edit's (or its undo's) mapping: in `move`'s segment, words before the replaced ones keep their
+        /// index, words after shift by the change in count, and each replacement word is owned by every replaced word;
+        /// every other segment keeps its words as they are.
+        init(from old: Transcript, to new: Transcript, move: ReviewWordMove, undo: Bool) throws {
+            let changed = HolosError.invalidInput("The edited transcript does not match the speaker labels' words.")
+            let oldSegments = Dictionary(old.segments.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+            // The move names a segment both revisions have (one naming none would be ignored, its numbers unchecked),
+            // and no segment ID is there twice (a damaged transcript: which one the move means cannot be told).
+            guard Set(oldSegments.keys) == Set(new.segments.map(\.id)), old.segments.count == new.segments.count,
+                  oldSegments.count == old.segments.count, oldSegments[move.segmentID] != nil,
+                  move.replaced.lowerBound == move.replacement.lowerBound, move.replaced.lowerBound >= 0 else {
+                throw changed
+            }
+            var mapped: [String: Segment] = [:]
+            for segment in new.segments {
+                try Task.checkCancellation()
+                guard let before = oldSegments[segment.id] else { throw changed }
+                let oldWords = WordTiming.effectiveWords(of: before)
+                let newWords = WordTiming.effectiveWords(of: segment)
+                let ref = { (word: Int) in WordRef(segmentID: segment.id, word: word) }
+                let owners: [[WordRef]]
+                if segment.id == move.segmentID {
+                    // Both ranges within their words before any count is used (a move read from a damaged journal
+                    // can hold any numbers), then compared without adding, so nothing can overflow. Neither is ever
+                    // empty (an edit, and its undo, replace words by words): an empty one would leave words with no
+                    // owner, hidden from every turn.
+                    guard !move.replaced.isEmpty, !move.replacement.isEmpty,
+                          move.replaced.upperBound <= oldWords.count, move.replacement.upperBound <= newWords.count,
+                          newWords.count - move.replacement.count == oldWords.count - move.replaced.count else {
+                        throw changed
+                    }
+                    // Each replacement word is owned by every replaced word: an edit replaces a few words of one turn,
+                    // so far fewer than `maximumMovePairs`; a move read from a damaged journal with more would take
+                    // hours to map, and is refused as damaged.
+                    let pairs = move.replaced.count.multipliedReportingOverflow(by: move.replacement.count)
+                    guard !pairs.overflow, pairs.partialValue <= Self.maximumMovePairs else { throw changed }
+                    // Every word outside the move reads the same in both revisions: a move whose numbers point
+                    // elsewhere (damaged) would give the words around it to the wrong turns.
+                    guard oldWords[..<move.replaced.lowerBound].map(\.text)
+                            == newWords[..<move.replacement.lowerBound].map(\.text),
+                          oldWords[move.replaced.upperBound...].map(\.text)
+                            == newWords[move.replacement.upperBound...].map(\.text) else {
+                        throw changed
+                    }
+                    // And the edit is where the move says: a Review edit leaves its mark over exactly its new words,
+                    // and its undo (`undo`) takes back one over exactly the words it replaces. Repeated text ("go go
+                    // go") can read the same around another place; the mark cannot, and an older mark elsewhere never
+                    // stands in for it (each direction is checked on its own side).
+                    func marked(_ fixes: [TranscriptWordFix]?, _ range: Range<Int>) -> Bool {
+                        (fixes ?? []).contains {
+                            $0.kind == .reviewEdit && $0.first == range.lowerBound && $0.end == range.upperBound
+                        }
+                    }
+                    guard undo ? marked(before.fixes, move.replaced) : marked(segment.fixes, move.replacement) else {
+                        throw changed
+                    }
+                    let replacedRefs = move.replaced.map(ref)
+                    owners = newWords.indices.map { index in
+                        if index < move.replacement.lowerBound { return [ref(index)] }
+                        if index < move.replacement.upperBound { return replacedRefs }
+                        return [ref(index - move.replacement.count + move.replaced.count)]
+                    }
+                } else {
+                    // Every other segment is as it was.
+                    guard newWords.map(\.text) == oldWords.map(\.text) else { throw changed }
+                    owners = newWords.indices.map { [ref($0)] }
+                }
+                mapped[segment.id] = Segment(old: oldWords, new: newWords, owners: owners)
+            }
+            segments = mapped
+            order = new.segments.map(\.id)
+            index()
         }
 
         /// True when every piece maps in its own word space. A cross-piece correction deliberately makes the
@@ -354,7 +541,7 @@ enum SpeakerTranscriptRetarget {
                 text += words.map { _ in "word" }
                 fixes += (piece.fixes ?? []).map {
                     TranscriptWordFix(first: $0.first + offset, end: $0.end + offset,
-                                      heard: $0.heard, kind: $0.kind)
+                                      heard: $0.heard, kind: $0.kind, heardWords: $0.heardWords, deleted: $0.deleted)
                 }
                 offset += words.count
             }
@@ -370,23 +557,26 @@ enum SpeakerTranscriptRetarget {
             return result
         }
 
+        /// The new words owned by a word of `spans` (old words), as spans in transcript order. Only the spans' own
+        /// words are read (`owned`), each within the old words some new word names (a span read from disk can hold
+        /// any numbers).
         func spansAllowingEmpty(_ spans: [WordSpan]) -> [WordSpan] {
-            var result: [WordSpan] = []
-            for segmentID in order {
-                guard let segment = segments[segmentID] else { continue }
-                let indices = segment.owners.indices.filter { index in
-                    segment.owners[index].contains { owner in
-                        spans.contains { span in
-                            span.segmentID == owner.segmentID && span.first <= owner.word && owner.word < span.end
-                        }
-                    }
+            var found = Set<WordRef>()
+            for span in spans {
+                let end = min(span.end, ownedEnd[span.segmentID] ?? 0)
+                let first = max(span.first, 0)
+                guard first < end else { continue }
+                for word in first..<end {
+                    for new in owned[WordRef(segmentID: span.segmentID, word: word)] ?? [] { found.insert(new) }
                 }
-                for index in indices {
-                    if let last = result.last, last.segmentID == segmentID, last.end == index {
-                        result[result.count - 1].end = index + 1
-                    } else {
-                        result.append(WordSpan(segmentID: segmentID, first: index, end: index + 1))
-                    }
+            }
+            let ordered = found.sorted { (place[$0.segmentID] ?? 0, $0.word) < (place[$1.segmentID] ?? 0, $1.word) }
+            var result: [WordSpan] = []
+            for word in ordered {
+                if let last = result.last, last.segmentID == word.segmentID, last.end == word.word {
+                    result[result.count - 1].end = word.word + 1
+                } else {
+                    result.append(WordSpan(segmentID: word.segmentID, first: word.word, end: word.word + 1))
                 }
             }
             return result
@@ -408,6 +598,27 @@ enum SpeakerTranscriptRetarget {
             let estimated = words.filter(\.estimated).count
             let quality: WordTimingQuality = estimated == 0 ? .measured : estimated == words.count ? .estimated : .mixed
             return (words.map(\.start).min() ?? first.start, words.map(\.end).max() ?? first.end, quality)
+        }
+
+        /// Whether `old` spans (of the old revision) and `new` spans (their mapping) name words of the same times, one
+        /// for one: the turn's audio is unchanged, so it keeps its own times (a labelling may time a turn otherwise
+        /// than by its words; a voice learned from it was learned from those). False for a span outside its segment.
+        func sameTimes(_ old: [WordSpan], _ new: [WordSpan]) -> Bool {
+            func words(_ spans: [WordSpan], old: Bool) -> [EffectiveWord]? {
+                var words: [EffectiveWord] = []
+                for span in spans {
+                    guard let segment = segments[span.segmentID] else { return nil }
+                    let side = old ? segment.old : segment.new
+                    guard span.first >= 0, span.first < span.end, span.end <= side.count else { return nil }
+                    words += side[span.first..<span.end]
+                }
+                return words
+            }
+            guard let before = words(old, old: true), let after = words(new, old: false),
+                  before.count == after.count else { return false }
+            return zip(before, after).allSatisfy {
+                $0.start == $1.start && $0.end == $1.end && $0.estimated == $1.estimated
+            }
         }
 
         func action(_ action: SpeakerEditAction) throws -> SpeakerEditAction {

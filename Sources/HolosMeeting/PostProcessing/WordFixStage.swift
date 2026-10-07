@@ -544,11 +544,10 @@ enum WordFixStage {
             let text = segment.text as NSString
             for fix in segment.fixes ?? []
             where fix.kind == .correction || fix.kind == .term || fix.kind == .reviewRevert {
-                guard fix.first >= 0, fix.first < fix.end, fix.end <= words.count else { continue }
-                let first = words[fix.first], last = words[fix.end - 1]
-                let range = NSRange(location: first.utf16Offset,
-                                    length: last.utf16Offset + last.utf16Length - first.utf16Offset)
-                guard range.location >= 0, range.location + range.length <= text.length,
+                guard TranscriptWordEdit.isSound(fix, wordCount: words.count) else { continue }
+                // The words' ranges as read from disk, checked before any is added up (`characterRange`).
+                guard let range = WordFixes.characterRange(of: fix, words: words, textLength: text.length)
+                        .map({ NSRange(location: $0.lowerBound, length: $0.count) }),
                       let location = fixLocation(first: fix.first, end: fix.end,
                                                  words: words, origins: origins) else { continue }
                 result.append(PriorFix(segmentID: segment.id, heard: fix.heard,
@@ -567,11 +566,10 @@ enum WordFixStage {
             guard let origins = wordOrigins(of: segment) else { continue }
             let text = segment.text as NSString
             for fix in segment.fixes ?? [] where fix.kind == .term {
-                guard fix.first >= 0, fix.first < fix.end, fix.end <= words.count else { continue }
-                let first = words[fix.first], last = words[fix.end - 1]
-                let range = NSRange(location: first.utf16Offset,
-                                    length: last.utf16Offset + last.utf16Length - first.utf16Offset)
-                guard range.location >= 0, range.location + range.length <= text.length,
+                guard TranscriptWordEdit.isSound(fix, wordCount: words.count) else { continue }
+                // The words' ranges as read from disk, checked before any is added up (`characterRange`).
+                guard let range = WordFixes.characterRange(of: fix, words: words, textLength: text.length)
+                        .map({ NSRange(location: $0.lowerBound, length: $0.count) }),
                       let location = fixLocation(first: fix.first, end: fix.end,
                                                  words: words, origins: origins) else { continue }
                 result.append(AcceptedTerm(segmentID: segment.id, heard: fix.heard,
@@ -621,11 +619,10 @@ enum WordFixStage {
             guard let origins = wordOrigins(of: segment) else { continue }
             let text = segment.text as NSString
             for fix in segment.fixes ?? [] where fix.kind == .reviewRevert {
-                guard fix.first >= 0, fix.first < fix.end, fix.end <= words.count else { continue }
-                let first = words[fix.first], last = words[fix.end - 1]
-                let range = NSRange(location: first.utf16Offset,
-                                    length: last.utf16Offset + last.utf16Length - first.utf16Offset)
-                guard range.location >= 0, range.location + range.length <= text.length,
+                guard TranscriptWordEdit.isSound(fix, wordCount: words.count) else { continue }
+                // The words' ranges as read from disk, checked before any is added up (`characterRange`).
+                guard let range = WordFixes.characterRange(of: fix, words: words, textLength: text.length)
+                        .map({ NSRange(location: $0.lowerBound, length: $0.count) }),
                       let location = fixLocation(first: fix.first, end: fix.end,
                                                  words: words, origins: origins) else { continue }
                 result.append(RevertedFix(segmentID: segment.id, rejected: fix.heard,
@@ -643,9 +640,9 @@ enum WordFixStage {
         let finished = WordFixes.finished(working, segment: segment)
         let words = WordTiming.effectiveWords(of: finished)
         guard let origins = wordOrigins(of: finished) else { return nil }
+        let length = finished.text.utf16.count
         let touched = words.indices.filter { index in
-            let word = words[index]
-            return (word.utf16Offset..<(word.utf16Offset + word.utf16Length)).overlaps(range)
+            words[index].utf16Range(within: length)?.overlaps(range) == true
         }
         guard let firstIndex = touched.first, let lastIndex = touched.last else { return nil }
         return fixLocation(first: firstIndex, end: lastIndex + 1, words: words, origins: origins)
@@ -673,8 +670,9 @@ enum WordFixStage {
             let replacementCount = fix.end - fix.first
             let originalCount: Int
             switch fix.kind {
-            case .correction, .term, .liveCorrection:
-                originalCount = WordFixes.tokens(of: Array(fix.heard.utf16)).count
+            case .correction, .term, .liveCorrection, .reviewEdit:
+                // A damaged count is refused below (nil), never multiplied.
+                originalCount = fix.heardWordCount() ?? 0
             case .reviewRevert:
                 originalCount = replacementCount
             default:
@@ -848,7 +846,8 @@ enum WordFixStage {
         var id = transcriptID
         var seen: Set<String> = [id]
         while let base = events.last(where: {
-            ($0.kind == MeetingEventKind.wordsFixed || $0.kind == MeetingEventKind.liveHintsApplied)
+            ($0.kind == MeetingEventKind.wordsFixed || $0.kind == MeetingEventKind.liveHintsApplied
+                || $0.kind == MeetingEventKind.transcriptEdited)
                 && $0.details["transcriptID"] == id
         })?.details["base"], !base.isEmpty, seen.insert(base).inserted {
             id = base

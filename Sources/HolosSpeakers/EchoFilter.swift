@@ -50,7 +50,15 @@ public enum EchoFilter {
         let minimumRun = max(1, parameters.echoMinRunWords)
         let mic = words(transcript.segments, track: microphoneTrack)
         let system = words(transcript.segments, track: systemTrack)
-        let micMatchable = mic.indices.filter { mic[$0].isMatchable }
+        // Words the person edited in Review were read and confirmed: never echo, and they break an echo run as a word
+        // the call did not say would (they stay in the sequence, matching nothing), so an edit never hides the words
+        // around it either: correcting "write" to "right" beside the call's "that sounds right", or "rarely" to
+        // "really" in "I rarely think so" beside its "I think so", leaves the microphone's words as judged before.
+        let edited = reviewEditedWords(in: transcript)
+        // An edited word breaks runs even when it has no letters or digits ("…"), which other words do not.
+        let micMatchable = mic.indices.filter {
+            mic[$0].isMatchable || (edited.contains(mic[$0].ref) && mic[$0].start.isFinite)
+        }
         let systemMatchable = system.indices.filter { system[$0].isMatchable }
         guard !micMatchable.isEmpty, !systemMatchable.isEmpty else { return [] }
 
@@ -66,7 +74,7 @@ public enum EchoFilter {
         // For each matchable microphone word: the system positions it may echo.
         let candidates: [[Int]] = micMatchable.map { index in
             let word = mic[index]
-            guard let list = byText[word.key] else { return [] }
+            guard !edited.contains(word.ref), let list = byText[word.key] else { return [] }
             let low = word.start - window - timeEpsilon
             let high = word.start + min(window, echoLeadToleranceSeconds) + timeEpsilon
             var first = 0
@@ -143,7 +151,7 @@ public enum EchoFilter {
         }
 
         var spans: [WordSpan] = []
-        for index in mic.indices where dropped[index] {
+        for index in mic.indices where dropped[index] && !edited.contains(mic[index].ref) {
             let ref = mic[index].ref
             if let lastSpan = spans.last, lastSpan.segmentID == ref.segmentID, lastSpan.end == ref.word {
                 spans[spans.count - 1].end += 1
@@ -152,6 +160,34 @@ public enum EchoFilter {
             }
         }
         return spans
+    }
+
+    /// The words under a `reviewEdit` fix (edited in Review, docs/meeting-design.md §5.10): neither echo filter drops
+    /// or hides them.
+    public static func reviewEditedWords(in transcript: Transcript) -> Set<WordRef> {
+        var refs = Set<WordRef>()
+        for segment in transcript.segments {
+            let fixes = (segment.fixes ?? []).filter { $0.kind == .reviewEdit }
+            guard !fixes.isEmpty else { continue }
+            // Fixes come from files: only a mark within the segment's words counts (a damaged one, past them or
+            // backwards, exempts nothing), and the marks are merged first, so each word is taken once however many
+            // marks repeat it.
+            let count = WordTiming.effectiveWords(of: segment).count
+            let ranges = fixes.filter { $0.first >= 0 && $0.first < $0.end && $0.end <= count }
+                .map { $0.first..<$0.end }.sorted { $0.lowerBound < $1.lowerBound }
+            var merged: [Range<Int>] = []
+            for range in ranges {
+                if let last = merged.last, range.lowerBound <= last.upperBound {
+                    merged[merged.count - 1] = last.lowerBound..<max(last.upperBound, range.upperBound)
+                } else {
+                    merged.append(range)
+                }
+            }
+            for range in merged {
+                for word in range { refs.insert(WordRef(segmentID: segment.id, word: word)) }
+            }
+        }
+        return refs
     }
 
     /// Microphone spans the acoustic echo mask flags (`SpeakerProjection` hides them; stored runs never list them):

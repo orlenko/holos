@@ -5,6 +5,103 @@ import HolosSpeakers
 import HolosStorage
 import UniformTypeIdentifiers
 
+/// A review window as quitting closes it (`ReviewQuit`).
+@MainActor
+protocol ClosingReview: AnyObject {
+    /// Closes it without waiting; the edit its open field holds is queued to be saved at once.
+    func startClosing()
+    /// Waits until it is closed and its changes are saved.
+    func closeAndWait() async
+}
+
+/// Quitting with review windows open (docs/meeting-design.md §5.10, "Editing words").
+enum ReviewQuit {
+    /// Every review starts closing at once, so each queues the edit its open field holds before any slow close (a
+    /// voice sync of another review) is waited for; then they are awaited together, at most `limit`. True when all
+    /// closed in time.
+    @MainActor
+    static func closeAll(_ reviews: [any ClosingReview], limit: Duration) async -> Bool {
+        for review in reviews { review.startClosing() }
+        let closing = Task { @MainActor in
+            for review in reviews { await review.closeAndWait() }
+        }
+        return await waitAtMost(limit, for: closing)
+    }
+}
+
+/// Closing a review window by hand (its close button, ⌘W) with an edit typed in its field: the window stays open until
+/// the edit is saved, and stays open when it is not, so a save that fails (a full disk) never loses what was typed.
+/// Quitting, and closing before a meeting is deleted, never come here (`ClosingReview.startClosing` closes the window
+/// directly): they keep their bounded wait, and log what was typed when it could not be saved.
+@MainActor
+final class ReviewCloseGate {
+    /// The edit typed when the close was asked for is being saved: another close waits for it.
+    private(set) var saving = false
+
+    /// Whether the window may close now. With an edit typed (`typed`), no: `save` saves it (nil when saved, else why,
+    /// with what was typed); then `close` closes the window, or `keep` opens the field again with what was typed and
+    /// shows why, and the window stays.
+    func shouldClose(typed: Bool, save: @escaping () async -> String?, close: @escaping () -> Void,
+                     keep: @escaping (String) -> Void) -> Bool {
+        if saving { return false }
+        guard typed else { return true }
+        saving = true
+        Task { @MainActor in
+            let refusal = await save()
+            saving = false
+            if let refusal { keep(refusal) } else { close() }
+        }
+        return false
+    }
+}
+
+/// A word edit the field handed over that was not saved: its words as the field showed them, what was typed, the word
+/// moves and `wordsEpoch` they follow, and why (`message`, with what was typed).
+struct FailedWordEdit {
+    var words: [ReviewWord]
+    var text: String
+    var movesSeen: Int
+    var wordsEpoch: Int
+    var message: String
+}
+
+/// After a close by hand stopped because edits were not saved (`ReviewWindow.keepAfterFailedClose`): fields could not
+/// open while the close waited, so the first failed edit's field opens now, with what was typed and why (`reopen`,
+/// false when its words are no longer there). Returns the others (all of them when the field could not open), for the
+/// footer (`UnsavedWordEdits`).
+enum ReviewCloseRecovery {
+    @MainActor
+    static func recover(_ failures: [FailedWordEdit], reopen: (FailedWordEdit) -> Bool) -> [FailedWordEdit] {
+        guard let first = failures.first else { return [] }
+        return reopen(first) ? Array(failures.dropFirst()) : failures
+    }
+}
+
+/// Word edits not saved whose field could not open again (their words were not shown, another field was open, a close
+/// was waiting): the footer lists each with what was typed until its field opens again (`reopenNext`; it is then the
+/// field's, saved, queued, or cancelled with Esc as any field's) or the person dismisses it (`dismissNext`). The next
+/// edit never clears them.
+struct UnsavedWordEdits {
+    private(set) var edits: [FailedWordEdit] = []
+
+    mutating func add(_ failed: [FailedWordEdit]) { edits += failed }
+
+    /// Opens the first one's field again (`reopen`); true when it opened, and it leaves the list.
+    @MainActor
+    mutating func reopenNext(_ reopen: (FailedWordEdit) -> Bool) -> Bool {
+        guard let first = edits.first, reopen(first) else { return false }
+        edits.removeFirst()
+        return true
+    }
+
+    mutating func dismissNext() {
+        if !edits.isEmpty { edits.removeFirst() }
+    }
+
+    /// The footer's lines: each edit's message (it says what was typed).
+    var lines: [String] { edits.map { "⚠ Not saved: " + $0.message } }
+}
+
 /// The transcript review window (docs/meeting-design.md §5.10): name the speakers of a meeting, play their audio,
 /// reassign, merge, split, confirm suggestions in bulk, find more speakers, undo, and export. The model is
 /// `ReviewSession` (HolosMeeting); this file only arranges views and routes actions to it. Every change shows at once
@@ -13,14 +110,14 @@ import UniformTypeIdentifiers
 /// Holos has no main menu, so the "Speakers" menu is a pull-down in the window's toolbar and the window handles its
 /// own shortcuts: Space (or K) play/pause, ←/→ (or J/L) back and ahead 5 seconds, and ⌘←/⌘→ the previous and next
 /// turn, anywhere but while typing in a text field; 1–9 assign (in the turn list), ⌘' next uncertain, ⌘Z undo,
-/// ⌘F search, ⌘E export, and the usual editing keys in text fields.
+/// ⌘F search, ⌘E edit mode (word clicks edit words), ⇧⌘E export, and the usual editing keys in text fields.
 ///
 /// The playback bar above the footer holds Play/Pause, the position, a scrubber, the speed, and who is speaking.
 /// Playing goes on through the meeting until paused; a click on a timestamp or on a word plays from there. While a
 /// meeting plays, the turn list tints the turn and word playing and keeps them in view, except for a few seconds after
 /// the reader scrolls it (`ReviewFollow`).
 @MainActor
-final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate {
+final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, ClosingReview {
     let sessionID: String
     let review: ReviewSession
     /// Called once the window has closed and its changes are saved.
@@ -55,6 +152,20 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate {
     private let searchField = NSSearchField()
     private let exportPopUp = NSPopUpButton(frame: .zero, pullsDown: true)
     private let screenTextButton = NSButton(title: "Screen Text…", target: nil, action: nil)
+    /// Edit mode (⌘E): word clicks edit the words instead of playing from them (docs/meeting-design.md §5.10,
+    /// "Editing words").
+    private let editButton = NSButton(title: "Edit Words", target: nil, action: nil)
+    private let editBanner = EditModeBanner()
+    /// The window's column of bars and panes, and the banner's width in it (made again each time the banner shows: a
+    /// hidden arranged view leaves the stack, and its constraints with it).
+    private weak var contentStack: NSStackView?
+    private var bannerWidth: NSLayoutConstraint?
+    /// A name or term the last word edit may have taught, offered for the word list until the next action.
+    private var offeredTerm: (term: String, heardAs: String?)?
+    /// The word list, as the app keeps it: a term's "often heard as" phrases (nil when the list does not have it), and
+    /// adding a term with what it is often heard as (returns what happened). Nil: no word list offers.
+    var wordListHeardAs: ((String) -> [String]?)?
+    var addWordListTerm: ((_ term: String, _ heardAs: String?) -> String)?
     private var screenTextPanel: ScreenTextPanel?
     private var screenOCRTask: Task<Void, Never>?
     private let learnBox = NSButton(checkboxWithTitle: "Learn voices of people I name in this meeting", target: nil,
@@ -63,6 +174,8 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate {
     private let notices = NSStackView()
     /// The last action's error, until the next action.
     private var problem: String?
+    /// What the last action did, when it says so (a term added to the word list), until the next action.
+    private var notice: String?
     private var query = ""
     /// Where "Split Turn" broke a paragraph without splitting a turn: the window's view only, never saved; kept with
     /// its turn on its run and through this window's word-fix reverts, dropped by any other new run (a relabel).
@@ -72,6 +185,19 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate {
     private var shownPlayerState = StateChangeTracker<ReviewPlayer.State>()
     private var resignedKeyAt: Date?
     private var closeTask: Task<Void, Never>?
+    /// A close by hand waits for the edit typed in the field to be saved (`windowShouldClose`).
+    private let closeGate = ReviewCloseGate()
+    /// Word edits the field handed over that are still saving (`editWords`), in the order they were made: each ends
+    /// with the edit when it was not saved (`FailedWordEdit`), nil when it was. A close by hand waits for them too.
+    private var pendingWordEdits: [(id: UUID, saving: Task<FailedWordEdit?, Never>)] = []
+    /// The field's edit a close by hand took and has not queued yet (it waits for the edits before it).
+    private var heldOpenEdit: HeldEdit?
+    /// Word edits not saved whose field could not open again: in the footer until reopened or dismissed.
+    private var unsavedEdits = UnsavedWordEdits()
+
+    /// Words can be edited in the window now: the review allows it, and no close by hand is saving the edits before
+    /// it closes (no field opens meanwhile, so nothing typed then can be left behind by the close).
+    private var canEditWordsNow: Bool { review.canEditWords && !closeGate.saving }
     private var splitSheet: SplitSheet?
     private var assignSignature: [String] = []
     private var refreshScheduled = false
@@ -143,9 +269,17 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate {
     /// A maintenance command is about to work on the meeting (`ReviewMaintenance`): the window turns read-only with
     /// `banner`, playback stops and lets go of the audio, and this returns once the window's changes are saved.
     func pauseForMaintenance(_ hold: ReviewMaintenance.Hold, banner: String) async {
+        // The review turns read-only, so the open edit field closes: what it holds is saved first, never lost.
+        let typed = turnList.takeOpenWordEdit().map { open in
+            ReviewSession.TypedEdit(words: open.words.map(\.ref), text: open.text, seenMoves: open.movesSeen,
+                                    expected: open.words.map(\.shown), seenEpoch: open.wordsEpoch)
+        }
         player.invalidate()
         refresh()
-        await review.pause(hold, reason: banner)
+        if let unsaved = await review.pause(hold, reason: banner, typed: typed) {
+            problem = unsaved
+            refreshFooter()
+        }
     }
 
     /// The command ended: the transcript, the labels, and playback are read again from disk, and the window is
@@ -212,10 +346,15 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate {
 
     /// Closes the window and waits until its changes are saved (before the meeting is deleted).
     func closeAndWait() async {
+        startClosing()
+        await closeTask?.value
+    }
+
+    /// Closes the window without waiting: its open edit field's text is queued to be saved at once (`beginClosing`).
+    func startClosing() {
         // A minimized window is not visible but must be closed too, or it stays in the Dock.
         if window.isVisible || window.isMiniaturized { window.close() }
         if closeTask == nil { beginClosing() }
-        await closeTask?.value
     }
 
     // MARK: - Layout
@@ -230,12 +369,19 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate {
         searchField.sendsSearchStringImmediately = true
         searchField.delegate = self
         searchField.widthAnchor.constraint(equalToConstant: 160).isActive = true
-        exportPopUp.toolTip = "Save or copy the transcript (⌘E)"
+        exportPopUp.toolTip = "Save or copy the transcript (⇧⌘E)"
         screenTextButton.target = self; screenTextButton.action = #selector(showScreenText)
         screenTextButton.bezelStyle = .push
         screenTextButton.toolTip = "Read saved screen OCR and unverified vocabulary candidates; never adds words automatically"
-        let toolbar = NSStackView(views: [nextUncertainButton, assignPopUp, splitButton, speakersPopUp, NSView(),
-                                          screenTextButton, searchField, exportPopUp])
+        editButton.bezelStyle = .push
+        editButton.setButtonType(.pushOnPushOff)
+        editButton.image = NSImage(systemSymbolName: "pencil", accessibilityDescription: nil)
+        editButton.imagePosition = .imageLeading
+        editButton.toolTip = Self.editWordsHelp
+        editButton.target = self
+        editButton.action = #selector(toggleEditMode)
+        let toolbar = NSStackView(views: [nextUncertainButton, assignPopUp, splitButton, speakersPopUp, editButton,
+                                          NSView(), screenTextButton, searchField, exportPopUp])
         toolbar.spacing = 8
         toolbar.alignment = .centerY
 
@@ -264,7 +410,8 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate {
         notices.spacing = 4
 
         let playbackBar = makePlaybackBar()
-        let stack = NSStackView(views: [toolbar, split, playbackBar, footer, notices])
+        editBanner.isHidden = true
+        let stack = NSStackView(views: [toolbar, editBanner, split, playbackBar, footer, notices])
         stack.orientation = .vertical
         stack.alignment = .leading
         stack.distribution = .fill
@@ -272,6 +419,7 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate {
         stack.translatesAutoresizingMaskIntoConstraints = false
         // The panes take the height; the bars keep theirs.
         for bar in [toolbar, footer, notices] { bar.setHuggingPriority(.defaultHigh, for: .vertical) }
+        editBanner.setContentHuggingPriority(.defaultHigh, for: .vertical)
         playbackBar.setContentHuggingPriority(.defaultHigh, for: .vertical)
         split.heightAnchor.constraint(greaterThanOrEqualToConstant: 300).isActive = true
         let content = NSView()
@@ -289,6 +437,7 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate {
         ])
         split.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .vertical)
         split.setContentCompressionResistancePriority(.defaultLow, for: .vertical)
+        contentStack = stack
         return content
     }
 
@@ -410,6 +559,23 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate {
         }
         turnList.onPlay = { [weak self] seconds in self?.play(from: seconds) }
         turnList.onRevertFix = { [weak self] word in self?.revertFix(word) }
+        turnList.onEditWords = { [weak self] words, text, addTerm, movesSeen, wordsEpoch in
+            self?.editWords(words, to: text, addTerm: addTerm, movesSeen: movesSeen, wordsEpoch: wordsEpoch)
+        }
+        turnList.onEditMessage = { [weak self] message in self?.editBanner.show(message: message) }
+        // The review turned read-only with a field open (an earlier edit's labels could not be reread, say): its edit
+        // is queued all the same, and waits for the reread as the changes before it do.
+        turnList.onKeepWordEdit = { [weak self] words, text, movesSeen, wordsEpoch in
+            self?.editWords(words, to: text, addTerm: false, movesSeen: movesSeen, wordsEpoch: wordsEpoch,
+                            whileUnread: true)
+        }
+        turnList.onRequestEditing = { [weak self] in
+            guard let self, self.review.canEditWords else { return }
+            self.setEditMode(true)
+        }
+        turnList.editText = { [review] words in review.shownText(of: words.map(\.ref)) }
+        turnList.editRefusal = { [review] words in review.wordEditRefusal(words.map(\.ref)) }
+        turnList.revertRefusal = { [review] word in review.revertRefusal(word) }
         turnList.onUserScroll = { [weak self] in
             self?.follow.userScrolled(at: ProcessInfo.processInfo.systemUptime)
         }
@@ -445,20 +611,27 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate {
             Task { [weak self] in await self?.refreshMicVolume() }
         }
         let projection = review.projection
+        // A run a word edit or its undo published keeps the turns, and with them the window's paragraph breaks.
+        let runID = projection.runID
         var paragraphs = ReviewParagraphs.group(
-            projection.turns, breaks: paragraphBreaks.active(in: projection.turns, runID: projection.runID))
+            projection.turns, breaks: paragraphBreaks.active(in: projection.turns, runID: runID,
+                                                             keepsTurnsOf: { [review] old in
+                                                                 review.keepsTurns(of: old, in: runID)
+                                                             }))
         // A search shows the paragraphs with a matching turn, whole.
         if !query.isEmpty {
             let matching = Set(review.turns(matching: query).map(\.id))
             paragraphs = paragraphs.filter { $0.turnIDs.contains(where: matching.contains) }
         }
         let people = review.knownPeople()
+        // Words changed elsewhere since a field opened: it is not put back on them (`TurnListView.followWordEdit`).
+        turnList.wordsEpoch = review.wordsEpoch
         turnList.update(paragraphs: paragraphs, speakers: projection.speakers, people: people,
                         editable: review.isEditable,
                         hints: review.profiles == nil ? [:] : review.voiceMatches.turnHints,
                         text: { [review] turn in review.text(of: turn) },
                         words: { [review] turn in review.words(of: turn) },
-                        resolve: { [review] id in review.resolvedTurnID(id) })
+                        resolve: { [review] id in review.resolvedTurnID(id) }, wordMoves: review.shownWordMoves)
         sidebar.update(rows: sidebarRows(), people: people, editable: review.isEditable,
                        suggestions: review.suggestionCount)
         refreshToolbar()
@@ -591,6 +764,19 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate {
         microphoneItem.isHidden = !review.canLabelMicrophoneSpeakers
         microphoneItem.isEnabled = editable
         undoItem.isEnabled = editable && review.canUndo
+        // Read-only (a command holds the review): edit mode can still be left, not entered.
+        editButton.isEnabled = canEditWordsNow || turnList.editingWords
+        // Why words cannot be edited (the transcript changed after labelling, or speaker changes cannot be read): the
+        // button's tooltip says so before edit mode is entered, and in edit mode (no field opens) the banner does.
+        editButton.toolTip = review.wordEditingBlocked ?? Self.editWordsHelp
+        turnList.canEditWords = canEditWordsNow
+        let blockedMessages = [ReviewSession.labelAgainFirst, ReviewSession.speakerChangesUnreadable,
+                               ReviewSession.baseUnreadable].map(\.localizedDescription)
+        if turnList.editingWords, let blocked = review.wordEditingBlocked {
+            editBanner.show(message: blocked)
+        } else if turnList.editingWords, blockedMessages.contains(editBanner.label.stringValue) {
+            editBanner.show(message: nil)
+        }
 
         learnBox.isEnabled = review.profiles != nil && review.rememberVoices
         learnBox.state = review.learnVoices && review.rememberVoices ? .on : .off
@@ -627,7 +813,24 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate {
             lines.append(Notice(text: "⚠ " + reloadProblem, color: .systemRed, button: "Reread",
                                 action: #selector(rereadLabels)))
         }
-        if let problem { lines.append(Notice(text: "⚠ " + problem, color: .systemRed)) }
+        if let problem, !unsavedEdits.edits.contains(where: { $0.message == problem }) {
+            lines.append(Notice(text: "⚠ " + problem, color: .systemRed))
+        }
+        // Each edit not saved whose field could not open, with what was typed; the first can be edited again.
+        for (index, line) in unsavedEdits.lines.enumerated() {
+            lines.append(index == 0
+                ? Notice(text: line, color: .systemRed, button: "Edit Again", action: #selector(editUnsavedAgain),
+                         secondButton: "Dismiss", secondAction: #selector(dismissUnsaved))
+                : Notice(text: line, color: .systemRed))
+        }
+        if let notice { lines.append(Notice(text: notice)) }
+        if let offered = offeredTerm {
+            let heard = offered.heardAs.map { ", often heard as “\($0)”" } ?? ""
+            lines.append(Notice(text: "Add “\(offered.term)” to the word list\(heard)? Voice is Local then expects it "
+                                + "in dictation and meetings.", button: "Add to Word List",
+                                action: #selector(addOfferedTerm), secondButton: "Not Now",
+                                secondAction: #selector(dismissOfferedTerm)))
+        }
         if let runProblem = review.snapshot.runProblem { lines.append(Notice(text: "⚠ " + runProblem, color: .systemRed)) }
         if review.snapshot.transcriptChanged {
             lines.append(Notice(text: "The transcript changed after speakers were labelled.", button: "Label Again",
@@ -670,6 +873,8 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate {
         var button: String?
         var action: Selector?
         var enabled = true
+        var secondButton: String?
+        var secondAction: Selector?
     }
 
     private func addNotice(_ notice: Notice) {
@@ -677,7 +882,8 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate {
         label.textColor = notice.color
         label.font = .systemFont(ofSize: 12)
         var views: [NSView] = [label]
-        if let button = notice.button, let action = notice.action {
+        for (button, action) in [(notice.button, notice.action), (notice.secondButton, notice.secondAction)] {
+            guard let button, let action else { continue }
             let control = NSButton(title: button, target: self, action: action)
             control.bezelStyle = .push
             control.controlSize = .small
@@ -695,6 +901,8 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate {
     /// Runs one change; its error shows in the footer until the next action.
     private func perform(_ change: @escaping @MainActor (ReviewSession) async throws -> Void) {
         problem = nil
+        notice = nil
+        offeredTerm = nil
         refreshFooter()
         let review = self.review
         Task { [weak self] in
@@ -893,6 +1101,9 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate {
         }
         let sheet = SplitSheet(words: Array(words.joined()), turnStarts: turnStarts,
                                onPlay: { [weak self] seconds in self?.play(from: seconds) })
+        // A word edit saved while the sheet is open moves its words: the split follows them (`split(seenMoves:)`).
+        let movesSeen = review.shownWordMoves.count
+        let epoch = review.wordsEpoch
         splitSheet = sheet
         window.beginSheet(sheet.panel) { [weak self] response in
             guard let self else { return }
@@ -901,7 +1112,9 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate {
                   let split = ReviewParagraphs.split(paragraph, words: words, at: index) else { return }
             switch split {
             case .splitTurn(let turnID, let word):
-                self.perform { review in try await review.split(turnID: turnID, at: word) }
+                self.perform { review in
+                    try await review.split(turnID: turnID, at: word, seenMoves: movesSeen, seenEpoch: epoch)
+                }
             case .breakBefore(let turnID):
                 guard let turn = paragraph.turns.first(where: { $0.id == turnID }) else { return }
                 self.paragraphBreaks.insert(before: turn, runID: self.review.projection.runID)
@@ -919,6 +1132,208 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate {
             defer { self?.endBreakCarryOver() }
             try await review.revertWordFix(word)
         }
+    }
+
+    // MARK: - Editing words
+
+    /// Edit Words (the toolbar toggle, ⌘E): on only while the review is editable (not while a command holds it
+    /// read-only); off always.
+    @objc private func toggleEditMode() {
+        let next = Self.editModeAfterToggle(on: turnList.editingWords, editable: canEditWordsNow)
+        if next == turnList.editingWords {
+            NSSound.beep()
+            editButton.state = next ? .on : .off
+            return
+        }
+        setEditMode(next)
+    }
+
+    /// The Edit Words button's tooltip while words can be edited.
+    static let editWordsHelp = "Edit the transcript's words: click a word to change it (⌘E)"
+
+    /// Edit mode after a toggle from `on`: it turns off whenever asked, and on only while `editable`.
+    static func editModeAfterToggle(on: Bool, editable: Bool) -> Bool {
+        on ? false : editable
+    }
+
+    /// Turns edit mode on or off: the toggle, the banner, and the turn list (an open field closes unsaved when it
+    /// turns off). Playback keys work either way; word clicks play only with it off.
+    func setEditMode(_ on: Bool) {
+        turnList.editingWords = on
+        editButton.state = on ? .on : .off
+        editButton.setAccessibilityValue(on ? "on" : "off")
+        editBanner.show(message: nil)
+        editBanner.isHidden = !on
+        bannerWidth?.isActive = false
+        bannerWidth = nil
+        if on, let stack = contentStack {
+            let width = editBanner.widthAnchor.constraint(equalTo: stack.widthAnchor)
+            width.isActive = true
+            bannerWidth = width
+        }
+        if on, NSWorkspace.shared.isVoiceOverEnabled {
+            NSAccessibility.post(element: window, notification: .announcementRequested, userInfo: [
+                .announcement: "Editing words", .priority: NSAccessibilityPriorityLevel.medium.rawValue,
+            ])
+        }
+        if !on { window.makeFirstResponder(turnList.table) }
+    }
+
+    /// Edit mode is on.
+    var isEditingWords: Bool { turnList.editingWords }
+
+    /// Saves an edit made in the turn list. Its new run keeps the turns, as does its undo's (`ReviewSession.keepsTurns`),
+    /// so the window's paragraph breaks stay (`refresh`). Once saved, a new text that looks like a name or term is
+    /// offered for the word list (with ⌥Return it is added at once). Tracked until it ends (`pendingWordEdits`), so
+    /// closing the window by hand waits for it, and stays open when it is not saved.
+    /// `wordsEpoch`: the review's when the field opened over `words`; the save is refused when words were changed
+    /// elsewhere since, even when the list has not shown that yet.
+    private func editWords(_ words: [ReviewWord], to text: String, addTerm: Bool, movesSeen: Int, wordsEpoch: Int,
+                           whileUnread: Bool = false) {
+        offeredTerm = nil
+        problem = nil
+        notice = nil
+        refreshFooter()
+        let id = UUID()
+        let epoch = wordsEpoch
+        // Queued in the review now, before anything else runs: a close or a quit right after finds it there (saved
+        // before the review closes, listed by `unsavedWordEdits` meanwhile), never only in a task of the window's.
+        let saved = SavedFlag()
+        let committed: (ReviewWordEdit) -> Void = { [weak self] edit in
+            saved.value = true
+            self?.offerTerm(after: edit, add: addTerm)
+        }
+        let queued: Result<(@MainActor () async throws -> ReviewWordEdit?)?, any Error>
+        do {
+            queued = .success(try review.queueWordEdit(words.map(\.ref), to: text, seenMoves: movesSeen,
+                                                       whileUnread: whileUnread, expecting: words.map(\.shown),
+                                                       seenEpoch: epoch, committed: committed))
+        } catch {
+            queued = .failure(error)
+        }
+        let saving: Task<FailedWordEdit?, Never> = Task { [weak self] () async -> FailedWordEdit? in
+            guard let self else { return nil }
+            let refusal: String? = await self.saveEdit(words, to: text, queued: queued, saved: saved,
+                                                       movesSeen: movesSeen, seenEpoch: epoch)
+            self.pendingWordEdits.removeAll { $0.id == id }
+            return refusal.map {
+                FailedWordEdit(words: words, text: text, movesSeen: movesSeen, wordsEpoch: epoch, message: $0)
+            }
+        }
+        pendingWordEdits.append((id, saving))
+    }
+
+    /// Whether a word edit was saved (`ReviewSession.queueWordEdit`'s `committed`), read when it then throws.
+    private final class SavedFlag {
+        var value = false
+    }
+
+    /// `editWords`' save, already queued (`queued`): nil when saved (also when its labels could not be reread after
+    /// it: the edit stands, and ⌥Return's term is still added), else why, with what was typed (the field opens again
+    /// with it when its words are still there). Made on the words as the field showed them: never over words changed
+    /// elsewhere since.
+    private func saveEdit(_ words: [ReviewWord], to text: String,
+                          queued: Result<(@MainActor () async throws -> ReviewWordEdit?)?, any Error>,
+                          saved: SavedFlag, movesSeen: Int, seenEpoch: Int) async -> String? {
+        do {
+            if let wait = try queued.get() { _ = try await wait() }
+            return nil
+        } catch is CancellationError {
+            return nil
+        } catch {
+            if saved.value {
+                problem = error.localizedDescription
+                refreshFooter()
+                return nil
+            }
+            let message = Self.withTyped(error.localizedDescription, text)
+            // Where its words are now: through the moves saved since, never across words changed elsewhere.
+            let reopened = turnList.reopenWordEdit(words, typed: text, message: message, movesSeen: movesSeen,
+                                                   wordsEpoch: seenEpoch)
+            // Not reopened: kept in the footer until reopened or dismissed (the next edit never clears it). A close
+            // waiting for it keeps it itself (`keepAfterFailedClose`).
+            if !reopened, !closeGate.saving {
+                unsavedEdits.add([FailedWordEdit(words: words, text: text, movesSeen: movesSeen,
+                                                 wordsEpoch: seenEpoch, message: message)])
+            }
+            problem = message
+            refreshFooter()
+            return message
+        }
+    }
+
+    /// `message` with what was typed, unless it says it already.
+    private static func withTyped(_ message: String, _ text: String) -> String {
+        let typed = TranscriptWordEdit.cleaned(text)
+        return message.contains("“\(typed)”") ? message : message + " What you typed: “\(typed)”."
+    }
+
+    /// After a saved edit: with `add` (⌥Return), its new text goes into the word list now, with what the recognizer
+    /// wrote as "often heard as"; otherwise a new text that looks like a name or term is offered in the footer, unless
+    /// the list has it with that phrase already.
+    private func offerTerm(after edit: ReviewWordEdit, add: Bool) {
+        guard !edit.deletion, let adder = addWordListTerm else { return }
+        let dictionary: (String) -> Bool = { word in
+            NSSpellChecker.shared.checkSpelling(of: word.lowercased(), startingAt: 0).location == NSNotFound
+        }
+        guard let offer = Self.wordListTerm(after: edit, add: add, isDictionaryWord: dictionary) else { return }
+        let term = offer.term
+        let heardAs = offer.heardAs
+        if add {
+            notice = adder(term, heardAs)
+            refreshFooter()
+            return
+        }
+        if let known = wordListHeardAs?(term),
+           heardAs.map({ phrase in known.contains { $0.caseInsensitiveCompare(phrase) == .orderedSame } }) ?? true {
+            return
+        }
+        offeredTerm = (term, heardAs)
+        refreshFooter()
+    }
+
+    /// The word-list term a saved edit gives (with `add`, ⌥Return: what was typed, as it is; else what was typed when
+    /// it looks like a name or term) and its "often heard as" phrase. Only what was typed, never the words the edit
+    /// took in around it ("Yorkshire", not "New Yorkshire", when only "York" of an automatic "New York" was edited);
+    /// "often heard as" only when the recognizer's text for exactly those words is known.
+    static func wordListTerm(after edit: ReviewWordEdit, add: Bool,
+                             isDictionaryWord: (String) -> Bool) -> (term: String, heardAs: String?)? {
+        let typed = edit.typed ?? edit.meant
+        let heard = edit.typed == nil ? edit.heard : edit.typedHeard
+        let term = add
+            ? WordList.typedTerm(typed)
+            : TranscriptEditLearning.term(heard: heard ?? "", meant: typed, isDictionaryWord: isDictionaryWord)
+        guard let term, !term.isEmpty else { return nil }
+        return (term, heard.flatMap { TranscriptEditLearning.heardAs(heard: $0, term: term) })
+    }
+
+    @objc private func addOfferedTerm() {
+        guard let offered = offeredTerm, let adder = addWordListTerm else { return }
+        offeredTerm = nil
+        notice = adder(offered.term, offered.heardAs)
+        refreshFooter()
+    }
+
+    @objc private func dismissOfferedTerm() {
+        offeredTerm = nil
+        refreshFooter()
+    }
+
+    /// "Edit Again" on an edit not saved: its field opens with what was typed, when its words are still shown.
+    @objc private func editUnsavedAgain() {
+        guard canEditWordsNow else { return }
+        if !turnList.editingWords { setEditMode(true) }
+        let opened = unsavedEdits.reopenNext { failed in
+            turnList.reopenWordEdit(failed.words, typed: failed.text, message: failed.message,
+                                    movesSeen: failed.movesSeen, wordsEpoch: failed.wordsEpoch)
+        }
+        notice = opened ? nil : "Those words are no longer shown as they were; edit them again, or dismiss this."
+        refreshFooter()
+    }
+
+    @objc private func dismissUnsaved() {
+        unsavedEdits.dismissNext()
+        refreshFooter()
     }
 
     private func endBreakCarryOver() {
@@ -1107,6 +1522,10 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate {
         if flags == [.command, .shift], key == "z" {
             return editingText && NSApplication.shared.sendAction(Selector(("redo:")), to: nil, from: window)
         }
+        if flags == [.command, .shift], key == "e" {
+            exportPopUp.performClick(nil)
+            return true
+        }
         guard flags == [.command] else { return false }
         switch key {
         case "'":
@@ -1116,7 +1535,8 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate {
             window.makeFirstResponder(searchField)
             return true
         case "e":
-            exportPopUp.performClick(nil)
+            // From the field being edited too: it closes unsaved, as the mode ends.
+            toggleEditMode()
             return true
         case "w":
             window.performClose(nil)
@@ -1153,6 +1573,106 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate {
         if window.attachedSheet == nil { resignedKeyAt = Date() }
     }
 
+    /// Closed by hand with an edit typed in the field: saved first, and the window stays open when it is not
+    /// (`ReviewCloseGate`).
+    /// Also with edits handed over and still saving (Return, then ⌘W at once): the window waits for them, and stays
+    /// open when one is not saved (its own failure opens its field again, or says what was typed).
+    func windowShouldClose(_ sender: NSWindow) -> Bool {
+        guard sender === window, closeTask == nil else { return true }
+        let open: OpenWordEdit? = closeGate.saving ? nil : turnList.takeOpenWordEdit()
+        // Held until it is queued, with the `wordsEpoch` its field opened under: a quit meanwhile closes the review
+        // with it (`beginClosing`); words changed elsewhere since the field opened refuse it.
+        if let open { heldOpenEdit = HeldEdit(edit: open, epoch: open.wordsEpoch) }
+        let epoch = open?.wordsEpoch ?? review.wordsEpoch
+        let pending: [Task<FailedWordEdit?, Never>] = closeGate.saving ? [] : pendingWordEdits.map(\.saving)
+        let outcome = CloseSaveOutcome()
+        let save: () async -> String? = { [weak self] in
+            await self?.saveBeforeClose(open, after: pending, outcome: outcome)
+        }
+        let close: () -> Void = { [weak self] in self?.window.close() }
+        let keep: (String) -> Void = { [weak self] message in
+            self?.keepAfterFailedClose(open, epoch: epoch, outcome: outcome, message: message)
+        }
+        let closesNow = closeGate.shouldClose(typed: open != nil || !pending.isEmpty, save: save, close: close,
+                                              keep: keep)
+        // Saving first: no field opens until the window closes, or stays open (`canEditWordsNow`).
+        if !closesNow { refreshToolbar() }
+        return closesNow
+    }
+
+    /// The open field's edit as `TurnListView.takeOpenWordEdit` hands it over.
+    private typealias OpenWordEdit = (words: [ReviewWord], text: String, movesSeen: Int, wordsEpoch: Int)
+
+    /// The field's edit a close by hand took, and the `wordsEpoch` its field opened under.
+    private struct HeldEdit {
+        let edit: OpenWordEdit
+        let epoch: Int
+    }
+
+    /// What a close by hand found when it saved (`saveBeforeClose`): every edit not saved, in the order they were made
+    /// (those handed over before, then the open field's).
+    private final class CloseSaveOutcome {
+        var failures: [FailedWordEdit] = []
+    }
+
+    /// Before a close by hand: waits for the edits handed over (in the order they were made), then saves the open
+    /// field's. Nil when all were saved, else every refusal, each with what was typed. While it waits no field can open
+    /// (`canEditWordsNow`), so each edit not saved is kept (`outcome`) for when the window stays open.
+    private func saveBeforeClose(_ open: OpenWordEdit?, after pending: [Task<FailedWordEdit?, Never>],
+                                 outcome: CloseSaveOutcome) async -> String? {
+        for edit in pending {
+            if let failed = await edit.value { outcome.failures.append(failed) }
+        }
+        // Unless the window's close took it meanwhile (quitting), which queues it itself.
+        if open != nil, closeTask == nil, let held = heldOpenEdit {
+            heldOpenEdit = nil
+            let open = held.edit
+            if let refusal = await saveTypedEdit(open.words, text: open.text, movesSeen: open.movesSeen,
+                                                 seenEpoch: held.epoch) {
+                outcome.failures.append(FailedWordEdit(words: open.words, text: open.text, movesSeen: open.movesSeen,
+                                                       wordsEpoch: held.epoch, message: refusal))
+            }
+        }
+        return outcome.failures.isEmpty ? nil : outcome.failures.map(\.message).joined(separator: " ")
+    }
+
+    /// A close by hand stopped because edits were not saved: fields may open again, so the first one's field opens with
+    /// what was typed and why, and the footer says every other one, each with what was typed
+    /// (`ReviewCloseRecovery`).
+    private func keepAfterFailedClose(_ open: OpenWordEdit?, epoch: Int, outcome: CloseSaveOutcome,
+                                      message: String) {
+        // Quitting closed the window meanwhile: its close saves (or logs) what is left.
+        guard closeTask == nil else { return }
+        // Fields may open again (the close by hand ended).
+        refreshToolbar()
+        if !outcome.failures.isEmpty, !turnList.editingWords { turnList.editingWords = true }
+        let others = ReviewCloseRecovery.recover(outcome.failures) { failed in
+            // Where its words are now: through the moves saved since, never across words changed elsewhere.
+            turnList.reopenWordEdit(failed.words, typed: failed.text, message: failed.message,
+                                    movesSeen: failed.movesSeen, wordsEpoch: failed.wordsEpoch)
+        }
+        // The others stay in the footer, each with what was typed, until reopened or dismissed.
+        unsavedEdits.add(others)
+        problem = outcome.failures.isEmpty ? message : nil
+        refreshFooter()
+    }
+
+    /// Saves an edit typed in the field and waits for it: nil when saved (also when its labels could not be reread
+    /// after it: the edit stands), else why, with what was typed.
+    private func saveTypedEdit(_ words: [ReviewWord], text: String, movesSeen: Int,
+                               seenEpoch: Int) async -> String? {
+        var saved = false
+        let committed: (ReviewWordEdit) -> Void = { _ in saved = true }
+        do {
+            _ = try await review.editWords(words.map(\.ref), to: text, seenMoves: movesSeen, whileUnread: true,
+                                           expecting: words.map(\.shown), seenEpoch: seenEpoch,
+                                           committed: committed)
+            return nil
+        } catch {
+            return saved ? nil : Self.withTyped(error.localizedDescription, text)
+        }
+    }
+
     func windowWillClose(_ notification: Notification) {
         guard (notification.object as? NSWindow) === window else { return }
         beginClosing()
@@ -1164,8 +1684,19 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate {
         player.invalidate()
         review.onChange = nil
         let review = self.review
+        // AppKit ends no editing when a window closes: an open edit field's text is saved (and learned) by the close,
+        // as is one a close by hand took from the field and has not queued yet (quitting came first).
+        let fromField = turnList.takeOpenWordEdit()
+        let held = heldOpenEdit
+        heldOpenEdit = nil
+        let open = fromField ?? held?.edit
+        let epoch = fromField?.wordsEpoch ?? held?.epoch ?? review.wordsEpoch
+        let typed = open.map { open in
+            ReviewSession.TypedEdit(words: open.words.map(\.ref), text: open.text, seenMoves: open.movesSeen,
+                                    expected: open.words.map(\.shown), seenEpoch: epoch)
+        }
         closeTask = Task { [weak self] in
-            await review.close()
+            await review.close(typed: typed)
             guard let self else { return }
             let onClose = self.onClose
             self.onClose = nil
@@ -1179,6 +1710,51 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate {
         let cleaned = name.map { "/:\\\n\r\t".contains($0) ? "-" : $0 }
         let text = String(cleaned).trimmingCharacters(in: .whitespacesAndNewlines)
         return text.isEmpty ? "Transcript" : String(text.prefix(100))
+    }
+}
+
+/// The band under the toolbar while edit mode is on: a tint of the accent color and what to do, or a passing message.
+final class EditModeBanner: NSView {
+    static let usual = "Editing — click a word to change it. ⇧-click or drag for more words of the same turn. Return "
+        + "saves, ⌥Return saves and adds it to the word list, Tab saves and edits the next word, Esc cancels. "
+        + "Space still plays and pauses."
+    let label = NSTextField(wrappingLabelWithString: EditModeBanner.usual)
+
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        label.font = .systemFont(ofSize: 12, weight: .medium)
+        label.textColor = .labelColor
+        label.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(label)
+        NSLayoutConstraint.activate([
+            label.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 10),
+            label.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -10),
+            label.topAnchor.constraint(equalTo: topAnchor, constant: 6),
+            label.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -6),
+        ])
+        setAccessibilityElement(true)
+        setAccessibilityRole(.group)
+        setAccessibilityLabel("Edit mode")
+    }
+
+    convenience init() { self.init(frame: .zero) }
+
+    required init?(coder: NSCoder) { nil }
+
+    /// `message` for now, or the usual text.
+    func show(message: String?) {
+        let text = message ?? Self.usual
+        if label.stringValue != text { label.stringValue = text }
+        label.textColor = message == nil ? .labelColor : .systemOrange
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        let path = NSBezierPath(roundedRect: bounds.insetBy(dx: 0.5, dy: 0.5), xRadius: 6, yRadius: 6)
+        NSColor.controlAccentColor.withAlphaComponent(0.14).setFill()
+        path.fill()
+        NSColor.controlAccentColor.withAlphaComponent(0.5).setStroke()
+        path.lineWidth = 1
+        path.stroke()
     }
 }
 

@@ -872,6 +872,40 @@ func aSampleFromAnEarlierRunWhoseTurnsAreNowEchoIsNotKept() async throws {
     try expectSampleDropped(store)
 }
 
+/// The sample was learned from run R1 with no echo found yet; Remember voices was then turned off (saved samples are
+/// kept). A word of the far end's (system track) is corrected in Review: the labels move to R2, the same labelling.
+/// The echo catch-up then finds the far end's echo in "Me"'s mixed turn, while her own turn still qualifies. R1 can be
+/// read, and only without the mask does it give the sample's inputs: the sample was learned from a turn now echo, so
+/// it is out of step (the catch-up's refresh acts), and with Remember voices off it is removed, not kept.
+@Test(.timeLimit(.minutes(2))) @MainActor
+func aSampleFromBeforeAWordEditWhoseTurnIsNowEchoIsRemovedEvenWithLearningOff() async throws {
+    let temp = try TemporaryDirectory("echo")
+    defer { temp.remove() }
+    let (session, store) = try await learnedBeforeTheEcho(in: temp, ownTurn: true)
+    let learned = try #require(try store.load().profiles.first?.samples.first)
+    try store.update { $0.rememberVoices = false }
+    let review = try await ReviewSession(session: session, profiles: nil, maintenance: nil, exportDelay: .seconds(60))
+    let farEnd = try #require(review.projection.turns.first { $0.track == "system" })
+    let word = try #require(review.words(of: farEnd.id).first)
+    try await review.editWords([word.ref], to: "corrected")
+    await review.close()
+    let head = try #require(try SpeakerSessionSnapshot.load(session: session).run)
+    #expect(head.labelling != nil && VoiceProfileService.sourceRunID(learned) != head.id)
+    #expect(!VoiceProfileService.samplesOutOfStep(session: session, store: store), "In step before the echo.")
+    // The catch-up's analysis saves the mask (its sample refresh comes after).
+    let manifest = try SessionArchive.readManifest(at: session)
+    let stored = try EchoAnalysisStage.analyzeSession(session: session, manifest: manifest,
+                                                      freeSpace: FixedFreeSpace(.max))
+    #expect(stored.record.verdict == .echo)
+    let view = try SessionFixtures.view(session)
+    #expect(view.turns.contains { $0.track == "mic" && $0.cutByEcho }, "The mixed turn is echo now.")
+    #expect(view.turns.contains { $0.track == "mic" && !$0.cutByEcho }, "Her own turn still qualifies.")
+    #expect(VoiceProfileService.samplesOutOfStep(session: session, store: store), "The catch-up's refresh acts.")
+    try await VoiceProfileService.refreshSamples(session: session, extractor: FixedVoice(), store: store)
+    try expectSampleDropped(store)
+    #expect(!VoiceProfileService.samplesOutOfStep(session: session, store: store))
+}
+
 @Test(.timeLimit(.minutes(2)))
 func aCallLongerThanAMaskIsKeptForIsSavedAsTooLongAndCountsAsDone() async throws {
     // One limit, made tiny here (100 frames, 1.6 s): the analysis does not write a frames file the reader would refuse
