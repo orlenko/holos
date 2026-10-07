@@ -95,6 +95,8 @@ public enum TranscriptWordEdit {
     public static func editing(_ request: Request, in current: Transcript, base: Transcript?,
                                editable: (Int) -> Bool = { _ in true }, now: Date = Date()) throws -> Result? {
         let text = cleaned(request.text)
+        // A segment ID used twice (in either revision) cannot say which words are meant.
+        if hasRepeatedSegmentIDs(current) || base.map(hasRepeatedSegmentIDs) == true { throw damagedMarks }
         guard let index = current.segments.firstIndex(where: { $0.id == request.segmentID }) else {
             throw HolosError.invalidInput("Those words are no longer in the transcript; reload and try again.")
         }
@@ -392,6 +394,12 @@ public enum TranscriptWordEdit {
         if fixes.contains(where: { !isSound($0, wordCount: count) }) { return true }
         let ordered = fixes.sorted { ($0.first, $0.end) < ($1.first, $1.end) }
         return zip(ordered, ordered.dropFirst()).contains { previous, next in next.first < previous.end }
+    }
+
+    /// Whether two of `transcript`'s segments share an ID (a damaged transcript): which one a word reference, an edit, or
+    /// a speaker span means cannot be told, so none of its words is edited and close-time learning skips it.
+    public static func hasRepeatedSegmentIDs(_ transcript: Transcript) -> Bool {
+        Set(transcript.segments.map(\.id)).count != transcript.segments.count
     }
 
     /// An edit refused because its segment's word positions or fix marks are damaged.

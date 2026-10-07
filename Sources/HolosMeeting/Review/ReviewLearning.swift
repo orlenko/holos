@@ -18,6 +18,8 @@ enum ReviewLearning {
     /// turns never joins them. `base`: the unfixed revision `transcript` was fixed from (`fixedFrom`), where what the
     /// recognizer wrote beside an edit (under an automatic fix) is read, punctuation included.
     static func edits(in transcript: Transcript, turns: [[WordSpan]], base: Transcript? = nil) -> [ReviewWordEdit] {
+        // A transcript with a segment ID used twice cannot say which segment a turn's words are in: nothing is learned.
+        guard !TranscriptWordEdit.hasRepeatedSegmentIDs(transcript) else { return [] }
         let ordered = transcript.segments.sorted { ($0.start, $0.track ?? "") < ($1.start, $1.track ?? "") }
         var edits: [ReviewWordEdit] = []
         for segment in ordered {

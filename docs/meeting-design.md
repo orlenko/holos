@@ -7755,7 +7755,9 @@ shown, Otter-style.
   quit meanwhile closes the review with it, and no field opens while such a close waits. A Split Turn sheet's word follows a word edit
   saved while the sheet was open (`split(seenMoves:)`), and is refused when the edit replaced
   it; a Revert's word likewise follows every word change saved since the words it was asked
-  on were read. Quitting starts every review
+  on were read. The window's list follows only the word moves the words shown are after
+  (`shownWordMoves`): a move saved but not reread yet is not shown, and an open field never
+  follows it onto the word that has its index now. Quitting starts every review
   window's close at once (`ReviewQuit.closeAll`), so each queues its open field's edit before
   any slow close (another window's voice sync) is waited for; when the closes cannot finish
   within the quit's limit, an edit not saved yet is logged with what was typed. A maintenance
@@ -7993,7 +7995,9 @@ shown, Otter-style.
     (each in range on its own) are damaged too: each word has at most one fix. So is a word
     whose range does not fit the text, starts before the previous word ends, has a boundary
     inside a character written as a surrogate pair, or reads otherwise than the word's text
-    (`TranscriptWordEdit.isDamaged`). A damaged
+    (`TranscriptWordEdit.isDamaged`). A transcript with two segments under one ID is damaged
+    as a whole (`hasRepeatedSegmentIDs`: which words are meant cannot be told): no word of it
+    is edited, and close-time learning reads nothing from it. A damaged
     segment shows no marks and none of its words is edited or reverted: the refusal comes before
     a field opens (`wordEditRefusal`, with the reason in the banner), before any range is
     walked. Close-time learning skips it, and reads no context from a damaged unfixed
@@ -8003,7 +8007,9 @@ shown, Otter-style.
     move in the event log is read only as written ("3-5", two unsigned decimal numbers; never
     empty; at most a million replaced × replacement word pairs, far more than any edit of one
     turn; its replaced words all of the same turns, checked wherever a move is mapped; a
-    segment both revisions have, every word outside it reading the same in both): a
+    segment both revisions have, every word outside it reading the same in both; the edit's
+    `reviewEdit` mark exactly over its new words, or, for an undo, over the words it replaces,
+    so repeated text elsewhere never passes for it): a
     malformed one makes the event damaged, refused rather than read another way. An automatic
     fix's words in the unfixed revision must hold what it matched (`heardFits`: its `heard`
     starts in the first and ends in the last, found in one linear pass), so word counts that

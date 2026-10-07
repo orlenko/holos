@@ -241,6 +241,12 @@ public struct ReviewWord: Sendable, Equatable {
     /// labels could not be, `reloadProblem`) moved words the transcript shown does not have. A word edit is checked
     /// against the words shown when it was asked for, from there.
     private var movesRead = 0
+
+    /// The word moves the words shown are after (`wordMoves` up to `movesRead`): what an edit field or a Split Turn
+    /// sheet over the words shown follows, and counts as seen. A move saved but not reread yet is not in them (its
+    /// words are not shown yet); followed by the field, it would put the field on the word that has its index now.
+    public var shownWordMoves: [ReviewWordMove] { Array(wordMoves.prefix(movesRead)) }
+
     /// Applied optimistic edit IDs → the queued change that made them, for counting changes.
     private var optimisticOwner: [String: ObjectIdentifier] = [:]
     private var exportTimer: Task<Void, Never>?
@@ -355,6 +361,10 @@ public struct ReviewWord: Sendable, Equatable {
         if snapshot.transcriptChanged { return Self.labelAgainFirst.localizedDescription }
         if !snapshot.journal.isComplete { return Self.speakerChangesUnreadable.localizedDescription }
         if !baseReadable { return Self.baseUnreadable.localizedDescription }
+        // Two segments sharing an ID: which words are meant cannot be told (`hasRepeatedSegmentIDs`).
+        if TranscriptWordEdit.hasRepeatedSegmentIDs(snapshot.transcript) {
+            return TranscriptWordEdit.damagedMarks.localizedDescription
+        }
         return nil
     }
 

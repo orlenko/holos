@@ -555,7 +555,7 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, Clo
                         hints: review.profiles == nil ? [:] : review.voiceMatches.turnHints,
                         text: { [review] turn in review.text(of: turn) },
                         words: { [review] turn in review.words(of: turn) },
-                        resolve: { [review] id in review.resolvedTurnID(id) }, wordMoves: review.wordMoves)
+                        resolve: { [review] id in review.resolvedTurnID(id) }, wordMoves: review.shownWordMoves)
         sidebar.update(rows: sidebarRows(), people: people, editable: review.isEditable,
                        suggestions: review.suggestionCount)
         refreshToolbar()
@@ -1012,7 +1012,7 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, Clo
         let sheet = SplitSheet(words: Array(words.joined()), turnStarts: turnStarts,
                                onPlay: { [weak self] seconds in self?.play(from: seconds) })
         // A word edit saved while the sheet is open moves its words: the split follows them (`split(seenMoves:)`).
-        let movesSeen = review.wordMoves.count
+        let movesSeen = review.shownWordMoves.count
         splitSheet = sheet
         window.beginSheet(sheet.panel) { [weak self] response in
             guard let self else { return }

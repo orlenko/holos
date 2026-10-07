@@ -336,9 +336,10 @@ enum SpeakerTranscriptRetarget {
         init(from old: Transcript, to new: Transcript, move: ReviewWordMove) throws {
             let changed = HolosError.invalidInput("The edited transcript does not match the speaker labels' words.")
             let oldSegments = Dictionary(old.segments.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
-            // The move names a segment both revisions have (one naming none would be ignored, its numbers unchecked).
+            // The move names a segment both revisions have (one naming none would be ignored, its numbers unchecked),
+            // and no segment ID is there twice (a damaged transcript: which one the move means cannot be told).
             guard Set(oldSegments.keys) == Set(new.segments.map(\.id)), old.segments.count == new.segments.count,
-                  oldSegments[move.segmentID] != nil,
+                  oldSegments.count == old.segments.count, oldSegments[move.segmentID] != nil,
                   move.replaced.lowerBound == move.replacement.lowerBound, move.replaced.lowerBound >= 0 else {
                 throw changed
             }
@@ -370,6 +371,17 @@ enum SpeakerTranscriptRetarget {
                             == newWords[..<move.replacement.lowerBound].map(\.text),
                           oldWords[move.replaced.upperBound...].map(\.text)
                             == newWords[move.replacement.upperBound...].map(\.text) else {
+                        throw changed
+                    }
+                    // And the edit is where the move says: a Review edit leaves its mark over exactly its new words,
+                    // and its undo takes back one over exactly the words it replaces. Repeated text ("go go go") can
+                    // read the same around another place; the mark cannot.
+                    func marked(_ fixes: [TranscriptWordFix]?, _ range: Range<Int>) -> Bool {
+                        (fixes ?? []).contains {
+                            $0.kind == .reviewEdit && $0.first == range.lowerBound && $0.end == range.upperBound
+                        }
+                    }
+                    guard marked(segment.fixes, move.replacement) || marked(before.fixes, move.replaced) else {
                         throw changed
                     }
                     let replacedRefs = move.replaced.map(ref)
