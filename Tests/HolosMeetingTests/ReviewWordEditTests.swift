@@ -779,6 +779,29 @@ func anEditIsNeverSavedOverAWordChangedElsewhereInItsPlace() async throws {
     #expect(try wordEditCurrent(session).segments[0].text == "ask Claude now", "Not saved over “now”.")
 }
 
+@Test(.timeLimit(.minutes(1)))
+func aWordEditEventWithADamagedMoveIsDamagedNeverReadAnotherWay() async throws {
+    let temp = try TemporaryDirectory("review")
+    defer { temp.remove() }
+    let session = try await wordEditSession(in: temp, [
+        WordEditTurn(speaker: "system:S1", start: 0, words: ["ask", "cloud", "now"]),
+    ])
+    let lease = try SessionArchive.acquireProcessingLease(at: session)
+    let archive = try SessionArchive.openForMaintenance(at: session, lease: lease)
+    // An edit as written, one with no move (an older journal: mapped by time), and one whose move is damaged.
+    try await archive.recordEvent(kind: MeetingEventKind.transcriptEdited, details: [
+        "transcriptID": "T-good", "base": "B", "segment": "S1", "replaced": "1-2", "replacement": "1-3"])
+    try await archive.recordEvent(kind: MeetingEventKind.transcriptEdited, details: [
+        "transcriptID": "T-old", "base": "B"])
+    try await archive.recordEvent(kind: MeetingEventKind.transcriptEdited, details: [
+        "transcriptID": "T-bad", "base": "B", "segment": "S1", "replaced": "-1-2", "replacement": "1-3"])
+    await archive.releaseLock()
+    let good = try #require(try SessionWordEdit.editedEvent(of: "T-good", session: session))
+    #expect(good.base == "B" && good.move == ReviewWordMove(segmentID: "S1", replaced: 1..<2, replacement: 1..<3))
+    #expect(try SessionWordEdit.editedEvent(of: "T-old", session: session)?.move == nil)
+    #expect(throws: HolosError.self) { try SessionWordEdit.editedEvent(of: "T-bad", session: session) }
+}
+
 @Test(.timeLimit(.minutes(1))) @MainActor
 func aDamagedWordMoveFromTheJournalIsRefusedNeverCounted() async throws {
     let temp = try TemporaryDirectory("review")
@@ -1069,22 +1092,26 @@ func learningAgainAtTheNextCloseChangesNothingAndASecondOccurrenceIsAdded() asyn
     #expect(edits == [ReviewWordEdit(heard: "cloud", meant: "Claude", before: "ask")])
 }
 
-@Test func aDamagedFixBesideAnEditGivesNoContext() {
-    // A damaged but decodable transcript: "now" is under an automatic fix whose words run past the segment's, beside
-    // a valid edit ("as" → "ask"). A turn's span damaged the same way holds it too.
-    var segment = SessionFixtures.segment(["ask", "now"], track: "system", start: 0, wordSeconds: 1, id: "S1")
-    segment.fixes = [TranscriptWordFix(first: 0, end: 1, heard: "as", kind: .reviewEdit, heardWords: 1),
-                     TranscriptWordFix(first: 1, end: 9, heard: "know", kind: .correction, heardWords: 1)]
-    var fixed = SessionFixtures.transcript([segment])
-    var baseSegment = SessionFixtures.segment(["ask", "know"], track: "system", start: 0, wordSeconds: 1, id: "S1")
-    baseSegment.fixes = [segment.fixes![0]]
-    let base = SessionFixtures.transcript([baseSegment])
-    fixed.fixedFrom = base.id
-    for turns in [[[WordSpan(segmentID: "S1", first: 0, end: 2)]], [[WordSpan(segmentID: "S1", first: 0, end: 9)]]] {
-        // Learned without that side's context, and nothing read past the words.
-        #expect(ReviewLearning.edits(in: fixed, turns: turns, base: base) == [ReviewWordEdit(heard: "as", meant: "ask")])
-        #expect(ReviewLearning.edits(in: fixed, turns: turns) == [ReviewWordEdit(heard: "as", meant: "ask")])
-    }
+@Test func aSegmentThatCannotBeTrustedTeachesNothing() {
+    // A damaged but decodable transcript beside a sound one. Each damaged segment holds a valid edit ("as" → "ask"):
+    // a mark past its words, two marks over one word, and a word range that does not fit the text.
+    var pastWords = SessionFixtures.segment(["ask", "now"], track: "system", start: 0, wordSeconds: 1, id: "S1")
+    pastWords.fixes = [TranscriptWordFix(first: 0, end: 1, heard: "as", kind: .reviewEdit, heardWords: 1),
+                       TranscriptWordFix(first: 1, end: 9, heard: "know", kind: .correction, heardWords: 1)]
+    var overlapping = SessionFixtures.segment(["ask", "now"], track: "system", start: 10, wordSeconds: 1, id: "S2")
+    overlapping.fixes = [TranscriptWordFix(first: 0, end: 2, heard: "as now", kind: .reviewEdit, heardWords: 2),
+                         TranscriptWordFix(first: 1, end: 2, heard: "know", kind: .correction, heardWords: 1)]
+    var outOfText = SessionFixtures.segment(["ask", "now"], track: "system", start: 20, wordSeconds: 1, id: "S3")
+    outOfText.fixes = [TranscriptWordFix(first: 0, end: 1, heard: "as", kind: .reviewEdit, heardWords: 1)]
+    outOfText.words[1].utf16Length = Int.max
+    var sound = SessionFixtures.segment(["we", "knew", "here"], track: "system", start: 30, wordSeconds: 1, id: "S4")
+    sound.fixes = [TranscriptWordFix(first: 1, end: 2, heard: "new", kind: .reviewEdit, heardWords: 1)]
+    for segment in [pastWords, overlapping, outOfText] { #expect(TranscriptWordEdit.isDamaged(segment)) }
+    let transcript = SessionFixtures.transcript([pastWords, overlapping, outOfText, sound])
+    let turns = ["S1", "S2", "S3", "S4"].map { [WordSpan(segmentID: $0, first: 0, end: 9)] }
+    // Only the sound segment's edit is learned; nothing is read past any word.
+    #expect(ReviewLearning.edits(in: transcript, turns: turns)
+        == [ReviewWordEdit(heard: "new", meant: "knew", before: "we", after: "here")])
 }
 
 @Test(.timeLimit(.minutes(1))) @MainActor

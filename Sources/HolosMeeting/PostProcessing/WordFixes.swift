@@ -7,6 +7,28 @@ import HolosSpeakers
 /// replaced, its new words share that span evenly, and every other word keeps its time; the segment keeps its ID,
 /// start and end, so speaker turns and exports find it as before. Each change is marked (`TranscriptSegment.fixes`)
 /// with what the recognizer wrote there, so the review can show it.
+/// A word's UTF-16 range in its segment's text, read from disk: the one way it is made. Nil when it does not fit a text
+/// of `textLength` units (negative, or past the end): checked by subtraction, so no damaged offset or length can
+/// overflow, and no range is ever made backwards (which would trap).
+func utf16Range(offset: Int, length: Int, within textLength: Int) -> Range<Int>? {
+    guard offset >= 0, length >= 0, offset <= textLength, length <= textLength - offset else { return nil }
+    return offset..<(offset + length)
+}
+
+extension EffectiveWord {
+    /// `utf16Range(offset:length:within:)` of this word.
+    func utf16Range(within textLength: Int) -> Range<Int>? {
+        HolosMeeting.utf16Range(offset: utf16Offset, length: utf16Length, within: textLength)
+    }
+}
+
+extension TimedWord {
+    /// `utf16Range(offset:length:within:)` of this word.
+    func utf16Range(within textLength: Int) -> Range<Int>? {
+        HolosMeeting.utf16Range(offset: utf16Offset, length: utf16Length, within: textLength)
+    }
+}
+
 extension TranscriptWordFix {
     /// How many recognizer words `heard` stands for: `heardWords`, recorded on every fix written from this version on;
     /// for an older fix without it, `heard`'s whitespace-separated tokens (wrong for text without spaces between its
@@ -86,9 +108,8 @@ public enum WordFixes {
             let length = segment.text.utf16.count
             var previousEnd = 0
             for word in words {
-                guard word.utf16Offset >= previousEnd, word.utf16Length >= 0,
-                      word.utf16Offset + word.utf16Length <= length else { return nil }
-                previousEnd = word.utf16Offset + word.utf16Length
+                guard let range = word.utf16Range(within: length), range.lowerBound >= previousEnd else { return nil }
+                previousEnd = range.upperBound
             }
             if preservingExistingFixes {
                 let effective = WordTiming.effectiveWords(of: segment)
@@ -249,7 +270,7 @@ public enum WordFixes {
         let effective = WordTiming.effectiveWords(of: fixed)
         let fixes: [TranscriptWordFix] = working.marks.compactMap { mark in
             let touched = effective.indices.filter {
-                (effective[$0].utf16Offset..<(effective[$0].utf16Offset + effective[$0].utf16Length)).overlaps(mark.range)
+                effective[$0].utf16Range(within: fixed.text.utf16.count)?.overlaps(mark.range) == true
             }
             guard let first = touched.first, let last = touched.last else { return nil }
             return TranscriptWordFix(first: first, end: last + 1, heard: mark.heard, kind: mark.kind,
@@ -297,8 +318,11 @@ public enum WordFixes {
         }
         // The recognizer's own words come back, with their times and boundaries, never split again at the spaces of
         // the text ("你好世界" is the two words "你好" and "世界" again, as in the base).
+        let baseLength = baseSegment.text.utf16.count
         let restored = baseSegment.words.filter { word in
-            originalRange.lowerBound <= word.utf16Offset && word.utf16Offset + word.utf16Length <= originalRange.upperBound
+            word.utf16Range(within: baseLength).map {
+                originalRange.lowerBound <= $0.lowerBound && $0.upperBound <= originalRange.upperBound
+            } ?? false
         }.map { word in
             var relative = word
             relative.utf16Offset -= originalRange.lowerBound
@@ -316,13 +340,11 @@ public enum WordFixes {
 
     static func characterRange(of fix: TranscriptWordFix, words: [EffectiveWord], textLength: Int)
         -> Range<Int>? {
-        guard TranscriptWordEdit.isSound(fix, wordCount: words.count) else { return nil }
-        let first = words[fix.first]
-        let last = words[fix.end - 1]
-        let lower = first.utf16Offset
-        let upper = last.utf16Offset + last.utf16Length
-        guard lower >= 0, lower < upper, upper <= textLength else { return nil }
-        return lower..<upper
+        guard TranscriptWordEdit.isSound(fix, wordCount: words.count),
+              let first = words[fix.first].utf16Range(within: textLength),
+              let last = words[fix.end - 1].utf16Range(within: textLength),
+              first.lowerBound < last.upperBound else { return nil }
+        return first.lowerBound..<last.upperBound
     }
 
     /// The whole original words around `fix.heard`. Repeated heard text is disambiguated by the fixed words' time.

@@ -105,30 +105,46 @@ public enum TranscriptWordEdit {
         }
         guard (request.first..<request.end).allSatisfy(editable) else { throw notShown }
         // A damaged mark (empty, backwards, or past the segment's words) is never walked: the segment is not edited.
-        if hasDamagedMark(segment) { throw damagedMarks }
+        if isDamaged(segment) { throw damagedMarks }
         guard var working = WordFixes.Working(segment, preservingExistingFixes: true) else {
             throw damagedMarks
         }
         let fixes = segment.fixes ?? []
+        /// `lower..<upper` with every fix mark it touches taken in (a mark is never split); nil when that runs out of
+        /// the words or onto a word the edited turn does not show. Marks are sound here (`isDamaged`).
+        func takingInMarks(_ lower: Int, _ upper: Int) -> (lower: Int, upper: Int)? {
+            var lower = lower, upper = upper, grew = true
+            while grew {
+                grew = false
+                for fix in fixes where fix.first < upper && lower < fix.end {
+                    if fix.first < lower { lower = fix.first; grew = true }
+                    if fix.end > upper { upper = fix.end; grew = true }
+                }
+            }
+            guard lower >= 0, upper <= words.count, (lower..<upper).allSatisfy(editable) else { return nil }
+            return (lower, upper)
+        }
         var lower = request.first
         var upper = request.end
         let deletion = text.isEmpty
         if deletion {
-            // The deleted words go into a neighbour of the same turn, which keeps their time and provenance; a word
-            // corrected while recording cannot take them (it cannot be edited here), so the other one does.
-            let liveCorrected = { (word: Int) in
-                fixes.contains { $0.kind == .liveCorrection && $0.first <= word && word < $0.end }
+            // The deleted words go into a neighbour of the same turn, which keeps their time and provenance. Each
+            // neighbour is judged with the marks it would take in: one whose mark runs out of the turn cannot take
+            // them, nor one corrected while recording (it cannot be edited here), so the other one does.
+            let liveCorrected = { (span: (lower: Int, upper: Int)) in
+                fixes.contains { $0.kind == .liveCorrection && $0.first < span.upper && span.lower < $0.end }
             }
-            let next = upper < words.count && editable(upper)
-            let previous = lower > 0 && editable(lower - 1)
-            if next, !liveCorrected(upper) {
-                upper += 1
-            } else if previous, !liveCorrected(lower - 1) {
-                lower -= 1
-            } else if next {
-                upper += 1
-            } else if previous {
-                lower -= 1
+            let next = upper < words.count && editable(upper) ? takingInMarks(lower, upper + 1) : nil
+            let previous = lower > 0 && editable(lower - 1) ? takingInMarks(lower - 1, upper) : nil
+            let hasNeighbour = (upper < words.count && editable(upper)) || (lower > 0 && editable(lower - 1))
+            if let next, !liveCorrected(next) {
+                (lower, upper) = next
+            } else if let previous, !liveCorrected(previous) {
+                (lower, upper) = previous
+            } else if let carrier = next ?? previous {
+                (lower, upper) = carrier
+            } else if hasNeighbour {
+                throw notShown
             } else if words.count == request.end - request.first {
                 throw HolosError.invalidInput("A segment cannot lose all its words yet; leave at least one word.")
             } else {
@@ -137,15 +153,8 @@ public enum TranscriptWordEdit {
             }
         }
         // A mark is never split: the span takes in every fix it touches.
-        var grew = true
-        while grew {
-            grew = false
-            for fix in fixes where fix.first < upper && lower < fix.end {
-                if fix.first < lower { lower = fix.first; grew = true }
-                if fix.end > upper { upper = fix.end; grew = true }
-            }
-        }
-        guard lower >= 0, upper <= words.count, (lower..<upper).allSatisfy(editable) else { throw notShown }
+        guard let taken = takingInMarks(lower, upper) else { throw notShown }
+        (lower, upper) = taken
         let touched = fixes.filter { $0.first < upper && lower < $0.end }
         if touched.contains(where: { $0.kind == .liveCorrection }) { throw liveCorrected }
         guard touched.allSatisfy({ [.correction, .term, .reviewRevert, .reviewEdit].contains($0.kind) }) else {
@@ -178,6 +187,8 @@ public enum TranscriptWordEdit {
         let baseSegment = base.flatMap { base in
             base.id == current.fixedFrom ? base.segments.first { $0.id == segment.id } : nil
         }
+        // The unfixed revision is written too: one that cannot be trusted is never edited, nor read from.
+        if let baseSegment, isDamaged(baseSegment) { throw damagedMarks }
         let baseWords = baseSegment.map(WordTiming.effectiveWords(of:))
         let bounds = baseWords.flatMap { baseBounds(fixes: fixes, current: words, base: $0) }
         /// A fix's `heard` with its recognizer words (`heardWordCount`; a damaged count is refused, never added up).
@@ -285,10 +296,12 @@ public enum TranscriptWordEdit {
         }
         var lower = range.lowerBound == 0 ? 0 : words[range.lowerBound].utf16Offset
         var upper = range.upperBound == words.count ? utf16.count : words[range.upperBound].utf16Offset
-        // Offsets that do not fit the text: the words' own ranges.
+        // Offsets that do not fit the text: the words' own ranges (none when they do not fit either: never added up).
         if lower < 0 || upper > utf16.count || lower >= upper {
-            lower = words[range.lowerBound].utf16Offset
-            upper = words[range.upperBound - 1].utf16Offset + words[range.upperBound - 1].utf16Length
+            guard let first = words[range.lowerBound].utf16Range(within: utf16.count),
+                  let last = words[range.upperBound - 1].utf16Range(within: utf16.count) else { return 0..<0 }
+            lower = first.lowerBound
+            upper = last.upperBound
         }
         guard lower >= 0, lower <= upper, upper <= utf16.count else { return 0..<0 }
         func isSpace(_ unit: UInt16) -> Bool {
@@ -327,13 +340,22 @@ public enum TranscriptWordEdit {
             && (fix.heardWords == nil || fix.heardWordCount() != nil)
     }
 
-    /// Whether `segment` has a fix mark that is not sound (`isSound`): none of its words is edited, and none of its fixes
-    /// reverted (`damagedMarks`), since every edit takes in the marks it touches.
-    /// Two marks over the same word are damaged too: each word has at most one fix (a fix never overlaps another), and
-    /// an edit or a mapping reading either would take the wrong one.
-    public static func hasDamagedMark(_ segment: TranscriptSegment) -> Bool {
+    /// Whether `segment`, as read from disk, cannot be trusted: none of its words is edited, none of its fixes reverted
+    /// (`damagedMarks`), and close-time learning skips it. Damaged are:
+    /// - a word whose range does not fit the text, or starts before the previous one ends (`utf16Range`);
+    /// - a fix mark that is not sound (`isSound`), since every edit takes in the marks it touches;
+    /// - two marks over the same word: each word has at most one fix (a fix never overlaps another), and an edit or a
+    ///   mapping reading either would take the wrong one.
+    public static func isDamaged(_ segment: TranscriptSegment) -> Bool {
+        let words = WordTiming.effectiveWords(of: segment)
+        let length = segment.text.utf16.count
+        var previousEnd = 0
+        for word in words {
+            guard let range = word.utf16Range(within: length), range.lowerBound >= previousEnd else { return true }
+            previousEnd = range.upperBound
+        }
         guard let fixes = segment.fixes, !fixes.isEmpty else { return false }
-        let count = WordTiming.effectiveWords(of: segment).count
+        let count = words.count
         if fixes.contains(where: { !isSound($0, wordCount: count) }) { return true }
         let ordered = fixes.sorted { ($0.first, $0.end) < ($1.first, $1.end) }
         return zip(ordered, ordered.dropFirst()).contains { previous, next in next.first < previous.end }

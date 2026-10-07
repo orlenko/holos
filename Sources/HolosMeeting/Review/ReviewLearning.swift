@@ -21,12 +21,16 @@ enum ReviewLearning {
         let ordered = transcript.segments.sorted { ($0.start, $0.track ?? "") < ($1.start, $1.track ?? "") }
         var edits: [ReviewWordEdit] = []
         for segment in ordered {
+            // A segment that cannot be trusted (word ranges, marks: `TranscriptWordEdit.isDamaged`) teaches nothing,
+            // neither its own edits nor context for them.
+            if TranscriptWordEdit.isDamaged(segment) { continue }
             let words = WordTiming.effectiveWords(of: segment)
             let utf16 = Array(segment.text.utf16)
             // Where each word boundary is in the unfixed segment, for what the recognizer wrote under a fix.
+            // (Not when it cannot be trusted either: then no context is read from it.)
             let baseSegment = base.flatMap { base in
                 base.id == transcript.fixedFrom ? base.segments.first { $0.id == segment.id } : nil
-            }
+            }.flatMap { TranscriptWordEdit.isDamaged($0) ? nil : $0 }
             let baseWords = baseSegment.map(WordTiming.effectiveWords(of:))
             let bounds = baseWords.flatMap {
                 TranscriptWordEdit.baseBounds(fixes: segment.fixes ?? [], current: words, base: $0)

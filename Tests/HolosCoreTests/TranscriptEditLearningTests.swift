@@ -97,6 +97,19 @@ private func isWord(_ word: String) -> Bool { dictionary.contains(word.lowercase
     #expect(TranscriptEditLearning.heardAs(heard: "c,", term: "C#") == "c")
 }
 
+@Test func aProperNounCaseChangeTeachesOnlyTheCasing() {
+    // The punctuation changed along with the case ("," became ".") is never part of the lesson.
+    let learned = TranscriptEditLearning.corrections(heard: "github,", meant: "GitHub.", isDictionaryWord: isWord)
+    #expect(learned == [Correction(heard: "github", meant: "GitHub")])
+    #expect(!learned.contains { $0.meant.contains(".") || $0.heard.contains(",") })
+    // With context, the same: only the casing of the edited word.
+    #expect(TranscriptEditLearning.corrections(heard: "github,", meant: "GitHub.", before: "we", after: "use",
+                                               isDictionaryWord: isWord)
+        == [Correction(heard: "github", meant: "GitHub")])
+    // A punctuation-only change still teaches nothing.
+    #expect(TranscriptEditLearning.corrections(heard: "GitHub,", meant: "GitHub.", isDictionaryWord: isWord).isEmpty)
+}
+
 @Test func aNameOrTermIsOfferedForTheWordList() {
     // Not a dictionary word.
     #expect(TranscriptEditLearning.term(heard: "cloud", meant: "Claude", isDictionaryWord: isWord) == "Claude")

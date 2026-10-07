@@ -14,13 +14,17 @@ public enum TranscriptEditLearning {
     public static func corrections(heard: String, meant: String, before: String? = nil, after: String? = nil,
                                    heardBefore: String? = nil, heardAfter: String? = nil,
                                    isDictionaryWord: (String) -> Bool) -> [Correction] {
-        let heard = words(heard), meant = words(meant)
+        let heard = words(heard)
+        var meant = words(meant)
         guard !heard.isEmpty, !meant.isEmpty, heard != meant else { return [] }
         // Whether the edit teaches anything is the edited words' own: a punctuation-only or case-only change stays one
         // whatever its context ("Hello" → "Hello," beside "cloud" fixed to "Claude" never teaches "Hello cloud" →
-        // "Hello, Claude"), unless the case change makes a proper noun.
-        guard key(heard) != key(meant)
-            || makesProperNoun(from: heard, to: meant, isDictionaryWord: isDictionaryWord) else { return [] }
+        // "Hello, Claude"), unless the case change makes a proper noun. That one teaches only the casing, never
+        // punctuation changed with it ("github," → "GitHub." teaches "github" → "GitHub").
+        if key(heard) == key(meant) {
+            guard makesProperNoun(from: heard, to: meant, isDictionaryWord: isDictionaryWord) else { return [] }
+            meant = casing(of: meant, onto: heard)
+        }
         let original = [heardBefore ?? before, heard, heardAfter ?? after].compactMap { $0 }.joined(separator: " ")
         let corrected = [before, meant, after].compactMap { $0 }.joined(separator: " ")
         return CorrectionList.learn(original: original, corrected: corrected,
@@ -81,6 +85,23 @@ public enum TranscriptEditLearning {
             .map { String($0.lowercased().filter { $0.isLetter || $0.isNumber }) }
             .filter { !$0.isEmpty }
             .joined(separator: " ")
+    }
+
+    /// `heard` with the case of `meant`'s letters and digits, its own punctuation kept: what a case change teaches.
+    /// The two have the same letters and digits word by word (`key`); `meant` as it is otherwise.
+    private static func casing(of meant: String, onto heard: String) -> String {
+        let old = heard.split(whereSeparator: \.isWhitespace)
+        let new = meant.split(whereSeparator: \.isWhitespace)
+        guard old.count == new.count else { return meant }
+        return zip(old, new).map { before, after -> String in
+            var cased = after.filter { $0.isLetter || $0.isNumber }.makeIterator()
+            let word = String(before.map { character -> Character in
+                guard character.isLetter || character.isNumber else { return character }
+                return cased.next() ?? character
+            })
+            // Letters that do not line up one for one ("ß" against "SS"): as meant.
+            return word.lowercased() == before.lowercased() ? word : String(after)
+        }.joined(separator: " ")
     }
 
     /// A case change that capitalizes a word that is not a dictionary word: every word whose letters changed case

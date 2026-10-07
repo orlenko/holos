@@ -392,7 +392,7 @@ public struct ReviewWord: Sendable, Equatable {
     public func wordEditRefusal(_ refs: [WordRef]) -> String? {
         guard let first = refs.first, let segment = segments[first.segmentID] else { return nil }
         // Checked before any fix's words are walked: a damaged mark's numbers can be anything.
-        if TranscriptWordEdit.hasDamagedMark(segment) { return TranscriptWordEdit.damagedMarks.localizedDescription }
+        if TranscriptWordEdit.isDamaged(segment) { return TranscriptWordEdit.damagedMarks.localizedDescription }
         let fixes = segment.fixes ?? []
         if fixes.contains(where: { fix in
             fix.kind == .liveCorrection && refs.contains { fix.first <= $0.word && $0.word < fix.end }
@@ -411,14 +411,14 @@ public struct ReviewWord: Sendable, Equatable {
     /// that cannot be counted, `TranscriptWordEdit.olderFix`). Nil when it can be tried.
     public func revertRefusal(_ word: WordRef) -> String? {
         guard let segment = segments[word.segmentID] else { return nil }
-        if TranscriptWordEdit.hasDamagedMark(segment) { return TranscriptWordEdit.damagedMarks.localizedDescription }
+        if TranscriptWordEdit.isDamaged(segment) { return TranscriptWordEdit.damagedMarks.localizedDescription }
         return blockedByOlderFix(segment) ? TranscriptWordEdit.olderFix.localizedDescription : nil
     }
 
     /// Words `indices` of `segment` with every fix mark they touch taken in, as an edit takes them
     /// (`TranscriptWordEdit.editing`: a mark is never split), so what is checked before an edit is what it changes.
     /// Only sound marks (`TranscriptWordEdit.isSound`) are taken in, so the range never runs past the segment's words
-    /// (a segment with a damaged one is refused before, `hasDamagedMark`).
+    /// (a segment with a damaged one is refused before, `isDamaged`).
     nonisolated static func takingInMarks(_ indices: [Int], of segment: TranscriptSegment) -> Range<Int> {
         guard let lowest = indices.min(), let highest = indices.max() else { return 0..<0 }
         let count = WordTiming.effectiveWords(of: segment).count
@@ -599,7 +599,7 @@ public struct ReviewWord: Sendable, Equatable {
             guard span.first >= 0, span.first < span.end, span.end <= effective.count else { continue }
             // A segment with a damaged mark shows none (no Revert is offered; its marks cannot be trusted), and its
             // words are not edited (`wordEditRefusal` says why).
-            let damaged = TranscriptWordEdit.hasDamagedMark(segment)
+            let damaged = TranscriptWordEdit.isDamaged(segment)
             // Automatic fixes, and edits made here that changed what the recognizer wrote (an edit back to it is not
             // marked as a change).
             let fixes = damaged ? [] : (segment.fixes ?? []).filter { fix in
@@ -944,7 +944,7 @@ public struct ReviewWord: Sendable, Equatable {
             throw HolosError.invalidInput("Those words are no longer in the transcript; reload and try again.")
         }
         // Before any fix's words are walked (`takingInMarks`).
-        if TranscriptWordEdit.hasDamagedMark(segment) { throw TranscriptWordEdit.damagedMarks }
+        if TranscriptWordEdit.isDamaged(segment) { throw TranscriptWordEdit.damagedMarks }
         // The words still read as the person saw them, punctuation included (`ReviewWord.shown`: a change made
         // elsewhere may keep a word's place and change only its untimed punctuation, "Hello." to "Hello?").
         if let expecting {

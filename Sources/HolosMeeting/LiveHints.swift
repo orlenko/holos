@@ -565,11 +565,11 @@ public enum LiveHints {
                                        in segment: TranscriptSegment) -> Range<Int>? {
         let effective = WordTiming.effectiveWords(of: segment)
         guard !words.isEmpty, words.lowerBound >= 0, words.upperBound <= effective.count else { return nil }
-        let first = effective[words.lowerBound]
-        let last = effective[words.upperBound - 1]
-        let range = first.utf16Offset..<(last.utf16Offset + last.utf16Length)
-        guard range.lowerBound >= 0, range.lowerBound < range.upperBound,
-              range.upperBound <= segment.text.utf16.count else { return nil }
+        // The words' ranges as read from disk, checked before any is added up (`utf16Range`).
+        guard let first = effective[words.lowerBound].utf16Range(within: segment.text.utf16.count),
+              let last = effective[words.upperBound - 1].utf16Range(within: segment.text.utf16.count),
+              first.lowerBound < last.upperBound else { return nil }
+        let range = first.lowerBound..<last.upperBound
         let displayed = displayed.trimmingCharacters(in: .whitespacesAndNewlines)
         let length = displayed.utf16.count
         guard length >= range.count, length <= segment.text.utf16.count else { return range }
@@ -620,7 +620,7 @@ public enum LiveHints {
     /// `heardWords`.
     private static func wordsTouched(_ range: Range<Int>, in segment: TranscriptSegment) -> Int {
         WordTiming.effectiveWords(of: segment).filter { word in
-            (word.utf16Offset..<(word.utf16Offset + word.utf16Length)).overlaps(range)
+            word.utf16Range(within: segment.text.utf16.count)?.overlaps(range) == true
         }.count
     }
 

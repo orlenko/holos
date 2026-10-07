@@ -544,20 +544,64 @@ private let editEchoMask: AcousticEchoMask = {
     #expect(turn.spans.flatMap { Array($0.first..<$0.end) } == [0, 1, 2, 4, 5, 6, 7, 8, 9])
 }
 
+@Test func aDeletionGoesToTheNeighbourWhoseMarkStaysInTheTurn() throws {
+    // "so um cloud now": the turn holds "so um cloud" (words 0–2); "cloud now" is one automatic fix, so the next
+    // neighbour would take in "now", another turn's word. "um" deleted: it goes into "so" instead.
+    var segment = editSegment(["so", "um", "cloud", "now"])
+    segment.fixes = [TranscriptWordFix(first: 2, end: 4, heard: "clod know", kind: .correction, heardWords: 2)]
+    let result = try #require(try TranscriptWordEdit.editing(editRequest(1, 2, ""), in: editTranscript([segment]),
+                                                             base: nil, editable: { $0 < 3 }))
+    #expect(result.labelsMove.replaced == 0..<2 && result.transcript.segments[0].text == "so cloud now")
+    // With no previous word in the turn either, it is refused (never across the turn).
+    #expect(throws: HolosError.self) {
+        try TranscriptWordEdit.editing(editRequest(1, 2, ""), in: editTranscript([segment]), base: nil,
+                                       editable: { (1..<3).contains($0) })
+    }
+}
+
+@Test func aWordRangeThatDoesNotFitItsTextIsDamagedNeverAddedUp() {
+    // Decodable, but "now" runs Int.max units on: its range is never added up, and the segment is not edited.
+    var segment = editSegment(["ask", "cloud", "now"])
+    segment.words[2].utf16Length = Int.max
+    #expect(TranscriptWordEdit.isDamaged(segment))
+    // Shown text never adds it up: the last word reads to the end of the text, the first as before.
+    #expect(TranscriptWordEdit.shownText(of: segment, first: 2, end: 3) == "now")
+    #expect(TranscriptWordEdit.shownText(of: segment, first: 0, end: 1) == "ask")
+    // A word whose offset is past the text: nothing is read for it.
+    segment.words[1].utf16Offset = Int.max
+    #expect(TranscriptWordEdit.shownText(of: segment, first: 1, end: 2) == nil)
+    #expect(throws: HolosError.self) {
+        try TranscriptWordEdit.editing(editRequest(0, 1, "as"), in: editTranscript([segment]), base: nil)
+    }
+    // Words out of order (one starts before the previous ends): damaged too.
+    var unordered = editSegment(["ask", "cloud", "now"])
+    unordered.words[2].utf16Offset = 1
+    #expect(TranscriptWordEdit.isDamaged(unordered))
+}
+
+@Test func aWordMoveIsReadOnlyAsItIsWritten() {
+    #expect(SessionWordEdit.parseRange("3-5") == 3..<5 && SessionWordEdit.parseRange("0-0") == 0..<0)
+    for damaged in ["-1-2", "1--2", "3-", "-5", "3-5-7", "+3-5", " 3-5", "3-5 ", "5-3", "3_5", "٣-٥", "",
+                    "99999999999999999999-1"] {
+        #expect(SessionWordEdit.parseRange(damaged) == nil, "\(damaged)")
+    }
+    #expect(SessionWordEdit.parseRange(nil) == nil)
+}
+
 @Test func twoMarksOverTheSameWordAreDamaged() throws {
     // Each in range on its own, but both over "cloud": damaged, and the segment is not edited.
     var segment = editSegment(["ask", "cloud", "now"])
     segment.fixes = [TranscriptWordFix(first: 0, end: 2, heard: "as cloud", kind: .reviewEdit, heardWords: 2),
                      TranscriptWordFix(first: 1, end: 3, heard: "cloud now", kind: .correction, heardWords: 2)]
     #expect(segment.fixes!.allSatisfy { TranscriptWordEdit.isSound($0, wordCount: 3) })
-    #expect(TranscriptWordEdit.hasDamagedMark(segment))
+    #expect(TranscriptWordEdit.isDamaged(segment))
     #expect(throws: HolosError.self) {
         try TranscriptWordEdit.editing(editRequest(0, 1, "as"), in: editTranscript([segment]), base: nil)
     }
     // Side by side (one ends where the next begins): sound.
     segment.fixes = [TranscriptWordFix(first: 0, end: 1, heard: "as", kind: .reviewEdit, heardWords: 1),
                      TranscriptWordFix(first: 1, end: 2, heard: "cloud", kind: .correction, heardWords: 1)]
-    #expect(!TranscriptWordEdit.hasDamagedMark(segment))
+    #expect(!TranscriptWordEdit.isDamaged(segment))
 }
 
 @Test func aDamagedHeardWordCountIsNeverAddedUp() throws {
@@ -567,7 +611,7 @@ private let editEchoMask: AcousticEchoMask = {
         #expect(damaged.heardWordCount() == nil, "\(heardWords)")
         var segment = editSegment(["ask", "Claude", "now"])
         segment.fixes = [damaged]
-        #expect(!TranscriptWordEdit.isSound(damaged, wordCount: 3) && TranscriptWordEdit.hasDamagedMark(segment))
+        #expect(!TranscriptWordEdit.isSound(damaged, wordCount: 3) && TranscriptWordEdit.isDamaged(segment))
         // No overflow counting it against the base, nor building word origins from it.
         let base = editSegment(["ask", "cloud", "now"])
         #expect(TranscriptWordEdit.baseBounds(fixes: [damaged], current: WordTiming.effectiveWords(of: segment),

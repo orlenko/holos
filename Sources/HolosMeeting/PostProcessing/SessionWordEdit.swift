@@ -216,14 +216,27 @@ enum SessionWordEdit {
             $0.details["transcriptID"] == transcriptID
                 && ($0.details[headFromKey] != nil || $0.kind == MeetingEventKind.transcriptEdited)
         })?.details, let base = details[headFromKey] ?? details["base"] else { return nil }
-        func range(_ key: String) -> Range<Int>? {
-            let bounds = (details[key] ?? "").split(separator: "-").compactMap { Int($0) }
-            guard bounds.count == 2, bounds[0] >= 0, bounds[0] <= bounds[1] else { return nil }
-            return bounds[0]..<bounds[1]
+        // No move recorded (a revert, or a journal from before moves were): the labels are mapped by time.
+        let keys = ["segment", "replaced", "replacement"]
+        guard keys.contains(where: { details[$0] != nil }) else { return (base, nil) }
+        // Recorded: exactly as `details(of:)` writes it, or the event is damaged (never read another way).
+        guard let segment = details["segment"], !segment.isEmpty, let replaced = parseRange(details["replaced"]),
+              let replacement = parseRange(details["replacement"]) else {
+            throw HolosError.invalidInput("A word edit in this meeting's event log is damaged, so the speaker labels "
+                                          + "cannot be kept on its words.")
         }
-        guard let segment = details["segment"], let replaced = range("replaced"),
-              let replacement = range("replacement") else { return (base, nil) }
         return (base, ReviewWordMove(segmentID: segment, replaced: replaced, replacement: replacement))
+    }
+
+    /// A word range as `details(of:)` writes it: two unsigned decimal numbers joined by one "-", the first not above
+    /// the second ("3-5"). Anything else ("-1-2", "3-", "3-5-7", "+3-5", " 3-5", numbers past `Int`) is nil.
+    static func parseRange(_ text: String?) -> Range<Int>? {
+        guard let text else { return nil }
+        let parts = text.split(separator: "-", omittingEmptySubsequences: false)
+        guard parts.count == 2,
+              parts.allSatisfy({ !$0.isEmpty && $0.allSatisfy { ("0"..."9").contains($0) } }),
+              let lower = Int(parts[0]), let upper = Int(parts[1]), lower <= upper else { return nil }
+        return lower..<upper
     }
 
     /// A word move as `transcriptEdited` details record it.
