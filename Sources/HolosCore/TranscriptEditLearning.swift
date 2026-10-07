@@ -48,16 +48,52 @@ public enum TranscriptEditLearning {
         }
         let term = tokens.joined(separator: " ")
         guard term.count <= WordList.maximumLength else { return nil }
-        // The heard words cleaned as the term's are, so the two compare alike ("c#" heard, "C#" meant).
-        let heardWords = Set(heard.split(whereSeparator: \.isWhitespace).map { WordList.termWord(String($0)) })
-        let looksLikeAName = tokens.contains { word in
+        // The heard words cleaned as the term's are, so the two compare alike ("c#" heard, "C#" meant), each meant word
+        // matched with the heard word it stands for (`aligned`): one word against its own, never against the set.
+        let heardWords = heard.split(whereSeparator: \.isWhitespace).map { WordList.termWord(String($0)) }
+            .filter { !$0.isEmpty }
+        let counterpart = aligned(tokens, with: heardWords)
+        let looksLikeAName = tokens.indices.contains { index in
+            let word = tokens[index]
             guard word.contains(where: \.isLetter) else { return false }
             if !isDictionaryWord(word.lowercased()) { return true }
             if word.dropFirst().contains(where: \.isUppercase) { return true }
             guard word.first?.isUppercase == true, isContentWord(word) else { return false }
-            return !heardWords.contains(word)
+            // Capitalized by the edit: a word the recognizer did not write (inserted), or its own word written with a
+            // lowercase first letter ("apple" → "Apple"; never "APPLE" → "Apple").
+            guard let heardWord = counterpart[index] else { return true }
+            return heardWord.first?.isLowercase == true
         }
         return looksLikeAName ? term : nil
+    }
+
+    /// For each of `meant`'s words, the word of `heard` it stands for: the two aligned in order on the words equal
+    /// but for case (a longest common subsequence), nil for a word `heard` has no counterpart for (inserted or
+    /// replaced).
+    static func aligned(_ meant: [String], with heard: [String]) -> [String?] {
+        let a = meant.map { $0.lowercased() }
+        let b = heard.map { $0.lowercased() }
+        // Lengths of the longest common subsequences of the suffixes (at most four meant words, so small).
+        var lengths = Array(repeating: Array(repeating: 0, count: b.count + 1), count: a.count + 1)
+        for i in stride(from: a.count - 1, through: 0, by: -1) {
+            for j in stride(from: b.count - 1, through: 0, by: -1) {
+                lengths[i][j] = a[i] == b[j] ? lengths[i + 1][j + 1] + 1 : max(lengths[i + 1][j], lengths[i][j + 1])
+            }
+        }
+        var result = [String?](repeating: nil, count: meant.count)
+        var i = 0, j = 0
+        while i < a.count, j < b.count {
+            if a[i] == b[j] {
+                result[i] = heard[j]
+                i += 1
+                j += 1
+            } else if lengths[i + 1][j] >= lengths[i][j + 1] {
+                i += 1
+            } else {
+                j += 1
+            }
+        }
+        return result
     }
 
     /// The "often heard as" phrase to save with `term`: what the recognizer wrote, unless that is the term itself in
@@ -71,6 +107,12 @@ public enum TranscriptEditLearning {
         let joined = phrase.joined(separator: " ")
         guard WordList.isHeardAs(joined, of: term) else { return nil }
         return joined
+    }
+
+    /// Whether an edit of `heard` into `meant` changes only punctuation or letter case (`key`): it teaches nothing
+    /// beside other edits, only on its own (a case change making a proper noun teaches its casing, `corrections`).
+    public static func changesOnlyPunctuationOrCase(heard: String, meant: String) -> Bool {
+        key(heard) == key(meant)
     }
 
     /// Whitespace collapsed, trimmed.

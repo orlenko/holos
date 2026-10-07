@@ -50,12 +50,9 @@ enum SessionWordEdit {
             let (current, snapshot) = try expectedState(session: session, transcriptID: expectedTranscriptID,
                                                         runID: expectedRunID)
             let base = try current.fixedFrom.map { try SessionFiles.transcript(id: $0, session: session) }
-            guard let result = try edited(request, in: current, base: base, projection: snapshot.projection,
-                                          now: now) else { return nil }
-            guard let plan = try SpeakerTranscriptRetarget.plan(session: session, from: snapshot, to: result.transcript,
-                                                               move: result.labelsMove, now: now) else {
-                throw HolosError.invalidInput("The speaker labels cannot be kept on the edited words.")
-            }
+            guard let made = try planned(request, in: current, base: base, snapshot: snapshot, session: session,
+                                         now: now) else { return nil }
+            let (result, plan) = made
             try Task.checkCancellation()
             try SpeakerTranscriptRetarget.stage(plan, session: session)
             if let newBase = result.base, let base {
@@ -79,10 +76,25 @@ enum SessionWordEdit {
         }
     }
 
+    /// Everything `run` makes before it writes: the edit (`edited`, on the head's labels in `snapshot`) and the speaker
+    /// labels retargeted onto it (`SpeakerTranscriptRetarget.plan`, which reads the session but writes nothing). The
+    /// review's field check runs this as a dry run on the transcript and labels it shows (`ReviewSession.wordEditRefusal`),
+    /// so it refuses exactly what a save would, with the same message. Nil when the text would not change.
+    static func planned(_ request: TranscriptWordEdit.Request, in current: Transcript, base: Transcript?,
+                        snapshot: SpeakerSessionSnapshot, session: URL, now: Date = Date()) throws
+        -> (result: TranscriptWordEdit.Result, plan: SpeakerTranscriptRetarget.Plan)? {
+        guard let result = try edited(request, in: current, base: base, projection: snapshot.projection,
+                                      now: now) else { return nil }
+        guard let plan = try SpeakerTranscriptRetarget.plan(session: session, from: snapshot, to: result.transcript,
+                                                           move: result.labelsMove, now: now) else {
+            throw HolosError.invalidInput("The speaker labels cannot be kept on the edited words.")
+        }
+        return (result, plan)
+    }
+
     /// The edit `run` makes, without reading or writing a file: on `current` (and `base`, the revision it was fixed
     /// from), within the one turn of `projection` that shows every requested word, refused when the words it replaces
-    /// do not all belong to the same turns. The review's field check runs this on the transcript it shows
-    /// (`ReviewSession.wordEditRefusal`), so it refuses exactly what a save would. Nil when the text would not change.
+    /// do not all belong to the same turns. Nil when the text would not change.
     static func edited(_ request: TranscriptWordEdit.Request, in current: Transcript, base: Transcript?,
                        projection: SpeakerProjection?, now: Date = Date()) throws -> TranscriptWordEdit.Result? {
         // The one turn holding every requested word (turns may overlap; the first holding the first word may not

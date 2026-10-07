@@ -79,9 +79,22 @@ enum SessionWordFixRevert {
         }
     }
 
+    /// Everything `publish` makes before it writes: the revert (`reverted`) and the speaker labels retargeted onto it
+    /// (`SpeakerTranscriptRetarget.plan`, which reads the session but writes nothing). The review's Revert check runs
+    /// this as a dry run on the transcript and labels it shows (`ReviewSession.revertRefusal`), so it refuses exactly
+    /// what a revert would, with the same message.
+    static func planned(_ word: WordRef, in current: Transcript, to base: Transcript?,
+                        snapshot: SpeakerSessionSnapshot, session: URL, now: Date = Date()) throws
+        -> (transcript: Transcript, move: ReviewWordMove, plan: SpeakerTranscriptRetarget.Plan) {
+        let (reverted, move) = try self.reverted(word, in: current, to: base, now: now)
+        guard let plan = try SpeakerTranscriptRetarget.plan(session: session, from: snapshot, to: reverted,
+                                                           now: now) else {
+            throw HolosError.invalidInput("The speaker labels cannot be kept on the reverted words.")
+        }
+        return (reverted, move, plan)
+    }
+
     /// The revert `publish` makes, without reading or writing a file: the new transcript, and how the fix's words moved.
-    /// The review's Revert check runs this on the transcript it shows (`ReviewSession.revertRefusal`), so it refuses
-    /// exactly what a revert would.
     /// `base`: the revision `current` was fixed from, nil when it has none.
     static func reverted(_ word: WordRef, in current: Transcript, to base: Transcript?,
                          now: Date = Date()) throws -> (transcript: Transcript, move: ReviewWordMove) {
@@ -120,11 +133,8 @@ enum SessionWordFixRevert {
                     throw HolosError.invalidInput("The speaker labels changed outside this window; reload and try again.")
                 }
                 let base = try current.fixedFrom.map { try SessionFiles.transcript(id: $0, session: session) }
-                let (reverted, move) = try self.reverted(word, in: current, to: base, now: now)
-                guard let plan = try SpeakerTranscriptRetarget.plan(session: session, from: snapshot,
-                                                                   to: reverted, now: now) else {
-                    throw HolosError.invalidInput("The speaker labels cannot be kept on the reverted words.")
-                }
+                let (reverted, move, plan) = try planned(word, in: current, to: base, snapshot: snapshot,
+                                                         session: session, now: now)
                 let published = Outcome(runID: plan.run.id, move: move, transcriptID: reverted.id)
                 try Task.checkCancellation()
                 try SpeakerTranscriptRetarget.stage(plan, session: session)

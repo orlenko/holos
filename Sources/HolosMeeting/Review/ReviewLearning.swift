@@ -87,6 +87,14 @@ enum ReviewLearning {
                 for word in range where !left.isEmpty { left = left.filter { holds($0, word) } }
                 return left
             }
+            /// A Review edit that changes only punctuation or letter case (`changesOnlyPunctuationOrCase`), its shown
+            /// text against what the recognizer wrote.
+            func trivial(_ fix: TranscriptWordFix) -> Bool {
+                guard fix.kind == .reviewEdit, TranscriptWordEdit.isSound(fix, wordCount: words.count),
+                      let shown = TranscriptWordEdit.shownText(first: fix.first, end: fix.end, words: words,
+                                                               utf16: utf16) else { return false }
+                return TranscriptEditLearning.changesOnlyPunctuationOrCase(heard: fix.heard, meant: shown)
+            }
             // Each word's fix (marks never overlap here: `isDamaged`), read once.
             var fixAt: [Int: TranscriptWordFix] = [:]
             for fix in segment.fixes ?? [] where TranscriptWordEdit.isSound(fix, wordCount: words.count) {
@@ -105,9 +113,13 @@ enum ReviewLearning {
             // apart, each would take the other's corrected word as what was heard beside it ("pull requested"), and
             // neither rule would match what the recognizer wrote ("bull requested"). Each span keeps the turns holding
             // all of it, narrowed as it grows (only the new words are checked).
+            // Only edits that change words are joined: one changing only punctuation or case ("Hello." → "Hello?")
+            // beside "cloud" → "Claude" would teach ". cloud" → "? Claude". It is learned on its own (`trivial`), and
+            // stands as context as it is now shown.
             var spans: [(fixes: [TranscriptWordFix], owners: [Int])] = []
             for fix in fixes {
-                if let last = spans.last, let previous = last.fixes.last, previous.end == fix.first {
+                if let last = spans.last, let previous = last.fixes.last, previous.end == fix.first,
+                   !trivial(previous), !trivial(fix) {
                     let owners = turnsHolding(fix.first..<fix.end, among: last.owners)
                     if !owners.isEmpty {
                         spans[spans.count - 1].fixes.append(fix)
@@ -136,9 +148,9 @@ enum ReviewLearning {
                 guard heard != shown else { continue }
                 let inTurn = { (word: Int) in holds(owner, word) }
                 let before = context(first - 1, words: words, utf16: utf16, fixAt: fixAt, inTurn: inTurn,
-                                     recognized: recognized)
+                                     trivial: trivial, recognized: recognized)
                 let after = context(end, words: words, utf16: utf16, fixAt: fixAt, inTurn: inTurn,
-                                    recognized: recognized)
+                                    trivial: trivial, recognized: recognized)
                 edits.append(ReviewWordEdit(heard: heard, meant: shown, before: before?.shown, after: after?.shown,
                                             heardBefore: before?.heard, heardAfter: after?.heard))
             }
@@ -153,18 +165,21 @@ enum ReviewLearning {
     /// hold all of ("newark" made "New York", split as "as New" / "York") gives no context: part of it has no heard
     /// text of its own, and corrected text never stands for what was heard ("as New" would match nothing). Both sides
     /// cover the same characters (`recognized`): "cloud." for "Claude.", never "cloud" beside "Claude.".
-    /// `words` and `utf16`: the segment's, read once; `fixAt`: each word's fix (its marks never overlap).
+    /// `words` and `utf16`: the segment's, read once; `fixAt`: each word's fix (its marks never overlap). An edit
+    /// changing only punctuation or case (`trivial`) stands as it is now shown, on both sides.
     private static func context(_ index: Int, words: [EffectiveWord], utf16: [UInt16], fixAt: [Int: TranscriptWordFix],
-                                inTurn: (Int) -> Bool,
+                                inTurn: (Int) -> Bool, trivial: (TranscriptWordFix) -> Bool,
                                 recognized: (TranscriptWordFix, String) -> String?) -> (shown: String, heard: String?)? {
         guard index >= 0, index < words.count, inTurn(index) else { return nil }
         if let fix = fixAt[index], fix.kind != .reviewRevert {
             // A damaged fix (its words out of the segment's) gives no context.
             guard TranscriptWordEdit.isSound(fix, wordCount: words.count), (fix.first..<fix.end).allSatisfy(inTurn),
-                  let whole = TranscriptWordEdit.shownText(first: fix.first, end: fix.end, words: words, utf16: utf16),
-                  let written = recognized(fix, whole) else {
+                  let whole = TranscriptWordEdit.shownText(first: fix.first, end: fix.end, words: words, utf16: utf16)
+            else {
                 return nil
             }
+            if trivial(fix) { return (TranscriptWordEdit.cleaned(whole), nil) }
+            guard let written = recognized(fix, whole) else { return nil }
             let shown = TranscriptWordEdit.cleaned(whole)
             let heard = TranscriptWordEdit.cleaned(written)
             return (shown, heard == shown ? nil : heard)

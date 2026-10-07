@@ -406,10 +406,11 @@ public struct ReviewWord: Sendable, Equatable {
             + "cannot be edited here: the speaker labels could not be kept on the edited words.")
 
     /// Why words `refs` (consecutive words of one segment) cannot be edited, known before a field opens over them; nil
-    /// when an edit can be tried. It is the save itself, made as a dry run on the transcript shown and the revision it
-    /// was fixed from (`wordEditRequest`, then `SessionWordEdit.edited`, which `SessionWordEdit.run` makes), with a
-    /// placeholder for the text: whatever the save refuses for these words, this refuses with the same message (a
-    /// word corrected while recording, overlapping turns, an older or newer fix, a damaged revision). Only what depends
+    /// when an edit can be tried. It is the save itself, made as a dry run on the transcript and labels shown and the
+    /// revision it was fixed from (`wordEditRequest`, then `SessionWordEdit.planned`, which `SessionWordEdit.run` makes:
+    /// the edit and the labels retargeted onto it, nothing written), with a placeholder for the text: whatever the save
+    /// refuses for these words, this refuses with the same message (a word corrected while recording, overlapping
+    /// turns, an older or newer fix, a damaged revision, labels that cannot be kept across it). Only what depends
     /// on the text typed (a deletion's neighbour) is known at the save alone. Made once per selection and labels read
     /// (`checks`).
     public func wordEditRefusal(_ refs: [WordRef]) -> String? {
@@ -419,14 +420,15 @@ public struct ReviewWord: Sendable, Equatable {
         return checked(key) {
             var (request, segment) = try wordEditRequest(refs, text: "")
             request.text = Self.placeholder(over: segment, first: request.first, end: request.end)
-            _ = try SessionWordEdit.edited(request, in: snapshot.transcript, base: try shownBase(),
-                                           projection: projection)
+            _ = try SessionWordEdit.planned(request, in: snapshot.transcript, base: try shownBase(),
+                                            snapshot: snapshot, session: session)
         }
     }
 
     /// Why the fix on `word` cannot be reverted, known before Revert is offered (context menu, VoiceOver) and checked
     /// again when it is asked for; nil when it can be tried. It is the revert itself, made as a dry run on the
-    /// transcript shown (`SessionWordFixRevert.reverted`, which the revert makes; for a Review edit, the edit back to
+    /// transcript and labels shown (`SessionWordFixRevert.planned`, which the revert makes: the revert and the labels
+    /// retargeted onto it, nothing written; for a Review edit, the edit back to
     /// what the recognizer wrote, made as `wordEditRefusal` makes one), so it refuses exactly what the revert would,
     /// with the same message. Made once per word and labels read (`checks`).
     public func revertRefusal(_ word: WordRef) -> String? {
@@ -436,8 +438,8 @@ public struct ReviewWord: Sendable, Equatable {
             }) {
                 let refs = (edit.first..<edit.end).map { WordRef(segmentID: word.segmentID, word: $0) }
                 let (request, _) = try wordEditRequest(refs, text: edit.heard, verbatim: true)
-                _ = try SessionWordEdit.edited(request, in: snapshot.transcript, base: try shownBase(),
-                                               projection: projection)
+                _ = try SessionWordEdit.planned(request, in: snapshot.transcript, base: try shownBase(),
+                                                snapshot: snapshot, session: session)
                 return
             }
             // As `revertWordFix` asks before it queues the revert.
@@ -446,7 +448,8 @@ public struct ReviewWord: Sendable, Equatable {
             }) else {
                 throw Self.notFixedAutomatically
             }
-            _ = try SessionWordFixRevert.reverted(word, in: snapshot.transcript, to: try shownBase())
+            _ = try SessionWordFixRevert.planned(word, in: snapshot.transcript, to: try shownBase(),
+                                                 snapshot: snapshot, session: session)
         }
     }
 

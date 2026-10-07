@@ -208,8 +208,9 @@ public struct WordList: Codable, Sendable, Equatable {
 
     /// One word of a typed term without the sentence's punctuation around it: opening and closing quotes and brackets,
     /// a trailing comma, semicolon or colon, and a trailing ".", "!", "?" or "…" only when the rest of the word is
-    /// plain (letters, digits, apostrophes, hyphens: "Claude." but not "Node.js." nor "e.g."). What belongs to the word
-    /// stays: "#", "+", a leading dot, punctuation inside it.
+    /// plain (letters, digits, apostrophes, hyphens: "Claude." but not "Node.js." nor "e.g.") or follows a closing quote
+    /// or bracket ("(Claude).", "“Node.js”."), each stripped in turn in whatever order they come. What belongs to the
+    /// word stays: "#", "+", a leading dot, punctuation inside it.
     public static func termWord(_ word: String) -> String {
         let opening: Set<Character> = ["\"", "'", "“", "‘", "«", "(", "[", "{", "¿", "¡"]
         let closing: Set<Character> = ["\"", "'", "”", "’", "»", ")", "]", "}"]
@@ -226,6 +227,12 @@ public struct WordList: Codable, Sendable, Equatable {
             } else if ending.contains(last) {
                 var rest = characters.dropLast()
                 while let previous = rest.last, ending.contains(previous) { rest = rest.dropLast() }
+                // After a closing quote or bracket (or a comma), the mark ends the sentence, never the word:
+                // "(Claude)." and "“Claude”." lose it, and then the wrapper, whatever the order.
+                if let previous = rest.last, closing.contains(previous) || separating.contains(previous) {
+                    characters = rest
+                    continue
+                }
                 guard plain(rest) else { break }
                 characters = rest
             } else {

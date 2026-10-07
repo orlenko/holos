@@ -1611,6 +1611,34 @@ func learningAgainAtTheNextCloseChangesNothingAndASecondOccurrenceIsAdded() asyn
     #expect(learned.map(\.heard) == ["as cloud"] && learned.map(\.meant) == ["ask Claude"])
 }
 
+/// "Hello. cloud now": "Hello." edited to "Hello?" (punctuation only), then "cloud" to "Claude" beside it. Only edits
+/// that change words are joined: the punctuation edit is learned on its own (it teaches nothing) and stands beside
+/// "Claude" as it is now shown, so no lesson holds ". cloud" → "? Claude".
+@Test func anEditOfPunctuationOrCaseIsNeverJoinedWithAnEditBesideIt() {
+    var segment = SessionFixtures.segment(["Hello?", "Claude", "now"], track: "system", start: 0, wordSeconds: 1,
+                                          id: "S1")
+    segment.fixes = [TranscriptWordFix(first: 0, end: 1, heard: "Hello.", kind: .reviewEdit, heardWords: 1),
+                     TranscriptWordFix(first: 1, end: 2, heard: "cloud", kind: .reviewEdit, heardWords: 1)]
+    let edits = ReviewLearning.edits(in: SessionFixtures.transcript([segment]),
+                                     turns: [[WordSpan(segmentID: "S1", first: 0, end: 3)]])
+    #expect(edits == [
+        ReviewWordEdit(heard: "Hello.", meant: "Hello?", after: "Claude", heardAfter: "cloud"),
+        ReviewWordEdit(heard: "cloud", meant: "Claude", before: "Hello?", after: "now"),
+    ])
+    let learned = ReviewLearning.corrections(edits) { edit in
+        TranscriptEditLearning.corrections(heard: edit.heard, meant: edit.meant, before: edit.before,
+                                           after: edit.after, heardBefore: edit.heardBefore,
+                                           heardAfter: edit.heardAfter, isDictionaryWord: { _ in true })
+    }
+    #expect(!learned.isEmpty && learned.allSatisfy { $0.heard.contains("cloud") && $0.meant.contains("Claude") })
+    #expect(!learned.contains { $0.heard.contains(".") || $0.meant.contains("?") && !$0.heard.contains("?") })
+    // Two edits that change words are still joined.
+    segment.fixes?[0] = TranscriptWordFix(first: 0, end: 1, heard: "Yellow.", kind: .reviewEdit, heardWords: 1)
+    #expect(ReviewLearning.edits(in: SessionFixtures.transcript([segment]),
+                                 turns: [[WordSpan(segmentID: "S1", first: 0, end: 3)]])
+        == [ReviewWordEdit(heard: "Yellow. cloud", meant: "Hello? Claude", after: "now")])
+}
+
 @Test func anEditIsLearnedOnlyWhenOneTurnHoldsItAllAndTakesContextFromThatTurn() {
     // Overlapping turns: A holds words 0–1, B holds 1–2, of each segment.
     var across = SessionFixtures.segment(["we", "much", "Claude", "now"], track: "system", start: 0, wordSeconds: 1,
@@ -2235,6 +2263,17 @@ func theChecksBeforeAnEditOrRevertRefuseWhatTheSaveRefuses() async throws {
         var change: (inout Transcript, inout Transcript) -> Void
         /// The words the field opens over.
         var words: [Int]
+        /// An edit of them is refused (else only the revert is, and the field check lets the edit be tried).
+        var editRefused = true
+    }
+    /// Another segment, after the first, whose word lies past its text.
+    func damagedSegment(_ transcript: Transcript) -> TranscriptSegment {
+        var other = transcript.segments[0]
+        other.id = "S-other"
+        other.start += 10
+        other.end += 10
+        other.words[0].utf16Offset = Int.max
+        return other
     }
     let cases: [Case] = [
         // A modern fix whose count of recognizer words does not hold what it matched in the unfixed revision.
@@ -2251,6 +2290,12 @@ func theChecksBeforeAnEditOrRevertRefuseWhatTheSaveRefuses() async throws {
         Case(name: "repeated base ID", change: { _, base in base.segments.append(base.segments[0]) }, words: [0]),
         Case(name: "damaged base", change: { _, base in base.segments[0].words[3].utf16Offset = Int.max },
              words: [0]),
+        // Another segment is damaged: the labels cannot be mapped by time across the whole transcript (a revert),
+        // while an edit maps them by its own words.
+        Case(name: "another segment damaged", change: { current, base in
+            current.segments.append(damagedSegment(current))
+            base.segments.append(damagedSegment(base))
+        }, words: [0], editRefused: false),
     ]
     for item in cases {
         let temp = try TemporaryDirectory("review")
@@ -2265,9 +2310,13 @@ func theChecksBeforeAnEditOrRevertRefuseWhatTheSaveRefuses() async throws {
         let review = try await wordEditOpen(session)
         #expect(review.canEditWords, "\(item.name)")
         let refs = wordEditRefs(review, "T1", item.words)
-        let check = try #require(review.wordEditRefusal(refs), "\(item.name): the field check refuses")
-        let save = await #expect(throws: HolosError.self) { try await review.editWords(refs, to: "Something") }
-        #expect(save?.localizedDescription == check, "\(item.name)")
+        if item.editRefused {
+            let check = try #require(review.wordEditRefusal(refs), "\(item.name): the field check refuses")
+            let save = await #expect(throws: HolosError.self) { try await review.editWords(refs, to: "Something") }
+            #expect(save?.localizedDescription == check, "\(item.name)")
+        } else {
+            #expect(review.wordEditRefusal(refs) == nil, "\(item.name)")
+        }
         // The revert, made as the window makes it (no check before it).
         let fixed = wordEditRefs(review, "T1", [2])[0]
         let revertCheck = review.revertRefusal(fixed)

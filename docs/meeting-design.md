@@ -7806,10 +7806,12 @@ shown, Otter-style.
   compares the `wordsEpoch` the field opened under, never the review's at the time of the
   save. The check before a field opens (`ReviewSession.wordEditRefusal`) and before Revert is
   offered (`revertRefusal`) is the save itself made as a dry run, on the transcript shown and
-  the revision it was fixed from, with no file read or written: the edit's request checks and
-  `SessionWordEdit.edited` (what `SessionWordEdit.run` makes, with a placeholder for the text),
-  and `SessionWordFixRevert.reverted` (what the revert makes; for a Review edit, the edit back
-  to its `heard`). Whatever the save would refuse (a damaged revision or a segment ID used
+  the revision it was fixed from, with nothing written: the edit's request checks and
+  `SessionWordEdit.planned` (what `SessionWordEdit.run` makes before it writes: the edit, with
+  a placeholder for the text, and the speaker labels retargeted onto it,
+  `SpeakerTranscriptRetarget.plan`), and `SessionWordFixRevert.planned` (the same for the
+  revert; for a Review edit, the edit back to its `heard`). So a revert the labels cannot be
+  mapped across (another segment damaged) is not offered either. Whatever the save would refuse (a damaged revision or a segment ID used
   twice, `TranscriptWordEdit.structureRefusal`; a word corrected while recording; a fix a
   newer version wrote; an automatic fix whose count of recognizer words does not hold what it
   matched, older or modern; overlapping turns), the check refuses with the same message,
@@ -7999,7 +8001,10 @@ shown, Otter-style.
     reverted is not there, so it teaches nothing. Edits side by side in one turn are one
     phrase: "bull" → "pull" then "requested" → "request" teaches "bull requested" → "pull
     request" (what the recognizer wrote, from each edit's `heard`), never "pull requested" or
-    "bull request", which would match nothing it wrote. An edit (or such a phrase) is learned
+    "bull request", which would match nothing it wrote. Only edits that change words are
+    joined: one changing only punctuation or case ("Hello." → "Hello?") is learned on its own
+    and stands beside the other as it is now shown, so "Hello. cloud" → "Hello? Claude" never
+    teaches ". cloud" → "? Claude". An edit (or such a phrase) is learned
     only when one turn holds all its words, and its context comes from that same turn (turns
     may overlap: two turns each holding some of the words are not one). Words edited together
     that a relabel has since put in two turns are not learned (a correction would mix two
@@ -8085,12 +8090,15 @@ shown, Otter-style.
     it ("github," → "GitHub." teaches "github" → "GitHub"); words split or joined ("everyday" → "every day") are a real
     change;
   - when the new text looks like a name or term (a word that is not a dictionary word, has a
-    capital inside it, or a content word the edit capitalized), the window offers "Add
+    capital inside it, or a content word the edit capitalized: each word compared with the
+    heard word it stands for, so "APPLE" → "Apple" is not, and the second of "Apple apple" →
+    "Apple Apple" is), the window offers "Add
     “Claude” to the word list, often heard as “cloud”?" (Add / Not Now); ⌥Return adds it
     without asking. Both keep the punctuation that belongs to the term and drop the
     sentence's (`WordList.typedTerm`): "C#", "C++", ".NET", "Node.js" stay; "GitHub," and
     "Claude." lose the comma and period (a final period only when the rest of the word is
-    plain, so "e.g." keeps it). What was heard is cleaned the same way before it is compared
+    plain, so "e.g." keeps it, or follows a closing quote or bracket: "(Claude)." and
+    "“Claude”." give "Claude", "(Node.js)." gives "Node.js"). What was heard is cleaned the same way before it is compared
     with the term, so a case-only change ("c#" → "C#") gives no "often heard as", never the
     broader "c". Nor is what was heard over words holding a deletion ("Clyde" edited over a
     word "um" was merged into would give "um cloud"): the term may still be offered, with no

@@ -84,6 +84,15 @@ private func isWord(_ word: String) -> Bool { dictionary.contains(word.lowercase
     #expect(WordList.typedTerm("e.g.") == "e.g.", "A dot is the word's when it has others.")
     #expect(WordList.typedTerm(" New York, ") == "New York")
     #expect(WordList.typedTerm("“…”") == nil)
+    // A sentence's mark after a closing bracket or quote, and the wrapper, in either order; the word's own kept.
+    #expect(WordList.typedTerm("(Claude).") == "Claude")
+    #expect(WordList.typedTerm("“Claude”.") == "Claude")
+    #expect(WordList.typedTerm("“Claude.”") == "Claude")
+    #expect(WordList.typedTerm("(Claude.)!") == "Claude")
+    #expect(WordList.typedTerm("(Node.js).") == "Node.js")
+    #expect(WordList.typedTerm("“C#”,") == "C#")
+    #expect(WordList.typedTerm("(.NET).") == ".NET")
+    #expect(WordList.typedTerm("Node.js.") == "Node.js.", "A dot after a word with its own is left, as before.")
 }
 
 @Test func theHeardSideIsCleanedAsTheTermIs() {
@@ -128,6 +137,26 @@ private func isWord(_ word: String) -> Bool { dictionary.contains(word.lowercase
     // A word kept capitalized as it was heard is not news.
     #expect(TranscriptEditLearning.term(heard: "Mark said", meant: "Mark says", isDictionaryWord: { _ in true },
                                         isContentWord: { _ in true }) == nil)
+}
+
+/// Each meant word is compared with the heard word it stands for, never with the heard words as a set.
+@Test func aWordCountsAsCapitalizedOnlyAgainstItsOwnHeardWord() {
+    let word = { (_: String) in true }
+    let content = { (_: String) in true }
+    // Capitals made lowercase are not a name.
+    #expect(TranscriptEditLearning.term(heard: "APPLE", meant: "Apple", isDictionaryWord: word,
+                                        isContentWord: content) == nil)
+    // The second "apple" was capitalized, though the first was already: offered.
+    #expect(TranscriptEditLearning.term(heard: "Apple apple", meant: "Apple Apple", isDictionaryWord: word,
+                                        isContentWord: content) == "Apple Apple")
+    // Lowercase to a capital, and a capitalized word put in: offered; as heard: not.
+    #expect(TranscriptEditLearning.term(heard: "apple", meant: "Apple", isDictionaryWord: word,
+                                        isContentWord: content) == "Apple")
+    #expect(TranscriptEditLearning.term(heard: "the pie", meant: "the Apple pie", isDictionaryWord: word,
+                                        isContentWord: { $0 != "the" }) == "the Apple pie")
+    #expect(TranscriptEditLearning.term(heard: "Apple pie", meant: "Apple pie", isDictionaryWord: word,
+                                        isContentWord: content) == nil)
+    #expect(TranscriptEditLearning.aligned(["Apple", "Apple"], with: ["Apple", "apple"]) == ["Apple", "apple"])
 }
 
 @Test func oftenHeardAsIsWhatTheRecognizerWrote() {
