@@ -13,7 +13,9 @@ public enum ShortInterjection: Sendable, Equatable {
 /// "Short interjections"). Presentation only: nothing is stored, the run and the edit journal keep these turns as they
 /// are, and voice learning, voice matching and every edit read the projection's own `turns`. Pure and deterministic.
 ///
-/// Only a shown turn of the unknown speaker (`speakerID` nil) of at most `maxWords` words is a candidate, and never one
+/// Only a shown turn of the unknown speaker (`speakerID` nil) of at most `maxWords` words is a candidate: at most
+/// `maxWords` words in its text split at spaces, and at most `maxRecognizerWords` words the recognizer timed (a
+/// language written without spaces, such as Chinese, is held to that count), and never one
 /// the user worked on: assigned (named by an applied `reassignTurns` edit, "Unknown" included, so choosing Unknown for
 /// an attached turn keeps it unknown; or `reassigned`), split (`modified`), or with a word edited in Review. Its neighbours
 /// are the turns just before and after it on its own track. In order:
@@ -28,6 +30,9 @@ public enum ShortInterjection: Sendable, Equatable {
 public enum ShortInterjections {
     /// Turns of more words than this are never touched.
     public static let maxWords = 4
+    /// Turns the recognizer timed more words for than this are never touched either, whatever their text's spaces
+    /// say (it may time punctuation or a hyphenated word apart, hence the margin).
+    public static let maxRecognizerWords = 2 * maxWords
     /// The most silence between a short turn and the turn it joins.
     public static let gapSeconds = 1.5
 
@@ -67,8 +72,8 @@ public enum ShortInterjections {
         var result: [String: ShortInterjection] = [:]
         for (index, turn) in turns.enumerated() where turn.speakerID == nil && !turn.reassigned && !turn.modified
             && !assigned.contains(turn.id) {
-            // Cheap first: a turn of many recognizer words is never short.
-            guard turn.spans.reduce(0, { $0 + max(0, $1.end - $1.first) }) <= maxWords * 2 else { continue }
+            // Both counts (the recognizer's, which is cheap, first).
+            guard turn.spans.reduce(0, { $0 + max(0, $1.end - $1.first) }) <= maxRecognizerWords else { continue }
             let tokens = Self.tokens(words.text(of: turn.spans))
             guard !tokens.isEmpty, tokens.count <= maxWords else { continue }
             let editedWords = edited ?? EchoFilter.reviewEditedWords(in: transcript)

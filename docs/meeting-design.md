@@ -7848,7 +7848,9 @@ public enum SessionAudioComposition {
   `turns`, `speakers` (talk time, turn counts), the run and the edit journal are left as
   they are, and edits, previews, Play samples, voice learning and voice matching read
   `turns`. A candidate is a shown turn of the unknown speaker of at most 4 words
-  (`maxWords`; words are its text split at spaces, punctuation trimmed) that the user
+  (`maxWords`; words are its text split at spaces, punctuation trimmed; the recognizer
+  must also have timed at most 8, `maxRecognizerWords`, so a language written without
+  spaces is not one long word) that the user
   did not assign (named by a `reassignTurns` edit in effect, Unknown included: choosing
   Unknown for an attached turn changes no stored speaker, yet it is saved, since
   `SpeakerEditor` compares `shownTurns` too, and keeps the turn unknown until undone),

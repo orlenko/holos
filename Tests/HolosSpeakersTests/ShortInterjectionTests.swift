@@ -18,6 +18,8 @@ private struct Line {
     var text: String
     var track = "system"
     var editedFirstWord = false
+    /// Every character a timed word, as for a language written without spaces.
+    var wordPerCharacter = false
 }
 
 private func line(_ id: String, _ start: Double, _ speaker: String?, _ text: String, track: String = "system",
@@ -29,7 +31,9 @@ private let wordSeconds = 0.4
 
 private func segment(_ line: Line) -> TranscriptSegment {
     var words: [TimedWord] = []
-    for (index, token) in line.text.split(separator: " ").enumerated() {
+    let tokens: [Substring] = line.wordPerCharacter
+        ? line.text.indices.map { line.text[$0...$0] } : line.text.split(separator: " ")
+    for (index, token) in tokens.enumerated() {
         let start = line.start + Double(index) * wordSeconds
         words.append(TimedWord(text: String(token), start: start, end: start + wordSeconds,
                                utf16Offset: line.text.utf16.distance(from: line.text.startIndex, to: token.startIndex),
@@ -238,6 +242,13 @@ private let meeting: [Line] = [
         line("T2", 2.2, nil, "agreed to it right away."),
     ])
     #expect(long.interjections.isEmpty)
+    // Without spaces the recognizer's words count: ten timed words are not short, three are.
+    var unspaced = line("T2", 2.2, nil, "他们后来都同意了这个")
+    unspaced.wordPerCharacter = true
+    let opening = line("T1", 0, "S2", "We asked them, but they")
+    #expect(projection([opening, unspaced]).interjections.isEmpty)
+    unspaced.text = "同意了"
+    #expect(projection([opening, unspaced]).interjections == ["T2": .attached(speakerID: "S2")])
 }
 
 @Test func fillersFollowTheMeetingsLanguages() {
