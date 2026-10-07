@@ -7863,7 +7863,8 @@ public enum SessionAudioComposition {
      as one ("Ummm", "Hmmm"). Fillers are never attached: a stretched "umm" heard as
      "an" belongs in nobody's sentence.
   2. *Attached* to the previous turn when that turn has a speaker, its text does not end
-     a sentence (`.`, `!`, `?`, `…`, closing quotes ignored), and the gap is at most
+     a sentence (its last character, past quotation marks and closing brackets of any
+     script, is a Unicode sentence terminal such as `.`, `?`, `。` or `؟`, or `…`), and the gap is at most
      `gapSeconds` (1.5 s): "…but they" + "agreed to it. Yeah." is the previous speaker's.
   3. *Attached* when the turns before and after it have the same speaker and both gaps
      are at most 1.5 s: a few words inside one person's speech.

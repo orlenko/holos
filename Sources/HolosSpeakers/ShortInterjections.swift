@@ -108,12 +108,17 @@ public enum ShortInterjections {
         return gap.isFinite ? gap : .infinity
     }
 
-    /// The text ends a sentence: its last character other than spaces, quotes and closing brackets is `.`, `!`, `?`,
-    /// `…` (or a full-width stop). An empty text ends nothing.
+    /// The text ends a sentence: its last character other than spaces, quotation marks and closing brackets (in any
+    /// script: „Fertig.“, 「終わり。」) ends sentences in Unicode (`.`, `!`, `?`, `。`, `؟`, …) or is `…`. An empty text
+    /// ends nothing.
     static func endsSentence(_ text: String) -> Bool {
-        let closing = CharacterSet(charactersIn: "\"'’”»)]}").union(.whitespacesAndNewlines)
-        guard let last = text.unicodeScalars.reversed().first(where: { !closing.contains($0) }) else { return false }
-        return ".!?…。！？".unicodeScalars.contains(last)
+        let last = text.unicodeScalars.reversed().first { scalar in
+            let properties = scalar.properties
+            return !(properties.isWhitespace || properties.isQuotationMark
+                || properties.generalCategory == .closePunctuation || properties.generalCategory == .finalPunctuation)
+        }
+        guard let last else { return false }
+        return last.properties.isSentenceTerminal || last == "…"
     }
 
     /// The words of a text as compared with the lists: split at spaces, lowercased, curly apostrophes made straight,
