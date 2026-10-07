@@ -14,6 +14,9 @@ struct ReviewSplitRequest: Equatable {
     /// The edit field's words and text when Return asked for the split: the field opens again over them, saying
     /// why, when the split is then refused (an edit saved meanwhile changed what it can do).
     var field: Field?
+    /// The speaker labels' run the turns were shown from: labelled again since (a new run that did not keep them), a
+    /// turn ID may name another turn, so the split is refused (`ReviewWindow.resolveSplit`).
+    var runID: String? = nil
 
     struct Field: Equatable {
         var words: [ReviewWord]
@@ -66,7 +69,7 @@ extension TurnListView {
                                          turnID: target.turnID ?? turnID(ofWordAt: target.range.lowerBound,
                                                                          in: target.paragraphID),
                                          movesSeen: target.movesSeen, wordsEpoch: target.wordsEpoch,
-                                         field: .init(words: target.words, text: typed))
+                                         field: .init(words: target.words, text: typed), runID: target.runID)
         switch resolveSplit?(request) {
         case .split(let split)?:
             cancelWordEdit()
@@ -82,16 +85,21 @@ extension TurnListView {
     /// Split Turn Here on `word` of `row` (as the row shows it): nil on the row's first word, where there is nothing
     /// to split from; else the item's request, with why it cannot be made (nil when it can).
     func splitOffer(row: Int, word: ReviewWord, index: Int) -> (choice: SplitChoice, refusal: String?)? {
-        guard row >= 0, row < paragraphs.count else { return nil }
-        let shown = paragraphWords(paragraphs[row])
-        // The clicked word itself (`index`: overlapping turns of a row may show a word twice), not its first copy.
-        guard index > 0, index < shown.words.count, shown.words[index].ref == word.ref else { return nil }
-        let request = ReviewSplitRequest(word: word.ref, after: false,
-                                         turnID: paragraphs[row].turns[shown.turns[index]].id,
-                                         movesSeen: wordMoves.count, wordsEpoch: wordsEpoch)
-        guard let resolution = resolveSplit?(request) else { return nil }
+        guard let request = splitRequest(row: row, index: index), request.word == word.ref,
+              let resolution = resolveSplit?(request) else { return nil }
         if case .refused(let why) = resolution { return (SplitChoice(request), why) }
         return (SplitChoice(request), nil)
+    }
+
+    /// A split before word `index` of `row` as the row shows it (that copy of it: overlapping turns of a row may show a
+    /// word twice, and the split is its turn's): nil on the row's first word, where there is nothing to split from.
+    func splitRequest(row: Int, index: Int) -> ReviewSplitRequest? {
+        guard row >= 0, row < paragraphs.count else { return nil }
+        let shown = paragraphWords(paragraphs[row])
+        guard index > 0, index < shown.words.count, index < shown.turns.count else { return nil }
+        return ReviewSplitRequest(word: shown.words[index].ref, after: false,
+                                  turnID: paragraphs[row].turns[shown.turns[index]].id,
+                                  movesSeen: wordMoves.count, wordsEpoch: wordsEpoch, runID: runID)
     }
 
     /// Split Turn Here chosen: the request the menu made, resolved again now (the word followed since). Refused now

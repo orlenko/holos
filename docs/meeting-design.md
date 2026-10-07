@@ -7831,10 +7831,17 @@ public enum SessionAudioComposition {
   does: in edit mode, Return with the caret at the very start of the field's words and
   nothing changed splits before them (the field opens with its word selected: ← first), and
   at the very end, after them; outside edit mode, a word's context menu offers Split Turn
-  Here (none on a row's first word, nor in edit mode, where a field may be open). A split
+  Here (none on a row's first word, nor in edit mode, where a field may be open), and
+  VoiceOver's actions on the text offer the same as "Split Turn Before “word”". A split
+  asked on rows of a labels run that was replaced since (Label Again, a refresh from
+  elsewhere; not a run a word edit, its undo or a revert published keeping the turns) is
+  refused, since a turn ID may name another turn by then. A split
   from the field refused once queued (an edit saved meanwhile changed what it can do) opens
   the field again over its words once the labels are read again, with the caret where
-  Return found it and the reason. A word two overlapping turns hold splits the turn it was
+  Return found it and the reason (unless edit mode was turned off or another text field
+  took the keyboard meanwhile: the footer alone says why). A field opened while the split
+  saves stays open as the split's saved turn replaces its temporary one, and the second
+  part's speaker pop-up then does not open. A word two overlapping turns hold splits the turn it was
   chosen in. A short interjection shown with its neighbour's speaker splits as the turn it is
   stored as (inside it, that turn splits; at its first word, the row breaks before it). Both make the same split or break as the sheet, checked
   first as the split itself is (`ReviewSession.splitRefusal`: words edited together, a

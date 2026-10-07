@@ -658,6 +658,7 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, NSM
         let people = review.knownPeople()
         // Words changed elsewhere since a field opened: it is not put back on them (`TurnListView.followWordEdit`).
         turnList.wordsEpoch = review.wordsEpoch
+        turnList.runID = runID
         turnList.update(paragraphs: paragraphs, speakers: projection.speakers, people: people,
                         editable: review.isEditable,
                         hints: review.profiles == nil ? [:] : review.voiceMatches.turnHints,
@@ -1220,10 +1221,8 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, NSM
     private func restoreSplitField(_ field: SplitField, epoch: Int, why: String) async {
         await review.reload()
         refresh()
-        // The person went on typing meanwhile (another word, a speaker's name, a search): it keeps the keyboard, and
-        // the refusal is in the footer only.
-        guard !turnList.typingElsewhere else { return }
-        if !turnList.editingWords { setEditMode(true) }
+        guard Self.reopensRefusedSplitField(typingElsewhere: turnList.typingElsewhere,
+                                            editingWords: turnList.editingWords) else { return }
         let text = field.field.text
         // Its saved ID: a part made by a split still saving when the field opened had a temporary one.
         let turnID = field.turnID.map(review.resolvedTurnID)
@@ -1251,6 +1250,14 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, NSM
         searchField.stringValue = ""
         refresh()
         _ = reopen()
+    }
+
+    /// Whether a refused split's field opens again once the labels are read again. Not while the person types
+    /// elsewhere (another word, a speaker's name, a search), which keeps the keyboard; nor once edit mode is off (the
+    /// field was asked from edit mode, which only the person turns off), so word clicks play, as they asked. The
+    /// refusal is in the footer either way.
+    static func reopensRefusedSplitField(typingElsewhere: Bool, editingWords: Bool) -> Bool {
+        !typingElsewhere && editingWords
     }
 
     /// Where a split asked at the start (or end, `atEnd`) of `word` is after the word moves since: the same edge of
@@ -1302,6 +1309,10 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, NSM
         guard review.isEditable else {
             return .refused(review.pauseReason ?? review.reloadProblem ?? "This meeting cannot be changed right now.")
         }
+        let runNow = review.projection.runID
+        guard Self.splitRunStands(asked: request.runID, now: runNow, keepsTurns: { [review] old in
+            review.keepsTurns(of: old, in: runNow)
+        }) else { return .refused(Self.labelledAgainSinceSplitAsked) }
         let place: ReviewSplitPlace?
         do {
             place = try review.splitPlace(at: request.word, after: request.after, in: request.turnID,
@@ -1313,6 +1324,16 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, NSM
             review.splitRefusal(turnID: turnID, at: word)
         }
     }
+
+    /// Whether a split asked on the rows of labels run `asked` can still be made on run `now`: the same run, or one a
+    /// word edit, its undo or a revert published from it keeping its turns (`keepsTurns`). Labelled again since (Label
+    /// Again, a refresh from elsewhere), a turn ID may name another turn. A request naming no run stands.
+    static func splitRunStands(asked: String?, now: String, keepsTurns: (String) -> Bool) -> Bool {
+        guard let asked, asked != now else { return true }
+        return keepsTurns(asked)
+    }
+
+    static let labelledAgainSinceSplitAsked = "The speakers were labelled again since; choose where to split again."
 
     /// `resolveSplit`'s rule for a place the review found (`place`) in the rows shown (`paragraphs`); `refusal`: why a
     /// turn cannot be split before a word (`ReviewSession.splitRefusal`).

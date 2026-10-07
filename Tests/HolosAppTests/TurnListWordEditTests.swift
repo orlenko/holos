@@ -637,6 +637,8 @@ struct TurnListWordEditTests {
         list.table.handleWordClick(row: 0, word: 2, through: 2, extend: false)
         #expect(list.wordEdit?.turnID == "T2")
         update(list, words: words, moves: [])
+        // Still over T2's copy, where it was opened, never moved onto T1's.
+        #expect(list.wordEdit?.range == 2...2 && list.wordEdit?.turnID == "T2")
         list.editField.currentEditor()?.selectedRange = NSRange(location: 0, length: 0)
         press(list, #selector(NSResponder.insertNewline(_:)))
         #expect(requests.last?.turnID == "T2" && requests.last?.word == beta.ref)
@@ -713,6 +715,32 @@ struct TurnListWordEditTests {
         // is never left behind.
         list.editingWords = true
         #expect(!menu(1).items.contains { $0.title == "Split Turn Here" })
+    }
+
+    /// VoiceOver reaches Split Turn Here through the text's actions: "Split Turn Before “beta”", none on the row's
+    /// first word nor in edit mode. Chosen, it is checked then, and a refusal says why.
+    @Test func voiceOverSplitsTheTurnBeforeAWord() throws {
+        let (list, _) = editingList()
+        var refuse = false
+        let made = splitting(list) { _, _ in refuse ? "Not here." : nil }
+        var refused: [String] = []
+        list.onSplitRefused = { refused.append($0) }
+        let text = try TurnListViewTests.cell(list, row: 0).bodyText
+        func splitActions() -> [NSAccessibilityCustomAction] {
+            (text.accessibilityCustomActions() ?? []).filter { $0.name.hasPrefix("Split Turn Before") }
+        }
+        #expect(splitActions().map(\.name)
+            == ["Split Turn Before “beta”", "Split Turn Before “gamma”", "Split Turn Before “delta”"])
+        let beta = try #require(splitActions().first)
+        #expect(beta.handler?() == true)
+        let betaRef = try #require(TurnListViewTests.words["T1"]?[1]).ref
+        #expect(made() == [.splitTurn(turnID: "T1", at: betaRef)])
+        // Refused once chosen: why, and no split.
+        refuse = true
+        #expect(try #require(splitActions().first).handler?() == true)
+        #expect(made().count == 1 && refused == ["Not here."])
+        list.editingWords = true
+        #expect(splitActions().isEmpty)
     }
 
     /// After a split, the second part's row is selected and its speaker pop-up opens, so its speaker can be chosen at
@@ -799,6 +827,37 @@ struct TurnListWordEditTests {
         let deleted = ReviewWordMove(segmentID: "S", replaced: 2..<3, replacement: 2..<2)
         #expect(boundary(true, [deleted])?.word.word == 2 && boundary(true, [deleted])?.atEnd == false)
         #expect(ReviewWindow.splitBoundary(nil, atEnd: false, through: []) == nil)
+    }
+
+    /// A refused split's field opens again only in edit mode with no other text field typed in: leaving edit mode
+    /// (⌘E) or typing a speaker's name while an earlier save held the split is never undone by the refusal.
+    /// A split names the labels run its rows showed: labelled again since (a run that did not keep the turns), a turn
+    /// ID may name another turn, so it is refused; a run a word edit published keeping the turns, or the same run,
+    /// lets it stand. The run is the list's when the menu opened, the field's when it opened.
+    @Test func aSplitAskedOnAnotherLabelsRunIsRefused() throws {
+        #expect(ReviewWindow.splitRunStands(asked: "R1", now: "R1", keepsTurns: { _ in false }))
+        #expect(ReviewWindow.splitRunStands(asked: nil, now: "R2", keepsTurns: { _ in false }))
+        #expect(ReviewWindow.splitRunStands(asked: "R1", now: "R2", keepsTurns: { $0 == "R1" }))
+        #expect(!ReviewWindow.splitRunStands(asked: "R1", now: "R2", keepsTurns: { _ in false }))
+        let (list, _) = editingList()
+        var requests: [ReviewSplitRequest] = []
+        list.resolveSplit = { requests.append($0); return .refused("recorded") }
+        list.runID = "R1"
+        let cell = try TurnListViewTests.cell(list, row: 0)
+        _ = list.table.wordMenu(row: 0, cell: cell, word: cell.bodyText.reviewWord(at: 1), index: 1)
+        #expect(requests.last?.runID == "R1")
+        list.editingWords = true
+        list.table.handleWordClick(row: 0, word: 1, through: 1, extend: false)
+        list.runID = "R2"
+        list.editField.currentEditor()?.selectedRange = NSRange(location: 0, length: 0)
+        press(list, #selector(NSResponder.insertNewline(_:)))
+        #expect(requests.count == 2 && requests.last?.runID == "R1", "The run the field's turn is of.")
+    }
+
+    @Test func aRefusedSplitsFieldOpensAgainOnlyWhereThePersonLeftIt() {
+        #expect(ReviewWindow.reopensRefusedSplitField(typingElsewhere: false, editingWords: true))
+        #expect(!ReviewWindow.reopensRefusedSplitField(typingElsewhere: false, editingWords: false))
+        #expect(!ReviewWindow.reopensRefusedSplitField(typingElsewhere: true, editingWords: true))
     }
 
     /// Only Esc drops what was typed: turning edit mode off saves it.
