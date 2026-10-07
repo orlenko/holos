@@ -4579,7 +4579,8 @@ they are on. App exclusion covers windows opened later. A display that mirrors a
 (`CGDisplayMirrorsDisplay`) is left out, since its snapshots would repeat. With
 `--screen main` there is one stream, on the display that is main when the capture starts
 (`CGMainDisplayID`, the one with the menu bar; the first listed display if the main one
-is missing); it does not follow a later change of main display. If the app is not running (a CLI-only
+is missing); it does not follow a later change of main display within that capture, but a
+restart of the capture (pause, sleep, an audio device change) takes the display that is main then. If the app is not running (a CLI-only
 recording), there is nothing of it to exclude. Desktop notifications and everything
 else on the displays are captured. Permission must already be granted; capture failures
 are optional-evidence failures and never invalidate saved audio.

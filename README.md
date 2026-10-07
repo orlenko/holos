@@ -131,7 +131,7 @@ from then on, or from the next meeting. Notifications and anything else on the d
 stays on this Mac. Screen & System Audio Recording permission must already be granted;
 without it the box is dimmed, and a capture failure never stops the audio.
 `voiceislocal record start --screen display` does the same from the command line
-(`--screen main` captures the main display only). Changed snapshots (a change counts
+(`--screen main` captures the main display only, chosen again when the capture restarts). Changed snapshots (a change counts
 once it holds still, so a moving video is skipped) are saved locally at up to one sample
 every two seconds per display, at most 2560 pixels wide. The displays share the storage
 limits (1000 snapshots, 256 MiB); near them the busiest display stops first, so a
