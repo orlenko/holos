@@ -2,6 +2,7 @@ import Foundation
 import HolosCore
 @testable import HolosMeeting
 import HolosSpeakers
+import HolosStorage
 import Testing
 
 // Editing words in Review, the pure part (docs/meeting-design.md §5.10, "Editing words"): `TranscriptWordEdit` on
@@ -714,6 +715,41 @@ private let editEchoMask: AcousticEchoMask = {
                                              text: Array(base.segments[0].text.utf16)))
     let next = try #require(try TranscriptWordEdit.editing(editRequest(1, 2, "then"), in: fixed, base: base))
     #expect(next.transcript.segments[0].text == "Hi! then")
+}
+
+@Test(.timeLimit(.minutes(1))) @MainActor
+func aDamagedSegmentIsNeverMappedByTime() async throws {
+    // Labels mapped from a transcript whose second language piece has a mark ending at Int.max (combining pieces would
+    // offset it past Int.max): refused, never trapped.
+    let temp = try TemporaryDirectory("review")
+    defer { temp.remove() }
+    let segment = editSegment(["ask", "cloud", "now"])
+    let transcript = editTranscript([segment])
+    let session = try await SessionFixtures.makeSession(in: temp.url, source: .system, audioSeconds: ["system": 4],
+                                                        mode: .call, transcript: transcript)
+    let manifest = try SessionArchive.readManifest(at: session)
+    let speaker = SessionSpeaker(id: "system:S1", ordinal: 1, provenance: .diarizer, clusterIDs: ["system:S1"])
+    let run = DiarizationRun(
+        sessionID: manifest.id, transcriptID: transcript.id, engine: .fake,
+        alignment: AlignmentInfo(version: 1, parameters: .v1),
+        tracks: [TrackDiarization(track: "system", policy: .diarized,
+                                  clusters: [ClusterSummary(clusterID: speaker.id, track: "system", speechSeconds: 3)])],
+        speakers: [speaker],
+        turns: [SpeakerTurn(id: "T1", track: "system", start: 0, end: 3, speakerID: speaker.id, clusterID: speaker.id,
+                            spans: [WordSpan(segmentID: "S1", first: 0, end: 3)], overlap: false,
+                            otherClusters: [], assignmentScore: 1, timing: .measured)])
+    try SessionArchive.withSpeakerLock(at: session) {
+        try SessionSpeakerStore.writeRun(run, session: session)
+        try SessionSpeakerStore.writeHead(SpeakerHead(runID: run.id), session: session)
+    }
+    let snapshot = try SpeakerSessionSnapshot.load(session: session)
+    var damaged = snapshot.transcript
+    damaged.id = UUID().uuidString
+    damaged.segments[0].fixes = [TranscriptWordFix(first: 1, end: Int.max, heard: "clod", kind: .correction,
+                                                   heardWords: 1)]
+    #expect(throws: HolosError.self) {
+        try SpeakerTranscriptRetarget.plan(session: session, from: snapshot, to: damaged)
+    }
 }
 
 @Test func aWordMoveIsReadOnlyAsItIsWritten() {

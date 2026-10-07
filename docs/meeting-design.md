@@ -8022,7 +8022,9 @@ shown, Otter-style.
     counts (a word fix run, no word move) checks them the same way when the unfixed revision
     can be read, and refuses them when they are wrong. Every walk over a segment's words
     (a turn's words, close-time learning) reads the segment once and looks words up by index,
-    so a very long or crafted segment never takes more than linear time. The
+    so a very long or crafted segment never takes more than linear time; learning indexes the
+    turns' spans by segment once and skips segments with no edit. Mapping speaker labels by
+    time refuses a transcript with a damaged segment or a segment ID used twice. The
     turns are the labels on the transcript as it is then: labels the window could not reread
     after an edit are read again at close; when that fails, or the labels read are still on
     another transcript (a speaker head owed, or the transcript changed under them), nothing

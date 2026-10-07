@@ -22,9 +22,20 @@ enum ReviewLearning {
         // An unfixed revision with one cannot say which segment holds what the recognizer wrote: no context from it.
         guard !TranscriptWordEdit.hasRepeatedSegmentIDs(transcript) else { return [] }
         let base = base.flatMap { TranscriptWordEdit.hasRepeatedSegmentIDs($0) ? nil : $0 }
+        // Read once for every segment (a meeting can hold tens of thousands of segments and turns): the unfixed
+        // segments by ID, and each turn's spans by segment.
+        let baseSegments = base.map { base in
+            Dictionary(base.segments.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        }
+        var spansOf: [String: [(turn: Int, span: WordSpan)]] = [:]
+        for (index, turn) in turns.enumerated() {
+            for span in turn { spansOf[span.segmentID, default: []].append((index, span)) }
+        }
         let ordered = transcript.segments.sorted { ($0.start, $0.track ?? "") < ($1.start, $1.track ?? "") }
         var edits: [ReviewWordEdit] = []
         for segment in ordered {
+            // Only a segment with words edited here teaches anything.
+            guard (segment.fixes ?? []).contains(where: { $0.kind == .reviewEdit }) else { continue }
             // A segment that cannot be trusted (word ranges, marks: `TranscriptWordEdit.isDamaged`) teaches nothing,
             // neither its own edits nor context for them.
             if TranscriptWordEdit.isDamaged(segment) { continue }
@@ -32,9 +43,8 @@ enum ReviewLearning {
             let utf16 = Array(segment.text.utf16)
             // Where each word boundary is in the unfixed segment, for what the recognizer wrote under a fix.
             // (Not when it cannot be trusted either: then no context is read from it.)
-            let baseSegment = base.flatMap { base in
-                base.id == transcript.fixedFrom ? base.segments.first { $0.id == segment.id } : nil
-            }.flatMap { TranscriptWordEdit.isDamaged($0) ? nil : $0 }
+            let baseSegment = (base?.id == transcript.fixedFrom ? baseSegments?[segment.id] : nil)
+                .flatMap { TranscriptWordEdit.isDamaged($0) ? nil : $0 }
             let baseWords = baseSegment.map(WordTiming.effectiveWords(of:))
             let baseUTF16 = baseSegment.map { Array($0.text.utf16) } ?? []
             let bounds = baseWords.flatMap {
@@ -61,12 +71,10 @@ enum ReviewLearning {
             // Which turns (by index, ascending) hold each word of the segment, read once from the spans (clamped to
             // the words: a span read from disk can hold any numbers), so nothing below walks every turn per word.
             var holders = Array(repeating: [Int](), count: words.count)
-            for (index, turn) in turns.enumerated() {
-                for span in turn where span.segmentID == segment.id {
-                    let lower = max(span.first, 0), upper = min(span.end, words.count)
-                    guard lower < upper else { continue }
-                    for word in lower..<upper where holders[word].last != index { holders[word].append(index) }
-                }
+            for (index, span) in spansOf[segment.id] ?? [] {
+                let lower = max(span.first, 0), upper = min(span.end, words.count)
+                guard lower < upper else { continue }
+                for word in lower..<upper where holders[word].last != index { holders[word].append(index) }
             }
             func holds(_ turn: Int, _ word: Int) -> Bool {
                 word >= 0 && word < holders.count && holders[word].contains(turn)

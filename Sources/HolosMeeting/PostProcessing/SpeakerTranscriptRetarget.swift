@@ -313,6 +313,15 @@ enum SpeakerTranscriptRetarget {
         var order: [String]
 
         init(from old: Transcript, to new: Transcript) throws {
+            // Read from disk: a segment whose words or marks cannot be trusted (`TranscriptWordEdit.isDamaged`) is never
+            // mapped (combining language pieces offsets their marks, which a damaged one could overflow), nor a
+            // transcript with a segment ID used twice.
+            guard !TranscriptWordEdit.hasRepeatedSegmentIDs(old), !TranscriptWordEdit.hasRepeatedSegmentIDs(new),
+                  !old.segments.contains(where: TranscriptWordEdit.isDamaged),
+                  !new.segments.contains(where: TranscriptWordEdit.isDamaged) else {
+                throw HolosError.invalidInput("The transcript's words or word fixes are damaged, so speaker labels "
+                                              + "cannot be kept.")
+            }
             let oldBase = old.liveCorrectedFrom ?? old.fixedFrom ?? old.id
             let newBase = new.liveCorrectedFrom ?? new.fixedFrom ?? new.id
             let oldSegments = Dictionary(old.segments.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })

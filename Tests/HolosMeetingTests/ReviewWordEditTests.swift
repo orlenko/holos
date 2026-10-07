@@ -1661,6 +1661,23 @@ func aSegmentWithOverlappingMarksIsRefusedBeforeAnyFieldOpens() async throws {
     #expect(edits.allSatisfy { $0.heardAfter != "cloud!" && $0.heardAfter != "cloud." })
 }
 
+@Test(.timeLimit(.minutes(1))) func manySegmentsAndTurnsAreReadOnceToLearn() {
+    // 60,000 one-word segments, each with its own turn, one edit among them: never every turn for every segment.
+    let count = 60_000
+    var segments = (0..<count).map { index in
+        TranscriptSegment(id: "S\(index)", start: Double(index), end: Double(index) + 0.5, text: "word",
+                          words: [TimedWord(text: "word", start: Double(index), end: Double(index) + 0.5,
+                                            utf16Offset: 0, utf16Length: 4)], track: "system")
+    }
+    segments[count - 1].text = "Claude"
+    segments[count - 1].words = [TimedWord(text: "Claude", start: Double(count - 1), end: Double(count) - 0.5,
+                                           utf16Offset: 0, utf16Length: 6)]
+    segments[count - 1].fixes = [TranscriptWordFix(first: 0, end: 1, heard: "cloud", kind: .reviewEdit, heardWords: 1)]
+    let turns = (0..<count).map { [WordSpan(segmentID: "S\($0)", first: 0, end: 1)] }
+    #expect(ReviewLearning.edits(in: SessionFixtures.transcript(segments), turns: turns)
+        == [ReviewWordEdit(heard: "cloud", meant: "Claude")])
+}
+
 @Test(.timeLimit(.minutes(1))) func manyEditsSideBySideAreLearnedInOnePass() {
     // 60,000 words, each edited on its own and side by side, in one turn: one span, read without rechecking the span
     // as it grows (which took billions of checks).
