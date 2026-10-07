@@ -79,16 +79,36 @@ public struct ProjectedTurn: Sendable, Equatable, Identifiable {
     public let excludedFromEnrollment: Bool
     /// assignmentScore < 0.6, overlap, or unknown speaker.
     public let uncertain: Bool
+    /// Set only in `SpeakerProjection.shownTurns`: a short turn of the unknown speaker shown with a neighbour's speaker
+    /// (`speakerID` is then that speaker's) or hidden (`ShortInterjections`). Nil in `turns`.
+    public let interjection: ShortInterjection?
 
     public init(id: String, track: String, start: Double, end: Double, speakerID: String?, clusterID: String?,
                 spans: [WordSpan], overlap: Bool, otherClusters: [String], assignmentScore: Double,
                 timing: WordTimingQuality, reassigned: Bool, modified: Bool, excludedFromEnrollment: Bool,
-                uncertain: Bool, cutByEcho: Bool = false) {
+                uncertain: Bool, cutByEcho: Bool = false, interjection: ShortInterjection? = nil) {
         self.id = id; self.cutByEcho = cutByEcho
         self.track = track; self.start = start; self.end = end; self.speakerID = speakerID
         self.clusterID = clusterID; self.spans = spans; self.overlap = overlap; self.otherClusters = otherClusters
         self.assignmentScore = assignmentScore; self.timing = timing; self.reassigned = reassigned
         self.modified = modified; self.excludedFromEnrollment = excludedFromEnrollment; self.uncertain = uncertain
+        self.interjection = interjection
+    }
+
+    /// This turn shown as `interjection`: attached, with that speaker and uncertain only when it overlaps another
+    /// speaker (it no longer lacks one); hidden, as it is.
+    func shown(as interjection: ShortInterjection) -> ProjectedTurn {
+        var speakerID = speakerID
+        var uncertain = uncertain
+        if case .attached(let neighbour) = interjection {
+            speakerID = neighbour
+            uncertain = overlap
+        }
+        return ProjectedTurn(id: id, track: track, start: start, end: end, speakerID: speakerID, clusterID: clusterID,
+                             spans: spans, overlap: overlap, otherClusters: otherClusters,
+                             assignmentScore: assignmentScore, timing: timing, reassigned: reassigned,
+                             modified: modified, excludedFromEnrollment: excludedFromEnrollment, uncertain: uncertain,
+                             cutByEcho: cutByEcho, interjection: interjection)
     }
 }
 
@@ -130,6 +150,20 @@ public struct SpeakerProjection: Sendable, Equatable {
     /// matched) to the same profile, plus recognition's suggestions for speakers that still exist and have neither
     /// rejected that profile nor been linked to another. Speaker IDs in list order; groups by first speaker.
     public let mergeSuggestions: [MergeSuggestion]
+    /// Short turns of the unknown speaker the Review list and the exports show with a neighbour's speaker or leave out
+    /// (`ShortInterjections`, docs/meeting-design.md §5.10), by turn ID. Presentation only: `turns` keeps them as they
+    /// are, and edits, voice learning and voice matching read `turns`.
+    public let interjections: [String: ShortInterjection]
+    /// `turns` as the Review list and every export show them: attached interjections with their neighbour's speaker,
+    /// hidden ones left out. Same order as `turns`.
+    public let shownTurns: [ProjectedTurn]
+    /// `shownTurns` with the hidden interjections too (Review's "Show Short Interjections").
+    public let shownTurnsWithHidden: [ProjectedTurn]
+
+    /// `shownTurns`, or `shownTurnsWithHidden` when `includingHidden`.
+    public func shownTurns(includingHidden: Bool) -> [ProjectedTurn] {
+        includingHidden ? shownTurnsWithHidden : shownTurns
+    }
 
     /// The inputs, the journal, and the state before names are derived, so `applying`, `fingerprint`, and
     /// `SpeakerCarryOver` need nothing else.
@@ -163,6 +197,8 @@ public struct SpeakerProjection: Sendable, Equatable {
     ///    still given to its speaker show unknown speaker, and no turn names it among its overlaps, unless the user
     ///    named or linked that speaker (their decision stands). Edits never see any of this: they apply to the run's
     ///    turns in steps 1–4, so the stored journal keeps naming stored turns whatever mask is shown.
+    /// 7. Short interjections (`ShortInterjections`, docs/meeting-design.md §5.10) are decided on the turns of step 6:
+    ///    `shownTurns` shows them with a neighbour's speaker or leaves them out. `turns` and `speakers` are unchanged.
     ///
     /// Listed speakers: every speaker with at least one turn shown, plus speakers created by `newSpeaker`.
     /// `recognition` matches whose profileID is not in `profileNames` (forgotten people) are ignored.
@@ -290,6 +326,24 @@ public struct SpeakerProjection: Sendable, Equatable {
         speakers = projected.speakers
         turns = projected.turns
         mergeSuggestions = projected.mergeSuggestions
+
+        // Step 7 (§5.10): short interjections, on the turns as shown (after the echo mask). A turn the user assigned
+        // stays as assigned, Unknown included (the stored speaker then does not change, so `reassigned` cannot say it).
+        var assigned = Set<String>()
+        for (entry, outcome) in zip(journal, outcomes) where outcome == .applied {
+            if case .reassignTurns(let turnIDs, _) = entry.action { assigned.formUnion(turnIDs) }
+        }
+        let interjections = ShortInterjections.classify(projected.turns, transcript: context.transcript,
+                                                        assigned: assigned)
+        self.interjections = interjections
+        if interjections.isEmpty {
+            shownTurns = projected.turns
+            shownTurnsWithHidden = projected.turns
+        } else {
+            let all = projected.turns.map { turn in interjections[turn.id].map { turn.shown(as: $0) } ?? turn }
+            shownTurnsWithHidden = all
+            shownTurns = all.filter { $0.interjection != .hidden }
+        }
     }
 
     /// Steps 3 and 4 of `make` over this run's journal.
@@ -378,6 +432,7 @@ extension SpeakerProjection: CustomStringConvertible, CustomDebugStringConvertib
             "editCount": editCount,
             "lastUndoableBatchID": lastUndoableBatchID as Any,
             "mergeSuggestions": mergeSuggestions,
+            "interjections": interjections.count,
         ], displayStyle: .struct)
     }
 }

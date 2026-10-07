@@ -73,6 +73,12 @@ enum AppKeyboard {
             .separator(),
             item("Find…", Selector(("focusSearch:")), "f"),
         ])
+        // The key review window answers these (ReviewWindow, its delegate) and names them as they apply to it; with no
+        // review window in front they are disabled.
+        submenu("View", [
+            item(ReviewWindow.speakersTitle(hidden: false), Selector(("toggleSpeakers:")), "s", [.command, .option]),
+            item("Show Short Interjections", Selector(("toggleShortInterjections:")), ""),
+        ])
         // ⌘1 … ⌘5 switch the main window's sections, and show it when it is closed.
         submenu("Go", MainSection.allCases.filter { $0 != .settings }.map { section in
             let entry = item(section.title, Selector(("showMainSection:")), section.keyEquivalent)
