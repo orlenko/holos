@@ -3214,6 +3214,11 @@ Application order in `make`:
 5. Derive names and provenance at the end: explicit name → `userRenamed`; linked profile
    → `userConfirmed`; automatic likely match not rejected → `recognized`; channel →
    `channelAssumption`; else `diarizer`.
+6. With a call's acoustic echo mask, hide the words and clusters it flags (§5.11).
+7. Decide the short interjections of the unknown speaker on the turns of step 6
+   (`interjections`, `shownTurns`, §5.10 "Short interjections"). Presentation only: `turns`
+   and `speakers` stay as steps 1–6 left them; the Review list and the exports read
+   `shownTurns`.
 
 Fingerprints use only state derived from the run and the journal (never recognition).
 This is the format implemented in PR5b (`SpeakerProjection.State.fingerprint(for:)`). The
@@ -7703,7 +7708,8 @@ speakers, undo, export.
 - Add `Sources/HolosMeeting/Review/ReviewSession.swift` (`@MainActor`, no AppKit),
   `Sources/HolosMeeting/Review/SessionAudioComposition.swift`.
 - Add `Sources/HolosApp/Review/`: `ReviewWindow.swift`, `SpeakerSidebarView.swift`,
-  `TurnListView.swift`, `ReviewPlayer.swift`.
+  `TurnListView.swift`, `ReviewPlayer.swift`, `ReviewPanes.swift` (the speakers pane that
+  hides); `Sources/HolosSpeakers/ShortInterjections.swift`.
 - Change `Sources/HolosApp/MeetingsWindow.swift` (`Review…` button; double-click opens
   Review when the session is labelled; the Delete Meeting alert gains "Also forget voice
   samples learned from this meeting"), `Sources/HolosApp/HolosApp+Meeting.swift` (the
@@ -7762,7 +7768,7 @@ public enum SessionAudioComposition {
 
 ```
 ┌──────────────────────────────────────────────────────────────────────────────────────────────┐
-│ [Next Uncertain ⌘']  [Assign to… ▾]  [Split Turn]  [Speakers ▾]        [🔍 Search]  [Export ▾] │
+│ [Hide Speakers] [Next Uncertain] [Assign to… ▾] [Split Turn] [Speakers ▾] [🔍 Search] [Export ▾]│
 ├──────────────────────────────┬───────────────────────────────────────────────────────────────┤
 │ SPEAKERS  [Confirm All (3)]  │ 01:12:03  [Jim ▾]         We should move the vote to next week. │
 │ [Jim            ▾]    41:12  │ 01:12:40  [Speaker 3 ▾]   Agreed, but the budget…               │
@@ -7827,6 +7833,51 @@ public enum SessionAudioComposition {
   While playing, the row of the turn being spoken is tinted, and a pause inside
   a row keeps it tinted with the last word spoken, so the tint and the scroll move a row
   at a time rather than every turn.
+- Speakers pane (`ReviewPanes`, an `NSSplitViewController`): once the speakers are sorted
+  out the pane can go. Hide Speakers / Show Speakers (the first toolbar button, View ▸
+  Hide Speakers, ⌥⌘S; dragging the divider to the edge does it too) collapses it,
+  animated unless Reduce motion is on, and the turn list takes its width; the window
+  keeps its size. Speakers are still named, merged into, and assigned from each row's
+  speaker pop-up. The state is per meeting (`ReviewSpeakersPaneMemory`: the IDs of the
+  meetings whose pane is hidden, at most 500, in the app's defaults), so a meeting opens
+  as it was left and a new meeting opens with the pane. Hiding it while a name is being
+  typed there ends that field first.
+- Short interjections (`ShortInterjections`, HolosSpeakers; pure, deterministic):
+  presentation only, in the one view the list and the exports read. `SpeakerProjection`
+  decides them after the echo mask (§4.9 step 7) into `interjections` and `shownTurns`;
+  `turns`, `speakers` (talk time, turn counts), the run and the edit journal are left as
+  they are, and edits, previews, Play samples, voice learning and voice matching read
+  `turns`. A candidate is a shown turn of the unknown speaker of at most 4 words
+  (`maxWords`; words are its text split at spaces, punctuation trimmed) that the user
+  did not assign (named by a `reassignTurns` edit in effect, Unknown included: choosing
+  Unknown for an attached turn changes no stored speaker, yet it is saved, since
+  `SpeakerEditor` compares `shownTurns` too, and keeps the turn unknown until undone),
+  split (`modified`), or edit a word of (a `reviewEdit` fix). Named speakers' turns are never candidates. Its neighbours are the turns just
+  before and after it on its own track. In order:
+  1. *Hidden* when every word is a filler or backchannel of the meeting's languages
+     (`Transcript.languages`, else `locale`): in any language mm, hmm, mhm, mm-hmm, ok,
+     okay; English um, umm, uh, uh-huh, yeah, yes, right, and "a" or "an" when it is
+     the turn's only word; French euh, ouais, oui, d'accord. Letters held longer count
+     as one ("Ummm", "Hmmm"). Fillers are never attached: a stretched "umm" heard as
+     "an" belongs in nobody's sentence.
+  2. *Attached* to the previous turn when that turn has a speaker, its text does not end
+     a sentence (`.`, `!`, `?`, `…`, closing quotes ignored), and the gap is at most
+     `gapSeconds` (1.5 s): "…but they" + "agreed to it. Yeah." is the previous speaker's.
+  3. *Attached* when the turns before and after it have the same speaker and both gaps
+     are at most 1.5 s: a few words inside one person's speech.
+  4. Otherwise shown as it is.
+  An attached turn shows with that speaker (`ProjectedTurn.interjection`), so it joins
+  their row and export block, and is uncertain only when it overlaps someone. View ▸
+  Show Short Interjections (off by default, kept across windows) lists the hidden ones
+  again as unknown-speaker rows; Next Uncertain skips them unless they are shown, and
+  the footer counts them ("3 short interjections hidden"). The exports always leave them
+  out, as they leave out echo, and write an attached turn with its neighbour's speaker
+  (JSON adds `"interjection": "attached"` to it). The thresholds come from a meeting's
+  rows where a lone "an" (a stretched "umm"), two standalone "Yeah." and four words that
+  finished the previous speaker's sentence all showed as Unknown. Transcript files
+  written before this change keep the old rows until they are next rewritten (the next
+  speaker change rewrites them); a meeting with such turns has new summary lines, so its summary
+  shows as out of date (§4.17).
 - Playback bar (above the footer): Play/Pause, position / length, a scrubber, the speed
   (1×, 1.25×, 1.5×, 2×; remembered, pitch kept), and who is speaking. Playing goes on
   through the meeting until paused (only a speaker's samples stop by themselves); Play
@@ -7841,7 +7892,9 @@ public enum SessionAudioComposition {
   start of the playing one first), ⌘→ next turn — anywhere in the window except while
   typing in a text field (with keyboard navigation on, Space presses a focused button
   instead); Return in the turn list plays the selected turn; ↑/↓ move selection; 1–9 assign the selection to the speaker
-  with that ordinal; ⌘' next uncertain; ⌘Z undo; ⌘F search; ⌘E edit mode (Editing words, below); ⇧⌘E export menu.
+  with that ordinal; ⌘' next uncertain; ⌘Z undo; ⌘F search; ⌘E edit mode (Editing words, below); ⇧⌘E export menu;
+  ⌥⌘S hide or show the speakers pane. The app's View menu (shown while a window is open)
+  holds Hide Speakers and Show Short Interjections for the key review window.
 - Menu "Speakers": Confirm All Suggestions, Find More Speakers… (explains that names
   carry over and turn-level changes do not), Label Speakers on My Microphone (call
   recordings recorded without "others in the room").
@@ -8401,6 +8454,10 @@ whose review is open or still opening):
 | `ReviewEchoMuteTests` | local-speech intervals (edges, joins, from 0, past the end, none) | the volume schedule; a mix on the microphone track only, read back as scheduled |
 | `playbackKeepsTheMicrophoneOnlyWhereItHasLocalSpeechWhenThereIsEcho` | a call with an echo mask, then `noEcho`, then other audio | a mix on the microphone track only with an echo mask; none otherwise |
 | `ReviewPlayerTests` (HolosAppTests) | a playback with and without a volume; a changed volume | the item's mix follows it, replaced in place |
+| `ShortInterjectionTests` (HolosSpeakersTests) | synthetic turns shaped like the rows that asked for it | a lone "an" and standalone "Yeah." hidden; words finishing the previous speaker's sentence attached; a longer unknown turn kept; a few words inside one speaker's speech attached, not across a long gap or another speaker; edited, assigned and split turns untouched; fillers by language; exports leave hidden ones out and write attached ones with the neighbour (`"interjection": "attached"`) |
+| `nextUncertainSkipsHiddenInterjectionsUnlessTheyAreShown` | a fixture session with a hidden "Yeah." | skipped and not listed; listed and next once shown; never in the Markdown export |
+| `choosingUnknownForAnAttachedTurnIsSavedAndUndone` | an attached turn given Unknown; undo | the edit is saved though no stored speaker changes; shown unknown; attached again after undo |
+| `ReviewPanesTests` (HolosAppTests) | the panes and the list laid out offscreen | hiding the speakers pane gives the list the window's width, showing it brings it back, each change reported once; the state per meeting, capped; Show Short Interjections lists the hidden turn as its own unknown row, the attached one stays in its neighbour's row; the View menu's targetless actions reach the window's delegate (`NSWindow.supplementalTarget`) |
 
 **Manual.** H14 and H20 in §7.
 
@@ -8549,6 +8606,9 @@ genuinely local (the user, or people in the room) stays even while the call play
   split is chosen from are the words shown, each named by its place in its segment (`WordRef`),
   so the split lands at that word of the stored turn; assign and undo name the turn. The
   journal only ever names stored turns and words, so it does not depend on the mask shown.
+  Short interjections (§5.10) are decided after the mask, on the words it leaves: a turn
+  of an echo cluster shown as unknown, or one the mask cut down to "Yeah.", is a candidate
+  like any other, and the exports leave hidden ones out as they leave out echo.
 - *Out of date when the mask changes.* The transcript files record the mask they were written
   with (`.generated.json` `echoMask`: the SHA-256 of the frames, none without a mask), and
   `SessionExports.filesState` calls them out of date when it is not the one the labels show now,

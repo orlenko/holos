@@ -305,6 +305,16 @@ timeline and a larger local-model benchmark are follow-ups.
   Playback uses the saved chunks at their session times (off after Delete Audio). The
   footer box "Learn voices of people I name in this meeting" decides whether naming learns
   a voice; it starts checked while Remember voices is on (on for new installs). Delete Meeting can also forget the voice samples learned from that meeting.
+  Hide Speakers (toolbar, View menu, ⌥⌘S) collapses the speakers pane, animated, and the
+  turn list takes its width; each meeting remembers it. Short turns of the unknown speaker
+  (at most 4 words, never edited, assigned or split by the user) are shown more simply in
+  Review and the exports: fillers and backchannels alone ("um", a lone "an", "Yeah.";
+  French euh, ouais, oui, d'accord) are hidden, and a few words that finish the previous
+  speaker's open sentence within 1.5 s, or sit within 1.5 s between two turns of one
+  speaker, are shown as that speaker's. Stored labels are unchanged; View ▸ Show Short
+  Interjections lists the hidden ones again, and Next Uncertain skips them otherwise.
+  Unit and offscreen layout tests cover the rules, the exports and the pane; not yet
+  tried on a real meeting.
 - `voices list` and `say` provide native voice discovery (with each voice's quality, and a
   hint to download Premium voices when none is installed), playback, and `.m4a`, `.wav`,
   or `.caf` export. Text comes from arguments or UTF-8 stdin. `--voice` takes a name as

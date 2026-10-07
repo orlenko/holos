@@ -118,6 +118,12 @@ public struct ReviewWord: Sendable, Equatable {
         // Which words one turn shows: the dry runs (`checks`) are made again.
         didSet { checks.removeAll() }
     }
+    /// Review's "Show Short Interjections": the turn list and Next Uncertain show the short interjections
+    /// `projection.shownTurns` leaves out (docs/meeting-design.md §5.10). The exports never show them.
+    public var showsShortInterjections = false
+    /// The turns the window lists, in time order: `projection.shownTurns`, with the hidden interjections when
+    /// `showsShortInterjections`.
+    public var shownTurns: [ProjectedTurn] { projection.shownTurns(includingHidden: showsShortInterjections) }
     public var onChange: (() -> Void)?
     /// Called with true when a relabel (Find More Speakers, Label Speakers on My Microphone, Label Again) starts and
     /// false when it ends, so the app can show it in Meetings.
@@ -720,9 +726,10 @@ public struct ReviewWord: Sendable, Equatable {
     }
 
     /// The next uncertain turn after `turnID` in time order, wrapping around to the first; the first uncertain turn
-    /// when `turnID` is nil or not shown. Nil when no turn is uncertain.
+    /// when `turnID` is nil or not shown. Nil when no turn is uncertain. Only turns the window lists (`shownTurns`):
+    /// a hidden interjection is skipped, and one attached to a neighbour is uncertain only when it overlaps.
     public func nextUncertain(after turnID: String?) -> ProjectedTurn? {
-        let turns = projection.turns
+        let turns = shownTurns
         guard !turns.isEmpty else { return nil }
         let current = turnID.map(resolvedTurnID).flatMap { id in turns.firstIndex { $0.id == id } }
         let start = current.map { $0 + 1 } ?? 0

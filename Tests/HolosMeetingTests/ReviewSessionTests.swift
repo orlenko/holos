@@ -244,6 +244,55 @@ func nextUncertainWrapsInTimeOrder() async throws {
 }
 
 @Test(.timeLimit(.minutes(1))) @MainActor
+func nextUncertainSkipsHiddenInterjectionsUnlessTheyAreShown() async throws {
+    let temp = try TemporaryDirectory("review")
+    defer { temp.remove() }
+    let (session, _) = try await reviewCustomSession(in: temp, turns: [
+        ReviewTurnSpec(speaker: "system:S1", start: 0, seconds: 2, words: ["We", "are", "done."]),
+        ReviewTurnSpec(speaker: nil, start: 2.5, seconds: 0.5, words: ["Yeah."]),
+        ReviewTurnSpec(speaker: "system:S2", start: 4, seconds: 2, words: ["Then", "we", "start."]),
+        ReviewTurnSpec(speaker: nil, start: 7, seconds: 3, words: reviewWords(6)),
+    ])
+    let review = try await reviewOpen(session)
+    #expect(review.projection.interjections == ["T2": .hidden])
+    // Off (the window's default): the hidden "Yeah." is neither listed nor next.
+    #expect(!review.showsShortInterjections)
+    #expect(review.shownTurns.map(\.id) == ["T1", "T3", "T4"])
+    #expect(review.nextUncertain(after: nil)?.id == "T4")
+    #expect(review.nextUncertain(after: "T1")?.id == "T4")
+    // On: listed again, and uncertain (its speaker is unknown).
+    review.showsShortInterjections = true
+    #expect(review.shownTurns.map(\.id) == ["T1", "T2", "T3", "T4"])
+    #expect(review.nextUncertain(after: nil)?.id == "T2")
+    // The exports leave it out either way.
+    let markdown = String(decoding: try await review.render(.md), as: UTF8.self)
+    #expect(!markdown.contains("Yeah."))
+    #expect(markdown.contains("w6"))
+}
+
+@Test(.timeLimit(.minutes(1))) @MainActor
+func choosingUnknownForAnAttachedTurnIsSavedAndUndone() async throws {
+    let temp = try TemporaryDirectory("review")
+    defer { temp.remove() }
+    let (session, _) = try await reviewCustomSession(in: temp, turns: [
+        ReviewTurnSpec(speaker: "system:S1", start: 0, seconds: 2, words: ["We", "asked,", "but", "they"]),
+        ReviewTurnSpec(speaker: nil, start: 2.3, seconds: 1, words: ["agreed", "to", "it."]),
+    ])
+    let review = try await reviewOpen(session)
+    #expect(review.projection.interjections == ["T2": .attached(speakerID: "system:S1")])
+    #expect(review.shownTurns.map(\.speakerID) == ["system:S1", "system:S1"])
+    // Its stored speaker is already unknown: the choice is saved all the same, and it shows as unknown.
+    try await review.assign(["T2"], to: .unknown)
+    #expect(review.shownTurns.map(\.speakerID) == ["system:S1", nil])
+    #expect(try reviewJournal(session).contains { edit in
+        if case .reassignTurns(let ids, nil) = edit.action { return ids == ["T2"] }
+        return false
+    })
+    try await review.undo()
+    #expect(review.shownTurns.map(\.speakerID) == ["system:S1", "system:S1"])
+}
+
+@Test(.timeLimit(.minutes(1))) @MainActor
 func searchIsCaseInsensitive() async throws {
     let temp = try TemporaryDirectory("review")
     defer { temp.remove() }

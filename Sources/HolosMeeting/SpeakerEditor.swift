@@ -159,7 +159,8 @@ public enum SpeakerEditor {
                 viewState = viewState.applying(action, editID: id)
             }
             if skipIfUnchanged, !edits.contains(where: { if case .revert = $0.action { true } else { false } }),
-               current.speakers == base.projection.speakers, current.turns == base.projection.turns {
+               current.speakers == base.projection.speakers, current.turns == base.projection.turns,
+               current.shownTurns == base.projection.shownTurns {
                 log.info("Session \(base.run.sessionID, privacy: .public): a speaker change of \(edits.count, privacy: .public) edits changes nothing; not saved")
                 return nil
             }
@@ -289,7 +290,9 @@ public enum SpeakerEditor {
             next = next.applying(action, editID: id)
             if next.staleEdits.contains(where: { $0.editID == id }) { return false }
         }
-        return next.speakers == view.speakers && next.turns == view.turns
+        // Shown turns too: choosing Unknown for a turn shown with a neighbour's speaker (a short interjection, §5.10)
+        // changes no stored speaker but keeps it unknown from then on.
+        return next.speakers == view.speakers && next.turns == view.turns && next.shownTurns == view.shownTurns
     }
 
     // MARK: - Private

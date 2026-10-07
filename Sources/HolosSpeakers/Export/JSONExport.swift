@@ -37,6 +37,10 @@ import HolosCore
 /// top-level `languages` (the languages it chose from, the preferred one first) and each turn's `languages` (those of
 /// its words, in the order they first appear).
 ///
+/// Turns are those the Review list shows (`SpeakerProjection.shownTurns`, docs/meeting-design.md §5.10): a hidden
+/// short interjection is not written, and one shown with a neighbour's speaker adds `"interjection": "attached"`
+/// (its `speakerID` is that speaker's), left out otherwise.
+///
 /// A meeting summarized for this transcript (docs/meeting-design.md §4.17) adds a top-level `summary` object (`title`,
 /// `summary`, `points`, `actions`, `model`), left out otherwise.
 enum JSONExport {
@@ -181,12 +185,14 @@ private struct TurnEntry: Encodable {
 
     enum CodingKeys: String, CodingKey {
         case id, speakerID, track, start, end, text, overlap, otherSpeakers, score, timing, words, languages
+        case interjection
     }
 
     func encode(to encoder: any Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(turn.id, forKey: .id)
         try container.encodeIfPresent(turn.languages, forKey: .languages)
+        if turn.attached { try container.encode("attached", forKey: .interjection) }
         try container.encodeOrNull(turn.speakerID, forKey: .speakerID)
         try container.encodeOrNull(turn.track, forKey: .track)
         try container.encodeNumber(turn.start, forKey: .start)
