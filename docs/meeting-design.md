@@ -7925,9 +7925,14 @@ shown, Otter-style.
   voice is compared by the audio it was learned from (`VoiceEnrollment.audioDigest`: the
   speakers and their qualifying turns' tracks and times, read from the run it was learned
   from when that run still gives its input digest): the same audio keeps it as it is, also
-  with the audio deleted; other audio recomputes or removes it, as for the head's own. When
-  that cannot be shown (the run or its words cannot be read, a sample with no input digest),
-  it is kept unless it can be learned again, or the person has no qualifying turn left. A
+  with the audio deleted; other audio recomputes or removes it, as for the head's own. The run
+  is read through the current echo mask and, with one, without it (a sample learned before
+  the echo was found): a mask found since that cuts a turn the sample was learned from is
+  other audio. When the run can be read but no view of it gives the sample's input digest,
+  its inputs changed: it is learned again, or removed (Remember voices off too), and the echo
+  catch-up's check (`samplesOutOfStep`) reports it. Only when its provenance cannot be read
+  (the run or its words cannot be read, a sample with no input digest) is it kept unless it
+  can be learned again, or the person has no qualifying turn left. A
   word change keeps a turn's times when its words keep theirs (`Mapping.sameTimes`): a
   labelling may time a turn otherwise than by its words, and a voice was learned from those
   times. Every save of a field's edit (Return, Tab, a close, a pause, a turn to read-only)
