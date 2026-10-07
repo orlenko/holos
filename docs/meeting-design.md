@@ -4595,7 +4595,10 @@ stops with an error, asks ScreenCaptureKit again and starts or stops streams.
 CoreGraphics is the truth for what is connected and targeted: a display the
 ScreenCaptureKit snapshot still lists after CoreGraphics dropped it counts as gone, and
 one a snapshot briefly leaves out while CoreGraphics still reports it keeps its stream
-(a snapshot only adds displays). A refresh whose query fails, or whose snapshot still
+(a snapshot only adds displays). Removals need no query: they are applied from the
+layout before each query (also one that fails) and at every poll that sees a change,
+even during a failed refresh's backoff, so an unplugged display whose stream failed can
+always come back. A refresh whose query fails, or whose snapshot still
 leaves out a display CoreGraphics already reports (mid-reconfiguration), records no layout, so that display is not missed for
 good: a later poll tries again after 4, 8, 16, 32, then every 60 seconds
 (`pollsBeforeRetry`). Each display's stream starts in its own task, registered before

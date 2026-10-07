@@ -39,14 +39,7 @@ struct ScreenDisplayRoster: Equatable {
     mutating func reconcile(available: [ScreenDisplayCandidate], connected present: Set<CGDirectDisplayID>)
         -> (start: [ScreenDisplay], stop: [CGDirectDisplayID]) {
         let connected = available.filter { present.contains($0.id) }
-        var stop: [CGDirectDisplayID] = []
-        for (id, state) in status where !present.contains(id) {
-            switch state {
-            case .running: stop.append(id); status[id] = .gone
-            case .failed: status[id] = .gone
-            case .gone, .capped: break
-            }
-        }
+        let stop = remove(notIn: present)
         var next = (displays.values.map(\.number).max() ?? 0) + 1
         let arranged = connected.sorted { ($0.frame.minX, $0.frame.minY, $0.id) < ($1.frame.minX, $1.frame.minY, $1.id) }
         for candidate in arranged where displays[candidate.id] == nil {
@@ -63,6 +56,20 @@ struct ScreenDisplayRoster: Equatable {
             start.append(display)
         }
         return (start.sorted { $0.number < $1.number }, stop.sorted())
+    }
+
+    /// The displays that left `present` (CoreGraphics, narrowed to the target): running ones are returned so their
+    /// streams end, and failed ones may come back. Needs no snapshot.
+    mutating func remove(notIn present: Set<CGDirectDisplayID>) -> [CGDirectDisplayID] {
+        var stop: [CGDirectDisplayID] = []
+        for (id, state) in status where !present.contains(id) {
+            switch state {
+            case .running: stop.append(id); status[id] = .gone
+            case .failed: status[id] = .gone
+            case .gone, .capped: break
+            }
+        }
+        return stop.sorted()
     }
 
     /// Both from one list (tests).

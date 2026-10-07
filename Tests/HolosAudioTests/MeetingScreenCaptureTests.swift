@@ -1337,3 +1337,43 @@ func aQueryThatFailsWhileEveryDisplayIsGoneIsRetriedNotFinal() async throws {
     #expect(try ScreenContextStore.read(session: archive.directory, sessionID: archive.id)?.failure == nil)
     try await archive.finish(status: ArchiveStatus.audioOnly)
 }
+
+@Test(.timeLimit(.minutes(1))) @MainActor
+func aDisplayUnpluggedDuringAFailedQueryIsCapturedWhenItComesBack() async throws {
+    let (root, archive) = try await screenCaptureFixture()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let system = FakeScreenSystem([candidate(9, x: 0, main: true), candidate(5, x: 1920)])
+    let capture = MeetingScreenCapture(permissionCheck: { true }, system: system, pollInterval: .seconds(3600))
+    capture.start(.display, session: archive.directory, origin: 0)
+    await capture.settle()
+    // 5 is unplugged; its stream errors, and the refresh that follows cannot query ScreenCaptureKit.
+    system.connected = [candidate(9, x: 0, main: true)]
+    system.failingQueries = 1
+    await capture.streamStopped(5)
+    await capture.settle()
+    system.connected.append(candidate(5, x: 1920))                 // back before any retry
+    await capture.refresh(); await capture.settle()
+    #expect(capture.capturing == [5, 9], "it was unplugged, not broken: captured again")
+    await capture.stop()
+    try await archive.finish(status: ArchiveStatus.audioOnly)
+}
+
+@Test(.timeLimit(.minutes(1))) @MainActor
+func aDisplayUnpluggedDuringTheRetryBackoffEndsAtTheNextPoll() async throws {
+    let (root, archive) = try await screenCaptureFixture()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let system = FakeScreenSystem([candidate(9, x: 0, main: true), candidate(5, x: 1920)])
+    let capture = MeetingScreenCapture(permissionCheck: { true }, system: system, pollInterval: .seconds(3600))
+    capture.start(.display, session: archive.directory, origin: 0)
+    await capture.settle()
+    system.failingQueries = 100                                      // ScreenCaptureKit stays unavailable
+    system.connected.append(candidate(7, x: 3840))
+    await capture.poll(); await capture.settle()                     // fails: the next query waits a poll
+    let queries = system.queries
+    system.connected = [candidate(9, x: 0, main: true), candidate(7, x: 3840)]
+    await capture.poll(); await capture.settle()                     // still backing off
+    #expect(system.queries == queries, "no query during the backoff")
+    #expect(system.stopped == [5] && capture.capturing == [9], "the unplugged display's stream ended anyway")
+    await capture.stop()
+    try await archive.finish(status: ArchiveStatus.audioOnly)
+}

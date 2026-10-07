@@ -217,8 +217,8 @@ struct ScreenDisplayLayout: Equatable, Sendable {
             await first.value
             while !Task.isCancelled {
                 try? await Task.sleep(for: interval)
-                guard !Task.isCancelled, let changed = self?.displaysChanged() else { return }
-                if changed { await self?.refresh() }
+                guard !Task.isCancelled, let capture = self else { return }
+                await capture.poll()
             }
         }
     }
@@ -230,12 +230,26 @@ struct ScreenDisplayLayout: Equatable, Sendable {
         await refresh()
     }
 
-    /// Whether the layout differs from that of the last complete refresh (and a failed one's backoff has passed);
-    /// the refresh then starts and stops streams.
-    private func displaysChanged() -> Bool {
-        guard system.layout() != reconciled else { return false }
-        guard pollsUntilRetry == 0 else { pollsUntilRetry -= 1; return false }
-        return true
+    /// One look at the layout. When it differs from that of the last complete refresh, displays CoreGraphics no
+    /// longer reports end at once (that needs no ScreenCaptureKit query, so no backoff holds it up), and once a
+    /// failed refresh's backoff has passed a refresh starts and stops the rest.
+    func poll() async {
+        guard !stopped, let receiver else { return }
+        let layout = system.layout()
+        guard layout != reconciled else { return }
+        applyRemovals(layout, receiver)
+        guard pollsUntilRetry == 0 else { pollsUntilRetry -= 1; return }
+        await refresh()
+    }
+
+    /// Ends the streams of displays that left the layout's target, from CoreGraphics alone (invariant 1): a failed
+    /// display seen gone becomes one that may come back, whether or not a ScreenCaptureKit query succeeds.
+    private func applyRemovals(_ layout: ScreenDisplayLayout, _ receiver: ScreenFrameReceiver) {
+        for id in roster.remove(notIn: layout.targeted(for: target)) {
+            receiver.end(id)
+            if let stream = streams.removeValue(forKey: id) { requestStop(stream) }
+            Self.log.info("Display \(id, privacy: .public) is gone; its screen capture ended")
+        }
     }
 
     /// Polls to wait after `failures` failed refreshes in a row: 1, 3, 7, 15, then 29 (a retry after 4, 8, 16, 32
@@ -259,7 +273,9 @@ struct ScreenDisplayLayout: Equatable, Sendable {
 
     private func reconcile(_ receiver: ScreenFrameReceiver) async {
         // Read before the query: a change during it differs from what is recorded, and the next poll refreshes.
+        // Removals come from this layout before the query, so they never depend on it succeeding.
         let layout = system.layout()
+        applyRemovals(layout, receiver)
         let snapshot: [ScreenDisplayCandidate]
         do { snapshot = try await system.displays() } catch {
             // The layout stays unrecorded and a later poll tries again, backing off. Nothing captures and the query
@@ -288,9 +304,9 @@ struct ScreenDisplayLayout: Equatable, Sendable {
         guard !stopped else { return }
         let change = roster.reconcile(available: candidates, connected: targeted)
         for id in change.stop {
+            // Removed by the layout read before the query already, so normally none.
             receiver.end(id)
             if let stream = streams.removeValue(forKey: id) { requestStop(stream) }
-            Self.log.info("Display \(id, privacy: .public) is gone; its screen capture ended")
         }
         for display in change.start {
             guard !stopped else { return }
