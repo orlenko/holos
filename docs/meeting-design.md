@@ -7806,8 +7806,12 @@ shown, Otter-style.
   compares the `wordsEpoch` the field opened under, never the review's at the time of the
   save. An automatic fix's Revert is offered (context menu, VoiceOver) only
   where its segment allows it (`ReviewSession.revertRefusal`: no damaged mark, no older fix
-  that cannot be counted), and refused before it is queued otherwise; `WordFixes.reverting`
-  refuses a revision with a segment ID used twice, as an edit does. Space still plays and pauses outside the field; the
+  that cannot be counted), and refused before it is queued otherwise. The edit, the revert and
+  the review's preflight (`wordEditRefusal`, `revertRefusal`) make one structure check
+  (`TranscriptWordEdit.structureRefusal`): a segment ID used twice in the transcript shown or
+  in the revision it was fixed from, or the segment damaged in either, refuses the words before
+  a field opens or Revert is offered, never after the person typed. The review reads that
+  structure once per labels read. Space still plays and pauses outside the field; the
   timestamp buttons still play. Every word has a VoiceOver action "Edit “word”", which turns
   edit mode on and opens the field; it is offered only while words can be edited (not after
   the transcript changed under the labels), and reports failure when no field opened. An edited word is dotted-underlined like a fixed word

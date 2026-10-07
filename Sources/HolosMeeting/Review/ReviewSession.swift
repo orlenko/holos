@@ -409,7 +409,7 @@ public struct ReviewWord: Sendable, Equatable {
     public func wordEditRefusal(_ refs: [WordRef]) -> String? {
         guard let first = refs.first, let segment = segments[first.segmentID] else { return nil }
         // Checked before any fix's words are walked: a damaged mark's numbers can be anything.
-        if TranscriptWordEdit.isDamaged(segment) { return TranscriptWordEdit.damagedMarks.localizedDescription }
+        if let refusal = structureRefusal(segment) { return refusal.localizedDescription }
         let fixes = segment.fixes ?? []
         if fixes.contains(where: { fix in
             fix.kind == .liveCorrection && refs.contains { fix.first <= $0.word && $0.word < fix.end }
@@ -428,8 +428,34 @@ public struct ReviewWord: Sendable, Equatable {
     /// that cannot be counted, `TranscriptWordEdit.olderFix`). Nil when it can be tried.
     public func revertRefusal(_ word: WordRef) -> String? {
         guard let segment = segments[word.segmentID] else { return nil }
-        if TranscriptWordEdit.isDamaged(segment) { return TranscriptWordEdit.damagedMarks.localizedDescription }
+        if let refusal = structureRefusal(segment) { return refusal.localizedDescription }
         return blockedByOlderFix(segment) ? TranscriptWordEdit.olderFix.localizedDescription : nil
+    }
+
+    /// The revisions' structure as an edit or revert checks it (`TranscriptWordEdit.structureRefusal`), for the
+    /// transcript shown and the unfixed revision it was fixed from, read once per labels read (`adopt` clears it):
+    /// whether either repeats a segment ID, and the unfixed revision's segments by ID.
+    private var structureRead: (key: String, repeatedIDs: Bool, baseSegments: [String: TranscriptSegment])?
+
+    /// Why `segment` (of the transcript shown) can be neither edited nor reverted for its revisions' structure; nil
+    /// when it can be tried. The same check the edit and the revert make (`TranscriptWordEdit.structureRefusal`).
+    private func structureRefusal(_ segment: TranscriptSegment) -> HolosError? {
+        let transcript = snapshot.transcript
+        let base = transcript.fixedFrom == nil ? nil : unfixedBase()
+        let key = "\(transcript.id)\u{1f}\(base?.id ?? "")"
+        let read: (key: String, repeatedIDs: Bool, baseSegments: [String: TranscriptSegment])
+        if let known = structureRead, known.key == key {
+            read = known
+        } else {
+            let repeated = TranscriptWordEdit.hasRepeatedSegmentIDs(transcript)
+                || base.map(TranscriptWordEdit.hasRepeatedSegmentIDs) == true
+            // With a repeated ID the segment is refused whichever copy is kept here.
+            let baseSegments = Dictionary((base?.segments ?? []).map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+            read = (key, repeated, baseSegments)
+            structureRead = read
+        }
+        return TranscriptWordEdit.structureRefusal(segment: segment, baseSegment: read.baseSegments[segment.id],
+                                                   repeatedIDs: read.repeatedIDs)
     }
 
     /// Words `indices` of `segment` with every fix mark they touch taken in, as an edit takes them
@@ -1007,7 +1033,7 @@ public struct ReviewWord: Sendable, Equatable {
             throw HolosError.invalidInput("Those words are no longer in the transcript; reload and try again.")
         }
         // Before any fix's words are walked (`takingInMarks`).
-        if TranscriptWordEdit.isDamaged(segment) { throw TranscriptWordEdit.damagedMarks }
+        if let refusal = structureRefusal(segment) { throw refusal }
         // The words still read as the person saw them, punctuation included (`ReviewWord.shown`: a change made
         // elsewhere may keep a word's place and change only its untimed punctuation, "Hello." to "Hello?").
         if let expecting {
@@ -2809,6 +2835,7 @@ public struct ReviewWord: Sendable, Equatable {
         snapshot = fresh
         // Labels read again: whether the unfixed revision can be read is checked again (it may be back, or gone).
         unfixedRead = nil
+        structureRead = nil
         olderFixChecked.removeAll()
         if let projection = fresh.projection { savedProjection = projection }
         savedVersion += 1

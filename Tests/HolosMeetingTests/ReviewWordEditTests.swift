@@ -2225,6 +2225,39 @@ func wordsAreReadOnlyWhileTheRevisionTheTranscriptWasFixedFromCannotBeRead() asy
     await review.close()
 }
 
+/// The unfixed revision reads but cannot be trusted (a segment ID used twice; its segment damaged): known before a
+/// field opens or Revert is offered, by the same check the edit and the revert make, never after the person typed.
+@Test(.timeLimit(.minutes(1))) @MainActor
+func anUntrustworthyUnfixedRevisionIsRefusedBeforeAFieldOpens() async throws {
+    for repeated in [true, false] {
+        let temp = try TemporaryDirectory("review")
+        defer { temp.remove() }
+        let session = try await wordEditFixedCloudSession(temp)
+        let fixed = try wordEditCurrent(session)
+        let baseID = try #require(fixed.fixedFrom)
+        var base = try SessionFiles.transcript(id: baseID, session: session)
+        if repeated {
+            base.segments.append(base.segments[0])
+        } else {
+            base.segments[0].words[3].utf16Offset = Int.max
+        }
+        try AtomicFile.writeJSON(base, to: SessionPaths.transcript(baseID, in: session))
+        let review = try await wordEditOpen(session)
+        #expect(review.canEditWords, "The transcript shown is sound: only its fixed segment is refused.")
+        let refs = wordEditRefs(review, "T1", [0])
+        let fixedWord = wordEditRefs(review, "T1", [2])[0]
+        let damaged = TranscriptWordEdit.damagedMarks.localizedDescription
+        #expect(review.wordEditRefusal(refs) == damaged, "repeated: \(repeated)")
+        #expect(review.revertRefusal(fixedWord) == damaged, "repeated: \(repeated)")
+        // What the edit and the revert refuse.
+        let edit = await #expect(throws: HolosError.self) { try await review.editWords(refs, to: "Ask") }
+        #expect(edit?.localizedDescription == damaged)
+        await #expect(throws: HolosError.self) { try await review.revertWordFix(fixedWord) }
+        #expect(try wordEditCurrent(session).id == fixed.id, "Nothing was written.")
+        await review.close()
+    }
+}
+
 @Test(.timeLimit(.minutes(1))) @MainActor
 func aWordCorrectedWhileRecordingIsKnownNotEditableBeforeAFieldOpens() async throws {
     let temp = try TemporaryDirectory("review")

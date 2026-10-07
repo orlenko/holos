@@ -95,8 +95,8 @@ public enum TranscriptWordEdit {
     public static func editing(_ request: Request, in current: Transcript, base: Transcript?,
                                editable: (Int) -> Bool = { _ in true }, now: Date = Date()) throws -> Result? {
         let text = cleaned(request.text)
-        // A segment ID used twice (in either revision) cannot say which words are meant.
-        if hasRepeatedSegmentIDs(current) || base.map(hasRepeatedSegmentIDs) == true { throw damagedMarks }
+        // What the review's preflight asks too (`structureRefusal`), before any word is read.
+        if let refusal = structureRefusal(segmentID: request.segmentID, current: current, base: base) { throw refusal }
         guard let index = current.segments.firstIndex(where: { $0.id == request.segmentID }) else {
             throw HolosError.invalidInput("Those words are no longer in the transcript; reload and try again.")
         }
@@ -106,8 +106,6 @@ public enum TranscriptWordEdit {
             throw HolosError.invalidInput("Those words are no longer in the transcript; reload and try again.")
         }
         guard (request.first..<request.end).allSatisfy(editable) else { throw notShown }
-        // A damaged mark (empty, backwards, or past the segment's words) is never walked: the segment is not edited.
-        if isDamaged(segment) { throw damagedMarks }
         guard var working = WordFixes.Working(segment, preservingExistingFixes: true) else {
             throw damagedMarks
         }
@@ -189,8 +187,7 @@ public enum TranscriptWordEdit {
         let baseSegment = base.flatMap { base in
             base.id == current.fixedFrom ? base.segments.first { $0.id == segment.id } : nil
         }
-        // The unfixed revision is written too: one that cannot be trusted is never edited, nor read from.
-        if let baseSegment, isDamaged(baseSegment) { throw damagedMarks }
+        // The unfixed revision is written too: one that cannot be trusted was refused above (`structureRefusal`).
         let baseWords = baseSegment.map(WordTiming.effectiveWords(of:))
         let bounds = baseWords.flatMap {
             baseBounds(fixes: fixes, current: words, base: $0, baseText: Array((baseSegment?.text ?? "").utf16))
@@ -400,6 +397,28 @@ public enum TranscriptWordEdit {
     /// a speaker span means cannot be told, so none of its words is edited and close-time learning skips it.
     public static func hasRepeatedSegmentIDs(_ transcript: Transcript) -> Bool {
         Set(transcript.segments.map(\.id)).count != transcript.segments.count
+    }
+
+    /// What every word edit and fix revert checks of the revisions' structure before any word is read, and what the
+    /// review's preflight asks before a field opens or Revert is offered (`ReviewSession.wordEditRefusal`,
+    /// `revertRefusal`), so the two cannot differ: `repeatedIDs` (either revision has a segment ID used twice), a
+    /// damaged `segment`, or a damaged `baseSegment` (the same segment of the revision the transcript was fixed from).
+    /// Nil when the words can be tried.
+    public static func structureRefusal(segment: TranscriptSegment, baseSegment: TranscriptSegment?,
+                                        repeatedIDs: Bool) -> HolosError? {
+        if repeatedIDs || isDamaged(segment) || baseSegment.map(isDamaged) == true { return damagedMarks }
+        return nil
+    }
+
+    /// `structureRefusal` for the segment `segmentID` of `current`, whose `fixedFrom` revision is `base` (a `base`
+    /// that is not that revision is not read). Nil when `current` has no such segment (the caller says so).
+    public static func structureRefusal(segmentID: String, current: Transcript, base: Transcript?) -> HolosError? {
+        let base = base.flatMap { $0.id == current.fixedFrom ? $0 : nil }
+        let repeated = hasRepeatedSegmentIDs(current) || base.map(hasRepeatedSegmentIDs) == true
+        if repeated { return damagedMarks }
+        guard let segment = current.segments.first(where: { $0.id == segmentID }) else { return nil }
+        return structureRefusal(segment: segment, baseSegment: base?.segments.first { $0.id == segmentID },
+                                repeatedIDs: false)
     }
 
     /// An edit refused because its segment's word positions or fix marks are damaged.
