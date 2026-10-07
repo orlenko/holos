@@ -216,10 +216,11 @@ extension TurnListView: NSTextFieldDelegate {
     /// A save of `words` was refused or failed before it was made: the field opens over them again with what was
     /// typed, and the banner says why. False (nothing opens) when another field is open or the words no longer read
     /// as they did; the window's message then carries what was typed. `caret`: where the caret goes in the text (a
-    /// split asked from the field reopens with the caret where Return found it); nil, at the end.
+    /// split asked from the field reopens with the caret where Return found it); nil, at the end. `inTurn`: the turn the
+    /// field was opened in, whose copy of the words it reopens over (overlapping turns may show them twice).
     @discardableResult
     func reopenWordEdit(_ words: [ReviewWord], typed: String, message: String, movesSeen: Int? = nil,
-                        wordsEpoch seenEpoch: Int? = nil, caret: Int? = nil) -> Bool {
+                        wordsEpoch seenEpoch: Int? = nil, caret: Int? = nil, inTurn: String? = nil) -> Bool {
         guard editingWords, editable, canEditWords, wordEdit == nil,
               let firstWord = words.first, let lastWord = words.last else { return false }
         // The words where they are now: followed through the word moves saved since the field took them
@@ -232,10 +233,13 @@ extension TurnListView: NSTextFieldDelegate {
             first = followed.refs[0]
             last = followed.refs[1]
         }
+        let turn = inTurn.flatMap { id in paragraphs.contains { $0.contains(turnID: id) } ? id : nil }
         for (row, paragraph) in paragraphs.enumerated() {
-            let all = paragraphWords(paragraph).words
-            guard let from = all.firstIndex(where: { $0.ref == first }),
-                  let through = all.firstIndex(where: { $0.ref == last }), from <= through,
+            let shown = paragraphWords(paragraph)
+            let all = shown.words
+            let inIt = { (index: Int) in turn == nil || paragraph.turns[shown.turns[index]].id == turn }
+            guard let from = all.indices.first(where: { all[$0].ref == first && inIt($0) }),
+                  let through = all.indices.first(where: { $0 >= from && all[$0].ref == last && inIt($0) }),
                   all[from...through].map(\.shown) == words.map(\.shown) else { continue }
             beginEditing(row: row, from: from, through: through, extend: false)
             guard wordEdit != nil else { return false }

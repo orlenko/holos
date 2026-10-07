@@ -640,6 +640,14 @@ struct TurnListWordEditTests {
         list.editField.currentEditor()?.selectedRange = NSRange(location: 0, length: 0)
         press(list, #selector(NSResponder.insertNewline(_:)))
         #expect(requests.last?.turnID == "T2" && requests.last?.word == beta.ref)
+        // A refused split's field opens again in the same turn's copy, either way it is reopened.
+        list.cancelWordEdit()
+        #expect(list.reopenWordEdit([beta], typed: "beta", message: "Not split.", caret: 0, inTurn: "T2"))
+        #expect(list.wordEdit?.turnID == "T2" && list.wordEdit?.range == 2...2)
+        list.cancelWordEdit()
+        #expect(list.reopenField(at: beta.ref, atEnd: false, message: "Not split.", inTurn: "T2"))
+        #expect(list.wordEdit?.turnID == "T2" && list.wordEdit?.range == 2...2)
+        list.cancelWordEdit()
     }
 
     /// The place is the word as the list showed it, never an index read again: a word edit saved since the field or

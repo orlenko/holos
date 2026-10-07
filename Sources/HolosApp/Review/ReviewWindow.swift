@@ -577,7 +577,7 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, Clo
             // The word is where `resolveSplit` found it just now, among the words shown: a word edit saved before the
             // split runs moves it from there; words changed elsewhere since it was chosen still refuse it.
             self.applySplit(split, movesSeen: self.review.shownWordMoves.count, epoch: request.wordsEpoch, focus: true,
-                            field: request.field.map { ($0, request.movesSeen, request.after) })
+                            field: request.field.map { ($0, request.movesSeen, request.after, request.turnID) })
         }
         turnList.resolveSplit = { [weak self] request in
             self?.resolveSplit(request) ?? .refused("The review is closing.")
@@ -1147,7 +1147,7 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, Clo
     /// opens again over its words once the labels are read again (a row the refused split showed for a moment is gone
     /// by then), with the caret where it was and the reason, as before Return.
     private func applySplit(_ split: ReviewParagraphSplit, movesSeen: Int?, epoch: Int, focus: Bool,
-                            field: (field: ReviewSplitRequest.Field, movesSeen: Int, atEnd: Bool)? = nil) {
+                            field: SplitField? = nil) {
         switch split {
         case .splitTurn(let turnID, let word):
             perform { [weak self] review in
@@ -1192,20 +1192,34 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, Clo
     /// showed for a moment is gone by then), the field opens again over its words with the caret where Return found
     /// it and why; when an edit saved meanwhile replaced its word, over the words that replaced it (nothing was typed
     /// in it, so their own text is what it shows).
-    private func restoreSplitField(_ field: (field: ReviewSplitRequest.Field, movesSeen: Int, atEnd: Bool), epoch: Int,
-                                   why: String) async {
+    /// The field the split was asked from: its words and text, the word moves they follow, whether the caret was at
+    /// its end, and the turn it was opened in.
+    private typealias SplitField = (field: ReviewSplitRequest.Field, movesSeen: Int, atEnd: Bool, turnID: String?)
+
+    /// In the turn the field was opened in (overlapping turns may show a word twice), so Return there asks for that
+    /// turn's split again; a word replaced meanwhile is taken at the edge of what replaced it (the end, for a split
+    /// after it), never inside words edited together.
+    private func restoreSplitField(_ field: SplitField, epoch: Int, why: String) async {
         await review.reload()
         refresh()
         if !turnList.editingWords { setEditMode(true) }
         let text = field.field.text
         if turnList.reopenWordEdit(field.field.words, typed: text, message: why, movesSeen: field.movesSeen,
-                                   wordsEpoch: epoch, caret: field.atEnd ? (text as NSString).length : 0) {
+                                   wordsEpoch: epoch, caret: field.atEnd ? (text as NSString).length : 0,
+                                   inTurn: field.turnID) {
             return
         }
         guard epoch == review.wordsEpoch, let word = field.atEnd ? field.field.words.last : field.field.words.first
         else { return }
-        let moved = ReviewSession.follow([word.ref], through: review.shownWordMoves.dropFirst(field.movesSeen))
-        if let ref = moved.refs.first { turnList.reopenField(at: ref, atEnd: field.atEnd, message: why) }
+        var ref = word.ref
+        for move in review.shownWordMoves.dropFirst(field.movesSeen) {
+            guard ref.segmentID == move.segmentID, move.replaced.contains(ref.word), !move.replacement.isEmpty else {
+                ref = move.map(ref).ref
+                continue
+            }
+            ref.word = field.atEnd ? move.replacement.upperBound - 1 : move.replacement.lowerBound
+        }
+        turnList.reopenField(at: ref, atEnd: field.atEnd, message: why, inTurn: field.turnID)
     }
 
     /// The second part's speaker pop-up after a split (`TurnListView.focusSpeaker`); a search hiding its row is cleared

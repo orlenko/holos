@@ -106,11 +106,16 @@ extension TurnListView {
 
     /// Opens the field over the word at `ref` (where it is shown now), with its own text, the caret at its start (or
     /// end, `atEnd`), and `message` in the banner: a split asked from the field whose word an edit replaced meanwhile.
+    /// `inTurn`: the turn the field was opened in, whose copy of the word it opens over (when that turn is shown).
     @discardableResult
-    func reopenField(at ref: WordRef, atEnd: Bool, message: String) -> Bool {
+    func reopenField(at ref: WordRef, atEnd: Bool, message: String, inTurn: String? = nil) -> Bool {
         guard editingWords, editable, canEditWords, wordEdit == nil else { return false }
+        let turn = inTurn.flatMap { id in paragraphs.contains { $0.contains(turnID: id) } ? id : nil }
         for (row, paragraph) in paragraphs.enumerated() {
-            guard let index = paragraphWords(paragraph).words.firstIndex(where: { $0.ref == ref }) else { continue }
+            let shown = paragraphWords(paragraph)
+            guard let index = shown.words.indices.first(where: {
+                shown.words[$0].ref == ref && (turn == nil || paragraph.turns[shown.turns[$0]].id == turn)
+            }) else { continue }
             beginEditing(row: row, from: index, through: index, extend: false)
             guard wordEdit != nil else { return false }
             let length = (editField.stringValue as NSString).length
