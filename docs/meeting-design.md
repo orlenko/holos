@@ -7760,7 +7760,10 @@ shown, Otter-style.
   follows it onto the word that has its index now. Words changed elsewhere (a transcript this
   window did not make: `wordsEpoch`) have no word moves at all, so a field open across such a
   change closes saying what was typed (nothing saved), and a Split Turn sheet opened before
-  it is refused. Quitting starts every review
+  it is refused; an edit handed over (or held by a close) carries it too, and is refused
+  when the words were changed elsewhere meanwhile. A field opened again after a failed save
+  follows its words through the moves saved since, never across such a change. A Review
+  edit's mark exempts its words from echo filtering only when it lies within its segment. Quitting starts every review
   window's close at once (`ReviewQuit.closeAll`), so each queues its open field's edit before
   any slow close (another window's voice sync) is waited for; when the closes cannot finish
   within the quit's limit, an edit not saved yet is logged with what was typed. A maintenance

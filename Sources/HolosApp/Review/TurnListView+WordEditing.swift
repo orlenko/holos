@@ -210,13 +210,24 @@ extension TurnListView: NSTextFieldDelegate {
     /// typed, and the banner says why. False (nothing opens) when another field is open or the words no longer read
     /// as they did; the window's message then carries what was typed.
     @discardableResult
-    func reopenWordEdit(_ words: [ReviewWord], typed: String, message: String) -> Bool {
+    func reopenWordEdit(_ words: [ReviewWord], typed: String, message: String, movesSeen: Int? = nil,
+                        wordsEpoch seenEpoch: Int? = nil) -> Bool {
         guard editingWords, editable, canEditWords, wordEdit == nil,
-              let first = words.first, let last = words.last else { return false }
+              let firstWord = words.first, let lastWord = words.last else { return false }
+        // The words where they are now: followed through the word moves saved since the field took them
+        // (`movesSeen`), never across words changed elsewhere (`wordsEpoch`), which no move describes.
+        if let seenEpoch, seenEpoch != wordsEpoch { return false }
+        var first = firstWord.ref, last = lastWord.ref
+        if let movesSeen, movesSeen < wordMoves.count {
+            let followed = ReviewSession.follow([first, last], through: wordMoves.dropFirst(movesSeen))
+            guard !followed.replaced, followed.refs.count == 2 else { return false }
+            first = followed.refs[0]
+            last = followed.refs[1]
+        }
         for (row, paragraph) in paragraphs.enumerated() {
             let all = paragraphWords(paragraph).words
-            guard let from = all.firstIndex(where: { $0.ref == first.ref }),
-                  let through = all.firstIndex(where: { $0.ref == last.ref }), from <= through,
+            guard let from = all.firstIndex(where: { $0.ref == first }),
+                  let through = all.firstIndex(where: { $0.ref == last }), from <= through,
                   all[from...through].map(\.shown) == words.map(\.shown) else { continue }
             beginEditing(row: row, from: from, through: through, extend: false)
             guard wordEdit != nil else { return false }

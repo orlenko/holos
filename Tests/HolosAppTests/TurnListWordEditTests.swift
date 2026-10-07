@@ -173,6 +173,27 @@ struct TurnListWordEditTests {
         #expect(list.wordEdit?.words.map(\.text) == ["beta"])
     }
 
+    /// A save that failed after an earlier edit moved its words ("go go": the first "go" became "go go"): the field
+    /// opens again over its own "go" where it is now, never over the "go" that has its old index; and never across
+    /// words changed elsewhere.
+    @Test func aFailedSaveReopensOverItsWordsWhereTheyAreNow() throws {
+        let (list, _) = editingList()
+        var words = TurnListViewTests.words
+        words["T1"] = [TurnListViewTests.word("T1", 0, "go", 0), TurnListViewTests.word("T1", 1, "go", 1)]
+        update(list, words: words, moves: [])
+        list.editingWords = true
+        let second = try #require(words["T1"]?[1])
+        // The first "go" became "go go" meanwhile: the second is word 2 now.
+        words["T1"] = [TurnListViewTests.word("T1", 0, "go", 0), TurnListViewTests.word("T1", 1, "go", 0.5),
+                       TurnListViewTests.word("T1", 2, "go", 1)]
+        update(list, words: words, moves: [ReviewWordMove(segmentID: "T1", replaced: 0..<1, replacement: 0..<2)])
+        #expect(!list.reopenWordEdit([second], typed: "stop", message: "Not saved.", movesSeen: 0, wordsEpoch: 1),
+                "Words changed elsewhere since: not reopened.")
+        #expect(list.reopenWordEdit([second], typed: "stop", message: "Not saved.", movesSeen: 0, wordsEpoch: 0))
+        #expect(list.wordEdit?.words.map(\.ref) == [WordRef(segmentID: "T1", word: 2)])
+        #expect(list.editField.stringValue == "stop")
+    }
+
     /// A save refused or failed after Return: the field opens again over the words with what was typed.
     @Test func aRefusedSaveOpensTheFieldAgainWithWhatWasTyped() throws {
         let (list, saved) = editingList()

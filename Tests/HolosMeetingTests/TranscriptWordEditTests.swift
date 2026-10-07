@@ -92,11 +92,18 @@ private func editRanged(_ text: String, _ ranges: [(Int, Int)], id: String = "S1
             "The field's text as it started changes nothing.")
 }
 
-@Test func aCorruptEditedRangeIsReadOnlyWithinItsSegment() {
+@Test(.timeLimit(.minutes(1))) func aCorruptEditedRangeExemptsNothingFromEcho() {
+    // A mark past the segment's words is damaged: it exempts no word from echo filtering (not even the ones it would
+    // cover within the segment), and is never walked.
     var segment = editSegment(["one", "two", "three"])
-    segment.fixes = [TranscriptWordFix(first: 1, end: Int.max, heard: "x", kind: .reviewEdit)]
-    let words = EchoFilter.reviewEditedWords(in: editTranscript([segment]))
-    #expect(words == [WordRef(segmentID: "S1", word: 1), WordRef(segmentID: "S1", word: 2)])
+    segment.fixes = [TranscriptWordFix(first: 1, end: Int.max, heard: "x", kind: .reviewEdit),
+                     TranscriptWordFix(first: 0, end: 1, heard: "won", kind: .reviewEdit)]
+    #expect(EchoFilter.reviewEditedWords(in: editTranscript([segment])) == [WordRef(segmentID: "S1", word: 0)])
+    // 60,000 marks over the same 60,000 words: each word is taken once (the marks are merged first).
+    let count = 60_000
+    var long = editSegment(Array(repeating: "w", count: count), id: "S2")
+    long.fixes = Array(repeating: TranscriptWordFix(first: 0, end: count, heard: "x", kind: .reviewEdit), count: count)
+    #expect(EchoFilter.reviewEditedWords(in: editTranscript([long])).count == count)
 }
 
 @Test func moreAndFewerWordsShareTheEditedSpansTime() throws {

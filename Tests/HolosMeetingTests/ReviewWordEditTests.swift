@@ -1215,6 +1215,12 @@ func wordsChangedElsewhereAreCountedAndNeverFollowed() async throws {
     }
     await review.reload()
     #expect(review.wordsEpoch == epoch + 1)
+    // An edit of the second "go" as it was chosen (word 2 then): refused, saying what was typed; nothing written.
+    let refused = await #expect(throws: HolosError.self) {
+        try await review.editWords([shown[2].ref], to: "stop", seenEpoch: epoch)
+    }
+    #expect(refused?.localizedDescription.contains("what you typed: “stop”") == true)
+    #expect(try wordEditCurrent(session).segments[0].text == "One more go go")
     // A split chosen before (at the second "go", word 2 then) is refused, never made at what is word 2 now.
     await #expect(throws: HolosError.self) {
         try await review.split(turnID: "T1", at: shown[2].ref, seenMoves: review.shownWordMoves.count,

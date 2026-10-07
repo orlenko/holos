@@ -169,13 +169,22 @@ public enum EchoFilter {
         for segment in transcript.segments {
             let fixes = (segment.fixes ?? []).filter { $0.kind == .reviewEdit }
             guard !fixes.isEmpty else { continue }
-            // Fixes come from files: only words that exist are expanded (an end of Int.max is not walked).
+            // Fixes come from files: only a mark within the segment's words counts (a damaged one, past them or
+            // backwards, exempts nothing), and the marks are merged first, so each word is taken once however many
+            // marks repeat it.
             let count = WordTiming.effectiveWords(of: segment).count
-            for fix in fixes {
-                let first = max(0, fix.first)
-                let end = min(count, fix.end)
-                guard first < end else { continue }
-                for word in first..<end { refs.insert(WordRef(segmentID: segment.id, word: word)) }
+            let ranges = fixes.filter { $0.first >= 0 && $0.first < $0.end && $0.end <= count }
+                .map { $0.first..<$0.end }.sorted { $0.lowerBound < $1.lowerBound }
+            var merged: [Range<Int>] = []
+            for range in ranges {
+                if let last = merged.last, range.lowerBound <= last.upperBound {
+                    merged[merged.count - 1] = last.lowerBound..<max(last.upperBound, range.upperBound)
+                } else {
+                    merged.append(range)
+                }
+            }
+            for range in merged {
+                for word in range { refs.insert(WordRef(segmentID: segment.id, word: word)) }
             }
         }
         return refs

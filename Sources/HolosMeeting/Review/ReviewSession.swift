@@ -946,11 +946,14 @@ public struct ReviewWord: Sendable, Equatable {
     /// `expecting`: each of `words`' text as the caller showed it (the edit field's words): a change made elsewhere
     /// and read since may have kept a word's place but changed it, and an edit is never made over words other than
     /// those the person saw. Refused then, saying what was typed.
+    ///
+    /// `seenEpoch`: `wordsEpoch` when the words were chosen: words changed elsewhere since cannot be followed (no word
+    /// move says where they went), and refuse the edit, saying what was typed.
     public func editWords(_ words: [WordRef], to text: String, seenMoves: Int? = nil, whileUnread: Bool = false,
-                          expecting: [String]? = nil,
+                          expecting: [String]? = nil, seenEpoch: Int? = nil,
                           committed: ((ReviewWordEdit) -> Void)? = nil) async throws -> ReviewWordEdit? {
         guard let op = try queuedWordEdit(words, to: text, seenMoves: seenMoves, whileUnread: whileUnread,
-                                          expecting: expecting) else {
+                                          expecting: expecting, seenEpoch: seenEpoch) else {
             return nil
         }
         do {
@@ -965,8 +968,13 @@ public struct ReviewWord: Sendable, Equatable {
 
     /// `editWords` up to its change being queued (no wait); nil when there is nothing to edit.
     private func queuedWordEdit(_ words: [WordRef], to text: String, seenMoves: Int?,
-                                whileUnread: Bool = false, expecting: [String]? = nil) throws -> Operation? {
+                                whileUnread: Bool = false, expecting: [String]? = nil,
+                                seenEpoch: Int? = nil) throws -> Operation? {
         try requireEditable(whileUnread: whileUnread)
+        if let seenEpoch, seenEpoch != wordsEpoch {
+            throw HolosError.invalidInput("The words were changed elsewhere while you edited them; edit them again "
+                                          + "(what you typed: “\(TranscriptWordEdit.cleaned(text))”).")
+        }
         guard !snapshot.transcriptChanged else { throw Self.labelAgainFirst }
         guard snapshot.journal.isComplete else { throw Self.speakerChangesUnreadable }
         guard baseReadable else { throw Self.baseUnreadable }
@@ -1161,9 +1169,13 @@ public struct ReviewWord: Sendable, Equatable {
         public var text: String
         public var seenMoves: Int
         public var expected: [String]?
+        /// `wordsEpoch` when the words were chosen (`editWords(seenEpoch:)`).
+        public var seenEpoch: Int?
 
-        public init(words: [WordRef], text: String, seenMoves: Int, expected: [String]? = nil) {
+        public init(words: [WordRef], text: String, seenMoves: Int, expected: [String]? = nil,
+                    seenEpoch: Int? = nil) {
             self.words = words; self.text = text; self.seenMoves = seenMoves; self.expected = expected
+            self.seenEpoch = seenEpoch
         }
     }
 
@@ -1184,7 +1196,7 @@ public struct ReviewWord: Sendable, Equatable {
         if let typed, !pauses.contains(where: { $0.hold == hold }) {
             do {
                 typedEdit = try queuedWordEdit(typed.words, to: typed.text, seenMoves: typed.seenMoves,
-                                               expecting: typed.expected)
+                                               expecting: typed.expected, seenEpoch: typed.seenEpoch)
             } catch {
                 refusal = error
             }
@@ -1261,7 +1273,7 @@ public struct ReviewWord: Sendable, Equatable {
         if let typed {
             do {
                 typedEdit = try queuedWordEdit(typed.words, to: typed.text, seenMoves: typed.seenMoves,
-                                               expecting: typed.expected)
+                                               expecting: typed.expected, seenEpoch: typed.seenEpoch)
                 closingEdit = typedEdit
             } catch {
                 Self.log.error("Session \(self.sessionID, privacy: .public): the edit open at close was not saved (\(ProcessSpawner.logCategory(error), privacy: .public))")
