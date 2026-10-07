@@ -7821,7 +7821,18 @@ public enum SessionAudioComposition {
   to take back; the break belongs to the run it was made on and goes with its turn; a new
   run drops it (the speakers labelled again; turn IDs then name other turns), except the
   runs published while the window reverts word fixes, which keep the turns and their
-  breaks; the window closed drops it too). After any
+  breaks; the window closed drops it too). A turn is split where its words are, as Otter
+  does: in edit mode, Return with the caret at the very start of the field's words and
+  nothing changed splits before them (the field opens with its word selected: ← first), and
+  at the very end, after them; outside edit mode, a word's context menu offers Split Turn
+  Here (none on a row's first word). Both make the same split or break as the sheet, checked
+  first as the split itself is (`ReviewSession.splitRefusal`: words edited together, a
+  turn's first word, a review held read-only; refused, the banner or a disabled menu item
+  says why, and the field stays), across a segment boundary too (the first word of a later
+  segment of the turn). Then the second part's row is selected and its speaker pop-up opens,
+  so it can be given its speaker at once; it keeps the first part's until then. The edit-mode
+  banner says so. The Split Turn sheet stays: it chooses a place by keyboard, and plays from
+  it first. After any
   change, a row stays selected only if every turn of it was selected: a turn that joins a
   selected row's paragraph clears that selection rather than widening it.
   While playing, the row of the turn being spoken is tinted, and a pause inside

@@ -570,6 +570,14 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, Clo
             self?.editWords(words, to: text, addTerm: addTerm, movesSeen: movesSeen, wordsEpoch: wordsEpoch)
         }
         turnList.onEditMessage = { [weak self] message in self?.editBanner.show(message: message) }
+        // Return at a word's start in edit mode, or Split Turn Here: the split, checked as the review checks it, then
+        // the second part's speaker pop-up.
+        turnList.onSplit = { [weak self] split in
+            guard let self else { return }
+            self.applySplit(split, movesSeen: self.review.shownWordMoves.count, epoch: self.review.wordsEpoch,
+                            focus: true)
+        }
+        turnList.splitRefusal = { [weak self] split in self?.splitRefusal(split) }
         // The review turned read-only with a field open (an earlier edit's labels could not be reread, say): its edit
         // is queued all the same, and waits for the reread as the changes before it do.
         turnList.onKeepWordEdit = { [weak self] words, text, movesSeen, wordsEpoch in
@@ -1100,6 +1108,7 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, Clo
         guard selected.count == 1, let paragraph = selected.first else { return }
         let words = paragraph.turns.map { review.words(of: $0) }
         guard words.joined().count > 1 else { return }
+        // Kept beside Return at a word's start and Split Turn Here: choosing a place by keyboard, playing from it first.
         var turnStarts = Set<Int>()
         var offset = 0
         for turnWords in words {
@@ -1117,17 +1126,37 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, Clo
             self.splitSheet = nil
             guard response == .OK, let index = sheet.splitIndex,
                   let split = ReviewParagraphs.split(paragraph, words: words, at: index) else { return }
-            switch split {
-            case .splitTurn(let turnID, let word):
-                self.perform { review in
-                    try await review.split(turnID: turnID, at: word, seenMoves: movesSeen, seenEpoch: epoch)
-                }
-            case .breakBefore(let turnID):
-                guard let turn = paragraph.turns.first(where: { $0.id == turnID }) else { return }
-                self.paragraphBreaks.insert(before: turn, runID: self.review.projection.runID)
+            self.applySplit(split, movesSeen: movesSeen, epoch: epoch, focus: false)
+        }
+    }
+
+    /// Makes `split`: the review splits the turn (undoable; a word edit saved since moves the word, `movesSeen`, and
+    /// words changed elsewhere refuse it, `epoch`), or the row breaks before a turn it holds (this window only). With
+    /// `focus` (Return at a word's start, Split Turn Here), the second part's row is selected and its speaker pop-up
+    /// opens, so it can be given its speaker at once (`TurnListView.focusSpeaker`).
+    private func applySplit(_ split: ReviewParagraphSplit, movesSeen: Int, epoch: Int, focus: Bool) {
+        switch split {
+        case .splitTurn(let turnID, let word):
+            perform { [weak self] review in
+                try await review.split(turnID: turnID, at: word, seenMoves: movesSeen, seenEpoch: epoch)
+                guard focus, let self else { return }
                 self.refresh()
-                self.turnList.select([turnID], scroll: true)
+                self.turnList.focusSpeaker(startingAt: word)
             }
+        case .breakBefore(let turnID):
+            guard let turn = review.projection.turns.first(where: { $0.id == turnID }) else { return }
+            paragraphBreaks.insert(before: turn, runID: review.projection.runID)
+            refresh()
+            turnList.select([turnID], scroll: true)
+            if focus, let first = review.words(of: turn).first { turnList.focusSpeaker(startingAt: first.ref) }
+        }
+    }
+
+    /// Why `split` cannot be made now (`ReviewSession.splitRefusal`); a paragraph break always can.
+    private func splitRefusal(_ split: ReviewParagraphSplit) -> String? {
+        switch split {
+        case .splitTurn(let turnID, let word): return review.splitRefusal(turnID: turnID, at: word)
+        case .breakBefore: return nil
         }
     }
 
@@ -1739,7 +1768,7 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, Clo
 final class EditModeBanner: NSView {
     static let usual = "Editing — click a word to change it. ⇧-click or drag for more words of the same turn. Return "
         + "saves, ⌥Return saves and adds it to the word list, Tab saves and edits the next word, Esc cancels. "
-        + "Space still plays and pauses."
+        + "Return at the start of a word (← first) splits the turn there. Space still plays and pauses."
     let label = NSTextField(wrappingLabelWithString: EditModeBanner.usual)
 
     override init(frame: NSRect) {

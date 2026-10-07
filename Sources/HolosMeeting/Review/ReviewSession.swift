@@ -1049,12 +1049,34 @@ public struct ReviewWord: Sendable, Equatable {
             }
             word = moved
         }
+        try await apply([splitAction(turnID: turnID, at: word)])
+    }
+
+    /// Why `turnID` cannot be split before `word` now, known before a split is offered or made (the context menu's
+    /// Split Turn Here, Return at a word's start in edit mode): the split's own checks, made on the labels shown
+    /// (`splitAction`), with the same message. Nil when it can be made.
+    public func splitRefusal(turnID: String, at word: WordRef) -> String? {
+        do {
+            _ = try splitAction(turnID: turnID, at: word)
+            return nil
+        } catch {
+            return error.localizedDescription
+        }
+    }
+
+    /// The split `split` queues, checked as it is checked when queued: the review editable, never inside words edited
+    /// together (their edit, and its Revert, belong to one turn), and the split one the labels shown can make
+    /// (`validate`: the word inside the turn, not its first).
+    private func splitAction(turnID: String, at word: WordRef) throws -> SpeakerEditAction {
+        try requireEditable()
         if let segment = segments[word.segmentID], (segment.fixes ?? []).contains(where: {
             $0.kind == .reviewEdit && $0.first < word.word && word.word < $0.end
         }) {
             throw HolosError.invalidInput("That word is part of words you edited together; split before or after them.")
         }
-        try await apply([.splitTurn(turnID: resolvedTurnID(turnID), at: word)])
+        let action = SpeakerEditAction.splitTurn(turnID: resolvedTurnID(turnID), at: word)
+        try validate([Self.cleaned(resolve(action))])
+        return action
     }
 
     /// Changes the automatic fix covering `word` back to what the recognizer heard. The other word fixes and the

@@ -42,7 +42,8 @@ final class WordEditField: NSTextField {
         layer?.zPosition = 10
         setAccessibilityLabel("Edit words")
         setAccessibilityHelp("Return saves, Option-Return saves and adds it to the word list, Tab saves and edits the "
-                             + "next word, Escape cancels.")
+                             + "next word, Escape cancels. Return with the cursor at the start, nothing changed, splits "
+                             + "the turn there.")
     }
 
     convenience init() { self.init(frame: .zero) }
@@ -386,6 +387,8 @@ extension TurnListView: NSTextFieldDelegate {
         switch commandSelector {
         case #selector(NSResponder.insertNewline(_:)):
             let option = NSApplication.shared.currentEvent?.modifierFlags.contains(.option) == true
+            // Return at the start (or end) of the words with nothing changed splits the turn there.
+            if !option, splitFromField() { return true }
             commitWordEdit(addTerm: option, advance: .stay)
         case #selector(NSResponder.insertNewlineIgnoringFieldEditor(_:)):
             commitWordEdit(addTerm: true, advance: .stay)
