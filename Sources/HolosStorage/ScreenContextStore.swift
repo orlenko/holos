@@ -49,9 +49,13 @@ public struct ScreenKeyframe: Codable, Sendable, Equatable {
     /// Where the snapshot came from; nil in a meeting captured before all displays were (only the main display was
     /// then), which `source` reads as the main display.
     public var display: ScreenDisplay?
+    /// The JPEG's size, so the shared caps know each display's share exactly after a reconnect or a recorder restart;
+    /// nil for a keyframe saved before keyframes said.
+    public var bytes: Int?
     public init(id: String = UUID().uuidString, start: Double, end: Double, lines: [ScreenTextLine]? = nil,
-                display: ScreenDisplay? = nil) {
+                display: ScreenDisplay? = nil, bytes: Int? = nil) {
         self.id = id; self.start = start; self.end = end; self.lines = lines; self.display = display
+        self.bytes = bytes
     }
 
     /// The display the snapshot came from; the main display for a keyframe saved before keyframes said.
@@ -98,17 +102,21 @@ public struct ScreenContextRecord: Codable, Sendable, Equatable {
 
     /// Which display a keyframe came from, for Review: nil when the meeting has one display, so nothing extra shows.
     public func displayLabel(_ frame: ScreenKeyframe) -> String? {
-        let displays = self.displays
         guard displays.count > 1 else { return nil }
-        return frame.source.label(severalMain: displays.filter(\.isMain).count > 1)
+        return frame.source.label(severalMain: severalMainDisplays)
     }
 
     /// `displayLabel` of every keyframe, in order, working out the displays once.
     public var displayLabels: [String?] {
-        let displays = self.displays
         guard displays.count > 1 else { return frames.map { _ in nil } }
-        let severalMain = displays.filter(\.isMain).count > 1
+        let severalMain = severalMainDisplays
         return frames.map { $0.source.label(severalMain: severalMain) }
+    }
+
+    /// More than one display was the main one in some keyframe (the main display changed during the meeting, say
+    /// across a pause), so "Main display" alone would not tell them apart.
+    private var severalMainDisplays: Bool {
+        Set(frames.filter(\.source.isMain).map { $0.display?.id ?? 0 }).count > 1
     }
 
     /// Where a new keyframe starting at `start` goes: after every keyframe that starts no later, so the shared
@@ -160,6 +168,7 @@ public enum ScreenContextStore {
             guard ids.insert(frame.id).inserted, frame.start.isFinite, frame.end.isFinite,
                   frame.start >= lastEnd[display, default: 0], frame.end >= frame.start,
                   (frame.display?.number).map({ (1...maximumDisplays).contains($0) }) ?? true,
+                  frame.bytes.map({ (0...maximumImageBytes).contains($0) }) ?? true,
                   (frame.lines?.count ?? 0) <= 256 else {
                 throw HolosError.invalidInput("Screen context has invalid times or text.")
             }

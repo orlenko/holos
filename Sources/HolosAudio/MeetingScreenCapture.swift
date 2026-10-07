@@ -76,29 +76,41 @@ public enum ScreenCapturePlan {
     }
 }
 
+/// The cheap view of the display arrangement the capture polls: which displays are connected, and which is main.
+struct ScreenDisplayLayout: Equatable, Sendable {
+    var ids: [CGDirectDisplayID]
+    var main: CGDirectDisplayID
+}
+
 /// What the capture needs from ScreenCaptureKit and CoreGraphics. Tests use a fake, so hot-plug, stream failures and
 /// the shared caps run without a stream, a screen or the permission.
 @MainActor protocol ScreenCaptureSystem: AnyObject {
-    /// The connected displays' IDs, cheaply (`CGGetActiveDisplayList`): polled to notice one come or go.
-    func connectedDisplayIDs() -> [CGDirectDisplayID]
+    /// The connected displays' IDs and the main one, cheaply (`CGGetActiveDisplayList`, `CGMainDisplayID`): polled
+    /// to notice a display come or go, or the main display change.
+    func layout() -> ScreenDisplayLayout
     /// The displays that can be captured now (`SCShareableContent`).
     func displays() async throws -> [ScreenDisplayCandidate]
-    /// Starts one display's stream; its samples go to `output` on the capture's queue.
-    func start(_ display: ScreenDisplay, output: ScreenDisplayOutput) async throws -> any ScreenStreamControl
+    /// One display's stream, not started yet; its samples go to `output` on the capture's queue.
+    func stream(for display: ScreenDisplay, output: ScreenDisplayOutput) throws -> any ScreenStreamControl
 }
 
+/// One display's stream. `stop` may come while `start` is still pending: a meeting that stops during a slow platform
+/// start must not leave the screen captured until that start returns.
 @MainActor protocol ScreenStreamControl: AnyObject {
+    func start() async throws
     func stop() async
 }
 
 /// Optional screen capture, independent of audio: one stream per display, all writing one timeline in
 /// `screen/context.json`. Startup never delays the audio consumer.
 ///
-/// Hot-plug: every `pollInterval` the capture compares the connected display IDs (`CGGetActiveDisplayList`, a cheap
-/// call that works in the command-line recorder, which has no AppKit run loop for the display-reconfiguration
-/// callback) with the last ones; only when they differ, or a stream stops with an error, does it ask
-/// ScreenCaptureKit again and start or stop streams (`ScreenDisplayRoster`). A disconnected display's interval
-/// already ends at its last observed sample, so ending its stream invents nothing.
+/// Hot-plug: every `pollInterval` the capture compares the connected display IDs and the main display
+/// (`CGGetActiveDisplayList` and `CGMainDisplayID`, cheap calls that work in the command-line recorder, which has no
+/// AppKit run loop for the display-reconfiguration callback) with those of the last successful refresh; only when
+/// they differ, or a stream stops with an error, does it ask ScreenCaptureKit again and start or stop streams
+/// (`ScreenDisplayRoster`). A refresh whose query fails forgets the recorded layout, so a later poll tries again,
+/// after 4, 8, 16, 32, then every 60 seconds (`pollsBeforeRetry`). A disconnected display's interval already ends at
+/// its last observed sample, so ending its stream invents nothing.
 @MainActor public final class MeetingScreenCapture {
     private static let log = Logger(subsystem: "ca.orlenko.holos.app", category: "screen")
     private let permissionCheck: @MainActor () -> Bool
@@ -113,7 +125,13 @@ public enum ScreenCapturePlan {
     private var streams: [CGDirectDisplayID: any ScreenStreamControl] = [:]
     /// Streams that stopped with an error before their start returned.
     private var stoppedEarly: Set<CGDirectDisplayID> = []
-    private var connected: [CGDirectDisplayID] = []
+    /// Streams whose start has not returned yet: `stop()` and the caps reach them too.
+    private var pending: [CGDirectDisplayID: any ScreenStreamControl] = [:]
+    /// The layout the last successful refresh matched; nil until one succeeds.
+    private var reconciled: ScreenDisplayLayout?
+    /// Refreshes whose ScreenCaptureKit query failed in a row, and polls to skip before the next try.
+    private var failedRefreshes = 0
+    private var pollsUntilRetry = 0
     private var refreshing = false
     private var refreshAgain = false
     private var started = false
@@ -157,17 +175,22 @@ public enum ScreenCapturePlan {
     private func begin(known: [ScreenDisplay]) async {
         guard !stopped else { return }
         roster = ScreenDisplayRoster(known: known)
-        connected = system.connectedDisplayIDs()
         await refresh()
         started = true
     }
 
-    /// Whether the connected displays changed since the last look; the next refresh starts and stops streams.
+    /// Whether the displays or the main display differ from those of the last successful refresh (and a failed
+    /// one's backoff has passed); the refresh then starts and stops streams.
     private func displaysChanged() -> Bool {
-        let now = system.connectedDisplayIDs()
-        guard now != connected else { return false }
-        connected = now
+        guard system.layout() != reconciled else { return false }
+        guard pollsUntilRetry == 0 else { pollsUntilRetry -= 1; return false }
         return true
+    }
+
+    /// Polls to wait after `failures` failed refreshes in a row: 1, 3, 7, 15, then 29 (a retry after 4, 8, 16, 32
+    /// and 60 seconds at one poll every two seconds).
+    nonisolated static func pollsBeforeRetry(failures: Int) -> Int {
+        failures <= 0 ? 0 : min((1 << min(failures, 5)) - 1, 29)
     }
 
     /// Asks ScreenCaptureKit for the displays and starts and stops streams to match. One refresh at a time; a
@@ -184,13 +207,21 @@ public enum ScreenCapturePlan {
     }
 
     private func reconcile(_ receiver: ScreenFrameReceiver) async {
+        // Read before the query: a change during it differs from what is recorded, and the next poll refreshes.
+        let layout = system.layout()
         let candidates: [ScreenDisplayCandidate]
         do { candidates = try await system.displays() } catch {
             // Nothing captures any more (the permission was withdrawn, say): the capture fails as it always did.
-            // While other streams run, the next change tries again.
+            // While other streams run, the layout stays unrecorded and a later poll tries again, backing off.
+            reconciled = nil
+            failedRefreshes += 1
+            pollsUntilRetry = Self.pollsBeforeRetry(failures: failedRefreshes)
             if streams.isEmpty { receiver.failed() }
             return
         }
+        reconciled = layout
+        failedRefreshes = 0
+        pollsUntilRetry = 0
         guard !stopped else { return }
         let change = roster.reconcile(ScreenCapturePlan.displays(candidates, for: target))
         for id in change.stop {
@@ -205,9 +236,15 @@ public enum ScreenCapturePlan {
                 Task { @MainActor in await self?.streamStopped(display.id) }
             }
             do {
-                defer { stoppedEarly.remove(display.id) }
-                let stream = try await system.start(display, output: output)
-                guard !stopped, roster.status[display.id] == .running else { await stream.stop(); continue }
+                defer { stoppedEarly.remove(display.id); pending[display.id] = nil }
+                let stream = try system.stream(for: display, output: output)
+                // Registered before the await, so a stop during a slow start stops this stream too.
+                pending[display.id] = stream
+                try await stream.start()
+                guard pending[display.id] != nil, !stopped, roster.status[display.id] == .running else {
+                    await stream.stop()
+                    continue
+                }
                 if stoppedEarly.contains(display.id) {
                     // It broke while starting: the next pass tells a disconnect from a broken stream.
                     roster.failed(display.id)
@@ -232,7 +269,7 @@ public enum ScreenCapturePlan {
     func streamStopped(_ id: CGDirectDisplayID) async {
         guard !stopped else { return }
         guard streams.removeValue(forKey: id) != nil else {
-            if roster.status[id] == .running { stoppedEarly.insert(id) }  // its start has not returned yet
+            if pending[id] != nil { stoppedEarly.insert(id) }  // its start has not returned yet
             return
         }
         roster.failed(id)
@@ -244,7 +281,7 @@ public enum ScreenCapturePlan {
     func capped(_ id: CGDirectDisplayID) async {
         guard !stopped else { return }
         roster.capped(id)
-        if let stream = streams.removeValue(forKey: id) { await stream.stop() }
+        if let stream = streams.removeValue(forKey: id) ?? pending.removeValue(forKey: id) { await stream.stop() }
         Self.log.info("Display \(id, privacy: .public) stopped for the shared screen storage limit")
     }
 
@@ -255,11 +292,14 @@ public enum ScreenCapturePlan {
         stopped = true
         initial?.cancel()
         monitor?.cancel()
-        let streams = self.streams
+        // Streams still starting too: a hung platform start must not keep the screen captured. The one whose start
+        // returns later is stopped again then; closing the receiver fences any frame it delivers.
+        let streams = Array(self.streams.values) + Array(pending.values)
         self.streams = [:]
+        pending = [:]
         // Close the receiver first: even a hung/late platform start cannot persist another frame.
         await receiver?.close()
-        for stream in streams.values { await stream.stop() }
+        for stream in streams { await stream.stop() }
     }
 }
 
@@ -267,12 +307,14 @@ public enum ScreenCapturePlan {
 @MainActor final class LiveScreenCaptureSystem: ScreenCaptureSystem {
     private var content: SCShareableContent?
 
-    func connectedDisplayIDs() -> [CGDirectDisplayID] {
+    func layout() -> ScreenDisplayLayout {
+        let main = CGMainDisplayID()
         var count: UInt32 = 0
-        guard CGGetActiveDisplayList(0, nil, &count) == .success, count > 0 else { return [] }
+        guard CGGetActiveDisplayList(0, nil, &count) == .success, count > 0 else { return .init(ids: [], main: main) }
         var ids = [CGDirectDisplayID](repeating: kCGNullDirectDisplay, count: Int(count))
-        guard CGGetActiveDisplayList(count, &ids, &count) == .success else { return [] }
-        return ids.prefix(Int(count)).sorted()
+        guard CGGetActiveDisplayList(count, &ids, &count) == .success else { return .init(ids: [], main: main) }
+        // Sorted, so only a real change differs; the main display is compared on its own.
+        return ScreenDisplayLayout(ids: ids.prefix(Int(count)).sorted(), main: main)
     }
 
     /// Displays that show another display's picture (hardware mirroring) are left out: their snapshots would repeat.
@@ -284,7 +326,7 @@ public enum ScreenCapturePlan {
             .map { ScreenDisplayCandidate(id: $0.displayID, frame: $0.frame, isMain: $0.displayID == main) }
     }
 
-    func start(_ display: ScreenDisplay, output: ScreenDisplayOutput) async throws -> any ScreenStreamControl {
+    func stream(for display: ScreenDisplay, output: ScreenDisplayOutput) throws -> any ScreenStreamControl {
         guard let content, let screen = content.displays.first(where: { $0.displayID == display.id }) else {
             throw HolosError.unavailable("No display is available to capture.")
         }
@@ -305,7 +347,6 @@ public enum ScreenCapturePlan {
         configuration.captureMicrophone = false
         let stream = SCStream(filter: filter, configuration: configuration, delegate: output)
         try stream.addStreamOutput(output, type: .screen, sampleHandlerQueue: output.queue)
-        try await stream.startCapture()
         return LiveScreenStream(stream: stream)
     }
 }
@@ -313,6 +354,7 @@ public enum ScreenCapturePlan {
 @MainActor final class LiveScreenStream: ScreenStreamControl {
     private let stream: SCStream
     init(stream: SCStream) { self.stream = stream }
+    func start() async throws { try await stream.startCapture() }
     func stop() async { try? await stream.stopCapture() }
 }
 
@@ -458,9 +500,18 @@ final class ScreenFrameReceiver: Sendable {
         }
     }
 
-    /// A display's stream is starting: a fresh retained frame, so its first sample is kept at once.
+    /// A display's stream is starting: a fresh retained frame, so its first sample is kept at once. A display that
+    /// comes back keeps its keyframe and byte counts for the shared caps; only its sampling starts again.
     func begin(_ display: ScreenDisplay) {
-        queue.async { self.state.withLock { $0.screens[display.id] = Self.screen(display, $0) } }
+        queue.async {
+            self.state.withLock { value in
+                guard let known = value.screens[display.id] else {
+                    value.screens[display.id] = Self.screen(display, value)
+                    return
+                }
+                value.screens[display.id] = Screen(display: display, keyframes: known.keyframes, bytes: known.bytes)
+            }
+        }
     }
 
     /// A display's stream ended: a change of it that never settled is dropped, and its last keyframe's interval
@@ -474,12 +525,13 @@ final class ScreenFrameReceiver: Sendable {
         }
     }
 
+    /// A display first seen by this capture generation, with what the meeting's saved keyframes say it used: each
+    /// keyframe's own JPEG size, or, for one saved without it, the meeting's average.
     private static func screen(_ display: ScreenDisplay, _ value: State) -> Screen {
         let frames = value.record?.frames ?? []
-        let keyframes = frames.filter { $0.display?.id == display.id }.count
-        // Bytes per display are not saved; earlier keyframes count by their share of the total.
-        let bytes = frames.isEmpty ? 0 : (value.record?.imageBytes ?? 0) * keyframes / frames.count
-        return Screen(display: display, keyframes: keyframes, bytes: bytes)
+        let own = frames.filter { $0.display?.id == display.id }
+        let average = frames.isEmpty ? 0 : (value.record?.imageBytes ?? 0) / frames.count
+        return Screen(display: display, keyframes: own.count, bytes: own.reduce(0) { $0 + ($1.bytes ?? average) })
     }
 
     func failed() {
@@ -632,7 +684,7 @@ final class ScreenFrameReceiver: Sendable {
             return .none
         }
         let start = max(kept.start, last.map { record.frames[$0].end } ?? 0)
-        let frame = ScreenKeyframe(start: start, end: max(time, start), display: display)
+        let frame = ScreenKeyframe(start: start, end: max(time, start), display: display, bytes: data.count)
         guard !stopped.withLock({ $0 }) else { return .none }
         record.frames.insert(frame, at: record.insertionIndex(start: start))
         value.bytes += data.count

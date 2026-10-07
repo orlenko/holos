@@ -4588,9 +4588,14 @@ displays connected at the start are numbered by arrangement (left to right, then
 bottom); one connected later takes the next number, and a display that comes back
 keeps its number, also across a recorder restart (numbers are read back from the saved
 keyframes). Hot-plug (`ScreenDisplayRoster`, pure): every two seconds the capture
-compares the connected display IDs (`CGGetActiveDisplayList`, a cheap call) with the
-last ones, and only when they differ, or a stream stops with an error, asks
-ScreenCaptureKit again and starts or stops streams. This was chosen over the
+compares the connected display IDs and the main display (`CGGetActiveDisplayList`,
+`CGMainDisplayID`, cheap calls) with those of the last successful refresh, and only when
+they differ, or a stream stops with an error, asks ScreenCaptureKit again and starts or
+stops streams. A refresh whose query fails forgets that layout, so a display connected
+then is not missed for good: a later poll tries again after 4, 8, 16, 32, then every 60
+seconds (`pollsBeforeRetry`). A stream is registered before its platform start returns,
+so a meeting stopped (or a display capped) during a slow or hung start stops that stream
+at once; frames it still delivers are fenced by the ended capture generation. This was chosen over the
 display-reconfiguration callback because the recorder is a command-line process without
 an AppKit run loop, and polling a list of IDs needs nothing from the window server
 beyond the call. A disconnected display's stream ends; its last keyframe's interval
@@ -4632,7 +4637,10 @@ Private `screen/context.json` records UUID keyframes, observed session-time inte
 their display, JPEG byte totals, and optional OCR lines with normalized bottom-left boxes
 and confidence. The display (`display`: `id`, `number`, `isMain`) is an additive field
 and `schemaVersion` stays 1: a keyframe without it, saved before all displays were
-captured, reads as the main display. Each display's keyframes follow one another without
+captured, reads as the main display. Each keyframe also records its JPEG size (`bytes`,
+additive), so each display's share of the caps is exact after a reconnect (kept in
+memory) or a recorder restart (rebuilt from the keyframes; one saved without a size
+counts as the meeting's average). Each display's keyframes follow one another without
 overlapping; different displays' overlap in time, so a build from before this change
 refuses a multi-display record as invalid times (it never shows a wrong timeline).
 `screen/<UUID>.jpg` is owner-only. Caps are 1000 keyframes, 1 MiB per JPEG, and 256 MiB
@@ -4671,7 +4679,8 @@ Unknown OCR tokens are read-only user-review candidates, not automatic vocabular
 or transcript edits. No Foundation Models or other LLM call is added during recording.
 Review's Screen Text sheet selects timestamped OCR and seeks without starting
 playback; when the meeting captured more than one display, each snapshot says which
-("0:12–0:40 · Display 2", "Main display"; "Display 2, main" if the main display changed),
+("0:12–0:40 · Display 2", "Main display"; "Display 2, main" once more than one display
+was main in some keyframe, as when the main display changed across a pause),
 and a single-display meeting shows nothing extra. OCR and the word-list questions work
 per keyframe, so they need nothing per display: OCR lines near a word come from
 whichever displays were observed then. An unreadable word list disables candidate

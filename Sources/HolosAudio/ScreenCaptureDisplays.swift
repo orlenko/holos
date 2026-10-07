@@ -87,7 +87,7 @@ public enum ScreenStoragePolicy {
         public var display: ScreenDisplay
         /// Keyframes this display saved in the meeting.
         public var keyframes: Int
-        /// JPEG bytes this display saved (an estimate for keyframes saved before a recorder restart).
+        /// JPEG bytes this display saved in the meeting (the average for a keyframe saved without its size).
         public var bytes: Int
 
         public init(display: ScreenDisplay, keyframes: Int, bytes: Int) {

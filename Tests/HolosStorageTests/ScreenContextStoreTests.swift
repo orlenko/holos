@@ -136,3 +136,28 @@ func displaysOverlapInTimeButEachDisplaysKeyframesFollowOneAnother() async throw
                                                                ScreenKeyframe(start: 2, end: 3, display: second)])
     #expect(single.frames.map { single.displayLabel($0) } == [nil, nil] && single.displayLabels == [nil, nil])
 }
+
+@Test func aMainDisplayThatChangesAcrossAPauseIsLabelledApart() {
+    // A main and B beside it; after a pause B is the main display.
+    let aMain = ScreenDisplay(id: 1, number: 1, isMain: true), b = ScreenDisplay(id: 2, number: 2, isMain: false)
+    let bMain = ScreenDisplay(id: 2, number: 2, isMain: true), aSide = ScreenDisplay(id: 1, number: 1, isMain: false)
+    let record = ScreenContextRecord(sessionID: "id", frames: [
+        ScreenKeyframe(start: 0, end: 5, display: aMain), ScreenKeyframe(start: 1, end: 5, display: b),
+        ScreenKeyframe(start: 10, end: 15, display: aSide), ScreenKeyframe(start: 10, end: 15, display: bMain),
+    ])
+    let labels = ["Display 1, main", "Display 2", "Display 1", "Display 2, main"]
+    #expect(record.frames.map { record.displayLabel($0) } == labels && record.displayLabels == labels)
+}
+
+@Test(.timeLimit(.minutes(1)))
+func keyframeSizesAreBoundedOnRead() async throws {
+    let (root, archive) = try await screenStoreFixture()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let display = ScreenDisplay(id: 1, number: 1, isMain: true)
+    for (bytes, valid) in [(512, true), (ScreenContextStore.maximumImageBytes + 1, false), (-1, false)] {
+        let frame = ScreenKeyframe(start: 1, end: 2, display: display, bytes: bytes)
+        try ScreenContextStore.write(ScreenContextRecord(sessionID: archive.id, frames: [frame]), session: archive.directory)
+        let read = try? ScreenContextStore.read(session: archive.directory, sessionID: archive.id)
+        #expect((read?.frames.first?.bytes == bytes) == valid)
+    }
+}
