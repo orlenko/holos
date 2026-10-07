@@ -112,7 +112,7 @@ enum SessionWordEdit {
             let previous = try SessionFiles.transcript(id: previousTranscriptID, session: session)
             let restored = TranscriptWordEdit.restoring(previous, now: now)
             guard let plan = try SpeakerTranscriptRetarget.plan(session: session, from: snapshot, to: restored,
-                                                               move: move, now: now) else {
+                                                               move: move, undo: true, now: now) else {
                 throw HolosError.invalidInput("The speaker labels cannot be kept on the words as they were.")
             }
             try Task.checkCancellation()
@@ -152,7 +152,8 @@ enum SessionWordEdit {
             let snapshot = try SpeakerSessionSnapshot.load(session: session)
             guard snapshot.transcript.id == expectedTranscriptID,
                   let plan = try SpeakerTranscriptRetarget.plan(session: session, from: snapshot, to: current,
-                                                               move: edited.move, now: now) else {
+                                                               move: edited.move, undo: edited.undo,
+                                                               now: now) else {
                 throw HolosError.invalidInput("The speaker labels cannot be repaired on the edited words.")
             }
             try Task.checkCancellation()
@@ -186,7 +187,8 @@ enum SessionWordEdit {
                 let snapshot = try SpeakerSessionSnapshot.load(session: session)
                 guard snapshot.transcript.id == run.transcriptID,
                       let plan = try SpeakerTranscriptRetarget.plan(session: session, from: snapshot, to: transcript,
-                                                                   move: edited.move, now: now) else {
+                                                                   move: edited.move, undo: edited.undo,
+                                                                   now: now) else {
                     throw HolosError.invalidInput("The speaker labels cannot be kept on the words edited in Review.")
                 }
                 try Task.checkCancellation()
@@ -211,21 +213,27 @@ enum SessionWordEdit {
     /// fix's revert, `wordsFixed` with `headFrom`), nil when none did: the transcript it was made from, and its word
     /// move (an edit's; nil for a revert, or in a journal written before moves were recorded: the labels are then
     /// mapped by time).
-    static func editedEvent(of transcriptID: String, session: URL) throws -> (base: String, move: ReviewWordMove?)? {
+    /// `undo`: the change was an edit's undo ("undo": "1"), whose mark is in the transcript it was made from.
+    static func editedEvent(of transcriptID: String, session: URL) throws
+        -> (base: String, move: ReviewWordMove?, undo: Bool)? {
         guard let details = try SessionArchive.readEvents(at: session).events.last(where: {
             $0.details["transcriptID"] == transcriptID
                 && ($0.details[headFromKey] != nil || $0.kind == MeetingEventKind.transcriptEdited)
         })?.details, let base = details[headFromKey] ?? details["base"] else { return nil }
+        let damaged = HolosError.invalidInput("A word edit in this meeting's event log is damaged, so the speaker "
+                                              + "labels cannot be kept on its words.")
+        // Exactly as written: "1", or absent.
+        guard details["undo"] == nil || details["undo"] == "1" else { throw damaged }
+        let undo = details["undo"] == "1"
         // No move recorded (a revert, or a journal from before moves were): the labels are mapped by time.
         let keys = ["segment", "replaced", "replacement"]
-        guard keys.contains(where: { details[$0] != nil }) else { return (base, nil) }
+        guard keys.contains(where: { details[$0] != nil }) else { return (base, nil, undo) }
         // Recorded: exactly as `details(of:)` writes it, or the event is damaged (never read another way).
         guard let segment = details["segment"], !segment.isEmpty, let replaced = parseRange(details["replaced"]),
               let replacement = parseRange(details["replacement"]) else {
-            throw HolosError.invalidInput("A word edit in this meeting's event log is damaged, so the speaker labels "
-                                          + "cannot be kept on its words.")
+            throw damaged
         }
-        return (base, ReviewWordMove(segmentID: segment, replaced: replaced, replacement: replacement))
+        return (base, ReviewWordMove(segmentID: segment, replaced: replaced, replacement: replacement), undo)
     }
 
     /// A word range as `details(of:)` writes it: two unsigned decimal numbers joined by one "-", the first not above

@@ -795,11 +795,20 @@ func aWordEditEventWithADamagedMoveIsDamagedNeverReadAnotherWay() async throws {
         "transcriptID": "T-old", "base": "B"])
     try await archive.recordEvent(kind: MeetingEventKind.transcriptEdited, details: [
         "transcriptID": "T-bad", "base": "B", "segment": "S1", "replaced": "-1-2", "replacement": "1-3"])
+    // An undo as written, and one whose "undo" is anything else.
+    try await archive.recordEvent(kind: MeetingEventKind.transcriptEdited, details: [
+        "transcriptID": "T-undo", "base": "B", "undo": "1", "segment": "S1", "replaced": "1-3", "replacement": "1-2"])
+    try await archive.recordEvent(kind: MeetingEventKind.transcriptEdited, details: [
+        "transcriptID": "T-odd", "base": "B", "undo": "yes", "segment": "S1", "replaced": "1-3",
+        "replacement": "1-2"])
     await archive.releaseLock()
     let good = try #require(try SessionWordEdit.editedEvent(of: "T-good", session: session))
     #expect(good.base == "B" && good.move == ReviewWordMove(segmentID: "S1", replaced: 1..<2, replacement: 1..<3))
+    #expect(!good.undo)
     #expect(try SessionWordEdit.editedEvent(of: "T-old", session: session)?.move == nil)
     #expect(throws: HolosError.self) { try SessionWordEdit.editedEvent(of: "T-bad", session: session) }
+    #expect(try SessionWordEdit.editedEvent(of: "T-undo", session: session)?.undo == true)
+    #expect(throws: HolosError.self) { try SessionWordEdit.editedEvent(of: "T-odd", session: session) }
 }
 
 @Test(.timeLimit(.minutes(1))) @MainActor
@@ -1167,6 +1176,13 @@ func aWordMoveIsWhereTheEditsMarkIsNeverOnRepeatedTextElsewhere() async throws {
     let spans = Dictionary(uniqueKeysWithValues: plan.run.turns.map { ($0.id, $0.spans) })
     #expect(spans["T1"] == [WordSpan(segmentID: "S1", first: 0, end: 2)])
     #expect(spans["T2"] == [WordSpan(segmentID: "S1", first: 2, end: 3)])
+    // Each direction on its own side: read as an undo, the same move needs its mark in the transcript it is made from
+    // (an older mark there never stands in for an edit's, nor the reverse).
+    #expect(throws: HolosError.self) {
+        try SpeakerTranscriptRetarget.plan(session: session, from: snapshot, to: edited,
+                                           move: ReviewWordMove(segmentID: "S1", replaced: 0..<1, replacement: 0..<2),
+                                           undo: true)
+    }
 }
 
 @Test(.timeLimit(.minutes(1))) @MainActor

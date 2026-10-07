@@ -26,8 +26,11 @@ enum SpeakerTranscriptRetarget {
     /// mapped by index, not by time: every other word keeps its exact owner, and the replacement words take the owner of
     /// the words they replace (one turn). Recognizer timings of neighbouring words can overlap across speakers, so
     /// mapping an edit's words by time could give an untouched word to another turn as well.
+    ///
+    /// `undo`: `move` takes an edit back (`SessionWordEdit.restore`), whose mark is in the transcript it is made from;
+    /// otherwise an edit's mark is in the new one.
     static func plan(session: URL, from snapshot: SpeakerSessionSnapshot, to transcript: Transcript,
-                     move: ReviewWordMove? = nil, now: Date = Date()) throws -> Plan? {
+                     move: ReviewWordMove? = nil, undo: Bool = false, now: Date = Date()) throws -> Plan? {
         guard let oldRun = snapshot.run, let projection = snapshot.projection,
               oldRun.transcriptID == snapshot.transcript.id else { return nil }
         guard snapshot.journal.isComplete else {
@@ -39,7 +42,7 @@ enum SpeakerTranscriptRetarget {
             try checkFixCounts(snapshot.transcript, session: session)
             try checkFixCounts(transcript, session: session)
         }
-        let mapping = try move.map { try Mapping(from: snapshot.transcript, to: transcript, move: $0) }
+        let mapping = try move.map { try Mapping(from: snapshot.transcript, to: transcript, move: $0, undo: undo) }
             ?? Mapping(from: snapshot.transcript, to: transcript)
         // Every word a move replaces belongs to the same turns (an edit is refused otherwise), so each replacement word
         // takes exactly those turns. Checked here for every path that maps by a move, a recovery reading it from the
@@ -364,7 +367,7 @@ enum SpeakerTranscriptRetarget {
         /// A Review word edit's (or its undo's) mapping: in `move`'s segment, words before the replaced ones keep their
         /// index, words after shift by the change in count, and each replacement word is owned by every replaced word;
         /// every other segment keeps its words as they are.
-        init(from old: Transcript, to new: Transcript, move: ReviewWordMove) throws {
+        init(from old: Transcript, to new: Transcript, move: ReviewWordMove, undo: Bool) throws {
             let changed = HolosError.invalidInput("The edited transcript does not match the speaker labels' words.")
             let oldSegments = Dictionary(old.segments.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
             // The move names a segment both revisions have (one naming none would be ignored, its numbers unchecked),
@@ -405,14 +408,15 @@ enum SpeakerTranscriptRetarget {
                         throw changed
                     }
                     // And the edit is where the move says: a Review edit leaves its mark over exactly its new words,
-                    // and its undo takes back one over exactly the words it replaces. Repeated text ("go go go") can
-                    // read the same around another place; the mark cannot.
+                    // and its undo (`undo`) takes back one over exactly the words it replaces. Repeated text ("go go
+                    // go") can read the same around another place; the mark cannot, and an older mark elsewhere never
+                    // stands in for it (each direction is checked on its own side).
                     func marked(_ fixes: [TranscriptWordFix]?, _ range: Range<Int>) -> Bool {
                         (fixes ?? []).contains {
                             $0.kind == .reviewEdit && $0.first == range.lowerBound && $0.end == range.upperBound
                         }
                     }
-                    guard marked(segment.fixes, move.replacement) || marked(before.fixes, move.replaced) else {
+                    guard undo ? marked(before.fixes, move.replaced) : marked(segment.fixes, move.replacement) else {
                         throw changed
                     }
                     let replacedRefs = move.replaced.map(ref)

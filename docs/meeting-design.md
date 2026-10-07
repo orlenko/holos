@@ -8011,8 +8011,9 @@ shown, Otter-style.
     empty; at most a million replaced × replacement word pairs, far more than any edit of one
     turn; its replaced words all of the same turns, checked wherever a move is mapped; a
     segment both revisions have, every word outside it reading the same in both; the edit's
-    `reviewEdit` mark exactly over its new words, or, for an undo, over the words it replaces,
-    so repeated text elsewhere never passes for it): a
+    `reviewEdit` mark exactly over its new words, or, for an undo (the event says `"undo":
+    "1"`), over the words it replaces, each direction checked on its own side, so repeated text
+    or an older mark elsewhere never passes for it): a
     malformed one makes the event damaged, refused rather than read another way. An automatic
     fix's words in the unfixed revision must hold what it matched (`heardFits`: its `heard`
     touches the first and the last, and no word around them, untimed punctuation it matched
