@@ -129,8 +129,9 @@ public struct ExportBlock: Sendable, Equatable {
 
 /// Renders an `ExportDocument` as Markdown, plain text, or JSON (docs/meeting-design.md §4.11). Pure: no file IO.
 ///
-/// Common rules: turns in `(start, track)` order; the speaker shown is the projection's `label`; an unknown speaker is
-/// "Unknown speaker"; without a projection, turns are the transcript's segments, named "Microphone" and
+/// Common rules: turns in `(start, track)` order, as the Review list shows them (`SpeakerProjection.shownTurns`: short
+/// interjections of the unknown speaker attached to a neighbour or left out); the speaker shown is the projection's
+/// `label`; an unknown speaker is "Unknown speaker"; without a projection, turns are the transcript's segments, named "Microphone" and
 /// "System audio" by track (a segment without a track takes it from a single-track `metadata.source`).
 /// Suggestions (`ProjectedSpeaker.suggestion`) never appear, and no format contains vectors of any kind.
 public enum TranscriptExporter {
@@ -204,6 +205,9 @@ struct ExportTurn: Sendable, Equatable {
     /// In a transcript merged from several languages (`Transcript.languages`): the languages of the turn's segments,
     /// in the order they first appear; nil otherwise.
     let languages: [String]?
+    /// A short turn of the unknown speaker shown with `speakerID`, the speaker of the turn it continues
+    /// (`ShortInterjection.attached`).
+    var attached = false
 }
 
 /// The document resolved once for every format: turns with text and labels, sorted annotations, and blocks.
@@ -258,7 +262,8 @@ struct ExportContent {
                                  labels: labels, speakerOrder: speakerOrder)
     }
 
-    /// The projection's turns, already in (start, track, id) order.
+    /// The projection's turns as shown (`SpeakerProjection.shownTurns`: short interjections attached to a neighbour or
+    /// left out, docs/meeting-design.md §5.10), already in (start, track, id) order.
     private static func projectedTurns(_ projection: SpeakerProjection, transcript: Transcript,
                                        labels: [String: String], speakerOrder: [String: Int]) -> [ExportTurn] {
         var clusterOwner: [String: String] = [:]
@@ -269,7 +274,7 @@ struct ExportContent {
         }
         let text = TranscriptText(transcript)
         let languages = SegmentLanguages(transcript)
-        return projection.turns.map { turn in
+        return projection.shownTurns.map { turn in
             var others: [String] = []
             for clusterID in turn.otherClusters {
                 guard let owner = clusterOwner[clusterID], owner != turn.speakerID, !others.contains(owner) else {
@@ -284,7 +289,8 @@ struct ExportContent {
                 groupKey: turn.speakerID.map { "speaker:\($0)" } ?? "unknown:\(turn.track)",
                 label: label, track: turn.track, start: turn.start, end: turn.end, text: text.text(of: turn.spans),
                 overlap: turn.overlap, otherSpeakerIDs: others, score: turn.assignmentScore, timing: turn.timing,
-                spans: turn.spans, languages: languages.of(turn.spans))
+                spans: turn.spans, languages: languages.of(turn.spans),
+                attached: turn.interjection.map { if case .attached = $0 { true } else { false } } ?? false)
         }
     }
 

@@ -1,0 +1,230 @@
+import Foundation
+import HolosCore
+
+/// What the Review list and the exports do with a short turn of the unknown speaker (`ShortInterjections`).
+public enum ShortInterjection: Sendable, Equatable {
+    /// Shown with the speaker of the neighbouring turn it continues (`speakerID`).
+    case attached(speakerID: String)
+    /// Left out: a standalone filler or backchannel ("um", "Yeah.").
+    case hidden
+}
+
+/// Short turns of the unknown speaker, as the Review list and the exports show them (docs/meeting-design.md §5.10,
+/// "Short interjections"). Presentation only: nothing is stored, the run and the edit journal keep these turns as they
+/// are, and voice learning, voice matching and every edit read the projection's own `turns`. Pure and deterministic.
+///
+/// Only a shown turn of the unknown speaker (`speakerID` nil) of at most `maxWords` words is a candidate: at most
+/// `maxWords` words in its text split at spaces, and at most `maxRecognizerWords` words the recognizer timed (a
+/// language written without spaces, such as Chinese, is held to that count), and never one
+/// the user worked on: assigned (named by an applied `reassignTurns` edit, "Unknown" included, so choosing Unknown for
+/// an attached turn keeps it unknown; or `reassigned`), split (`modified`), or with a word the user changed
+/// (`userChangedWords`: edited or reverted in Review, corrected while recording). Its neighbours
+/// are the turns just before and after it on its own track. In order:
+/// 1. **Hidden** when every word is a filler or backchannel of the meeting's languages (`isFillerOnly`). Fillers are
+///    never attached: a stretched "umm" heard as "an" says nothing in anyone's sentence.
+/// 2. **Attached** to the previous turn when that turn has a speaker, does not end a sentence (`endsSentence`), and
+///    the two adjoin (`adjoin`: at most `gapSeconds` of silence, at most `overlapSeconds` of overlap): "… but they" +
+///    "agreed to it. Yeah." reads as one sentence of the previous speaker.
+/// 3. **Attached** when the turns just before and after it have the same speaker and it adjoins both: a few words
+///    inside one person's speech.
+/// 4. Otherwise shown as it is. A short turn spoken over a long one (overlapping it by more than `overlapSeconds`) is
+///    someone else talking at the same time, never a continuation.
+public enum ShortInterjections {
+    /// Turns of more words than this are never touched.
+    public static let maxWords = 4
+    /// Turns the recognizer timed more words for than this are never touched either, whatever their text's spaces
+    /// say (it may time punctuation or a hyphenated word apart, hence the margin).
+    public static let maxRecognizerWords = 2 * maxWords
+    /// The most silence between a short turn and the turn it joins.
+    public static let gapSeconds = 1.5
+    /// The most a short turn and the turn it joins may overlap (word times at a turn boundary are rarely exact).
+    public static let overlapSeconds = 0.5
+
+    // Not `FillerWords` (dictation's hesitation sounds, which leaves out "mm" because it is a unit inside a
+    // sentence): here a word stands alone as a whole turn, and backchannels ("yeah", "okay") count too.
+
+    /// Fillers and backchannels in every language: sounds rather than words.
+    static let anyLanguage = ["mm", "hmm", "mhm", "mm-hmm", "ok", "okay"]
+    /// Fillers and backchannels by language (the language code before "-" or "_").
+    static let byLanguage: [String: [String]] = [
+        "en": ["um", "umm", "uh", "uh-huh", "yeah", "yes", "right"],
+        "fr": ["euh", "ouais", "oui", "d'accord"],
+    ]
+    /// Fillers only when they are the turn's one word: an article on its own is a stretched "umm".
+    static let aloneByLanguage: [String: [String]] = ["en": ["a", "an"]]
+
+    /// Turn ID → what to do with it, for the candidates of `turns` (in the projection's order). `transcript` holds the
+    /// turns' words; its languages (`languages`, else `locale`) choose the fillers. `assigned`: the turns the user gave
+    /// a speaker (or Unknown) by an edit in effect; they are never candidates.
+    public static func classify(_ turns: [ProjectedTurn], transcript: Transcript,
+                                assigned: Set<String> = []) -> [String: ShortInterjection] {
+        var words = TurnWords(transcript)
+        let fillers = Fillers(languages: transcript.languages ?? [transcript.locale])
+        var edited: Set<WordRef>?
+        // Previous and next turn on the same track.
+        var previous: [Int?] = Array(repeating: nil, count: turns.count)
+        var next: [Int?] = Array(repeating: nil, count: turns.count)
+        var lastOnTrack: [String: Int] = [:]
+        for (index, turn) in turns.enumerated() {
+            if let last = lastOnTrack[turn.track] {
+                previous[index] = last
+                next[last] = index
+            }
+            lastOnTrack[turn.track] = index
+        }
+
+        var result: [String: ShortInterjection] = [:]
+        for (index, turn) in turns.enumerated() where turn.speakerID == nil && !turn.reassigned && !turn.modified
+            && !assigned.contains(turn.id) {
+            // Both counts (the recognizer's, which is cheap, first).
+            guard Self.recognizerWords(turn.spans, atMost: maxRecognizerWords) else { continue }
+            let tokens = Self.tokens(words.text(of: turn.spans))
+            guard !tokens.isEmpty, tokens.count <= maxWords else { continue }
+            let editedWords = edited ?? Self.userChangedWords(in: transcript)
+            edited = editedWords
+            // The spans are short here (the count above), so walking their words is cheap.
+            if !editedWords.isEmpty, turn.spans.contains(where: { span in
+                (max(0, span.first)..<max(max(0, span.first), span.end)).contains {
+                    editedWords.contains(WordRef(segmentID: span.segmentID, word: $0))
+                }
+            }) { continue }
+
+            if fillers.isFillerOnly(tokens) {
+                result[turn.id] = .hidden
+                continue
+            }
+            let before = previous[index].map { turns[$0] }
+            let after = next[index].map { turns[$0] }
+            if let before, let speakerID = before.speakerID, Self.adjoin(before, turn),
+               !Self.endsSentence(words.text(of: before.spans.suffix(1))) {
+                result[turn.id] = .attached(speakerID: speakerID)
+            } else if let before, let after, let speakerID = before.speakerID, after.speakerID == speakerID,
+                      Self.adjoin(before, turn), Self.adjoin(turn, after) {
+                result[turn.id] = .attached(speakerID: speakerID)
+            }
+        }
+        return result
+    }
+
+    /// The spans name at most `limit` words, counted without trapping on spans from damaged files (`first` past `end`,
+    /// bounds near `Int.min` or `Int.max`): an empty or backwards span counts nothing, one too long or overflowing ends
+    /// the count.
+    static func recognizerWords(_ spans: [WordSpan], atMost limit: Int) -> Bool {
+        var count = 0
+        for span in spans {
+            let (length, overflow) = span.end.subtractingReportingOverflow(span.first)
+            if overflow || length > limit - count { return false }
+            count += max(0, length)
+        }
+        return true
+    }
+
+    /// The words the user changed: typed in Review (`reviewEdit`), restored by reverting a fix there
+    /// (`reviewRevert`), or corrected while the meeting recorded (`liveCorrection`). Marks outside their segment's
+    /// words count for nothing.
+    static func userChangedWords(in transcript: Transcript) -> Set<WordRef> {
+        let kinds: Set<TranscriptWordFixKind> = [.reviewEdit, .reviewRevert, .liveCorrection]
+        var refs = Set<WordRef>()
+        for segment in transcript.segments {
+            let fixes = (segment.fixes ?? []).filter { kinds.contains($0.kind) }
+            guard !fixes.isEmpty else { continue }
+            let count = WordTiming.effectiveWords(of: segment).count
+            for fix in fixes where fix.first >= 0 && fix.first < fix.end && fix.end <= count {
+                for word in fix.first..<fix.end { refs.insert(WordRef(segmentID: segment.id, word: word)) }
+            }
+        }
+        return refs
+    }
+
+    /// `second` starts at most `gapSeconds` after `first` ends, and at most `overlapSeconds` before. False when a time
+    /// is not a number.
+    static func adjoin(_ first: ProjectedTurn, _ second: ProjectedTurn) -> Bool {
+        let gap = second.start - first.end
+        return gap.isFinite && gap >= -overlapSeconds && gap <= gapSeconds
+    }
+
+    /// The text ends a sentence: its last character other than spaces, quotation marks and closing brackets (in any
+    /// script: „Fertig.“, 「終わり。」) ends sentences in Unicode (`.`, `!`, `?`, `。`, `؟`, …) or is `…`. An empty text
+    /// ends nothing.
+    static func endsSentence(_ text: String) -> Bool {
+        let last = text.unicodeScalars.reversed().first { scalar in
+            let properties = scalar.properties
+            return !(properties.isWhitespace || properties.isQuotationMark
+                || properties.generalCategory == .closePunctuation || properties.generalCategory == .finalPunctuation)
+        }
+        guard let last else { return false }
+        return last.properties.isSentenceTerminal || last == "…"
+    }
+
+    /// The words of a text as compared with the lists: split at spaces, lowercased, curly apostrophes made straight,
+    /// and punctuation trimmed from both ends ("Yeah." → "yeah", "Mm-hmm," → "mm-hmm"). Pieces with no letter or
+    /// digit ("—") are dropped.
+    static func tokens(_ text: String) -> [String] {
+        let edges = CharacterSet.alphanumerics.inverted
+        return text.split(whereSeparator: \.isWhitespace).compactMap { piece in
+            let word = piece.lowercased().replacingOccurrences(of: "’", with: "'")
+                .trimmingCharacters(in: edges)
+            return word.isEmpty ? nil : word
+        }
+    }
+
+    /// The fillers of some languages, compared with letters held longer folded ("ummm" is "um", "hmmm" is "hmm").
+    struct Fillers {
+        let words: Set<String>
+        let alone: Set<String>
+
+        init(languages: [String]) {
+            let codes = Set(languages.map { language in
+                String(language.lowercased().split(whereSeparator: { $0 == "-" || $0 == "_" }).first ?? "")
+            })
+            words = Set((ShortInterjections.anyLanguage + codes.flatMap { ShortInterjections.byLanguage[$0] ?? [] })
+                .map(Self.folded))
+            alone = Set(codes.flatMap { ShortInterjections.aloneByLanguage[$0] ?? [] })
+        }
+
+        /// Every token is a filler; an article only as the one token.
+        func isFillerOnly(_ tokens: [String]) -> Bool {
+            guard !tokens.isEmpty else { return false }
+            if tokens.count == 1, alone.contains(tokens[0]) { return true }
+            return tokens.allSatisfy { words.contains(Self.folded($0)) }
+        }
+
+        /// Runs of one letter as one letter ("ummm" → "um", "hmm" → "hm"), applied to the lists and the words alike.
+        static func folded(_ word: String) -> String {
+            var result = ""
+            for character in word where character != result.last { result.append(character) }
+            return result
+        }
+    }
+
+    /// Turn text by span, building each segment's text and words only when a turn of it is read.
+    struct TurnWords {
+        private let segments: [String: TranscriptSegment]
+        private var built: [String: TranscriptText.Segment] = [:]
+
+        init(_ transcript: Transcript) {
+            var segments: [String: TranscriptSegment] = [:]
+            for segment in transcript.segments where segments[segment.id] == nil { segments[segment.id] = segment }
+            self.segments = segments
+        }
+
+        /// The spans' text as the exports write it (`TranscriptExporter.text`).
+        mutating func text<Spans: Sequence<WordSpan>>(of spans: Spans) -> String {
+            var pieces: [String] = []
+            for span in spans {
+                guard let segment = segment(span.segmentID) else { continue }
+                let piece = segment.text(first: span.first, end: span.end)
+                if !piece.isEmpty { pieces.append(piece) }
+            }
+            return pieces.joined(separator: " ")
+        }
+
+        private mutating func segment(_ id: String) -> TranscriptText.Segment? {
+            if let segment = built[id] { return segment }
+            guard let source = segments[id] else { return nil }
+            let segment = TranscriptText.Segment(source)
+            built[id] = segment
+            return segment
+        }
+    }
+}

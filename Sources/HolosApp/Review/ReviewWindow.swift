@@ -117,14 +117,16 @@ struct UnsavedWordEdits {
 /// Holos has no main menu, so the "Speakers" menu is a pull-down in the window's toolbar and the window handles its
 /// own shortcuts: Space (or K) play/pause, ←/→ (or J/L) back and ahead 5 seconds, and ⌘←/⌘→ the previous and next
 /// turn, anywhere but while typing in a text field; 1–9 assign (in the turn list), ⌘' next uncertain, ⌘Z undo,
-/// ⌘F search, ⌘E edit mode (word clicks edit words), ⇧⌘E export, and the usual editing keys in text fields.
+/// ⌘F search, ⌘E edit mode (word clicks edit words), ⇧⌘E export, ⌥⌘S hide or show the speakers pane, and the usual
+/// editing keys in text fields. The app's View menu has Hide Speakers and Show Short Interjections for the key review
+/// window (`toggleSpeakers`, `toggleShortInterjections`, reached through the responder chain as the window's delegate).
 ///
 /// The playback bar above the footer holds Play/Pause, the position, a scrubber, the speed, and who is speaking.
 /// Playing goes on through the meeting until paused; a click on a timestamp or on a word plays from there. While a
 /// meeting plays, the turn list tints the turn and word playing and keeps them in view, except for a few seconds after
 /// the reader scrolls it (`ReviewFollow`).
 @MainActor
-final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, ClosingReview {
+final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, NSMenuItemValidation, ClosingReview {
     let sessionID: String
     let review: ReviewSession
     /// Called once the window has closed and its changes are saved.
@@ -141,6 +143,12 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, Clo
     private let player = ReviewPlayer()
     private let sidebar = SpeakerSidebarView()
     private let turnList = TurnListView()
+    /// The speakers pane and the turn list; the speakers pane can be hidden (⌥⌘S).
+    private lazy var panes = ReviewPanes(speakers: sidebar, list: turnList)
+    /// Hides or shows the speakers pane (also View ▸ Hide Speakers, ⌥⌘S).
+    private let speakersButton = NSButton(title: "Hide Speakers", target: nil, action: nil)
+    /// "Show Short Interjections" (off unless the user turned it on), kept across windows.
+    static let showInterjectionsKey = "reviewShowsShortInterjections"
     private let playButton = NSButton(title: "Play", target: nil, action: nil)
     private let timeLabel = NSTextField(labelWithString: "")
     private let scrubber = NSSlider(value: 0, minValue: 0, maxValue: 1, target: nil, action: nil)
@@ -232,6 +240,7 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, Clo
         let review = try await ReviewSession(session: session, profiles: SpeakerProfileStore(), maintenance: maintenance,
                                              analyseVoices: true, pendingVoices: PendingVoiceSamples())
         review.autoMergeVoices = UserDefaults.standard.bool(forKey: autoMergeKey)
+        review.showsShortInterjections = UserDefaults.standard.bool(forKey: showInterjectionsKey)
         let title = await Task.detached { MeetingNaming.currentTitle(session: session) }.value
         return ReviewWindow(sessionID: sessionID, review: review, title: title)
     }
@@ -267,7 +276,7 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, Clo
         }
         NSApplication.shared.activate()
         window.makeKeyAndOrderFront(nil)
-        if turnList.selectedTurnIDs.isEmpty, let first = review.projection.turns.first {
+        if turnList.selectedTurnIDs.isEmpty, let first = review.shownTurns.first {
             turnList.select([first.id], scroll: true)
         }
         window.makeFirstResponder(turnList.table)
@@ -387,22 +396,21 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, Clo
         editButton.toolTip = Self.editWordsHelp
         editButton.target = self
         editButton.action = #selector(toggleEditMode)
-        let toolbar = NSStackView(views: [nextUncertainButton, assignPopUp, splitButton, speakersPopUp, editButton,
-                                          NSView(), screenTextButton, searchField, exportPopUp])
+        speakersButton.bezelStyle = .push
+        speakersButton.image = NSImage(systemSymbolName: "sidebar.left", accessibilityDescription: nil)
+        speakersButton.imagePosition = .imageLeading
+        speakersButton.target = self
+        speakersButton.action = #selector(toggleSpeakers(_:))
+        let toolbar = NSStackView(views: [speakersButton, nextUncertainButton, assignPopUp, splitButton, speakersPopUp,
+                                          editButton, NSView(), screenTextButton, searchField, exportPopUp])
         toolbar.spacing = 8
         toolbar.alignment = .centerY
 
-        let split = NSSplitView()
-        split.isVertical = true
-        split.dividerStyle = .thin
-        split.addArrangedSubview(sidebar)
-        split.addArrangedSubview(turnList)
-        split.setHoldingPriority(NSLayoutConstraint.Priority(260), forSubviewAt: 0)
-        sidebar.widthAnchor.constraint(greaterThanOrEqualToConstant: 260).isActive = true
-        let sidebarWidth = sidebar.widthAnchor.constraint(equalToConstant: 320)
-        sidebarWidth.priority = .defaultLow
-        sidebarWidth.isActive = true
-        turnList.widthAnchor.constraint(greaterThanOrEqualToConstant: 520).isActive = true
+        // A meeting opens with the speakers pane as it was left (`ReviewSpeakersPaneMemory`).
+        panes.setSpeakersHidden(ReviewSpeakersPaneMemory().isHidden(sessionID: sessionID), animated: false)
+        panes.onSpeakersHiddenChange = { [weak self] hidden in self?.speakersHiddenChanged(hidden) }
+        refreshSpeakersButton()
+        let split = panes.view
 
         learnBox.toolTip = "When on, naming a person here also learns their voice for suggestions in later meetings. "
             + "Only for people who agreed; voiceprints are biometric data."
@@ -634,13 +642,14 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, Clo
             Task { [weak self] in await self?.refreshMicVolume() }
         }
         let projection = review.projection
-        // A run a word edit or its undo published keeps the turns, and with them the window's paragraph breaks.
+        // A run a word edit or its undo published keeps the turns, and with them the window's paragraph breaks (kept
+        // for every turn, a hidden interjection's too).
         let runID = projection.runID
-        var paragraphs = ReviewParagraphs.group(
-            projection.turns, breaks: paragraphBreaks.active(in: projection.turns, runID: runID,
-                                                             keepsTurnsOf: { [review] old in
-                                                                 review.keepsTurns(of: old, in: runID)
-                                                             }))
+        let breaks = paragraphBreaks.active(in: projection.turns, runID: runID, keepsTurnsOf: { [review] old in
+            review.keepsTurns(of: old, in: runID)
+        })
+        // The turns as shown: short interjections attached to a neighbour or left out (§5.10).
+        var paragraphs = ReviewParagraphs.group(review.shownTurns, breaks: breaks)
         // A search shows the paragraphs with a matching turn, whole.
         if !query.isEmpty {
             let matching = Set(review.turns(matching: query).map(\.id))
@@ -721,7 +730,9 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, Clo
             return
         }
         let time = player.currentTime
-        let turns = review.projection.turns
+        // As listed: an attached interjection plays as its neighbour's speaker. A hidden one is still speech: it is
+        // the turn spoken (unknown speaker), and, not being listed, tints no row, as a turn a search left out.
+        let turns = review.projection.shownTurnsWithHidden
         let turn = ReviewTimeline.turnIndex(at: time, turns: turns.map { ($0.start, $0.end) }).map { turns[$0] }
         let speaker = turn.map { turn in turn.speakerID.flatMap { review.speaker($0)?.label } ?? "Unknown speaker" }
         let speaking = speaker ?? "—"
@@ -751,7 +762,7 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, Clo
     private func refreshToolbar() {
         let editable = review.isEditable
         let selected = turnList.selectedTurns
-        nextUncertainButton.isEnabled = review.projection.turns.contains(where: \.uncertain)
+        nextUncertainButton.isEnabled = review.shownTurns.contains(where: \.uncertain)
 
         // Menus are replaced only when their items changed, so an update never swaps a menu that is open.
         let assignItems = AssignMenu.items(speakers: review.projection.speakers, people: review.knownPeople(),
@@ -817,9 +828,13 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, Clo
     private func refreshFooter() {
         let projection = review.projection
         let changes = review.changeCount
+        let shown = review.shownTurns.count
         var parts = ["\(projection.speakers.count) \(projection.speakers.count == 1 ? "speaker" : "speakers")",
-                     "\(projection.turns.count) \(projection.turns.count == 1 ? "turn" : "turns")",
+                     "\(shown) \(shown == 1 ? "turn" : "turns")",
                      "\(changes) \(changes == 1 ? "change" : "changes")"]
+        // Short interjections left out of the list (View ▸ Show Short Interjections lists them).
+        let hidden = review.showsShortInterjections ? 0 : projection.turns.count - projection.shownTurns.count
+        if hidden > 0 { parts.insert("\(hidden) short \(hidden == 1 ? "interjection" : "interjections") hidden", at: 2) }
         if let activity = review.activity {
             parts.append(activity)
         } else if let saved = review.lastSavedAt {
@@ -1028,13 +1043,13 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, Clo
 
     private func previousTurn() {
         seek(to: ReviewTimeline.previousTurnStart(before: player.currentTime,
-                                                  starts: review.projection.turns.map(\.start)))
+                                                  starts: review.shownTurns.map(\.start)))
     }
 
     private func nextTurn() {
         guard player.isReady else { return }
         guard let start = ReviewTimeline.nextTurnStart(after: player.currentTime,
-                                                       starts: review.projection.turns.map(\.start)) else {
+                                                       starts: review.shownTurns.map(\.start)) else {
             NSSound.beep()
             return
         }
@@ -1565,6 +1580,70 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, Clo
         refreshToolbar()
     }
 
+    // MARK: - View options
+
+    /// Hide Speakers / Show Speakers (the toolbar button, View menu, ⌥⌘S): the speakers pane collapses and the turn
+    /// list takes its width. Speakers can still be named from each row's speaker pop-up.
+    @objc func toggleSpeakers(_ sender: Any?) {
+        let hide = !panes.speakersHidden
+        // A name being typed in the pane ends first (as a click elsewhere would end it). While a field is edited the
+        // first responder is the window's field editor, whose delegate is the field.
+        if hide, Self.isEditing(in: sidebar, responder: window.firstResponder) {
+            window.makeFirstResponder(turnList.table)
+        }
+        panes.setSpeakersHidden(hide, animated: true)
+    }
+
+    /// `responder` is in `pane`, or is the field editor of a field in it.
+    static func isEditing(in pane: NSView, responder: NSResponder?) -> Bool {
+        if let editor = responder as? NSTextView, editor.isFieldEditor, let field = editor.delegate as? NSView {
+            return field.isDescendant(of: pane)
+        }
+        return (responder as? NSView)?.isDescendant(of: pane) ?? false
+    }
+
+    /// The pane was hidden or shown (also by dragging the divider): remembered for this meeting. Hidden by a drag with a
+    /// name being typed there, the field ends now, so nothing typed goes to a field out of sight.
+    private func speakersHiddenChanged(_ hidden: Bool) {
+        if hidden, Self.isEditing(in: sidebar, responder: window.firstResponder) {
+            window.makeFirstResponder(turnList.table)
+        }
+        ReviewSpeakersPaneMemory().setHidden(hidden, sessionID: sessionID)
+        refreshSpeakersButton()
+    }
+
+    private func refreshSpeakersButton() {
+        let title = Self.speakersTitle(hidden: panes.speakersHidden)
+        if speakersButton.title != title { speakersButton.title = title }
+        speakersButton.toolTip = (panes.speakersHidden ? "Show the speakers pane" : "Hide the speakers pane; name "
+            + "speakers from each row's speaker pop-up meanwhile") + " (⌥⌘S)"
+    }
+
+    /// The button's and the View menu item's title.
+    static func speakersTitle(hidden: Bool) -> String { hidden ? "Show Speakers" : "Hide Speakers" }
+
+    /// Show Short Interjections (View menu): the short turns of the unknown speaker the list leaves out are listed
+    /// again (docs/meeting-design.md §5.10); the exports leave them out either way. Kept across windows.
+    @objc func toggleShortInterjections(_ sender: Any?) {
+        review.showsShortInterjections.toggle()
+        UserDefaults.standard.set(review.showsShortInterjections, forKey: Self.showInterjectionsKey)
+        refresh()
+    }
+
+    /// The View menu's review items: their titles and check marks follow this window. Every other item it is asked
+    /// about (the Export pull-down) stays enabled.
+    func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+        switch menuItem.action {
+        case #selector(toggleSpeakers(_:))?:
+            menuItem.title = Self.speakersTitle(hidden: panes.speakersHidden)
+        case #selector(toggleShortInterjections(_:))?:
+            menuItem.state = review.showsShortInterjections ? .on : .off
+        default:
+            break
+        }
+        return true
+    }
+
     // MARK: - Export
 
     @objc private func saveAs() {
@@ -1679,6 +1758,10 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, Clo
         }
         if flags == [.command, .shift], key == "e" {
             exportPopUp.performClick(nil)
+            return true
+        }
+        if flags == [.command, .option], key == "s" {
+            toggleSpeakers(nil)
             return true
         }
         guard flags == [.command] else { return false }
