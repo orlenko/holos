@@ -54,6 +54,29 @@ private func editRanged(_ text: String, _ ranges: [(Int, Int)], id: String = "S1
     return TranscriptSegment(id: id, start: 0, end: Double(ranges.count), text: text, words: words, track: "system")
 }
 
+/// What the recognizer wrote is kept as it was, two spaces and a line break included: a Revert (the edit back to it,
+/// `verbatim`) writes back exactly that text; learning reads it cleaned (`Result.heard`).
+@Test func anEditKeepsTheRecognizersWhitespaceSoARevertRestoresItExactly() throws {
+    let original = "ask  more\ncloud now"
+    let current = editTranscript([editRanged(original, [(0, 3), (5, 4), (10, 5), (16, 3)])])
+    let edited = try #require(try TranscriptWordEdit.editing(editRequest(0, 3, "Ask for Claude"), in: current,
+                                                             base: nil))
+    let mark = try #require(edited.transcript.segments[0].fixes?.first)
+    #expect(mark.kind == .reviewEdit && mark.heard == "ask  more\ncloud")
+    #expect(edited.heard == "ask more cloud", "Learning reads it cleaned.")
+    #expect(edited.transcript.segments[0].text == "Ask for Claude now")
+    // The Revert: the edit's words back to its `heard`, as written.
+    var revert = editRequest(mark.first, mark.end, mark.heard)
+    revert.verbatim = true
+    let reverted = try #require(try TranscriptWordEdit.editing(revert, in: edited.transcript, base: nil))
+    #expect(reverted.transcript.segments[0].text == original)
+    #expect(reverted.transcript.segments[0].words.map(\.text) == ["ask", "more", "cloud", "now"])
+    // Typed text has its whitespace made one space, as before.
+    let typed = try #require(try TranscriptWordEdit.editing(editRequest(mark.first, mark.end, mark.heard),
+                                                            in: edited.transcript, base: nil))
+    #expect(typed.transcript.segments[0].text == "ask more cloud now")
+}
+
 @Test func aSpaceAtTheFrontOfAWordsRangeStaysWhereItIs() async throws {
     // Apple's speech recognition: " cloud" and " now" carry the space before them.
     let apple = editTranscript([editRanged("ask cloud now", [(0, 3), (3, 6), (9, 4)])])

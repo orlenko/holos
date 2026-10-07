@@ -7804,14 +7804,21 @@ shown, Otter-style.
   labelling may time a turn otherwise than by its words, and a voice was learned from those
   times. Every save of a field's edit (Return, Tab, a close, a pause, a turn to read-only)
   compares the `wordsEpoch` the field opened under, never the review's at the time of the
-  save. An automatic fix's Revert is offered (context menu, VoiceOver) only
-  where its segment allows it (`ReviewSession.revertRefusal`: no damaged mark, no older fix
-  that cannot be counted), and refused before it is queued otherwise. The edit, the revert and
-  the review's preflight (`wordEditRefusal`, `revertRefusal`) make one structure check
-  (`TranscriptWordEdit.structureRefusal`): a segment ID used twice in the transcript shown or
-  in the revision it was fixed from, or the segment damaged in either, refuses the words before
-  a field opens or Revert is offered, never after the person typed. The review reads that
-  structure once per labels read. Space still plays and pauses outside the field; the
+  save. The check before a field opens (`ReviewSession.wordEditRefusal`) and before Revert is
+  offered (`revertRefusal`) is the save itself made as a dry run, on the transcript shown and
+  the revision it was fixed from, with no file read or written: the edit's request checks and
+  `SessionWordEdit.edited` (what `SessionWordEdit.run` makes, with a placeholder for the text),
+  and `SessionWordFixRevert.reverted` (what the revert makes; for a Review edit, the edit back
+  to its `heard`). Whatever the save would refuse (a damaged revision or a segment ID used
+  twice, `TranscriptWordEdit.structureRefusal`; a word corrected while recording; a fix a
+  newer version wrote; an automatic fix whose count of recognizer words does not hold what it
+  matched, older or modern; overlapping turns), the check refuses with the same message,
+  before anything is typed. Only what depends on the text typed (where a deletion goes) is
+  known at the save alone. Each result is kept per selection (or word) until the labels are
+  read again or the labels shown change, so clicks stay cheap. A Review edit's `heard` is
+  what the recognizer wrote as it was, whitespace and line breaks included (only trimmed):
+  its Revert writes that back exactly (`Request.verbatim`), while learning and the menus
+  read it with each run of whitespace one space. Space still plays and pauses outside the field; the
   timestamp buttons still play. Every word has a VoiceOver action "Edit “word”", which turns
   edit mode on and opens the field; it is offered only while words can be edited (not after
   the transcript changed under the labels), and reports failure when no field opened. An edited word is dotted-underlined like a fixed word
@@ -7825,12 +7832,12 @@ shown, Otter-style.
   other words of each turn can be edited (`ReviewWord.revertible`). Relabels are not stopped
   from splitting them. Revert (of an edit or of an automatic fix) is offered only while words
   can be edited, since otherwise it would be refused. Words known not to be editable open no
-  field either, and the banner says why (`ReviewSession.wordEditRefusal`): a word corrected
-  while the meeting was recording, words that do not all belong to the same speaker turns
-  (overlapping turns hold only some of them: the new words would belong to every turn of
-  every word replaced, and the undo could not give each back to its own; checked again on
-  everything an edit takes in when it is saved), a segment with an older automatic fix that
-  cannot be counted. A save refused or failed after Return never loses what was typed: the field opens
+  field either, and the banner says why (`ReviewSession.wordEditRefusal`, the save as a dry
+  run): a word corrected while the meeting was recording, words that do not all belong to the
+  same speaker turns (overlapping turns hold only some of them: the new words would belong to
+  every turn of every word replaced, and the undo could not give each back to its own;
+  checked on everything an edit takes in), a segment with an automatic fix that cannot be
+  counted. A save refused or failed after Return never loses what was typed: the field opens
   again over the words with it (when they still read the same and no other field is open),
   and the message says what was typed in any case, also for a queued edit refused later.
   ⌥Return's word-list term is added once the edit is saved, also when the labels could not be

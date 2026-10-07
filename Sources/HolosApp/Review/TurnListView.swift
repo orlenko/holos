@@ -160,7 +160,8 @@ final class TurnTableView: NSTableView {
               let fix = word.fix, word.revertible,
               cell.bodyText.canRevert(fix, at: word.ref) else { return super.menu(for: event) }
         let menu = NSMenu()
-        let item = NSMenuItem(title: "Revert to “\(fix.heard)”", action: #selector(revertFix(_:)), keyEquivalent: "")
+        let item = NSMenuItem(title: "Revert to “\(TranscriptWordEdit.cleaned(fix.heard))”",
+                              action: #selector(revertFix(_:)), keyEquivalent: "")
         item.target = self
         item.representedObject = WordFixChoice(word.ref)
         menu.addItem(item)
@@ -297,7 +298,8 @@ final class TurnTextView: NSTextView {
 
     /// With `revertible` false (words edited together, now in two turns), it says how to change them instead.
     static func fixDescription(_ fix: TranscriptWordFix, revertible: Bool = true) -> String {
-        "Heard as “\(fix.heard)”; " + (fix.kind == .term ? "a word-list term Apple Intelligence chose"
+        "Heard as “\(TranscriptWordEdit.cleaned(fix.heard))”; "
+            + (fix.kind == .term ? "a word-list term Apple Intelligence chose"
             : fix.kind == .reviewEdit ? "you edited it" : "fixed by a learned correction")
             + (revertible ? "" : " (" + notRevertible + ")")
     }
@@ -331,7 +333,8 @@ final class TurnTextView: NSTextView {
                 let ref = wordRefs[index]
                 let key = [ref.segmentID, String(fixed.first), String(fixed.end)]
                 if offeredFixes.insert(key).inserted {
-                    actions.append(NSAccessibilityCustomAction(name: "Revert to “\(fixed.heard)”") { [weak self] in
+                    let name = "Revert to “\(TranscriptWordEdit.cleaned(fixed.heard))”"
+                    actions.append(NSAccessibilityCustomAction(name: name) { [weak self] in
                         guard let onRevertFix = self?.onRevertFix else { return false }
                         onRevertFix(ref)
                         return true

@@ -66,7 +66,8 @@ enum ReviewLearning {
                     if !range.isEmpty { return String(decoding: baseUTF16[range], as: UTF16.self) }
                 }
                 let own = words[fix.first..<fix.end].map(\.text).joined(separator: " ")
-                return TranscriptWordEdit.cleaned(own) == TranscriptWordEdit.cleaned(shown) ? fix.heard : nil
+                return TranscriptWordEdit.cleaned(own) == TranscriptWordEdit.cleaned(shown)
+                    ? TranscriptWordEdit.cleaned(fix.heard) : nil
             }
             // Which turns (by index, ascending) hold each word of the segment, read once from the spans (clamped to
             // the words: a span read from disk can hold any numbers), so nothing below walks every turn per word.

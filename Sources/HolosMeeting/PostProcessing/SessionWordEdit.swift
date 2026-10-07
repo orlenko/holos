@@ -49,30 +49,9 @@ enum SessionWordEdit {
         try await publishing(session: session) { archive in
             let (current, snapshot) = try expectedState(session: session, transcriptID: expectedTranscriptID,
                                                         runID: expectedRunID)
-            // The one turn holding every requested word (turns may overlap; the first holding the first word may not
-            // hold the rest).
-            guard let projection = snapshot.projection,
-                  let turn = projection.turns.first(where: { turn in
-                      (request.first..<request.end).allSatisfy { word in
-                          turn.spans.contains {
-                              $0.segmentID == request.segmentID && $0.first <= word && word < $0.end
-                          }
-                      }
-                  }) else {
-                throw HolosError.invalidInput("Those words are not shown in the review any more; reload and try again.")
-            }
             let base = try current.fixedFrom.map { try SessionFiles.transcript(id: $0, session: session) }
-            let editable: (Int) -> Bool = { word in
-                turn.spans.contains { $0.segmentID == request.segmentID && $0.first <= word && word < $0.end }
-            }
-            guard let result = try TranscriptWordEdit.editing(request, in: current, base: base, editable: editable,
-                                                              now: now) else { return nil }
-            // Every word the edit replaces (with any it took in) belongs to the same turns, so the labels map back on
-            // its undo exactly; overlapping turns holding only some of them refuse it.
-            guard TranscriptWordEdit.sameOwners(result.labelsMove.replaced, segmentID: request.segmentID,
-                                                turns: projection.turns.map(\.spans)) else {
-                throw TranscriptWordEdit.overlappingTurns
-            }
+            guard let result = try edited(request, in: current, base: base, projection: snapshot.projection,
+                                          now: now) else { return nil }
             guard let plan = try SpeakerTranscriptRetarget.plan(session: session, from: snapshot, to: result.transcript,
                                                                move: result.labelsMove, now: now) else {
                 throw HolosError.invalidInput("The speaker labels cannot be kept on the edited words.")
@@ -98,6 +77,35 @@ enum SessionWordEdit {
                             incomplete: IncompletePublication(message: "The words were edited", outcome: outcome))
             return outcome
         }
+    }
+
+    /// The edit `run` makes, without reading or writing a file: on `current` (and `base`, the revision it was fixed
+    /// from), within the one turn of `projection` that shows every requested word, refused when the words it replaces
+    /// do not all belong to the same turns. The review's field check runs this on the transcript it shows
+    /// (`ReviewSession.wordEditRefusal`), so it refuses exactly what a save would. Nil when the text would not change.
+    static func edited(_ request: TranscriptWordEdit.Request, in current: Transcript, base: Transcript?,
+                       projection: SpeakerProjection?, now: Date = Date()) throws -> TranscriptWordEdit.Result? {
+        // The one turn holding every requested word (turns may overlap; the first holding the first word may not
+        // hold the rest).
+        guard let projection, let turn = projection.turns.first(where: { turn in
+            (request.first..<request.end).allSatisfy { word in
+                turn.spans.contains { $0.segmentID == request.segmentID && $0.first <= word && word < $0.end }
+            }
+        }) else {
+            throw HolosError.invalidInput("Those words are not shown in the review any more; reload and try again.")
+        }
+        let editable: (Int) -> Bool = { word in
+            turn.spans.contains { $0.segmentID == request.segmentID && $0.first <= word && word < $0.end }
+        }
+        guard let result = try TranscriptWordEdit.editing(request, in: current, base: base, editable: editable,
+                                                          now: now) else { return nil }
+        // Every word the edit replaces (with any it took in) belongs to the same turns, so the labels map back on
+        // its undo exactly; overlapping turns holding only some of them refuse it.
+        guard TranscriptWordEdit.sameOwners(result.labelsMove.replaced, segmentID: request.segmentID,
+                                            turns: projection.turns.map(\.spans)) else {
+            throw TranscriptWordEdit.overlappingTurns
+        }
+        return result
     }
 
     /// Undoes an edit: the current transcript must still be the edit's (`expectedTranscriptID`, head run

@@ -114,7 +114,10 @@ public struct ReviewWord: Sendable, Equatable {
     public private(set) var snapshot: SpeakerSessionSnapshot
     /// What the window shows: updated at once by each edit (`SpeakerProjection.applying`), then replaced by the
     /// editor's result.
-    public private(set) var projection: SpeakerProjection
+    public private(set) var projection: SpeakerProjection {
+        // Which words one turn shows: the dry runs (`checks`) are made again.
+        didSet { checks.removeAll() }
+    }
     public var onChange: (() -> Void)?
     /// Called with true when a relabel (Find More Speakers, Label Speakers on My Microphone, Label Again) starts and
     /// false when it ends, so the app can show it in Meetings.
@@ -402,66 +405,88 @@ public struct ReviewWord: Sendable, Equatable {
         "Some of this meeting's speaker changes cannot be read (damaged, or saved by a newer Voice is Local), so words "
             + "cannot be edited here: the speaker labels could not be kept on the edited words.")
 
-    /// Why words `refs` (consecutive words of one segment) cannot be edited, known before a field opens over them: a
-    /// word corrected while the meeting was recording, words that overlapping turns hold only some of
-    /// (`TranscriptWordEdit.overlappingTurns`), or a segment with an older automatic fix that cannot be counted. Nil
-    /// when an edit can be tried (it may still be refused when saved, saying why).
+    /// Why words `refs` (consecutive words of one segment) cannot be edited, known before a field opens over them; nil
+    /// when an edit can be tried. It is the save itself, made as a dry run on the transcript shown and the revision it
+    /// was fixed from (`wordEditRequest`, then `SessionWordEdit.edited`, which `SessionWordEdit.run` makes), with a
+    /// placeholder for the text: whatever the save refuses for these words, this refuses with the same message (a
+    /// word corrected while recording, overlapping turns, an older or newer fix, a damaged revision). Only what depends
+    /// on the text typed (a deletion's neighbour) is known at the save alone. Made once per selection and labels read
+    /// (`checks`).
     public func wordEditRefusal(_ refs: [WordRef]) -> String? {
-        guard let first = refs.first, let segment = segments[first.segmentID] else { return nil }
-        // Checked before any fix's words are walked: a damaged mark's numbers can be anything.
-        if let refusal = structureRefusal(segment) { return refusal.localizedDescription }
-        let fixes = segment.fixes ?? []
-        if fixes.contains(where: { fix in
-            fix.kind == .liveCorrection && refs.contains { fix.first <= $0.word && $0.word < fix.end }
-        }) {
-            return TranscriptWordEdit.liveCorrected.localizedDescription
+        guard let first = refs.first else { return nil }
+        let indices = refs.map(\.word)
+        let key = "edit\u{1f}\(first.segmentID)\u{1f}\(indices.min() ?? 0)\u{1f}\(indices.max() ?? 0)\u{1f}\(indices.count)"
+        return checked(key) {
+            var (request, segment) = try wordEditRequest(refs, text: "")
+            request.text = Self.placeholder(over: segment, first: request.first, end: request.end)
+            _ = try SessionWordEdit.edited(request, in: snapshot.transcript, base: try shownBase(),
+                                           projection: projection)
         }
-        if !TranscriptWordEdit.sameOwners(Self.takingInMarks(refs.map(\.word), of: segment),
-                                          segmentID: first.segmentID, turns: projection.turns.map(\.spans)) {
-            return TranscriptWordEdit.overlappingTurns.localizedDescription
-        }
-        return blockedByOlderFix(segment) ? TranscriptWordEdit.olderFix.localizedDescription : nil
     }
 
     /// Why the fix on `word` cannot be reverted, known before Revert is offered (context menu, VoiceOver) and checked
-    /// again when it is asked for: its segment refuses every edit and revert (a damaged mark; an older automatic fix
-    /// that cannot be counted, `TranscriptWordEdit.olderFix`). Nil when it can be tried.
+    /// again when it is asked for; nil when it can be tried. It is the revert itself, made as a dry run on the
+    /// transcript shown (`SessionWordFixRevert.reverted`, which the revert makes; for a Review edit, the edit back to
+    /// what the recognizer wrote, made as `wordEditRefusal` makes one), so it refuses exactly what the revert would,
+    /// with the same message. Made once per word and labels read (`checks`).
     public func revertRefusal(_ word: WordRef) -> String? {
-        guard let segment = segments[word.segmentID] else { return nil }
-        if let refusal = structureRefusal(segment) { return refusal.localizedDescription }
-        return blockedByOlderFix(segment) ? TranscriptWordEdit.olderFix.localizedDescription : nil
+        checked("revert\u{1f}\(word.segmentID)\u{1f}\(word.word)") {
+            if let segment = segments[word.segmentID], let edit = (segment.fixes ?? []).first(where: {
+                $0.kind == .reviewEdit && $0.first <= word.word && word.word < $0.end
+            }) {
+                let refs = (edit.first..<edit.end).map { WordRef(segmentID: word.segmentID, word: $0) }
+                let (request, _) = try wordEditRequest(refs, text: edit.heard, verbatim: true)
+                _ = try SessionWordEdit.edited(request, in: snapshot.transcript, base: try shownBase(),
+                                               projection: projection)
+                return
+            }
+            // As `revertWordFix` asks before it queues the revert.
+            guard let segment = segments[word.segmentID], (segment.fixes ?? []).contains(where: {
+                ($0.kind == .correction || $0.kind == .term) && $0.first <= word.word && word.word < $0.end
+            }) else {
+                throw Self.notFixedAutomatically
+            }
+            _ = try SessionWordFixRevert.reverted(word, in: snapshot.transcript, to: try shownBase())
+        }
     }
 
-    /// The revisions' structure as an edit or revert checks it (`TranscriptWordEdit.structureRefusal`), for the
-    /// transcript shown and the unfixed revision it was fixed from, read once per labels read (`adopt` clears it):
-    /// whether either repeats a segment ID, and the unfixed revision's segments by ID.
-    private var structureRead: (key: String, repeatedIDs: Bool, baseSegments: [String: TranscriptSegment])?
+    nonisolated static let notFixedAutomatically = HolosError.invalidInput("That word was not fixed automatically.")
 
-    /// Why `segment` (of the transcript shown) can be neither edited nor reverted for its revisions' structure; nil
-    /// when it can be tried. The same check the edit and the revert make (`TranscriptWordEdit.structureRefusal`).
-    private func structureRefusal(_ segment: TranscriptSegment) -> HolosError? {
-        let transcript = snapshot.transcript
-        let base = transcript.fixedFrom == nil ? nil : unfixedBase()
-        let key = "\(transcript.id)\u{1f}\(base?.id ?? "")"
-        let read: (key: String, repeatedIDs: Bool, baseSegments: [String: TranscriptSegment])
-        if let known = structureRead, known.key == key {
-            read = known
-        } else {
-            let repeated = TranscriptWordEdit.hasRepeatedSegmentIDs(transcript)
-                || base.map(TranscriptWordEdit.hasRepeatedSegmentIDs) == true
-            // With a repeated ID the segment is refused whichever copy is kept here.
-            let baseSegments = Dictionary((base?.segments ?? []).map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
-            read = (key, repeated, baseSegments)
-            structureRead = read
+    /// The dry runs' results (`wordEditRefusal`, `revertRefusal`), by selection or word, for the transcript and labels
+    /// shown: cleared when they are read again (`adopt`) or the labels shown change (`projection`).
+    private var checks: [String: String?] = [:]
+
+    private func checked(_ key: String, _ dryRun: () throws -> Void) -> String? {
+        if let known = checks[key] { return known }
+        let refusal: String?
+        do {
+            try dryRun()
+            refusal = nil
+        } catch {
+            refusal = error.localizedDescription
         }
-        return TranscriptWordEdit.structureRefusal(segment: segment, baseSegment: read.baseSegments[segment.id],
-                                                   repeatedIDs: read.repeatedIDs)
+        checks[key] = .some(refusal)
+        return refusal
+    }
+
+    /// The revision the transcript shown was fixed from, as a save reads it; nil when the transcript is unfixed.
+    /// Throws `baseUnreadable` when it cannot be read.
+    private func shownBase() throws -> Transcript? {
+        guard snapshot.transcript.fixedFrom != nil else { return nil }
+        guard let base = unfixedBase() else { throw Self.baseUnreadable }
+        return base
+    }
+
+    /// Text that changes words `[first, end)` of `segment` for a dry run: one word unlike what they show.
+    nonisolated static func placeholder(over segment: TranscriptSegment, first: Int, end: Int) -> String {
+        let shown = TranscriptWordEdit.shownText(of: segment, first: first, end: end) ?? ""
+        return TranscriptWordEdit.cleaned(shown) == "x" ? "y" : "x"
     }
 
     /// Words `indices` of `segment` with every fix mark they touch taken in, as an edit takes them
     /// (`TranscriptWordEdit.editing`: a mark is never split), so what is checked before an edit is what it changes.
     /// Only sound marks (`TranscriptWordEdit.isSound`) are taken in, so the range never runs past the segment's words
-    /// (a segment with a damaged one is refused before, `isDamaged`).
+    /// (a segment with a damaged one is refused by the edit itself, `isDamaged`).
     nonisolated static func takingInMarks(_ indices: [Int], of segment: TranscriptSegment) -> Range<Int> {
         guard let lowest = indices.min(), let highest = indices.max() else { return 0..<0 }
         let count = WordTiming.effectiveWords(of: segment).count
@@ -477,22 +502,6 @@ public struct ReviewWord: Sendable, Equatable {
             }
         }
         return lower..<upper
-    }
-
-    /// Segments checked for an older automatic fix that cannot be counted (`TranscriptWordEdit.blockedByOlderFix`), by
-    /// transcript and segment: the unfixed base is read once, only for a segment with such a fix.
-    private var olderFixChecked: [String: Bool] = [:]
-
-    private func blockedByOlderFix(_ segment: TranscriptSegment) -> Bool {
-        guard (segment.fixes ?? []).contains(where: {
-            ($0.kind == .correction || $0.kind == .term) && $0.heardWords == nil
-        }), snapshot.transcript.fixedFrom != nil else { return false }
-        let key = "\(snapshot.transcript.id)\u{1f}\(segment.id)"
-        if let known = olderFixChecked[key] { return known }
-        let base = unfixedBase()?.segments.first { $0.id == segment.id }
-        let blocked = base.map { TranscriptWordEdit.blockedByOlderFix(segment, base: $0) } ?? false
-        olderFixChecked[key] = blocked
-        return blocked
     }
 
     /// The text words `refs` (consecutive words of one segment) show in the transcript, as an edit field over them
@@ -934,14 +943,16 @@ public struct ReviewWord: Sendable, Equatable {
         if let segment = segments[word.segmentID], let edit = (segment.fixes ?? []).first(where: {
             $0.kind == .reviewEdit && $0.first <= word.word && word.word < $0.end
         }) {
-            try await editWords((edit.first..<edit.end).map { WordRef(segmentID: word.segmentID, word: $0) },
-                                to: edit.heard)
+            // Written back exactly as the recognizer wrote it (`verbatim`: two spaces, a line break).
+            guard let op = try queuedWordEdit((edit.first..<edit.end).map { WordRef(segmentID: word.segmentID, word: $0) },
+                                              to: edit.heard, seenMoves: nil, verbatim: true) else { return }
+            try await wait(for: op)
             return
         }
         guard let segment = segments[word.segmentID], (segment.fixes ?? []).contains(where: {
             ($0.kind == .correction || $0.kind == .term) && $0.first <= word.word && word.word < $0.end
         }) else {
-            throw HolosError.invalidInput("That word was not fixed automatically.")
+            throw Self.notFixedAutomatically
         }
         // `word` is of the words shown (`segments`, after `movesRead` moves): a word change saved but not reread yet
         // moves it, so the revert follows every move from there.
@@ -995,7 +1006,7 @@ public struct ReviewWord: Sendable, Equatable {
     /// `editWords` up to its change being queued (no wait); nil when there is nothing to edit.
     private func queuedWordEdit(_ words: [WordRef], to text: String, seenMoves: Int?,
                                 whileUnread: Bool = false, expecting: [String]? = nil,
-                                seenEpoch: Int? = nil) throws -> Operation? {
+                                seenEpoch: Int? = nil, verbatim: Bool = false) throws -> Operation? {
         try requireEditable(whileUnread: whileUnread)
         if let seenEpoch, seenEpoch != wordsEpoch {
             throw HolosError.invalidInput("The words were changed elsewhere while you edited them; edit them again "
@@ -1020,7 +1031,35 @@ public struct ReviewWord: Sendable, Equatable {
             }
             words = followed.refs
         }
-        guard let first = words.first else { return nil }
+        guard !words.isEmpty else { return nil }
+        let (request, segment) = try wordEditRequest(words, text: text, verbatim: verbatim) { segment in
+            // The words still read as the person saw them, punctuation included (`ReviewWord.shown`: a change made
+            // elsewhere may keep a word's place and change only its untimed punctuation, "Hello." to "Hello?").
+            if let expecting {
+                guard expecting.count == words.count, zip(words, expecting).allSatisfy({ word, shown in
+                    TranscriptWordEdit.shownText(of: segment, first: word.word, end: word.word + 1) == shown
+                }) else {
+                    throw HolosError.invalidInput("Those words were changed elsewhere while you edited them; edit "
+                                                  + "them again (what you typed: “\(TranscriptWordEdit.cleaned(text))”).")
+                }
+            }
+        }
+        let op = queued(.editWords(request, segment: segment), optimistic: [])
+        // Its words are those of `segment`: it follows every move since (it runs later, never before this returns).
+        op.movesSeen = movesRead
+        return op
+    }
+
+    /// The request for an edit of shown words `words` (of the transcript shown) to `text`, and their segment: what
+    /// `editWords` queues and what the field check (`wordEditRefusal`) makes a dry run of. Throws, saying why, when
+    /// they are not consecutive words of one segment that one turn shows all of, or words of overlapping turns.
+    /// `shownAsSeen` runs once the segment is known.
+    private func wordEditRequest(_ words: [WordRef], text: String, verbatim: Bool = false,
+                                 shownAsSeen: (TranscriptSegment) throws -> Void = { _ in })
+        throws -> (TranscriptWordEdit.Request, TranscriptSegment) {
+        guard let first = words.first else {
+            throw HolosError.invalidInput("Those words are no longer in the transcript; reload and try again.")
+        }
         guard words.allSatisfy({ $0.segmentID == first.segmentID }) else {
             throw HolosError.invalidInput("Words of two segments cannot be edited together yet; edit each part on its "
                                           + "own.")
@@ -1032,18 +1071,7 @@ public struct ReviewWord: Sendable, Equatable {
         guard let segment = segments[first.segmentID] else {
             throw HolosError.invalidInput("Those words are no longer in the transcript; reload and try again.")
         }
-        // Before any fix's words are walked (`takingInMarks`).
-        if let refusal = structureRefusal(segment) { throw refusal }
-        // The words still read as the person saw them, punctuation included (`ReviewWord.shown`: a change made
-        // elsewhere may keep a word's place and change only its untimed punctuation, "Hello." to "Hello?").
-        if let expecting {
-            guard expecting.count == words.count, zip(words, expecting).allSatisfy({ word, shown in
-                TranscriptWordEdit.shownText(of: segment, first: word.word, end: word.word + 1) == shown
-            }) else {
-                throw HolosError.invalidInput("Those words were changed elsewhere while you edited them; edit them "
-                                              + "again (what you typed: “\(TranscriptWordEdit.cleaned(text))”).")
-            }
-        }
+        try shownAsSeen(segment)
         func holds(_ turn: ProjectedTurn, _ index: Int) -> Bool {
             turn.spans.contains { $0.segmentID == first.segmentID && $0.first <= index && index < $0.end }
         }
@@ -1059,12 +1087,8 @@ public struct ReviewWord: Sendable, Equatable {
                                             turns: projection.turns.map(\.spans)) else {
             throw TranscriptWordEdit.overlappingTurns
         }
-        let request = TranscriptWordEdit.Request(segmentID: first.segmentID, first: lowest, end: highest + 1,
-                                                 text: text)
-        let op = queued(.editWords(request, segment: segment), optimistic: [])
-        // Its words are those of `segment`: it follows every move since (it runs later, never before this returns).
-        op.movesSeen = movesRead
-        return op
+        return (TranscriptWordEdit.Request(segmentID: first.segmentID, first: lowest, end: highest + 1, text: text,
+                                           verbatim: verbatim), segment)
     }
 
     /// Moves every turn of `speakerID` to `target`; `speakerID` disappears. `target` keeps its name.
@@ -2835,8 +2859,7 @@ public struct ReviewWord: Sendable, Equatable {
         snapshot = fresh
         // Labels read again: whether the unfixed revision can be read is checked again (it may be back, or gone).
         unfixedRead = nil
-        structureRead = nil
-        olderFixChecked.removeAll()
+        checks.removeAll()
         if let projection = fresh.projection { savedProjection = projection }
         savedVersion += 1
         reloadProblem = nil

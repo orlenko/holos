@@ -2225,6 +2225,65 @@ func wordsAreReadOnlyWhileTheRevisionTheTranscriptWasFixedFromCannotBeRead() asy
     await review.close()
 }
 
+/// The field check and the Revert check are the save and the revert made as dry runs: for every refusal the save or
+/// the revert makes, the check gives the same message before anything is typed or asked. "ask more Claude now", fixed
+/// from "ask more cloud now"; each case changes the revisions as read from disk.
+@Test(.timeLimit(.minutes(1))) @MainActor
+func theChecksBeforeAnEditOrRevertRefuseWhatTheSaveRefuses() async throws {
+    struct Case {
+        var name: String
+        var change: (inout Transcript, inout Transcript) -> Void
+        /// The words the field opens over.
+        var words: [Int]
+    }
+    let cases: [Case] = [
+        // A modern fix whose count of recognizer words does not hold what it matched in the unfixed revision.
+        Case(name: "wrong heardWords", change: { current, _ in current.segments[0].fixes?[0].heardWords = 2 },
+             words: [0]),
+        // A fix of a kind a newer version wrote.
+        Case(name: "newer kind", change: { current, _ in
+            current.segments[0].fixes?[0].kind = TranscriptWordFixKind("fromTheFuture")
+        }, words: [2]),
+        // A word corrected while recording.
+        Case(name: "live correction", change: { current, _ in current.segments[0].fixes?[0].kind = .liveCorrection },
+             words: [2]),
+        // The unfixed revision repeats a segment ID, or its segment is damaged.
+        Case(name: "repeated base ID", change: { _, base in base.segments.append(base.segments[0]) }, words: [0]),
+        Case(name: "damaged base", change: { _, base in base.segments[0].words[3].utf16Offset = Int.max },
+             words: [0]),
+    ]
+    for item in cases {
+        let temp = try TemporaryDirectory("review")
+        defer { temp.remove() }
+        let session = try await wordEditFixedCloudSession(temp)
+        var current = try wordEditCurrent(session)
+        let baseID = try #require(current.fixedFrom)
+        var base = try SessionFiles.transcript(id: baseID, session: session)
+        item.change(&current, &base)
+        try AtomicFile.writeJSON(current, to: SessionPaths.transcript(current.id, in: session))
+        try AtomicFile.writeJSON(base, to: SessionPaths.transcript(baseID, in: session))
+        let review = try await wordEditOpen(session)
+        #expect(review.canEditWords, "\(item.name)")
+        let refs = wordEditRefs(review, "T1", item.words)
+        let check = try #require(review.wordEditRefusal(refs), "\(item.name): the field check refuses")
+        let save = await #expect(throws: HolosError.self) { try await review.editWords(refs, to: "Something") }
+        #expect(save?.localizedDescription == check, "\(item.name)")
+        // The revert, made as the window makes it (no check before it).
+        let fixed = wordEditRefs(review, "T1", [2])[0]
+        let revertCheck = review.revertRefusal(fixed)
+        let runID = try #require(try SessionSpeakerStore.readHead(session: session)?.runID)
+        do {
+            try await SessionWordFixRevert.run(session: session, word: fixed, expectedTranscriptID: current.id,
+                                               expectedRunID: runID)
+            Issue.record("\(item.name): the revert was made")
+        } catch {
+            #expect(revertCheck == error.localizedDescription, "\(item.name)")
+        }
+        #expect(try wordEditCurrent(session).id == current.id, "\(item.name): nothing was written")
+        await review.close()
+    }
+}
+
 /// The unfixed revision reads but cannot be trusted (a segment ID used twice; its segment damaged): known before a
 /// field opens or Revert is offered, by the same check the edit and the revert make, never after the person typed.
 @Test(.timeLimit(.minutes(1))) @MainActor

@@ -367,7 +367,11 @@ public enum WordFixes {
         guard let currentRange = characterRange(of: target, words: currentWords, textLength: segment.text.utf16.count),
               let originalRange = originalRange(of: targetIndex, fixes: fixes, currentWords: currentWords,
                                                 segment: baseSegment) else {
-            throw HolosError.invalidInput("That word fix cannot be matched to the original transcript.")
+            // As an edit says it (`TranscriptWordEdit.olderFix`): a fix saved by an earlier version, without the count
+            // of words it replaced, is counted by the spaces in what was heard, wrong for "你好世界".
+            let older = fixes.contains { ($0.kind == .correction || $0.kind == .term) && $0.heardWords == nil }
+            throw older ? TranscriptWordEdit.olderFix
+                : HolosError.invalidInput("That word fix cannot be matched to the original transcript.")
         }
         let original = Array(baseSegment.text.utf16)
         let heard = String(decoding: original[originalRange], as: UTF16.self)

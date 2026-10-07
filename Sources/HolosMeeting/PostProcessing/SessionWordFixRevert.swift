@@ -79,43 +79,60 @@ enum SessionWordFixRevert {
         }
     }
 
+    /// The revert `publish` makes, without reading or writing a file: the new transcript, and how the fix's words moved.
+    /// The review's Revert check runs this on the transcript it shows (`ReviewSession.revertRefusal`), so it refuses
+    /// exactly what a revert would.
+    /// `base`: the revision `current` was fixed from, nil when it has none.
+    static func reverted(_ word: WordRef, in current: Transcript, to base: Transcript?,
+                         now: Date = Date()) throws -> (transcript: Transcript, move: ReviewWordMove) {
+        guard let base else {
+            if let refusal = TranscriptWordEdit.structureRefusal(segmentID: word.segmentID, current: current,
+                                                                 base: nil) {
+                throw refusal
+            }
+            throw HolosError.invalidInput("That word fix no longer belongs to the current transcript.")
+        }
+        let reverted = try WordFixes.reverting(word, in: current, to: base, now: now)
+        // The fix's words became the recognizer's own: their count may differ ("你好地球" is "你好" and "世界").
+        guard let fixed = current.segments.first(where: { $0.id == word.segmentID })?.fixes?.first(where: {
+                  ($0.kind == .correction || $0.kind == .term) && $0.first <= word.word && word.word < $0.end
+              }),
+              let restored = reverted.segments.first(where: { $0.id == word.segmentID })?.fixes?.first(where: {
+                  $0.kind == .reviewRevert && $0.first == fixed.first
+              }) else {
+            throw HolosError.invalidInput("That word fix cannot be matched to the original transcript.")
+        }
+        return (reverted, ReviewWordMove(segmentID: word.segmentID, replaced: fixed.first..<fixed.end,
+                                         replacement: restored.first..<restored.end))
+    }
+
     private static func publish(session: URL, word: WordRef, expectedTranscriptID: String, expectedRunID: String,
                                 lease: ProcessingLease, now: Date) async throws -> Outcome {
         let archive = try SessionArchive.openForMaintenance(at: session, lease: lease)
         do {
             let outcome = try await SessionArchive.withSpeakerLockAsync(at: session) { () async throws -> Outcome in
                 let current = try SessionFiles.currentTranscript(session: session)
-                guard let current, current.id == expectedTranscriptID, let baseID = current.fixedFrom else {
+                guard let current, current.id == expectedTranscriptID else {
                     throw HolosError.invalidInput("The transcript changed outside this window; reload and try again.")
                 }
                 let snapshot = try SpeakerSessionSnapshot.load(session: session)
                 guard snapshot.run?.id == expectedRunID, snapshot.transcript.id == current.id else {
                     throw HolosError.invalidInput("The speaker labels changed outside this window; reload and try again.")
                 }
-                let base = try SessionFiles.transcript(id: baseID, session: session)
-                let reverted = try WordFixes.reverting(word, in: current, to: base, now: now)
+                let base = try current.fixedFrom.map { try SessionFiles.transcript(id: $0, session: session) }
+                let (reverted, move) = try self.reverted(word, in: current, to: base, now: now)
                 guard let plan = try SpeakerTranscriptRetarget.plan(session: session, from: snapshot,
                                                                    to: reverted, now: now) else {
                     throw HolosError.invalidInput("The speaker labels cannot be kept on the reverted words.")
                 }
-                // The fix's words became the recognizer's own: their count may differ ("你好地球" is "你好" and "世界").
-                guard let fixed = current.segments.first(where: { $0.id == word.segmentID })?.fixes?.first(where: {
-                          ($0.kind == .correction || $0.kind == .term) && $0.first <= word.word && word.word < $0.end
-                      }),
-                      let restored = reverted.segments.first(where: { $0.id == word.segmentID })?.fixes?.first(where: {
-                          $0.kind == .reviewRevert && $0.first == fixed.first
-                      }) else {
-                    throw HolosError.invalidInput("That word fix cannot be matched to the original transcript.")
-                }
-                let move = ReviewWordMove(segmentID: word.segmentID, replaced: fixed.first..<fixed.end,
-                                          replacement: restored.first..<restored.end)
                 let published = Outcome(runID: plan.run.id, move: move, transcriptID: reverted.id)
                 try Task.checkCancellation()
                 try SpeakerTranscriptRetarget.stage(plan, session: session)
                 let counts = WordFixes.Counts(reverted)
                 try await archive.recordEvent(kind: MeetingEventKind.wordsFixed, details: [
                     "transcriptID": reverted.id,
-                    "base": base.id,
+                    // Never empty: `reverted` refuses a transcript with no unfixed revision.
+                    "base": base?.id ?? "",
                     "corrections": String(counts.corrections),
                     "terms": String(counts.terms),
                     "asked": "0",

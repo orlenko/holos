@@ -43,9 +43,14 @@ public enum TranscriptWordEdit {
         public var first: Int
         public var end: Int
         public var text: String
+        /// `text` is written as it is (only trimmed), its whitespace kept: a Revert writing back what the recognizer
+        /// wrote (a Review edit's `heard`, two spaces or a line break included). Typed text has each run of whitespace
+        /// made one space.
+        public var verbatim: Bool
 
-        public init(segmentID: String, first: Int, end: Int, text: String) {
+        public init(segmentID: String, first: Int, end: Int, text: String, verbatim: Bool = false) {
             self.segmentID = segmentID; self.first = first; self.end = end; self.text = text
+            self.verbatim = verbatim
         }
     }
 
@@ -55,9 +60,10 @@ public enum TranscriptWordEdit {
         /// The new unfixed revision `transcript.fixedFrom` names, when the edited transcript was a fixed one; nil when
         /// the edited transcript was itself unfixed (then `transcript` is the new unfixed revision).
         public var base: Transcript?
-        /// What the recognizer wrote over the edited span (the edit's `heard`).
+        /// What the recognizer wrote over the edited span (the edit's `heard`), each run of whitespace one space (the
+        /// mark keeps it as written).
         public var heard: String
-        /// The span's new text.
+        /// The span's new text, each run of whitespace one space.
         public var meant: String
         /// The span's text before the edit, as the review showed it.
         public var shown: String
@@ -94,7 +100,8 @@ public enum TranscriptWordEdit {
     /// the text would not change. Throws `invalidInput` with a message for the person when the edit cannot be made.
     public static func editing(_ request: Request, in current: Transcript, base: Transcript?,
                                editable: (Int) -> Bool = { _ in true }, now: Date = Date()) throws -> Result? {
-        let text = cleaned(request.text)
+        func trimmed(_ text: String) -> String { text.trimmingCharacters(in: .whitespacesAndNewlines) }
+        let text = request.verbatim ? trimmed(request.text) : cleaned(request.text)
         // What the review's preflight asks too (`structureRefusal`), before any word is read.
         if let refusal = structureRefusal(segmentID: request.segmentID, current: current, base: base) { throw refusal }
         guard let index = current.segments.firstIndex(where: { $0.id == request.segmentID }) else {
@@ -172,10 +179,11 @@ public enum TranscriptWordEdit {
               selected.upperBound <= span.upperBound else {
             throw damagedMarks
         }
-        let meant = cleaned(string(span.lowerBound..<selected.lowerBound) + (deletion ? " " : text)
-            + string(selected.upperBound..<span.upperBound))
+        let joined = string(span.lowerBound..<selected.lowerBound) + (deletion ? " " : text)
+            + string(selected.upperBound..<span.upperBound)
+        let meant = request.verbatim ? trimmed(joined) : cleaned(joined)
         let shown = string(span)
-        guard meant != cleaned(shown), !meant.isEmpty else { return nil }
+        guard meant != (request.verbatim ? shown : cleaned(shown)), !meant.isEmpty else { return nil }
 
         // What the recognizer wrote, as the text had it (a Revert writes it back): unmarked words and a Review revert's
         // words (the recognizer's, restored) as shown, an automatic fix the recognizer's words it replaced, an earlier
@@ -234,7 +242,9 @@ public enum TranscriptWordEdit {
             previousEnd = extent.upperBound
             word = piece.upperBound
         }
-        let heard = cleaned(written)
+        // Kept as the recognizer wrote it, its whitespace included (only trimmed), so a Revert writes back exactly
+        // that; learning and comparisons read it cleaned (`Result.heard`).
+        let heard = trimmed(written)
         guard !heard.isEmpty, heardWords > 0 else {
             throw damagedMarks
         }
@@ -294,7 +304,8 @@ public enum TranscriptWordEdit {
         } else {
             result.liveCorrectedFrom = current.liveCorrectedFrom ?? current.id
         }
-        return Result(transcript: result, base: newBase, heard: heard, meant: meant, shown: shown, deletion: deletion,
+        return Result(transcript: result, base: newBase, heard: cleaned(heard), meant: cleaned(meant), shown: shown,
+                      deletion: deletion,
                       before: lower > 0 && editable(lower - 1) ? words[lower - 1].text : nil,
                       after: upper < words.count && editable(upper) ? words[upper].text : nil, move: move,
                       labelsMove: labelsMove, holdsDeleted: deleted == true)
@@ -399,41 +410,20 @@ public enum TranscriptWordEdit {
         Set(transcript.segments.map(\.id)).count != transcript.segments.count
     }
 
-    /// What every word edit and fix revert checks of the revisions' structure before any word is read, and what the
-    /// review's preflight asks before a field opens or Revert is offered (`ReviewSession.wordEditRefusal`,
-    /// `revertRefusal`), so the two cannot differ: `repeatedIDs` (either revision has a segment ID used twice), a
-    /// damaged `segment`, or a damaged `baseSegment` (the same segment of the revision the transcript was fixed from).
-    /// Nil when the words can be tried.
-    public static func structureRefusal(segment: TranscriptSegment, baseSegment: TranscriptSegment?,
-                                        repeatedIDs: Bool) -> HolosError? {
-        if repeatedIDs || isDamaged(segment) || baseSegment.map(isDamaged) == true { return damagedMarks }
-        return nil
-    }
-
-    /// `structureRefusal` for the segment `segmentID` of `current`, whose `fixedFrom` revision is `base` (a `base`
-    /// that is not that revision is not read). Nil when `current` has no such segment (the caller says so).
+    /// What every word edit and fix revert checks of the revisions' structure before any word is read: a segment ID
+    /// used twice in `current` or in `base` (its `fixedFrom` revision; a `base` that is not that revision is not
+    /// read), or the segment `segmentID` damaged in either (`isDamaged`). Nil when the words can be tried, and when
+    /// `current` has no such segment (the caller says so).
     public static func structureRefusal(segmentID: String, current: Transcript, base: Transcript?) -> HolosError? {
         let base = base.flatMap { $0.id == current.fixedFrom ? $0 : nil }
-        let repeated = hasRepeatedSegmentIDs(current) || base.map(hasRepeatedSegmentIDs) == true
-        if repeated { return damagedMarks }
+        if hasRepeatedSegmentIDs(current) || base.map(hasRepeatedSegmentIDs) == true { return damagedMarks }
         guard let segment = current.segments.first(where: { $0.id == segmentID }) else { return nil }
-        return structureRefusal(segment: segment, baseSegment: base?.segments.first { $0.id == segmentID },
-                                repeatedIDs: false)
+        let baseSegment = base?.segments.first { $0.id == segmentID }
+        return isDamaged(segment) || baseSegment.map(isDamaged) == true ? damagedMarks : nil
     }
 
     /// An edit refused because its segment's word positions or fix marks are damaged.
     public static let damagedMarks = HolosError.invalidInput("That segment's word positions cannot be edited safely.")
-
-    /// `segment` has an automatic fix saved by an earlier version (without `heardWords`) that cannot be counted against
-    /// its unfixed `base`: every edit in it is refused (`olderFix`).
-    public static func blockedByOlderFix(_ segment: TranscriptSegment, base: TranscriptSegment) -> Bool {
-        let fixes = segment.fixes ?? []
-        guard fixes.contains(where: { ($0.kind == .correction || $0.kind == .term) && $0.heardWords == nil }) else {
-            return false
-        }
-        return baseBounds(fixes: fixes, current: WordTiming.effectiveWords(of: segment),
-                          base: WordTiming.effectiveWords(of: base), baseText: Array(base.text.utf16)) == nil
-    }
 
     /// An edit refused because its words do not all belong to the same speaker turns (turns that overlap hold some of
     /// them): its new words would belong to every turn of every word it replaced, and its undo could not give each
