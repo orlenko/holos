@@ -3,6 +3,7 @@ import HolosCore
 @testable import HolosMeeting
 import HolosSpeakers
 import HolosStorage
+import os
 import Testing
 
 // Editing words through the review's model (docs/meeting-design.md §5.10, "Editing words"): `ReviewSession.editWords`
@@ -2292,6 +2293,61 @@ func theChecksBeforeAFieldOpensReadNoFileAndMakeNoPlanOnALargeMeeting() async th
     clickThrough()
     #expect(plans.value == 0 && review.wordChecksReads == 2)
     await review.close()
+}
+
+/// The labels read again many times while the word checks are being read: reads are coalesced. One is in flight;
+/// the rereads meanwhile make exactly one more, for the labels then, never one per reread. A read of a closed review
+/// is cancelled.
+@Test(.timeLimit(.minutes(1))) @MainActor
+func rereadingTheLabelsInABurstReadsTheWordChecksAtMostTwiceMore() async throws {
+    let temp = try TemporaryDirectory("review")
+    defer { temp.remove() }
+    let session = try await wordEditSession(in: temp, [
+        WordEditTurn(speaker: "system:S1", start: 0, words: ["ask", "cloud", "now"]),
+    ])
+    let review = try await wordEditOpen(session)
+    #expect(review.wordChecksReads == 1)
+    let gate = WordEditGate()
+    let entered = SharedValue(0)
+    review.wordChecksReader = { snapshot, session in
+        entered.update { $0 += 1 }
+        await gate.wait()
+        return try ReviewSession.WordChecks.read(snapshot, session: session)
+    }
+    // Five rereads, one after another, while the first read is held.
+    for _ in 0..<5 { await review.rereadLabels() }
+    #expect(review.wordChecksReads == 2, "One read in flight; the rest only mark it stale.")
+    gate.open()
+    await review.wordChecksSettled()
+    #expect(review.wordChecksReads == 3, "Exactly one more, for the labels then.")
+    #expect(entered.value == 2)
+    #expect(review.wordEditRefusal(wordEditRefs(review, "T1", [1])) == nil, "Ready again.")
+    await review.close()
+}
+
+/// A gate a held read waits at until `open`, or until its task is cancelled.
+private final class WordEditGate: Sendable {
+    private let state = OSAllocatedUnfairLock(initialState: (open: false, waiters: [CheckedContinuation<Void, Never>]()))
+
+    func open() {
+        let waiters = state.withLock { state -> [CheckedContinuation<Void, Never>] in
+            state.open = true
+            defer { state.waiters.removeAll() }
+            return state.waiters
+        }
+        for waiter in waiters { waiter.resume() }
+    }
+
+    func wait() async {
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            let now = state.withLock { state -> Bool in
+                guard !state.open else { return true }
+                state.waiters.append(continuation)
+                return false
+            }
+            if now { continuation.resume() }
+        }
+    }
 }
 
 /// The field check and the Revert check are the save and the revert made as dry runs: for every refusal the save or

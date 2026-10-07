@@ -64,7 +64,10 @@ enum SpeakerTranscriptRetarget {
         run.labelling = oldRun.labelling ?? oldRun.id
         run.createdAt = now
         run.transcriptID = transcript.id
+        // Cancellation is checked per segment (`Mapping`), turn, and speaker edit: a plan of a long meeting stops soon
+        // when nothing will use it.
         run.turns = try oldRun.turns.map { turn in
+            try Task.checkCancellation()
             var moved = turn
             moved.spans = try mapping.spans(turn.spans, turnID: turn.id)
             let timing = try mapping.timing(of: moved.spans, turnID: turn.id)
@@ -85,6 +88,7 @@ enum SpeakerTranscriptRetarget {
                                           profileNames: [:])
         var edits: [SpeakerEdit] = []
         for old in snapshot.journal.edits where old.baseRunID == oldRun.id && effective.contains(old.id) {
+            try Task.checkCancellation()
             let action = try mapping.action(old.action)
             let expected = view.fingerprint(for: action)
             let staleBefore = view.staleEdits.count
@@ -366,6 +370,7 @@ enum SpeakerTranscriptRetarget {
                 }
             }
             for group in groups {
+                try Task.checkCancellation()
                 let before = try group.map { segment -> TranscriptSegment in
                     guard let found = oldSegments[segment.id] else {
                         throw HolosError.invalidInput(
@@ -429,6 +434,7 @@ enum SpeakerTranscriptRetarget {
             }
             var mapped: [String: Segment] = [:]
             for segment in new.segments {
+                try Task.checkCancellation()
                 guard let before = oldSegments[segment.id] else { throw changed }
                 let oldWords = WordTiming.effectiveWords(of: before)
                 let newWords = WordTiming.effectiveWords(of: segment)

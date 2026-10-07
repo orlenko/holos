@@ -370,6 +370,36 @@ struct TurnListWordEditTests {
         #expect(inField(try hit(onWord: 0, shift: true)))
     }
 
+    /// Which coordinates AppKit gives `hitTest(_:)`, decided through the real hierarchy: the window finds the view for
+    /// a mouse-down by asking its frame view with the point in window coordinates, and each view asks its subviews with
+    /// the point in its own coordinates, that is, in the subview's superview's (Apple: "point: A point that is in the
+    /// coordinate system of the view's superview, not of the view itself"). The field is on a lower row at a non-zero
+    /// origin, so a point taken as the field's own would miss: a ⇧-click on the next word reaches the table only when
+    /// the field converts the point from the table.
+    @Test func aShiftClickFoundFromTheWindowReachesTheTableOnALowerRow() throws {
+        let (list, _) = editingList()
+        list.editingWords = true
+        list.table.handleWordClick(row: 1, word: 0, through: 0, extend: false)
+        #expect(list.wordEdit?.words.map(\.text) == ["epsilon"])
+        let field = list.editField
+        #expect(field.frame.minY > 0 && field.frame.minX > 0, "A lower row, at a non-zero origin.")
+        let window = try #require(list.window)
+        let frameView = try #require(window.contentView?.superview, "The window's frame view.")
+        let text = try TurnListViewTests.cell(list, row: 1).bodyText
+        func hit(onWord index: Int, shift: Bool) throws -> NSView? {
+            let rect = try #require(text.rect(ofWord: index))
+            let inWindow = text.convert(NSPoint(x: rect.midX, y: rect.midY), to: nil)
+            #expect(field.frame.contains(list.table.convert(inWindow, from: nil)), "The field lies over word \(index).")
+            field.extendsSelection = { shift }
+            return frameView.hitTest(inWindow)
+        }
+        func inField(_ view: NSView?) -> Bool { view.map { $0 === field || $0.isDescendant(of: field) } ?? false }
+        let shiftOnZeta = try hit(onWord: 1, shift: true)
+        #expect(!inField(shiftOnZeta) && shiftOnZeta.map { $0 === list.table || $0.isDescendant(of: list.table) } == true)
+        #expect(inField(try hit(onWord: 1, shift: false)), "A plain click places the caret in the field.")
+        #expect(inField(try hit(onWord: 0, shift: true)), "On the edited words, the field keeps it.")
+    }
+
     /// Only Esc drops what was typed: turning edit mode off saves it.
     @Test func turningEditModeOffSavesTheFieldAndEscDropsIt() {
         let (list, saved) = editingList()

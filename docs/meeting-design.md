@@ -7942,7 +7942,9 @@ shown, Otter-style.
   used twice, and the labels' plan onto the transcript itself, mapped by time as a revert's
   is (so a revert the labels cannot be mapped across, another segment damaged, is not
   offered). A click reads no file and makes no plan: a meeting of 30,000 words in 1,000 turns
-  answers at once. While the checks are being read (after any change, for a moment), fields
+  answers at once. Reads are coalesced: one at a time; the labels read again while one runs
+  make exactly one more once it ends, for the labels then (never one per reread). A review
+  closed meanwhile cancels its read, which stops at the next segment, turn, or speaker edit. While the checks are being read (after any change, for a moment), fields
   open and Revert is offered, and the save, which makes the full plan, decides, keeping what
   was typed when it refuses. Mapping the labels is linear in the words: each turn's spans are
   mapped through an index of the words' owners made once (`Mapping.spansAllowingEmpty`), and

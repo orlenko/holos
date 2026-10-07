@@ -316,7 +316,7 @@ public struct ReviewWord: Sendable, Equatable {
         }
         // The word checks are read with the labels the review opens on (later reads run in the background).
         let opened = loaded.snapshot
-        wordChecks = try await Self.detached { WordChecks.read(opened, session: session) }
+        wordChecks = try await Self.detached { try WordChecks.read(opened, session: session) }
         wordChecksReads = 1
         self.session = session
         self.profiles = profiles
@@ -412,19 +412,23 @@ public struct ReviewWord: Sendable, Equatable {
             "\(snapshot.transcript.id)\u{1f}\(snapshot.run?.id ?? "")\u{1f}\(snapshot.journal.edits.count)"
         }
 
-        /// Reads files and walks every turn: off the main actor only.
-        nonisolated static func read(_ snapshot: SpeakerSessionSnapshot, session: URL) -> WordChecks {
+        /// Reads files and walks every turn: off the main actor only. Throws `CancellationError` when its task is
+        /// cancelled (checked between the steps, and per segment and turn inside the labels' plan).
+        nonisolated static func read(_ snapshot: SpeakerSessionSnapshot, session: URL) throws -> WordChecks {
             var checks = WordChecks(key: key(of: snapshot))
             if let id = snapshot.transcript.fixedFrom {
                 checks.base = try? SessionFiles.transcript(id: id, session: session)
                 checks.baseUnreadable = checks.base == nil
             }
+            try Task.checkCancellation()
             checks.repeatedIDs = TranscriptWordEdit.hasRepeatedSegmentIDs(snapshot.transcript)
             do {
                 if try SpeakerTranscriptRetarget.plan(session: session, from: snapshot, to: snapshot.transcript,
                                                       unfixed: checks.base, voiceData: false) == nil {
                     checks.revertRefusal = SessionWordFixRevert.labelsNotKept.localizedDescription
                 }
+            } catch is CancellationError {
+                throw CancellationError()
             } catch {
                 checks.revertRefusal = error.localizedDescription
             }
@@ -443,31 +447,53 @@ public struct ReviewWord: Sendable, Equatable {
     /// The word checks for the labels shown; nil while they are being read (a click then opens a field, and the save
     /// decides).
     private var wordChecks: WordChecks?
-    /// The read of `wordChecks` running for the labels shown.
+    /// The read of `wordChecks` in flight: at most one at a time (`readWordChecks`).
     private var wordChecksRead: Task<Void, Never>?
-    /// How many times the word checks were read (tests: once per labels read, never per click).
+    /// The labels were read again while a read was in flight: once it ends, one more is made, for the labels then.
+    private var wordChecksStale = false
+    /// How many reads of the word checks were started (tests: once per labels read at most, never per click).
     private(set) var wordChecksReads = 0
+    /// What a read does (`WordChecks.read`; tests hold it to see reads coalesce).
+    var wordChecksReader: @Sendable (SpeakerSessionSnapshot, URL) async throws -> WordChecks = { snapshot, session in
+        try WordChecks.read(snapshot, session: session)
+    }
 
     private var readyChecks: WordChecks? {
         wordChecks.flatMap { $0.key == WordChecks.key(of: snapshot) ? $0 : nil }
     }
 
-    /// Reads the word checks for the labels shown off the main actor; they apply once read, if the labels are still
-    /// those (`readyChecks`), and the window is told.
+    /// The labels were read: the word checks are read again for them, off the main actor; they apply once read, if
+    /// the labels are still those (`readyChecks`), and the window is told. Reads are coalesced: while one is in flight,
+    /// a new request only marks it stale, and when it ends exactly one more is made, for the labels then (a burst of
+    /// rereads makes at most two reads, never one per reread).
     private func readWordChecks() {
+        // Not ready until read again: the unfixed revision may be back, gone, or another, with the same labels.
+        wordChecks = nil
+        guard wordChecksRead == nil else {
+            wordChecksStale = true
+            return
+        }
+        startWordChecksRead()
+    }
+
+    private func startWordChecksRead() {
         let snapshot = self.snapshot
         let session = self.session
         let key = WordChecks.key(of: snapshot)
-        wordChecksRead?.cancel()
-        // Not ready until read again: the unfixed revision may be back, gone, or another, with the same labels.
-        wordChecks = nil
+        let reader = wordChecksReader
+        wordChecksStale = false
         wordChecksReads += 1
         wordChecksRead = Task { [weak self] in
-            let read = await Task.detached(priority: .userInitiated) {
-                WordChecks.read(snapshot, session: session)
-            }.value
-            // A later read (the labels read again meanwhile) cancelled this one.
-            guard let self, !Task.isCancelled, WordChecks.key(of: self.snapshot) == key else { return }
+            let result = await Self.cancellableResult { try await reader(snapshot, session) }
+            guard let self else { return }
+            self.wordChecksRead = nil
+            // Closed meanwhile (the read was cancelled): nothing more is read.
+            guard !self.closed else { return }
+            if self.wordChecksStale {
+                self.startWordChecksRead()
+                return
+            }
+            guard case .success(let read) = result, WordChecks.key(of: self.snapshot) == key else { return }
             self.wordChecks = read
             self.checks.removeAll()
             self.notify()
@@ -1292,9 +1318,15 @@ public struct ReviewWord: Sendable, Equatable {
     /// that were made on the older labels are refused.
     public func reload() async {
         guard !closed else { return }
-        _ = try? await enqueue(.reload, optimistic: [])
+        await rereadLabels()
         // Read again on request: the word checks too (off the main actor), before it returns.
         await wordChecksSettled()
+    }
+
+    /// `reload` without waiting for the word checks (tests).
+    func rereadLabels() async {
+        guard !closed else { return }
+        _ = try? await enqueue(.reload, optimistic: [])
     }
 
     /// What the window's open edit field holds, handed over when it closes for a pause or the window's close: its
@@ -1418,6 +1450,8 @@ public struct ReviewWord: Sendable, Equatable {
         closed = true
         exportTimer?.cancel()
         exportTimer = nil
+        // A read of the word checks in flight is of no use now: it stops at its next segment or turn.
+        wordChecksRead?.cancel()
         do {
             try await enqueue(.exports, optimistic: [])
         } catch {
