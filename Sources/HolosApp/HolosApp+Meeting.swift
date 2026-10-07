@@ -1144,6 +1144,10 @@ extension HolosAppDelegate: NSMenuDelegate {
             for failed in window.review.failedWordEditsAtClose {
                 Self.meetingLog.error("Quitting after a word edit was not saved (\(failed.reason, privacy: .private); what was typed: \(failed.typed, privacy: .private))")
             }
+            // Edits refused earlier whose fields could not open again (the window's footer held them).
+            for typed in window.unsavedEditTexts {
+                Self.meetingLog.error("Quitting with a word edit not saved (what was typed: \(typed, privacy: .private))")
+            }
         }
         if !finished {
             Self.meetingLog.error("Quitting before \(windows.count, privacy: .public) review windows finished saving")

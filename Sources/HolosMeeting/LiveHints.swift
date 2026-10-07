@@ -610,10 +610,11 @@ public enum LiveHints {
         return expandedLower.utf16Offset(in: segment.text)..<expandedUpper.utf16Offset(in: segment.text)
     }
 
-    /// `range` touches words edited in Review (a `reviewEdit` mark): a live hint replayed later (recovery) must leave
-    /// them, the person's newer choice, as they are, neither marking nor changing them.
+    /// `range` touches words changed in Review (a `reviewEdit` mark, or a `reviewRevert`: an automatic fix taken back
+    /// to what the recognizer wrote): a live hint replayed later (recovery) must leave them, the person's newer choice,
+    /// as they are, neither marking nor changing them.
     private static func overlapsReviewEdit(_ range: Range<Int>, in working: WordFixes.Working) -> Bool {
-        working.marks.contains { $0.kind == .reviewEdit && $0.range.overlaps(range) }
+        working.marks.contains { ($0.kind == .reviewEdit || $0.kind == .reviewRevert) && $0.range.overlaps(range) }
     }
 
     /// How many of `segment`'s words `range` touches: the words a live correction there replaces, recorded as its

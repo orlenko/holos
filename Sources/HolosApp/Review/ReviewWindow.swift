@@ -100,6 +100,13 @@ struct UnsavedWordEdits {
 
     /// The footer's lines: each edit's message (it says what was typed).
     var lines: [String] { edits.map { "⚠ Not saved: " + $0.message } }
+
+    /// A close by hand waits: the window stays open until each one is edited again or dismissed (quitting does not
+    /// wait; it logs them, `typedTexts`).
+    var holdsClose: Bool { !edits.isEmpty }
+
+    /// What was typed in each, for the quit's log.
+    var typedTexts: [String] { edits.map(\.text) }
 }
 
 /// The transcript review window (docs/meeting-design.md §5.10): name the speakers of a meeting, play their audio,
@@ -1333,8 +1340,15 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, Clo
 
     @objc private func dismissUnsaved() {
         unsavedEdits.dismissNext()
+        if !unsavedEdits.holdsClose, notice == Self.unsavedBeforeClose { notice = nil }
         refreshFooter()
     }
+
+    static let unsavedBeforeClose = "Some words you edited were not saved. Edit them again or dismiss each one, then "
+        + "close the window."
+
+    /// What was typed in each edit not saved whose field could not open again (`UnsavedWordEdits`): quitting logs them.
+    var unsavedEditTexts: [String] { unsavedEdits.typedTexts }
 
     private func endBreakCarryOver() {
         paragraphBreaks.endCarryOver(turns: review.projection.turns, runID: review.projection.runID)
@@ -1579,6 +1593,14 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, Clo
     /// open when one is not saved (its own failure opens its field again, or says what was typed).
     func windowShouldClose(_ sender: NSWindow) -> Bool {
         guard sender === window, closeTask == nil else { return true }
+        // Edits not saved whose fields could not open again: closing would drop what was typed, so the window stays
+        // open, its footer offering Edit Again or Dismiss for each (`UnsavedWordEdits`). A close already saving decides
+        // itself.
+        if unsavedEdits.holdsClose, !closeGate.saving {
+            notice = Self.unsavedBeforeClose
+            refreshFooter()
+            return false
+        }
         let open: OpenWordEdit? = closeGate.saving ? nil : turnList.takeOpenWordEdit()
         // Held until it is queued, with the `wordsEpoch` its field opened under: a quit meanwhile closes the review
         // with it (`beginClosing`); words changed elsewhere since the field opened refuse it.

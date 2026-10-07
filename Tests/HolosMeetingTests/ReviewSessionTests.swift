@@ -198,6 +198,21 @@ func aFailedReviewRevertHeadCanBeRepublishedFromTheOldEditedHead() async throws 
     #expect(try SessionSpeakerStore.readHead(session: session)?.runID == fixedRun.id,
             "The transcript pointer moved before the injected head-write failure.")
 
+    // Another transcript made current meanwhile holds a Review revert mark too, but the journal never says it was
+    // reverted from the transcript the window showed: the labels are never repaired onto it.
+    let pointer = try Data(contentsOf: SessionPaths.transcriptPointer(session))
+    var foreign = reverted
+    foreign.id = UUID().uuidString
+    try await SessionFixtures.saveTranscript(foreign, in: session)
+    await #expect(throws: HolosError.self) {
+        try await SessionWordFixRevert.repairCurrentHead(
+            session: session, expectedTranscriptID: fixed.id, expectedRunID: fixedRun.id)
+    }
+    #expect(try SessionSpeakerStore.readHead(session: session)?.runID == fixedRun.id, "Nothing was published.")
+    // The revert's own transcript current again: it is repaired.
+    try AtomicFile.write(pointer, to: SessionPaths.transcriptPointer(session))
+    #expect(try SessionFiles.currentTranscript(session: session)?.id == reverted.id)
+
     try await SessionWordFixRevert.repairCurrentHead(
         session: session, expectedTranscriptID: fixed.id, expectedRunID: fixedRun.id)
     let repaired = try SpeakerSessionSnapshot.load(session: session)

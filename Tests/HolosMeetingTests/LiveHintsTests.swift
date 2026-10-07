@@ -79,6 +79,21 @@ private func hint(_ segment: TranscriptSegment, words: Range<Int>, action: LiveH
     #expect(replayed.transcript.segments == reviewed.segments, "Neither piece is marked or changed.")
 }
 
+/// A fix reverted in Review (`reviewRevert`: the person took "share" back to the recognizer's "send") is the person's
+/// newer choice too: a live hint replayed later neither changes nor marks it.
+@Test func aReplayedLiveHintNeverChangesOrMarksWordsRevertedInReview() {
+    let live = SessionFixtures.segment(["please", "send", "the", "deck"], track: "system", start: 4, id: "live")
+    var reverted = live
+    reverted.fixes = [TranscriptWordFix(first: 1, end: 2, heard: "share", kind: .reviewRevert, heardWords: 1)]
+    let replayed = LiveHints.applyingText([hint(live, words: 1..<2, action: .replaceText("share"))],
+                                          to: SessionFixtures.transcript([reverted]))
+    #expect(replayed.applied == 0)
+    #expect(replayed.transcript.segments == [reverted], "The Review revert stays as it is.")
+    // Without the revert, the same hint is made.
+    #expect(LiveHints.applyingText([hint(live, words: 1..<2, action: .replaceText("share"))],
+                                   to: SessionFixtures.transcript([live])).applied == 1)
+}
+
 @Test func liveTextHintSurvivesReplayChangingTheSegmentID() {
     let live = SessionFixtures.segment(["asked", "cloud", "today"], track: "mic", start: 10, id: "live")
     let replayed = SessionFixtures.segment(["asked", "cloud", "today"], track: "mic", start: 10.08, id: "replayed")
