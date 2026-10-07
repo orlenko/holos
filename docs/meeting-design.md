@@ -7886,7 +7886,9 @@ shown, Otter-style.
   saved whose field cannot open again (a Tab past it, its words not shown, a close waiting)
   stays in the footer with what was typed (`UnsavedWordEdits`): the next edit never clears
   it; it leaves when "Edit Again" opens its field (the field's from then on: saved, or
-  cancelled with Esc) or when it is dismissed. Edits refused or failed while a quit closes
+  cancelled with Esc) or when it is dismissed. Closing the window by hand waits for them: it
+  stays open, its footer asking to edit each again or dismiss it; quitting does not wait,
+  and logs what was typed in each (private). Edits refused or failed while a quit closes
   the review are logged with what was typed (private), timeout or not
   (`failedWordEditsAtClose`). The field's edit such a close took is held on the window until it is queued, so a
   quit meanwhile closes the review with it, and no field opens while such a close waits. A Split Turn sheet's word follows a word edit
@@ -7984,7 +7986,10 @@ shown, Otter-style.
   ("You changed “heard”"), and its Revert ("Revert to “heard”") is another edit back to what
   the recognizer wrote; an edit is a change when its text as shown differs from what was
   heard, punctuation included ("Hello." → "Hello?"). A live hint replayed later (recovery)
-  never marks or changes words edited in Review: the hint is skipped. Words edited together that a relabel (Find More Speakers, Label
+  never marks or changes words edited in Review, nor a fix reverted there (`reviewRevert`): the
+  hint is skipped. A head left to repair after a revert is repaired only onto the transcript
+  the journal says was reverted from the one the window showed (`revertedFrom`), as an edit's
+  is. Words edited together that a relabel (Find More Speakers, Label
   Speakers on My Microphone) has since put in two turns offer no Revert (menu or VoiceOver)
   and open no field (an edit takes in the whole mark, across the turns, and would be
   refused; a selection stops before them); their tooltip and the banner say so, and that the

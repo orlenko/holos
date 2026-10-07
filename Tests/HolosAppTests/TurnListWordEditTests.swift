@@ -451,14 +451,19 @@ struct TurnListWordEditTests {
                                 movesSeen: failed.movesSeen, wordsEpoch: failed.wordsEpoch)
         }
         var unsaved = UnsavedWordEdits()
+        #expect(!unsaved.holdsClose)
         unsaved.add([gone, alfa])
         #expect(unsaved.lines == ["⚠ Not saved: Not saved. What you typed: “Gone”.",
                                   "⚠ Not saved: The disk is full. What you typed: “Alfa”."])
+        // A close by hand waits for each (quitting logs them instead).
+        #expect(unsaved.holdsClose && unsaved.typedTexts == ["Gone", "Alfa"])
         // Its words are gone: it cannot open, so it stays.
         #expect(!unsaved.reopenNext(reopen) && unsaved.edits.count == 2)
         // Dismissed: the next one comes first, and opens with what was typed.
         unsaved.dismissNext()
+        #expect(unsaved.holdsClose, "One is left: the window still stays open.")
         #expect(unsaved.reopenNext(reopen) && unsaved.edits.isEmpty)
+        #expect(!unsaved.holdsClose, "Each was edited again or dismissed: the window may close.")
         #expect(list.wordEdit?.words.map(\.text) == ["alpha"] && list.editField.stringValue == "Alfa")
     }
 

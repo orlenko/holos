@@ -45,11 +45,12 @@ enum SessionWordFixRevert {
             let archive = try SessionArchive.openForMaintenance(at: session, lease: lease)
             do {
                 let published = try await SessionArchive.withSpeakerLockAsync(at: session) { () async throws -> String? in
+                    // The current transcript is the one this revert published: the journal says it was reverted
+                    // from `expectedTranscriptID` (`revertedFrom`), as the word-edit repair asks of an edit. Any other
+                    // transcript, a Review revert mark or not, is never repaired onto.
                     guard let current = try SessionFiles.currentTranscript(session: session),
                           current.id != expectedTranscriptID,
-                          current.segments.contains(where: {
-                              ($0.fixes ?? []).contains { $0.kind == .reviewRevert }
-                          }) else {
+                          try revertedFrom(current.id, session: session) == expectedTranscriptID else {
                         throw HolosError.invalidInput("The reverted transcript is no longer current.")
                     }
                     guard let head = try SpeakerAnalysis.headState(session: session, transcript: current) else {
@@ -77,6 +78,15 @@ enum SessionWordFixRevert {
                 throw error
             }
         }
+    }
+
+    /// The transcript `transcriptID` was reverted from in Review, as the journal records it (`publish`'s `wordsFixed`
+    /// event, "reverted" 1, with the transcript it was made from); nil when the journal records no such revert.
+    static func revertedFrom(_ transcriptID: String, session: URL) throws -> String? {
+        try SessionArchive.readEvents(at: session).events.last(where: {
+            $0.kind == MeetingEventKind.wordsFixed && $0.details["transcriptID"] == transcriptID
+                && $0.details["reverted"] == "1"
+        })?.details[SessionWordEdit.headFromKey]
     }
 
     /// Everything `publish` makes before it writes: the revert (`reverted`) and the speaker labels retargeted onto it
