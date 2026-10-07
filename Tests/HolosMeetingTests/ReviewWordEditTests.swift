@@ -1729,6 +1729,32 @@ func aSplitIsCheckedBeforeItIsOfferedAsItIsWhenMade() async throws {
     await review.close()
 }
 
+/// A split names the labels run its turn was chosen on (`seenRun`): one labelled again since (a run that did not keep
+/// the turns) is refused, before and when made, as a turn ID may name another turn by then; the run a word edit
+/// published from it keeps its turns, so the split stands.
+@Test(.timeLimit(.minutes(1))) @MainActor
+func aSplitChosenOnAnotherLabelsRunIsRefused() async throws {
+    let temp = try TemporaryDirectory("review")
+    defer { temp.remove() }
+    let session = try await wordEditSession(in: temp, [
+        WordEditTurn(speaker: "system:S1", start: 0, words: ["ask", "the", "cloud", "now", "please"]),
+    ])
+    let review = try await wordEditOpen(session)
+    let chosenOn = review.projection.runID
+    #expect(review.splitRunRefusal(seenRun: chosenOn) == nil && review.splitRunRefusal(seenRun: nil) == nil)
+    let other = try #require(review.splitRunRefusal(seenRun: "another-run"))
+    let refused = await #expect(throws: HolosError.self) {
+        try await review.split(turnID: "T1", at: review.words(of: "T1")[2].ref, seenRun: "another-run")
+    }
+    #expect(refused?.localizedDescription == other && review.projection.turns.count == 1)
+    // A word edit publishes a run keeping the turns: a split chosen before it stands.
+    try await review.editWords(wordEditRefs(review, "T1", [0]), to: "Ask")
+    #expect(review.projection.runID != chosenOn && review.splitRunRefusal(seenRun: chosenOn) == nil)
+    try await review.split(turnID: "T1", at: review.words(of: "T1")[2].ref, seenRun: chosenOn)
+    #expect(review.projection.turns.count == 2)
+    await review.close()
+}
+
 /// Where a split asked at a word falls now (`splitPlace`): the word as it was shown when the split was asked
 /// (`seenMoves`), followed through the word edits saved since, never the index read again; before or after it; at a
 /// turn's start or end; refused when an edit replaced the word, or the words changed elsewhere.

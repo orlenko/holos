@@ -1050,14 +1050,28 @@ public struct ReviewWord: Sendable, Equatable {
     ///
     /// `seenEpoch`: `wordsEpoch` when the sheet opened: words changed elsewhere since cannot be followed, and refuse it.
     ///
+    /// `seenRun`: the labels run the turn was chosen on (`splitRunRefusal`): labelled again since, it is refused.
+    ///
     /// Returns the word it split before, as it is now (moved by a word edit saved since, `seenMoves`): the second
     /// part's first word.
     @discardableResult
     public func split(turnID: String, at word: WordRef, seenMoves: Int? = nil,
-                      seenEpoch: Int? = nil) async throws -> WordRef {
+                      seenEpoch: Int? = nil, seenRun: String? = nil) async throws -> WordRef {
+        if let refusal = splitRunRefusal(seenRun: seenRun) { throw HolosError.invalidInput(refusal) }
         let word = try splitWord(word, seenMoves: seenMoves, seenEpoch: seenEpoch)
         try await apply([splitAction(turnID: turnID, at: word)])
         return word
+    }
+
+    /// Why a split chosen on the turns of labels run `seenRun` cannot be made on the labels shown now: labelled again
+    /// since (Label Again, a refresh from elsewhere), a turn ID may name another turn. The same run, or one this
+    /// window's word edit, its undo or a revert published from it keeping its turns (`keepsTurns`), lets it be made;
+    /// so does nil (no run known). Nil when it can be made.
+    public func splitRunRefusal(seenRun: String?) -> String? {
+        guard let seenRun, seenRun != projection.runID, !keepsTurns(of: seenRun, in: projection.runID) else {
+            return nil
+        }
+        return "The speakers were labelled again since; choose where to split again."
     }
 
     /// `word`, chosen when `seenMoves` of `wordMoves` were seen and `wordsEpoch` was `seenEpoch`, where it is in the

@@ -831,14 +831,9 @@ struct TurnListWordEditTests {
 
     /// A refused split's field opens again only in edit mode with no other text field typed in: leaving edit mode
     /// (⌘E) or typing a speaker's name while an earlier save held the split is never undone by the refusal.
-    /// A split names the labels run its rows showed: labelled again since (a run that did not keep the turns), a turn
-    /// ID may name another turn, so it is refused; a run a word edit published keeping the turns, or the same run,
-    /// lets it stand. The run is the list's when the menu opened, the field's when it opened.
-    @Test func aSplitAskedOnAnotherLabelsRunIsRefused() throws {
-        #expect(ReviewWindow.splitRunStands(asked: "R1", now: "R1", keepsTurns: { _ in false }))
-        #expect(ReviewWindow.splitRunStands(asked: nil, now: "R2", keepsTurns: { _ in false }))
-        #expect(ReviewWindow.splitRunStands(asked: "R1", now: "R2", keepsTurns: { $0 == "R1" }))
-        #expect(!ReviewWindow.splitRunStands(asked: "R1", now: "R2", keepsTurns: { _ in false }))
+    /// A split names the labels run its rows showed (`ReviewSession.splitRunRefusal` refuses one labelled again
+    /// since): the list's when the menu opened, the field's when it opened.
+    @Test func aSplitNamesTheLabelsRunItWasChosenOn() throws {
         let (list, _) = editingList()
         var requests: [ReviewSplitRequest] = []
         list.resolveSplit = { requests.append($0); return .refused("recorded") }
@@ -855,9 +850,15 @@ struct TurnListWordEditTests {
     }
 
     @Test func aRefusedSplitsFieldOpensAgainOnlyWhereThePersonLeftIt() {
-        #expect(ReviewWindow.reopensRefusedSplitField(typingElsewhere: false, editingWords: true))
-        #expect(!ReviewWindow.reopensRefusedSplitField(typingElsewhere: false, editingWords: false))
-        #expect(!ReviewWindow.reopensRefusedSplitField(typingElsewhere: true, editingWords: true))
+        #expect(ReviewWindow.reopensRefusedSplitField(typingElsewhere: false, editingWords: true,
+                                                      fieldOpenedSince: false))
+        #expect(!ReviewWindow.reopensRefusedSplitField(typingElsewhere: false, editingWords: false,
+                                                       fieldOpenedSince: false))
+        #expect(!ReviewWindow.reopensRefusedSplitField(typingElsewhere: true, editingWords: true,
+                                                       fieldOpenedSince: false))
+        // A field opened in the refused split's second row, closed with it: where the person was typing.
+        #expect(!ReviewWindow.reopensRefusedSplitField(typingElsewhere: false, editingWords: true,
+                                                       fieldOpenedSince: true))
     }
 
     /// Only Esc drops what was typed: turning edit mode off saves it.
