@@ -1755,6 +1755,11 @@ func aSplitPlaceFollowsTheWordThroughEditsSavedSince() async throws {
         == .turnStart(turnID: "T1"))
     #expect(try review.splitPlace(at: now[4].ref, after: true, seenMoves: nil, seenEpoch: nil)
         == .turnEnd(turnID: "T1"))
+    // The split itself follows it the same way, and says where it split: the second part's first word, now.
+    let second = try await review.split(turnID: "T1", at: asked[2].ref, seenMoves: seen, seenEpoch: epoch)
+    #expect(second == now[3].ref)
+    #expect(review.words(of: review.projection.turns[1]).first?.text == "cloud")
+    try await review.undo()
     // The word an edit replaced, or words changed elsewhere since: refused.
     #expect(throws: HolosError.self) {
         try review.splitPlace(at: asked[0].ref, after: false, seenMoves: seen, seenEpoch: epoch)
@@ -1762,6 +1767,35 @@ func aSplitPlaceFollowsTheWordThroughEditsSavedSince() async throws {
     #expect(throws: HolosError.self) {
         try review.splitPlace(at: asked[2].ref, after: false, seenMoves: seen, seenEpoch: epoch + 1)
     }
+    await review.close()
+}
+
+/// Overlapping turns (T1 holds words 0–2, T2 words 1–3): a split at a word both hold is the turn's it was chosen in.
+@Test(.timeLimit(.minutes(1))) @MainActor
+func aSplitAtAWordTwoTurnsHoldIsTheTurnsItWasChosenIn() async throws {
+    let temp = try TemporaryDirectory("review")
+    defer { temp.remove() }
+    let session = try await wordEditSharedSession(in: temp, ["hello", "there", "yes", "indeed"],
+                                                  times: [(0, 0.8), (1, 1.8), (2, 2.8), (3, 3.8)], split: 2)
+    var run = try SessionSpeakerStore.readRun(
+        id: try #require(try SessionSpeakerStore.readHead(session: session)?.runID), session: session)
+    let segmentID = try wordEditCurrent(session).segments[0].id
+    run.id = UUID().uuidString
+    run.turns[0].spans = [WordSpan(segmentID: segmentID, first: 0, end: 3)]
+    run.turns[1].spans = [WordSpan(segmentID: segmentID, first: 1, end: 4)]
+    try SessionArchive.withSpeakerLock(at: session) {
+        try SessionSpeakerStore.writeRun(run, session: session)
+        try SessionSpeakerStore.writeHead(SpeakerHead(runID: run.id), session: session)
+    }
+    let review = try await wordEditOpen(session)
+    let yes = WordRef(segmentID: segmentID, word: 2)
+    #expect(try review.splitPlace(at: yes, after: false, in: "T2", seenMoves: nil, seenEpoch: nil)
+        == .inside(turnID: "T2", word: yes))
+    #expect(try review.splitPlace(at: yes, after: false, in: "T1", seenMoves: nil, seenEpoch: nil)
+        == .inside(turnID: "T1", word: yes))
+    // A turn that does not hold the word: no place.
+    #expect(try review.splitPlace(at: WordRef(segmentID: segmentID, word: 0), after: false, in: "T2",
+                                  seenMoves: nil, seenEpoch: nil) == nil)
     await review.close()
 }
 

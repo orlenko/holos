@@ -209,10 +209,11 @@ extension TurnListView: NSTextFieldDelegate {
 
     /// A save of `words` was refused or failed before it was made: the field opens over them again with what was
     /// typed, and the banner says why. False (nothing opens) when another field is open or the words no longer read
-    /// as they did; the window's message then carries what was typed.
+    /// as they did; the window's message then carries what was typed. `caret`: where the caret goes in the text (a
+    /// split asked from the field reopens with the caret where Return found it); nil, at the end.
     @discardableResult
     func reopenWordEdit(_ words: [ReviewWord], typed: String, message: String, movesSeen: Int? = nil,
-                        wordsEpoch seenEpoch: Int? = nil) -> Bool {
+                        wordsEpoch seenEpoch: Int? = nil, caret: Int? = nil) -> Bool {
         guard editingWords, editable, canEditWords, wordEdit == nil,
               let firstWord = words.first, let lastWord = words.last else { return false }
         // The words where they are now: followed through the word moves saved since the field took them
@@ -233,7 +234,9 @@ extension TurnListView: NSTextFieldDelegate {
             beginEditing(row: row, from: from, through: through, extend: false)
             guard wordEdit != nil else { return false }
             editField.stringValue = typed
-            editField.currentEditor()?.selectedRange = NSRange(location: (typed as NSString).length, length: 0)
+            let length = (typed as NSString).length
+            editField.currentEditor()?.selectedRange = NSRange(location: min(max(caret ?? length, 0), length),
+                                                                length: 0)
             onEditMessage?(message)
             return true
         }

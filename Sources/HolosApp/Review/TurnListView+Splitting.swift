@@ -7,6 +7,8 @@ import HolosMeeting
 struct ReviewSplitRequest: Equatable {
     var word: WordRef
     var after: Bool
+    /// The turn the word was chosen in (turns may overlap: the split is that turn's).
+    var turnID: String?
     var movesSeen: Int
     var wordsEpoch: Int
     /// The edit field's words and text when Return asked for the split: the field opens again over them, saying
@@ -60,6 +62,8 @@ extension TurnListView {
         guard selection.length == 0, selection.location == 0 || selection.location == length else { return false }
         let atStart = selection.location == 0
         let request = ReviewSplitRequest(word: atStart ? first.ref : last.ref, after: !atStart,
+                                         turnID: turnID(ofWordAt: target.range.lowerBound,
+                                                        in: target.paragraphID),
                                          movesSeen: target.movesSeen, wordsEpoch: target.wordsEpoch,
                                          field: .init(words: target.words, text: typed))
         switch resolveSplit?(request) {
@@ -77,11 +81,13 @@ extension TurnListView {
     /// Split Turn Here on `word` of `row` (as the row shows it): nil on the row's first word, where there is nothing
     /// to split from; else the item's request, with why it cannot be made (nil when it can).
     func splitOffer(row: Int, word: ReviewWord) -> (choice: SplitChoice, refusal: String?)? {
-        guard row >= 0, row < paragraphs.count, paragraphWords(paragraphs[row]).words.first?.ref != word.ref else {
-            return nil
-        }
-        let request = ReviewSplitRequest(word: word.ref, after: false, movesSeen: wordMoves.count,
-                                         wordsEpoch: wordsEpoch)
+        guard row >= 0, row < paragraphs.count else { return nil }
+        let shown = paragraphWords(paragraphs[row])
+        guard shown.words.first?.ref != word.ref else { return nil }
+        let index = shown.words.firstIndex { $0.ref == word.ref }
+        let request = ReviewSplitRequest(word: word.ref, after: false,
+                                         turnID: index.map { paragraphs[row].turns[shown.turns[$0]].id },
+                                         movesSeen: wordMoves.count, wordsEpoch: wordsEpoch)
         guard let resolution = resolveSplit?(request) else { return nil }
         if case .refused(let why) = resolution { return (SplitChoice(request), why) }
         return (SplitChoice(request), nil)
@@ -91,6 +97,13 @@ extension TurnListView {
     func splitChosen(_ choice: SplitChoice) {
         guard case .split(let split)? = resolveSplit?(choice.request) else { return }
         onSplit?(split, choice.request)
+    }
+
+    /// The turn of row `paragraphID` its word `index` belongs to.
+    func turnID(ofWordAt index: Int, in paragraphID: String) -> String? {
+        guard let paragraph = paragraphs.first(where: { $0.id == paragraphID }) else { return nil }
+        let turns = paragraphWords(paragraph).turns
+        return index >= 0 && index < turns.count ? paragraph.turns[turns[index]].id : nil
     }
 
     /// After a split: the row the second part starts (its first word `word`) is selected and shown, and its speaker

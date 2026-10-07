@@ -577,7 +577,7 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, Clo
             // The word is where `resolveSplit` found it just now, among the words shown: a word edit saved before the
             // split runs moves it from there; words changed elsewhere since it was chosen still refuse it.
             self.applySplit(split, movesSeen: self.review.shownWordMoves.count, epoch: request.wordsEpoch, focus: true,
-                            field: request.field.map { ($0, request.movesSeen) })
+                            field: request.field.map { ($0, request.movesSeen, request.after) })
         }
         turnList.resolveSplit = { [weak self] request in
             self?.resolveSplit(request) ?? .refused("The review is closing.")
@@ -1138,28 +1138,35 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, Clo
     /// words changed elsewhere refuse it, `epoch`), or the row breaks before a turn it holds (this window only). With
     /// `focus` (Return at a word's start, Split Turn Here), the second part's row is selected and its speaker pop-up
     /// opens, so it can be given its speaker at once (`TurnListView.focusSpeaker`).
-    /// `field`: the edit field Return asked from (its words and text, and the word moves they follow): refused once
-    /// queued (an edit saved meanwhile changed what the split can do), the field opens again over its words, saying
-    /// why, as before Return.
+    /// `field`: the edit field Return asked from (its words and text, the word moves they follow, and whether the
+    /// caret was at its end): refused once queued (an edit saved meanwhile changed what the split can do), the field
+    /// opens again over its words once the labels are read again (a row the refused split showed for a moment is gone
+    /// by then), with the caret where it was and the reason, as before Return.
     private func applySplit(_ split: ReviewParagraphSplit, movesSeen: Int?, epoch: Int, focus: Bool,
-                            field: (field: ReviewSplitRequest.Field, movesSeen: Int)? = nil) {
+                            field: (field: ReviewSplitRequest.Field, movesSeen: Int, atEnd: Bool)? = nil) {
         switch split {
         case .splitTurn(let turnID, let word):
             perform { [weak self] review in
+                let second: WordRef
                 do {
-                    try await review.split(turnID: turnID, at: word, seenMoves: movesSeen, seenEpoch: epoch)
+                    second = try await review.split(turnID: turnID, at: word, seenMoves: movesSeen, seenEpoch: epoch)
                 } catch let error where !(error is CancellationError) {
                     if let field, let self {
+                        await review.reload()
+                        self.refresh()
                         if !self.turnList.editingWords { self.setEditMode(true) }
-                        self.turnList.reopenWordEdit(field.field.words, typed: field.field.text,
+                        let text = field.field.text
+                        self.turnList.reopenWordEdit(field.field.words, typed: text,
                                                      message: error.localizedDescription, movesSeen: field.movesSeen,
-                                                     wordsEpoch: epoch)
+                                                     wordsEpoch: epoch,
+                                                     caret: field.atEnd ? (text as NSString).length : 0)
                     }
                     throw error
                 }
                 guard focus, let self else { return }
                 self.refresh()
-                self.focusSpeaker(startingAt: word)
+                // Where the word is now (an edit saved before the split ran may have moved it).
+                self.focusSpeaker(startingAt: second)
             }
         case .breakBefore(let turnID):
             guard let turn = review.projection.turns.first(where: { $0.id == turnID }) else { return }
@@ -1188,8 +1195,8 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, Clo
     private func resolveSplit(_ request: ReviewSplitRequest) -> ReviewSplitResolution {
         let place: ReviewSplitPlace?
         do {
-            place = try review.splitPlace(at: request.word, after: request.after, seenMoves: request.movesSeen,
-                                          seenEpoch: request.wordsEpoch)
+            place = try review.splitPlace(at: request.word, after: request.after, in: request.turnID,
+                                          seenMoves: request.movesSeen, seenEpoch: request.wordsEpoch)
         } catch {
             return .refused(error.localizedDescription)
         }
