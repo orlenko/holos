@@ -1799,6 +1799,43 @@ func aSplitAtAWordTwoTurnsHoldIsTheTurnsItWasChosenIn() async throws {
     await review.close()
 }
 
+/// A short turn of the unknown speaker shown with its neighbour's speaker (an attached interjection, §5.10): a split
+/// asked in its words is the stored turn's, and splits it as stored; at its first word, the place is its own start.
+@Test(.timeLimit(.minutes(1))) @MainActor
+func aSplitInAnAttachedInterjectionSplitsTheStoredTurn() async throws {
+    let temp = try TemporaryDirectory("review")
+    defer { temp.remove() }
+    let session = try await wordEditSession(in: temp, [
+        WordEditTurn(speaker: "system:S1", start: 0, words: ["we", "will", "meet"]),
+        WordEditTurn(speaker: "system:S2", start: 3.5, words: ["on", "the", "porch"]),
+    ])
+    // The second turn's speaker unknown: a short turn continuing the first speaker's sentence.
+    var run = try SessionSpeakerStore.readRun(
+        id: try #require(try SessionSpeakerStore.readHead(session: session)?.runID), session: session)
+    run.id = UUID().uuidString
+    run.turns[1].speakerID = nil
+    run.turns[1].clusterID = nil
+    try SessionArchive.withSpeakerLock(at: session) {
+        try SessionSpeakerStore.writeRun(run, session: session)
+        try SessionSpeakerStore.writeHead(SpeakerHead(runID: run.id), session: session)
+    }
+    let review = try await wordEditOpen(session)
+    let attached = try #require(review.shownTurns.first { $0.id == "T2" })
+    #expect(attached.interjection == .attached(speakerID: "system:S1") && attached.speakerID == "system:S1")
+    #expect(review.projection.turns.first { $0.id == "T2" }?.speakerID == nil, "Stored as it was.")
+    let words = review.words(of: "T2")
+    #expect(try review.splitPlace(at: words[0].ref, after: false, in: "T2", seenMoves: nil, seenEpoch: nil)
+        == .turnStart(turnID: "T2"))
+    #expect(try review.splitPlace(at: words[1].ref, after: false, in: "T2", seenMoves: nil, seenEpoch: nil)
+        == .inside(turnID: "T2", word: words[1].ref))
+    #expect(review.splitRefusal(turnID: "T2", at: words[1].ref) == nil)
+    try await review.split(turnID: "T2", at: words[1].ref)
+    let stored = review.projection.turns
+    #expect(stored.count == 3 && stored.map { review.words(of: $0).count } == [3, 1, 2])
+    #expect(stored[1].id == "T2" && stored[2].id.hasPrefix("T2/"))
+    await review.close()
+}
+
 /// A turn over two segments: a split at the first word of the later segment is a split like any other.
 @Test(.timeLimit(.minutes(1))) @MainActor
 func aTurnSplitsAtTheFirstWordOfItsLaterSegment() async throws {

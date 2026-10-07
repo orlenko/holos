@@ -7835,7 +7835,8 @@ public enum SessionAudioComposition {
   from the field refused once queued (an edit saved meanwhile changed what it can do) opens
   the field again over its words once the labels are read again, with the caret where
   Return found it and the reason. A word two overlapping turns hold splits the turn it was
-  chosen in. Both make the same split or break as the sheet, checked
+  chosen in. A short interjection shown with its neighbour's speaker splits as the turn it is
+  stored as (inside it, that turn splits; at its first word, the row breaks before it). Both make the same split or break as the sheet, checked
   first as the split itself is (`ReviewSession.splitRefusal`: words edited together, a
   turn's first word, a review held read-only; refused, the banner or a disabled menu item
   says why, and the field stays), across a segment boundary too (the first word of a later

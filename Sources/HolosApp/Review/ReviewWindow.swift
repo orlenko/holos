@@ -1219,9 +1219,11 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, NSM
         refresh()
         if !turnList.editingWords { setEditMode(true) }
         let text = field.field.text
+        // Its saved ID: a part made by a split still saving when the field opened had a temporary one.
+        let turnID = field.turnID.map(review.resolvedTurnID)
         if turnList.reopenWordEdit(field.field.words, typed: text, message: why, movesSeen: field.movesSeen,
                                    wordsEpoch: epoch, caret: field.atEnd ? (text as NSString).length : 0,
-                                   inTurn: field.turnID) {
+                                   inTurn: turnID) {
             return
         }
         guard epoch == review.wordsEpoch, let word = field.atEnd ? field.field.words.last : field.field.words.first
@@ -1234,7 +1236,7 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, NSM
             }
             ref.word = field.atEnd ? move.replacement.upperBound - 1 : move.replacement.lowerBound
         }
-        turnList.reopenField(at: ref, atEnd: field.atEnd, message: why, inTurn: field.turnID)
+        turnList.reopenField(at: ref, atEnd: field.atEnd, message: why, inTurn: turnID)
     }
 
     /// The second part's speaker pop-up after a split (`TurnListView.focusSpeaker`); a search hiding its row is cleared
