@@ -55,8 +55,9 @@ extension TurnListView {
     func splitFromField() -> Bool {
         guard let target = wordEdit, let editor = editField.currentEditor(),
               let first = target.words.first, let last = target.words.last else { return false }
+        // Unchanged exactly: a space typed at the end is a change (Return then saves it, as before), never a split.
         let typed = editField.stringValue
-        guard TranscriptWordEdit.cleaned(typed) == TranscriptWordEdit.cleaned(target.shown) else { return false }
+        guard typed == target.shown else { return false }
         let selection = editor.selectedRange
         let length = (typed as NSString).length
         guard selection.length == 0, selection.location == 0 || selection.location == length else { return false }
@@ -80,23 +81,27 @@ extension TurnListView {
 
     /// Split Turn Here on `word` of `row` (as the row shows it): nil on the row's first word, where there is nothing
     /// to split from; else the item's request, with why it cannot be made (nil when it can).
-    func splitOffer(row: Int, word: ReviewWord) -> (choice: SplitChoice, refusal: String?)? {
+    func splitOffer(row: Int, word: ReviewWord, index: Int) -> (choice: SplitChoice, refusal: String?)? {
         guard row >= 0, row < paragraphs.count else { return nil }
         let shown = paragraphWords(paragraphs[row])
-        guard shown.words.first?.ref != word.ref else { return nil }
-        let index = shown.words.firstIndex { $0.ref == word.ref }
+        // The clicked word itself (`index`: overlapping turns of a row may show a word twice), not its first copy.
+        guard index > 0, index < shown.words.count, shown.words[index].ref == word.ref else { return nil }
         let request = ReviewSplitRequest(word: word.ref, after: false,
-                                         turnID: index.map { paragraphs[row].turns[shown.turns[$0]].id },
+                                         turnID: paragraphs[row].turns[shown.turns[index]].id,
                                          movesSeen: wordMoves.count, wordsEpoch: wordsEpoch)
         guard let resolution = resolveSplit?(request) else { return nil }
         if case .refused(let why) = resolution { return (SplitChoice(request), why) }
         return (SplitChoice(request), nil)
     }
 
-    /// Split Turn Here chosen: the request the menu made, resolved again now (the word followed since).
+    /// Split Turn Here chosen: the request the menu made, resolved again now (the word followed since). Refused now
+    /// (an edit replaced the word while the menu was open, words changed elsewhere), the window says why.
     func splitChosen(_ choice: SplitChoice) {
-        guard case .split(let split)? = resolveSplit?(choice.request) else { return }
-        onSplit?(split, choice.request)
+        switch resolveSplit?(choice.request) {
+        case .split(let split)?: onSplit?(split, choice.request)
+        case .refused(let why)?: onSplitRefused?(why)
+        case nil: break
+        }
     }
 
     /// The turn of row `paragraphID` its word `index` belongs to.
@@ -106,14 +111,20 @@ extension TurnListView {
         return index >= 0 && index < turns.count ? paragraph.turns[turns[index]].id : nil
     }
 
-    /// After a split: the row the second part starts (its first word `word`) is selected and shown, and its speaker
-    /// pop-up opens (`openSpeakerMenu`), so its speaker can be chosen at once; it keeps the first part's until then.
-    /// False when no row shown starts at `word` (a search may hide it).
+    /// After a split: the row the second part starts (its first word `word`; its first turn `turnID` when known, else
+    /// a part split from `splitOf`) is selected and shown, and its speaker pop-up opens (`openSpeakerMenu`), so its
+    /// speaker can be chosen at once; it keeps the first part's until then. Overlapping turns may start two rows at
+    /// one word: the turn decides. False when no row shown starts there (a search may hide it).
     @discardableResult
-    func focusSpeaker(startingAt word: WordRef) -> Bool {
-        guard let row = paragraphs.firstIndex(where: { paragraphWords($0).words.first?.ref == word }) else {
-            return false
+    func focusSpeaker(startingAt word: WordRef, turnID: String? = nil, splitOf: String? = nil) -> Bool {
+        let starting = paragraphs.indices.filter { paragraphWords(paragraphs[$0]).words.first?.ref == word }
+        let chosen = starting.first { row in
+            let first = paragraphs[row].turns[0].id
+            if let turnID { return first == turnID }
+            if let splitOf { return first.hasPrefix(splitOf + "/") }
+            return true
         }
+        guard let row = chosen ?? starting.first else { return false }
         select(paragraphs[row].turnIDs, scroll: true)
         guard let cell = table.view(atColumn: 0, row: row, makeIfNecessary: true) as? TurnCellView else { return false }
         window?.makeFirstResponder(cell.speakerPopUp)

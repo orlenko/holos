@@ -182,7 +182,7 @@ final class TurnTableView: NSTableView {
 
     /// Split Turn Here on `word` (the clicked word as the row shows it) of `row`: nil when no split is offered there
     /// (the row's first word), else the item's request and why it cannot be made (nil when it can).
-    var splitOffer: ((_ row: Int, _ word: ReviewWord) -> (choice: SplitChoice, refusal: String?)?)?
+    var splitOffer: ((_ row: Int, _ word: ReviewWord, _ index: Int) -> (choice: SplitChoice, refusal: String?)?)?
     /// Split Turn Here chosen: the split the menu offered, as it was when the menu opened.
     var onSplitChosen: ((SplitChoice) -> Void)?
 
@@ -192,13 +192,15 @@ final class TurnTableView: NSTableView {
         guard row >= 0, let cell = view(atColumn: 0, row: row, makeIfNecessary: false) as? TurnCellView else {
             return super.menu(for: event)
         }
-        let menu = wordMenu(row: row, cell: cell, word: cell.bodyText.word(at: cell.bodyText.convert(point, from: self)))
+        let inText = cell.bodyText.convert(point, from: self)
+        let menu = wordMenu(row: row, cell: cell, word: cell.bodyText.word(at: inText),
+                            index: cell.bodyText.wordIndex(atPoint: inText))
         return menu.items.isEmpty ? super.menu(for: event) : menu
     }
 
     /// A word's context menu: Revert its automatic fix (when it can be), and Split Turn Here (the turn splits before
-    /// the word; disabled, saying why, when it cannot).
-    func wordMenu(row: Int, cell: TurnCellView, word: ReviewWord?) -> NSMenu {
+    /// the word, word `index` of the row; disabled, saying why, when it cannot).
+    func wordMenu(row: Int, cell: TurnCellView, word: ReviewWord?, index: Int?) -> NSMenu {
         let menu = NSMenu()
         menu.autoenablesItems = false
         if let word, cell.bodyText.canRevertFix, let fix = word.fix, word.revertible,
@@ -210,7 +212,7 @@ final class TurnTableView: NSTableView {
             menu.addItem(item)
         }
         // Not in edit mode, where Return at a word's start splits: a field open on another word is never left behind.
-        if !editingWords, let word, let offer = splitOffer?(row, word) {
+        if !editingWords, let word, let index, let offer = splitOffer?(row, word, index) {
             let item = NSMenuItem(title: "Split Turn Here", action: #selector(splitHere(_:)), keyEquivalent: "")
             item.target = self
             item.representedObject = offer.choice
@@ -556,6 +558,9 @@ final class TurnListView: NSView, NSTableViewDataSource, NSTableViewDelegate {
     /// What a split request makes now: the review finds where the word is (following word moves since it was
     /// chosen) and checks the split as it is checked when made (`ReviewSession.splitPlace`, `splitRefusal`).
     var resolveSplit: ((ReviewSplitRequest) -> ReviewSplitResolution)?
+    /// A split chosen from a word's menu was refused when it was made (the words changed while the menu was open):
+    /// why, for the window to say.
+    var onSplitRefused: ((String) -> Void)?
     /// Opens a row's speaker pop-up after a split, so the second part can be given its speaker at once (tests record
     /// it instead: a pop-up's menu tracks the mouse until it closes).
     var openSpeakerMenu: (NSPopUpButton) -> Void = { popUp in
@@ -644,7 +649,7 @@ final class TurnListView: NSView, NSTableViewDataSource, NSTableViewDelegate {
         table.onWordEditClick = { [weak self] row, from, to, extend in
             self?.beginEditing(row: row, from: from, through: to, extend: extend)
         }
-        table.splitOffer = { [weak self] row, word in self?.splitOffer(row: row, word: word) }
+        table.splitOffer = { [weak self] row, word, index in self?.splitOffer(row: row, word: word, index: index) }
         table.onSplitChosen = { [weak self] choice in self?.splitChosen(choice) }
         table.onEditClickBegan = { [weak self] extend in self?.editClickBegan(extend: extend) }
         table.onEditClickEnded = { [weak self] in self?.editClickEnded() }

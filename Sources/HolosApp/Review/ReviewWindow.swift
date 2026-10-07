@@ -582,6 +582,10 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, Clo
         turnList.resolveSplit = { [weak self] request in
             self?.resolveSplit(request) ?? .refused("The review is closing.")
         }
+        turnList.onSplitRefused = { [weak self] why in
+            self?.problem = why
+            self?.refreshFooter()
+        }
         // The review turned read-only with a field open (an earlier edit's labels could not be reread, say): its edit
         // is queued all the same, and waits for the reread as the changes before it do.
         turnList.onKeepWordEdit = { [weak self] words, text, movesSeen, wordsEpoch in
@@ -1165,27 +1169,30 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, Clo
                 }
                 guard focus, let self else { return }
                 self.refresh()
-                // Where the word is now (an edit saved before the split ran may have moved it).
-                self.focusSpeaker(startingAt: second)
+                // Where the word is now (an edit saved before the split ran may have moved it), in the part split
+                // from `turnID`.
+                self.focusSpeaker(startingAt: second, splitOf: turnID)
             }
         case .breakBefore(let turnID):
             guard let turn = review.projection.turns.first(where: { $0.id == turnID }) else { return }
             paragraphBreaks.insert(before: turn, runID: review.projection.runID)
             refresh()
             turnList.select([turnID], scroll: true)
-            if focus, let first = review.words(of: turn).first { focusSpeaker(startingAt: first.ref) }
+            if focus, let first = review.words(of: turn).first {
+                focusSpeaker(startingAt: first.ref, turnID: turnID)
+            }
         }
     }
 
-    /// The second part's speaker pop-up after a split; a search hiding its row is cleared first, as Next Uncertain
-    /// clears one hiding where it goes.
-    private func focusSpeaker(startingAt word: WordRef) {
-        if turnList.focusSpeaker(startingAt: word) { return }
+    /// The second part's speaker pop-up after a split (`TurnListView.focusSpeaker`); a search hiding its row is cleared
+    /// first, as Next Uncertain clears one hiding where it goes.
+    private func focusSpeaker(startingAt word: WordRef, turnID: String? = nil, splitOf: String? = nil) {
+        if turnList.focusSpeaker(startingAt: word, turnID: turnID, splitOf: splitOf) { return }
         guard !query.isEmpty else { return }
         query = ""
         searchField.stringValue = ""
         refresh()
-        turnList.focusSpeaker(startingAt: word)
+        turnList.focusSpeaker(startingAt: word, turnID: turnID, splitOf: splitOf)
     }
 
     /// What a split asked for at a word makes now (`TurnListView.resolveSplit`): the review finds where the word is
