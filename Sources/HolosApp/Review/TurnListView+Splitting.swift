@@ -2,69 +2,91 @@ import AppKit
 import HolosCore
 import HolosMeeting
 
+/// A split asked for at a word as the list showed it: before `word`, or after it (`after`), with the word moves and
+/// words epoch it was chosen under, so the review finds where the word is now (`ReviewSession.splitPlace`).
+struct ReviewSplitRequest: Equatable {
+    var word: WordRef
+    var after: Bool
+    var movesSeen: Int
+    var wordsEpoch: Int
+}
+
+/// What a split request makes (`TurnListView.resolveSplit`): the split, or why there is none.
+enum ReviewSplitResolution: Equatable {
+    case split(ReviewParagraphSplit)
+    case refused(String)
+}
+
+/// A Split Turn Here menu item's request, as the row showed the word when the menu opened.
+final class SplitChoice: NSObject {
+    let request: ReviewSplitRequest
+
+    init(_ request: ReviewSplitRequest) { self.request = request }
+}
+
 /// Splitting a turn where its words are (docs/meeting-design.md §5.10): in edit mode, Return with the caret at the
 /// start of the field's words and nothing changed splits the turn before them (at the end: after them); outside it, a
-/// word's context menu offers Split Turn Here. Either way the split is the window's (`onSplit`: the review's
-/// `split`, undoable, or a paragraph break when the word starts a turn of the row), checked first as the review checks
-/// it (`splitRefusal`), and the second part's speaker pop-up opens so it can be given its speaker at once
-/// (`focusSpeaker`). The Split Turn sheet stays for choosing a place without the mouse on the words.
+/// word's context menu offers Split Turn Here. The place is the word as the list showed it, with the word moves and
+/// words epoch it was chosen under: the window has the review find where it is now (`resolveSplit`), so a word edit
+/// saved since moves it, and words changed elsewhere refuse it; never an index read again after the words changed.
+/// The split is checked as the review checks it (refused: the banner or a disabled item says why, and the field
+/// stays), then made (`onSplit`: the review's undoable split, or a break of the row before a turn it holds), and the
+/// second part's speaker pop-up opens (`focusSpeaker`). The Split Turn sheet stays for choosing a place by keyboard.
 extension TurnListView {
-    /// Return at the start of a turn's words: there is nothing before them to split from.
+    /// Return at the start of a row's first word: there is nothing before it to split from.
     static let alreadyStartsHere = "The turn already starts here. Return at the start of a later word splits the "
         + "turn before it."
     /// Return at the end of a row's last word.
     static let alreadyEndsHere = "The turn already ends here."
 
-    /// What splitting `paragraph` before its word `index` (into the row's words) does; nil before its first word or
-    /// past its words.
-    func split(of paragraph: ReviewParagraph, before index: Int) -> ReviewParagraphSplit? {
-        ReviewParagraphs.split(paragraph, words: paragraph.turns.map(words), at: index)
-    }
-
     /// Return in the edit field: when nothing was changed and the caret (no text selected) is at the very start of
     /// the field, the turn splits before its first word; at the very end, after its last word. Anything else is a
-    /// usual Return (false). A split that cannot be made says why in the banner, and the field stays open.
+    /// usual Return (false).
     func splitFromField() -> Bool {
-        guard let target = wordEdit, let editor = editField.currentEditor() else { return false }
+        guard let target = wordEdit, let editor = editField.currentEditor(),
+              let first = target.words.first, let last = target.words.last else { return false }
         let typed = editField.stringValue
         guard TranscriptWordEdit.cleaned(typed) == TranscriptWordEdit.cleaned(target.shown) else { return false }
         let selection = editor.selectedRange
         let length = (typed as NSString).length
-        guard selection.length == 0, selection.location == 0 || selection.location == length,
-              let row = paragraphs.firstIndex(where: { $0.id == target.paragraphID }) else { return false }
+        guard selection.length == 0, selection.location == 0 || selection.location == length else { return false }
         let atStart = selection.location == 0
-        let paragraph = paragraphs[row]
-        let index = atStart ? target.range.lowerBound : target.range.upperBound + 1
-        guard let split = split(of: paragraph, before: index) else {
-            onEditMessage?(atStart ? Self.alreadyStartsHere : Self.alreadyEndsHere)
-            return true
+        let request = ReviewSplitRequest(word: atStart ? first.ref : last.ref, after: !atStart,
+                                         movesSeen: target.movesSeen, wordsEpoch: target.wordsEpoch)
+        switch resolveSplit?(request) {
+        case .split(let split)?:
+            cancelWordEdit()
+            onSplit?(split, request)
+        case .refused(let why)?:
+            onEditMessage?(why)
+        case nil:
+            return false
         }
-        if let refusal = splitRefusal?(split) {
-            onEditMessage?(refusal)
-            return true
-        }
-        cancelWordEdit()
-        onSplit?(split)
         return true
     }
 
-    /// Split Turn Here on word `word` of `row`: nil when none is offered (the row's first word), else why it cannot be
-    /// made (nil inside when it can).
-    func splitOffer(row: Int, word: Int) -> String?? {
-        guard row >= 0, row < paragraphs.count, let split = split(of: paragraphs[row], before: word) else { return nil }
-        return .some(splitRefusal?(split) ?? nil)
+    /// Split Turn Here on `word` of `row` (as the row shows it): nil on the row's first word, where there is nothing
+    /// to split from; else the item's request, with why it cannot be made (nil when it can).
+    func splitOffer(row: Int, word: ReviewWord) -> (choice: SplitChoice, refusal: String?)? {
+        guard row >= 0, row < paragraphs.count, paragraphWords(paragraphs[row]).words.first?.ref != word.ref else {
+            return nil
+        }
+        let request = ReviewSplitRequest(word: word.ref, after: false, movesSeen: wordMoves.count,
+                                         wordsEpoch: wordsEpoch)
+        guard let resolution = resolveSplit?(request) else { return nil }
+        if case .refused(let why) = resolution { return (SplitChoice(request), why) }
+        return (SplitChoice(request), nil)
     }
 
-    /// Split Turn Here chosen.
-    func splitHere(row: Int, word: Int) {
-        guard row >= 0, row < paragraphs.count, let split = split(of: paragraphs[row], before: word),
-              splitRefusal?(split) == nil else { return }
-        onSplit?(split)
+    /// Split Turn Here chosen: the request the menu made, resolved again now (the word followed since).
+    func splitChosen(_ choice: SplitChoice) {
+        guard case .split(let split)? = resolveSplit?(choice.request) else { return }
+        onSplit?(split, choice.request)
     }
 
     /// After a split: the row the second part starts (its first word `word`) is selected and shown, and its speaker
     /// pop-up opens (`openSpeakerMenu`), so its speaker can be chosen at once; it keeps the first part's until then.
-    /// False when no row starts at `word`.
+    /// False when no row shown starts at `word` (a search may hide it).
     @discardableResult
     func focusSpeaker(startingAt word: WordRef) -> Bool {
         guard let row = paragraphs.firstIndex(where: { paragraphWords($0).words.first?.ref == word }) else {

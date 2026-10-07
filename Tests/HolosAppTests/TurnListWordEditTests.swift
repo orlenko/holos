@@ -467,14 +467,37 @@ struct TurnListWordEditTests {
         #expect(list.wordEdit?.words.map(\.text) == ["alpha"] && list.editField.stringValue == "Alfa")
     }
 
+    /// The window's resolver over the fixture (`ReviewWindow.splitResolution`), with where a word falls in its turn
+    /// worked out as the review does (`ReviewSession.splitPlace`) over the fixture's words; `refusal` stands for the
+    /// review's split check. Records the splits made.
+    private func splitting(_ list: TurnListView, refusal: @escaping (String, WordRef) -> String? = { _, _ in nil })
+        -> () -> [ReviewParagraphSplit] {
+        var splits: [ReviewParagraphSplit] = []
+        list.resolveSplit = { request in
+            let turnWords = TurnListViewTests.words[request.word.segmentID] ?? []
+            let place: ReviewSplitPlace? = turnWords.firstIndex { $0.ref == request.word }.map { index in
+                if request.after {
+                    return index + 1 < turnWords.count
+                        ? .inside(turnID: request.word.segmentID, word: turnWords[index + 1].ref)
+                        : .turnEnd(turnID: request.word.segmentID)
+                }
+                return index > 0 ? .inside(turnID: request.word.segmentID, word: request.word)
+                    : .turnStart(turnID: request.word.segmentID)
+            }
+            return ReviewWindow.splitResolution(place, paragraphs: list.paragraphs, refusal: refusal)
+        }
+        list.onSplit = { split, _ in splits.append(split) }
+        return { splits }
+    }
+
     /// Return with the caret at the start of the field's word and nothing changed splits the turn before it (row 0 is
     /// T1 "alpha beta" and T2 "gamma delta"): inside a turn, a split; at a turn's first word, a break of the row. At the
     /// end of the word, the split comes after it. With the word selected (as the field opens) or the caret inside it,
     /// Return does what it always did: nothing changed, nothing saved, no split.
     @Test func returnAtTheStartOfAWordSplitsTheTurnThere() throws {
         let (list, saved) = editingList()
-        var splits: [ReviewParagraphSplit] = []
-        list.onSplit = { splits.append($0) }
+        let made = splitting(list)
+        var splits: [ReviewParagraphSplit] { made() }
         var messages: [String?] = []
         list.onEditMessage = { messages.append($0) }
         list.editingWords = true
@@ -520,40 +543,58 @@ struct TurnListWordEditTests {
     /// Split Turn Here is offered disabled, saying why.
     @Test func aRefusedSplitSaysWhyAndIsNotMade() throws {
         let (list, _) = editingList()
-        var splits: [ReviewParagraphSplit] = []
-        list.onSplit = { splits.append($0) }
+        let why = "That word is part of words you edited together; split before or after them."
+        let splits = splitting(list, refusal: { _, _ in why })
         var messages: [String?] = []
         list.onEditMessage = { messages.append($0) }
-        let why = "That word is part of words you edited together; split before or after them."
-        list.splitRefusal = { split in if case .splitTurn = split { why } else { nil } }
         list.editingWords = true
         list.table.handleWordClick(row: 0, word: 1, through: 1, extend: false)
         list.editField.currentEditor()?.selectedRange = NSRange(location: 0, length: 0)
         press(list, #selector(NSResponder.insertNewline(_:)))
-        #expect(splits.isEmpty && messages.last == why && list.wordEdit != nil)
+        #expect(splits().isEmpty && messages.last == why && list.wordEdit != nil)
         list.cancelWordEdit()
         list.editingWords = false
         let cell = try TurnListViewTests.cell(list, row: 0)
-        let menu = list.table.wordMenu(row: 0, cell: cell, word: cell.bodyText.reviewWord(at: 1), index: 1)
+        let menu = list.table.wordMenu(row: 0, cell: cell, word: cell.bodyText.reviewWord(at: 1))
         let item = try #require(menu.items.first { $0.title == "Split Turn Here" })
         #expect(!item.isEnabled && item.toolTip == why)
-        list.splitHere(row: 0, word: 1)
-        #expect(splits.isEmpty)
+        list.splitChosen(try #require(item.representedObject as? SplitChoice))
+        #expect(splits().isEmpty, "Chosen anyway (the item is disabled): still not made.")
         // A paragraph break is never refused.
-        let breakItem = try #require(list.table.wordMenu(row: 0, cell: cell, word: cell.bodyText.reviewWord(at: 2),
-                                                         index: 2).items.first { $0.title == "Split Turn Here" })
+        let breakItem = try #require(list.table.wordMenu(row: 0, cell: cell, word: cell.bodyText.reviewWord(at: 2))
+            .items.first { $0.title == "Split Turn Here" })
         #expect(breakItem.isEnabled)
+    }
+
+    /// The place is the word as the list showed it, never an index read again: a word edit saved since the field or
+    /// the menu took the word ("alpha" became "al pha", so every later word of T1 moved by one) is followed
+    /// (`ReviewSession.splitPlace`); a split is made before the same word, "beta", now word 2.
+    @Test func aSplitFollowsTheWordItWasAskedAtThroughEditsSavedSince() throws {
+        let (list, _) = editingList()
+        var requests: [ReviewSplitRequest] = []
+        list.resolveSplit = { request in
+            requests.append(request)
+            return .split(.splitTurn(turnID: "T1", at: request.word))
+        }
+        list.onSplit = { _, _ in }
+        list.editingWords = true
+        list.table.handleWordClick(row: 0, word: 1, through: 1, extend: false)
+        list.editField.currentEditor()?.selectedRange = NSRange(location: 0, length: 0)
+        press(list, #selector(NSResponder.insertNewline(_:)))
+        let beta = try #require(TurnListViewTests.words["T1"]?[1])
+        // The request names the field's own word, with the moves and epoch the field follows: the review follows them.
+        #expect(requests == [ReviewSplitRequest(word: beta.ref, after: false, movesSeen: 0, wordsEpoch: 0)])
     }
 
     /// Outside edit mode, a word's context menu offers Split Turn Here (no sheet): before that word. Not on a row's
     /// first word, where there is nothing to split from. A fixed word offers its Revert beside it.
     @Test func theWordMenuSplitsTheTurnHere() throws {
         let (list, _) = editingList()
-        var splits: [ReviewParagraphSplit] = []
-        list.onSplit = { splits.append($0) }
+        let made = splitting(list)
+        var splits: [ReviewParagraphSplit] { made() }
         let cell = try TurnListViewTests.cell(list, row: 0)
         func menu(_ index: Int) -> NSMenu {
-            list.table.wordMenu(row: 0, cell: cell, word: cell.bodyText.reviewWord(at: index), index: index)
+            list.table.wordMenu(row: 0, cell: cell, word: cell.bodyText.reviewWord(at: index))
         }
         #expect(menu(0).items.isEmpty, "The row's first word: no split.")
         let item = try #require(menu(1).items.first { $0.title == "Split Turn Here" })

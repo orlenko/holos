@@ -572,12 +572,15 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, Clo
         turnList.onEditMessage = { [weak self] message in self?.editBanner.show(message: message) }
         // Return at a word's start in edit mode, or Split Turn Here: the split, checked as the review checks it, then
         // the second part's speaker pop-up.
-        turnList.onSplit = { [weak self] split in
+        turnList.onSplit = { [weak self] split, request in
             guard let self else { return }
-            self.applySplit(split, movesSeen: self.review.shownWordMoves.count, epoch: self.review.wordsEpoch,
-                            focus: true)
+            // The word is where `resolveSplit` found it just now, among the words shown: a word edit saved before the
+            // split runs moves it from there; words changed elsewhere since it was chosen still refuse it.
+            self.applySplit(split, movesSeen: self.review.shownWordMoves.count, epoch: request.wordsEpoch, focus: true)
         }
-        turnList.splitRefusal = { [weak self] split in self?.splitRefusal(split) }
+        turnList.resolveSplit = { [weak self] request in
+            self?.resolveSplit(request) ?? .refused("The review is closing.")
+        }
         // The review turned read-only with a field open (an earlier edit's labels could not be reread, say): its edit
         // is queued all the same, and waits for the reread as the changes before it do.
         turnList.onKeepWordEdit = { [weak self] words, text, movesSeen, wordsEpoch in
@@ -1134,29 +1137,71 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, Clo
     /// words changed elsewhere refuse it, `epoch`), or the row breaks before a turn it holds (this window only). With
     /// `focus` (Return at a word's start, Split Turn Here), the second part's row is selected and its speaker pop-up
     /// opens, so it can be given its speaker at once (`TurnListView.focusSpeaker`).
-    private func applySplit(_ split: ReviewParagraphSplit, movesSeen: Int, epoch: Int, focus: Bool) {
+    private func applySplit(_ split: ReviewParagraphSplit, movesSeen: Int?, epoch: Int, focus: Bool) {
         switch split {
         case .splitTurn(let turnID, let word):
             perform { [weak self] review in
                 try await review.split(turnID: turnID, at: word, seenMoves: movesSeen, seenEpoch: epoch)
                 guard focus, let self else { return }
                 self.refresh()
-                self.turnList.focusSpeaker(startingAt: word)
+                self.focusSpeaker(startingAt: word)
             }
         case .breakBefore(let turnID):
             guard let turn = review.projection.turns.first(where: { $0.id == turnID }) else { return }
             paragraphBreaks.insert(before: turn, runID: review.projection.runID)
             refresh()
             turnList.select([turnID], scroll: true)
-            if focus, let first = review.words(of: turn).first { turnList.focusSpeaker(startingAt: first.ref) }
+            if focus, let first = review.words(of: turn).first { focusSpeaker(startingAt: first.ref) }
         }
     }
 
-    /// Why `split` cannot be made now (`ReviewSession.splitRefusal`); a paragraph break always can.
-    private func splitRefusal(_ split: ReviewParagraphSplit) -> String? {
-        switch split {
-        case .splitTurn(let turnID, let word): return review.splitRefusal(turnID: turnID, at: word)
-        case .breakBefore: return nil
+    /// The second part's speaker pop-up after a split; a search hiding its row is cleared first, as Next Uncertain
+    /// clears one hiding where it goes.
+    private func focusSpeaker(startingAt word: WordRef) {
+        if turnList.focusSpeaker(startingAt: word) { return }
+        guard !query.isEmpty else { return }
+        query = ""
+        searchField.stringValue = ""
+        refresh()
+        turnList.focusSpeaker(startingAt: word)
+    }
+
+    /// What a split asked for at a word makes now (`TurnListView.resolveSplit`): the review finds where the word is
+    /// (`ReviewSession.splitPlace`, following word moves since it was chosen); inside a turn, that turn's split,
+    /// checked as it is when made (`ReviewSession.splitRefusal`); at a turn's start or end, a break of the row before
+    /// the turn there, when the row goes on past it.
+    private func resolveSplit(_ request: ReviewSplitRequest) -> ReviewSplitResolution {
+        let place: ReviewSplitPlace?
+        do {
+            place = try review.splitPlace(at: request.word, after: request.after, seenMoves: request.movesSeen,
+                                          seenEpoch: request.wordsEpoch)
+        } catch {
+            return .refused(error.localizedDescription)
+        }
+        return Self.splitResolution(place, paragraphs: turnList.paragraphs) { [review] turnID, word in
+            review.splitRefusal(turnID: turnID, at: word)
+        }
+    }
+
+    /// `resolveSplit`'s rule for a place the review found (`place`) in the rows shown (`paragraphs`); `refusal`: why a
+    /// turn cannot be split before a word (`ReviewSession.splitRefusal`).
+    static func splitResolution(_ place: ReviewSplitPlace?, paragraphs: [ReviewParagraph],
+                                refusal: (String, WordRef) -> String?) -> ReviewSplitResolution {
+        switch place {
+        case .inside(let turnID, let word)?:
+            if let refusal = refusal(turnID, word) { return .refused(refusal) }
+            return .split(.splitTurn(turnID: turnID, at: word))
+        case .turnStart(let turnID)?:
+            guard let paragraph = paragraphs.first(where: { $0.contains(turnID: turnID) }),
+                  paragraph.turns.first?.id != turnID else { return .refused(TurnListView.alreadyStartsHere) }
+            return .split(.breakBefore(turnID: turnID))
+        case .turnEnd(let turnID)?:
+            guard let paragraph = paragraphs.first(where: { $0.contains(turnID: turnID) }),
+                  let index = paragraph.turns.firstIndex(where: { $0.id == turnID }),
+                  index + 1 < paragraph.turns.count else { return .refused(TurnListView.alreadyEndsHere) }
+            return .split(.breakBefore(turnID: paragraph.turns[index + 1].id))
+        case nil:
+            return .refused("Those words are no longer shown; try the split again.")
         }
     }
 

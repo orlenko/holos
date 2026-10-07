@@ -1729,6 +1729,42 @@ func aSplitIsCheckedBeforeItIsOfferedAsItIsWhenMade() async throws {
     await review.close()
 }
 
+/// Where a split asked at a word falls now (`splitPlace`): the word as it was shown when the split was asked
+/// (`seenMoves`), followed through the word edits saved since, never the index read again; before or after it; at a
+/// turn's start or end; refused when an edit replaced the word, or the words changed elsewhere.
+@Test(.timeLimit(.minutes(1))) @MainActor
+func aSplitPlaceFollowsTheWordThroughEditsSavedSince() async throws {
+    let temp = try TemporaryDirectory("review")
+    defer { temp.remove() }
+    let session = try await wordEditSession(in: temp, [
+        WordEditTurn(speaker: "system:S1", start: 0, words: ["ask", "the", "cloud", "now"]),
+    ])
+    let review = try await wordEditOpen(session)
+    let seen = review.shownWordMoves.count
+    let epoch = review.wordsEpoch
+    let asked = review.words(of: "T1")
+    // "ask" became "please ask": every later word moved by one.
+    try await review.editWords(wordEditRefs(review, "T1", [0]), to: "please ask")
+    let now = review.words(of: "T1")
+    #expect(now.map(\.text) == ["please", "ask", "the", "cloud", "now"])
+    #expect(try review.splitPlace(at: asked[2].ref, after: false, seenMoves: seen, seenEpoch: epoch)
+        == .inside(turnID: "T1", word: now[3].ref), "Before “cloud”, where it is now.")
+    #expect(try review.splitPlace(at: asked[1].ref, after: true, seenMoves: seen, seenEpoch: epoch)
+        == .inside(turnID: "T1", word: now[3].ref), "After “the”: before “cloud”.")
+    #expect(try review.splitPlace(at: now[0].ref, after: false, seenMoves: nil, seenEpoch: nil)
+        == .turnStart(turnID: "T1"))
+    #expect(try review.splitPlace(at: now[4].ref, after: true, seenMoves: nil, seenEpoch: nil)
+        == .turnEnd(turnID: "T1"))
+    // The word an edit replaced, or words changed elsewhere since: refused.
+    #expect(throws: HolosError.self) {
+        try review.splitPlace(at: asked[0].ref, after: false, seenMoves: seen, seenEpoch: epoch)
+    }
+    #expect(throws: HolosError.self) {
+        try review.splitPlace(at: asked[2].ref, after: false, seenMoves: seen, seenEpoch: epoch + 1)
+    }
+    await review.close()
+}
+
 /// A turn over two segments: a split at the first word of the later segment is a split like any other.
 @Test(.timeLimit(.minutes(1))) @MainActor
 func aTurnSplitsAtTheFirstWordOfItsLaterSegment() async throws {

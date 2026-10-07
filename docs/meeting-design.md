@@ -7829,9 +7829,13 @@ public enum SessionAudioComposition {
   first as the split itself is (`ReviewSession.splitRefusal`: words edited together, a
   turn's first word, a review held read-only; refused, the banner or a disabled menu item
   says why, and the field stays), across a segment boundary too (the first word of a later
-  segment of the turn). Then the second part's row is selected and its speaker pop-up opens,
-  so it can be given its speaker at once; it keeps the first part's until then. The edit-mode
-  banner says so. The Split Turn sheet stays: it chooses a place by keyboard, and plays from
+  segment of the turn). The place is the word as the list showed it, with the word moves
+  and words epoch it was chosen under: the review finds where that word is now
+  (`ReviewSession.splitPlace`; a word edit saved since moves it, one that replaced it or
+  words changed elsewhere refuse the split), never an index read again. Then the second
+  part's row is selected and its speaker pop-up opens, so it can be given its speaker at
+  once; it keeps the first part's until then (a search hiding that row is cleared first).
+  The edit-mode banner says so. The Split Turn sheet stays: it chooses a place by keyboard, and plays from
   it first. After any
   change, a row stays selected only if every turn of it was selected: a turn that joins a
   selected row's paragraph clears that selection rather than widening it.
