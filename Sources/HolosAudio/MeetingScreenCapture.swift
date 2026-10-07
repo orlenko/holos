@@ -256,7 +256,7 @@ struct ScreenDisplayLayout: Equatable, Sendable {
             // Nothing captures any more (the permission was withdrawn, say): the capture fails as it always did.
             // While other streams run, the layout stays unrecorded and a later poll tries again, backing off.
             retryLater()
-            if streams.isEmpty { receiver.failed() }
+            if !stopped, streams.isEmpty, isCurrent(layout) { receiver.failed() }
             return
         }
         // CoreGraphics is the truth for what is connected: a display the snapshot still lists after it was
@@ -299,7 +299,18 @@ struct ScreenDisplayLayout: Equatable, Sendable {
                 self?.starts[token] = nil
             }
         }
-        failIfNothingCaptures(receiver)
+        if isCurrent(layout) { failIfNothingCaptures(receiver) }
+    }
+
+    /// Whether this refresh may decide that nothing can capture: no stream error came in meanwhile, and the
+    /// displays are still those its query was made for. Otherwise the decision would rest on a stale snapshot (one
+    /// still listing a display unplugged during the query), so the refresh runs again on the current state instead.
+    private func isCurrent(_ layout: ScreenDisplayLayout) -> Bool {
+        guard !refreshAgain, system.layout() == layout else {
+            refreshAgain = true
+            return false
+        }
+        return true
     }
 
     /// One display's platform start, in its own task: a hung one holds up nothing else.
@@ -329,15 +340,15 @@ struct ScreenDisplayLayout: Equatable, Sendable {
         Self.log.info("Capturing display \(stream.display.number, privacy: .public) of the meeting")
     }
 
+    /// Inside a refresh, which decides at its end whether anything can still capture.
     private func startFailed(_ display: ScreenDisplay, _ receiver: ScreenFrameReceiver) {
         roster.failed(display.id)
         receiver.end(display.id)
         Self.log.error("Display \(display.number, privacy: .public) could not be captured")
-        failIfNothingCaptures(receiver)
     }
 
     /// No display captures or is starting, and one is connected but failing, or none was ever there: the capture
-    /// fails as one display's did. While snapshots still leave out a display CoreGraphics reports (displays being
+    /// fails as one display's did. Decided only at the end of a refresh whose snapshot is still current. While snapshots still leave out a display CoreGraphics reports (displays being
     /// reconfigured), it waits, up to `incompleteLimit` refreshes. Every display gone after one was captured (a lid
     /// closed on the last one) waits for one to return.
     private func failIfNothingCaptures(_ receiver: ScreenFrameReceiver) {
@@ -396,6 +407,7 @@ struct ScreenDisplayLayout: Equatable, Sendable {
     func capped(_ id: CGDirectDisplayID) {
         guard !stopped else { return }
         roster.capped(id)
+        receiver?.end(id)
         if let stream = streams.removeValue(forKey: id) { requestStop(stream) }
         Self.log.info("Display \(id, privacy: .public) stopped for the shared screen storage limit")
     }

@@ -512,6 +512,8 @@ func theBusiestDisplayStopsAtTheSharedCapAndTheQuietOneRunsToTheEnd() async thro
     var mirroring: [CGDirectDisplayID: CGDirectDisplayID] = [:]
     /// Displays ScreenCaptureKit's snapshot still lists after CoreGraphics dropped them (being unplugged).
     var stale: [ScreenDisplayCandidate] = []
+    /// Runs inside a ScreenCaptureKit query, after its answer was taken: what it returns may be stale by then.
+    var whileQuerying: (() async -> Void)?
     /// Runs inside a stream's stop, after the stop was asked for.
     var whileStopping: ((ScreenDisplay) async -> Void)?
     private(set) var queries = 0
@@ -535,7 +537,9 @@ func theBusiestDisplayStopsAtTheSharedCapAndTheQuietOneRunsToTheEnd() async thro
             failingQueries -= 1
             throw HolosError.unavailable("Synthetic: no shareable content.")
         }
-        return connected.filter { !unlisted.contains($0.id) && mirroring[$0.id] == nil } + stale
+        let answer = connected.filter { !unlisted.contains($0.id) && mirroring[$0.id] == nil } + stale
+        await whileQuerying?()
+        return answer
     }
     func stream(for display: ScreenDisplay, output: ScreenDisplayOutput) throws -> any ScreenStreamControl {
         if failing.contains(display.id) { throw HolosError.unavailable("Synthetic stream failure.") }
@@ -1193,5 +1197,58 @@ func aStreamThatErrorsWhileItsStartHangsIsRetiredAtOnce() async throws {
     gate.open()                                                      // the late start return is ignored
     await capture.settle()
     #expect(capture.capturing.isEmpty)
+    try await archive.finish(status: ArchiveStatus.audioOnly)
+}
+
+@Test(.timeLimit(.minutes(1))) @MainActor
+func aDisplayUnpluggedDuringAQueryNeverEndsTheCaptureForGood() async throws {
+    let (root, archive) = try await screenCaptureFixture()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let system = FakeScreenSystem([candidate(9, x: 0, main: true), candidate(5, x: 1920)])
+    let capture = MeetingScreenCapture(permissionCheck: { true }, system: system, pollInterval: .seconds(3600))
+    capture.start(.display, session: archive.directory, origin: 0)
+    await capture.settle()
+    // 5 is unplugged; the refresh's query takes its answer (9 alone) and is held there.
+    let gate = Gate()
+    let (entered, enter) = AsyncStream.makeStream(of: Void.self)
+    system.whileQuerying = { enter.yield(); await gate.wait() }
+    system.connected = [candidate(9, x: 0, main: true)]
+    let refreshing = Task { await capture.refresh() }
+    var iterator = entered.makeAsyncIterator()
+    _ = await iterator.next()
+    system.whileQuerying = nil
+    // Meanwhile 9 is unplugged too, and its stream errors.
+    system.connected = []
+    await capture.streamStopped(9)
+    gate.open()                                                      // the query returns its stale answer
+    await refreshing.value
+    await capture.settle()
+    // Both come back: the capture was waiting, not sealed.
+    system.connected = [candidate(9, x: 0, main: true), candidate(5, x: 1920)]
+    await capture.refresh(); await capture.settle()
+    #expect(capture.capturing == [5, 9])
+    await capture.stop()
+    #expect(try ScreenContextStore.read(session: archive.directory, sessionID: archive.id)?.failure == nil)
+    try await archive.finish(status: ArchiveStatus.audioOnly)
+}
+
+@Test(.timeLimit(.minutes(1))) @MainActor
+func aCapAppliedAfterItsDisplayCameBackStillStopsItsSamples() async throws {
+    // The cap is the display's (its usage stays across streams): when it lands after the display came back in a
+    // new stream, that stream stops and its samples are no longer taken.
+    let (root, archive) = try await screenCaptureFixture()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let system = FakeScreenSystem([candidate(9, x: 0, main: true), candidate(5, x: 1920)])
+    let capture = MeetingScreenCapture(permissionCheck: { true }, system: system, pollInterval: .seconds(3600))
+    capture.start(.display, session: archive.directory, origin: 0)
+    await capture.settle()
+    let output = try #require(system.outputs[5])
+    capture.capped(5)
+    await capture.settle()
+    #expect(system.stopped == [5])
+    await deliver(output.receiver, image: try screenCaptureImage(gray: 1), time: 50, display: output.display,
+                  stream: output.stream)
+    #expect(try ScreenContextStore.read(session: archive.directory, sessionID: archive.id)?.frames.isEmpty == true)
+    await capture.stop()
     try await archive.finish(status: ArchiveStatus.audioOnly)
 }

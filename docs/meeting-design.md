@@ -4608,7 +4608,12 @@ its stop is still finishing and the display is back) touches a newer one. A stre
 reports an error, even while its start is still pending (which may never return), is
 retired at once, and a start that fails is handled the same way: a refresh against the
 current layout tells an unplugged display from a broken stream before anything decides
-that nothing can capture; a late start return is stopped again. Stops are requested
+that nothing can capture; a late start return is stopped again. That decision is made
+only at the end of a refresh whose snapshot is still current (no stream error came in
+during its query, and the CoreGraphics layout is still the one it was made for);
+otherwise the refresh runs again, so a display unplugged during a query never seals the
+capture on a stale answer. A cap that lands after its display came back in a new stream
+still ends that stream's samples. Stops are requested
 without waiting, all at once when the meeting stops, so one stalled platform stop never
 leaves another stream running or holds up a refresh. Polling was chosen over the
 display-reconfiguration callback because the recorder is a command-line process without
