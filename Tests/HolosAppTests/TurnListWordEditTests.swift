@@ -751,6 +751,35 @@ struct TurnListWordEditTests {
         #expect(!list.focusSpeaker(startingAt: WordRef(segmentID: "T9", word: 0)), "No row starts there.")
     }
 
+    /// A field opened in a split's second part while the split still saves (its row has the part's temporary ID)
+    /// stays open when the saved split replaces that ID: nothing half typed is saved, and the window can tell a field
+    /// was opened since the split was asked (`fieldsOpened`), so no pop-up takes the keyboard.
+    @Test func aFieldInASplitsSecondPartFollowsItsSavedID() throws {
+        let (list, saved) = editingList()
+        let beta = try #require(TurnListViewTests.words["T1"]?[1])
+        var words = TurnListViewTests.words
+        words["T1"] = [try #require(TurnListViewTests.words["T1"]?[0])]
+        func shown(_ part: String) -> [ReviewParagraph] {
+            var turns = TurnListViewTests.turns
+            turns.insert(TurnListViewTests.turn(part, "S1", 1, 2), at: 1)
+            return ReviewParagraphs.group(turns, breaks: [part])
+        }
+        words["T1/e"] = [beta]
+        update(list, words: words, moves: [], paragraphs: shown("T1/e"))
+        let opened = list.fieldsOpened
+        list.editingWords = true
+        let row = try #require(list.paragraphs.firstIndex { $0.id == "T1/e" })
+        list.table.handleWordClick(row: row, word: 0, through: 0, extend: false)
+        #expect(list.wordEdit?.turnID == "T1/e" && list.fieldsOpened == opened + 1)
+        list.editField.stringValue = "Bet"
+        // Saved: the part's turn is "T1/s" now.
+        words["T1/s"] = [beta]
+        update(list, words: words, moves: [], paragraphs: shown("T1/s"), resolve: { $0 == "T1/e" ? "T1/s" : $0 })
+        #expect(list.wordEdit?.paragraphID == "T1/s" && list.wordEdit?.turnID == "T1/s")
+        #expect(list.editField.stringValue == "Bet" && saved().isEmpty)
+        #expect(list.fieldsOpened == opened + 1)
+    }
+
     /// Where a refused split's field opens again after edits saved meanwhile (`ReviewWindow.splitBoundary`): the same
     /// edge of its word, moved; of what replaced it (its last word for a split after it, never inside); a deleted
     /// word's boundary is the start of the word after it.
@@ -844,11 +873,11 @@ struct TurnListWordEditTests {
     }
 
     private func update(_ list: TurnListView, words: [String: [ReviewWord]], moves: [ReviewWordMove],
-                        paragraphs: [ReviewParagraph]? = nil) {
+                        paragraphs: [ReviewParagraph]? = nil, resolve: (String) -> String = { $0 }) {
         list.update(paragraphs: paragraphs ?? ReviewParagraphs.group(TurnListViewTests.turns),
                     speakers: [TurnListViewTests.speaker("S1", 1), TurnListViewTests.speaker("S2", 2)], people: [],
                     editable: true, text: { (words[$0.id] ?? []).map(\.text).joined(separator: " ") },
-                    words: { words[$0.id] ?? [] }, resolve: { $0 }, wordMoves: moves)
+                    words: { words[$0.id] ?? [] }, resolve: resolve, wordMoves: moves)
     }
 
     /// Words edited together that a relabel put in two turns: no Revert (it would be refused), and the tooltip says

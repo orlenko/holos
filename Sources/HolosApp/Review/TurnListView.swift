@@ -592,7 +592,12 @@ final class TurnListView: NSView, NSTableViewDataSource, NSTableViewDelegate {
         }
     }
     /// The words being edited, while the edit field is open.
-    var wordEdit: WordEditTarget?
+    var wordEdit: WordEditTarget? {
+        didSet { if wordEdit != nil, oldValue == nil { fieldsOpened += 1 } }
+    }
+    /// How many times a word's edit field opened: a split that finishes after the person opened one (it may have
+    /// closed again since, its row replaced) leaves the keyboard alone.
+    private(set) var fieldsOpened = 0
     /// A ⇧-click is on its way: the field losing the keyboard to the table does not save (the selection grows).
     var extendingWordEdit = false
     /// `ReviewSession.wordsEpoch` as of the last update: a field opened before it changed is not put back on its words.
@@ -669,6 +674,12 @@ final class TurnListView: NSView, NSTableViewDataSource, NSTableViewDelegate {
                 wordMoves newWordMoves: [ReviewWordMove] = []) {
         wordMoves = newWordMoves
         let selected = selectedTurnIDs.map(resolve)
+        // The open field's row and turn by their saved IDs: a part made by a split still saving when the field opened
+        // had a temporary one, which the saved split replaces (a paragraph's ID is its first turn's).
+        if let target = wordEdit {
+            wordEdit?.paragraphID = resolve(target.paragraphID)
+            wordEdit?.turnID = target.turnID.map(resolve)
+        }
         let oldParagraphs = paragraphs
         let oldLabels = labels
         let oldHints = hints

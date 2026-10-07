@@ -1163,6 +1163,9 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, NSM
     /// by then), with the caret where it was and the reason, as before Return.
     private func applySplit(_ split: ReviewParagraphSplit, movesSeen: Int?, epoch: Int, focus: Bool,
                             field: SplitField? = nil) {
+        // A word's field opened while the split saves (open still, or closed again since): the person went on
+        // editing, so no pop-up takes the keyboard.
+        let fieldsOpened = turnList.fieldsOpened
         switch split {
         case .splitTurn(let turnID, let word):
             perform { [weak self] review in
@@ -1174,7 +1177,7 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, NSM
                     // Saved, but its labels could not be reread (`incomplete`): the split stands, so its second part
                     // gets its pop-up as any; the footer says what failed after it.
                     if case HolosError.incomplete = error {
-                        if focus {
+                        if focus, self.turnList.fieldsOpened == fieldsOpened {
                             self.refresh()
                             let moved = ReviewSession.follow([word],
                                                              through: review.shownWordMoves.dropFirst(movesSeen ?? 0))
@@ -1186,7 +1189,7 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, NSM
                     if let field { await self.restoreSplitField(field, epoch: epoch, why: error.localizedDescription) }
                     throw error
                 }
-                guard focus, let self else { return }
+                guard focus, let self, self.turnList.fieldsOpened == fieldsOpened else { return }
                 self.refresh()
                 // Where the word is now (an edit saved before the split ran may have moved it), in the part split
                 // from `turnID` (its saved ID: a part made by a split still saving had a temporary one).
@@ -1217,6 +1220,9 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, NSM
     private func restoreSplitField(_ field: SplitField, epoch: Int, why: String) async {
         await review.reload()
         refresh()
+        // The person went on typing meanwhile (another word, a speaker's name, a search): it keeps the keyboard, and
+        // the refusal is in the footer only.
+        guard !turnList.typingElsewhere else { return }
         if !turnList.editingWords { setEditMode(true) }
         let text = field.field.text
         // Its saved ID: a part made by a split still saving when the field opened had a temporary one.
