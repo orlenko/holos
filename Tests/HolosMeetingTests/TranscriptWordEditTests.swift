@@ -610,6 +610,32 @@ private let editEchoMask: AcousticEchoMask = {
     #expect(reverted.segments[0].text == "ask cloud now")
 }
 
+@Test func anAutomaticFixEditedBackLeavesTheSegmentEditable() async throws {
+    // "你好世界 再见", timed as "你好", "世界", "再见"; the word-fix stage made "你好世界" "你好地球" (one word).
+    let base = editTranscript([editRanged("你好世界 再见", [(0, 2), (2, 2), (5, 2)])])
+    let fixed = try await editFixed(base, [Correction(heard: "你好世界", meant: "你好地球")])
+    #expect(fixed.segments[0].text == "你好地球 再见")
+    // Edited back in Review: both revisions count the edited words alike, so the next edit is made.
+    let back = try #require(try TranscriptWordEdit.editing(editRequest(0, 1, "你好世界"), in: fixed, base: base))
+    let edited = try #require(back.base)
+    #expect(WordTiming.effectiveWords(of: back.transcript.segments[0]).count
+        == WordTiming.effectiveWords(of: edited.segments[0]).count)
+    let next = try #require(try TranscriptWordEdit.editing(editRequest(1, 2, "拜拜"), in: back.transcript,
+                                                           base: edited))
+    #expect(next.transcript.segments[0].text == "你好世界 拜拜")
+}
+
+@Test func aWordThatReadsOtherwiseThanItsTextIsDamaged() {
+    // "one two three", with "two" pointing one character on: its range reads "wo ".
+    var segment = editRanged("one two three", [(0, 3), (4, 3), (8, 5)])
+    #expect(!TranscriptWordEdit.isDamaged(segment))
+    segment.words[1].utf16Offset = 5
+    #expect(TranscriptWordEdit.isDamaged(segment))
+    #expect(throws: HolosError.self) {
+        try TranscriptWordEdit.editing(editRequest(1, 2, "four"), in: editTranscript([segment]), base: nil)
+    }
+}
+
 @Test func aWordMoveIsReadOnlyAsItIsWritten() {
     #expect(SessionWordEdit.parseRange("3-5") == 3..<5 && SessionWordEdit.parseRange("0-0") == 0..<0)
     for damaged in ["-1-2", "1--2", "3-", "-5", "3-5-7", "+3-5", " 3-5", "3-5 ", "5-3", "3_5", "٣-٥", "",

@@ -271,8 +271,22 @@ public enum TranscriptWordEdit {
             guard let base, base.id == baseID else {
                 throw HolosError.invalidInput("The transcript the words were fixed from cannot be read.")
             }
+            // The edited words as this revision now has them (offsets from the new text's start): the unfixed
+            // revision takes the same, so both count the edit's words alike (`baseBounds`) even where one would keep
+            // the recognizer's words for the same text and the other split it anew ("你好世界" edited back over an
+            // automatic "你好地球").
+            let newText = span.lowerBound..<(span.lowerBound + meant.utf16.count)
+            let newLength = result.segments[index].text.utf16.count
+            let newWords = result.segments[index].words.compactMap { word -> TimedWord? in
+                guard let range = word.utf16Range(within: newLength), newText.contains(range.lowerBound),
+                      range.upperBound <= newText.upperBound else { return nil }
+                var relative = word
+                relative.utf16Offset -= newText.lowerBound
+                return relative
+            }
             let edited = try editingBase(base, segment: segment, words: words, span: lower..<upper, meant: meant,
-                                         heard: heard, heardWords: heardWords, deleted: deleted, now: now)
+                                         heard: heard, heardWords: heardWords, deleted: deleted,
+                                         newWords: newWords.isEmpty ? nil : newWords, now: now)
             newBase = edited
             result.fixedFrom = edited.id
             result.liveCorrectedFrom = edited.liveCorrectedFrom
@@ -342,8 +356,8 @@ public enum TranscriptWordEdit {
 
     /// Whether `segment`, as read from disk, cannot be trusted: none of its words is edited, none of its fixes reverted
     /// (`damagedMarks`), and close-time learning skips it. Damaged are:
-    /// - a word whose range does not fit the text, starts before the previous one ends (`utf16Range`), or has a
-    ///   boundary inside a character written as a surrogate pair;
+    /// - a word whose range does not fit the text, starts before the previous one ends (`utf16Range`), has a
+    ///   boundary inside a character written as a surrogate pair, or reads otherwise than the word's text;
     /// - a fix mark that is not sound (`isSound`), since every edit takes in the marks it touches;
     /// - two marks over the same word: each word has at most one fix (a fix never overlaps another), and an edit or a
     ///   mapping reading either would take the wrong one.
@@ -359,6 +373,11 @@ public enum TranscriptWordEdit {
         for word in words {
             guard let range = word.utf16Range(within: utf16.count), range.lowerBound >= previousEnd,
                   !splitsCharacter(range.lowerBound), !splitsCharacter(range.upperBound) else { return true }
+            // Every writer puts a word's text at its range: one that reads otherwise points at other text (an edit
+            // there would replace the wrong characters).
+            let there = String(decoding: utf16[range], as: UTF16.self)
+            guard there.trimmingCharacters(in: .whitespacesAndNewlines)
+                    == word.text.trimmingCharacters(in: .whitespacesAndNewlines) else { return true }
             previousEnd = range.upperBound
         }
         guard let fixes = segment.fixes, !fixes.isEmpty else { return false }
@@ -416,7 +435,7 @@ public enum TranscriptWordEdit {
     /// `base` with the same edit, made on the words the current segment's span stands for there.
     private static func editingBase(_ base: Transcript, segment: TranscriptSegment, words: [EffectiveWord],
                                     span: Range<Int>, meant: String, heard: String, heardWords: Int?, deleted: Bool?,
-                                    now: Date) throws -> Transcript {
+                                    newWords: [TimedWord]?, now: Date) throws -> Transcript {
         guard let index = base.segments.firstIndex(where: { $0.id == segment.id }),
               let bounds = baseBounds(fixes: segment.fixes ?? [], current: words,
                                       base: WordTiming.effectiveWords(of: base.segments[index])) else {
@@ -443,7 +462,8 @@ public enum TranscriptWordEdit {
         }
         working.marks.removeAll { $0.range.overlaps(range) }
         let edited = WordFixes.applying([.init(range: range, text: meant, kind: .reviewEdit, heard: heard,
-                                               heardWords: heardWords, deleted: deleted)], to: working)
+                                               heardWords: heardWords, words: newWords, deleted: deleted)],
+                                        to: working)
         var result = base
         result.id = UUID().uuidString
         result.createdAt = now

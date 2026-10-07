@@ -830,6 +830,29 @@ func aDamagedWordMoveFromTheJournalIsRefusedNeverCounted() async throws {
 }
 
 @Test(.timeLimit(.minutes(1))) @MainActor
+func aWordMoveTooLargeForAnyEditIsRefusedNeverMapped() async throws {
+    let temp = try TemporaryDirectory("review")
+    defer { temp.remove() }
+    // 1,001 words: a move whose every replacement word is owned by every replaced word would be over a million pairs.
+    let session = try await wordEditSession(in: temp, [
+        WordEditTurn(speaker: "system:S1", start: 0, words: Array(repeating: "word", count: 1_001)),
+    ])
+    let snapshot = try SpeakerSessionSnapshot.load(session: session)
+    let segment = try #require(snapshot.transcript.segments.first?.id)
+    var edited = snapshot.transcript
+    edited.id = UUID().uuidString
+    #expect(throws: HolosError.self) {
+        try SpeakerTranscriptRetarget.plan(session: session, from: snapshot, to: edited,
+                                           move: ReviewWordMove(segmentID: segment, replaced: 0..<1_001,
+                                                                replacement: 0..<1_001))
+    }
+    // One a real edit makes maps.
+    #expect(try SpeakerTranscriptRetarget.plan(session: session, from: snapshot, to: edited,
+                                               move: ReviewWordMove(segmentID: segment, replaced: 0..<500,
+                                                                    replacement: 0..<500)) != nil)
+}
+
+@Test(.timeLimit(.minutes(1))) @MainActor
 func anEditIsNeverSavedOverAWordWhosePunctuationChangedElsewhere() async throws {
     let temp = try TemporaryDirectory("review")
     defer { temp.remove() }

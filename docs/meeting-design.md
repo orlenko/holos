@@ -7875,7 +7875,9 @@ shown, Otter-style.
   on a new base keeps the words already there; the Revert of an edit is another edit. The
   edit is made in both layers:
   - the unfixed base `B` (`current.fixedFrom`, or the current transcript when it has none)
-    gets a new revision `B′` with the edit marked `reviewEdit`, `fixedFrom` nil and
+    gets a new revision `B′` with the edit marked `reviewEdit` (its new words as `C′` has
+    them, so both count the edit's words alike even where one would keep the recognizer's
+    words for the same text and the other split it anew), `fixedFrom` nil and
     `liveCorrectedFrom` = `B.liveCorrectedFrom ?? B.id` (the stable word space retargeting
     compares);
   - a fixed current transcript `C` gets `C′`: `C` with the same edit, `fixedFrom = B′.id`;
@@ -7979,8 +7981,9 @@ shown, Otter-style.
     damaged one (its words out of the segment's, `TranscriptWordEdit.isSound`, the one check
     every walk over a fix's words makes first; it is never read). Two marks over the same word
     (each in range on its own) are damaged too: each word has at most one fix. So is a word
-    whose range does not fit the text, starts before the previous word ends, or has a boundary
-    inside a character written as a surrogate pair (`TranscriptWordEdit.isDamaged`). A damaged
+    whose range does not fit the text, starts before the previous word ends, has a boundary
+    inside a character written as a surrogate pair, or reads otherwise than the word's text
+    (`TranscriptWordEdit.isDamaged`). A damaged
     segment shows no marks and none of its words is edited or reverted: the refusal comes before
     a field opens (`wordEditRefusal`, with the reason in the banner), before any range is
     walked. Close-time learning skips it, and reads no context from a damaged unfixed
@@ -7988,7 +7991,8 @@ shown, Otter-style.
     from disk is made one way (`utf16Range(offset:length:within:)`: by subtraction, never past
     the text, never backwards), so no damaged offset or length can overflow or trap. A word
     move in the event log is read only as written ("3-5", two unsigned decimal numbers; never
-    empty): a malformed one makes the event damaged, refused rather than read another way. The
+    empty; at most a million replaced × replacement word pairs, far more than any edit of one
+    turn): a malformed one makes the event damaged, refused rather than read another way. The
     turns are the labels on the transcript as it is then: labels the window could not reread
     after an edit are read again at close; when that fails, or the labels read are still on
     another transcript (a speaker head owed, or the transcript changed under them), nothing

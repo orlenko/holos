@@ -254,6 +254,10 @@ enum SpeakerTranscriptRetarget {
     }
 
     private struct Mapping {
+        /// The most replaced × replacement word pairs a word move may map (`init(from:to:move:)`): a million, far more
+        /// than any edit of one turn's words.
+        static let maximumMovePairs = 1_000_000
+
         struct Segment {
             var old: [EffectiveWord]
             var new: [EffectiveWord]
@@ -344,9 +348,15 @@ enum SpeakerTranscriptRetarget {
                           newWords.count - move.replacement.count == oldWords.count - move.replaced.count else {
                         throw changed
                     }
+                    // Each replacement word is owned by every replaced word: an edit replaces a few words of one turn,
+                    // so far fewer than `maximumMovePairs`; a move read from a damaged journal with more would take
+                    // hours to map, and is refused as damaged.
+                    let pairs = move.replaced.count.multipliedReportingOverflow(by: move.replacement.count)
+                    guard !pairs.overflow, pairs.partialValue <= Self.maximumMovePairs else { throw changed }
+                    let replacedRefs = move.replaced.map(ref)
                     owners = newWords.indices.map { index in
                         if index < move.replacement.lowerBound { return [ref(index)] }
-                        if index < move.replacement.upperBound { return move.replaced.map(ref) }
+                        if index < move.replacement.upperBound { return replacedRefs }
                         return [ref(index - move.replacement.count + move.replaced.count)]
                     }
                 } else {
