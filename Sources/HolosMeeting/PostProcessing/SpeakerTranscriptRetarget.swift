@@ -336,8 +336,11 @@ enum SpeakerTranscriptRetarget {
                 let owners: [[WordRef]]
                 if segment.id == move.segmentID {
                     // Both ranges within their words before any count is used (a move read from a damaged journal
-                    // can hold any numbers), then compared without adding, so nothing can overflow.
-                    guard move.replaced.upperBound <= oldWords.count, move.replacement.upperBound <= newWords.count,
+                    // can hold any numbers), then compared without adding, so nothing can overflow. Neither is ever
+                    // empty (an edit, and its undo, replace words by words): an empty one would leave words with no
+                    // owner, hidden from every turn.
+                    guard !move.replaced.isEmpty, !move.replacement.isEmpty,
+                          move.replaced.upperBound <= oldWords.count, move.replacement.upperBound <= newWords.count,
                           newWords.count - move.replacement.count == oldWords.count - move.replaced.count else {
                         throw changed
                     }

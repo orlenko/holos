@@ -7748,7 +7748,10 @@ shown, Otter-style.
   what it holds, before the close learns from the edits. Closed by hand (its close button,
   ⌘W), the window stays open until that edit is saved, and stays open when it is not (a full
   disk, a refusal): the field opens again with what was typed and the footer says why
-  (`ReviewCloseGate`), so nothing typed is lost to a failed save. Quitting starts every review
+  (`ReviewCloseGate`), so nothing typed is lost to a failed save. It waits the same way for
+  edits handed over a moment before and still saving (Return, then ⌘W), and stays open when
+  one of them is not saved (the footer says every edit not saved, with what was typed in
+  each). Quitting starts every review
   window's close at once (`ReviewQuit.closeAll`), so each queues its open field's edit before
   any slow close (another window's voice sync) is waited for; when the closes cannot finish
   within the quit's limit, an edit not saved yet is logged with what was typed. A maintenance
@@ -7834,7 +7837,9 @@ shown, Otter-style.
   consecutive stored indices of words shown in one projected turn; hidden echo words between
   them, another segment, or another turn refuse the edit with a message. The span grows to
   whole word-fix marks it touches (a mark is never split), and a deletion is merged into the
-  next word of the same turn (else the previous one), so the deleted words keep provenance
+  next word of the same turn (else the previous one; each judged with the marks it would take
+  in, so one whose fix runs out of the turn, or holds a live correction, gives way to the
+  other), so the deleted words keep provenance
   and time: "I um think" with "um" deleted is "I think" whose "think" was heard as "um
   think". Deleting every word of a segment, and touching a live correction (`liveCorrection`,
   whose live hint would no longer match), are refused in v1. Whitespace in the new text
@@ -7973,10 +7978,17 @@ shown, Otter-style.
     what was heard: "as New" beside "newark" made "New York" would match nothing), nor does a
     damaged one (its words out of the segment's, `TranscriptWordEdit.isSound`, the one check
     every walk over a fix's words makes first; it is never read). Two marks over the same word
-    (each in range on its own) are damaged too: each word has at most one fix. A segment with a damaged
-    mark shows no marks and none of its words is edited or reverted: the refusal comes before
+    (each in range on its own) are damaged too: each word has at most one fix. So is a word
+    whose range does not fit the text, starts before the previous word ends, or has a boundary
+    inside a character written as a surrogate pair (`TranscriptWordEdit.isDamaged`). A damaged
+    segment shows no marks and none of its words is edited or reverted: the refusal comes before
     a field opens (`wordEditRefusal`, with the reason in the banner), before any range is
-    walked. The
+    walked. Close-time learning skips it, and reads no context from a damaged unfixed
+    revision; editing and reverting refuse a damaged unfixed revision. Every word range read
+    from disk is made one way (`utf16Range(offset:length:within:)`: by subtraction, never past
+    the text, never backwards), so no damaged offset or length can overflow or trap. A word
+    move in the event log is read only as written ("3-5", two unsigned decimal numbers; never
+    empty): a malformed one makes the event damaged, refused rather than read another way. The
     turns are the labels on the transcript as it is then: labels the window could not reread
     after an edit are read again at close; when that fails, or the labels read are still on
     another transcript (a speaker head owed, or the transcript changed under them), nothing
@@ -8008,7 +8020,8 @@ shown, Otter-style.
   - nothing is learned from a deletion, a punctuation-only change, or a case-only change
     (decided on the edited words alone: a context word's own fix never makes "Hello" →
     "Hello," teach "Hello cloud" → "Hello, Claude"), unless the case change makes a proper noun (a word whose lowercase is not a dictionary
-    word: "github" → "GitHub"); words split or joined ("everyday" → "every day") are a real
+    word: "github" → "GitHub"), which teaches only the casing, never punctuation changed with
+    it ("github," → "GitHub." teaches "github" → "GitHub"); words split or joined ("everyday" → "every day") are a real
     change;
   - when the new text looks like a name or term (a word that is not a dictionary word, has a
     capital inside it, or a content word the edit capitalized), the window offers "Add

@@ -291,6 +291,11 @@ public enum WordFixes {
             throw HolosError.invalidInput("That word fix no longer belongs to the current transcript.")
         }
         let segment = transcript.segments[segmentIndex]
+        // Both revisions as read from disk: a segment that cannot be trusted is never reverted, nor its recognizer
+        // words taken back from a damaged unfixed one (a word dropped there would leave the words incomplete).
+        guard !TranscriptWordEdit.isDamaged(segment), !TranscriptWordEdit.isDamaged(baseSegment) else {
+            throw TranscriptWordEdit.damagedMarks
+        }
         let fixes = segment.fixes ?? []
         guard let targetIndex = fixes.firstIndex(where: {
             ($0.kind == .correction || $0.kind == .term) && $0.first <= word.word && word.word < $0.end

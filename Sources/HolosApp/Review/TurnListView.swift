@@ -309,7 +309,7 @@ final class TurnTextView: NSTextView {
     /// when asked for, never announced.
     override func accessibilityCustomActions() -> [NSAccessibilityCustomAction]? {
         var actions: [NSAccessibilityCustomAction] = []
-        var offeredFixes = Set<String>()
+        var offeredFixes = Set<[String]>()
         for (index, start) in wordStarts.enumerated() {
             let word = index < wordTexts.count ? wordTexts[index].trimmingCharacters(in: .whitespacesAndNewlines) : ""
             let revertible = index < wordRevertible.count ? wordRevertible[index] : true
@@ -329,7 +329,7 @@ final class TurnTextView: NSTextView {
             if canRevertFix, revertible, index < wordRefs.count, index < wordFixes.count, let fixed = wordFixes[index],
                canRevert(fixed, at: wordRefs[index]) {
                 let ref = wordRefs[index]
-                let key = "\(ref.segmentID)\u{1f}\(fixed.first)\u{1f}\(fixed.end)"
+                let key = [ref.segmentID, String(fixed.first), String(fixed.end)]
                 if offeredFixes.insert(key).inserted {
                     actions.append(NSAccessibilityCustomAction(name: "Revert to “\(fixed.heard)”") { [weak self] in
                         guard let onRevertFix = self?.onRevertFix else { return false }

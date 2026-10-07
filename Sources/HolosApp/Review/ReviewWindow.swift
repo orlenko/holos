@@ -140,6 +140,9 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, Clo
     private var closeTask: Task<Void, Never>?
     /// A close by hand waits for the edit typed in the field to be saved (`windowShouldClose`).
     private let closeGate = ReviewCloseGate()
+    /// Word edits the field handed over that are still saving (`editWords`): each ends with why it was not saved, nil
+    /// when it was. A close by hand waits for them too.
+    private var pendingWordEdits: [UUID: Task<String?, Never>] = [:]
     private var splitSheet: SplitSheet?
     private var assignSignature: [String] = []
     private var refreshScheduled = false
@@ -1080,31 +1083,59 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, Clo
 
     /// Saves an edit made in the turn list. Its new run keeps the turns, as does its undo's (`ReviewSession.keepsTurns`),
     /// so the window's paragraph breaks stay (`refresh`). Once saved, a new text that looks like a name or term is
-    /// offered for the word list (with ⌥Return it is added at once).
+    /// offered for the word list (with ⌥Return it is added at once). Tracked until it ends (`pendingWordEdits`), so
+    /// closing the window by hand waits for it, and stays open when it is not saved.
     private func editWords(_ words: [ReviewWord], to text: String, addTerm: Bool, movesSeen: Int,
                            whileUnread: Bool = false) {
         offeredTerm = nil
-        perform { [weak self] review in
-            var saved = false
-            do {
-                // Once saved, also when the labels could not be refreshed after it (the edit stands, and ⌥Return's
-                // term is still added).
-                // The words as the field showed them: never saved over words changed elsewhere since.
-                _ = try await review.editWords(words.map(\.ref), to: text, seenMoves: movesSeen,
-                                               whileUnread: whileUnread, expecting: words.map(\.shown)) { edit in
-                    saved = true
-                    self?.offerTerm(after: edit, add: addTerm)
-                }
-            } catch let error where !saved && !(error is CancellationError) {
-                // Refused or failed before it was saved: what was typed is never lost. The field opens again with it
-                // when the words are still there; the message says it in any case.
-                let typed = TranscriptWordEdit.cleaned(text)
-                let message = error.localizedDescription.contains("“\(typed)”") ? error.localizedDescription
-                    : error.localizedDescription + " What you typed: “\(typed)”."
-                self?.turnList.reopenWordEdit(words, typed: text, message: message)
-                throw HolosError.invalidInput(message)
-            }
+        problem = nil
+        notice = nil
+        refreshFooter()
+        let id = UUID()
+        let saving: Task<String?, Never> = Task { [weak self] () async -> String? in
+            guard let self else { return nil }
+            let refusal: String? = await self.saveEdit(words, to: text, addTerm: addTerm, movesSeen: movesSeen,
+                                                       whileUnread: whileUnread)
+            self.pendingWordEdits[id] = nil
+            return refusal
         }
+        pendingWordEdits[id] = saving
+    }
+
+    /// `editWords`' save: nil when saved (also when its labels could not be reread after it: the edit stands, and
+    /// ⌥Return's term is still added), else why, with what was typed (the field opens again with it when its words are
+    /// still there). Made on the words as the field showed them: never over words changed elsewhere since.
+    private func saveEdit(_ words: [ReviewWord], to text: String, addTerm: Bool, movesSeen: Int,
+                          whileUnread: Bool) async -> String? {
+        var saved = false
+        let committed: (ReviewWordEdit) -> Void = { [weak self] edit in
+            saved = true
+            self?.offerTerm(after: edit, add: addTerm)
+        }
+        do {
+            _ = try await review.editWords(words.map(\.ref), to: text, seenMoves: movesSeen, whileUnread: whileUnread,
+                                           expecting: words.map(\.shown), committed: committed)
+            return nil
+        } catch is CancellationError {
+            return nil
+        } catch {
+            if saved {
+                problem = error.localizedDescription
+                refreshFooter()
+                return nil
+            }
+            let message = Self.withTyped(error.localizedDescription, text)
+            turnList.reopenWordEdit(words, typed: text, message: message)
+            problem = message
+            refreshFooter()
+            return message
+        }
+    }
+
+    /// `message` with what was typed, unless it says it already.
+    private static func withTyped(_ message: String, _ text: String) -> String {
+        let typed = TranscriptWordEdit.cleaned(text)
+        return message.contains("“\(typed)”") ? message : message + " What you typed: “\(typed)”."
     }
 
     /// After a saved edit: with `add` (⌥Return), its new text goes into the word list now, with what the recognizer
@@ -1397,37 +1428,69 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, Clo
 
     /// Closed by hand with an edit typed in the field: saved first, and the window stays open when it is not
     /// (`ReviewCloseGate`).
+    /// Also with edits handed over and still saving (Return, then ⌘W at once): the window waits for them, and stays
+    /// open when one is not saved (its own failure opens its field again, or says what was typed).
     func windowShouldClose(_ sender: NSWindow) -> Bool {
         guard sender === window, closeTask == nil else { return true }
-        let open = closeGate.saving ? nil : turnList.takeOpenWordEdit()
-        return closeGate.shouldClose(typed: open != nil, save: { [weak self] in
-            guard let self, let open else { return nil }
-            return await self.saveTypedEdit(open.words, text: open.text, movesSeen: open.movesSeen)
-        }, close: { [weak self] in
-            self?.window.close()
-        }, keep: { [weak self] message in
-            guard let self, let open else { return }
-            if !self.turnList.editingWords { self.turnList.editingWords = true }
-            self.turnList.reopenWordEdit(open.words, typed: open.text, message: message)
-            self.problem = message
-            self.refreshFooter()
-        })
+        let open: OpenWordEdit? = closeGate.saving ? nil : turnList.takeOpenWordEdit()
+        let pending: [Task<String?, Never>] = closeGate.saving ? [] : Array(pendingWordEdits.values)
+        let outcome = CloseSaveOutcome()
+        let save: () async -> String? = { [weak self] in
+            await self?.saveBeforeClose(open, after: pending, outcome: outcome)
+        }
+        let close: () -> Void = { [weak self] in self?.window.close() }
+        let keep: (String) -> Void = { [weak self] message in
+            self?.keepAfterFailedClose(open, outcome: outcome, message: message)
+        }
+        return closeGate.shouldClose(typed: open != nil || !pending.isEmpty, save: save, close: close, keep: keep)
+    }
+
+    /// The open field's edit as `TurnListView.takeOpenWordEdit` hands it over.
+    private typealias OpenWordEdit = (words: [ReviewWord], text: String, movesSeen: Int)
+
+    /// What a close by hand found when it saved (`saveBeforeClose`): why the open field's edit was not saved.
+    private final class CloseSaveOutcome {
+        var openRefusal: String?
+    }
+
+    /// Before a close by hand: waits for the edits handed over (in the order they were made), then saves the open
+    /// field's. Nil when all were saved, else every refusal, each with what was typed.
+    private func saveBeforeClose(_ open: OpenWordEdit?, after pending: [Task<String?, Never>],
+                                 outcome: CloseSaveOutcome) async -> String? {
+        var refusals: [String] = []
+        for edit in pending {
+            if let refusal = await edit.value { refusals.append(refusal) }
+        }
+        if let open {
+            let refusal = await saveTypedEdit(open.words, text: open.text, movesSeen: open.movesSeen)
+            outcome.openRefusal = refusal
+            if let refusal { refusals.append(refusal) }
+        }
+        return refusals.isEmpty ? nil : refusals.joined(separator: " ")
+    }
+
+    /// A close by hand stopped because an edit was not saved: the open field's edit opens again with what was typed (an
+    /// edit handed over before did so itself), and the footer says every edit not saved.
+    private func keepAfterFailedClose(_ open: OpenWordEdit?, outcome: CloseSaveOutcome, message: String) {
+        if let open, let refusal = outcome.openRefusal {
+            if !turnList.editingWords { turnList.editingWords = true }
+            turnList.reopenWordEdit(open.words, typed: open.text, message: refusal)
+        }
+        problem = message
+        refreshFooter()
     }
 
     /// Saves an edit typed in the field and waits for it: nil when saved (also when its labels could not be reread
     /// after it: the edit stands), else why, with what was typed.
     private func saveTypedEdit(_ words: [ReviewWord], text: String, movesSeen: Int) async -> String? {
         var saved = false
+        let committed: (ReviewWordEdit) -> Void = { _ in saved = true }
         do {
             _ = try await review.editWords(words.map(\.ref), to: text, seenMoves: movesSeen, whileUnread: true,
-                                           expecting: words.map(\.shown)) { _ in saved = true }
-            return nil
-        } catch where saved {
+                                           expecting: words.map(\.shown), committed: committed)
             return nil
         } catch {
-            let typed = TranscriptWordEdit.cleaned(text)
-            return error.localizedDescription.contains("“\(typed)”") ? error.localizedDescription
-                : error.localizedDescription + " What you typed: “\(typed)”."
+            return saved ? nil : Self.withTyped(error.localizedDescription, text)
         }
     }
 

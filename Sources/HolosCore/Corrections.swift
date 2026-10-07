@@ -70,8 +70,9 @@ public struct CorrectionList: Codable, Sendable, Equatable {
     @discardableResult
     public mutating func learnFromReview(_ learned: [Correction], meeting: String) -> [Correction] {
         var taught = taught(byMeeting: meeting)
-        let known = Set(taught.map { Self.key($0.heard) + "\u{1f}" + $0.meant })
-        let new = learned.filter { !known.contains(Self.key($0.heard) + "\u{1f}" + $0.meant) }
+        // Phrase and value kept apart (never joined into one string, where decoded text could make two lessons one).
+        let known = Set(taught.map { Correction(heard: Self.key($0.heard), meant: $0.meant) })
+        let new = learned.filter { !known.contains(Correction(heard: Self.key($0.heard), meant: $0.meant)) }
         let applied = learnReplacingTaught(new, taught: taught)
         guard !applied.isEmpty else { return [] }
         for correction in applied {

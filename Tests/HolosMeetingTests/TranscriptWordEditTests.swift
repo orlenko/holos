@@ -579,6 +579,37 @@ private let editEchoMask: AcousticEchoMask = {
     #expect(TranscriptWordEdit.isDamaged(unordered))
 }
 
+@Test func aWordBoundaryInsideACharacterIsDamaged() {
+    // "hi 😀 there": the emoji is two UTF-16 units (3–4). A word starting at 4 would split it when edited.
+    let sound = editRanged("hi 😀 there", [(0, 2), (3, 2), (6, 5)])
+    #expect(!TranscriptWordEdit.isDamaged(sound))
+    var split = sound
+    split.words[1].utf16Length = 1
+    #expect(TranscriptWordEdit.isDamaged(split))
+    var inside = sound
+    inside.words[2].utf16Offset = 4
+    inside.words[2].utf16Length = 7
+    #expect(TranscriptWordEdit.isDamaged(inside))
+    #expect(throws: HolosError.self) {
+        try TranscriptWordEdit.editing(editRequest(2, 3, "world"), in: editTranscript([inside]), base: nil)
+    }
+}
+
+@Test func aFixIsNeverRevertedOntoADamagedUnfixedRevision() async throws {
+    let base = editTranscript([editSegment(["ask", "cloud", "now"])])
+    let fixed = try await editFixed(base, [Correction(heard: "cloud", meant: "Claude")])
+    #expect(fixed.segments[0].text == "ask Claude now")
+    // The unfixed revision as read back, damaged: "now" lies past its text. Its words would come back incomplete.
+    var damaged = base
+    damaged.segments[0].words[2].utf16Offset = Int.max
+    #expect(throws: HolosError.self) {
+        try WordFixes.reverting(WordRef(segmentID: "S1", word: 1), in: fixed, to: damaged)
+    }
+    // As written, the revert is made.
+    let reverted = try WordFixes.reverting(WordRef(segmentID: "S1", word: 1), in: fixed, to: base)
+    #expect(reverted.segments[0].text == "ask cloud now")
+}
+
 @Test func aWordMoveIsReadOnlyAsItIsWritten() {
     #expect(SessionWordEdit.parseRange("3-5") == 3..<5 && SessionWordEdit.parseRange("0-0") == 0..<0)
     for damaged in ["-1-2", "1--2", "3-", "-5", "3-5-7", "+3-5", " 3-5", "3-5 ", "5-3", "3_5", "٣-٥", "",

@@ -1491,15 +1491,21 @@ public struct ReviewWord: Sendable, Equatable {
     /// the next undo.
     private func restoreUndo(after op: Operation, error: any Error) {
         guard case .undo(let target) = op.kind, !op.savedUnreloaded, !Self.isIncomplete(error) else { return }
+        // The labels are still those the undo was asked on, or this window's own word changes retargeted them since
+        // (an edit saved while the undo waited keeps the turns: `keepsTurns`); a new labelling is neither.
+        var sameLabels = snapshot.run?.id == op.runID
+        if !sameLabels, let current = snapshot.run?.id, let asked = op.runID {
+            sameLabels = keepsTurns(of: asked, in: current)
+        }
         switch target {
         case .saved(let entry):
-            guard snapshot.run?.id == op.runID else { return }
+            guard sameLabels else { return }
             let index = undoStack.firstIndex { $0.order > entry.order } ?? undoStack.endIndex
             undoStack.insert(entry, at: index)
         case .operation(let earlier):
             // The earlier change stays in effect on disk, so it is shown again and can be undone again.
             earlier.undone = false
-            guard !earlier.savedUnreloaded, earlier.savedUndoable, snapshot.run?.id == op.runID else { return }
+            guard !earlier.savedUnreloaded, earlier.savedUndoable, sameLabels else { return }
             pushUndo(earlier.batches, wordEdit: earlier.wordEdit)
         }
         Self.log.info("Session \(self.sessionID, privacy: .public): an undo failed; the change can be undone again")

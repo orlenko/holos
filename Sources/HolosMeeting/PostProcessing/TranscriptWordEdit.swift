@@ -342,16 +342,23 @@ public enum TranscriptWordEdit {
 
     /// Whether `segment`, as read from disk, cannot be trusted: none of its words is edited, none of its fixes reverted
     /// (`damagedMarks`), and close-time learning skips it. Damaged are:
-    /// - a word whose range does not fit the text, or starts before the previous one ends (`utf16Range`);
+    /// - a word whose range does not fit the text, starts before the previous one ends (`utf16Range`), or has a
+    ///   boundary inside a character written as a surrogate pair;
     /// - a fix mark that is not sound (`isSound`), since every edit takes in the marks it touches;
     /// - two marks over the same word: each word has at most one fix (a fix never overlaps another), and an edit or a
     ///   mapping reading either would take the wrong one.
     public static func isDamaged(_ segment: TranscriptSegment) -> Bool {
         let words = WordTiming.effectiveWords(of: segment)
-        let length = segment.text.utf16.count
+        let utf16 = Array(segment.text.utf16)
+        // A boundary between the two halves of a character written as a surrogate pair ("😀"): an edit there would
+        // split the character.
+        func splitsCharacter(_ boundary: Int) -> Bool {
+            boundary > 0 && boundary < utf16.count && UTF16.isTrailSurrogate(utf16[boundary])
+        }
         var previousEnd = 0
         for word in words {
-            guard let range = word.utf16Range(within: length), range.lowerBound >= previousEnd else { return true }
+            guard let range = word.utf16Range(within: utf16.count), range.lowerBound >= previousEnd,
+                  !splitsCharacter(range.lowerBound), !splitsCharacter(range.upperBound) else { return true }
             previousEnd = range.upperBound
         }
         guard let fixes = segment.fixes, !fixes.isEmpty else { return false }

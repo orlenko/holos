@@ -816,7 +816,9 @@ func aDamagedWordMoveFromTheJournalIsRefusedNeverCounted() async throws {
     // A decodable journal event whose move holds numbers past any word count (repairing a speaker head reads it).
     for move in [ReviewWordMove(segmentID: segment, replaced: 1..<2, replacement: 1..<Int.max),
                  ReviewWordMove(segmentID: segment, replaced: 1..<Int.max, replacement: 1..<2),
-                 ReviewWordMove(segmentID: segment, replaced: 1..<2, replacement: 1..<9)] {
+                 ReviewWordMove(segmentID: segment, replaced: 1..<2, replacement: 1..<9),
+                 // Empty: no edit has one, and the word it would add has no owner.
+                 ReviewWordMove(segmentID: segment, replaced: 1..<1, replacement: 1..<1)] {
         #expect(throws: HolosError.self, "\(move)") {
             try SpeakerTranscriptRetarget.plan(session: session, from: snapshot, to: edited, move: move)
         }
@@ -884,6 +886,50 @@ func anEditTakingInAnEarlierDeletionOffersNoHeardAs() async throws {
     saved.removeAll()
     try await review.editWords(wordEditRefs(review, "T1", [1]), to: "later") { saved.append($0) }
     #expect(saved.first?.typedHeard == "now")
+    await review.close()
+}
+
+@Test(.timeLimit(.minutes(1))) @MainActor
+func anUndoThatFailsAfterTheEditItWaitedForCanBeAskedAgain() async throws {
+    let temp = try TemporaryDirectory("review")
+    defer { temp.remove() }
+    let session = try await wordEditSession(in: temp, [
+        WordEditTurn(speaker: "system:S1", start: 0, words: ["ask", "cloud", "now"]),
+    ])
+    let original = try wordEditCurrent(session)
+    let file = SessionPaths.transcript(original.id, in: session)
+    let saved = try Data(contentsOf: file)
+    let review = try await wordEditOpen(session)
+    let (stream, release) = AsyncStream<Void>.makeStream()
+    let entered = SharedValue(0)
+    review.beforeEdit = {
+        let count = entered.update { value -> Int in
+            value += 1
+            return value
+        }
+        if count == 1 {
+            for await _ in stream {}
+        } else {
+            // The undo, once the edit saved: the transcript it would restore cannot be read for a moment.
+            try? Data("damaged".utf8).write(to: file)
+        }
+    }
+    // The edit is saving when Undo is asked: the undo waits for it, on the labels before it.
+    let edit = Task { try await review.editWords(wordEditRefs(review, "T1", [1]), to: "Claude") }
+    #expect(await eventually { entered.value == 1 })
+    let undo = Task { try await review.undo() }
+    #expect(await eventually { review.queuedOperations == 2 })
+    // The edit saves (a new run, keeping the turns); the undo then fails before saving anything.
+    release.finish()
+    await #expect(throws: Never.self, "the edit") { _ = try await edit.value }
+    await #expect(throws: (any Error).self) { try await undo.value }
+    #expect(try wordEditCurrent(session).segments[0].text == "ask Claude now")
+    // Still undoable: the labels are this window's own (its edit retargeted them), not a new labelling.
+    #expect(review.canUndo)
+    review.beforeEdit = nil
+    try saved.write(to: file)
+    await #expect(throws: Never.self, "the second undo") { try await review.undo() }
+    #expect(try wordEditCurrent(session).segments[0].text == "ask cloud now")
     await review.close()
 }
 
@@ -1924,6 +1970,10 @@ func aRuleTheMeetingTaughtThenDeletedInCorrectionsIsNeverTaughtAgain() async thr
     #expect(list.learnFromReview([Correction(heard: "cloud", meant: "Claude")], meeting: "M1").isEmpty)
     #expect(list.learnFromReview([Correction(heard: "cloud", meant: "Claude")], meeting: "M2")
         == [Correction(heard: "cloud", meant: "Claude")], "Another meeting teaches it as its own.")
+    // Phrase and value are compared apart: text holding a separator never makes two lessons one.
+    var separated = CorrectionList()
+    #expect(separated.learnFromReview([Correction(heard: "a", meant: "b\u{1f}c")], meeting: "M1").count == 1)
+    #expect(separated.learnFromReview([Correction(heard: "a\u{1f}b", meant: "c")], meeting: "M1").count == 1)
 }
 
 @Test func contextBesideAFixedWordCoversTheSameCharactersOnBothSides() {
