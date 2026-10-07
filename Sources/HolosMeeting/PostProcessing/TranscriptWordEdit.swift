@@ -164,7 +164,7 @@ public enum TranscriptWordEdit {
         (lower, upper) = taken
         let touched = fixes.filter { $0.first < upper && lower < $0.end }
         if touched.contains(where: { $0.kind == .liveCorrection }) { throw liveCorrected }
-        guard touched.allSatisfy({ [.correction, .term, .reviewRevert, .reviewEdit].contains($0.kind) }) else {
+        guard touched.allSatisfy({ editableKinds.contains($0.kind) }) else {
             throw HolosError.invalidInput("These words were changed by a newer Voice is Local and cannot be edited here.")
         }
 
@@ -421,6 +421,10 @@ public enum TranscriptWordEdit {
         let baseSegment = base?.segments.first { $0.id == segmentID }
         return isDamaged(segment) || baseSegment.map(isDamaged) == true ? damagedMarks : nil
     }
+
+    /// The fix kinds an edit can take in (a live correction is known but refused, `liveCorrected`); any other kind was
+    /// written by a newer version, and an edit touching it is refused. Close-time learning reads only these too.
+    public static let editableKinds: Set<TranscriptWordFixKind> = [.correction, .term, .reviewRevert, .reviewEdit]
 
     /// An edit refused because its segment's word positions or fix marks are damaged.
     public static let damagedMarks = HolosError.invalidInput("That segment's word positions cannot be edited safely.")

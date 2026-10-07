@@ -7897,7 +7897,9 @@ shown, Otter-style.
   any slow close (another window's voice sync) is waited for; when the closes cannot finish
   within the quit's limit, every word edit not saved yet is logged with what was typed (as
   private): those Return or Tab handed over and still waiting or saving, and the one the
-  field held at the close (`ReviewSession.unsavedWordEdits`). A maintenance
+  field held at the close (`ReviewSession.unsavedWordEdits`). Return and Tab hand the edit to
+  the review's queue before anything else runs (`queueWordEdit`), so a quit right after
+  finds it there and the close saves it. A maintenance
   command that makes the review read-only does the same: the open field's edit is queued
   before the pause and waited for; when it is refused, the footer says why, with what was
   typed (`ReviewSession.pause(typed:)`). So does any other turn to read-only with the field
@@ -8181,7 +8183,10 @@ shown, Otter-style.
     segment shows no marks and none of its words is edited or reverted: the refusal comes before
     a field opens (`wordEditRefusal`, with the reason in the banner), before any range is
     walked. Close-time learning skips it, and reads no context from a damaged unfixed
-    revision; editing and reverting refuse a damaged unfixed revision. Every word range read
+    revision; editing and reverting refuse a damaged unfixed revision. A fix of a kind a newer
+    version wrote is never read as what the recognizer wrote: learning reads the editor's kinds
+    only (`TranscriptWordEdit.editableKinds`, and a live correction), and skips a segment
+    where an edit holds or stands beside such a fix. Every word range read
     from disk is made one way (`utf16Range(offset:length:within:)`: by subtraction, never past
     the text, never backwards), so no damaged offset or length can overflow or trap. A word
     move in the event log is read only as written ("3-5", two unsigned decimal numbers; never

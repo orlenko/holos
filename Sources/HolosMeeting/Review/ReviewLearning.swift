@@ -18,6 +18,8 @@ enum ReviewLearning {
     /// turns never joins them. `base`: the unfixed revision `transcript` was fixed from (`fixedFrom`), where what the
     /// recognizer wrote beside an edit (under an automatic fix) is read, punctuation included.
     static func edits(in transcript: Transcript, turns: [[WordSpan]], base: Transcript? = nil) -> [ReviewWordEdit] {
+        // The fix kinds learning reads: those the editor knows (`editableKinds`, and a live correction it refuses).
+        let readable = TranscriptWordEdit.editableKinds.union([.liveCorrection])
         // A transcript with a segment ID used twice cannot say which segment a turn's words are in: nothing is learned.
         // An unfixed revision with one cannot say which segment holds what the recognizer wrote: no context from it.
         guard !TranscriptWordEdit.hasRepeatedSegmentIDs(transcript) else { return [] }
@@ -39,6 +41,15 @@ enum ReviewLearning {
             // A segment that cannot be trusted (word ranges, marks: `TranscriptWordEdit.isDamaged`) teaches nothing,
             // neither its own edits nor context for them.
             if TranscriptWordEdit.isDamaged(segment) { continue }
+            // Nor one where an edit touches (holds, or stands beside) a fix of a kind a newer version wrote: what the
+            // recognizer wrote there cannot be told, as the editor cannot edit it (`TranscriptWordEdit.editableKinds`).
+            let marks = segment.fixes ?? []
+            let newer = marks.filter { !readable.contains($0.kind) }
+            if marks.contains(where: { edit in
+                edit.kind == .reviewEdit && newer.contains { $0.first <= edit.end && edit.first <= $0.end }
+            }) {
+                continue
+            }
             let words = WordTiming.effectiveWords(of: segment)
             let utf16 = Array(segment.text.utf16)
             // Where each word boundary is in the unfixed segment, for what the recognizer wrote under a fix.
@@ -54,6 +65,8 @@ enum ReviewLearning {
             /// recognizer did not time included): from the unfixed segment for an automatic fix; else its `heard`
             /// when its shown text is just its words; nil when that cannot be told (no context then).
             func recognized(_ fix: TranscriptWordFix, shown: String) -> String? {
+                // A kind a newer version wrote: what its `heard` means is not known here, so it is no provenance.
+                guard readable.contains(fix.kind) else { return nil }
                 // A deletion's `heard` holds the deleted words too: beside an edit, it would teach dropping them.
                 if fix.deleted == true { return nil }
                 // A damaged fix (its words out of the segment's) has nothing that can be read.

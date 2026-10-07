@@ -1698,6 +1698,27 @@ func learningAgainAtTheNextCloseChangesNothingAndASecondOccurrenceIsAdded() asyn
         == [ReviewWordEdit(heard: "Yellow. cloud", meant: "Hello? Claude", after: "now")])
 }
 
+/// A fix of a kind a newer version wrote: what its `heard` means is not known here, so it is never read as what the
+/// recognizer wrote. An edit beside it (or holding it) is not learned; an edit elsewhere in another segment is, and
+/// one in the same segment away from it too.
+@Test func learningReadsNothingFromAFixOfAKindItDoesNotKnow() {
+    let newer = TranscriptWordFixKind("fromTheFuture")
+    var beside = SessionFixtures.segment(["ask", "Claude", "now"], track: "system", start: 0, wordSeconds: 1,
+                                         id: "S1")
+    beside.fixes = [TranscriptWordFix(first: 0, end: 1, heard: "as", kind: newer, heardWords: 1),
+                    TranscriptWordFix(first: 1, end: 2, heard: "cloud", kind: .reviewEdit, heardWords: 1)]
+    var away = SessionFixtures.segment(["we", "knew", "here", "and", "there"], track: "system", start: 10,
+                                       wordSeconds: 1, id: "S2")
+    away.fixes = [TranscriptWordFix(first: 1, end: 2, heard: "new", kind: .reviewEdit, heardWords: 1),
+                  TranscriptWordFix(first: 4, end: 5, heard: "their", kind: newer, heardWords: 1)]
+    let edits = ReviewLearning.edits(in: SessionFixtures.transcript([beside, away]),
+                                     turns: [[WordSpan(segmentID: "S1", first: 0, end: 3)],
+                                             [WordSpan(segmentID: "S2", first: 0, end: 5)]])
+    #expect(edits == [ReviewWordEdit(heard: "new", meant: "knew", before: "we", after: "here")])
+    // The kinds learning reads are the editor's.
+    #expect(!TranscriptWordEdit.editableKinds.contains(newer))
+}
+
 @Test func anEditIsLearnedOnlyWhenOneTurnHoldsItAllAndTakesContextFromThatTurn() {
     // Overlapping turns: A holds words 0–1, B holds 1–2, of each segment.
     var across = SessionFixtures.segment(["we", "much", "Claude", "now"], track: "system", start: 0, wordSeconds: 1,
@@ -2178,6 +2199,30 @@ func whatWasTypedIsKnownUntilTheEditOpenAtCloseIsSaved() async throws {
     await closing.value
     #expect(review.unsavedWordEdits.isEmpty)
     #expect(try wordEditCurrent(session).segments[0].text == "ask Claude now")
+}
+
+/// The window hands an edit over on Return or Tab with `queueWordEdit`: it is in the review's queue when the call
+/// returns, before any task runs, so a close right after (a quit) saves it, and meanwhile it is listed with what was
+/// typed. Nothing sits in a task of the window's between the field and the queue.
+@Test(.timeLimit(.minutes(1))) @MainActor
+func anEditHandedOverIsQueuedBeforeTheCallReturnsSoACloseRightAfterSavesIt() async throws {
+    let temp = try TemporaryDirectory("review")
+    defer { temp.remove() }
+    let session = try await wordEditSession(in: temp, [
+        WordEditTurn(speaker: "system:S1", start: 0, words: ["ask", "cloud", "now"]),
+    ])
+    let review = try await wordEditOpen(session)
+    var committed: [ReviewWordEdit] = []
+    let wait = try #require(try review.queueWordEdit(wordEditRefs(review, "T1", [1]), to: "Claude",
+                                                     seenMoves: review.wordMoves.count,
+                                                     committed: { committed.append($0) }))
+    #expect(review.unsavedWordEdits == ["Claude"], "Queued before the call returned.")
+    // Closed at once (a quit), without waiting for the edit first: the close saves it.
+    await review.close()
+    #expect(try wordEditCurrent(session).segments[0].text == "ask Claude now")
+    #expect(review.unsavedWordEdits.isEmpty)
+    let edit = try await wait()
+    #expect(edit?.meant == "Claude" && committed.map(\.meant) == ["Claude"])
 }
 
 /// Return, then Tab, then a quit while the first still saves: every edit not saved is known with what was typed (the

@@ -1161,10 +1161,25 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, Clo
         refreshFooter()
         let id = UUID()
         let epoch = wordsEpoch
+        // Queued in the review now, before anything else runs: a close or a quit right after finds it there (saved
+        // before the review closes, listed by `unsavedWordEdits` meanwhile), never only in a task of the window's.
+        let saved = SavedFlag()
+        let committed: (ReviewWordEdit) -> Void = { [weak self] edit in
+            saved.value = true
+            self?.offerTerm(after: edit, add: addTerm)
+        }
+        let queued: Result<(@MainActor () async throws -> ReviewWordEdit?)?, any Error>
+        do {
+            queued = .success(try review.queueWordEdit(words.map(\.ref), to: text, seenMoves: movesSeen,
+                                                       whileUnread: whileUnread, expecting: words.map(\.shown),
+                                                       seenEpoch: epoch, committed: committed))
+        } catch {
+            queued = .failure(error)
+        }
         let saving: Task<FailedWordEdit?, Never> = Task { [weak self] () async -> FailedWordEdit? in
             guard let self else { return nil }
-            let refusal: String? = await self.saveEdit(words, to: text, addTerm: addTerm, movesSeen: movesSeen,
-                                                       whileUnread: whileUnread, seenEpoch: epoch)
+            let refusal: String? = await self.saveEdit(words, to: text, queued: queued, saved: saved,
+                                                       movesSeen: movesSeen, seenEpoch: epoch)
             self.pendingWordEdits.removeAll { $0.id == id }
             return refusal.map {
                 FailedWordEdit(words: words, text: text, movesSeen: movesSeen, wordsEpoch: epoch, message: $0)
@@ -1173,25 +1188,25 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, Clo
         pendingWordEdits.append((id, saving))
     }
 
-    /// `editWords`' save: nil when saved (also when its labels could not be reread after it: the edit stands, and
-    /// ⌥Return's term is still added), else why, with what was typed (the field opens again with it when its words are
-    /// still there). Made on the words as the field showed them: never over words changed elsewhere since.
-    private func saveEdit(_ words: [ReviewWord], to text: String, addTerm: Bool, movesSeen: Int,
-                          whileUnread: Bool, seenEpoch: Int) async -> String? {
-        var saved = false
-        let committed: (ReviewWordEdit) -> Void = { [weak self] edit in
-            saved = true
-            self?.offerTerm(after: edit, add: addTerm)
-        }
+    /// Whether a word edit was saved (`ReviewSession.queueWordEdit`'s `committed`), read when it then throws.
+    private final class SavedFlag {
+        var value = false
+    }
+
+    /// `editWords`' save, already queued (`queued`): nil when saved (also when its labels could not be reread after
+    /// it: the edit stands, and ⌥Return's term is still added), else why, with what was typed (the field opens again
+    /// with it when its words are still there). Made on the words as the field showed them: never over words changed
+    /// elsewhere since.
+    private func saveEdit(_ words: [ReviewWord], to text: String,
+                          queued: Result<(@MainActor () async throws -> ReviewWordEdit?)?, any Error>,
+                          saved: SavedFlag, movesSeen: Int, seenEpoch: Int) async -> String? {
         do {
-            _ = try await review.editWords(words.map(\.ref), to: text, seenMoves: movesSeen, whileUnread: whileUnread,
-                                           expecting: words.map(\.shown), seenEpoch: seenEpoch,
-                                           committed: committed)
+            if let wait = try queued.get() { _ = try await wait() }
             return nil
         } catch is CancellationError {
             return nil
         } catch {
-            if saved {
+            if saved.value {
                 problem = error.localizedDescription
                 refreshFooter()
                 return nil

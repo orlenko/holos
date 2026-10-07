@@ -1099,18 +1099,35 @@ public struct ReviewWord: Sendable, Equatable {
     public func editWords(_ words: [WordRef], to text: String, seenMoves: Int? = nil, whileUnread: Bool = false,
                           expecting: [String]? = nil, seenEpoch: Int? = nil,
                           committed: ((ReviewWordEdit) -> Void)? = nil) async throws -> ReviewWordEdit? {
+        guard let saved = try queueWordEdit(words, to: text, seenMoves: seenMoves, whileUnread: whileUnread,
+                                            expecting: expecting, seenEpoch: seenEpoch, committed: committed) else {
+            return nil
+        }
+        return try await saved()
+    }
+
+    /// `editWords` with its change queued before this returns: the window hands an edit over on Return or Tab this
+    /// way, so a close or a quit right after finds it in the queue (it is saved before the review closes, and
+    /// `unsavedWordEdits` lists it meanwhile). Returns the wait for it (what was edited, or why it was not), nil when
+    /// there is nothing to edit; throws when it is refused before it is queued.
+    public func queueWordEdit(_ words: [WordRef], to text: String, seenMoves: Int? = nil, whileUnread: Bool = false,
+                              expecting: [String]? = nil, seenEpoch: Int? = nil,
+                              committed: ((ReviewWordEdit) -> Void)? = nil) throws
+        -> (@MainActor () async throws -> ReviewWordEdit?)? {
         guard let op = try queuedWordEdit(words, to: text, seenMoves: seenMoves, whileUnread: whileUnread,
                                           expecting: expecting, seenEpoch: seenEpoch) else {
             return nil
         }
-        do {
-            try await wait(for: op)
-        } catch {
+        return { [self] in
+            do {
+                try await wait(for: op)
+            } catch {
+                if let edit = op.wordEditResult { committed?(edit) }
+                throw error
+            }
             if let edit = op.wordEditResult { committed?(edit) }
-            throw error
+            return op.wordEditResult
         }
-        if let edit = op.wordEditResult { committed?(edit) }
-        return op.wordEditResult
     }
 
     /// `editWords` up to its change being queued (no wait); nil when there is nothing to edit.
