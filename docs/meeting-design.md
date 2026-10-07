@@ -7972,7 +7972,8 @@ shown, Otter-style.
     turn holds only part of gives no context on that side (corrected text never stands for
     what was heard: "as New" beside "newark" made "New York" would match nothing), nor does a
     damaged one (its words out of the segment's, `TranscriptWordEdit.isSound`, the one check
-    every walk over a fix's words makes first; it is never read). A segment with a damaged
+    every walk over a fix's words makes first; it is never read). Two marks over the same word
+    (each in range on its own) are damaged too: each word has at most one fix. A segment with a damaged
     mark shows no marks and none of its words is edited or reverted: the refusal comes before
     a field opens (`wordEditRefusal`, with the reason in the banner), before any range is
     walked. The

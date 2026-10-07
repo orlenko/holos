@@ -83,9 +83,10 @@ extension TurnListView: NSTextFieldDelegate {
         + "neither edited nor reverted here; the other words of each turn can."
 
     /// A word as the transcript shows it (`editText`: with untimed punctuation, without a recognizer's leading space),
-    /// else its text without the whitespace around it.
+    /// else as the review read it (`ReviewWord.shown`). Anything that puts a field back on words compares this, never
+    /// the timed text alone ("Hello." changed to "Hello?" elsewhere is another word).
     func shownText(of word: ReviewWord) -> String {
-        editText?([word]) ?? word.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        editText?([word]) ?? word.shown
     }
 
     /// The paragraph's words (every turn's, in order) and the index of the turn each belongs to.
@@ -211,7 +212,7 @@ extension TurnListView: NSTextFieldDelegate {
             let all = paragraphWords(paragraph).words
             guard let from = all.firstIndex(where: { $0.ref == first.ref }),
                   let through = all.firstIndex(where: { $0.ref == last.ref }), from <= through,
-                  all[from...through].map(\.text) == words.map(\.text) else { continue }
+                  all[from...through].map(\.shown) == words.map(\.shown) else { continue }
             beginEditing(row: row, from: from, through: through, extend: false)
             guard wordEdit != nil else { return false }
             editField.stringValue = typed

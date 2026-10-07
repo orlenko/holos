@@ -329,10 +329,14 @@ public enum TranscriptWordEdit {
 
     /// Whether `segment` has a fix mark that is not sound (`isSound`): none of its words is edited, and none of its fixes
     /// reverted (`damagedMarks`), since every edit takes in the marks it touches.
+    /// Two marks over the same word are damaged too: each word has at most one fix (a fix never overlaps another), and
+    /// an edit or a mapping reading either would take the wrong one.
     public static func hasDamagedMark(_ segment: TranscriptSegment) -> Bool {
         guard let fixes = segment.fixes, !fixes.isEmpty else { return false }
         let count = WordTiming.effectiveWords(of: segment).count
-        return fixes.contains { !isSound($0, wordCount: count) }
+        if fixes.contains(where: { !isSound($0, wordCount: count) }) { return true }
+        let ordered = fixes.sorted { ($0.first, $0.end) < ($1.first, $1.end) }
+        return zip(ordered, ordered.dropFirst()).contains { previous, next in next.first < previous.end }
     }
 
     /// An edit refused because its segment's word positions or fix marks are damaged.

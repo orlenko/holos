@@ -133,6 +133,27 @@ struct TurnListWordEditTests {
         #expect(list.wordEdit?.words.map(\.text) == ["alpha", "beta"] && list.editField.stringValue == "Alfa")
     }
 
+    /// A save refused because "beta" was changed elsewhere to "beta?" (its timed text the same): the field does not
+    /// open again over a word the person never saw; the message carries what was typed.
+    @Test func aFieldIsNeverReopenedOverAWordWhosePunctuationChanged() throws {
+        let (list, saved) = editingList()
+        list.editingWords = true
+        list.table.handleWordClick(row: 0, word: 1, through: 1, extend: false)
+        list.editField.stringValue = "Beta"
+        press(list, #selector(NSResponder.insertNewline(_:)))
+        #expect(saved().count == 1 && list.wordEdit == nil)
+        let seen = try #require(TurnListViewTests.words["T1"]?[1])
+        var words = TurnListViewTests.words
+        words["T1"]?[1] = ReviewWord(ref: seen.ref, text: "beta", start: seen.start, shown: "beta?")
+        update(list, words: words, moves: [])
+        #expect(!list.reopenWordEdit([seen], typed: "Beta", message: "Changed elsewhere. What you typed: “Beta”."))
+        #expect(list.wordEdit == nil)
+        // As it was: the field opens again.
+        update(list, words: TurnListViewTests.words, moves: [])
+        #expect(list.reopenWordEdit([seen], typed: "Beta", message: "Not saved."))
+        #expect(list.wordEdit?.words.map(\.shown) == ["beta"] && list.editField.stringValue == "Beta")
+    }
+
     /// A save refused or failed after Return: the field opens again over the words with what was typed.
     @Test func aRefusedSaveOpensTheFieldAgainWithWhatWasTyped() throws {
         let (list, saved) = editingList()

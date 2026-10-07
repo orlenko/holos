@@ -544,6 +544,22 @@ private let editEchoMask: AcousticEchoMask = {
     #expect(turn.spans.flatMap { Array($0.first..<$0.end) } == [0, 1, 2, 4, 5, 6, 7, 8, 9])
 }
 
+@Test func twoMarksOverTheSameWordAreDamaged() throws {
+    // Each in range on its own, but both over "cloud": damaged, and the segment is not edited.
+    var segment = editSegment(["ask", "cloud", "now"])
+    segment.fixes = [TranscriptWordFix(first: 0, end: 2, heard: "as cloud", kind: .reviewEdit, heardWords: 2),
+                     TranscriptWordFix(first: 1, end: 3, heard: "cloud now", kind: .correction, heardWords: 2)]
+    #expect(segment.fixes!.allSatisfy { TranscriptWordEdit.isSound($0, wordCount: 3) })
+    #expect(TranscriptWordEdit.hasDamagedMark(segment))
+    #expect(throws: HolosError.self) {
+        try TranscriptWordEdit.editing(editRequest(0, 1, "as"), in: editTranscript([segment]), base: nil)
+    }
+    // Side by side (one ends where the next begins): sound.
+    segment.fixes = [TranscriptWordFix(first: 0, end: 1, heard: "as", kind: .reviewEdit, heardWords: 1),
+                     TranscriptWordFix(first: 1, end: 2, heard: "cloud", kind: .correction, heardWords: 1)]
+    #expect(!TranscriptWordEdit.hasDamagedMark(segment))
+}
+
 @Test func aDamagedHeardWordCountIsNeverAddedUp() throws {
     // A valid-looking fix whose recorded count of recognizer words cannot be right.
     for heardWords in [Int.max, 0, -1, 6] {

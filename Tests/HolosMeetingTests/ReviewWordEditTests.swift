@@ -1116,6 +1116,23 @@ func aSegmentWithADamagedMarkIsRefusedBeforeAnyFieldOpens() async throws {
     await review.close()
 }
 
+@Test(.timeLimit(.minutes(1))) @MainActor
+func aSegmentWithOverlappingMarksIsRefusedBeforeAnyFieldOpens() async throws {
+    let temp = try TemporaryDirectory("review")
+    defer { temp.remove() }
+    let session = try await wordEditSession(in: temp, [
+        WordEditTurn(speaker: "system:S1", start: 0, words: ["ask", "cloud", "now"]),
+    ], fixes: [TranscriptWordFix(first: 0, end: 2, heard: "as cloud", kind: .reviewEdit, heardWords: 2),
+               TranscriptWordFix(first: 1, end: 3, heard: "cloud now", kind: .correction, heardWords: 2)])
+    let review = try await wordEditOpen(session)
+    let words = review.words(of: "T1")
+    #expect(words.allSatisfy { $0.fix == nil }, "No mark is shown, so no Revert is offered.")
+    let reason = TranscriptWordEdit.damagedMarks.localizedDescription
+    #expect(review.wordEditRefusal([words[2].ref]) == reason && review.revertRefusal(words[1].ref) == reason)
+    await #expect(throws: HolosError.self) { try await review.editWords([words[2].ref], to: "later") }
+    await review.close()
+}
+
 @Test func aFixTheTurnHoldsOnlyPartOfGivesNoContext() {
     // "as newark": "newark" fixed automatically to "New York", then "as" edited to "ask"; the labels split the fix,
     // "as New" in one turn and "York" in the next.
