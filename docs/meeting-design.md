@@ -4566,8 +4566,9 @@ and dimmed and says what is missing; Start is never blocked by it. The app passe
 `--screen display` (every display) to the recorder; `voiceislocal record start --screen
 display|main|off` (default off) is the CLI form, where `main` is the main display alone (what
 `display` meant before all displays were captured). A saved `screenWindow` from PR #71
-decodes as no capture. The Settings caption says "every display connected when a meeting
-starts", the start panel's note "every display connected now".
+decodes as no capture. The Settings caption says "every connected display", the start panel's
+note "every connected display": a display plugged in mid-meeting is captured once the
+capture restarts in that meeting, so the text does not promise it is left out.
 
 *What is captured.* One ScreenCaptureKit stream per display, each with a display filter
 `excludingApplications` Voice is Local itself: `ca.orlenko.holos.app`,
@@ -4598,7 +4599,9 @@ next number. A display whose stream ends (unplugged or broken; the capture does 
 them apart) is not captured again in that epoch: its last keyframe's interval already
 ends at its last observed sample and a change that had not settled is dropped, so
 nothing claims it was seen afterwards. A display plugged in during the meeting is not
-captured until the next meeting or the next capture epoch. Following displays mid-epoch
+captured until the next capture epoch (the displays are chosen again whenever the
+capture restarts: resuming after a pause or sleep, an audio device change) or the next
+meeting; the README and Settings text say so rather than promising it stays out. Following displays mid-epoch
 (polling `CGGetActiveDisplayList`, restarting streams) is a possible follow-up.
 
 The capture keeps four invariants (`MeetingScreenCapture`'s documentation): the set of

@@ -8,7 +8,8 @@ Hardware-facing and cross-app acceptance remain pending.
 Opt-in meeting screen context is implemented: one Settings checkbox (off for new
 installs, on for users of the earlier window offer) and a per-meeting "Capture screen"
 box; every display connected when the capture starts (one stream each for the whole
-capture, a display plugged in mid-meeting waits for the next meeting, shared caps that
+capture; the displays are chosen again whenever the capture restarts, after a pause,
+sleep or an audio device change, or at the next meeting; shared caps that
 stop the busiest display first; `--screen main` for the main display alone) without Voice is Local's own windows (no window picker);
 low-rate JPEGs of changes that hold still, at most 2560 pixels;
 post-stop on-device Vision OCR, read-only timed text and vocabulary candidates in

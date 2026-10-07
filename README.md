@@ -123,9 +123,11 @@ labelling drops the microphone's echo of it (below); nothing warns about it.
 Screen capture during meetings is optional and off by default. Turn on **Capture the
 screen during meetings (slides, shared screens) to improve transcripts** in Settings ›
 Meetings; the start panel's **Capture screen** box begins checked then and can be
-unchecked for one meeting. Every display connected when the meeting starts is captured,
-without Voice is Local's own windows; one unplugged stops being captured, and one
-plugged in during the meeting is not captured until the next. Notifications and anything else on the displays are included. Everything
+unchecked for one meeting. Every display connected when the capture starts is captured,
+without Voice is Local's own windows; one unplugged stops being captured. The displays
+are chosen again whenever the capture restarts during the meeting (after a pause,
+sleep, or an audio device change), so a display plugged in mid-meeting is captured
+from then on, or from the next meeting. Notifications and anything else on the displays are included. Everything
 stays on this Mac. Screen & System Audio Recording permission must already be granted;
 without it the box is dimmed, and a capture failure never stops the audio.
 `voiceislocal record start --screen display` does the same from the command line

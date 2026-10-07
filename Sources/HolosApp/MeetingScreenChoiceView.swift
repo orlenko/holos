@@ -3,12 +3,12 @@ import AppKit
 /// The words of Settings › Meetings' screen row and the start panel's "Capture screen" (docs/meeting-design.md §4.15).
 enum MeetingScreenText {
     static let settingTitle = "Capture the screen during meetings (slides, shared screens) to improve transcripts"
-    static let settingCaption = "Everything stays on this Mac. Every display connected when a meeting starts is saved "
+    static let settingCaption = "Everything stays on this Mac. Every connected display is saved "
         + "when it changes, its text is read on this Mac after the recording, and images and text are deleted with "
         + "the meeting audio. "
         + "Voice is Local's own windows are left out; notifications are not. Needs Screen & System Audio Recording."
     static let choiceTitle = "Capture screen"
-    static let choiceNote = "Every display connected now, without Voice is Local's own windows. Read on this Mac "
+    static let choiceNote = "Every connected display, without Voice is Local's own windows. Read on this Mac "
         + "after the recording; deleted with the audio."
     static let choiceNeedsPermission = "Needs Screen & System Audio Recording permission (Settings › Permissions)."
 }
