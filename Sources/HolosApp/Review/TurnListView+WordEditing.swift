@@ -233,7 +233,8 @@ extension TurnListView: NSTextFieldDelegate {
             first = followed.refs[0]
             last = followed.refs[1]
         }
-        let turn = inTurn.flatMap { id in paragraphs.contains { $0.contains(turnID: id) } ? id : nil }
+        // Only that turn's copy, never another turn's standing in (a search hiding the turn: the caller clears it).
+        let turn = inTurn
         for (row, paragraph) in paragraphs.enumerated() {
             let shown = paragraphWords(paragraph)
             let all = shown.words

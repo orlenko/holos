@@ -110,7 +110,8 @@ extension TurnListView {
     @discardableResult
     func reopenField(at ref: WordRef, atEnd: Bool, message: String, inTurn: String? = nil) -> Bool {
         guard editingWords, editable, canEditWords, wordEdit == nil else { return false }
-        let turn = inTurn.flatMap { id in paragraphs.contains { $0.contains(turnID: id) } ? id : nil }
+        // Only that turn's copy, never another turn's standing in (a search hiding the turn: the caller clears it).
+        let turn = inTurn
         for (row, paragraph) in paragraphs.enumerated() {
             let shown = paragraphWords(paragraph)
             guard let index = shown.words.indices.first(where: {

@@ -1221,22 +1221,55 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, NSM
         let text = field.field.text
         // Its saved ID: a part made by a split still saving when the field opened had a temporary one.
         let turnID = field.turnID.map(review.resolvedTurnID)
-        if turnList.reopenWordEdit(field.field.words, typed: text, message: why, movesSeen: field.movesSeen,
-                                   wordsEpoch: epoch, caret: field.atEnd ? (text as NSString).length : 0,
-                                   inTurn: turnID) {
-            return
+        let reopen = { [self] () -> Bool in
+            if turnList.reopenWordEdit(field.field.words, typed: text, message: why, movesSeen: field.movesSeen,
+                                       wordsEpoch: epoch, caret: field.atEnd ? (text as NSString).length : 0,
+                                       inTurn: turnID) {
+                return true
+            }
+            guard epoch == review.wordsEpoch,
+                  let place = Self.splitBoundary(field.atEnd ? field.field.words.last : field.field.words.first,
+                                                 atEnd: field.atEnd,
+                                                 through: review.shownWordMoves.dropFirst(field.movesSeen))
+            else { return false }
+            if turnList.reopenField(at: place.word, atEnd: place.atEnd, message: why, inTurn: turnID) { return true }
+            // The same boundary from the word before it (a deleted last word leaves no word after it).
+            guard !place.atEnd, place.word.word > 0 else { return false }
+            return turnList.reopenField(at: WordRef(segmentID: place.word.segmentID, word: place.word.word - 1),
+                                        atEnd: true, message: why, inTurn: turnID)
         }
-        guard epoch == review.wordsEpoch, let word = field.atEnd ? field.field.words.last : field.field.words.first
-        else { return }
+        if reopen() { return }
+        // A search hiding the row (an edit saved meanwhile changed what it matched): cleared, as for a split made.
+        guard !query.isEmpty else { return }
+        query = ""
+        searchField.stringValue = ""
+        refresh()
+        _ = reopen()
+    }
+
+    /// Where a split asked at the start (or end, `atEnd`) of `word` is after the word moves since: the same edge of
+    /// the word, or of what replaced it (never inside words edited together); a deleted word's boundary is the start
+    /// of the next word, else the end of the one before. Nil when there is no word.
+    static func splitBoundary(_ word: ReviewWord?, atEnd: Bool,
+                              through moves: ArraySlice<ReviewWordMove>) -> (word: WordRef, atEnd: Bool)? {
+        guard let word else { return nil }
         var ref = word.ref
-        for move in review.shownWordMoves.dropFirst(field.movesSeen) {
-            guard ref.segmentID == move.segmentID, move.replaced.contains(ref.word), !move.replacement.isEmpty else {
+        var atEnd = atEnd
+        for move in moves {
+            guard ref.segmentID == move.segmentID, move.replaced.contains(ref.word) else {
                 ref = move.map(ref).ref
                 continue
             }
-            ref.word = field.atEnd ? move.replacement.upperBound - 1 : move.replacement.lowerBound
+            if move.replacement.isEmpty {
+                // Deleted: the boundary is where the words after it now start (`restoreSplitField` takes the end of
+                // the word before when none is left after it).
+                ref.word = move.replacement.lowerBound
+                atEnd = false
+            } else {
+                ref.word = atEnd ? move.replacement.upperBound - 1 : move.replacement.lowerBound
+            }
         }
-        turnList.reopenField(at: ref, atEnd: field.atEnd, message: why, inTurn: turnID)
+        return (ref, atEnd)
     }
 
     /// The second part's speaker pop-up after a split (`TurnListView.focusSpeaker`); a search hiding its row is cleared
@@ -1255,6 +1288,11 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, NSM
     /// checked as it is when made (`ReviewSession.splitRefusal`); at a turn's start or end, a break of the row before
     /// the turn there, when the row goes on past it.
     private func resolveSplit(_ request: ReviewSplitRequest) -> ReviewSplitResolution {
+        // Held read-only (a maintenance command, labels that could not be reread): no split, nor a row break, as the
+        // toolbar's Split Turn is disabled then.
+        guard review.isEditable else {
+            return .refused(review.pauseReason ?? review.reloadProblem ?? "This meeting cannot be changed right now.")
+        }
         let place: ReviewSplitPlace?
         do {
             place = try review.splitPlace(at: request.word, after: request.after, in: request.turnID,

@@ -648,6 +648,10 @@ struct TurnListWordEditTests {
         #expect(list.reopenField(at: beta.ref, atEnd: false, message: "Not split.", inTurn: "T2"))
         #expect(list.wordEdit?.turnID == "T2" && list.wordEdit?.range == 2...2)
         list.cancelWordEdit()
+        // A turn no row shows (a search hides it): no other turn's copy stands in.
+        #expect(!list.reopenWordEdit([beta], typed: "beta", message: "Not split.", inTurn: "T9"))
+        #expect(!list.reopenField(at: beta.ref, atEnd: false, message: "Not split.", inTurn: "T9"))
+        #expect(list.wordEdit == nil)
     }
 
     /// The place is the word as the list showed it, never an index read again: a word edit saved since the field or
@@ -731,6 +735,27 @@ struct TurnListWordEditTests {
         let popUp = try TurnListViewTests.cell(list, row: row).speakerPopUp
         #expect(opened.count == 1 && opened.first === popUp)
         #expect(!list.focusSpeaker(startingAt: WordRef(segmentID: "T9", word: 0)), "No row starts there.")
+    }
+
+    /// Where a refused split's field opens again after edits saved meanwhile (`ReviewWindow.splitBoundary`): the same
+    /// edge of its word, moved; of what replaced it (its last word for a split after it, never inside); a deleted
+    /// word's boundary is the start of the word after it.
+    @Test func aSplitBoundaryFollowsItsWordThroughEditsSavedSince() throws {
+        let word = TurnListViewTests.word("S", 2, "cloud", 2)
+        func boundary(_ atEnd: Bool, _ moves: [ReviewWordMove]) -> (word: WordRef, atEnd: Bool)? {
+            ReviewWindow.splitBoundary(word, atEnd: atEnd, through: moves[...])
+        }
+        // An edit before it ("ask" became "please ask"): the same word, one further.
+        let before = ReviewWordMove(segmentID: "S", replaced: 0..<1, replacement: 0..<2)
+        #expect(boundary(false, [before]).map { [$0.word.word] } == [3])
+        // "cloud" became "the cloud": a split after it is after "cloud" (word 3), one before it before "the" (2).
+        let grown = ReviewWordMove(segmentID: "S", replaced: 2..<3, replacement: 2..<4)
+        #expect(boundary(true, [grown])?.word.word == 3 && boundary(true, [grown])?.atEnd == true)
+        #expect(boundary(false, [grown])?.word.word == 2 && boundary(false, [grown])?.atEnd == false)
+        // Deleted: at the start of the word after it, whichever side was asked.
+        let deleted = ReviewWordMove(segmentID: "S", replaced: 2..<3, replacement: 2..<2)
+        #expect(boundary(true, [deleted])?.word.word == 2 && boundary(true, [deleted])?.atEnd == false)
+        #expect(ReviewWindow.splitBoundary(nil, atEnd: false, through: []) == nil)
     }
 
     /// Only Esc drops what was typed: turning edit mode off saves it.
