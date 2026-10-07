@@ -342,6 +342,10 @@ public enum WordFixes {
     /// word-fix operation, not a general transcript editor.
     public static func reverting(_ word: WordRef, in transcript: Transcript, to base: Transcript,
                                  now: Date = Date()) throws -> Transcript {
+        // Two segments sharing an ID, in either revision: which one holds the word cannot be told, as for an edit.
+        if TranscriptWordEdit.hasRepeatedSegmentIDs(transcript) || TranscriptWordEdit.hasRepeatedSegmentIDs(base) {
+            throw TranscriptWordEdit.damagedMarks
+        }
         guard transcript.fixedFrom == base.id,
               let segmentIndex = transcript.segments.firstIndex(where: { $0.id == word.segmentID }),
               let baseSegment = base.segments.first(where: { $0.id == word.segmentID }) else {

@@ -88,6 +88,18 @@ public enum VoiceEnrollment {
         return "venroll1:" + FingerprintSHA256.hexDigest(Array(parts.joined(separator: "|").utf8))
     }
 
+    /// A digest of the audio a sample of `speakerIDs` is learned from: the speakers and each candidate turn's track
+    /// and times, without the run, the turn IDs, or the words. A word change retargets the labels to a new run and
+    /// moves word indices, so `inputDigest` changes; this one changes only when the audio asked about does.
+    public static func audioDigest(speakerIDs: [String], projection: SpeakerProjection) -> String {
+        let speakers = Set(speakerIDs).sorted()
+        func text(_ value: String) -> String { "\(value.unicodeScalars.count):\(value)" }
+        let turns = candidateTurns(for: speakers, projection: projection)
+            .map { "turn=\(text($0.track));\($0.start)-\($0.end)" }.sorted()
+        let parts = ["speakers=" + speakers.map(text).joined(separator: ",")] + turns
+        return "vaudio1:" + FingerprintSHA256.hexDigest(Array(parts.joined(separator: "|").utf8))
+    }
+
     /// The selection a voice sample extractor makes from a fresh diarization pass of one track (§4.10): for each
     /// turn, the fresh speaker whose segments cover the most of it must cover at least 60 % of it and no other
     /// speaker more than 25 % (otherwise it is not clean single-speaker speech and gets nothing); then only that

@@ -61,6 +61,8 @@ enum SpeakerTranscriptRetarget {
             var moved = turn
             moved.spans = try mapping.spans(turn.spans, turnID: turn.id)
             let timing = try mapping.timing(of: moved.spans, turnID: turn.id)
+            // Words of the same times: the same audio, and the times the labelling gave it stay.
+            if mapping.sameTimes(turn.spans, moved.spans) { return moved }
             moved.start = timing.start
             moved.end = timing.end
             moved.timing = timing.quality
@@ -547,6 +549,27 @@ enum SpeakerTranscriptRetarget {
             let estimated = words.filter(\.estimated).count
             let quality: WordTimingQuality = estimated == 0 ? .measured : estimated == words.count ? .estimated : .mixed
             return (words.map(\.start).min() ?? first.start, words.map(\.end).max() ?? first.end, quality)
+        }
+
+        /// Whether `old` spans (of the old revision) and `new` spans (their mapping) name words of the same times, one
+        /// for one: the turn's audio is unchanged, so it keeps its own times (a labelling may time a turn otherwise
+        /// than by its words; a voice learned from it was learned from those). False for a span outside its segment.
+        func sameTimes(_ old: [WordSpan], _ new: [WordSpan]) -> Bool {
+            func words(_ spans: [WordSpan], old: Bool) -> [EffectiveWord]? {
+                var words: [EffectiveWord] = []
+                for span in spans {
+                    guard let segment = segments[span.segmentID] else { return nil }
+                    let side = old ? segment.old : segment.new
+                    guard span.first >= 0, span.first < span.end, span.end <= side.count else { return nil }
+                    words += side[span.first..<span.end]
+                }
+                return words
+            }
+            guard let before = words(old, old: true), let after = words(new, old: false),
+                  before.count == after.count else { return false }
+            return zip(before, after).allSatisfy {
+                $0.start == $1.start && $0.end == $1.end && $0.estimated == $1.estimated
+            }
         }
 
         func action(_ action: SpeakerEditAction) throws -> SpeakerEditAction {

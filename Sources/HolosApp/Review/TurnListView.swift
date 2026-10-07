@@ -466,8 +466,10 @@ final class TurnListView: NSView, NSTableViewDataSource, NSTableViewDelegate {
     /// The reader scrolled the turns themselves.
     var onUserScroll: (() -> Void)?
     /// Edit mode: `words` (shown words of one segment of one turn, in order) are to become `text`; `addTerm`: ⌥Return
-    /// asked for the new text in the word list too; `movesSeen`: how many of the review's word moves `words` follow.
-    var onEditWords: ((_ words: [ReviewWord], _ text: String, _ addTerm: Bool, _ movesSeen: Int) -> Void)?
+    /// asked for the new text in the word list too; `movesSeen`: how many of the review's word moves `words` follow;
+    /// `wordsEpoch`: the review's `wordsEpoch` when the field opened over them.
+    var onEditWords: ((_ words: [ReviewWord], _ text: String, _ addTerm: Bool, _ movesSeen: Int,
+                       _ wordsEpoch: Int) -> Void)?
     /// The review's word moves (`ReviewSession.wordMoves`) as of the last update: the open field follows them.
     private(set) var wordMoves: [ReviewWordMove] = []
     /// What the edit mode banner says for a moment (a selection stopped at a turn's end), nil for its usual text.
@@ -482,8 +484,9 @@ final class TurnListView: NSView, NSTableViewDataSource, NSTableViewDelegate {
     /// and VoiceOver offer Revert only then.
     var revertRefusal: ((WordRef) -> String?)?
     /// The open field's edit when it closes for any reason but Esc or a save (`keepWordEdit`: words, what was typed,
-    /// the word moves it follows): the window queues it, so it waits for the review rather than being lost.
-    var onKeepWordEdit: (([ReviewWord], String, Int) -> Void)?
+    /// the word moves it follows, the `wordsEpoch` it opened under): the window queues it, so it waits for the review
+    /// rather than being lost.
+    var onKeepWordEdit: (([ReviewWord], String, Int, Int) -> Void)?
     /// Words can be edited now (`ReviewSession.canEditWords`); edit mode shows, but a click opens no field, otherwise.
     var canEditWords = true {
         didSet { if !canEditWords { keepWordEdit() } }

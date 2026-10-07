@@ -842,6 +842,62 @@ func aVoiceLearnedBeforeAWordEditIsTheLabellingsOwnNeverAnEarlierOnes() async th
     #expect(VoiceProfileService.builtFromEarlierRun(sample, headRunID: head.id), "Without it, as a relabel.")
 }
 
+/// A voice extractor that gives every turn the same embedding.
+private struct WordEditVoice: VoiceSampleExtractor {
+    func turnEmbeddings(session: URL, track: String, turns: [TurnRef]) async throws -> [TurnEmbedding] {
+        turns.map { TurnEmbedding(turnID: $0.id, speechSeconds: $0.end - $0.start, vector: FloatVector([0.6, 0.8])) }
+    }
+}
+
+/// A voice learned, the audio deleted, then a word corrected in another speaker's turn and the samples synced: the
+/// labels moved to a new run of the same labelling, but the audio the voice was learned from is the same, so it is
+/// kept. A change that does move its audio (one of its turns given to someone else) still removes it; one that cannot
+/// be shown either way (a sample with no input digest, as older builds saved) keeps it.
+@Test(.timeLimit(.minutes(1))) @MainActor
+func aWordEditAfterTheAudioIsDeletedKeepsTheVoicesItDidNotChange() async throws {
+    for (reassign, undigested) in [(false, false), (true, false), (true, true)] {
+        let temp = try TemporaryDirectory("review")
+        defer { temp.remove() }
+        let session = try await wordEditSession(in: temp, [
+            WordEditTurn(speaker: "system:S1", start: 0, words: ["ask", "cloud", "now"]),
+            WordEditTurn(speaker: "system:S2", start: 4, words: ["then", "we", "go"]),
+            WordEditTurn(speaker: "system:S1", start: 8, words: ["and", "more", "here"]),
+        ])
+        let store = SpeakerProfileStore(directory: temp.url.appendingPathComponent("Support/Speakers"))
+        try store.update { $0.rememberVoices = true }
+        _ = try await VoiceProfileService.link(session: session, speakerID: "system:S1", to: .new(name: "Alice"),
+                                               view: try SessionFixtures.view(session), learnVoice: true,
+                                               extractor: WordEditVoice(), store: store)
+        if undigested {
+            try store.update { $0.profiles[0].samples[0].inputDigest = nil }
+        }
+        let learned = try #require(try store.load().profiles.first?.samples.first)
+        #expect(learned.speakerIDs == ["system:S1"])
+        let lease = try SessionArchive.acquireProcessingLease(at: session)
+        try SessionDeletion.deleteAudio(session: session, lease: lease)
+        lease.release()
+
+        let review = try await wordEditOpen(session)
+        try await review.editWords(wordEditRefs(review, "T2", [1]), to: "they")
+        if reassign { try await review.apply([.reassignTurns(turnIDs: ["T3"], to: "system:S2")]) }
+        await review.close()
+        let head = try #require(try SpeakerSessionSnapshot.load(session: session).run)
+        #expect(head.labelling != nil && VoiceProfileService.sourceRunID(learned) != head.id)
+
+        // The labelling timed each turn 3 s; its words end 0.2 s before. Turns whose words the edit left keep the
+        // labelling's times: the audio a voice was learned from.
+        #expect(head.turns.map(\.end) == [3, 7, 11])
+        // The samples brought in step (naming the other speaker, say).
+        try await VoiceProfileService.refreshSamples(session: session, extractor: WordEditVoice(), store: store)
+        let alice = try #require(try store.load().profiles.first { $0.displayName == "Alice" })
+        if reassign && !undigested {
+            #expect(alice.samples.isEmpty, "Its audio changed, and it cannot be learned again without the audio.")
+        } else {
+            #expect(alice.samples == [learned], "undigested: \(undigested)")
+        }
+    }
+}
+
 @Test(.timeLimit(.minutes(1))) @MainActor
 func aDamagedWordMoveFromTheJournalIsRefusedNeverCounted() async throws {
     let temp = try TemporaryDirectory("review")

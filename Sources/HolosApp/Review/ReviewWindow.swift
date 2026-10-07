@@ -221,7 +221,7 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, Clo
         // The review turns read-only, so the open edit field closes: what it holds is saved first, never lost.
         let typed = turnList.takeOpenWordEdit().map { open in
             ReviewSession.TypedEdit(words: open.words.map(\.ref), text: open.text, seenMoves: open.movesSeen,
-                                    expected: open.words.map(\.shown), seenEpoch: review.wordsEpoch)
+                                    expected: open.words.map(\.shown), seenEpoch: open.wordsEpoch)
         }
         player.invalidate()
         refresh()
@@ -491,14 +491,15 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, Clo
         }
         turnList.onPlay = { [weak self] seconds in self?.play(from: seconds) }
         turnList.onRevertFix = { [weak self] word in self?.revertFix(word) }
-        turnList.onEditWords = { [weak self] words, text, addTerm, movesSeen in
-            self?.editWords(words, to: text, addTerm: addTerm, movesSeen: movesSeen)
+        turnList.onEditWords = { [weak self] words, text, addTerm, movesSeen, wordsEpoch in
+            self?.editWords(words, to: text, addTerm: addTerm, movesSeen: movesSeen, wordsEpoch: wordsEpoch)
         }
         turnList.onEditMessage = { [weak self] message in self?.editBanner.show(message: message) }
         // The review turned read-only with a field open (an earlier edit's labels could not be reread, say): its edit
         // is queued all the same, and waits for the reread as the changes before it do.
-        turnList.onKeepWordEdit = { [weak self] words, text, movesSeen in
-            self?.editWords(words, to: text, addTerm: false, movesSeen: movesSeen, whileUnread: true)
+        turnList.onKeepWordEdit = { [weak self] words, text, movesSeen, wordsEpoch in
+            self?.editWords(words, to: text, addTerm: false, movesSeen: movesSeen, wordsEpoch: wordsEpoch,
+                            whileUnread: true)
         }
         turnList.onRequestEditing = { [weak self] in
             guard let self, self.review.canEditWords else { return }
@@ -1098,15 +1099,16 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, Clo
     /// so the window's paragraph breaks stay (`refresh`). Once saved, a new text that looks like a name or term is
     /// offered for the word list (with ⌥Return it is added at once). Tracked until it ends (`pendingWordEdits`), so
     /// closing the window by hand waits for it, and stays open when it is not saved.
-    private func editWords(_ words: [ReviewWord], to text: String, addTerm: Bool, movesSeen: Int,
+    /// `wordsEpoch`: the review's when the field opened over `words`; the save is refused when words were changed
+    /// elsewhere since, even when the list has not shown that yet.
+    private func editWords(_ words: [ReviewWord], to text: String, addTerm: Bool, movesSeen: Int, wordsEpoch: Int,
                            whileUnread: Bool = false) {
         offeredTerm = nil
         problem = nil
         notice = nil
         refreshFooter()
         let id = UUID()
-        // The words were chosen on the words as read now (a field open across words changed elsewhere was closed).
-        let epoch = review.wordsEpoch
+        let epoch = wordsEpoch
         let saving: Task<String?, Never> = Task { [weak self] () async -> String? in
             guard let self else { return nil }
             let refusal: String? = await self.saveEdit(words, to: text, addTerm: addTerm, movesSeen: movesSeen,
@@ -1451,10 +1453,10 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, Clo
     func windowShouldClose(_ sender: NSWindow) -> Bool {
         guard sender === window, closeTask == nil else { return true }
         let open: OpenWordEdit? = closeGate.saving ? nil : turnList.takeOpenWordEdit()
-        // Held until it is queued, with the words as read now (`wordsEpoch`): a quit meanwhile closes the review with
-        // it (`beginClosing`); words changed elsewhere while it waits refuse it.
-        if let open { heldOpenEdit = HeldEdit(edit: open, epoch: review.wordsEpoch) }
-        let epoch = review.wordsEpoch
+        // Held until it is queued, with the `wordsEpoch` its field opened under: a quit meanwhile closes the review
+        // with it (`beginClosing`); words changed elsewhere since the field opened refuse it.
+        if let open { heldOpenEdit = HeldEdit(edit: open, epoch: open.wordsEpoch) }
+        let epoch = open?.wordsEpoch ?? review.wordsEpoch
         let pending: [Task<String?, Never>] = closeGate.saving ? [] : Array(pendingWordEdits.values)
         let outcome = CloseSaveOutcome()
         let save: () async -> String? = { [weak self] in
@@ -1472,9 +1474,9 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, Clo
     }
 
     /// The open field's edit as `TurnListView.takeOpenWordEdit` hands it over.
-    private typealias OpenWordEdit = (words: [ReviewWord], text: String, movesSeen: Int)
+    private typealias OpenWordEdit = (words: [ReviewWord], text: String, movesSeen: Int, wordsEpoch: Int)
 
-    /// The field's edit a close by hand took, and `wordsEpoch` when it did.
+    /// The field's edit a close by hand took, and the `wordsEpoch` its field opened under.
     private struct HeldEdit {
         let edit: OpenWordEdit
         let epoch: Int
@@ -1556,7 +1558,7 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, Clo
         let held = heldOpenEdit
         heldOpenEdit = nil
         let open = fromField ?? held?.edit
-        let epoch = fromField != nil ? review.wordsEpoch : (held?.epoch ?? review.wordsEpoch)
+        let epoch = fromField?.wordsEpoch ?? held?.epoch ?? review.wordsEpoch
         let typed = open.map { open in
             ReviewSession.TypedEdit(words: open.words.map(\.ref), text: open.text, seenMoves: open.movesSeen,
                                     expected: open.words.map(\.shown), seenEpoch: epoch)

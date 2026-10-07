@@ -21,7 +21,7 @@ struct TurnListWordEditTests {
     private func editingList() -> (TurnListView, () -> [Saved]) {
         let list = TurnListViewTests.list()
         var saved: [Saved] = []
-        list.onEditWords = { words, text, addTerm, _ in saved.append(Saved(words: words.map(\.text), text: text,
+        list.onEditWords = { words, text, addTerm, _, _ in saved.append(Saved(words: words.map(\.text), text: text,
                                                                            addTerm: addTerm)) }
         return (list, { saved })
     }
@@ -171,6 +171,35 @@ struct TurnListWordEditTests {
         list.table.handleWordClick(row: 0, word: 1, through: 1, extend: false)
         update(list, words: TurnListViewTests.words, moves: [])
         #expect(list.wordEdit?.words.map(\.text) == ["beta"])
+    }
+
+    /// Every save hands over the `wordsEpoch` the field opened under, never the one at the time of the save: words
+    /// changed elsewhere before the list showed it (the review's epoch moved first) make the review refuse the edit.
+    @Test func everySaveCarriesTheEpochItsFieldOpenedUnder() {
+        let (list, _) = editingList()
+        var epochs: [Int] = []
+        list.onEditWords = { _, _, _, _, epoch in epochs.append(epoch) }
+        var kept: [Int] = []
+        list.onKeepWordEdit = { _, _, _, epoch in kept.append(epoch) }
+        list.editingWords = true
+        list.wordsEpoch = 2
+        // Return.
+        list.table.handleWordClick(row: 0, word: 1, through: 1, extend: false)
+        list.editField.stringValue = "Beta"
+        list.wordsEpoch = 3
+        press(list, #selector(NSResponder.insertNewline(_:)))
+        #expect(epochs == [2])
+        // Taken by a close or a pause.
+        list.table.handleWordClick(row: 0, word: 0, through: 0, extend: false)
+        list.editField.stringValue = "Alfa"
+        list.wordsEpoch = 4
+        #expect(list.takeOpenWordEdit()?.wordsEpoch == 3)
+        // Kept when the review turns read-only.
+        list.table.handleWordClick(row: 0, word: 0, through: 0, extend: false)
+        list.editField.stringValue = "Alfa"
+        list.wordsEpoch = 5
+        list.canEditWords = false
+        #expect(kept == [4])
     }
 
     /// A save that failed after an earlier edit moved its words ("go go": the first "go" became "go go"): the field
@@ -520,7 +549,7 @@ struct TurnListWordEditTests {
     @Test func tabAfterADeletionKeepsTheNextFieldOpenOnTheMergedWord() {
         let (list, saved) = editingList()
         var seen: [Int] = []
-        list.onEditWords = { _, _, _, movesSeen in seen.append(movesSeen) }
+        list.onEditWords = { _, _, _, movesSeen, _ in seen.append(movesSeen) }
         list.editingWords = true
         // "alpha" deleted, Tab: the field opens on "beta" before the save ends.
         list.table.handleWordClick(row: 0, word: 0, through: 0, extend: false)
@@ -649,7 +678,7 @@ struct TurnListWordEditTests {
         var messages: [String?] = []
         list.onEditMessage = { messages.append($0) }
         var kept: [([String], String)] = []
-        list.onKeepWordEdit = { words, text, _ in kept.append((words.map(\.text), text)) }
+        list.onKeepWordEdit = { words, text, _, _ in kept.append((words.map(\.text), text)) }
         list.editingWords = true
         list.table.handleWordClick(row: 0, word: 1, through: 1, extend: false)
         list.editField.stringValue = "Beta"

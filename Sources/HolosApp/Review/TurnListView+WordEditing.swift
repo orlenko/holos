@@ -181,7 +181,7 @@ extension TurnListView: NSTextFieldDelegate {
         let typed = editField.stringValue
         closeEditField()
         if TranscriptWordEdit.cleaned(typed) != TranscriptWordEdit.cleaned(target.shown) {
-            onEditWords?(target.words, typed, addTerm, target.movesSeen)
+            onEditWords?(target.words, typed, addTerm, target.movesSeen, target.wordsEpoch)
         }
         guard advance != .stay, let row = paragraphs.firstIndex(where: { $0.id == target.paragraphID }) else { return }
         let count = paragraphWords(paragraphs[row]).words.count
@@ -240,13 +240,14 @@ extension TurnListView: NSTextFieldDelegate {
     }
 
     /// The window is closing (AppKit ends no editing then): closes the field and hands over what it holds to be saved
-    /// before the review closes; nil when nothing was typed.
-    func takeOpenWordEdit() -> (words: [ReviewWord], text: String, movesSeen: Int)? {
+    /// before the review closes; nil when nothing was typed. `wordsEpoch` is the one the field opened under: every save
+    /// compares it, never the review's at the time of the save.
+    func takeOpenWordEdit() -> (words: [ReviewWord], text: String, movesSeen: Int, wordsEpoch: Int)? {
         guard let target = wordEdit else { return nil }
         let typed = editField.stringValue
         closeEditField()
         guard TranscriptWordEdit.cleaned(typed) != TranscriptWordEdit.cleaned(target.shown) else { return nil }
-        return (target.words, typed, target.movesSeen)
+        return (target.words, typed, target.movesSeen, target.wordsEpoch)
     }
 
     /// Closes the field without saving.
@@ -316,9 +317,9 @@ extension TurnListView: NSTextFieldDelegate {
     func keepWordEdit() {
         guard wordEdit != nil, let open = takeOpenWordEdit() else { return }
         if let keep = onKeepWordEdit {
-            keep(open.words, open.text, open.movesSeen)
+            keep(open.words, open.text, open.movesSeen, open.wordsEpoch)
         } else {
-            onEditWords?(open.words, open.text, false, open.movesSeen)
+            onEditWords?(open.words, open.text, false, open.movesSeen, open.wordsEpoch)
         }
     }
 

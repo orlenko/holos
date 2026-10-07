@@ -618,6 +618,27 @@ private let editEchoMask: AcousticEchoMask = {
     #expect(reverted.segments[0].text == "ask cloud now")
 }
 
+@Test func aFixIsNeverRevertedWhenASegmentIDRepeats() async throws {
+    let base = editTranscript([editSegment(["ask", "cloud", "now"])])
+    let fixed = try await editFixed(base, [Correction(heard: "cloud", meant: "Claude")])
+    // The unfixed revision as read back holds "S1" twice: which copy the fix came from cannot be told, even when the
+    // first one is the right one.
+    var repeated = base
+    repeated.segments.append(base.segments[0])
+    #expect(TranscriptWordEdit.hasRepeatedSegmentIDs(repeated))
+    #expect(throws: HolosError.self) {
+        try WordFixes.reverting(WordRef(segmentID: "S1", word: 1), in: fixed, to: repeated)
+    }
+    // The current revision too.
+    var current = fixed
+    current.segments.append(fixed.segments[0])
+    #expect(throws: HolosError.self) {
+        try WordFixes.reverting(WordRef(segmentID: "S1", word: 1), in: current, to: base)
+    }
+    #expect(try WordFixes.reverting(WordRef(segmentID: "S1", word: 1), in: fixed, to: base).segments[0].text
+        == "ask cloud now")
+}
+
 @Test func anAutomaticFixEditedBackLeavesTheSegmentEditable() async throws {
     // "你好世界 再见", timed as "你好", "世界", "再见"; the word-fix stage made "你好世界" "你好地球" (one word).
     let base = editTranscript([editRanged("你好世界 再见", [(0, 2), (2, 2), (5, 2)])])
