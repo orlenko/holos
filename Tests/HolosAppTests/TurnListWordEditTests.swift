@@ -734,6 +734,13 @@ struct TurnListWordEditTests {
         #expect(list.table.selectedRowIndexes == [row])
         let popUp = try TurnListViewTests.cell(list, row: row).speakerPopUp
         #expect(opened.count == 1 && opened.first === popUp)
+        // A field opened since (the split took a while): it keeps the keyboard, and nothing half typed is saved.
+        list.editingWords = true
+        list.table.handleWordClick(row: 0, word: 0, through: 0, extend: false)
+        list.editField.stringValue = "Alp"
+        #expect(!list.focusSpeaker(startingAt: beta.ref))
+        #expect(opened.count == 1 && list.wordEdit != nil && list.editField.stringValue == "Alp")
+        list.cancelWordEdit()
         #expect(!list.focusSpeaker(startingAt: WordRef(segmentID: "T9", word: 0)), "No row starts there.")
     }
 

@@ -141,6 +141,9 @@ extension TurnListView {
     /// there with that turn (a search may hide it).
     @discardableResult
     func focusSpeaker(startingAt word: WordRef, turnID: String? = nil, splitOf: String? = nil) -> Bool {
+        // A field opened since the split was asked (the split took a while): never pulled away from it, which would
+        // save what is half typed there.
+        guard wordEdit == nil else { return false }
         let starting = paragraphs.indices.filter { paragraphWords(paragraphs[$0]).words.first?.ref == word }
         let chosen = starting.first { row in
             let first = paragraphs[row].turns[0].id
