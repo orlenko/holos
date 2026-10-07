@@ -202,12 +202,13 @@ public enum ScreenContextStore {
         }
         // Each display's keyframes follow one another without overlapping; different displays' overlap in time. A
         // keyframe without a display (saved before keyframes said) is the main display's.
-        var lastEnd: [UInt32?: Double] = [:], ids: Set<String> = []
+        // All of them are listed in start order: Review lists them so, and new keyframes are inserted by start.
+        var lastEnd: [UInt32?: Double] = [:], lastStart = 0.0, ids: Set<String> = []
         for frame in record.frames {
             _ = try image(frame.id, session: session)
             let display = frame.display?.id
             guard ids.insert(frame.id).inserted, frame.start.isFinite, frame.end.isFinite,
-                  frame.start >= lastEnd[display, default: 0], frame.end >= frame.start,
+                  frame.start >= lastEnd[display, default: 0], frame.start >= lastStart, frame.end >= frame.start,
                   (frame.display?.number).map({ (1...maximumDisplays).contains($0) }) ?? true,
                   frame.bytes.map({ (0...maximumImageBytes).contains($0) }) ?? true,
                   (frame.lines?.count ?? 0) <= 256 else {
@@ -220,6 +221,7 @@ public enum ScreenContextStore {
                 }
             }
             lastEnd[display] = frame.end
+            lastStart = frame.start
         }
         return record
     }

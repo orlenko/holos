@@ -891,7 +891,8 @@ func sharedCapsCountEachDisplaysOwnBytesAcrossAReconnectAndARestart() async thro
     let mebibyte = ScreenContextStore.maximumImageBytes, small = (75 << 20) / 600
     let earlier = (0..<150).map { ScreenKeyframe(start: Double($0), end: Double($0), display: a, bytes: mebibyte) }
         + (0..<600).map { ScreenKeyframe(start: Double($0), end: Double($0), display: b, bytes: small) }
-    var record = ScreenContextRecord(sessionID: archive.id, frames: earlier)
+    // One timeline, in start order (`sorted` is stable, so each display's own keyframes stay in order).
+    var record = ScreenContextRecord(sessionID: archive.id, frames: earlier.sorted { $0.start < $1.start })
     record.imageBytes = 150 * mebibyte + 600 * small
     try ScreenContextStore.write(record, session: archive.directory)
     let capped = Mutex<[UInt32]>([])
@@ -1170,5 +1171,27 @@ func aStartThatFailsBecauseItsDisplayWasUnpluggedLeavesTheCaptureWaiting() async
     #expect(capture.capturing == [9], "the capture did not give up")
     await capture.stop()
     #expect(try ScreenContextStore.read(session: archive.directory, sessionID: archive.id)?.failure == nil)
+    try await archive.finish(status: ArchiveStatus.audioOnly)
+}
+
+@Test(.timeLimit(.minutes(1))) @MainActor
+func aStreamThatErrorsWhileItsStartHangsIsRetiredAtOnce() async throws {
+    let (root, archive) = try await screenCaptureFixture()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let system = FakeScreenSystem([candidate(9, x: 0, main: true)])
+    let gate = Gate()
+    system.whileStarting = { _ in await gate.wait() }               // the start never returns (until the end)
+    let capture = MeetingScreenCapture(permissionCheck: { true }, system: system, pollInterval: .seconds(3600))
+    capture.start(.display, session: archive.directory, origin: 0)
+    await capture.initial?.value
+    await capture.streamStopped(9)                                  // its error arrives while the start hangs
+    #expect(system.stopped == [9] || capture.capturing.isEmpty)
+    await capture.stop()
+    #expect(system.stopped.contains(9), "the broken stream was asked to stop")
+    #expect(try ScreenContextStore.read(session: archive.directory, sessionID: archive.id)?.failure == "captureFailed",
+            "its display is still connected and nothing else captures: the capture says it failed")
+    gate.open()                                                      // the late start return is ignored
+    await capture.settle()
+    #expect(capture.capturing.isEmpty)
     try await archive.finish(status: ArchiveStatus.audioOnly)
 }

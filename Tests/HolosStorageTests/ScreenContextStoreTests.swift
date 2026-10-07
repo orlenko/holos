@@ -209,3 +209,24 @@ func aContextWithoutAReadableVersionIsRefused() async throws {
         }
     }
 }
+
+@Test(.timeLimit(.minutes(1)))
+func keyframesOfAllDisplaysAreListedInStartOrder() async throws {
+    let (root, archive) = try await screenStoreFixture()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let a = ScreenDisplay(id: 4, number: 1, isMain: true), b = ScreenDisplay(id: 7, number: 2, isMain: false)
+    let backwards = ScreenContextRecord(sessionID: archive.id, frames: [
+        ScreenKeyframe(start: 10, end: 12, display: a), ScreenKeyframe(start: 1, end: 3, display: b),
+    ])
+    try ScreenContextStore.write(backwards, session: archive.directory)
+    #expect(throws: (any Error).self, "B at 1 s listed after A at 10 s") {
+        try ScreenContextStore.read(session: archive.directory, sessionID: archive.id)
+    }
+    // Overlapping intervals of different displays stay fine while their starts are in order.
+    let ordered = ScreenContextRecord(sessionID: archive.id, frames: [
+        ScreenKeyframe(start: 1, end: 12, display: a), ScreenKeyframe(start: 1, end: 3, display: b),
+        ScreenKeyframe(start: 4, end: 9, display: b),
+    ])
+    try ScreenContextStore.write(ordered, session: archive.directory)
+    #expect(try ScreenContextStore.read(session: archive.directory, sessionID: archive.id) == ordered)
+}

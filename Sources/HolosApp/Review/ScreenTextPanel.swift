@@ -25,9 +25,11 @@ import HolosStorage
         window.delegate = self
         frames.target = self; frames.action = #selector(chosen)
         frames.setAccessibilityLabel("Saved screen snapshot time")
-        // Through the menu: `addItem(withTitle:)` would drop an earlier snapshot with the same title.
-        for title in Self.titles(record) {
-            frames.menu?.addItem(NSMenuItem(title: title, action: nil, keyEquivalent: ""))
+        // `addItem(withTitle:)` drops an earlier item with the same title, so each is added under its unique index,
+        // then given its title: the pop-up's own items stay wired to its selection and enabled.
+        for (index, title) in Self.titles(record).enumerated() {
+            frames.addItem(withTitle: "\(index)")
+            frames.lastItem?.title = title
         }
         if frames.numberOfItems > 0 { frames.selectItem(at: 0) }
         let note = NSTextField(wrappingLabelWithString: "OCR is supporting evidence, not what was spoken. "
@@ -75,6 +77,8 @@ import HolosStorage
 
     /// The pop-up's snapshot titles (tests).
     var snapshotTitles: [String] { frames.itemTitles }
+    /// The pop-up's menu, to choose a snapshot as the user does (tests).
+    var snapshotMenu: NSMenu? { frames.menu }
 
     private static func time(_ seconds: Double) -> String {
         let seconds = Int(max(0, seconds))

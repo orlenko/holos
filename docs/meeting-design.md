@@ -4602,14 +4602,16 @@ displays nor hot-plug, and a meeting stopped (or a display capped or unplugged) 
 it stops that stream at once; frames it still delivers are fenced by the ended capture
 generation. Each stream is one object (`ScreenDisplayStream`) holding its control, its
 output (ScreenCaptureKit holds a stream's output and delegate weakly, so the capture
-keeps it for as long as the stream may run), its phase, and whether it broke while
-starting; its callbacks and its samples carry a token, so nothing an old stream of a
-display does (a late sample while its stop is still finishing and the display is back)
-touches a newer one. A start that fails is handled like a running stream's error: a
-refresh against the current layout tells an unplugged display from a broken stream
-before anything decides that nothing can capture. Stops are requested without waiting, all at once when the meeting
-stops, so one stalled platform stop never leaves another stream running or holds up a
-refresh. This was chosen over the display-reconfiguration callback because the recorder is a command-line process without
+keeps it for as long as the stream may run), and its phase; its callbacks and its
+samples carry a token, so nothing an old stream of a display does (a late sample while
+its stop is still finishing and the display is back) touches a newer one. A stream that
+reports an error, even while its start is still pending (which may never return), is
+retired at once, and a start that fails is handled the same way: a refresh against the
+current layout tells an unplugged display from a broken stream before anything decides
+that nothing can capture; a late start return is stopped again. Stops are requested
+without waiting, all at once when the meeting stops, so one stalled platform stop never
+leaves another stream running or holds up a refresh. Polling was chosen over the
+display-reconfiguration callback because the recorder is a command-line process without
 an AppKit run loop, and polling a list of IDs needs nothing from the window server
 beyond the call. A disconnected display's stream ends; its last keyframe's interval
 already ends at its last observed sample and a change that had not settled is dropped,
@@ -4663,7 +4665,9 @@ transcripts are unaffected), rather than rewriting it without the fields it does
 know, after which every snapshot would read as the main display's. A record without
 them (one saved before, even after this build recognized its text) stays at 1, so an
 older build can still read it. Each display's keyframes follow one another without
-overlapping; different displays' overlap in time.
+overlapping; different displays' overlap in time, but every keyframe is listed in start
+order (new ones are inserted by start, and a record out of order is refused as damaged),
+which Review's list and the insertion rely on.
 `screen/<UUID>.jpg` is owner-only. Caps are 1000 keyframes, 1 MiB per JPEG, and 256 MiB
 total JPEGs, shared by all displays (`ScreenStoragePolicy`, pure): each display beyond
 the first (counting only displays whose stream has delivered a sample, so a stream still

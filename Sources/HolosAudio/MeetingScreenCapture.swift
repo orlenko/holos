@@ -127,8 +127,6 @@ struct ScreenDisplayLayout: Equatable, Sendable {
     let control: any ScreenStreamControl
     let output: ScreenDisplayOutput
     var phase = Phase.starting
-    /// Its stream reported an error before its start returned.
-    var brokeWhileStarting = false
 
     init(display: ScreenDisplay, token: UUID, control: any ScreenStreamControl, output: ScreenDisplayOutput) {
         self.display = display; self.token = token; self.control = control; self.output = output
@@ -327,15 +325,6 @@ struct ScreenDisplayLayout: Equatable, Sendable {
             await stream.control.stop()
             return
         }
-        if stream.brokeWhileStarting {
-            // A refresh tells a disconnect from a broken stream.
-            streams[id] = nil
-            requestStop(stream)
-            roster.failed(id)
-            receiver.end(id)
-            await refresh()
-            return
-        }
         stream.phase = .running
         Self.log.info("Capturing display \(stream.display.number, privacy: .public) of the meeting")
     }
@@ -394,7 +383,8 @@ struct ScreenDisplayLayout: Equatable, Sendable {
     private func streamStopped(_ id: CGDirectDisplayID, token: UUID) async {
         streamErrors += 1
         guard !stopped, let stream = streams[id], stream.token == token else { return }
-        if stream.phase == .starting { stream.brokeWhileStarting = true; return }
+        // Also while its start is pending, which may never return: the stream is retired at once (a late return of
+        // its start finds another stream, or none, under its display and is stopped again), and the refresh decides.
         streams[id] = nil
         requestStop(stream)
         roster.failed(id)
