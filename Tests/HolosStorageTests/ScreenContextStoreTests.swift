@@ -194,3 +194,18 @@ func recordsThatNameDisplaysAreWrittenAsVersionTwo() async throws {
     }
     #expect(try AtomicFile.readIfPresent(ScreenContextStore.manifest(archive.directory), maxBytes: 1 << 20) == newer)
 }
+
+@Test(.timeLimit(.minutes(1)))
+func aContextWithoutAReadableVersionIsRefused() async throws {
+    let (root, archive) = try await screenStoreFixture()
+    defer { try? FileManager.default.removeItem(at: root) }
+    try AtomicFile.ensurePrivateDirectory(ScreenContextStore.directory(archive.directory))
+    for version in ["", "\"schemaVersion\":\"2\",", "\"schemaVersion\":0,"] {
+        let json = "{\(version)\"sessionID\":\"\(archive.id)\",\"frames\":[]}"
+        try? FileManager.default.removeItem(at: ScreenContextStore.manifest(archive.directory))
+        try AtomicFile.create(Data(json.utf8), at: ScreenContextStore.manifest(archive.directory))
+        #expect(throws: (any Error).self, "\(version)") {
+            try ScreenContextStore.read(session: archive.directory, sessionID: archive.id)
+        }
+    }
+}

@@ -91,6 +91,12 @@ public struct ScreenContextRecord: Codable, Sendable, Equatable {
     /// `schemaVersion` is checked before decoding (`ScreenContextStore.read`) and follows from the keyframes.
     public init(from decoder: any Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
+        // Required, as before the version followed from the keyframes: a file without a readable version is damaged.
+        let version = try container.decode(Int.self, forKey: .schemaVersion)
+        guard (1...ScreenContextStore.schemaVersion).contains(version) else {
+            throw DecodingError.dataCorruptedError(forKey: .schemaVersion, in: container,
+                                                   debugDescription: "Unsupported screen context schema version.")
+        }
         sessionID = try container.decode(String.self, forKey: .sessionID)
         frames = try container.decode([ScreenKeyframe].self, forKey: .frames)
         imageBytes = try container.decodeIfPresent(Int.self, forKey: .imageBytes) ?? 0
@@ -168,6 +174,8 @@ public struct ScreenContextRecord: Codable, Sendable, Equatable {
 }
 
 public enum ScreenContextStore {
+    /// The newest `screen/context.json` version this build reads (`ScreenContextRecord.schemaVersion`).
+    public static let schemaVersion = 2
     public static let maximumFrames = 1_000
     public static let maximumImageBytes = 1 << 20
     public static let maximumTotalImageBytes = 256 << 20
@@ -187,7 +195,7 @@ public enum ScreenContextStore {
 
     public static func read(session: URL, sessionID: String) throws -> ScreenContextRecord? {
         guard let data = try AtomicFile.readIfPresent(manifest(session), maxBytes: 16 << 20) else { return nil }
-        let record = try SchemaVersion.decode(ScreenContextRecord.self, from: data, current: 2, name: "screen/context.json")
+        let record = try SchemaVersion.decode(ScreenContextRecord.self, from: data, current: schemaVersion, name: "screen/context.json")
         guard record.sessionID == sessionID, record.frames.count <= maximumFrames,
               record.imageBytes >= 0, record.imageBytes <= maximumTotalImageBytes else {
             throw HolosError.invalidInput("Screen context belongs to another session or has too many frames.")

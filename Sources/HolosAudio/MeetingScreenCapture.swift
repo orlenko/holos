@@ -282,9 +282,9 @@ struct ScreenDisplayLayout: Equatable, Sendable {
         }
         for display in change.start {
             guard !stopped else { return }
-            receiver.begin(display)
             let token = UUID()
-            let output = ScreenDisplayOutput(display: display, receiver: receiver) { [weak self] in
+            receiver.begin(display, stream: token)
+            let output = ScreenDisplayOutput(display: display, stream: token, receiver: receiver) { [weak self] in
                 Task { @MainActor in await self?.streamStopped(display.id, token: token) }
             }
             let control: any ScreenStreamControl
@@ -313,7 +313,12 @@ struct ScreenDisplayLayout: Equatable, Sendable {
             guard streams[id] === stream, stream.phase == .starting else { return }
             streams[id] = nil
             stream.phase = .stopped
-            startFailed(stream.display, receiver)
+            // As for a running stream's error: the display may have been unplugged while it started. A refresh
+            // against the current layout tells that from a broken stream before anything decides nothing captures.
+            roster.failed(id)
+            receiver.end(id)
+            Self.log.error("Display \(stream.display.number, privacy: .public) could not be captured")
+            await refresh()
             return
         }
         // Stopped, disconnected or capped while starting: the stop came before the platform had a stream to stop,
@@ -540,12 +545,15 @@ enum ScreenFrameEncoding {
 /// One display's stream output and delegate: hands its samples, tagged with the display, to the capture's receiver.
 final class ScreenDisplayOutput: NSObject, SCStreamOutput, SCStreamDelegate, Sendable {
     let display: ScreenDisplay
+    /// The stream's token: its samples count only while it is the display's current stream.
+    let stream: UUID
     let receiver: ScreenFrameReceiver
     private let onStop: @Sendable () -> Void
     var queue: DispatchQueue { receiver.queue }
 
-    init(display: ScreenDisplay, receiver: ScreenFrameReceiver, onStop: @escaping @Sendable () -> Void) {
-        self.display = display; self.receiver = receiver; self.onStop = onStop
+    init(display: ScreenDisplay, stream: UUID, receiver: ScreenFrameReceiver,
+         onStop: @escaping @Sendable () -> Void) {
+        self.display = display; self.stream = stream; self.receiver = receiver; self.onStop = onStop
         super.init()
     }
 
@@ -555,7 +563,7 @@ final class ScreenDisplayOutput: NSObject, SCStreamOutput, SCStreamDelegate, Sen
 
     func stream(_ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer, of type: SCStreamOutputType) {
         guard type == .screen else { return }
-        receiver.receive(sampleBuffer, from: display)
+        receiver.receive(sampleBuffer, from: display, stream: self.stream)
     }
 }
 
@@ -592,6 +600,9 @@ final class ScreenFrameReceiver: Sendable {
         /// Its stream has delivered a sample: it is capturing, not still starting (or hung starting), so it takes
         /// part in the shared caps' reservations.
         var delivering = false
+        /// The token of the display's current stream. A sample of an older stream of the display (one whose stop
+        /// has not finished when the display came back) is ignored, so it cannot touch the new stream's state.
+        var stream: UUID?
     }
     private struct State {
         var stopped = false
@@ -637,16 +648,22 @@ final class ScreenFrameReceiver: Sendable {
 
     /// A display's stream is starting: a fresh retained frame, so its first sample is kept at once. A display that
     /// comes back keeps its keyframe and byte counts for the shared caps; only its sampling starts again.
-    func begin(_ display: ScreenDisplay) {
+    func begin(_ display: ScreenDisplay, stream: UUID? = nil) {
         queue.async {
             self.state.withLock { value in
                 guard let known = value.screens[display.id] else {
-                    value.screens[display.id] = Self.screen(display, value)
+                    value.screens[display.id] = Self.screen(display, value, stream: stream)
                     return
                 }
-                value.screens[display.id] = Screen(display: display, keyframes: known.keyframes, bytes: known.bytes)
+                value.screens[display.id] = Screen(display: display, keyframes: known.keyframes, bytes: known.bytes,
+                                                   stream: stream)
             }
         }
+    }
+
+    /// Whether a sample of `stream` belongs to the display's current stream (or is the display's first).
+    private static func current(_ value: State, _ id: CGDirectDisplayID, _ stream: UUID?) -> Bool {
+        value.screens[id].map { $0.stream == stream } ?? true
     }
 
     /// A display's stream ended: a change of it that never settled is dropped, and its last keyframe's interval
@@ -662,11 +679,12 @@ final class ScreenFrameReceiver: Sendable {
 
     /// A display first seen by this capture generation, with what the meeting's saved keyframes say it used: each
     /// keyframe's own JPEG size, or, for one saved without it, the meeting's average.
-    private static func screen(_ display: ScreenDisplay, _ value: State) -> Screen {
+    private static func screen(_ display: ScreenDisplay, _ value: State, stream: UUID? = nil) -> Screen {
         let frames = value.record?.frames ?? []
         let own = frames.filter { $0.display?.id == display.id }
         let average = frames.isEmpty ? 0 : (value.record?.imageBytes ?? 0) / frames.count
-        return Screen(display: display, keyframes: own.count, bytes: own.reduce(0) { $0 + ($1.bytes ?? average) })
+        return Screen(display: display, keyframes: own.count, bytes: own.reduce(0) { $0 + ($1.bytes ?? average) },
+                      stream: stream)
     }
 
     func failed() {
@@ -701,8 +719,9 @@ final class ScreenFrameReceiver: Sendable {
     }
 
     /// Called on `queue` by a display's stream.
-    func receive(_ sampleBuffer: CMSampleBuffer, from display: ScreenDisplay) {
-        guard sampleBuffer.isValid,
+    func receive(_ sampleBuffer: CMSampleBuffer, from display: ScreenDisplay, stream: UUID) {
+        // An older stream's sample is not even converted.
+        guard state.withLock({ Self.current($0, display.id, stream) }), sampleBuffer.isValid,
               let attachments = CMSampleBufferGetSampleAttachmentsArray(sampleBuffer, createIfNecessary: false)
                 as? [[SCStreamFrameInfo: Any]],
               let raw = attachments.first?[.status] as? Int else { return }
@@ -715,19 +734,23 @@ final class ScreenFrameReceiver: Sendable {
             let input = CIImage(cvPixelBuffer: buffer)
             image = images.createCGImage(input, from: input.extent)
         }
-        receive(image, at: time, status: raw, from: display)
+        receive(image, at: time, status: raw, from: display, stream: stream)
     }
 
     /// Called on `queue`, also by synthetic-frame tests. No screen/device lookup occurs here.
-    func receive(_ image: CGImage?, at time: Double, status raw: Int, from display: ScreenDisplay) {
+    func receive(_ image: CGImage?, at time: Double, status raw: Int, from display: ScreenDisplay,
+                 stream: UUID? = nil) {
         if raw != SCFrameStatus.complete.rawValue && raw != SCFrameStatus.idle.rawValue {
-            state.withLock { $0.screens[display.id]?.fingerprint = nil; $0.screens[display.id]?.previous = nil }
+            state.withLock { value in
+                guard Self.current(value, display.id, stream) else { return }
+                value.screens[display.id]?.fingerprint = nil; value.screens[display.id]?.previous = nil
+            }
             return
         }
         guard time.isFinite, time >= 0, !stopped.withLock({ $0 }) else { return }
         state.withLock { value in
-            guard !value.stopped else { return }
-            var screen = value.screens[display.id] ?? Self.screen(display, value)
+            guard !value.stopped, Self.current(value, display.id, stream) else { return }
+            var screen = value.screens[display.id] ?? Self.screen(display, value, stream: stream)
             guard !screen.ended else { return }
             screen.delivering = true
             let step: Step

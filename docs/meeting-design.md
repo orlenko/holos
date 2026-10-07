@@ -4603,8 +4603,11 @@ it stops that stream at once; frames it still delivers are fenced by the ended c
 generation. Each stream is one object (`ScreenDisplayStream`) holding its control, its
 output (ScreenCaptureKit holds a stream's output and delegate weakly, so the capture
 keeps it for as long as the stream may run), its phase, and whether it broke while
-starting; callbacks name it by a token, so nothing an old stream of a display does
-touches a newer one. Stops are requested without waiting, all at once when the meeting
+starting; its callbacks and its samples carry a token, so nothing an old stream of a
+display does (a late sample while its stop is still finishing and the display is back)
+touches a newer one. A start that fails is handled like a running stream's error: a
+refresh against the current layout tells an unplugged display from a broken stream
+before anything decides that nothing can capture. Stops are requested without waiting, all at once when the meeting
 stops, so one stalled platform stop never leaves another stream running or holds up a
 refresh. This was chosen over the display-reconfiguration callback because the recorder is a command-line process without
 an AppKit run loop, and polling a list of IDs needs nothing from the window server
@@ -4652,7 +4655,8 @@ and its JPEG size (`bytes`), so each display's share of the caps is exact after 
 reconnect (kept in memory) or a recorder restart (rebuilt from the keyframes; one saved
 without a size counts as the meeting's average). A keyframe without a display, saved
 before all displays were captured, reads as the main display. A record whose keyframes
-carry either field is written with `schemaVersion` 2; this build reads 1 and 2. A build
+carry either field is written with `schemaVersion` 2; this build reads 1 and 2, and a
+file without a readable version is refused as damaged. A build
 from before displays were named reads only 1 and refuses a version-2 file as written by
 a newer version, leaving it alone (its OCR and Review report the refusal; recording and
 transcripts are unaffected), rather than rewriting it without the fields it does not
