@@ -33,6 +33,41 @@ enum ReviewLearning {
         for (index, turn) in turns.enumerated() {
             for span in turn { spansOf[span.segmentID, default: []].append((index, span)) }
         }
+        let segmentsByID = Dictionary(transcript.segments.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        // Each segment read once, when an edit or its context needs it (nil: it cannot be trusted).
+        var cache: [String: Prepared?] = [:]
+        func prepared(_ id: String) -> Prepared? {
+            if let known = cache[id] { return known }
+            let made = segmentsByID[id].flatMap { segment in
+                Self.prepare(segment, readable: readable,
+                             baseSegment: base?.id == transcript.fixedFrom ? baseSegments?[segment.id] : nil,
+                             spans: spansOf[segment.id] ?? [])
+            }
+            cache[id] = .some(made)
+            return made
+        }
+        /// The context word before (`before`) or after words `first..<end` of segment `segmentID`, in turn `owner`:
+        /// the word beside them in the segment; at the segment's edge, the turn's word beside them in the segment its
+        /// spans go on in (a one-word segment inside a longer turn has context too). Never a word another turn holds,
+        /// nor hidden echo (a span that does not reach the edge of its segment leaves words between).
+        func neighbour(owner: Int, segmentID: String, first: Int, end: Int,
+                       before: Bool) -> (shown: String, heard: String?)? {
+            guard let this = prepared(segmentID) else { return nil }
+            let index = before ? first - 1 : end
+            if index >= 0, index < this.words.count { return Self.context(index, in: this, owner: owner) }
+            guard owner >= 0, owner < turns.count else { return nil }
+            let spans = turns[owner]
+            let edge = before ? first : end - 1
+            guard let at = spans.firstIndex(where: {
+                $0.segmentID == segmentID && $0.first <= edge && edge < $0.end
+            }) else { return nil }
+            let next = before ? at - 1 : at + 1
+            guard spans.indices.contains(next), spans[next].segmentID != segmentID,
+                  let other = prepared(spans[next].segmentID) else { return nil }
+            let span = spans[next]
+            guard before ? span.end == other.words.count : span.first == 0 else { return nil }
+            return Self.context(before ? span.end - 1 : span.first, in: other, owner: owner)
+        }
         let ordered = transcript.segments.sorted { ($0.start, $0.track ?? "") < ($1.start, $1.track ?? "") }
         var edits: [ReviewWordEdit] = []
         for segment in ordered {
@@ -40,7 +75,7 @@ enum ReviewLearning {
             guard (segment.fixes ?? []).contains(where: { $0.kind == .reviewEdit }) else { continue }
             // A segment that cannot be trusted (word ranges, marks: `TranscriptWordEdit.isDamaged`) teaches nothing,
             // neither its own edits nor context for them.
-            if TranscriptWordEdit.isDamaged(segment) { continue }
+            guard let this = prepared(segment.id) else { continue }
             // Nor one where an edit touches (holds, or stands beside) a fix of a kind a newer version wrote: what the
             // recognizer wrote there cannot be told, as the editor cannot edit it (`TranscriptWordEdit.editableKinds`).
             let marks = segment.fixes ?? []
@@ -50,69 +85,16 @@ enum ReviewLearning {
             }) {
                 continue
             }
-            let words = WordTiming.effectiveWords(of: segment)
-            let utf16 = Array(segment.text.utf16)
-            // Where each word boundary is in the unfixed segment, for what the recognizer wrote under a fix.
-            // (Not when it cannot be trusted either: then no context is read from it.)
-            let baseSegment = (base?.id == transcript.fixedFrom ? baseSegments?[segment.id] : nil)
-                .flatMap { TranscriptWordEdit.isDamaged($0) ? nil : $0 }
-            let baseWords = baseSegment.map(WordTiming.effectiveWords(of:))
-            let baseUTF16 = baseSegment.map { Array($0.text.utf16) } ?? []
-            let bounds = baseWords.flatMap {
-                TranscriptWordEdit.baseBounds(fixes: segment.fixes ?? [], current: words, base: $0, baseText: baseUTF16)
-            }
-            /// What the recognizer wrote over `fix`, the same extent its shown text has (`shown`: punctuation the
-            /// recognizer did not time included): from the unfixed segment for an automatic fix; else its `heard`
-            /// when its shown text is just its words; nil when that cannot be told (no context then).
-            func recognized(_ fix: TranscriptWordFix, shown: String) -> String? {
-                // A kind a newer version wrote: what its `heard` means is not known here, so it is no provenance.
-                guard readable.contains(fix.kind) else { return nil }
-                // A deletion's `heard` holds the deleted words too: beside an edit, it would teach dropping them.
-                if fix.deleted == true { return nil }
-                // A damaged fix (its words out of the segment's) has nothing that can be read.
-                guard TranscriptWordEdit.isSound(fix, wordCount: words.count) else { return nil }
-                if fix.kind == .correction || fix.kind == .term, baseSegment != nil, let baseWords, let bounds,
-                   fix.end < bounds.count,
-                   bounds[fix.first] >= 0, bounds[fix.end] >= 0 {
-                    let range = TranscriptWordEdit.extent(of: bounds[fix.first]..<bounds[fix.end], words: baseWords,
-                                                          utf16: baseUTF16)
-                    if !range.isEmpty { return String(decoding: baseUTF16[range], as: UTF16.self) }
-                }
-                let own = words[fix.first..<fix.end].map(\.text).joined(separator: " ")
-                return TranscriptWordEdit.cleaned(own) == TranscriptWordEdit.cleaned(shown)
-                    ? TranscriptWordEdit.cleaned(fix.heard) : nil
-            }
-            // Which turns (by index, ascending) hold each word of the segment, read once from the spans (clamped to
-            // the words: a span read from disk can hold any numbers), so nothing below walks every turn per word.
-            var holders = Array(repeating: [Int](), count: words.count)
-            for (index, span) in spansOf[segment.id] ?? [] {
-                let lower = max(span.first, 0), upper = min(span.end, words.count)
-                guard lower < upper else { continue }
-                for word in lower..<upper where holders[word].last != index { holders[word].append(index) }
-            }
-            func holds(_ turn: Int, _ word: Int) -> Bool {
-                word >= 0 && word < holders.count && holders[word].contains(turn)
-            }
+            let words = this.words
+            let utf16 = this.utf16
             /// The turns holding every word of `range`, in order (the first is the one an edit belongs to).
             func turnsHolding(_ range: Range<Int>, among candidates: [Int]? = nil) -> [Int] {
-                guard !range.isEmpty, range.lowerBound >= 0, range.upperBound <= holders.count else { return [] }
-                var left = candidates ?? holders[range.lowerBound]
-                for word in range where !left.isEmpty { left = left.filter { holds($0, word) } }
+                guard !range.isEmpty, range.lowerBound >= 0, range.upperBound <= this.holders.count else { return [] }
+                var left = candidates ?? this.holders[range.lowerBound]
+                for word in range where !left.isEmpty { left = left.filter { this.holds($0, word) } }
                 return left
             }
-            /// A Review edit that changes only punctuation or letter case (`changesOnlyPunctuationOrCase`), its shown
-            /// text against what the recognizer wrote.
-            func trivial(_ fix: TranscriptWordFix) -> Bool {
-                guard fix.kind == .reviewEdit, TranscriptWordEdit.isSound(fix, wordCount: words.count),
-                      let shown = TranscriptWordEdit.shownText(first: fix.first, end: fix.end, words: words,
-                                                               utf16: utf16) else { return false }
-                return TranscriptEditLearning.changesOnlyPunctuationOrCase(heard: fix.heard, meant: shown)
-            }
-            // Each word's fix (marks never overlap here: `isDamaged`), read once.
-            var fixAt: [Int: TranscriptWordFix] = [:]
-            for fix in segment.fixes ?? [] where TranscriptWordEdit.isSound(fix, wordCount: words.count) {
-                for word in fix.first..<fix.end { fixAt[word] = fix }
-            }
+            let trivial = this.trivial
             // Only words edited together that one shown turn still holds: a relabel may since have put them in two
             // turns, and a correction learned from them would mix two speakers' words.
             // A deletion (or an edit that took one in) teaches nothing: its `heard` holds the deleted words, and
@@ -159,16 +141,96 @@ enum ReviewLearning {
                 let heard = TranscriptWordEdit.cleaned(written)
                 let shown = TranscriptWordEdit.cleaned(meant)
                 guard heard != shown else { continue }
-                let inTurn = { (word: Int) in holds(owner, word) }
-                let before = context(first - 1, words: words, utf16: utf16, fixAt: fixAt, inTurn: inTurn,
-                                     trivial: trivial, recognized: recognized)
-                let after = context(end, words: words, utf16: utf16, fixAt: fixAt, inTurn: inTurn,
-                                    trivial: trivial, recognized: recognized)
+                let before = neighbour(owner: owner, segmentID: segment.id, first: first, end: end, before: true)
+                let after = neighbour(owner: owner, segmentID: segment.id, first: first, end: end, before: false)
                 edits.append(ReviewWordEdit(heard: heard, meant: shown, before: before?.shown, after: after?.shown,
                                             heardBefore: before?.heard, heardAfter: after?.heard))
             }
         }
         return edits
+    }
+
+    /// One segment as learning reads it (`prepare`, once per segment): its words and text, each word's fix, which
+    /// turns hold each word, what the recognizer wrote under a fix (`recognized`), and whether an edit changes only
+    /// punctuation or case (`trivial`).
+    private struct Prepared {
+        var words: [EffectiveWord]
+        var utf16: [UInt16]
+        var fixAt: [Int: TranscriptWordFix]
+        var holders: [[Int]]
+        var recognized: (TranscriptWordFix, String) -> String?
+        var trivial: (TranscriptWordFix) -> Bool
+
+        func holds(_ turn: Int, _ word: Int) -> Bool {
+            word >= 0 && word < holders.count && holders[word].contains(turn)
+        }
+    }
+
+    /// `segment` read for learning; nil when it cannot be trusted (`TranscriptWordEdit.isDamaged`). `baseSegment`: the
+    /// same segment of the unfixed revision, where what the recognizer wrote under an automatic fix is read (not when
+    /// it cannot be trusted either); `spans`: the turns' spans in it; `readable`: the fix kinds learning reads.
+    private static func prepare(_ segment: TranscriptSegment, readable: Set<TranscriptWordFixKind>,
+                                baseSegment: TranscriptSegment?,
+                                spans: [(turn: Int, span: WordSpan)]) -> Prepared? {
+        if TranscriptWordEdit.isDamaged(segment) { return nil }
+        let words = WordTiming.effectiveWords(of: segment)
+        let utf16 = Array(segment.text.utf16)
+        // Where each word boundary is in the unfixed segment, for what the recognizer wrote under a fix.
+        let baseSegment = baseSegment.flatMap { TranscriptWordEdit.isDamaged($0) ? nil : $0 }
+        let baseWords = baseSegment.map(WordTiming.effectiveWords(of:))
+        let baseUTF16 = baseSegment.map { Array($0.text.utf16) } ?? []
+        let bounds = baseWords.flatMap {
+            TranscriptWordEdit.baseBounds(fixes: segment.fixes ?? [], current: words, base: $0, baseText: baseUTF16)
+        }
+        /// What the recognizer wrote over `fix`, the same extent its shown text has (`shown`: punctuation the
+        /// recognizer did not time included): from the unfixed segment for an automatic fix; else its `heard` when its
+        /// shown text is just its words; nil when that cannot be told (no context then).
+        let recognized = { (fix: TranscriptWordFix, shown: String) -> String? in
+            // A kind a newer version wrote: what its `heard` means is not known here, so it is no provenance.
+            guard readable.contains(fix.kind) else { return nil }
+            // A deletion's `heard` holds the deleted words too: beside an edit, it would teach dropping them.
+            if fix.deleted == true { return nil }
+            // A damaged fix (its words out of the segment's) has nothing that can be read.
+            guard TranscriptWordEdit.isSound(fix, wordCount: words.count) else { return nil }
+            if fix.kind == .correction || fix.kind == .term, let baseWords, let bounds, fix.end < bounds.count,
+               bounds[fix.first] >= 0, bounds[fix.end] >= 0 {
+                let range = TranscriptWordEdit.extent(of: bounds[fix.first]..<bounds[fix.end], words: baseWords,
+                                                      utf16: baseUTF16)
+                if !range.isEmpty { return String(decoding: baseUTF16[range], as: UTF16.self) }
+            }
+            let own = words[fix.first..<fix.end].map(\.text).joined(separator: " ")
+            return TranscriptWordEdit.cleaned(own) == TranscriptWordEdit.cleaned(shown)
+                ? TranscriptWordEdit.cleaned(fix.heard) : nil
+        }
+        // Which turns (by index, ascending) hold each word of the segment, read once from the spans (clamped to the
+        // words: a span read from disk can hold any numbers), so nothing walks every turn per word.
+        var holders = Array(repeating: [Int](), count: words.count)
+        for (index, span) in spans {
+            let lower = max(span.first, 0), upper = min(span.end, words.count)
+            guard lower < upper else { continue }
+            for word in lower..<upper where holders[word].last != index { holders[word].append(index) }
+        }
+        /// A Review edit that changes only punctuation or letter case (`changesOnlyPunctuationOrCase`), its shown text
+        /// against what the recognizer wrote.
+        let trivial = { (fix: TranscriptWordFix) -> Bool in
+            guard fix.kind == .reviewEdit, TranscriptWordEdit.isSound(fix, wordCount: words.count),
+                  let shown = TranscriptWordEdit.shownText(first: fix.first, end: fix.end, words: words, utf16: utf16)
+            else { return false }
+            return TranscriptEditLearning.changesOnlyPunctuationOrCase(heard: fix.heard, meant: shown)
+        }
+        // Each word's fix (marks never overlap here: `isDamaged`), read once.
+        var fixAt: [Int: TranscriptWordFix] = [:]
+        for fix in segment.fixes ?? [] where TranscriptWordEdit.isSound(fix, wordCount: words.count) {
+            for word in fix.first..<fix.end { fixAt[word] = fix }
+        }
+        return Prepared(words: words, utf16: utf16, fixAt: fixAt, holders: holders, recognized: recognized,
+                        trivial: trivial)
+    }
+
+    /// `context`, for word `index` of `segment` in turn `owner`.
+    private static func context(_ index: Int, in segment: Prepared, owner: Int) -> (shown: String, heard: String?)? {
+        context(index, words: segment.words, utf16: segment.utf16, fixAt: segment.fixAt,
+                inTurn: { segment.holds(owner, $0) }, trivial: segment.trivial, recognized: segment.recognized)
     }
 
     /// Word `index` of `segment` as context, when the edit's own turn holds it (`inTurn`): its shown text, and what the

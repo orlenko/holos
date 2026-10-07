@@ -4910,7 +4910,9 @@ skips it.
    (`SessionDeepTranscribeCommand.languageProblem`). Edited speaker labels of the current transcript:
    `skipped` with "Speaker labels were edited, so the meeting was not transcribed again. …
    run voiceislocal session deep-transcribe with --force." (checked again under the
-   publication's locks). Deleted audio, no audio, the model not installed, an unreadable
+   publication's locks). Words changed in Review (an edit, or an automatic fix reverted:
+   `TranscriptWordEdit.hasReviewEdits`) are kept the same way unless forced, here and in the
+   languages stage. Deleted audio, no audio, the model not installed, an unreadable
    vocabulary.json or words.json: the transcript is kept and the record says why.
 3. *Prompt* (`DeepTranscriptionPrompt`, pure). "<meeting name>. <term>, <term>, …." with the
    word list's terms and the names of the people the app knows; the ones this meeting's
@@ -7880,7 +7882,13 @@ shown, Otter-style.
   edits handed over a moment before and still saving (Return, then ⌘W), and stays open when
   one of them is not saved. No field opens while it waits, so each edit not saved is kept;
   once the window stays open, the first one's field opens with what was typed and why, and
-  the footer says the others, each with what was typed (`ReviewCloseRecovery`). The field's edit such a close took is held on the window until it is queued, so a
+  the footer says the others, each with what was typed (`ReviewCloseRecovery`). Any edit not
+  saved whose field cannot open again (a Tab past it, its words not shown, a close waiting)
+  stays in the footer with what was typed (`UnsavedWordEdits`): the next edit never clears
+  it; it leaves when "Edit Again" opens its field (the field's from then on: saved, or
+  cancelled with Esc) or when it is dismissed. Edits refused or failed while a quit closes
+  the review are logged with what was typed (private), timeout or not
+  (`failedWordEditsAtClose`). The field's edit such a close took is held on the window until it is queued, so a
   quit meanwhile closes the review with it, and no field opens while such a close waits. A Split Turn sheet's word follows a word edit
   saved while the sheet was open (`split(seenMoves:)`), and is refused when the edit replaced
   it; a Revert's word likewise follows every word change saved since the words it was asked
@@ -8155,7 +8163,10 @@ shown, Otter-style.
     and stands beside the other as it is now shown, so "Hello. cloud" → "Hello? Claude" never
     teaches ". cloud" → "? Claude". An edit (or such a phrase) is learned
     only when one turn holds all its words, and its context comes from that same turn (turns
-    may overlap: two turns each holding some of the words are not one). Words edited together
+    may overlap: two turns each holding some of the words are not one), across segments too:
+    at a segment's edge, the context is the turn's word beside it in the segment its spans go
+    on in (a one-word segment inside a longer turn has context), never across hidden echo.
+    Words edited together
     that a relabel has since put in two turns are not learned (a correction would mix two
     speakers' words); an edit beside them is learned on its own;
   - each is diffed as dictation's Learn does (`CorrectionList.learn`, the recognizer's words

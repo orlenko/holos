@@ -1698,6 +1698,26 @@ func learningAgainAtTheNextCloseChangesNothingAndASecondOccurrenceIsAdded() asyn
         == [ReviewWordEdit(heard: "Yellow. cloud", meant: "Hello? Claude", after: "now")])
 }
 
+/// A one-word segment ("cloud" → "Claude") inside a longer turn: its context is the turn's words in the segments
+/// beside it, through the turn's spans in order; never another turn's word, nor across hidden echo.
+@Test func contextGoesOnAcrossSegmentsOfTheSameTurn() {
+    var before = SessionFixtures.segment(["we", "asked"], track: "system", start: 0, wordSeconds: 1, id: "S1")
+    before.fixes = nil
+    var edited = SessionFixtures.segment(["Claude"], track: "system", start: 2, wordSeconds: 1, id: "S2")
+    edited.fixes = [TranscriptWordFix(first: 0, end: 1, heard: "cloud", kind: .reviewEdit, heardWords: 1)]
+    let after = SessionFixtures.segment(["now", "please"], track: "system", start: 3, wordSeconds: 1, id: "S3")
+    let transcript = SessionFixtures.transcript([before, edited, after])
+    let whole = [WordSpan(segmentID: "S1", first: 0, end: 2), WordSpan(segmentID: "S2", first: 0, end: 1),
+                 WordSpan(segmentID: "S3", first: 0, end: 2)]
+    #expect(ReviewLearning.edits(in: transcript, turns: [whole])
+        == [ReviewWordEdit(heard: "cloud", meant: "Claude", before: "asked", after: "now")])
+    // "now" is another turn's: no context after. "asked" hidden as echo (the turn's span stops before it): none before.
+    let split = [[WordSpan(segmentID: "S1", first: 0, end: 1), WordSpan(segmentID: "S2", first: 0, end: 1)],
+                 [WordSpan(segmentID: "S3", first: 0, end: 2)]]
+    #expect(ReviewLearning.edits(in: transcript, turns: split)
+        == [ReviewWordEdit(heard: "cloud", meant: "Claude")])
+}
+
 /// A fix of a kind a newer version wrote: what its `heard` means is not known here, so it is never read as what the
 /// recognizer wrote. An edit beside it (or holding it) is not learned; an edit elsewhere in another segment is, and
 /// one in the same segment away from it too.
@@ -2223,6 +2243,41 @@ func anEditHandedOverIsQueuedBeforeTheCallReturnsSoACloseRightAfterSavesIt() asy
     #expect(review.unsavedWordEdits.isEmpty)
     let edit = try await wait()
     #expect(edit?.meant == "Claude" && committed.map(\.meant) == ["Claude"])
+}
+
+/// A quit while edits still save, and they then fail at once (the transcript changed outside): each is known with
+/// what was typed and why once the review closed, so quitting logs them, timeout or not, never only in a window's
+/// footer that is going away.
+@Test(.timeLimit(.minutes(1))) @MainActor
+func wordEditsThatFailWhileClosingAreKnownWithWhatWasTyped() async throws {
+    let temp = try TemporaryDirectory("review")
+    defer { temp.remove() }
+    let session = try await wordEditSession(in: temp, [
+        WordEditTurn(speaker: "system:S1", start: 0, words: ["ask", "cloud", "now", "please"]),
+    ])
+    let review = try await wordEditOpen(session)
+    let (stream, release) = AsyncStream<Void>.makeStream()
+    let entered = SharedValue(0)
+    review.beforeEdit = {
+        entered.update { $0 += 1 }
+        for await _ in stream {}
+    }
+    let seen = review.wordMoves.count
+    let wait = try #require(try review.queueWordEdit(wordEditRefs(review, "T1", [1]), to: "Claude", seenMoves: seen))
+    #expect(await eventually { entered.value == 1 })
+    let closing = Task { await review.close(typed: .init(words: wordEditRefs(review, "T1", [3]), text: "thanks",
+                                                    seenMoves: seen)) }
+    #expect(await eventually { review.unsavedWordEdits == ["Claude", "thanks"] })
+    // Changed outside meanwhile: both saves are refused.
+    var outside = try wordEditCurrent(session)
+    outside.id = UUID().uuidString
+    try await SessionFixtures.saveTranscript(outside, in: session)
+    release.finish()
+    await closing.value
+    await #expect(throws: HolosError.self) { _ = try await wait() }
+    #expect(review.unsavedWordEdits.isEmpty)
+    #expect(review.failedWordEditsAtClose.map(\.typed) == ["Claude", "thanks"])
+    #expect(review.failedWordEditsAtClose.allSatisfy { !$0.reason.isEmpty })
 }
 
 /// Return, then Tab, then a quit while the first still saves: every edit not saved is known with what was typed (the

@@ -84,9 +84,11 @@ public enum TranscriptWordEdit {
         public var holdsDeleted = false
     }
 
-    /// Whether `transcript` holds words edited in Review.
+    /// Whether `transcript` holds words changed in Review: edited (`reviewEdit`), or an automatic fix reverted to what
+    /// the recognizer wrote (`reviewRevert`). A pass that would replace the transcript (deep transcription, language
+    /// detection) leaves both alone unless forced.
     public static func hasReviewEdits(_ transcript: Transcript) -> Bool {
-        transcript.segments.contains { ($0.fixes ?? []).contains { $0.kind == .reviewEdit } }
+        transcript.segments.contains { ($0.fixes ?? []).contains { $0.kind == .reviewEdit || $0.kind == .reviewRevert } }
     }
 
     /// `text` trimmed, each run of whitespace one space.

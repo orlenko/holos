@@ -192,6 +192,22 @@ public struct ReviewWord: Sendable, Equatable {
         }
     }
 
+    /// The word edits not saved yet when the review began closing (`close`), the field's included.
+    private var closingWordEdits: [Operation] = []
+    /// The field's edit at close, refused before it could be queued.
+    private var refusedAtClose: (typed: String, reason: String)?
+
+    /// The word edits not saved yet when the review began closing that were then refused or failed, each with what was
+    /// typed and why, in the order they were queued. Their windows close, so quitting logs them (timeout or not):
+    /// none is dropped without what was typed.
+    public var failedWordEditsAtClose: [(typed: String, reason: String)] {
+        closingWordEdits.compactMap { op -> (typed: String, reason: String)? in
+            guard op.finished, op.wordEditResult == nil, case .failure(let error)? = op.result,
+                  !(error is CancellationError), case .editWords(let request, _) = op.kind else { return nil }
+            return (TranscriptWordEdit.cleaned(request.text), error.localizedDescription)
+        } + (refusedAtClose.map { [$0] } ?? [])
+    }
+
     /// The corrections one word edit teaches (the app: `TranscriptEditLearning`).
     public var correctionsToLearn: ((ReviewWordEdit) -> [Correction])?
     /// Changes the corrections list as saved (the app: corrections.json loaded, changed by `change`, and saved, under
@@ -1461,7 +1477,13 @@ public struct ReviewWord: Sendable, Equatable {
                                                expecting: typed.expected, seenEpoch: typed.seenEpoch)
             } catch {
                 Self.log.error("Session \(self.sessionID, privacy: .public): the edit open at close was not saved (\(ProcessSpawner.logCategory(error), privacy: .public))")
+                refusedAtClose = (TranscriptWordEdit.cleaned(typed.text), error.localizedDescription)
             }
+        }
+        // Every word edit still to save, the field's with them: one that fails now is known with what was typed.
+        closingWordEdits = queue.filter { op in
+            guard !op.finished, case .editWords = op.kind else { return false }
+            return true
         }
         closed = true
         exportTimer?.cancel()

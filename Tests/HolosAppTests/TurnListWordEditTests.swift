@@ -425,14 +425,41 @@ struct TurnListWordEditTests {
         list.canEditWords = true
         let footer = ReviewCloseRecovery.recover(failures, reopen: reopen)
         #expect(list.wordEdit?.words.map(\.text) == ["alpha"] && list.editField.stringValue == "Alfa")
-        #expect(footer == "The disk is full. What you typed: “Epsilon”.")
+        #expect(footer.map(\.message) == ["The disk is full. What you typed: “Epsilon”."])
         // When the first one's words are gone, the footer says them all.
         list.cancelWordEdit()
         let gone = FailedWordEdit(words: [TurnListViewTests.word("T9", 0, "gone", 0)], text: "Gone", movesSeen: 0,
                                   wordsEpoch: 0, message: "Not saved. What you typed: “Gone”.")
-        #expect(ReviewCloseRecovery.recover([gone] + failures.dropFirst(), reopen: reopen)
-            == "Not saved. What you typed: “Gone”. The disk is full. What you typed: “Epsilon”.")
-        #expect(ReviewCloseRecovery.recover([], reopen: reopen) == nil)
+        #expect(ReviewCloseRecovery.recover([gone] + failures.dropFirst(), reopen: reopen).map(\.text)
+            == ["Gone", "Epsilon"])
+        #expect(ReviewCloseRecovery.recover([], reopen: reopen).isEmpty)
+    }
+
+    /// A failed edit (Tab) whose field could not open again stays in the footer with what was typed: the next edit
+    /// never clears it. It leaves only when its field opens again ("Edit Again", the field's from then on: saved, or
+    /// cancelled with Esc) or when it is dismissed.
+    @Test func editsNotSavedStayUntilReopenedOrDismissed() throws {
+        let (list, _) = editingList()
+        list.editingWords = true
+        let alpha = try #require(TurnListViewTests.words["T1"]?[0])
+        let gone = FailedWordEdit(words: [TurnListViewTests.word("T9", 0, "gone", 0)], text: "Gone", movesSeen: 0,
+                                  wordsEpoch: 0, message: "Not saved. What you typed: “Gone”.")
+        let alfa = FailedWordEdit(words: [alpha], text: "Alfa", movesSeen: 0, wordsEpoch: 0,
+                                  message: "The disk is full. What you typed: “Alfa”.")
+        func reopen(_ failed: FailedWordEdit) -> Bool {
+            list.reopenWordEdit(failed.words, typed: failed.text, message: failed.message,
+                                movesSeen: failed.movesSeen, wordsEpoch: failed.wordsEpoch)
+        }
+        var unsaved = UnsavedWordEdits()
+        unsaved.add([gone, alfa])
+        #expect(unsaved.lines == ["⚠ Not saved: Not saved. What you typed: “Gone”.",
+                                  "⚠ Not saved: The disk is full. What you typed: “Alfa”."])
+        // Its words are gone: it cannot open, so it stays.
+        #expect(!unsaved.reopenNext(reopen) && unsaved.edits.count == 2)
+        // Dismissed: the next one comes first, and opens with what was typed.
+        unsaved.dismissNext()
+        #expect(unsaved.reopenNext(reopen) && unsaved.edits.isEmpty)
+        #expect(list.wordEdit?.words.map(\.text) == ["alpha"] && list.editField.stringValue == "Alfa")
     }
 
     /// Only Esc drops what was typed: turning edit mode off saves it.

@@ -67,15 +67,39 @@ struct FailedWordEdit {
 
 /// After a close by hand stopped because edits were not saved (`ReviewWindow.keepAfterFailedClose`): fields could not
 /// open while the close waited, so the first failed edit's field opens now, with what was typed and why (`reopen`,
-/// false when its words are no longer there), and the footer says every other one, each with what was typed (all of
-/// them when the field could not open). Nil when nothing failed.
+/// false when its words are no longer there). Returns the others (all of them when the field could not open), for the
+/// footer (`UnsavedWordEdits`).
 enum ReviewCloseRecovery {
     @MainActor
-    static func recover(_ failures: [FailedWordEdit], reopen: (FailedWordEdit) -> Bool) -> String? {
-        guard let first = failures.first else { return nil }
-        let left = reopen(first) ? Array(failures.dropFirst()) : failures
-        return left.isEmpty ? nil : left.map(\.message).joined(separator: " ")
+    static func recover(_ failures: [FailedWordEdit], reopen: (FailedWordEdit) -> Bool) -> [FailedWordEdit] {
+        guard let first = failures.first else { return [] }
+        return reopen(first) ? Array(failures.dropFirst()) : failures
     }
+}
+
+/// Word edits not saved whose field could not open again (their words were not shown, another field was open, a close
+/// was waiting): the footer lists each with what was typed until its field opens again (`reopenNext`; it is then the
+/// field's, saved, queued, or cancelled with Esc as any field's) or the person dismisses it (`dismissNext`). The next
+/// edit never clears them.
+struct UnsavedWordEdits {
+    private(set) var edits: [FailedWordEdit] = []
+
+    mutating func add(_ failed: [FailedWordEdit]) { edits += failed }
+
+    /// Opens the first one's field again (`reopen`); true when it opened, and it leaves the list.
+    @MainActor
+    mutating func reopenNext(_ reopen: (FailedWordEdit) -> Bool) -> Bool {
+        guard let first = edits.first, reopen(first) else { return false }
+        edits.removeFirst()
+        return true
+    }
+
+    mutating func dismissNext() {
+        if !edits.isEmpty { edits.removeFirst() }
+    }
+
+    /// The footer's lines: each edit's message (it says what was typed).
+    var lines: [String] { edits.map { "⚠ Not saved: " + $0.message } }
 }
 
 /// The transcript review window (docs/meeting-design.md §5.10): name the speakers of a meeting, play their audio,
@@ -168,6 +192,8 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, Clo
     private var pendingWordEdits: [(id: UUID, saving: Task<FailedWordEdit?, Never>)] = []
     /// The field's edit a close by hand took and has not queued yet (it waits for the edits before it).
     private var heldOpenEdit: HeldEdit?
+    /// Word edits not saved whose field could not open again: in the footer until reopened or dismissed.
+    private var unsavedEdits = UnsavedWordEdits()
 
     /// Words can be edited in the window now: the review allows it, and no close by hand is saving the edits before
     /// it closes (no field opens meanwhile, so nothing typed then can be left behind by the close).
@@ -787,7 +813,16 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, Clo
             lines.append(Notice(text: "⚠ " + reloadProblem, color: .systemRed, button: "Reread",
                                 action: #selector(rereadLabels)))
         }
-        if let problem { lines.append(Notice(text: "⚠ " + problem, color: .systemRed)) }
+        if let problem, !unsavedEdits.edits.contains(where: { $0.message == problem }) {
+            lines.append(Notice(text: "⚠ " + problem, color: .systemRed))
+        }
+        // Each edit not saved whose field could not open, with what was typed; the first can be edited again.
+        for (index, line) in unsavedEdits.lines.enumerated() {
+            lines.append(index == 0
+                ? Notice(text: line, color: .systemRed, button: "Edit Again", action: #selector(editUnsavedAgain),
+                         secondButton: "Dismiss", secondAction: #selector(dismissUnsaved))
+                : Notice(text: line, color: .systemRed))
+        }
         if let notice { lines.append(Notice(text: notice)) }
         if let offered = offeredTerm {
             let heard = offered.heardAs.map { ", often heard as “\($0)”" } ?? ""
@@ -1213,8 +1248,14 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, Clo
             }
             let message = Self.withTyped(error.localizedDescription, text)
             // Where its words are now: through the moves saved since, never across words changed elsewhere.
-            turnList.reopenWordEdit(words, typed: text, message: message, movesSeen: movesSeen,
-                                    wordsEpoch: seenEpoch)
+            let reopened = turnList.reopenWordEdit(words, typed: text, message: message, movesSeen: movesSeen,
+                                                   wordsEpoch: seenEpoch)
+            // Not reopened: kept in the footer until reopened or dismissed (the next edit never clears it). A close
+            // waiting for it keeps it itself (`keepAfterFailedClose`).
+            if !reopened, !closeGate.saving {
+                unsavedEdits.add([FailedWordEdit(words: words, text: text, movesSeen: movesSeen,
+                                                 wordsEpoch: seenEpoch, message: message)])
+            }
             problem = message
             refreshFooter()
             return message
@@ -1275,6 +1316,23 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, Clo
 
     @objc private func dismissOfferedTerm() {
         offeredTerm = nil
+        refreshFooter()
+    }
+
+    /// "Edit Again" on an edit not saved: its field opens with what was typed, when its words are still shown.
+    @objc private func editUnsavedAgain() {
+        guard canEditWordsNow else { return }
+        if !turnList.editingWords { setEditMode(true) }
+        let opened = unsavedEdits.reopenNext { failed in
+            turnList.reopenWordEdit(failed.words, typed: failed.text, message: failed.message,
+                                    movesSeen: failed.movesSeen, wordsEpoch: failed.wordsEpoch)
+        }
+        notice = opened ? nil : "Those words are no longer shown as they were; edit them again, or dismiss this."
+        refreshFooter()
+    }
+
+    @objc private func dismissUnsaved() {
+        unsavedEdits.dismissNext()
         refreshFooter()
     }
 
@@ -1593,7 +1651,9 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, Clo
             turnList.reopenWordEdit(failed.words, typed: failed.text, message: failed.message,
                                     movesSeen: failed.movesSeen, wordsEpoch: failed.wordsEpoch)
         }
-        problem = outcome.failures.isEmpty ? message : others ?? outcome.failures.first?.message
+        // The others stay in the footer, each with what was typed, until reopened or dismissed.
+        unsavedEdits.add(others)
+        problem = outcome.failures.isEmpty ? message : nil
         refreshFooter()
     }
 
