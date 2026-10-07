@@ -311,7 +311,7 @@ timeline and a larger local-model benchmark are follow-ups.
   Review and the exports: fillers and backchannels alone ("um", a lone "an", "Yeah.";
   French euh, ouais, oui, d'accord) are hidden, and a few words that finish the previous
   speaker's open sentence within 1.5 s, or sit within 1.5 s between two turns of one
-  speaker, are shown as that speaker's. Stored labels are unchanged; View ▸ Show Short
+  speaker (overlapping either by at most 0.5 s), are shown as that speaker's. Stored labels are unchanged; View ▸ Show Short
   Interjections lists the hidden ones again, and Next Uncertain skips them otherwise.
   Unit and offscreen layout tests cover the rules, the exports and the pane; not yet
   tried on a real meeting.

@@ -89,6 +89,49 @@ struct ReviewPanesTests {
         #expect(list.table.numberOfRows == 4)
     }
 
+    @Test func aHiddenInterjectionPlayingTintsNoRow() throws {
+        let (projection, transcript) = Self.meeting()
+        let list = Self.list()
+        Self.update(list, projection.shownTurns(includingHidden: false), projection: projection, transcript: transcript)
+        // The window passes the turn spoken from every turn, hidden ones included (`shownTurnsWithHidden`).
+        let spoken = try #require(ReviewTimeline.turnIndex(at: 2.4, turns: projection.shownTurnsWithHidden.map {
+            ($0.start, $0.end)
+        }).map { projection.shownTurnsWithHidden[$0] })
+        #expect(spoken.id == "T2" && spoken.interjection == .hidden)
+        _ = list.showPlaying(turnID: spoken.id, at: 2.4)
+        // Speech that is not listed: not taken for a pause inside Avery's row.
+        #expect(list.playingParagraphID == nil)
+        // A real pause inside the row still tints it.
+        _ = list.showPlaying(turnID: nil, at: 2.8)
+        #expect(list.playingParagraphID == "T1")
+    }
+
+    @Test func aNameBeingTypedInThePaneIsFoundThroughTheFieldEditor() throws {
+        NSApplication.shared.setActivationPolicy(.prohibited)
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 600, height: 300), styleMask: [.titled],
+                              backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        Self.windows.append(window)
+        let pane = NSView(frame: NSRect(x: 0, y: 0, width: 300, height: 300))
+        // A name field as the speakers pane has (a combo box).
+        let inside = NSComboBox(frame: NSRect(x: 10, y: 10, width: 200, height: 24))
+        pane.addSubview(inside)
+        let outside = NSTextField(frame: NSRect(x: 310, y: 10, width: 200, height: 24))
+        let content = NSView(frame: NSRect(x: 0, y: 0, width: 600, height: 300))
+        content.addSubview(pane)
+        content.addSubview(outside)
+        window.contentView = content
+        #expect(window.makeFirstResponder(inside))
+        // The first responder is the window's field editor, whose delegate is the field.
+        let editor = try #require(window.firstResponder as? NSTextView)
+        #expect(editor.isFieldEditor && editor.delegate === inside)
+        #expect(ReviewWindow.isEditing(in: pane, responder: window.firstResponder))
+        #expect(window.makeFirstResponder(outside))
+        #expect(!ReviewWindow.isEditing(in: pane, responder: window.firstResponder))
+        #expect(ReviewWindow.isEditing(in: pane, responder: inside))
+        #expect(!ReviewWindow.isEditing(in: pane, responder: nil))
+    }
+
     /// The View menu's items have no target: AppKit sends them up the key window's responder chain, where the window
     /// hands an action it does not answer to its delegate, the `ReviewWindow` (which also validates them).
     @Test func theViewMenusReviewItemsReachTheWindowsController() {

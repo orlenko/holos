@@ -714,8 +714,9 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, NSM
             return
         }
         let time = player.currentTime
-        // As listed: an attached interjection plays as its neighbour's speaker; a hidden one is silence here.
-        let turns = review.shownTurns
+        // As listed: an attached interjection plays as its neighbour's speaker. A hidden one is still speech: it is
+        // the turn spoken (unknown speaker), and, not being listed, tints no row, as a turn a search left out.
+        let turns = review.projection.shownTurnsWithHidden
         let turn = ReviewTimeline.turnIndex(at: time, turns: turns.map { ($0.start, $0.end) }).map { turns[$0] }
         let speaker = turn.map { turn in turn.speakerID.flatMap { review.speaker($0)?.label } ?? "Unknown speaker" }
         let speaking = speaker ?? "—"
@@ -1444,11 +1445,20 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, NSM
     /// list takes its width. Speakers can still be named from each row's speaker pop-up.
     @objc func toggleSpeakers(_ sender: Any?) {
         let hide = !panes.speakersHidden
-        // A name being typed in the pane ends first (as a click elsewhere would end it).
-        if hide, let responder = window.firstResponder as? NSView, responder.isDescendant(of: sidebar) {
+        // A name being typed in the pane ends first (as a click elsewhere would end it). While a field is edited the
+        // first responder is the window's field editor, whose delegate is the field.
+        if hide, Self.isEditing(in: sidebar, responder: window.firstResponder) {
             window.makeFirstResponder(turnList.table)
         }
         panes.setSpeakersHidden(hide, animated: true)
+    }
+
+    /// `responder` is in `pane`, or is the field editor of a field in it.
+    static func isEditing(in pane: NSView, responder: NSResponder?) -> Bool {
+        if let editor = responder as? NSTextView, editor.isFieldEditor, let field = editor.delegate as? NSView {
+            return field.isDescendant(of: pane)
+        }
+        return (responder as? NSView)?.isDescendant(of: pane) ?? false
     }
 
     /// The pane was hidden or shown (also by dragging the divider): remembered for this meeting.

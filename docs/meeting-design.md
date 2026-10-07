@@ -7841,7 +7841,7 @@ public enum SessionAudioComposition {
   speaker pop-up. The state is per meeting (`ReviewSpeakersPaneMemory`: the IDs of the
   meetings whose pane is hidden, at most 500, in the app's defaults), so a meeting opens
   as it was left and a new meeting opens with the pane. Hiding it while a name is being
-  typed there ends that field first.
+  typed there ends that field first (the window's field editor is found by its delegate).
 - Short interjections (`ShortInterjections`, HolosSpeakers; pure, deterministic):
   presentation only, in the one view the list and the exports read. `SpeakerProjection`
   decides them after the echo mask (§4.9 step 7) into `interjections` and `shownTurns`;
@@ -7864,16 +7864,20 @@ public enum SessionAudioComposition {
      "an" belongs in nobody's sentence.
   2. *Attached* to the previous turn when that turn has a speaker, its text does not end
      a sentence (its last character, past quotation marks and closing brackets of any
-     script, is a Unicode sentence terminal such as `.`, `?`, `。` or `؟`, or `…`), and the gap is at most
-     `gapSeconds` (1.5 s): "…but they" + "agreed to it. Yeah." is the previous speaker's.
-  3. *Attached* when the turns before and after it have the same speaker and both gaps
-     are at most 1.5 s: a few words inside one person's speech.
-  4. Otherwise shown as it is.
+     script, is a Unicode sentence terminal such as `.`, `?`, `。` or `؟`, or `…`), and the two
+     adjoin: at most `gapSeconds` (1.5 s) of silence and at most `overlapSeconds` (0.5 s)
+     of overlap between them. "…but they" + "agreed to it. Yeah." is the previous speaker's.
+  3. *Attached* when the turns before and after it have the same speaker and it adjoins
+     both: a few words inside one person's speech.
+  4. Otherwise shown as it is. A short turn spoken over a longer one (more than 0.5 s of
+     overlap) is someone else talking at the same time, never a continuation.
   An attached turn shows with that speaker (`ProjectedTurn.interjection`), so it joins
   their row and export block, and is uncertain only when it overlaps someone. View ▸
   Show Short Interjections (off by default, kept across windows) lists the hidden ones
   again as unknown-speaker rows; Next Uncertain skips them unless they are shown, and
-  the footer counts them ("3 short interjections hidden"). The exports always leave them
+  the footer counts them ("3 short interjections hidden"). While one plays it is the turn
+  spoken (the bar says "Unknown speaker") and tints no row, as a turn a search left out,
+  rather than passing for a pause inside its neighbour's row. The exports always leave them
   out, as they leave out echo, and write an attached turn with its neighbour's speaker
   (JSON adds `"interjection": "attached"` to it). The thresholds come from a meeting's
   rows where a lone "an" (a stretched "umm"), two standalone "Yeah." and four words that
@@ -8460,7 +8464,7 @@ whose review is open or still opening):
 | `ShortInterjectionTests` (HolosSpeakersTests) | synthetic turns shaped like the rows that asked for it | a lone "an" and standalone "Yeah." hidden; words finishing the previous speaker's sentence attached; a longer unknown turn kept; a few words inside one speaker's speech attached, not across a long gap or another speaker; edited, assigned and split turns untouched; fillers by language; exports leave hidden ones out and write attached ones with the neighbour (`"interjection": "attached"`) |
 | `nextUncertainSkipsHiddenInterjectionsUnlessTheyAreShown` | a fixture session with a hidden "Yeah." | skipped and not listed; listed and next once shown; never in the Markdown export |
 | `choosingUnknownForAnAttachedTurnIsSavedAndUndone` | an attached turn given Unknown; undo | the edit is saved though no stored speaker changes; shown unknown; attached again after undo |
-| `ReviewPanesTests` (HolosAppTests) | the panes and the list laid out offscreen | hiding the speakers pane gives the list the window's width, showing it brings it back, each change reported once; the state per meeting, capped; Show Short Interjections lists the hidden turn as its own unknown row, the attached one stays in its neighbour's row; the View menu's targetless actions reach the window's delegate (`NSWindow.supplementalTarget`) |
+| `ReviewPanesTests` (HolosAppTests) | the panes and the list laid out offscreen | hiding the speakers pane gives the list the window's width, showing it brings it back, each change reported once; the state per meeting, capped; Show Short Interjections lists the hidden turn as its own unknown row, the attached one stays in its neighbour's row; the View menu's targetless actions reach the window's delegate (`NSWindow.supplementalTarget`); a hidden interjection playing tints no row, a pause still does; a name being typed is found through the field editor |
 
 **Manual.** H14 and H20 in §7.
 

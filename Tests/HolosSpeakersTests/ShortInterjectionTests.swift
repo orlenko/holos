@@ -218,6 +218,25 @@ private let meeting: [Line] = [
         line("T2", 4.0, nil, "agreed to it."),
     ])
     #expect(late.interjections.isEmpty)
+    // Spoken over the previous turn (it starts 3 s before that one ends): someone else, not a continuation.
+    let over = projection([
+        line("T1", 0, "S2", "We asked them all about the plan but they"),   // 0–4.0
+        line("T2", 1.0, nil, "agreed to it."),
+    ])
+    #expect(over.interjections.isEmpty)
+    // A boundary overlap of a few tenths of a second still adjoins.
+    let touching = projection([
+        line("T1", 0, "S2", "We asked them, but they"),   // 0–2.0
+        line("T2", 1.7, nil, "agreed to it."),
+    ])
+    #expect(touching.interjections == ["T2": .attached(speakerID: "S2")])
+    // Inside one speaker's speech, overlapping either side by more: shown as it is.
+    let inside = projection([
+        line("T1", 0, "S1", "We tried it."),          // 0–1.2
+        line("T2", 0.4, nil, "the new one"),
+        line("T3", 2.5, "S1", "It worked well."),
+    ])
+    #expect(inside.interjections.isEmpty)
     // The previous turn ended its sentence: not a continuation.
     let closed = projection([
         line("T1", 0, "S2", "We asked them twice?"),

@@ -21,12 +21,13 @@ public enum ShortInterjection: Sendable, Equatable {
 /// are the turns just before and after it on its own track. In order:
 /// 1. **Hidden** when every word is a filler or backchannel of the meeting's languages (`isFillerOnly`). Fillers are
 ///    never attached: a stretched "umm" heard as "an" says nothing in anyone's sentence.
-/// 2. **Attached** to the previous turn when that turn has a speaker, does not end a sentence (its text does not end
-///    in `.`, `!`, `?` or `…`), and this one starts at most `gapSeconds` after it ends: "… but they" + "agreed to it.
-///    Yeah." reads as one sentence of the previous speaker.
-/// 3. **Attached** when the turns just before and after it have the same speaker and both gaps are at most
-///    `gapSeconds`: a few words inside one person's speech.
-/// 4. Otherwise shown as it is.
+/// 2. **Attached** to the previous turn when that turn has a speaker, does not end a sentence (`endsSentence`), and
+///    the two adjoin (`adjoin`: at most `gapSeconds` of silence, at most `overlapSeconds` of overlap): "… but they" +
+///    "agreed to it. Yeah." reads as one sentence of the previous speaker.
+/// 3. **Attached** when the turns just before and after it have the same speaker and it adjoins both: a few words
+///    inside one person's speech.
+/// 4. Otherwise shown as it is. A short turn spoken over a long one (overlapping it by more than `overlapSeconds`) is
+///    someone else talking at the same time, never a continuation.
 public enum ShortInterjections {
     /// Turns of more words than this are never touched.
     public static let maxWords = 4
@@ -35,6 +36,8 @@ public enum ShortInterjections {
     public static let maxRecognizerWords = 2 * maxWords
     /// The most silence between a short turn and the turn it joins.
     public static let gapSeconds = 1.5
+    /// The most a short turn and the turn it joins may overlap (word times at a turn boundary are rarely exact).
+    public static let overlapSeconds = 0.5
 
     // Not `FillerWords` (dictation's hesitation sounds, which leaves out "mm" because it is a unit inside a
     // sentence): here a word stands alone as a whole turn, and backchannels ("yeah", "okay") count too.
@@ -90,22 +93,22 @@ public enum ShortInterjections {
             }
             let before = previous[index].map { turns[$0] }
             let after = next[index].map { turns[$0] }
-            if let before, let speakerID = before.speakerID, Self.gap(before, turn) <= gapSeconds,
+            if let before, let speakerID = before.speakerID, Self.adjoin(before, turn),
                !Self.endsSentence(words.text(of: before.spans.suffix(1))) {
                 result[turn.id] = .attached(speakerID: speakerID)
             } else if let before, let after, let speakerID = before.speakerID, after.speakerID == speakerID,
-                      Self.gap(before, turn) <= gapSeconds, Self.gap(turn, after) <= gapSeconds {
+                      Self.adjoin(before, turn), Self.adjoin(turn, after) {
                 result[turn.id] = .attached(speakerID: speakerID)
             }
         }
         return result
     }
 
-    /// Seconds from the end of `first` to the start of `second` (negative when they overlap); infinite when either time
+    /// `second` starts at most `gapSeconds` after `first` ends, and at most `overlapSeconds` before. False when a time
     /// is not a number.
-    static func gap(_ first: ProjectedTurn, _ second: ProjectedTurn) -> Double {
+    static func adjoin(_ first: ProjectedTurn, _ second: ProjectedTurn) -> Bool {
         let gap = second.start - first.end
-        return gap.isFinite ? gap : .infinity
+        return gap.isFinite && gap >= -overlapSeconds && gap <= gapSeconds
     }
 
     /// The text ends a sentence: its last character other than spaces, quotation marks and closing brackets (in any
