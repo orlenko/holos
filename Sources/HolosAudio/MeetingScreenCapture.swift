@@ -55,6 +55,17 @@ public enum ScreenCapturePlan {
         displays.first { id($0) == main } ?? displays.first
     }
 
+    /// The displays a target captures at the start: all of them, or the main one alone.
+    public static func displays(_ candidates: [ScreenDisplayCandidate],
+                                for target: ScreenCaptureTarget) -> [ScreenDisplayCandidate] {
+        switch target {
+        case .display: candidates
+        case .main:
+            display(candidates, id: \.id, main: candidates.first(where: \.isMain)?.id ?? kCGNullDirectDisplay)
+                .map { [$0] } ?? []
+        }
+    }
+
     /// The stream's frame size: the display's pixels, scaled down so neither side exceeds
     /// `ScreenContextStore.maximumImageDimension` (5K → 2560×1440), never below 2×2.
     public static func size(pixelWidth: Int, pixelHeight: Int,
@@ -65,39 +76,10 @@ public enum ScreenCapturePlan {
     }
 }
 
-/// The cheap view of the display arrangement the capture polls: which displays are connected, and which is main.
-struct ScreenDisplayLayout: Equatable, Sendable {
-    var ids: [CGDirectDisplayID]
-    var main: CGDirectDisplayID
-    /// Each display that shows another's picture, and the display it mirrors: mirroring turned on or off leaves the
-    /// IDs and the main display as they were.
-    var mirroring: [CGDirectDisplayID: CGDirectDisplayID] = [:]
-
-    /// The displays a target captures, as CoreGraphics reports them: every active display that mirrors none, or
-    /// the main one alone (the first such display if the main one is not listed).
-    func targeted(for target: ScreenCaptureTarget) -> Set<CGDirectDisplayID> {
-        let capturable = ids.filter { mirroring[$0] == nil }
-        switch target {
-        case .display: return Set(capturable)
-        case .main: return capturable.contains(main) ? [main] : Set(capturable.prefix(1))
-        }
-    }
-
-    /// Whether a ScreenCaptureKit snapshot lists every display the target captures. While displays are being
-    /// reconfigured, CoreGraphics can already report a display that the snapshot still leaves out (or, briefly,
-    /// leaves out one it reported before); such a refresh is tried again.
-    func isCovered(by candidates: [ScreenDisplayCandidate], for target: ScreenCaptureTarget) -> Bool {
-        targeted(for: target).isSubset(of: candidates.map(\.id))
-    }
-}
-
-/// What the capture needs from ScreenCaptureKit and CoreGraphics. Tests use a fake, so hot-plug, stream failures and
-/// the shared caps run without a stream, a screen or the permission.
+/// What the capture needs from ScreenCaptureKit. Tests use a fake, so stream failures, stop races and the shared caps
+/// run without a stream, a screen or the permission.
 @MainActor protocol ScreenCaptureSystem: AnyObject {
-    /// The connected displays' IDs, the main one and mirroring, cheaply (`CGGetActiveDisplayList`, `CGMainDisplayID`,
-    /// `CGDisplayMirrorsDisplay`): polled to notice a display come or go, the main display change, or mirroring.
-    func layout() -> ScreenDisplayLayout
-    /// The displays that can be captured now (`SCShareableContent`).
+    /// The displays that can be captured now (`SCShareableContent`), mirrors left out. Asked once, at the start.
     func displays() async throws -> [ScreenDisplayCandidate]
     /// One display's stream, not started yet; its samples go to `output` on the capture's queue.
     func stream(for display: ScreenDisplay, output: ScreenDisplayOutput) throws -> any ScreenStreamControl
@@ -112,8 +94,7 @@ struct ScreenDisplayLayout: Equatable, Sendable {
 }
 
 /// One display's stream for as long as it may run: its control, its output (ScreenCaptureKit holds that only
-/// weakly, so this keeps it), and its phase. Callbacks name a stream by its token,
-/// never by its display alone, so nothing an old stream of a display does can touch a newer one of the same display.
+/// weakly, so this keeps it), its token and its phase.
 @MainActor final class ScreenDisplayStream {
     enum Phase { case starting, running, stopped }
     let display: ScreenDisplay
@@ -127,79 +108,52 @@ struct ScreenDisplayLayout: Equatable, Sendable {
     }
 }
 
-/// Optional screen capture, independent of audio: one stream per display, all writing one timeline in
-/// `screen/context.json`. Startup never delays the audio consumer.
+/// Optional screen capture, independent of audio: one stream per display connected when the capture starts, all
+/// writing one timeline in `screen/context.json`. Startup never delays the audio consumer.
 ///
-/// Hot-plug: every `pollInterval` the capture compares the display layout (connected IDs, the main display and
-/// mirroring: cheap CoreGraphics calls that work in the command-line recorder, which has no AppKit run loop for the
-/// display-reconfiguration callback) with that of the last complete refresh; only when they differ, or a stream stops
-/// with an error, does it ask ScreenCaptureKit again and start or stop streams (`ScreenDisplayRoster`). CoreGraphics
-/// says which displays are connected: a display the ScreenCaptureKit snapshot still lists after CoreGraphics dropped
-/// it counts as gone. A refresh whose query fails, or whose snapshot leaves out a display CoreGraphics has, records no
-/// layout, so a later poll tries again, after 4, 8, 16, 32, then every 60 seconds (`pollsBeforeRetry`). Each
-/// display's stream starts in its own task, so one slow or hung platform start holds up neither the other displays
-/// nor hot-plug. A disconnected display's interval already ends at its last observed sample, so ending its stream
-/// invents nothing.
+/// The displays are those ScreenCaptureKit lists at the start (mirrors left out; with `--screen main`, the main
+/// display alone, which is not followed if the main display changes later). Each keeps its one stream for the whole
+/// capture: a display whose stream ends (unplugged, or a broken stream; the two are not told apart) is not captured
+/// again, and its last keyframe's interval already ends at its last observed sample. A display connected during the
+/// meeting is not captured until the next meeting, or until the recorder starts a new capture epoch (resuming after
+/// a pause or sleep, or after an audio device change), which asks again; hot-plug is a possible follow-up.
 ///
 /// The invariants every path keeps (docs/meeting-design.md §4.15):
-/// 1. CoreGraphics' layout decides which displays are connected and targeted; a stream ends only when its display
-///    leaves that set, or on its own error, a cap, or `stop()`. A ScreenCaptureKit snapshot only adds: a display
-///    starts once a snapshot lists it, and one a snapshot leaves out keeps its stream.
-/// 2. Every asynchronous step of a stream (its start beginning and returning, an error callback, a sample, its
-///    stop) is checked against the stream's identity (object or token) and phase: a retired stream is never
-///    started, registered or fed into the receiver, and nothing it does touches a newer stream of its display.
-/// 3. "Nothing can capture" is decided only at the end of a refresh that is still current (no stream error during
-///    it, the CoreGraphics layout unchanged since its query) and with no retry budget left for a snapshot that
-///    leaves out a display or a query that failed. Before any stream started, a failed query is final at once (the
-///    permission is missing), as with one display. Storage limits are decided by the receiver under its lock from
-///    its current record.
+/// 1. The set of streams is decided once, at the start; afterwards streams only end (an error, a cap, `stop()`).
+/// 2. Every asynchronous step of a stream (its start beginning and returning, an error callback, a sample, its stop)
+///    is checked against the stream's identity (object or token) and phase: a stream that has ended is never
+///    started or registered again, and nothing it does reaches the receiver.
+/// 3. The capture fails ("captureFailed", as with one display) when no stream could be started at all, or when the
+///    last stream still starting or running ends with an error. Storage limits are decided by the receiver under its
+///    lock from its current record.
 /// 4. `stop()` is final: from the moment it begins nothing starts, registers or fails, and every stream, starting or
 ///    running, is asked to stop without one stop waiting for another.
 @MainActor public final class MeetingScreenCapture {
     private static let log = Logger(subsystem: "ca.orlenko.holos.app", category: "screen")
-    /// Refreshes in a row whose snapshot may leave out a display CoreGraphics reports, or whose query may fail,
-    /// before a capture with nothing capturing gives up (about a minute of backoff).
-    static let incompleteLimit = 5
     private let permissionCheck: @MainActor () -> Bool
     private let system: any ScreenCaptureSystem
-    private let pollInterval: Duration
-    private var target = ScreenCaptureTarget.display
     private var receiver: ScreenFrameReceiver?
-    /// The first refresh; tests wait for it.
+    /// The start: the display query and the streams' creation; tests wait for it.
     private(set) var initial: Task<Void, Never>?
-    private var monitor: Task<Void, Never>?
-    private var roster = ScreenDisplayRoster()
     /// Every display's stream that is starting or running.
     private var streams: [CGDirectDisplayID: ScreenDisplayStream] = [:]
     /// The tasks finishing platform starts, and those stopping streams (tests wait for them).
     private var starts: [UUID: Task<Void, Never>] = [:]
     private var stops: [UUID: Task<Void, Never>] = [:]
-    /// The layout the last complete refresh matched; nil until one succeeds.
-    private var reconciled: ScreenDisplayLayout?
-    /// Refreshes in a row that failed or came back incomplete, and polls to skip before the next try.
-    private var failedRefreshes = 0
-    private var pollsUntilRetry = 0
-    /// The last snapshot left out a display CoreGraphics reports.
-    private var incomplete = false
-    private var refreshing = false
-    private var refreshAgain = false
-    /// A stream was ever started in this capture.
-    private var everStarted = false
     private var stopped = false
     /// Stream errors handled (tests wait for them).
     private(set) var streamErrors = 0
 
     public convenience init(permissionCheck: @escaping @MainActor () -> Bool = { CGPreflightScreenCaptureAccess() }) {
-        self.init(permissionCheck: permissionCheck, system: LiveScreenCaptureSystem(), pollInterval: .seconds(2))
+        self.init(permissionCheck: permissionCheck, system: LiveScreenCaptureSystem())
     }
 
-    init(permissionCheck: @escaping @MainActor () -> Bool, system: any ScreenCaptureSystem, pollInterval: Duration) {
-        self.permissionCheck = permissionCheck; self.system = system; self.pollInterval = pollInterval
+    init(permissionCheck: @escaping @MainActor () -> Bool, system: any ScreenCaptureSystem) {
+        self.permissionCheck = permissionCheck; self.system = system
     }
 
     public func start(_ target: ScreenCaptureTarget, session: URL, origin: Double) {
         guard receiver == nil, !stopped else { return }
-        self.target = target
         let receiver = ScreenFrameReceiver(session: session, origin: origin, onFailure: { [weak self] in
             Task { @MainActor in await self?.stop() }
         }, onDisplayCapped: { [weak self] id in
@@ -207,163 +161,62 @@ struct ScreenDisplayLayout: Equatable, Sendable {
         })
         self.receiver = receiver
         guard permissionCheck() else { receiver.failed(); return }
-        let interval = pollInterval
-        let first = Task { [weak self] in
+        initial = Task { [weak self] in
             let known = await receiver.knownDisplays()
-            await self?.begin(known: known)
-        }
-        initial = first
-        monitor = Task { [weak self] in
-            await first.value
-            while !Task.isCancelled {
-                try? await Task.sleep(for: interval)
-                guard !Task.isCancelled, let capture = self else { return }
-                await capture.poll()
-            }
+            await self?.begin(target, known: known, receiver)
         }
     }
 
-    /// The first refresh, numbering displays after those the meeting's saved keyframes already name.
-    private func begin(known: [ScreenDisplay]) async {
+    /// Asks ScreenCaptureKit for the displays once and starts one stream for each the target captures, numbered
+    /// after those the meeting's saved keyframes already name.
+    private func begin(_ target: ScreenCaptureTarget, known: [ScreenDisplay], _ receiver: ScreenFrameReceiver) async {
         guard !stopped else { return }
-        roster = ScreenDisplayRoster(known: known)
-        await refresh()
-    }
-
-    /// One look at the layout. When it differs from that of the last complete refresh, displays CoreGraphics no
-    /// longer reports end at once (that needs no ScreenCaptureKit query, so no backoff holds it up), and once a
-    /// failed refresh's backoff has passed a refresh starts and stops the rest.
-    func poll() async {
-        guard !stopped, let receiver else { return }
-        let layout = system.layout()
-        guard layout != reconciled else { return }
-        applyRemovals(layout, receiver)
-        guard pollsUntilRetry == 0 else { pollsUntilRetry -= 1; return }
-        await refresh()
-    }
-
-    /// Ends the streams of displays that left the layout's target, from CoreGraphics alone (invariant 1): a failed
-    /// display seen gone becomes one that may come back, whether or not a ScreenCaptureKit query succeeds.
-    private func applyRemovals(_ layout: ScreenDisplayLayout, _ receiver: ScreenFrameReceiver) {
-        for id in roster.remove(notIn: layout.targeted(for: target)) {
-            receiver.end(id)
-            if let stream = streams.removeValue(forKey: id) { requestStop(stream) }
-            Self.log.info("Display \(id, privacy: .public) is gone; its screen capture ended")
-        }
-    }
-
-    /// Polls to wait after `failures` failed refreshes in a row: 1, 3, 7, 15, then 29 (a retry after 4, 8, 16, 32
-    /// and 60 seconds at one poll every two seconds).
-    nonisolated static func pollsBeforeRetry(failures: Int) -> Int {
-        failures <= 0 ? 0 : min((1 << min(failures, 5)) - 1, 29)
-    }
-
-    /// Asks ScreenCaptureKit for the displays and starts and stops streams to match. One refresh at a time; a
-    /// request during one runs once more after it.
-    func refresh() async {
-        guard !stopped, let receiver else { return }
-        if refreshing { refreshAgain = true; return }
-        refreshing = true
-        defer { refreshing = false }
-        repeat {
-            refreshAgain = false
-            await reconcile(receiver)
-        } while refreshAgain && !stopped
-    }
-
-    private func reconcile(_ receiver: ScreenFrameReceiver) async {
-        // Read before the query: a change during it differs from what is recorded, and the next poll refreshes.
-        // Removals come from this layout before the query, so they never depend on it succeeding.
-        let layout = system.layout()
-        applyRemovals(layout, receiver)
-        let snapshot: [ScreenDisplayCandidate]
-        do { snapshot = try await system.displays() } catch {
-            // The layout stays unrecorded and a later poll tries again, backing off. Nothing captures and the query
-            // keeps failing (the permission was withdrawn, say), or it failed before any stream started: the capture
-            // fails as it always did.
-            retryLater()
-            let spent = !everStarted || failedRefreshes >= Self.incompleteLimit
-            if !stopped, streams.isEmpty, spent, isCurrent(layout) { receiver.failed() }
+        let candidates: [ScreenDisplayCandidate]
+        do { candidates = try await system.displays() } catch {
+            if !stopped { receiver.failed() }  // the permission was withdrawn, say: as with one display
             return
         }
-        // CoreGraphics is the truth for what is connected and targeted: a display the snapshot still lists after it
-        // was unplugged is gone, so its stream ends (and a failed one may come back when it is plugged in again),
-        // and one the snapshot leaves out while CoreGraphics still reports it keeps its stream. The snapshot only
-        // adds: a display starts once it lists it.
-        let targeted = layout.targeted(for: target)
-        let candidates = snapshot.filter { targeted.contains($0.id) }
-        incomplete = !layout.isCovered(by: candidates, for: target)
-        if incomplete {
-            // A display CoreGraphics reports is not in the snapshot yet: capture what is there, and look again.
-            retryLater()
-        } else {
-            reconciled = layout
-            failedRefreshes = 0
-            pollsUntilRetry = 0
-        }
         guard !stopped else { return }
-        let change = roster.reconcile(available: candidates, connected: targeted)
-        for id in change.stop {
-            // Removed by the layout read before the query already, so normally none.
-            receiver.end(id)
-            if let stream = streams.removeValue(forKey: id) { requestStop(stream) }
-        }
-        for display in change.start {
-            guard !stopped else { return }
+        for display in ScreenDisplayNumbering.number(ScreenCapturePlan.displays(candidates, for: target),
+                                                     known: known) {
             let token = UUID()
             receiver.begin(display, stream: token)
             let output = ScreenDisplayOutput(display: display, stream: token, receiver: receiver) { [weak self] in
-                Task { @MainActor in await self?.streamStopped(display.id, token: token) }
+                Task { @MainActor in self?.streamStopped(display.id, token: token) }
             }
             let control: any ScreenStreamControl
             do { control = try system.stream(for: display, output: output) } catch {
-                startFailed(display, receiver)
+                receiver.end(display.id)
+                Self.log.error("Display \(display.number, privacy: .public) could not be captured")
                 continue
             }
             // Registered before the start is awaited, so a stop during a slow start stops this stream too.
             let stream = ScreenDisplayStream(display: display, token: token, control: control, output: output)
             streams[display.id] = stream
-            everStarted = true
             starts[token] = Task { [weak self] in
                 await self?.finishStart(stream, receiver)
                 self?.starts[token] = nil
             }
         }
-        if isCurrent(layout) { failIfNothingCaptures(receiver) }
-    }
-
-    /// Whether this refresh may decide that nothing can capture: no stream error came in meanwhile, and the
-    /// displays are still those its query was made for. Otherwise the decision would rest on a stale snapshot (one
-    /// still listing a display unplugged during the query), so the refresh runs again on the current state instead.
-    private func isCurrent(_ layout: ScreenDisplayLayout) -> Bool {
-        guard !refreshAgain, system.layout() == layout else {
-            refreshAgain = true
-            return false
-        }
-        return true
+        failIfNothingCaptures(receiver)
     }
 
     /// One display's platform start, in its own task: a hung one holds up nothing else.
     private func finishStart(_ stream: ScreenDisplayStream, _ receiver: ScreenFrameReceiver) async {
         let id = stream.display.id
-        // Queued behind a stop, a disconnect, a cap or an error: a retired stream is never started.
+        // Queued behind a stop, a cap or an error: a stream that has ended is never started.
         guard !stopped, streams[id] === stream, stream.phase == .starting else { return }
         do {
             try await stream.control.start()
         } catch {
-            guard streams[id] === stream, stream.phase == .starting else { return }
-            streams[id] = nil
-            stream.phase = .stopped
-            // As for a running stream's error: the display may have been unplugged while it started. A refresh
-            // against the current layout tells that from a broken stream before anything decides nothing captures.
-            roster.failed(id)
-            receiver.end(id)
+            guard !stopped, streams[id] === stream, stream.phase == .starting else { return }
             Self.log.error("Display \(stream.display.number, privacy: .public) could not be captured")
-            await refresh()
+            end(stream, receiver)
+            failIfNothingCaptures(receiver)
             return
         }
-        // Stopped, disconnected or capped while starting: the stop came before the platform had a stream to stop,
-        // so it is stopped again now.
+        // Stopped, capped or broken while starting: the stop came before the platform had a stream to stop, so it is
+        // stopped again now.
         guard !stopped, streams[id] === stream, stream.phase == .starting else {
             await stream.control.stop()
             return
@@ -372,35 +225,22 @@ struct ScreenDisplayLayout: Equatable, Sendable {
         Self.log.info("Capturing display \(stream.display.number, privacy: .public) of the meeting")
     }
 
-    /// Inside a refresh, which decides at its end whether anything can still capture.
-    private func startFailed(_ display: ScreenDisplay, _ receiver: ScreenFrameReceiver) {
-        roster.failed(display.id)
-        receiver.end(display.id)
-        Self.log.error("Display \(display.number, privacy: .public) could not be captured")
-    }
-
-    /// No display captures or is starting, and one is connected but failing, or none was ever there: the capture
-    /// fails as one display's did. Decided only at the end of a refresh whose snapshot is still current. While snapshots still leave out a display CoreGraphics reports (displays being
-    /// reconfigured), it waits, up to `incompleteLimit` refreshes. Every display gone after one was captured (a lid
-    /// closed on the last one) waits for one to return.
+    /// No stream is starting or running: none could be started, or the last one ended with an error. The capture
+    /// fails as one display's did.
     private func failIfNothingCaptures(_ receiver: ScreenFrameReceiver) {
-        guard !stopped, roster.running.isEmpty, !waitingForSnapshot else { return }
-        if roster.anyFailed || !everStarted { receiver.failed() }
+        if !stopped, streams.isEmpty { receiver.failed() }
     }
 
-    /// The last snapshot left out a display CoreGraphics reports, and the retry budget is not spent: nothing is
-    /// terminal yet, since that display may still come and capture.
-    private var waitingForSnapshot: Bool { incomplete && failedRefreshes < Self.incompleteLimit }
-
-    /// A refresh that failed or came back incomplete: the layout stays unrecorded, and polls back off.
-    private func retryLater() {
-        reconciled = nil
-        failedRefreshes += 1
-        pollsUntilRetry = Self.pollsBeforeRetry(failures: failedRefreshes)
+    /// Ends one display's stream for the rest of the capture: its samples are ignored from now on, and the platform
+    /// is asked to stop it.
+    private func end(_ stream: ScreenDisplayStream, _ receiver: ScreenFrameReceiver?) {
+        streams[stream.display.id] = nil
+        receiver?.end(stream.display.id)
+        requestStop(stream)
     }
 
-    /// Asks the platform to stop a stream without waiting: one stalled stop never holds up another stream's, or a
-    /// refresh. The task keeps the stream (and its output) alive until the stop returns.
+    /// Asks the platform to stop a stream without waiting: one stalled stop never holds up another stream's. The
+    /// task keeps the stream (and its output) alive until the stop returns.
     @discardableResult private func requestStop(_ stream: ScreenDisplayStream) -> Task<Void, Never> {
         stream.phase = .stopped
         let key = UUID()
@@ -419,32 +259,27 @@ struct ScreenDisplayLayout: Equatable, Sendable {
     }
 
     /// The current stream of a display stopped with an error (tests; the output reports it with its token).
-    func streamStopped(_ id: CGDirectDisplayID) async {
+    func streamStopped(_ id: CGDirectDisplayID) {
         guard let token = streams[id]?.token else { return }
-        await streamStopped(id, token: token)
+        streamStopped(id, token: token)
     }
 
-    /// A stream stopped with an error: a display being disconnected, or a broken stream. The refresh tells them
-    /// apart. An older stream of the display (already replaced) is ignored.
-    private func streamStopped(_ id: CGDirectDisplayID, token: UUID) async {
+    /// A stream stopped with an error: its display was unplugged, or the stream broke. Either way it ends for the
+    /// rest of the capture, also while its start is still pending (which may never return; a late return finds it
+    /// ended and stops it again). The last one ending fails the capture.
+    private func streamStopped(_ id: CGDirectDisplayID, token: UUID) {
         streamErrors += 1
         guard !stopped, let stream = streams[id], stream.token == token else { return }
-        // Also while its start is pending, which may never return: the stream is retired at once (a late return of
-        // its start finds another stream, or none, under its display and is stopped again), and the refresh decides.
-        streams[id] = nil
-        requestStop(stream)
-        roster.failed(id)
-        receiver?.end(id)
-        await refresh()
+        Self.log.info("Display \(stream.display.number, privacy: .public) stopped; its screen capture ended")
+        end(stream, receiver)
+        if let receiver { failIfNothingCaptures(receiver) }
     }
 
     /// The shared caps stopped this display (the busiest); the others go on.
     func capped(_ id: CGDirectDisplayID) {
-        guard !stopped else { return }
-        roster.capped(id)
-        receiver?.end(id)
-        if let stream = streams.removeValue(forKey: id) { requestStop(stream) }
-        Self.log.info("Display \(id, privacy: .public) stopped for the shared screen storage limit")
+        guard !stopped, let stream = streams[id] else { return }
+        end(stream, receiver)
+        Self.log.info("Display \(stream.display.number, privacy: .public) stopped for the shared screen storage limit")
     }
 
     /// The display IDs with a running stream (tests).
@@ -453,7 +288,6 @@ struct ScreenDisplayLayout: Equatable, Sendable {
     public func stop() async {
         stopped = true
         initial?.cancel()
-        monitor?.cancel()
         // Streams still starting too: a hung platform start must not keep the screen captured. The one whose start
         // returns later is stopped again then; closing the receiver fences any frame it delivers.
         let all = Array(streams.values)
@@ -469,22 +303,6 @@ struct ScreenDisplayLayout: Equatable, Sendable {
 /// ScreenCaptureKit itself: a display filter per display that leaves Voice is Local out, at most 0.5 fps.
 @MainActor final class LiveScreenCaptureSystem: ScreenCaptureSystem {
     private var content: SCShareableContent?
-
-    func layout() -> ScreenDisplayLayout {
-        let main = CGMainDisplayID()
-        var count: UInt32 = 0
-        guard CGGetActiveDisplayList(0, nil, &count) == .success, count > 0 else { return .init(ids: [], main: main) }
-        var ids = [CGDirectDisplayID](repeating: kCGNullDirectDisplay, count: Int(count))
-        guard CGGetActiveDisplayList(count, &ids, &count) == .success else { return .init(ids: [], main: main) }
-        // Sorted, so only a real change differs; the main display and mirroring are compared on their own.
-        let active = ids.prefix(Int(count)).sorted()
-        var mirroring: [CGDirectDisplayID: CGDirectDisplayID] = [:]
-        for id in active {
-            let mirrored = CGDisplayMirrorsDisplay(id)
-            if mirrored != kCGNullDirectDisplay { mirroring[id] = mirrored }
-        }
-        return ScreenDisplayLayout(ids: active, main: main, mirroring: mirroring)
-    }
 
     /// Displays that show another display's picture (hardware mirroring) are left out: their snapshots would repeat.
     func displays() async throws -> [ScreenDisplayCandidate] {
@@ -632,13 +450,13 @@ final class ScreenFrameReceiver: Sendable {
         /// Keyframes and JPEG bytes this display saved in the meeting, for the shared caps.
         var keyframes = 0
         var bytes = 0
-        /// Disconnected, or stopped by the shared caps: late samples are ignored.
+        /// Its stream ended (an error, or the shared caps): late samples are ignored.
         var ended = false
         /// Its stream has delivered a sample: it is capturing, not still starting (or hung starting), so it takes
         /// part in the shared caps' reservations.
         var delivering = false
-        /// The token of the display's current stream. A sample of an older stream of the display (one whose stop
-        /// has not finished when the display came back) is ignored, so it cannot touch the new stream's state.
+        /// The token of the display's stream. A sample carrying another token (from a stream this capture does not
+        /// own for the display) is ignored before it touches the display's state.
         var stream: UUID?
     }
     private struct State {
@@ -683,18 +501,11 @@ final class ScreenFrameReceiver: Sendable {
         }
     }
 
-    /// A display's stream is starting: a fresh retained frame, so its first sample is kept at once. A display that
-    /// comes back keeps its keyframe and byte counts for the shared caps; only its sampling starts again.
+    /// A display's stream is starting: a fresh retained frame, so its first sample is kept at once, and its usage of
+    /// the shared caps as the meeting's saved keyframes say (a recorder restart).
     func begin(_ display: ScreenDisplay, stream: UUID? = nil) {
         queue.async {
-            self.state.withLock { value in
-                guard let known = value.screens[display.id] else {
-                    value.screens[display.id] = Self.screen(display, value, stream: stream)
-                    return
-                }
-                value.screens[display.id] = Screen(display: display, keyframes: known.keyframes, bytes: known.bytes,
-                                                   stream: stream)
-            }
+            self.state.withLock { $0.screens[display.id] = Self.screen(display, $0, stream: stream) }
         }
     }
 

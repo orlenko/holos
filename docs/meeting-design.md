@@ -4547,7 +4547,10 @@ dictation, not to steal data", and the per-meeting window list "is impractical. 
 screen recording is the real deal". Nothing leaves the Mac: there is no online model.
 The capture is now of the whole display; the window picker is gone. It began with the
 main display only; the user often has the call or the slides on a second monitor, so every
-display is now captured (option A, "all displays", approved 2026-10-06).
+display connected when the capture starts is now captured (option A, "all displays",
+approved 2026-10-06). The first version of #101 also followed displays plugged in or
+out mid-meeting; review kept finding races in that state machine, so the owner split it
+off (branch `meetings/screen-hotplug-wip`): hot-plug is a possible follow-up.
 
 *Setting and start panel.* Settings › Meetings has one checkbox, "Capture the screen
 during meetings (slides, shared screens) to improve transcripts" (UserDefaults
@@ -4563,7 +4566,8 @@ and dimmed and says what is missing; Start is never blocked by it. The app passe
 `--screen display` (every display) to the recorder; `voiceislocal record start --screen
 display|main|off` (default off) is the CLI form, where `main` is the main display alone (what
 `display` meant before all displays were captured). A saved `screenWindow` from PR #71
-decodes as no capture. The Settings caption and the start panel's note say "all displays".
+decodes as no capture. The Settings caption says "every display connected when a meeting
+starts", the start panel's note "every display connected now".
 
 *What is captured.* One ScreenCaptureKit stream per display, each with a display filter
 `excludingApplications` Voice is Local itself: `ca.orlenko.holos.app`,
@@ -4572,75 +4576,56 @@ decodes as no capture. The Settings caption and the start panel's note say "all 
 Review, and the menu are never read back into the meeting's context, whichever display
 they are on. App exclusion covers windows opened later. A display that mirrors another
 (`CGDisplayMirrorsDisplay`) is left out, since its snapshots would repeat. With
-`--screen main` there is one stream, on the main display (`CGMainDisplayID`, the one
-with the menu bar; the first listed display if the main one is missing; if the main
-display changes, the stream follows it). If the app is not running (a CLI-only
+`--screen main` there is one stream, on the display that is main when the capture starts
+(`CGMainDisplayID`, the one with the menu bar; the first listed display if the main one
+is missing); it does not follow a later change of main display. If the app is not running (a CLI-only
 recording), there is nothing of it to exclude. Desktop notifications and everything
 else on the displays are captured. Permission must already be granted; capture failures
 are optional-evidence failures and never invalidate saved audio.
 
-*Displays.* Every display has its own retained frame and pending change
+*Displays.* ScreenCaptureKit is asked once, when the capture starts, which displays
+there are (`SCShareableContent`, mirrors left out); each gets one stream for the whole
+capture. Every display has its own retained frame and pending change
 (`ScreenFrameReceiver`), so one display's video never settles or breaks another's
 slide; all of them write one timeline, kept in start order, in `screen/context.json`.
 Each keyframe records its display (`ScreenDisplay`): the `CGDirectDisplayID`, a number
-for the meeting, and whether it was the main display when its stream began. The
-displays connected at the start are numbered by arrangement (left to right, then top to
-bottom); one connected later takes the next number, and a display that comes back
-keeps its number, also across a recorder restart (numbers are read back from the saved
-keyframes). Hot-plug (`ScreenDisplayRoster`, pure): every two seconds the capture
-compares the display layout (connected IDs, the main display, and which display mirrors
-which: `CGGetActiveDisplayList`, `CGMainDisplayID`, `CGDisplayMirrorsDisplay`, cheap
-calls) with that of the last complete refresh, and only when they differ, or a stream
-stops with an error, asks ScreenCaptureKit again and starts or stops streams.
-CoreGraphics is the truth for what is connected and targeted: a display the
-ScreenCaptureKit snapshot still lists after CoreGraphics dropped it counts as gone, and
-one a snapshot briefly leaves out while CoreGraphics still reports it keeps its stream
-(a snapshot only adds displays). Removals need no query: they are applied from the
-layout before each query (also one that fails) and at every poll that sees a change,
-even during a failed refresh's backoff, so an unplugged display whose stream failed can
-always come back. A refresh whose query fails, or whose snapshot still
-leaves out a display CoreGraphics already reports (mid-reconfiguration), records no layout, so that display is not missed for
-good: a later poll tries again after 4, 8, 16, 32, then every 60 seconds
-(`pollsBeforeRetry`). Each display's stream starts in its own task, registered before
-its platform start returns, so one slow or hung start holds up neither the other
-displays nor hot-plug, and a meeting stopped (or a display capped or unplugged) during
-it stops that stream at once; frames it still delivers are fenced by the ended capture
-generation. Each stream is one object (`ScreenDisplayStream`) holding its control, its
-output (ScreenCaptureKit holds a stream's output and delegate weakly, so the capture
-keeps it for as long as the stream may run), and its phase; its callbacks and its
-samples carry a token, so nothing an old stream of a display does (a late sample while
-its stop is still finishing and the display is back) touches a newer one. A stream that
-reports an error, even while its start is still pending (which may never return), is
-retired at once, and a start that fails is handled the same way: a refresh against the
-current layout tells an unplugged display from a broken stream before anything decides
-that nothing can capture; a late start return is stopped again, and a start queued
-behind a stop, a disconnect, a cap or an error never runs. That decision is made only
-at the end of a refresh whose snapshot is still current (no stream error came in during
-its query, and the CoreGraphics layout is still the one it was made for) and with no
-retry budget left for a snapshot that leaves out a display or a query that fails (five
-refreshes, about a minute; before any stream started a failed query is final at once,
-as with one display); otherwise the refresh runs again or waits, so a display unplugged
-during a query, or one the snapshot has not listed yet, never seals the capture on a
-stale answer. A cap is the display's, not one stream's: one that lands after its
-display came back in a new stream still ends that stream's samples. The code states
-these as four invariants in `MeetingScreenCapture`'s documentation (CoreGraphics decides
-removals and snapshots only add; every stream step is checked against the stream's
-identity and phase; terminal decisions only from a current refresh with no retry budget
-left; `stop()` is final), and each path was checked against them. Stops are requested
-without waiting, all at once when the meeting stops, so one stalled platform stop never
-leaves another stream running or holds up a refresh. Polling was chosen over the
-display-reconfiguration callback because the recorder is a command-line process without
-an AppKit run loop, and polling a list of IDs needs nothing from the window server
-beyond the call. A disconnected display's stream ends; its last keyframe's interval
-already ends at its last observed sample and a change that had not settled is dropped,
-so nothing claims it was seen while gone. A stream that fails while its display stays
-connected is not restarted (no loop); once that display is seen gone, it was a
-disconnect after all and is captured again if it returns. The capture as a whole fails
-("captureFailed", as with one display) only when no display captures and one is
-connected but failing, or none could be started at all; while snapshots still leave out
-a display CoreGraphics reports, a capture that has not started a stream yet waits, for
-at most five such refreshes (about a minute). Every display gone after one was captured
-(the lid closed on the last one) waits for one to return.
+for the meeting, and whether it was the main display when its stream began. Displays
+are numbered by arrangement (left to right, then top to bottom;
+`ScreenDisplayNumbering`); a display the meeting's saved keyframes already name keeps
+its number when the recorder starts a new capture epoch (resuming after a pause or
+sleep, or after an audio device change), which asks again, and one new by then takes the
+next number. A display whose stream ends (unplugged or broken; the capture does not tell
+them apart) is not captured again in that epoch: its last keyframe's interval already
+ends at its last observed sample and a change that had not settled is dropped, so
+nothing claims it was seen afterwards. A display plugged in during the meeting is not
+captured until the next meeting or the next capture epoch. Following displays mid-epoch
+(polling `CGGetActiveDisplayList`, restarting streams) is a possible follow-up.
+
+The capture keeps four invariants (`MeetingScreenCapture`'s documentation): the set of
+streams is decided once, at the start, and afterwards streams only end (an error, a cap,
+`stop()`); every asynchronous step of a stream (its start beginning and returning, an
+error callback, a sample, its stop) is checked against the stream's identity (object or
+token) and phase, so an ended stream is never started or registered again and nothing it
+does reaches the receiver; the capture fails ("captureFailed", as with one display) when
+no stream could be started at all (the display query failed, no stream could be made,
+or every platform start failed) or when the last stream still starting or running ends
+with an error; and `stop()` is final. Each stream is one object
+(`ScreenDisplayStream`) holding its control, its output (ScreenCaptureKit holds a
+stream's output and delegate weakly, so the capture keeps it for as long as the stream
+may run), its token and its phase. Each stream starts in its own task, registered before
+its platform start returns, so one slow or hung start holds up no other display, and a
+meeting stopped (or a display capped or broken) during it stops that stream at once; a
+late start return is stopped again, and frames it still delivers are fenced. Stops are
+requested without waiting, all at once when the meeting stops, so one stalled platform
+stop never leaves another stream running.
+
+*Every display unplugged.* Unplugging displays is not told apart from a broken stream:
+when the last remaining stream ends with an error (the lid closed on a laptop with no
+external display, or every external display unplugged with the lid closed), the capture
+fails with "captureFailed" ("Screen capture unavailable; audio continues"), exactly as a
+single-display capture does when its stream ends. Audio goes on, and the next capture
+epoch (resuming after the sleep that usually follows) or the next meeting asks for the
+displays again. A single-display meeting behaves as before all displays were captured.
 
 One serial utility queue, shared by every display's stream, samples each display at
 most 0.5 fps, with no cursor or audio. Each stream delivers its display's pixels
@@ -4758,18 +4743,18 @@ two-second round (about 1% of one core), +28 MiB peak footprint; a busy display 
 a still one (idle samples) 22–24 ms, +28–29 MiB; two busy displays 43–47 ms (about 2.2%
 of one core), +42–43 MiB, at about 307 KiB per JPEG. Unverified: ScreenCaptureKit's and
 the window server's own work and buffer pools for each extra stream (outside this
-process's CPU and footprint), and real multi-display capture, hot-plug and
-display-reconfiguration behaviour, which no test runs.
+process's CPU and footprint), and real multi-display capture and what ScreenCaptureKit
+does when a display is unplugged, which no test runs.
 `scripts/preview-screen-choice.swift` renders the Settings row and the start panel's
 Screen row (checked, unchecked, no permission) offscreen in light and dark appearances
 without launching Holos. Manual checks still required: granted/denied permission, that
 Voice is Local's own windows (live transcript, Review, menu) are absent from saved
 snapshots, desktop notifications, a video call next to a shared slide, scrolling,
 pause/restart, audio-only survival of capture failure, deletion, two displays (both
-captured, Voice is Local's windows absent from each, Screen Text labels), connecting and
-disconnecting a display during a meeting (and reconnecting it), mirroring, closing the
-lid on a laptop with an external display, `--screen main`, the shared caps on a long
-meeting, and the full start, Settings, recording indicator, and Review UI in both
+captured, Voice is Local's windows absent from each, Screen Text labels), unplugging a
+display during a meeting (its stream ends, the other goes on) and plugging one in (not
+captured until the next epoch or meeting), mirroring, closing the lid on a laptop with
+an external display, `--screen main`, the shared caps on a long meeting, and the full start, Settings, recording indicator, and Review UI in both
 appearances. These checks must not be run by agents against the user's running
 app or real meeting content.
 

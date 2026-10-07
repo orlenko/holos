@@ -7,19 +7,20 @@ Hardware-facing and cross-app acceptance remain pending.
 
 Opt-in meeting screen context is implemented: one Settings checkbox (off for new
 installs, on for users of the earlier window offer) and a per-meeting "Capture screen"
-box; every display (one stream each, displays connected or disconnected during the
-meeting handled, shared caps that stop the busiest display first; `--screen main` for
-the main display alone) without Voice is Local's own windows (no window picker);
+box; every display connected when the capture starts (one stream each for the whole
+capture, a display plugged in mid-meeting waits for the next meeting, shared caps that
+stop the busiest display first; `--screen main` for the main display alone) without Voice is Local's own windows (no window picker);
 low-rate JPEGs of changes that hold still, at most 2560 pixels;
 post-stop on-device Vision OCR, read-only timed text and vocabulary candidates in
 Review, and bounded OCR context for existing word-list questions. Screen evidence is
 removed with audio; no new live LLM step is added. `record start --screen display`
 is the CLI form. Synthetic frame (including 5K)/lifecycle/storage/OCR tests, a 5K CPU
 probe, and offscreen light/dark previews of the Settings row and the start panel row
-cover the implementation, with fake displays for hot-plug and a synthetic two-display
-pipeline benchmark. Real ScreenCaptureKit permission, own-window exclusion, real
-multi-display capture and hot-plug, pause/restart, and end-to-end UI acceptance checks
-remain pending. The thumbnail timeline and a larger local-model benchmark are follow-ups.
+cover the implementation, with fake displays for stream failures and stop races and a
+synthetic two-display pipeline benchmark. Real ScreenCaptureKit permission, own-window
+exclusion, real multi-display capture, pause/restart, and end-to-end UI acceptance checks
+remain pending. Display hot-plug (branch `meetings/screen-hotplug-wip`), the thumbnail
+timeline and a larger local-model benchmark are follow-ups.
 
 ## Available now
 

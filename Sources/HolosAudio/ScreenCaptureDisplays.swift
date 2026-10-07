@@ -2,7 +2,7 @@ import CoreGraphics
 import Foundation
 import HolosStorage
 
-/// A connected display as one refresh of the capture sees it (docs/meeting-design.md §4.15).
+/// A connected display as the capture sees it when it starts (docs/meeting-design.md §4.15).
 public struct ScreenDisplayCandidate: Sendable, Equatable {
     public var id: CGDirectDisplayID
     /// Where it sits in the arrangement, in global points (the main display's origin is 0, 0).
@@ -15,79 +15,25 @@ public struct ScreenDisplayCandidate: Sendable, Equatable {
     }
 }
 
-/// Which displays a meeting's screen capture runs as displays come and go. Pure: the capture hands it each refresh's
-/// displays and starts and stops the streams it names, so hot-plug is tested without ScreenCaptureKit.
-///
-/// A display keeps its number for the whole meeting (seeded from the keyframes already saved, so a recorder restart
-/// keeps it too). A display that disconnects ends its stream; when it comes back it gets a new one. A display whose
-/// stream failed while it stayed connected is not started again, so a broken stream cannot loop; once it is seen
-/// gone, it is a disconnect after all and may come back. A display stopped for the storage caps stays stopped.
-struct ScreenDisplayRoster: Equatable {
-    enum Status: Equatable { case running, gone, failed, capped }
-    private(set) var displays: [CGDirectDisplayID: ScreenDisplay] = [:]
-    private(set) var status: [CGDirectDisplayID: Status] = [:]
-
-    init(known: [ScreenDisplay] = []) {
-        for display in known { displays[display.id] = display }
-    }
-
-    /// The streams to start and stop: `connected` (CoreGraphics, narrowed to the capture's target) decides which
-    /// displays are gone; `available` (the ScreenCaptureKit snapshot, within `connected`) only adds, so a display a
-    /// snapshot briefly leaves out keeps its stream. Displays new to the meeting are numbered after every number used
-    /// so far, by arrangement: left to right, then top to bottom. A display past `ScreenContextStore.maximumDisplays`
-    /// is not captured.
-    mutating func reconcile(available: [ScreenDisplayCandidate], connected present: Set<CGDirectDisplayID>)
-        -> (start: [ScreenDisplay], stop: [CGDirectDisplayID]) {
-        let connected = available.filter { present.contains($0.id) }
-        let stop = remove(notIn: present)
-        var next = (displays.values.map(\.number).max() ?? 0) + 1
-        let arranged = connected.sorted { ($0.frame.minX, $0.frame.minY, $0.id) < ($1.frame.minX, $1.frame.minY, $1.id) }
-        for candidate in arranged where displays[candidate.id] == nil {
-            displays[candidate.id] = ScreenDisplay(id: candidate.id, number: next, isMain: candidate.isMain)
+/// The numbers of the displays a capture starts with (docs/meeting-design.md §4.15). Pure. A display the meeting's
+/// saved keyframes already name keeps its number (a recorder restart in a new epoch); the others are numbered after
+/// every number used so far, by arrangement: left to right, then top to bottom. A display past
+/// `ScreenContextStore.maximumDisplays` is not captured.
+enum ScreenDisplayNumbering {
+    static func number(_ candidates: [ScreenDisplayCandidate], known: [ScreenDisplay]) -> [ScreenDisplay] {
+        var numbers: [CGDirectDisplayID: Int] = [:]
+        for display in known { numbers[display.id] = display.number }
+        var next = (numbers.values.max() ?? 0) + 1
+        let arranged = candidates.sorted { ($0.frame.minX, $0.frame.minY, $0.id) < ($1.frame.minX, $1.frame.minY, $1.id) }
+        for candidate in arranged where numbers[candidate.id] == nil {
+            numbers[candidate.id] = next
             next += 1
         }
-        var start: [ScreenDisplay] = []
-        for candidate in connected where status[candidate.id] == nil || status[candidate.id] == .gone {
-            guard var display = displays[candidate.id],
-                  display.number <= ScreenContextStore.maximumDisplays else { continue }
-            display.isMain = candidate.isMain
-            displays[candidate.id] = display
-            status[candidate.id] = .running
-            start.append(display)
-        }
-        return (start.sorted { $0.number < $1.number }, stop.sorted())
+        return arranged.compactMap { candidate in
+            guard let number = numbers[candidate.id], number <= ScreenContextStore.maximumDisplays else { return nil }
+            return ScreenDisplay(id: candidate.id, number: number, isMain: candidate.isMain)
+        }.sorted { $0.number < $1.number }
     }
-
-    /// The displays that left `present` (CoreGraphics, narrowed to the target): running ones are returned so their
-    /// streams end, and failed ones may come back. Needs no snapshot.
-    mutating func remove(notIn present: Set<CGDirectDisplayID>) -> [CGDirectDisplayID] {
-        var stop: [CGDirectDisplayID] = []
-        for (id, state) in status where !present.contains(id) {
-            switch state {
-            case .running: stop.append(id); status[id] = .gone
-            case .failed: status[id] = .gone
-            case .gone, .capped: break
-            }
-        }
-        return stop.sorted()
-    }
-
-    /// Both from one list (tests).
-    mutating func reconcile(_ connected: [ScreenDisplayCandidate]) -> (start: [ScreenDisplay], stop: [CGDirectDisplayID]) {
-        reconcile(available: connected, connected: Set(connected.map(\.id)))
-    }
-
-    /// The display's stream stopped with an error, or would not start.
-    mutating func failed(_ id: CGDirectDisplayID) {
-        if status[id] == .running { status[id] = .failed }
-    }
-
-    /// The shared caps stopped the display (`ScreenStoragePolicy`): it is not captured again in this capture.
-    mutating func capped(_ id: CGDirectDisplayID) { status[id] = .capped }
-
-    var running: [CGDirectDisplayID] { status.filter { $0.value == .running }.keys.sorted() }
-    /// A display is connected but its stream failed.
-    var anyFailed: Bool { status.values.contains(.failed) }
 }
 
 /// The storage caps every display of a meeting shares (docs/meeting-design.md §4.15): 1000 keyframes and 256 MiB of

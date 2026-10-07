@@ -63,9 +63,9 @@ struct Record: AsyncParsableCommand {
         enum Screen: String, ExpressibleByArgument, CaseIterable { case off, display, main }
         @Option(help: """
             Capture the screen for on-device OCR after the recording (slides, shared screens): display (every \
-            display, including one connected during the recording, without Voice is Local's own windows; needs \
-            Screen Recording permission), main (the main display only), or off. Changed frames only, at most one \
-            every two seconds per display; deleted with the meeting audio.
+            display connected when the recording starts, without Voice is Local's own windows; needs Screen \
+            Recording permission), main (the main display at the start only), or off. Changed frames only, at most \
+            one every two seconds per display; deleted with the meeting audio.
             """)
         var screen: Screen = .off
 

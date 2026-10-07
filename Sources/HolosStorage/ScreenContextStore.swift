@@ -18,7 +18,7 @@ public struct ScreenTextLine: Codable, Sendable, Equatable {
 }
 
 /// The display a keyframe came from, as the meeting knows it (docs/meeting-design.md §4.15). The same physical display
-/// keeps its number for the whole meeting, across a disconnect and a recorder restart.
+/// keeps its number for the whole meeting, also in the recorder's next capture epoch (after a pause, say).
 public struct ScreenDisplay: Codable, Sendable, Equatable, Hashable {
     /// The `CGDirectDisplayID`: stable for one physical display while it stays connected, and usually across a
     /// reconnect.
@@ -49,7 +49,7 @@ public struct ScreenKeyframe: Codable, Sendable, Equatable {
     /// Where the snapshot came from; nil in a meeting captured before all displays were (only the main display was
     /// then), which `source` reads as the main display.
     public var display: ScreenDisplay?
-    /// The JPEG's size, so the shared caps know each display's share exactly after a reconnect or a recorder restart;
+    /// The JPEG's size, so the shared caps know each display's share exactly in the recorder's next capture epoch;
     /// nil for a keyframe saved before keyframes said.
     public var bytes: Int?
     public init(id: String = UUID().uuidString, start: Double, end: Double, lines: [ScreenTextLine]? = nil,
