@@ -55,17 +55,6 @@ public enum ScreenCapturePlan {
         displays.first { id($0) == main } ?? displays.first
     }
 
-    /// The displays a target captures: all of them, or the main one alone.
-    public static func displays(_ candidates: [ScreenDisplayCandidate],
-                                for target: ScreenCaptureTarget) -> [ScreenDisplayCandidate] {
-        switch target {
-        case .display: candidates
-        case .main:
-            display(candidates, id: \.id, main: candidates.first(where: \.isMain)?.id ?? kCGNullDirectDisplay)
-                .map { [$0] } ?? []
-        }
-    }
-
     /// The stream's frame size: the display's pixels, scaled down so neither side exceeds
     /// `ScreenContextStore.maximumImageDimension` (5K → 2560×1440), never below 2×2.
     public static func size(pixelWidth: Int, pixelHeight: Int,
@@ -84,16 +73,21 @@ struct ScreenDisplayLayout: Equatable, Sendable {
     /// IDs and the main display as they were.
     var mirroring: [CGDirectDisplayID: CGDirectDisplayID] = [:]
 
-    /// Whether a ScreenCaptureKit snapshot lists every display this layout says can be captured (every active
-    /// display that mirrors none). While displays are being reconfigured, CoreGraphics can already report a new
-    /// display that the snapshot still leaves out; such a refresh is tried again.
-    func isCovered(by candidates: [ScreenDisplayCandidate]) -> Bool {
-        Set(ids.filter { mirroring[$0] == nil }).isSubset(of: candidates.map(\.id))
+    /// The displays a target captures, as CoreGraphics reports them: every active display that mirrors none, or
+    /// the main one alone (the first such display if the main one is not listed).
+    func targeted(for target: ScreenCaptureTarget) -> Set<CGDirectDisplayID> {
+        let capturable = ids.filter { mirroring[$0] == nil }
+        switch target {
+        case .display: return Set(capturable)
+        case .main: return capturable.contains(main) ? [main] : Set(capturable.prefix(1))
+        }
     }
 
-    /// A snapshot's display that this layout says is connected and mirrors none.
-    func isCapturable(_ candidate: ScreenDisplayCandidate) -> Bool {
-        ids.contains(candidate.id) && mirroring[candidate.id] == nil
+    /// Whether a ScreenCaptureKit snapshot lists every display the target captures. While displays are being
+    /// reconfigured, CoreGraphics can already report a display that the snapshot still leaves out (or, briefly,
+    /// leaves out one it reported before); such a refresh is tried again.
+    func isCovered(by candidates: [ScreenDisplayCandidate], for target: ScreenCaptureTarget) -> Bool {
+        targeted(for: target).isSubset(of: candidates.map(\.id))
     }
 }
 
@@ -118,7 +112,7 @@ struct ScreenDisplayLayout: Equatable, Sendable {
 }
 
 /// One display's stream for as long as it may run: its control, its output (ScreenCaptureKit holds that only
-/// weakly, so this keeps it), whether it broke while starting, and its phase. Callbacks name a stream by its token,
+/// weakly, so this keeps it), and its phase. Callbacks name a stream by its token,
 /// never by its display alone, so nothing an old stream of a display does can touch a newer one of the same display.
 @MainActor final class ScreenDisplayStream {
     enum Phase { case starting, running, stopped }
@@ -146,10 +140,25 @@ struct ScreenDisplayLayout: Equatable, Sendable {
 /// display's stream starts in its own task, so one slow or hung platform start holds up neither the other displays
 /// nor hot-plug. A disconnected display's interval already ends at its last observed sample, so ending its stream
 /// invents nothing.
+///
+/// The invariants every path keeps (docs/meeting-design.md §4.15):
+/// 1. CoreGraphics' layout decides which displays are connected and targeted; a stream ends only when its display
+///    leaves that set, or on its own error, a cap, or `stop()`. A ScreenCaptureKit snapshot only adds: a display
+///    starts once a snapshot lists it, and one a snapshot leaves out keeps its stream.
+/// 2. Every asynchronous step of a stream (its start beginning and returning, an error callback, a sample, its
+///    stop) is checked against the stream's identity (object or token) and phase: a retired stream is never
+///    started, registered or fed into the receiver, and nothing it does touches a newer stream of its display.
+/// 3. "Nothing can capture" is decided only at the end of a refresh that is still current (no stream error during
+///    it, the CoreGraphics layout unchanged since its query) and with no retry budget left for a snapshot that
+///    leaves out a display or a query that failed. Before any stream started, a failed query is final at once (the
+///    permission is missing), as with one display. Storage limits are decided by the receiver under its lock from
+///    its current record.
+/// 4. `stop()` is final: from the moment it begins nothing starts, registers or fails, and every stream, starting or
+///    running, is asked to stop without one stop waiting for another.
 @MainActor public final class MeetingScreenCapture {
     private static let log = Logger(subsystem: "ca.orlenko.holos.app", category: "screen")
-    /// Snapshots in a row that may leave out a display CoreGraphics reports before a capture that never started a
-    /// stream gives up (about a minute of backoff).
+    /// Refreshes in a row whose snapshot may leave out a display CoreGraphics reports, or whose query may fail,
+    /// before a capture with nothing capturing gives up (about a minute of backoff).
     static let incompleteLimit = 5
     private let permissionCheck: @MainActor () -> Bool
     private let system: any ScreenCaptureSystem
@@ -253,16 +262,21 @@ struct ScreenDisplayLayout: Equatable, Sendable {
         let layout = system.layout()
         let snapshot: [ScreenDisplayCandidate]
         do { snapshot = try await system.displays() } catch {
-            // Nothing captures any more (the permission was withdrawn, say): the capture fails as it always did.
-            // While other streams run, the layout stays unrecorded and a later poll tries again, backing off.
+            // The layout stays unrecorded and a later poll tries again, backing off. Nothing captures and the query
+            // keeps failing (the permission was withdrawn, say), or it failed before any stream started: the capture
+            // fails as it always did.
             retryLater()
-            if !stopped, streams.isEmpty, isCurrent(layout) { receiver.failed() }
+            let spent = !everStarted || failedRefreshes >= Self.incompleteLimit
+            if !stopped, streams.isEmpty, spent, isCurrent(layout) { receiver.failed() }
             return
         }
-        // CoreGraphics is the truth for what is connected: a display the snapshot still lists after it was
-        // unplugged is gone, so its stream ends (and a failed one may come back when it is plugged in again).
-        let candidates = snapshot.filter(layout.isCapturable)
-        incomplete = !layout.isCovered(by: candidates)
+        // CoreGraphics is the truth for what is connected and targeted: a display the snapshot still lists after it
+        // was unplugged is gone, so its stream ends (and a failed one may come back when it is plugged in again),
+        // and one the snapshot leaves out while CoreGraphics still reports it keeps its stream. The snapshot only
+        // adds: a display starts once it lists it.
+        let targeted = layout.targeted(for: target)
+        let candidates = snapshot.filter { targeted.contains($0.id) }
+        incomplete = !layout.isCovered(by: candidates, for: target)
         if incomplete {
             // A display CoreGraphics reports is not in the snapshot yet: capture what is there, and look again.
             retryLater()
@@ -272,7 +286,7 @@ struct ScreenDisplayLayout: Equatable, Sendable {
             pollsUntilRetry = 0
         }
         guard !stopped else { return }
-        let change = roster.reconcile(ScreenCapturePlan.displays(candidates, for: target))
+        let change = roster.reconcile(available: candidates, connected: targeted)
         for id in change.stop {
             receiver.end(id)
             if let stream = streams.removeValue(forKey: id) { requestStop(stream) }
@@ -316,6 +330,8 @@ struct ScreenDisplayLayout: Equatable, Sendable {
     /// One display's platform start, in its own task: a hung one holds up nothing else.
     private func finishStart(_ stream: ScreenDisplayStream, _ receiver: ScreenFrameReceiver) async {
         let id = stream.display.id
+        // Queued behind a stop, a disconnect, a cap or an error: a retired stream is never started.
+        guard !stopped, streams[id] === stream, stream.phase == .starting else { return }
         do {
             try await stream.control.start()
         } catch {
@@ -352,10 +368,13 @@ struct ScreenDisplayLayout: Equatable, Sendable {
     /// reconfigured), it waits, up to `incompleteLimit` refreshes. Every display gone after one was captured (a lid
     /// closed on the last one) waits for one to return.
     private func failIfNothingCaptures(_ receiver: ScreenFrameReceiver) {
-        guard !stopped, roster.running.isEmpty else { return }
-        let waitingForSnapshot = incomplete && failedRefreshes < Self.incompleteLimit
-        if roster.anyFailed || (!everStarted && !waitingForSnapshot) { receiver.failed() }
+        guard !stopped, roster.running.isEmpty, !waitingForSnapshot else { return }
+        if roster.anyFailed || !everStarted { receiver.failed() }
     }
+
+    /// The last snapshot left out a display CoreGraphics reports, and the retry budget is not spent: nothing is
+    /// terminal yet, since that display may still come and capture.
+    private var waitingForSnapshot: Bool { incomplete && failedRefreshes < Self.incompleteLimit }
 
     /// A refresh that failed or came back incomplete: the layout stays unrecorded, and polls back off.
     private func retryLater() {

@@ -4592,9 +4592,11 @@ compares the display layout (connected IDs, the main display, and which display 
 which: `CGGetActiveDisplayList`, `CGMainDisplayID`, `CGDisplayMirrorsDisplay`, cheap
 calls) with that of the last complete refresh, and only when they differ, or a stream
 stops with an error, asks ScreenCaptureKit again and starts or stops streams.
-CoreGraphics is the truth for what is connected: a display the ScreenCaptureKit snapshot
-still lists after CoreGraphics dropped it counts as gone. A refresh whose query fails, or whose snapshot still leaves out a display CoreGraphics already
-reports (mid-reconfiguration), records no layout, so that display is not missed for
+CoreGraphics is the truth for what is connected and targeted: a display the
+ScreenCaptureKit snapshot still lists after CoreGraphics dropped it counts as gone, and
+one a snapshot briefly leaves out while CoreGraphics still reports it keeps its stream
+(a snapshot only adds displays). A refresh whose query fails, or whose snapshot still
+leaves out a display CoreGraphics already reports (mid-reconfiguration), records no layout, so that display is not missed for
 good: a later poll tries again after 4, 8, 16, 32, then every 60 seconds
 (`pollsBeforeRetry`). Each display's stream starts in its own task, registered before
 its platform start returns, so one slow or hung start holds up neither the other
@@ -4608,12 +4610,20 @@ its stop is still finishing and the display is back) touches a newer one. A stre
 reports an error, even while its start is still pending (which may never return), is
 retired at once, and a start that fails is handled the same way: a refresh against the
 current layout tells an unplugged display from a broken stream before anything decides
-that nothing can capture; a late start return is stopped again. That decision is made
-only at the end of a refresh whose snapshot is still current (no stream error came in
-during its query, and the CoreGraphics layout is still the one it was made for);
-otherwise the refresh runs again, so a display unplugged during a query never seals the
-capture on a stale answer. A cap that lands after its display came back in a new stream
-still ends that stream's samples. Stops are requested
+that nothing can capture; a late start return is stopped again, and a start queued
+behind a stop, a disconnect, a cap or an error never runs. That decision is made only
+at the end of a refresh whose snapshot is still current (no stream error came in during
+its query, and the CoreGraphics layout is still the one it was made for) and with no
+retry budget left for a snapshot that leaves out a display or a query that fails (five
+refreshes, about a minute; before any stream started a failed query is final at once,
+as with one display); otherwise the refresh runs again or waits, so a display unplugged
+during a query, or one the snapshot has not listed yet, never seals the capture on a
+stale answer. A cap is the display's, not one stream's: one that lands after its
+display came back in a new stream still ends that stream's samples. The code states
+these as four invariants in `MeetingScreenCapture`'s documentation (CoreGraphics decides
+removals and snapshots only add; every stream step is checked against the stream's
+identity and phase; terminal decisions only from a current refresh with no retry budget
+left; `stop()` is final), and each path was checked against them. Stops are requested
 without waiting, all at once when the meeting stops, so one stalled platform stop never
 leaves another stream running or holds up a refresh. Polling was chosen over the
 display-reconfiguration callback because the recorder is a command-line process without

@@ -31,11 +31,14 @@ struct ScreenDisplayRoster: Equatable {
         for display in known { displays[display.id] = display }
     }
 
-    /// The streams to start and stop for the displays connected now (already narrowed to the capture's target).
-    /// Displays new to the meeting are numbered after every number used so far, by arrangement: left to right, then
-    /// top to bottom. A display past `ScreenContextStore.maximumDisplays` is not captured.
-    mutating func reconcile(_ connected: [ScreenDisplayCandidate]) -> (start: [ScreenDisplay], stop: [CGDirectDisplayID]) {
-        let present = Set(connected.map(\.id))
+    /// The streams to start and stop: `connected` (CoreGraphics, narrowed to the capture's target) decides which
+    /// displays are gone; `available` (the ScreenCaptureKit snapshot, within `connected`) only adds, so a display a
+    /// snapshot briefly leaves out keeps its stream. Displays new to the meeting are numbered after every number used
+    /// so far, by arrangement: left to right, then top to bottom. A display past `ScreenContextStore.maximumDisplays`
+    /// is not captured.
+    mutating func reconcile(available: [ScreenDisplayCandidate], connected present: Set<CGDirectDisplayID>)
+        -> (start: [ScreenDisplay], stop: [CGDirectDisplayID]) {
+        let connected = available.filter { present.contains($0.id) }
         var stop: [CGDirectDisplayID] = []
         for (id, state) in status where !present.contains(id) {
             switch state {
@@ -60,6 +63,11 @@ struct ScreenDisplayRoster: Equatable {
             start.append(display)
         }
         return (start.sorted { $0.number < $1.number }, stop.sorted())
+    }
+
+    /// Both from one list (tests).
+    mutating func reconcile(_ connected: [ScreenDisplayCandidate]) -> (start: [ScreenDisplay], stop: [CGDirectDisplayID]) {
+        reconcile(available: connected, connected: Set(connected.map(\.id)))
     }
 
     /// The display's stream stopped with an error, or would not start.
