@@ -63,8 +63,8 @@ extension TurnListView {
         guard selection.length == 0, selection.location == 0 || selection.location == length else { return false }
         let atStart = selection.location == 0
         let request = ReviewSplitRequest(word: atStart ? first.ref : last.ref, after: !atStart,
-                                         turnID: turnID(ofWordAt: target.range.lowerBound,
-                                                        in: target.paragraphID),
+                                         turnID: target.turnID ?? turnID(ofWordAt: target.range.lowerBound,
+                                                                         in: target.paragraphID),
                                          movesSeen: target.movesSeen, wordsEpoch: target.wordsEpoch,
                                          field: .init(words: target.words, text: typed))
         switch resolveSplit?(request) {
@@ -114,7 +114,8 @@ extension TurnListView {
     /// After a split: the row the second part starts (its first word `word`; its first turn `turnID` when known, else
     /// a part split from `splitOf`) is selected and shown, and its speaker pop-up opens (`openSpeakerMenu`), so its
     /// speaker can be chosen at once; it keeps the first part's until then. Overlapping turns may start two rows at
-    /// one word: the turn decides. False when no row shown starts there (a search may hide it).
+    /// one word: the turn decides, and a row of another turn is never taken for it. False when no row shown starts
+    /// there with that turn (a search may hide it).
     @discardableResult
     func focusSpeaker(startingAt word: WordRef, turnID: String? = nil, splitOf: String? = nil) -> Bool {
         let starting = paragraphs.indices.filter { paragraphWords(paragraphs[$0]).words.first?.ref == word }
@@ -124,7 +125,7 @@ extension TurnListView {
             if let splitOf { return first.hasPrefix(splitOf + "/") }
             return true
         }
-        guard let row = chosen ?? starting.first else { return false }
+        guard let row = chosen else { return false }
         select(paragraphs[row].turnIDs, scroll: true)
         guard let cell = table.view(atColumn: 0, row: row, makeIfNecessary: true) as? TurnCellView else { return false }
         window?.makeFirstResponder(cell.speakerPopUp)

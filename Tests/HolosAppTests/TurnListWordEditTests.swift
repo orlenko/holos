@@ -612,6 +612,34 @@ struct TurnListWordEditTests {
                                                           ReviewParagraph(turns: [turns[2]])])
         #expect(list.focusSpeaker(startingAt: beta.ref, turnID: "T2"))
         #expect(opened.last === (try TurnListViewTests.cell(list, row: 1)).speakerPopUp)
+        // A turn no row starts with (hidden by a search, say): no other row's pop-up stands in for it.
+        let count = opened.count
+        #expect(!list.focusSpeaker(startingAt: beta.ref, turnID: "T9"))
+        #expect(!list.focusSpeaker(startingAt: beta.ref, splitOf: "T3"))
+        #expect(opened.count == count)
+    }
+
+    /// The field keeps the turn it was opened in: following its words through a refresh may land on another copy of
+    /// a word two overlapping turns show, but Return at its start still asks for that turn's split.
+    @Test func theFieldKeepsTheTurnItWasOpenedInThroughARefresh() throws {
+        let (list, _) = editingList()
+        var requests: [ReviewSplitRequest] = []
+        list.resolveSplit = { request in
+            requests.append(request)
+            return .refused("recorded")
+        }
+        let beta = try #require(TurnListViewTests.words["T1"]?[1])
+        var words = TurnListViewTests.words
+        words["T2"] = [beta, try #require(TurnListViewTests.words["T2"]?[0])]
+        update(list, words: words, moves: [])
+        list.editingWords = true
+        // T2's copy of "beta" (word 2 of the row).
+        list.table.handleWordClick(row: 0, word: 2, through: 2, extend: false)
+        #expect(list.wordEdit?.turnID == "T2")
+        update(list, words: words, moves: [])
+        list.editField.currentEditor()?.selectedRange = NSRange(location: 0, length: 0)
+        press(list, #selector(NSResponder.insertNewline(_:)))
+        #expect(requests.last?.turnID == "T2" && requests.last?.word == beta.ref)
     }
 
     /// The place is the word as the list showed it, never an index read again: a word edit saved since the field or

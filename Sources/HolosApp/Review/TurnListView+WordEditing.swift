@@ -21,6 +21,9 @@ struct WordEditTarget: Equatable {
     var wordTexts: [String] = []
     /// `ReviewSession.wordsEpoch` when the field opened: words changed elsewhere since cannot be followed.
     var wordsEpoch = 0
+    /// The turn the words were chosen in (overlapping turns of a row may show a word twice): a split asked from the
+    /// field is that turn's, whatever copy following the words lands on.
+    var turnID: String?
 }
 
 /// The field over the words being edited: the turn text's font, a bezel, and no wrapping.
@@ -165,9 +168,12 @@ extension TurnListView: NSTextFieldDelegate {
             ?? textView(row: row)?.shownText(from: range.lowerBound, through: range.upperBound)?
                 .trimmingCharacters(in: .whitespacesAndNewlines)
             ?? all[range].map(\.text).joined(separator: " ")
+        let owner = paragraphWords(paragraph).turns
         wordEdit = WordEditTarget(paragraphID: paragraph.id, range: range, anchor: anchor, words: Array(all[range]),
                                   shown: shown, movesSeen: wordMoves.count, wordTexts: all[range].map(shownText(of:)),
-                                  wordsEpoch: wordsEpoch)
+                                  wordsEpoch: wordsEpoch,
+                                  turnID: range.lowerBound < owner.count ? paragraph.turns[owner[range.lowerBound]].id
+                                      : nil)
         editField.stringValue = shown
         if editField.superview !== table { table.addSubview(editField) }
         positionEditField(row: row, range: range)
