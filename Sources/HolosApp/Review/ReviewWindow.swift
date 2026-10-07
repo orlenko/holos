@@ -55,6 +55,29 @@ final class ReviewCloseGate {
     }
 }
 
+/// A word edit the field handed over that was not saved: its words as the field showed them, what was typed, the word
+/// moves and `wordsEpoch` they follow, and why (`message`, with what was typed).
+struct FailedWordEdit {
+    var words: [ReviewWord]
+    var text: String
+    var movesSeen: Int
+    var wordsEpoch: Int
+    var message: String
+}
+
+/// After a close by hand stopped because edits were not saved (`ReviewWindow.keepAfterFailedClose`): fields could not
+/// open while the close waited, so the first failed edit's field opens now, with what was typed and why (`reopen`,
+/// false when its words are no longer there), and the footer says every other one, each with what was typed (all of
+/// them when the field could not open). Nil when nothing failed.
+enum ReviewCloseRecovery {
+    @MainActor
+    static func recover(_ failures: [FailedWordEdit], reopen: (FailedWordEdit) -> Bool) -> String? {
+        guard let first = failures.first else { return nil }
+        let left = reopen(first) ? Array(failures.dropFirst()) : failures
+        return left.isEmpty ? nil : left.map(\.message).joined(separator: " ")
+    }
+}
+
 /// The transcript review window (docs/meeting-design.md §5.10): name the speakers of a meeting, play their audio,
 /// reassign, merge, split, confirm suggestions in bulk, find more speakers, undo, and export. The model is
 /// `ReviewSession` (HolosMeeting); this file only arranges views and routes actions to it. Every change shows at once
@@ -140,9 +163,9 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, Clo
     private var closeTask: Task<Void, Never>?
     /// A close by hand waits for the edit typed in the field to be saved (`windowShouldClose`).
     private let closeGate = ReviewCloseGate()
-    /// Word edits the field handed over that are still saving (`editWords`): each ends with why it was not saved, nil
-    /// when it was. A close by hand waits for them too.
-    private var pendingWordEdits: [UUID: Task<String?, Never>] = [:]
+    /// Word edits the field handed over that are still saving (`editWords`), in the order they were made: each ends
+    /// with the edit when it was not saved (`FailedWordEdit`), nil when it was. A close by hand waits for them too.
+    private var pendingWordEdits: [(id: UUID, saving: Task<FailedWordEdit?, Never>)] = []
     /// The field's edit a close by hand took and has not queued yet (it waits for the edits before it).
     private var heldOpenEdit: HeldEdit?
 
@@ -1138,14 +1161,16 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, Clo
         refreshFooter()
         let id = UUID()
         let epoch = wordsEpoch
-        let saving: Task<String?, Never> = Task { [weak self] () async -> String? in
+        let saving: Task<FailedWordEdit?, Never> = Task { [weak self] () async -> FailedWordEdit? in
             guard let self else { return nil }
             let refusal: String? = await self.saveEdit(words, to: text, addTerm: addTerm, movesSeen: movesSeen,
                                                        whileUnread: whileUnread, seenEpoch: epoch)
-            self.pendingWordEdits[id] = nil
-            return refusal
+            self.pendingWordEdits.removeAll { $0.id == id }
+            return refusal.map {
+                FailedWordEdit(words: words, text: text, movesSeen: movesSeen, wordsEpoch: epoch, message: $0)
+            }
         }
-        pendingWordEdits[id] = saving
+        pendingWordEdits.append((id, saving))
     }
 
     /// `editWords`' save: nil when saved (also when its labels could not be reread after it: the edit stands, and
@@ -1486,7 +1511,7 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, Clo
         // with it (`beginClosing`); words changed elsewhere since the field opened refuse it.
         if let open { heldOpenEdit = HeldEdit(edit: open, epoch: open.wordsEpoch) }
         let epoch = open?.wordsEpoch ?? review.wordsEpoch
-        let pending: [Task<String?, Never>] = closeGate.saving ? [] : Array(pendingWordEdits.values)
+        let pending: [Task<FailedWordEdit?, Never>] = closeGate.saving ? [] : pendingWordEdits.map(\.saving)
         let outcome = CloseSaveOutcome()
         let save: () async -> String? = { [weak self] in
             await self?.saveBeforeClose(open, after: pending, outcome: outcome)
@@ -1511,46 +1536,49 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, Clo
         let epoch: Int
     }
 
-    /// What a close by hand found when it saved (`saveBeforeClose`): why the open field's edit was not saved.
+    /// What a close by hand found when it saved (`saveBeforeClose`): every edit not saved, in the order they were made
+    /// (those handed over before, then the open field's).
     private final class CloseSaveOutcome {
-        var openRefusal: String?
+        var failures: [FailedWordEdit] = []
     }
 
     /// Before a close by hand: waits for the edits handed over (in the order they were made), then saves the open
-    /// field's. Nil when all were saved, else every refusal, each with what was typed.
-    private func saveBeforeClose(_ open: OpenWordEdit?, after pending: [Task<String?, Never>],
+    /// field's. Nil when all were saved, else every refusal, each with what was typed. While it waits no field can open
+    /// (`canEditWordsNow`), so each edit not saved is kept (`outcome`) for when the window stays open.
+    private func saveBeforeClose(_ open: OpenWordEdit?, after pending: [Task<FailedWordEdit?, Never>],
                                  outcome: CloseSaveOutcome) async -> String? {
-        var refusals: [String] = []
         for edit in pending {
-            if let refusal = await edit.value { refusals.append(refusal) }
+            if let failed = await edit.value { outcome.failures.append(failed) }
         }
         // Unless the window's close took it meanwhile (quitting), which queues it itself.
         if open != nil, closeTask == nil, let held = heldOpenEdit {
             heldOpenEdit = nil
             let open = held.edit
-            let refusal = await saveTypedEdit(open.words, text: open.text, movesSeen: open.movesSeen,
-                                              seenEpoch: held.epoch)
-            outcome.openRefusal = refusal
-            if let refusal { refusals.append(refusal) }
+            if let refusal = await saveTypedEdit(open.words, text: open.text, movesSeen: open.movesSeen,
+                                                 seenEpoch: held.epoch) {
+                outcome.failures.append(FailedWordEdit(words: open.words, text: open.text, movesSeen: open.movesSeen,
+                                                       wordsEpoch: held.epoch, message: refusal))
+            }
         }
-        return refusals.isEmpty ? nil : refusals.joined(separator: " ")
+        return outcome.failures.isEmpty ? nil : outcome.failures.map(\.message).joined(separator: " ")
     }
 
-    /// A close by hand stopped because an edit was not saved: the open field's edit opens again with what was typed (an
-    /// edit handed over before did so itself), and the footer says every edit not saved.
+    /// A close by hand stopped because edits were not saved: fields may open again, so the first one's field opens with
+    /// what was typed and why, and the footer says every other one, each with what was typed
+    /// (`ReviewCloseRecovery`).
     private func keepAfterFailedClose(_ open: OpenWordEdit?, epoch: Int, outcome: CloseSaveOutcome,
                                       message: String) {
         // Quitting closed the window meanwhile: its close saves (or logs) what is left.
         guard closeTask == nil else { return }
         // Fields may open again (the close by hand ended).
         refreshToolbar()
-        if let open, let refusal = outcome.openRefusal {
-            if !turnList.editingWords { turnList.editingWords = true }
+        if !outcome.failures.isEmpty, !turnList.editingWords { turnList.editingWords = true }
+        let others = ReviewCloseRecovery.recover(outcome.failures) { failed in
             // Where its words are now: through the moves saved since, never across words changed elsewhere.
-            turnList.reopenWordEdit(open.words, typed: open.text, message: refusal, movesSeen: open.movesSeen,
-                                    wordsEpoch: epoch)
+            turnList.reopenWordEdit(failed.words, typed: failed.text, message: failed.message,
+                                    movesSeen: failed.movesSeen, wordsEpoch: failed.wordsEpoch)
         }
-        problem = message
+        problem = outcome.failures.isEmpty ? message : others ?? outcome.failures.first?.message
         refreshFooter()
     }
 

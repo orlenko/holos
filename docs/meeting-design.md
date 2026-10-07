@@ -7878,8 +7878,9 @@ shown, Otter-style.
   disk, a refusal): the field opens again with what was typed and the footer says why
   (`ReviewCloseGate`), so nothing typed is lost to a failed save. It waits the same way for
   edits handed over a moment before and still saving (Return, then ⌘W), and stays open when
-  one of them is not saved (the footer says every edit not saved, with what was typed in
-  each). The field's edit such a close took is held on the window until it is queued, so a
+  one of them is not saved. No field opens while it waits, so each edit not saved is kept;
+  once the window stays open, the first one's field opens with what was typed and why, and
+  the footer says the others, each with what was typed (`ReviewCloseRecovery`). The field's edit such a close took is held on the window until it is queued, so a
   quit meanwhile closes the review with it, and no field opens while such a close waits. A Split Turn sheet's word follows a word edit
   saved while the sheet was open (`split(seenMoves:)`), and is refused when the edit replaced
   it; a Revert's word likewise follows every word change saved since the words it was asked

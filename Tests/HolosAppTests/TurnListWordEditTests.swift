@@ -400,6 +400,41 @@ struct TurnListWordEditTests {
         #expect(inField(try hit(onWord: 0, shift: true)), "On the edited words, the field keeps it.")
     }
 
+    /// Return, then a close at once: the close waits for the save with editing off (no field opens), so a save that
+    /// fails then cannot open its field. Each failed edit is kept; once the window stays open, the first one's field
+    /// opens with what was typed and why, and the footer says the others, each with what was typed.
+    @Test func editsThatFailWhileACloseWaitsOpenAgainOnceTheWindowStays() throws {
+        let (list, _) = editingList()
+        list.editingWords = true
+        let alpha = try #require(TurnListViewTests.words["T1"]?[0])
+        let epsilon = try #require(TurnListViewTests.words["T2"]?[0])
+        let failures = [
+            FailedWordEdit(words: [alpha], text: "Alfa", movesSeen: 0, wordsEpoch: 0,
+                           message: "The disk is full. What you typed: “Alfa”."),
+            FailedWordEdit(words: [epsilon], text: "Epsilon", movesSeen: 0, wordsEpoch: 0,
+                           message: "The disk is full. What you typed: “Epsilon”."),
+        ]
+        func reopen(_ failed: FailedWordEdit) -> Bool {
+            list.reopenWordEdit(failed.words, typed: failed.text, message: failed.message,
+                                movesSeen: failed.movesSeen, wordsEpoch: failed.wordsEpoch)
+        }
+        // While the close waits, editing is off: the save's own attempt to open its field does nothing.
+        list.canEditWords = false
+        #expect(!reopen(failures[0]) && list.wordEdit == nil)
+        // The window stays open: the first field opens with what was typed; the footer says the other.
+        list.canEditWords = true
+        let footer = ReviewCloseRecovery.recover(failures, reopen: reopen)
+        #expect(list.wordEdit?.words.map(\.text) == ["alpha"] && list.editField.stringValue == "Alfa")
+        #expect(footer == "The disk is full. What you typed: “Epsilon”.")
+        // When the first one's words are gone, the footer says them all.
+        list.cancelWordEdit()
+        let gone = FailedWordEdit(words: [TurnListViewTests.word("T9", 0, "gone", 0)], text: "Gone", movesSeen: 0,
+                                  wordsEpoch: 0, message: "Not saved. What you typed: “Gone”.")
+        #expect(ReviewCloseRecovery.recover([gone] + failures.dropFirst(), reopen: reopen)
+            == "Not saved. What you typed: “Gone”. The disk is full. What you typed: “Epsilon”.")
+        #expect(ReviewCloseRecovery.recover([], reopen: reopen) == nil)
+    }
+
     /// Only Esc drops what was typed: turning edit mode off saves it.
     @Test func turningEditModeOffSavesTheFieldAndEscDropsIt() {
         let (list, saved) = editingList()
