@@ -66,7 +66,7 @@ struct SetupState {
     var localeChangeable = true
     /// The fillers removed in this language ("euh, heu, …"); nil when it has none.
     var fillerExamples: String?
-    /// History and privacy: how long dictations are kept, and how many are kept now.
+    /// Dictation history: how long dictations are kept, and how many are kept now.
     var historyRetention = HistoryRetention.standard
     /// Every dictation the file keeps (a newer build's too): what Clear History deletes.
     var historyCount = 0
@@ -88,7 +88,7 @@ enum SetupAction: Int, CaseIterable {
     case toggleRecordSystemAudio
     /// Settings only: open People, clear the history, run the Setup Assistant.
     case people, clearHistory, setupAssistant
-    /// Settings › History and privacy › Keep the audio of dictations.
+    /// Settings › Dictation history › Keep the audio of dictations.
     case toggleHistoryAudio
     /// Settings › Dictation › Write spoken paths and commands as code, and Wrap them in backticks.
     case toggleSpokenCode, toggleSpokenCodeBackticks
@@ -105,7 +105,7 @@ enum SetupAction: Int, CaseIterable {
 }
 
 /// The main window's Settings section (it replaces the Setup window): cards for General, Permissions, Dictation,
-/// Meetings, Reading, and History and privacy, and a way back to the Setup Assistant. It shows `SetupState`, which the app delegate refreshes
+/// Meetings, Reading, and Dictation history, and a way back to the Setup Assistant. It shows `SetupState`, which the app delegate refreshes
 /// every second while the section is on screen (TCC has no change notification), and reports each change through its
 /// callbacks. The sidebar lists the cards as chapters (`show(chapter:animated:)`, `onChapterChange`), and a search
 /// field above the page shows only the settings that match (`SettingsSearch`).
@@ -647,7 +647,8 @@ final class SettingsPane: NSViewController, MainSectionContent, NSSearchFieldDel
         historyAudioUsage.setAccessibilityLabel("Dictation audio disk use")
         let note = Self.note("""
             History keeps each dictation's text, the text as heard, the app, and the language, and, when the box \
-            above is on, its audio, only on this Mac. Nothing is copied to the clipboard unless you choose Copy.
+            above is on, its audio, only on this Mac. Nothing is copied to the clipboard unless you choose Copy. \
+            Meetings are kept until you delete them in Meetings.
             """)
         addItem(.history, historyAudioToggle.title, caption: historyAudioToggle.toolTip ?? "",
                 keywords: ["audio", "run again", "disk", "storage", "recordings"], views: [audio],

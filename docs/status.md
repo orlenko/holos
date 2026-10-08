@@ -481,7 +481,7 @@ timeline and a larger local-model benchmark are follow-ups.
   Reading (⌘5), and Settings (⌘,), with a
   dictation status card at the sidebar's bottom. Corrections, Meetings, and People are the
   former windows' contents hosted as sections; Settings replaces the Setup window
-  (Permissions, Dictation, Meetings, Reading, History and privacy, Run Setup Assistant…), and every
+  (Permissions, Dictation, Meetings, Reading, Dictation history, Run Setup Assistant…), and every
   "Setup…" path opens it. The menu bar menu is slimmed to the dictation status and toggle,
   the kept result's Copy items, Correct Last Dictation…, the meeting block, and the window's
   items; the language and shortcut submenus moved to Settings. The Setup Assistant, the
@@ -551,7 +551,7 @@ timeline and a larger local-model benchmark are follow-ups.
 - Dictation audio and Run Again (docs/design.md "Dictation audio and Run Again"): each
   recorded dictation's microphone audio, the frames the recognizer took, is kept as
   `History/audio/<id>.m4a` (AAC mono 16 kHz, ~32 kbit/s, 0600) and linked from its record,
-  unless Settings › History and privacy › Keep the audio of dictations is off (it shows the
+  unless Settings › Dictation history › Keep the audio of dictations is off (it shows the
   disk use; turning it off offers to delete the audio kept). Cancelled, refused, and
   unrecorded dictations leave none; Delete, Clear History, and the retention sweep remove it
   with the text, and sweeps also remove audio without a record and stale partial files.

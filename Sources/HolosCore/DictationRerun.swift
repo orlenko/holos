@@ -1,6 +1,6 @@
 import Foundation
 
-/// Settings › History and privacy › "Keep the audio of dictations (for Run Again)" (UserDefaults `historyKeepAudio`,
+/// Settings › Dictation history › "Keep the audio of dictations (for Run Again)" (UserDefaults `historyKeepAudio`,
 /// on when never set), and how the audio is kept (docs/design.md "Dictation audio and Run Again").
 public enum HistoryAudio {
     public static let defaultsKey = "historyKeepAudio"

@@ -12,7 +12,7 @@ enum SettingsChapter: Int, CaseIterable {
         case .dictation: "Dictation"
         case .meetings: "Meetings"
         case .reading: "Reading"
-        case .history: "History and privacy"
+        case .history: "Dictation history"
         }
     }
 }
