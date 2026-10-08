@@ -2,6 +2,7 @@ import AppKit
 import Foundation
 import HolosCore
 import HolosDictation
+import HolosMeeting
 import HolosStorage
 
 // The dictation history itself (records in memory, the serial file queue, flushing on quit) is
@@ -65,6 +66,7 @@ extension HolosAppDelegate {
         let (pipeline, note) = DictationRerun.pipeline(language: locale, removeFillers: removeFillers,
                                                        corrections: corrections, wordList: wordList.terms,
                                                        heardAs: wordList.heardAsPairs,
+                                                       names: VoiceProfileService.profileNames().values.sorted(),
                                                        aiFix: AIFixSetting.isOn,
                                                        spokenCode: SpokenCodeSetting.isOn,
                                                        backticks: SpokenCodeSetting.backticks)

@@ -2,6 +2,7 @@ import ArgumentParser
 import Foundation
 import HolosCore
 import HolosDictation
+import HolosMeeting
 import HolosStorage
 
 /// `voiceislocal history`: the dictation history the app keeps on this Mac (docs/design.md "Dictation history").
@@ -90,7 +91,9 @@ struct History: ParsableCommand {
                 dictation language, the word list (Application Support/Holos/words.json, as vocabulary), the \
                 learned corrections (corrections.json, as vocabulary and as replacements), filler removal, spoken paths and commands written as code, and \
                 Apple Intelligence's fix, as set in the app's \
-                Settings. Prints the text as heard and as written, then and now, what each step did, and which steps \
+                Settings. The recognizer's results are joined as live dictation joins them: a capital a pause left \
+                inside a sentence is lowered, unless the word is "I", an acronym, a name, or a capitalized word of \
+                the word list, the corrections, or People. Prints the text as heard and as written, then and now, what each step did, and which steps \
                 behaved differently from then. Nothing is typed, copied, or changed in the history. --all runs every \
                 dictation with audio (or those from --since ago) for a report on a change to the corrections or the fix.
                 """)
@@ -143,6 +146,7 @@ struct History: ParsableCommand {
             let (pipeline, note) = DictationRerun.pipeline(language: locale, removeFillers: preferences.removeFillers,
                                                            corrections: corrections, wordList: wordList.terms,
                                                            heardAs: wordList.heardAsPairs,
+                                                           names: VoiceProfileService.profileNames().values.sorted(),
                                                            aiFix: preferences.aiFix && !noAIFix,
                                                            spokenCode: preferences.spokenCode && !noSpokenCode,
                                                            backticks: preferences.spokenCodeBackticks)

@@ -372,6 +372,19 @@ timeline and a larger local-model benchmark are follow-ups.
   nothing leaves it and its ten-minute expiry in place. See
   [dictation validation](dictation-validation.md).
   Dictation audio is not saved.
+- A capital the recognizer puts after a pause inside a sentence ("our big Pull request")
+  is lowered before any other step (docs/design.md "Pauses inside a sentence"), in English
+  and French dictation, for the preview, the streamed and final text, History and Run
+  Again; "I", acronyms and mixed case, single letters, capitalized words of the word list,
+  corrections and People, names `NLTagger` finds, and words whose lowercase form the spell
+  checker does not know keep theirs. Measured on 189 kept dictations (English): Run Again's
+  recognition had 449 pauses, 442 after a sentence end and 6 before a capital inside a
+  sentence, all 6 lowered correctly. As a stress test, each of the 187 capitalized words
+  (other than "I") inside a sentence of the stored text was treated as following a pause: 58
+  would be lowered (about 34 stray capitals, about 19 product or company names that are
+  also dictionary words, 5 unclear) and 129 kept (about 3 stray capitals among them).
+  Periods a pause puts inside a sentence are not changed: 29 of the 411 pauses after a
+  period started with a lowercase word, nearly all of them the same sentence going on.
 - Dictation text is cleaned before it is written: filler words are removed (English and
   French lists; off in Settings), then learned corrections are applied. **Correct Last
   Dictation…** learns word swaps from the user's edits, and the Corrections section adds,

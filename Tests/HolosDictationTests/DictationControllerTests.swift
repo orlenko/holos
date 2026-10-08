@@ -300,6 +300,24 @@ private final class DictationSleeper {
     #expect(controller.status.text.hasPrefix("Hello there."))
 }
 
+@Test @MainActor func aPauseInsideASentenceLeavesNoCapitalInPreviewCommittedOrResult() async {
+    let harness = Harness()
+    await harness.speech.setSegments([.init(start: 0, end: 1, text: "We are cleaning up our big"),
+                                      .init(start: 1, end: 2, text: "Pull request splitting it.")])
+    let controller = DictationController(locale: "en-US", dependencies: harness.dependencies) { _ in }
+    controller.seamTerms = ["Signal"]
+    #expect(controller.begin())
+    #expect(await eventually { controller.status.phase == .listening })
+    harness.emit(.init(segment: .init(start: 0, end: 1, text: "We are cleaning up our big"), isFinal: true))
+    harness.emit(.init(segment: .init(start: 1, end: 2, text: "Pull request"), isFinal: false))
+    #expect(await eventually { controller.status.text == "We are cleaning up our big pull request" })
+    harness.emit(.init(segment: .init(start: 1, end: 2, text: "Pull request splitting it."), isFinal: true))
+    #expect(await eventually { controller.status.committedText == "We are cleaning up our big pull request splitting it." })
+    controller.end()
+    #expect(await eventually { controller.status.phase == .result })
+    #expect(controller.status.text == "We are cleaning up our big pull request splitting it.")
+}
+
 @Test @MainActor func captureAndRecognizerFailuresBecomeFailedStatuses() async {
     let captureHarness = Harness()
     captureHarness.capture.startError = HolosError.unavailable("Microphone unavailable")

@@ -229,7 +229,7 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
             message = "Could not read corrections.json; corrections are off until it is fixed or removed."
         }
         loadWordList()
-        controller.contextualStrings = dictationVocabulary(language: locale)
+        updateDictationVocabulary()
         let folder = CorrectionList.defaultURL.deletingLastPathComponent()
         correctionsWatcher = FolderWatcher(folder: folder) { [weak self] in
             MainActor.assumeIsolated {
@@ -1352,10 +1352,12 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
         adoptCorrections(list)
     }
 
-    /// The next dictation's contextual strings: the word list, then the words of learned corrections. A dictation
-    /// already listening keeps the ones it started with.
+    /// The next dictation's contextual strings (the word list, then the words of learned corrections) and the words
+    /// whose capitals stay after a pause (`dictationSeamTerms`, people's names as they are now). A dictation already
+    /// listening keeps the ones it started with.
     func updateDictationVocabulary() {
         controller.contextualStrings = dictationVocabulary(language: locale)
+        controller.seamTerms = dictationSeamTerms()
     }
 
     private func write(_ text: String, to destination: Destination) -> InsertionOutcome {

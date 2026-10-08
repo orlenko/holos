@@ -27,27 +27,31 @@ public enum HistoryAudio {
     }
 }
 
-/// The text steps live dictation applies to what the recognizer heard, in order: filler removal, learned corrections,
-/// spoken code, then Apple Intelligence's fix, chunk by chunk as the words are committed and the rest on release. Run
+/// The text steps live dictation applies to what the recognizer heard, in order: the results joined with the capitals
+/// pauses left inside sentences lowered (`DictationSeams`), filler removal, learned corrections, spoken code, then
+/// Apple Intelligence's fix, chunk by chunk as the words are committed and the rest on release. Run
 /// Again feeds it a saved dictation's recognizer results so the text comes out as live dictation would write it now.
 /// Spoken code and the fix are injected (`coder`, `fixer`), so tests run them with closures; nil runs without them.
 public struct DictationTextPipeline: Sendable {
     public var language: String
     public var removeFillers: Bool
     public var corrections: CorrectionList
-    /// The word list's terms (`WordList`), for the recognizer's vocabulary.
+    /// The word list's terms (`WordList`), for the recognizer's vocabulary and the capitals a pause keeps.
     public var wordList: [String]
+    /// People's names (the People section), whose capitals a pause keeps (`DictationSeams`).
+    public var names: [String]
     /// Spoken paths and commands written as code; nil when it is off.
     public var coder: SpokenCodeFormatter?
     /// Apple Intelligence's fix; nil when it is off or cannot be used.
     public var fixer: TranscriptFixer?
 
     public init(language: String, removeFillers: Bool, corrections: CorrectionList, wordList: [String] = [],
-                fixer: TranscriptFixer? = nil, coder: SpokenCodeFormatter? = nil) {
+                names: [String] = [], fixer: TranscriptFixer? = nil, coder: SpokenCodeFormatter? = nil) {
         self.language = language
         self.removeFillers = removeFillers
         self.corrections = corrections
         self.wordList = wordList
+        self.names = names
         self.fixer = fixer
         self.coder = coder
     }
@@ -164,9 +168,19 @@ public struct DictationTextPipeline: Sendable {
     }
 
     /// The recognizer's results as live dictation joins them (`DictationStatus.transcript`): each trimmed, empty ones
-    /// left out, one space between.
-    public static func transcript(_ texts: [String]) -> String {
-        texts.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }.joined(separator: " ")
+    /// left out, one space between, and with `seams`, a capital a pause left inside a sentence lowered
+    /// (`DictationSeams`).
+    public static func transcript(_ texts: [String], seams: DictationSeams? = nil) -> String {
+        if let seams { return seams.join(texts) }
+        return texts.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
+            .joined(separator: " ")
+    }
+
+    /// How live dictation joins the recognizer's results in this pipeline's language, with the capitals of the word
+    /// list's terms, the corrections' meant phrases and people's names kept. Each run makes one.
+    public func makeSeams() -> DictationSeams {
+        DictationSeams(language: language,
+                       terms: DictationSeams.terms(wordList: wordList, corrections: corrections, names: names))
     }
 
     /// Filler removal (when on), as live dictation applies it to the final text.
@@ -197,7 +211,8 @@ public struct DictationTextPipeline: Sendable {
     /// spoken path) is on release, the fix's `isFinal`. Live dictation joins chunks queued while the model is busy,
     /// which depends on timing, so its result may differ.
     public func run(segments: [String]) async -> Output {
-        let heard = Self.transcript(segments)
+        let seams = makeSeams()
+        let heard = Self.transcript(segments, seams: seams)
         let withoutFillers = withoutFillers(heard).trimmingCharacters(in: .whitespacesAndNewlines)
         let (corrected, count) = corrections.applyCounting(to: withoutFillers)
         var output = Output(heard: heard, withoutFillers: withoutFillers, corrected: corrected, coded: corrected,
@@ -216,7 +231,7 @@ public struct DictationTextPipeline: Sendable {
             output.codeSpans += result.codeSpans
         }
         for count in stride(from: 1, through: segments.count, by: 1) {
-            let streamed = cleanedForStreaming(Self.transcript(Array(segments.prefix(count))))
+            let streamed = cleanedForStreaming(Self.transcript(Array(segments.prefix(count)), seams: seams))
             guard streamed.hasPrefix(submitted) else {
                 // The recognizer revised committed text: dictation stops streaming there.
                 streaming = false

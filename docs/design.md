@@ -193,6 +193,50 @@ continue is held back, from the spelled letters or content word before its first
 symbol word, until it ends or the key is released; so is a last content word or run
 of spelled letters, which a symbol word may still follow.
 
+#### Pauses inside a sentence
+
+Apple's speech transcriber gives one result per stretch of speech between pauses and
+formats each as a sentence: a capital first word, sometimes a closing period. A pause in
+the middle of a sentence therefore left a capital there ("we are cleaning up our big
+Pull request", "you're saying that It will"). Dictation joins the results in one place,
+`DictationSeams` (HolosCore), which the preview, the committed text that streams into the
+field, the final text, History's "heard" and written text, and Run Again all go
+through (`DictationStatus.transcript`, `DictationTextPipeline.transcript`). It runs first,
+before filler removal, learned corrections, spoken code and Apple Intelligence's fix, so
+each of them sees the sentence starts the speaker meant: a correction that copies the
+capital of the words it replaces does not carry the pause's capital over, filler removal
+capitalizes after a filler only where a sentence began, and the fix, which counts a
+capitalized word inside a sentence as a name it may not change, no longer protects a word
+that is only capitalized because of a pause.
+
+Where the text before a pause does not end a sentence (no `.`, `!`, `?` or `…` at its
+end, past closing quotes and brackets, and no line break at the pause), the first letter
+of the next result is lowered, unless:
+
+- the result opens with a quote or bracket (a quoted sentence), or not with a capital;
+- the word is "I" or one of its contractions (English);
+- the word has another capital, a digit or a symbol ("PR", "NASA", "GPT-4", "McDonald's");
+- it is one letter ("plan B", "dash P"), but for the one-letter words "A" (and French "À", "Y");
+- a term of the word list, a learned correction's meant phrase, or a person's name in People
+  has the word with a capital;
+- `NLTagger` (name type, in the dictation language) tags it as a person, place or
+  organization, reading the result before the pause and the one after it as one text;
+- the spell checker of the dictation language does not know its lowercase form ("alice",
+  "london", "monday" in English), or did not answer within 150 ms. Hesitations ("Um",
+  "Euh") are lowered without asking.
+
+Only English and French dictation is changed; other languages (German capitalizes its
+nouns) are joined as before, one space between trimmed results. Each pause's decision depends
+only on the result before it and the one after it, and is kept for the utterance, so the
+committed text stays a prefix of what follows and a slow spell checker cannot change a word
+already written. Decisions cost about 1 ms at the 95th percentile (the first one loads the
+tagger's model, about 15 ms).
+
+A word that is both a product name and a dictionary word ("Slack", "Outlook") is not
+recognized as a name and is lowered after a pause; adding it to the word list keeps its
+capital. The periods a pause puts inside a sentence ("…the second step. which runs
+later") are left as the recognizer wrote them.
+
 ### Main window
 
 The app's windows other than the transient ones are one main window, "Voice is Local"
@@ -698,7 +742,8 @@ Run Again (History detail, ⌘R; `voiceislocal history rerun`) reads the file ba
 frames and feeds them to the recognizer live dictation uses (`AppleSpeechSession`, the
 speech backend's progressive preset, the current dictation language, the word list and the
 learned corrections' words as contextual strings), then runs the text steps of live dictation
-(`DictationTextPipeline`, HolosCore): filler removal and corrections as on the final text,
+(`DictationTextPipeline`, HolosCore): the results joined as dictation joins them ("Pauses
+inside a sentence"), filler removal and corrections as on the final text,
 and, when Apple Intelligence's fix is on and available, the fix as dictation streams it:
 each recognizer result is taken as committed in turn (the last one too: the recognizer
 commits it when it finishes, before the result) and each new part, cleaned as streaming
