@@ -57,8 +57,10 @@ private let rows: [String?] = [nil, "A", "B", nil, "C", "D", nil, "E"]
     let previous = ["A", "B", "C", "D", "E"]
     // B, C deleted: D, the meeting after them.
     #expect(MeetingSelection.successor(of: ["B", "C"], previous: previous, remaining: ["A", "D", "E"]) == "D")
-    // A and C (not adjacent): the one after the last of them.
-    #expect(MeetingSelection.successor(of: ["A", "C"], previous: previous, remaining: ["B", "D", "E"]) == "D")
+    // A and C (not adjacent): B, left between them, now where the selection began.
+    #expect(MeetingSelection.successor(of: ["A", "C"], previous: previous, remaining: ["B", "D", "E"]) == "B")
+    // Rows A, B, C with A and C deleted before a refresh: B, though nothing follows C or precedes A.
+    #expect(MeetingSelection.successor(of: ["A", "C"], previous: ["A", "B", "C"], remaining: ["B"]) == "B")
     // The last ones: the nearest before.
     #expect(MeetingSelection.successor(of: ["D", "E"], previous: previous, remaining: ["A", "B", "C"]) == "C")
     // The one after them is hidden by the search: the next shown.

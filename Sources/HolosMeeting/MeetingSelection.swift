@@ -29,13 +29,13 @@ public enum MeetingSelection {
         return selected.contains(clicked) ? selectable(selected, rows: rows) : IndexSet(integer: clicked)
     }
 
-    /// The meeting to select once every selected meeting left the list (deleted): the first meeting after the last of
-    /// them in the list as it was (`previous`, the shown IDs in order) that is still listed (`remaining`), else the
-    /// nearest one before the first of them; nil when none is left.
+    /// The meeting to select once every selected meeting left the list (deleted): the first meeting after the first of
+    /// them in the list as it was (`previous`, the shown IDs in order) that is still listed (`remaining`), so one left
+    /// between them comes first (the row that now sits where the selection began), else the nearest one before it;
+    /// nil when none is left.
     public static func successor(of removed: Set<String>, previous: [String], remaining: Set<String>) -> String? {
-        let positions = previous.indices.filter { removed.contains(previous[$0]) }
-        guard let first = positions.first, let last = positions.last else { return nil }
-        if let after = previous[(last + 1)...].first(where: remaining.contains) { return after }
+        guard let first = previous.firstIndex(where: removed.contains) else { return nil }
+        if let after = previous[(first + 1)...].first(where: remaining.contains) { return after }
         return previous[..<first].last(where: remaining.contains)
     }
 
