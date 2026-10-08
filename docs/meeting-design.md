@@ -8401,7 +8401,8 @@ the disk.
 - Echo-free playback (`SessionAudioComposition.makePlayback`, `ReviewEchoMute`,
   `ReviewMicVolume`): when the call's current echo analysis found echo (§5.11,
   `EchoMaskStore.current` with verdict `echo`), the player item gets an audio mix that plays
-  the microphone track at full volume in `AcousticEchoMask.localSpeechIntervals()` and at 0
+  the microphone track at full volume in `AcousticEchoMask.localSpeechIntervals()` (local
+  stretches with at least 3 frames clearly above the predicted echo, §5.11 *Playback*) and at 0
   elsewhere, with 25 ms linear ramps (a fade in ends where an interval starts, inside its
   lead padding; a fade out starts where it ends; intervals closer than two ramps are
   joined). The echo is muted only where the system track plays: a call whose system chunks
@@ -8744,15 +8745,36 @@ genuinely local (the user, or people in the room) stays even while the call play
   window takes the new mask (`ReviewEchoMaskFollow`) and its microphone volume follows; one that
   finished opening after the run ended rereads the meeting too (`maintenanceEnded`).
 - *Playback.* `AcousticEchoMask.localSpeechIntervals()` gives the microphone's own
-  speech: local frames, gaps under 300 ms merged, padded 64 ms before and 200 ms after. The
-  review window plays the microphone only there (§5.10, echo-free playback).
+  speech: runs of local frames, joined into stretches across gaps under 300 ms; a stretch is
+  kept only when at least 3 of its local frames (`playbackEvidenceFrames`) have the predicted
+  echo more than 6 dB below the microphone (`playbackEvidenceDB`); kept stretches are padded
+  64 ms before and 200 ms after. The review window plays the microphone only there (§5.10,
+  echo-free playback). The evidence rule (2026-10-08) answers echo heard in review on a call
+  through laptop speakers: where the call's speech is cancelled poorly, the frame rule calls
+  short runs of a few frames local all through it, their predicted echo at or above the
+  microphone's level (or a steady 3–5 dB under it), and each one, padded and joined to the
+  next, opened the microphone at full volume over seconds of echo. On the 8 echo masks on
+  the developer's machine (5.6 hours of calls), local stretches are either without such a
+  frame or have many: 73 % of 3–5-frame stretches have none, and 84 % of stretches of 20
+  frames or more have 10 or more. Before, after: microphone on 3,811 s, 2,581 s; echo frames
+  played 1,110 s, 372 s; microphone on where the echo dominates (echo frames at least three
+  times the local ones within ±0.5 s) 1,308 s, 307 s; local frames with the predicted echo
+  12 dB or more below the microphone kept 100 %, 99.8 %. Of the stretches of 20 frames or
+  more, 102 of 1,045 are dropped; 70 of those have a median level at or above 0 dB, which
+  speech in the room added to the call cannot give (it makes the microphone louder than the
+  echo alone). The quieter double-talk frames (−12 to −3 dB) are kept 74 % (a stretch with
+  louder frames keeps all of its own). Considered and not taken: a minimum stretch length
+  (13 frames cut the echo further but dropped 7 % of the clearly local frames, short sounds
+  over a quiet call) and a partial volume for doubtful stretches (it still plays the echo,
+  only quieter).
 
 Validation. Synthetic tests (`Tests/HolosSpeakersTests/AcousticEchoTests.swift`,
 `Tests/HolosMeetingTests/AcousticEchoMeetingTests.swift`): the delay to within 1 ms (also an
 inverted microphone, a 30 s call, outlying windows); echo-only frames echo, local bursts
 local, local speech over the call at echo level kept, gaps in the recording kept;
-headphones, missing or silent system audio, and one signal on both tracks are no-ops; the
-projection hides echo words from turns that keep their IDs, a split chosen among the words
+headphones, missing or silent system audio, and one signal on both tracks are no-ops;
+playback keeps sustained local speech with its lead and double-talk from its weak first run,
+and leaves scattered local runs the call explains muted; the projection hides echo words from turns that keep their IDs, a split chosen among the words
 shown lands at that stored word (assign and undo too, through the review), hides echo
 clusters, keeps a named speaker whose turns are all echo with its name and assignments, and
 changes with the mask alone; a word fix across an echo boundary is judged once; stale,

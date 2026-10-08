@@ -415,8 +415,80 @@ private func mask(_ classes: [AcousticEchoMask.FrameClass], levels: [Int8]? = ni
     #expect(abs(intervals[1].start - (AcousticEchoMask.centre(ofFrame: 80) - 0.008 - 0.064)) < 1e-9)
     // Padding never goes below 0.
     var early = [AcousticEchoMask.FrameClass](repeating: .silence, count: 10)
-    early[0] = .local
+    for frame in 0..<3 { early[frame] = .local }
     #expect(mask(early).localSpeechIntervals().first?.start == 0)
+}
+
+/// Echo frames throughout `count` frames, with `local` frames at the given predicted echo level (stored half-dB steps)
+/// and every other frame at 0 dB (the echo explains the microphone).
+private func echoMask(count: Int, local: [(frames: Range<Int>, level: Int8)]) -> AcousticEchoMask {
+    var classes = [AcousticEchoMask.FrameClass](repeating: .echo, count: count)
+    var levels = [Int8](repeating: 0, count: count)
+    for run in local {
+        for frame in run.frames { classes[frame] = .local; levels[frame] = run.level }
+    }
+    return mask(classes, levels: levels)
+}
+
+@Test func scatteredLocalFramesInTheCallStayMuted() {
+    // Short local runs through the call's speech, the predicted echo at or above the microphone's level (0 to +3 dB)
+    // or a steady 3.5–4 dB below it (once as two runs 80 ms apart: one stretch), no frame 6 dB below: echo cancelled
+    // poorly, not speech in the room. A 12-frame run at +1 dB too.
+    let scattered = echoMask(count: 500, local: [
+        (20..<23, 2), (50..<53, 6), (80..<85, -8), (120..<124, 0), (200..<212, 2), (300..<305, -8), (310..<314, -7),
+    ])
+    #expect(scattered.localSpeechIntervals().isEmpty)
+    // Exactly 6 dB below is not below: two stretches, one of three such frames, one with two frames past it.
+    let limit = echoMask(count: 200, local: [(20..<23, -12), (100..<105, -8), (102..<104, -13)])
+    #expect(limit.localSpeechIntervals().isEmpty)
+}
+
+@Test func sustainedLocalSpeechIsKeptWithItsLeadPadding() {
+    // 0.64 s of speech in the room, the call quiet (predicted echo 20 dB below the microphone), between echo.
+    let speech = echoMask(count: 300, local: [(100..<140, -40)])
+    let intervals = speech.localSpeechIntervals()
+    #expect(intervals.count == 1)
+    let start = AcousticEchoMask.centre(ofFrame: 100) - AcousticEchoMask.hopSeconds / 2
+        - AcousticEchoMask.playbackLeadSeconds
+    let end = AcousticEchoMask.centre(ofFrame: 139) + AcousticEchoMask.hopSeconds / 2
+        + AcousticEchoMask.playbackTailSeconds
+    #expect(abs((intervals.first?.start ?? 0) - start) < 1e-9)
+    #expect(abs((intervals.first?.end ?? 0) - end) < 1e-9)
+    // No predicted echo at all (stored as the lowest level) is evidence too: three frames are enough.
+    let burst = echoMask(count: 100, local: [(40..<43, .min)])
+    #expect(burst.localSpeechIntervals().count == 1)
+}
+
+@Test func speechOverTheCallKeepsItsWeakFirstSyllable() {
+    // Double-talk: the user starts quietly over the call (a first run near the echo's level, no evidence of its
+    // own), then speaks up: frames 8 dB above the prediction among others 1.5–2 dB above it, in runs under 0.2 s
+    // apart. The whole stretch is kept from the first run, lead included.
+    let doubleTalk = echoMask(count: 400, local: [
+        (100..<104, -4), (110..<120, -4), (113..<116, -16), (130..<150, -3), (135..<137, -16), (160..<170, -4),
+    ])
+    let intervals = doubleTalk.localSpeechIntervals()
+    #expect(intervals.count == 1)
+    let start = AcousticEchoMask.centre(ofFrame: 100) - AcousticEchoMask.hopSeconds / 2
+        - AcousticEchoMask.playbackLeadSeconds
+    let end = AcousticEchoMask.centre(ofFrame: 169) + AcousticEchoMask.hopSeconds / 2
+        + AcousticEchoMask.playbackTailSeconds
+    #expect(abs((intervals.first?.start ?? 0) - start) < 1e-9)
+    #expect(abs((intervals.first?.end ?? 0) - end) < 1e-9)
+    // Evidence adds up across the runs of one stretch (2 + 1 frames), not across stretches (0.7 s apart).
+    let spread = echoMask(count: 400, local: [(100..<104, -4), (100..<102, -16), (110..<114, -4), (112..<113, -16)])
+    #expect(spread.localSpeechIntervals().count == 1)
+    let apart = echoMask(count: 400, local: [(100..<104, -4), (100..<102, -16), (150..<154, -4), (150..<151, -16)])
+    #expect(apart.localSpeechIntervals().isEmpty)
+}
+
+@Test func mutedEchoBurstsLeaveTheSpeechIntervalsAsTheyWere() {
+    // Scattered echo bursts between two kept stretches change nothing about those stretches: the same intervals as
+    // the mask without the bursts.
+    let speech: [(frames: Range<Int>, level: Int8)] = [(100..<140, -40), (400..<430, -30)]
+    let clean = echoMask(count: 600, local: speech)
+    let noisy = echoMask(count: 600, local: speech + [(200..<204, 2), (250..<253, 4), (520..<532, 0)])
+    #expect(noisy.localSpeechIntervals() == clean.localSpeechIntervals())
+    #expect(clean.localSpeechIntervals().count == 2)
 }
 
 @Test func maskBytesRoundTrip() throws {

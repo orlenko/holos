@@ -220,7 +220,8 @@ timeline and a larger local-model benchmark are follow-ups.
   or from the next relabel or Recover, or at once with
   `voiceislocal session echo-analyze <id>`; nothing stored besides `echo/` and the transcript
   files changes. Review playback mutes the echo: with an echo verdict, the microphone plays
-  only where it has speech of its own (25 ms fades), and as recorded otherwise
+  only where it has speech of its own (25 ms fades; short local runs the call explains,
+  echo cancelled poorly, stay muted), and as recorded otherwise
   (headphones, no analysis); the review shows a speaker's consecutive turns as paragraphs.
   Nothing warns when a call plays on the laptop speakers: the `echoRisk`
   warning, its output-route check, and the start panel's orange line were removed with
