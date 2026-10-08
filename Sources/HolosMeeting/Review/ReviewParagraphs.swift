@@ -148,8 +148,8 @@ public struct ReviewParagraphBreaks: Sendable, Equatable {
 
     /// A word-fix revert ended (however it ended): with `turns` of `runID` as they now are, the breaks are taken over
     /// once more, then no longer carried over unless another revert is in flight.
-    public mutating func endCarryOver(turns: [ProjectedTurn], runID: String?) {
-        _ = active(in: turns, runID: runID)
+    public mutating func endCarryOver(turns: [ProjectedTurn], runID: String?, alsoHeld: [String: String] = [:]) {
+        _ = active(in: turns, runID: runID, alsoHeld: alsoHeld)
         carryOvers = max(0, carryOvers - 1)
     }
 
@@ -159,9 +159,13 @@ public struct ReviewParagraphBreaks: Sendable, Equatable {
     /// word edit in Review, or its undo, `ReviewSession.keepsTurns`): the breaks and joins of that run are carried
     /// over too. `resolve` gives the ID a turn held now has (`ReviewSession.resolvedTurnID`): a break or join made on
     /// a split's second part while the split was still saving names its temporary ID, which the saved split replaces.
+    /// `alsoHeld`: turns the run still holds though `turns` leaves them out (`SpeakerProjection.heldTurnTracks`: every
+    /// word deleted with its segment, or echo alone), by ID with their track: their marks stay, for when their words
+    /// come back (an undo, a Restore); only a mark whose turn is gone from the run goes.
     public mutating func active(in turns: [ProjectedTurn], runID: String?,
                                 keepsTurnsOf: (String) -> Bool = { _ in false },
-                                resolve: (String) -> String = { $0 }) -> Set<String> {
+                                resolve: (String) -> String = { $0 },
+                                alsoHeld: [String: String] = [:]) -> Set<String> {
         guard !isEmpty else {
             self.runID = runID
             return []
@@ -175,12 +179,13 @@ public struct ReviewParagraphBreaks: Sendable, Equatable {
             }
         }
         let held = Dictionary(marks.map { (resolve($0.key), $0.value) }, uniquingKeysWith: { first, _ in first })
-        var kept: [String: Held] = [:]
-        for turn in turns {
-            if let mark = held[turn.id], mark.track == turn.track { kept[turn.id] = mark }
-        }
+        var tracks = alsoHeld
+        for turn in turns { tracks[turn.id] = turn.track }
+        let kept = held.filter { tracks[$0.key] == $0.value.track }
         marks = kept
-        return Set(kept.compactMap { $0.value.mark == .breakBefore ? $0.key : nil })
+        // Breaks of turns shown now (a hidden turn's break waits for it to be shown again).
+        let shown = Set(turns.map(\.id))
+        return Set(kept.compactMap { $0.value.mark == .breakBefore && shown.contains($0.key) ? $0.key : nil })
     }
 }
 

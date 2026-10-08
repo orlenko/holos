@@ -101,6 +101,7 @@ struct ReviewWindowJoinTests {
         private let lock = NSLock()
         private var count = 0
         func next() -> Int { lock.withLock { count += 1; return count } }
+        func peek() -> Int { lock.withLock { count } }
     }
 
     private nonisolated static func setWritable(_ url: URL, _ writable: Bool) {
@@ -566,6 +567,54 @@ struct ReviewWindowJoinTests {
         #expect(await until { speaker(window, "T3") == "S2" })
         window.refresh()
         #expect(rows(window) == [["T1"], ["T2"], ["T3"]] && window.paragraphJoins.isEmpty)
+        await window.closeAndWait()
+    }
+
+    /// Backspace joins, and ⌘Z is pressed while the join's speaker change saves: once it saves, the field does not
+    /// open again saying "Joined" (the person moved on); the revert then takes the join back.
+    @Test(.timeLimit(.minutes(1))) func undoWhileTheJoinSavesOpensNoField() async throws {
+        let (window, session) = try await open([Spec(speaker: "S1", start: 0, words: ["amber", "birch"]),
+                                                Spec(speaker: "S2", start: 5, words: ["cedar", "dune"])])
+        let (stream, release) = AsyncStream<Void>.makeStream()
+        let calls = Calls()
+        window.review.beforeEdit = { if calls.next() == 1 { for await _ in stream {} } }
+        window.setEditMode(true)
+        press(window, row: 1, word: 0, caret: 0, #selector(NSResponder.deleteBackward(_:)))
+        #expect(await until { speaker(window, "T2") == "S1" && rows(window) == [["T1", "T2"]] })
+        // Saving (held in the save): ⌘Z.
+        #expect(await until { calls.peek() >= 1 })
+        window.window.makeFirstResponder(window.turnList.table)
+        #expect(window.handleKey(try commandZ(window)))
+        release.finish()
+        #expect(await until {
+            window.review.snapshot.journal.edits.count == 2 && speaker(window, "T2") == "S2"
+                && window.paragraphJoins.isEmpty && rows(window) == [["T1"], ["T2"]]
+        })
+        window.review.beforeEdit = nil
+        #expect(window.turnList.wordEdit == nil, "No field opened for a join undone while it saved.")
+        #expect(journal(session).first == .reassignTurns(turnIDs: ["T2"], to: "S1"))
+        await window.closeAndWait()
+    }
+
+    /// Two S1 turns past the gap, joined; every word of the later one deleted (its segment emptied, so the turn is
+    /// not shown), then ⌘Z: the words come back, and so does the join.
+    @Test(.timeLimit(.minutes(1))) func aJoinComesBackWithItsTurnsDeletedWords() async throws {
+        let (window, _) = try await open([Spec(speaker: "S1", start: 0, words: ["amber", "birch"]),
+                                          Spec(speaker: "S1", start: 8, words: ["cedar", "dune"])])
+        #expect(rows(window) == [["T1"], ["T2"]])
+        window.turnList.joinChosen(try #require(window.turnList.joinOffer(row: 1, index: 0)).choice)
+        #expect(rows(window) == [["T1", "T2"]])
+        window.setEditMode(true)
+        let list = window.turnList
+        list.table.handleWordClick(row: 0, word: 2, through: 3, extend: false)
+        #expect(list.wordEdit?.words.map(\.text) == ["cedar", "dune"])
+        list.editField.stringValue = ""
+        _ = list.control(list.editField, textView: NSTextView(), doCommandBy: #selector(NSResponder.insertNewline(_:)))
+        #expect(await until { window.review.turn("T2") == nil && rows(window) == [["T1"]] })
+        window.window.makeFirstResponder(list.table)
+        #expect(window.handleKey(try commandZ(window)))
+        #expect(await until { window.review.turn("T2") != nil && rows(window) == [["T1", "T2"]] })
+        #expect(window.paragraphJoins == ["T2"])
         await window.closeAndWait()
     }
 }

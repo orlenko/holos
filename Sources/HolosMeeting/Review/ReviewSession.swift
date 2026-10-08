@@ -32,6 +32,9 @@ public enum ReviewChangeState: Sendable, Equatable {
     case pending
     /// Saved, and in effect in the labels read from disk.
     case inEffect
+    /// Undo was asked for it while it was saving: its revert is queued or saving (it is in effect again if that
+    /// fails).
+    case undoing
     /// Taken back: reverted in the labels read from disk, or dropped by Undo before it ran.
     case undone
     /// Refused or failed once queued: nothing saved.
@@ -1084,10 +1087,11 @@ public struct ReviewDeletedWords: Sendable, Equatable {
             let wanted = Set(op.batches)
             let applied = Set(savedProjection.appliedEditIDs)
             let lines = snapshot.journal.edits.filter { wanted.contains($0.batchID ?? $0.id) }
-            guard !lines.isEmpty else { return .pending }
-            return lines.contains { applied.contains($0.id) } ? .inEffect : .undone
+            guard !lines.isEmpty else { return op.undone ? .undoing : .pending }
+            guard lines.contains(where: { applied.contains($0.id) }) else { return .undone }
+            return op.undone ? .undoing : .inEffect
         }
-        guard op.finished else { return .pending }
+        guard op.finished else { return op.undone ? .undoing : .pending }
         switch op.result {
         case .failure(let error)?:
             // Saved, not reread yet: its batches are found when labels are read again.

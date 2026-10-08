@@ -7881,7 +7881,11 @@ public enum SessionAudioComposition {
   join `owner`), and taking it back touches only marks that are still its own, putting back
   what each turn had before (never the mark of a join already taken back; joins are settled
   newest first); a later join or break is never undone by it. A join whose speaker change
-  ⌘Z dropped before it ran opens no field and announces nothing. And a join follows
+  ⌘Z dropped before it ran, or was asked to undo while it saved (`state(of:)` `undoing`),
+  opens no field and announces nothing. Marks stay for turns the run still holds though
+  none of their words is shown (every word deleted with its segment, or echo alone:
+  `SpeakerProjection.heldTurnTracks`), so a break or join comes back with its words (an
+  undo, a Restore); only a mark whose turn is gone from the run goes. And a join follows
   its own speaker change alone (`ReviewSession.reassign(_:to:seenRun:following:)` and
   `state(of:)`: that change's own saved batches in the labels read from disk; never a change
   or an undo still queued or saving, nor what other changes did to the same turns): queued,

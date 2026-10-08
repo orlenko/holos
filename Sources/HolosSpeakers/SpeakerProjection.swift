@@ -160,6 +160,13 @@ public struct SpeakerProjection: Sendable, Equatable {
     /// `shownTurns` with the hidden interjections too (Review's "Show Short Interjections").
     public let shownTurnsWithHidden: [ProjectedTurn]
 
+    /// Every turn the run holds with the journal applied, by ID, with its track: `turns` and the turns `turns` leaves
+    /// out because none of their words is left to show (deleted with their segment in Review, or echo alone), which
+    /// come back when their words do.
+    public var heldTurnTracks: [String: String] {
+        Dictionary(state.turns.map { ($0.id, $0.track) }, uniquingKeysWith: { first, _ in first })
+    }
+
     /// `shownTurns`, or `shownTurnsWithHidden` when `includingHidden`.
     public func shownTurns(includingHidden: Bool) -> [ProjectedTurn] {
         includingHidden ? shownTurnsWithHidden : shownTurns

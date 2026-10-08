@@ -673,7 +673,7 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, NSM
         // A break or join made on a split's second part while the split saved names its temporary ID: resolved.
         let breaks = paragraphBreaks.active(in: projection.turns, runID: runID, keepsTurnsOf: { [review] old in
             review.keepsTurns(of: old, in: runID)
-        }, resolve: { [review] id in review.resolvedTurnID(id) })
+        }, resolve: { [review] id in review.resolvedTurnID(id) }, alsoHeld: projection.heldTurnTracks)
         // The turns as shown: short interjections attached to a neighbour or left out (§5.10).
         var paragraphs = ReviewParagraphs.group(review.shownTurns, breaks: breaks, joins: paragraphBreaks.joins)
         allParagraphs = paragraphs
@@ -1496,6 +1496,10 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, NSM
                 self.forgetJoin(made, takingBack: true)
                 self.refresh()
                 return
+            case .undoing:
+                // ⌘Z was pressed for it while it saved: the person moved on; its revert settles it.
+                self.refresh()
+                return
             case .pending, .inEffect:
                 break
             }
@@ -1529,7 +1533,7 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, NSM
                 continue
             }
             switch review.state(of: made.change) {
-            case .notQueued, .pending, .inEffect: continue
+            case .notQueued, .pending, .inEffect, .undoing: continue
             case .undone, .failed: forgetJoin(made, takingBack: true)
             }
         }
@@ -1907,7 +1911,8 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, NSM
     var unsavedEditTexts: [String] { unsavedEdits.typedTexts }
 
     private func endBreakCarryOver() {
-        paragraphBreaks.endCarryOver(turns: review.projection.turns, runID: review.projection.runID)
+        paragraphBreaks.endCarryOver(turns: review.projection.turns, runID: review.projection.runID,
+                                    alsoHeld: review.projection.heldTurnTracks)
         refresh()
     }
 
