@@ -303,6 +303,8 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, NSM
         player.invalidate()
         refresh()
         if let unsaved = await review.pause(hold, reason: banner, typed: typed) {
+            // A failed save drops every join, as everywhere else.
+            clearJoins()
             problem = unsaved
             refreshFooter()
         }
@@ -1483,8 +1485,9 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, NSM
             // Checked again as the assignment is queued: a reload may have adopted a relabel since.
             guard sameLabels() else { throw HolosError.invalidInput(Self.joinRelabelled) }
             try await review.assign(join.reassign, to: target)
-            // Dropped meanwhile (⌘Z pressed, a change failed): no field, no announcement.
-            guard let self, self.joinsCleared == cleared else { return }
+            // Dropped meanwhile (⌘Z pressed, a change failed) or relabelled since (its turn IDs may name other turns
+            // now): no field, no announcement.
+            guard let self, self.joinsCleared == cleared, sameLabels() else { return }
             finish()
         }
     }
@@ -2092,9 +2095,11 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, NSM
 
     /// Whether ⌘Z undoes typing (the text being edited) rather than the review's newest change: in a text field whose
     /// own undo has something to undo (`typingToUndo`, whatever the text reads now: "cat" typed over "dog" typed over
-    /// "cat" is still typing).
-    static func undoIsTyping(editingText: Bool, typingToUndo: Bool) -> Bool {
-        editingText && typingToUndo
+    /// "cat" is still typing), or a word's field holding text it did not open with (`unsavedText`: typing put back
+    /// without its undo, after a ⇧-click widened the field or a save failed). Only an untouched field hands ⌘Z to the
+    /// review.
+    static func undoIsTyping(editingText: Bool, typingToUndo: Bool, unsavedText: Bool = false) -> Bool {
+        editingText && (typingToUndo || unsavedText)
     }
 
     /// Shortcuts of the window (Holos has no main menu to carry them). Internal for tests.
@@ -2132,9 +2137,16 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, NSM
         case "z":
             // In a text field with typing to undo, ⌘Z undoes the typing (it leaves the review, and its joins, alone);
             // with none (a word's field opened again after a join, say), it is the review's, as the banner says.
-            let typingToUndo = (window.firstResponder as? NSTextView)?.undoManager?.canUndo ?? false
-            if Self.undoIsTyping(editingText: editingText, typingToUndo: typingToUndo) {
-                return NSApplication.shared.sendAction(Selector(("undo:")), to: nil, from: window)
+            let editor = window.firstResponder as? NSTextView
+            let typingToUndo = editor?.undoManager?.canUndo ?? false
+            let unsavedText = editor != nil && editor === turnList.editField.currentEditor()
+                && turnList.wordEdit.map {
+                    TranscriptWordEdit.cleaned(turnList.editField.stringValue) != TranscriptWordEdit.cleaned($0.shown)
+                } == true
+            if Self.undoIsTyping(editingText: editingText, typingToUndo: typingToUndo, unsavedText: unsavedText) {
+                // Taken even when the field has no undo for its text: the review's change behind it stays.
+                _ = NSApplication.shared.sendAction(Selector(("undo:")), to: nil, from: window)
+                return true
             }
             undo()
             return true

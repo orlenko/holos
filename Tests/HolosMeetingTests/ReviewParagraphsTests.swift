@@ -238,6 +238,22 @@ private func paragraphWords(_ paragraph: ReviewParagraph, counts: [Int]) -> [[Re
     #expect(breaks.active(in: [paragraphTurn("T2", "S1", 3, 6, track: "mic")], runID: "R5").isEmpty)
 }
 
+@Test func aJoinIsNeverCarriedOverByARevertInFlightAlone() {
+    var breaks = ReviewParagraphBreaks()
+    breaks.insert(before: paragraphTurn("T2", "S1", 2, 4), runID: "R1")
+    breaks.join(paragraphTurn("T3", "S1", 9, 12), runID: "R1")
+    breaks.beginCarryOver()
+    // A new run while a revert is in flight, not shown to keep the turns (a relabel may have landed): the break
+    // carries over, the join does not.
+    let turns = [paragraphTurn("T1", "S1", 0, 1.9), paragraphTurn("T2", "S1", 2, 4), paragraphTurn("T3", "S1", 9, 12)]
+    #expect(breaks.active(in: turns, runID: "R2") == ["T2"])
+    #expect(breaks.joins.isEmpty)
+    // A run shown to keep them carries both.
+    breaks.join(paragraphTurn("T3", "S1", 9, 12), runID: "R2")
+    #expect(breaks.active(in: turns, runID: "R3", keepsTurnsOf: { $0 == "R2" }) == ["T2"])
+    #expect(breaks.joins == ["T3"])
+}
+
 // MARK: - Joining a row to the row before it
 
 @Test func joiningARowGivesItsTurnsTheSpeakerBeforeIt() {

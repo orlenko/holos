@@ -7891,7 +7891,11 @@ public enum SessionAudioComposition {
   the join's assignment came back (⌘Z pressed meanwhile) open no field and announce nothing.
   In a text field, ⌘Z undoes the field's typing while it has typing to undo (by its own undo
   history, never by comparing its text: "cat" typed over "dog" typed over "cat" is still
-  typing); with none (a word's field just opened, as after a join), it is the review's undo.
+  typing), and also while a word's field holds text it did not open with (typing put back
+  without its undo, after a ⇧-click widened the field or a save failed: ⌘Z then does nothing
+  rather than undo the review's change behind it); only an untouched field (a word's field
+  just opened, as after a join) hands ⌘Z to the review. A join whose speaker change comes
+  back after a relabel opens no field and announces nothing.
   A row joined back to the part
   it was split from reads as before the split; the split itself stays in the journal (the
   journal's only way to take it back is a revert, which ⌘Z could not undo in turn), so ⌘Z

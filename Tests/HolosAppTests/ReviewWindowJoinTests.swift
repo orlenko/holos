@@ -160,6 +160,29 @@ struct ReviewWindowJoinTests {
         await window.closeAndWait()
     }
 
+    /// Typing put back in the field without its undo (a ⇧-click widening the field, a failed save handing the text
+    /// back): ⌘Z there never undoes the review's last change behind the user's text.
+    @Test(.timeLimit(.minutes(1))) func commandZWithUnsavedTextAndNoUndoLeavesTheReviewAlone() async throws {
+        let (window, session) = try await open([Spec(speaker: "S1", start: 0, words: ["amber", "birch"]),
+                                                Spec(speaker: "S2", start: 2, words: ["cedar", "dune"])])
+        window.setEditMode(true)
+        press(window, row: 1, word: 0, caret: 0, #selector(NSResponder.deleteBackward(_:)))
+        #expect(await until { journal(session).count == 1 && window.turnList.wordEdit != nil })
+        // Text set as the field restores it: no undo registered for it.
+        window.turnList.editField.stringValue = "Cedric"
+        window.turnList.editField.currentEditor()?.undoManager?.removeAllActions()
+        let joins = window.paragraphJoins
+        #expect(!joins.isEmpty)
+        #expect(window.handleKey(try commandZ(window)))
+        // The review's undo would drop every join at once, before its revert is even queued.
+        #expect(window.paragraphJoins == joins, "No review-level undo ran.")
+        #expect(speaker(window, "T2") == "S1", "The join's speaker change stays.")
+        #expect(journal(session).count == 1)
+        #expect(ReviewWindow.undoIsTyping(editingText: true, typingToUndo: false, unsavedText: true))
+        window.turnList.cancelWordEdit()
+        await window.closeAndWait()
+    }
+
     /// "cedar" typed over with "dune", then everything selected and "cedar" typed again: the field reads as it opened,
     /// but it has typing to undo, so ⌘Z is the typing's. The review is not undone, and the join stays (a text undo is
     /// typing, not a review Undo).
@@ -212,6 +235,34 @@ struct ReviewWindowJoinTests {
         try? FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: transcripts.path)
         #expect(journal(session).isEmpty)
         list.cancelWordEdit()
+        await window.closeAndWait()
+    }
+
+    /// Delete Audio starting while the field holds typing saves it first; when that save fails, every join is dropped,
+    /// as for any failed save, though the labels run stays the same.
+    @Test(.timeLimit(.minutes(1))) func aFailedSaveBeforeMaintenanceDropsEveryJoin() async throws {
+        let (window, session) = try await open([Spec(speaker: "S1", start: 0, words: ["amber", "birch"]),
+                                                Spec(speaker: "S1", start: 8, words: ["cedar", "dune"])])
+        window.turnList.joinChosen(try #require(window.turnList.joinOffer(row: 1, index: 0)).choice)
+        #expect(window.paragraphJoins == ["T2"])
+        window.setEditMode(true)
+        let list = window.turnList
+        list.table.handleWordClick(row: 0, word: 0, through: 0, extend: false)
+        list.editField.stringValue = "Amber"
+        let transcripts = SessionPaths.transcripts(session)
+        window.review.beforeEdit = {
+            try? FileManager.default.setAttributes([.posixPermissions: 0o500], ofItemAtPath: transcripts.path)
+        }
+        defer {
+            try? FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: transcripts.path)
+        }
+        let hold = ReviewMaintenance.Hold(.deleteAudio)
+        await window.pauseForMaintenance(hold, banner: "Deleting this meeting's audio.")
+        #expect(window.paragraphJoins.isEmpty)
+        #expect(rows(window) == [["T1"], ["T2"]])
+        window.review.beforeEdit = nil
+        try? FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: transcripts.path)
+        await window.resumeAfterMaintenance(hold)
         await window.closeAndWait()
     }
 

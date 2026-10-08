@@ -134,8 +134,8 @@ public struct ReviewParagraphBreaks: Sendable, Equatable {
     }
 
     /// The turns of `turns` (of run `runID`) to break before (`ReviewParagraphs.group`); the joins kept are `joins`
-    /// then. A new run that is not carried over drops every break and join; otherwise each stays while a turn with
-    /// its ID and track does. `keepsTurnsOf` says whether `runID` replaced a given earlier run keeping its turns (a
+    /// then. A new run that is not carried over drops every break and join; one carried over only because a revert
+    /// is in flight keeps its breaks but drops its joins; otherwise each stays while a turn with its ID and track does. `keepsTurnsOf` says whether `runID` replaced a given earlier run keeping its turns (a
     /// word edit in Review, or its undo, `ReviewSession.keepsTurns`): the breaks and joins of that run are carried
     /// over too. `resolve` gives the ID a turn held now has (`ReviewSession.resolvedTurnID`): a break or join made on
     /// a split's second part while the split was still saving names its temporary ID, which the saved split replaces.
@@ -153,6 +153,9 @@ public struct ReviewParagraphBreaks: Sendable, Equatable {
                 marks = [:]
                 return []
             }
+            // Carried over by a revert in flight but not shown to keep the turns (a relabel may have landed): the
+            // breaks carry over, the joins never do.
+            if !kept { marks = marks.filter { $0.value.mark == .breakBefore } }
         }
         let held = Dictionary(marks.map { (resolve($0.key), $0.value) }, uniquingKeysWith: { first, _ in first })
         var kept: [String: Held] = [:]
