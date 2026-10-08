@@ -59,6 +59,8 @@ final class MeetingAppState {
     var automaticHolds: [String: ReviewMaintenance.Hold] = [:]
     /// How many maintenance commands have ended per meeting, so a review that opened meanwhile rereads it.
     var maintenanceEnded: [String: Int] = [:]
+    /// A deletion of several meetings from Meetings, one at a time (`performBulkMeetingAction`).
+    var bulkRun: Task<Void, Never>?
     /// Holos is quitting: review windows close without alerts.
     var quitting = false
     var savingWindow: NSWindow?
@@ -671,6 +673,7 @@ extension HolosAppDelegate: NSMenuDelegate {
         // transcript's header follows the list).
         pane.onTitleChanged = { [weak self] id in self?.refreshReviewTitle(id) }
         pane.runRename = { [weak self] summary, request in self?.runRename(summary, request) }
+        pane.performBulk = { [weak self] action, plan in self?.performBulkMeetingAction(action, plan) }
         pane.update(summarizing: meeting.summaries.running?.sessionID)
         pane.update(meetingState: controller.state)
         meeting.meetingsPane = pane
@@ -710,26 +713,109 @@ extension HolosAppDelegate: NSMenuDelegate {
             guard confirm("Delete the audio of “\(name)”?",
                           "The audio is deleted for good. The transcript, speaker labels, and transcript files stay.",
                           button: "Delete Audio") else { return }
-            arguments = ["session", "delete", path, "--audio-only", "--yes", "--json"]
-            doing = "Deleting audio…"
+            (arguments, doing) = Self.deletion(.deleteAudio, path: path)
         case .deleteMeeting:
             guard let forget = confirmDeleteMeeting(name) else { return }
             forgetSamples = forget
-            arguments = ["session", "delete", path, "--yes", "--json"]
-            doing = "Moving to the Trash…"
+            (arguments, doing) = Self.deletion(.deleteMeeting, path: path)
         }
         startMeetingCommand(action, summary, arguments: arguments, doing: doing, forgetSamples: forgetSamples)
+    }
+
+    /// The command line of a deletion and what the list says while it runs, the same for one meeting and several.
+    private static func deletion(_ action: MeetingBulkPlan.Action, path: String) -> (arguments: [String],
+                                                                                     doing: String) {
+        switch action {
+        case .deleteAudio: (["session", "delete", path, "--audio-only", "--yes", "--json"], "Deleting audio…")
+        case .deleteMeeting: (["session", "delete", path, "--yes", "--json"], "Moving to the Trash…")
+        }
+    }
+
+    /// Delete Meeting… or Delete Audio… on several meetings from Meetings (`MeetingBulkPlan`): one confirmation, with
+    /// the meetings skipped and why, then each meeting in turn through the single deletion's path
+    /// (`startMeetingCommand`: registered as in use, its review let go, the voice samples forgotten when asked, the
+    /// `voiceislocal session delete` child holding the lease and locks). A meeting that fails does not stop the rest;
+    /// one alert lists the failures at the end. The list shows the meetings still waiting and the progress meanwhile.
+    func performBulkMeetingAction(_ action: MeetingsPane.Action, _ plan: MeetingBulkPlan) {
+        guard meeting.controller != nil else { return }
+        guard meeting.bulkRun == nil else {
+            showMeetingAlert("Voice is Local is still deleting the meetings selected before.",
+                             "Try again when it finishes; the Meetings list shows its progress.")
+            return
+        }
+        guard !plan.targets.isEmpty else {
+            showMeetingAlert(plan.nothingTitle, plan.skipText ?? "")
+            return
+        }
+        var forgetSamples = false
+        switch plan.action {
+        case .deleteMeeting:
+            guard let forget = confirmBulkDelete(plan) else { return }
+            forgetSamples = forget
+        case .deleteAudio:
+            guard confirm(plan.confirmationTitle, plan.confirmationText, button: plan.confirmationButton) else { return }
+        }
+        let badge = plan.action == .deleteMeeting ? "Waiting to move to the Trash" : "Waiting to delete audio"
+        meeting.bulkRun = Task { [weak self] in
+            var queued = Set(plan.targets.map(\.id))
+            let result = await MeetingBulkRun.run(plan.targets, progress: { done in
+                self?.meeting.meetingsPane?.update(bulk: .init(queued: queued, badge: badge,
+                                                               status: plan.progressText(done: done)))
+            }, each: { summary in
+                defer { queued.remove(summary.id) }
+                guard let self else { return "Voice is Local stopped." }
+                let (arguments, doing) = Self.deletion(plan.action, path: summary.directory.path)
+                return await withCheckedContinuation { continuation in
+                    self.startMeetingCommand(action, summary, arguments: arguments, doing: doing,
+                                             forgetSamples: forgetSamples) { failure in
+                        continuation.resume(returning: failure)
+                    }
+                }
+            })
+            guard let self else { return }
+            self.meeting.bulkRun = nil
+            self.meeting.meetingsPane?.update(bulk: nil)
+            self.meeting.meetingsPane?.refresh()
+            if let report = plan.report(result) { self.showMeetingAlert(report.title, report.text) }
+        }
+    }
+
+    /// The one confirmation of a deletion of several meetings, with "Also forget voice samples learned from these
+    /// meetings"; nil when cancelled, else whether the box was checked.
+    private func confirmBulkDelete(_ plan: MeetingBulkPlan) -> Bool? {
+        let alert = NSAlert()
+        alert.messageText = plan.confirmationTitle
+        alert.informativeText = plan.confirmationText
+        let box = NSButton(checkboxWithTitle: plan.forgetSamplesTitle, target: nil, action: nil)
+        alert.accessoryView = box
+        alert.addButton(withTitle: plan.confirmationButton)
+        alert.addButton(withTitle: "Cancel")
+        NSApplication.shared.activate()
+        guard alert.runModal() == .alertFirstButtonReturn else { return nil }
+        return box.state == .on
     }
 
     /// Registers the meeting as in use (`MeetingController.beginUsing`; a meeting the app already uses is turned down
     /// with an alert), lets a review of it go (`ReviewMaintenance`), then runs the command. Delete Meeting with
     /// "Also forget voice samples" forgets them first, after the review closed and before the meeting moves.
+    ///
+    /// `completion` (a deletion of several meetings): called once when the command ended, with nil when it succeeded,
+    /// else why not; it then takes the place of the alerts about this meeting.
     private func startMeetingCommand(_ action: MeetingsPane.Action, _ summary: SessionSummary, arguments: [String],
-                                     doing: String, forgetSamples: Bool = false) {
-        guard meeting.maintenance != nil, let controller = meeting.controller else { return }
+                                     doing: String, forgetSamples: Bool = false,
+                                     completion: ((String?) -> Void)? = nil) {
+        guard meeting.maintenance != nil, let controller = meeting.controller else {
+            completion?("Voice is Local cannot run meeting commands now.")
+            return
+        }
         // The automatic relabel or another command may have taken the meeting while the confirmation was open.
         guard controller.beginUsing(summary.id, for: doing) else {
-            showSessionInUse(summary, doing: controller.sessionsInUse[summary.id])
+            if let completion {
+                let doing = controller.sessionsInUse[summary.id]
+                completion("Voice is Local is working on it" + (doing.map { " (\($0))" } ?? "") + ".")
+            } else {
+                showSessionInUse(summary, doing: controller.sessionsInUse[summary.id])
+            }
             return
         }
         let name = Self.short(summary.displayTitle)
@@ -747,14 +833,27 @@ extension HolosAppDelegate: NSMenuDelegate {
                     }
                 }.value
                 if let failure {
-                    guard let self else { return }
+                    guard let self else {
+                        completion?(failure)
+                        return
+                    }
                     self.maintenanceFinished(summary.id)
-                    self.showMeetingAlert("Voice is Local could not forget the voice samples learned from “\(name)”.",
-                                          "The meeting was not moved to the Trash. \(failure)")
+                    if let completion {
+                        completion("Its voice samples could not be forgotten, so it was not moved to the Trash. "
+                                   + failure)
+                    } else {
+                        self.showMeetingAlert(
+                            "Voice is Local could not forget the voice samples learned from “\(name)”.",
+                            "The meeting was not moved to the Trash. \(failure)")
+                    }
                     return
                 }
             }
-            self?.runMeetingCommand(action, summary, arguments: arguments)
+            guard let self else {
+                completion?("Voice is Local stopped.")
+                return
+            }
+            self.runMeetingCommand(action, summary, arguments: arguments, completion: completion)
         }
     }
 
@@ -785,21 +884,32 @@ extension HolosAppDelegate: NSMenuDelegate {
 
     /// Runs the maintenance command of a Meetings action, the meeting already registered as in use
     /// (`startMeetingCommand`); `maintenanceFinished` ends that use however the command ends.
-    private func runMeetingCommand(_ action: MeetingsPane.Action, _ summary: SessionSummary, arguments: [String]) {
+    private func runMeetingCommand(_ action: MeetingsPane.Action, _ summary: SessionSummary, arguments: [String],
+                                   completion: ((String?) -> Void)? = nil) {
         guard let maintenance = meeting.maintenance else {
             maintenanceFinished(summary.id)
+            completion?("Voice is Local cannot run meeting commands now.")
             return
         }
         let output = Self.temporaryFile("out")
         let errors = Self.temporaryFile("err")
         do {
             try maintenance.run(arguments, standardOutput: output, standardError: errors) { [weak self] code in
-                self?.meetingCommandEnded(action, summary, code: code, output: output, errors: errors)
+                guard let self else {
+                    completion?("Voice is Local stopped.")
+                    return
+                }
+                self.meetingCommandEnded(action, summary, code: code, output: output, errors: errors,
+                                         completion: completion)
             }
         } catch {
             maintenanceFinished(summary.id)
             Self.removeFile(output)
             Self.removeFile(errors)
+            if let completion {
+                completion(error.localizedDescription)
+                return
+            }
             let title = action == .recover ? "Voice is Local could not recover “\(Self.short(summary.displayTitle))”."
                 : "Voice is Local could not run the command."
             showMeetingAlert(title, error.localizedDescription)
@@ -811,8 +921,10 @@ extension HolosAppDelegate: NSMenuDelegate {
                          (doing.map { $0 + " " } ?? "") + "Try again when it finishes; the Meetings list shows when it is done.")
     }
 
+    /// `completion` (a deletion of several meetings): told nil on success, else why not, in place of the alert. Only
+    /// deletions pass it: a failed Recover or Label Speakers still needs the labelling bookkeeping below.
     private func meetingCommandEnded(_ action: MeetingsPane.Action, _ summary: SessionSummary, code: Int32,
-                                     output: URL, errors: URL) {
+                                     output: URL, errors: URL, completion: ((String?) -> Void)? = nil) {
         let result = Self.commandResult(output: output, errors: errors)
         // `session diarize` succeeds without labels when the speaker models are missing; its record then has no run.
         let madeRun = Self.jsonObject(output)?["runID"] is String
@@ -831,6 +943,11 @@ extension HolosAppDelegate: NSMenuDelegate {
                 if meeting.lastSummary?.sessionID == summary.id { meeting.lastSummary = nil }
                 rebuildMenu()
             }
+            completion?(nil)
+            return
+        }
+        if let completion {
+            completion(result ?? "The command ended with code \(code).")
             return
         }
         let session = summary.directory

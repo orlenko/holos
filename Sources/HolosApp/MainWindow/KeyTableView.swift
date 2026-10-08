@@ -1,6 +1,6 @@
 import AppKit
 
-/// A table whose Return opens the selected row and whose Delete (⌫, or ⌦) deletes it, both through closures (the
+/// A table whose Return opens the selected row and whose Delete (⌫, ⌘⌫, or ⌦) deletes it, both through closures (the
 /// section asks for confirmation), whose Space can play the selected row, and whose ⌘R can rename it. ↑↓ and the
 /// rest of the keyboard behave as in any table.
 @MainActor
@@ -17,6 +17,11 @@ final class KeyTableView: NSTableView {
         if modifiers == .command, selectedRow >= 0, let onRename,
            event.charactersIgnoringModifiers?.lowercased() == "r" {
             onRename()
+            return
+        }
+        // ⌘⌫ deletes as ⌫ does (the Finder's Move to Trash).
+        if modifiers == .command, selectedRow >= 0, event.keyCode == 51, let onDelete {
+            onDelete()
             return
         }
         if modifiers.isEmpty, selectedRow >= 0 {
