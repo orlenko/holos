@@ -669,11 +669,17 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, NSM
         // A run a word edit or its undo published keeps the turns, and with them the window's paragraph breaks (kept
         // for every turn, a hidden interjection's too).
         let runID = projection.runID
-        settleJoins(runID: runID)
+        // An undo saved here or elsewhere (a command) since the last refresh: every join goes.
+        let reverts = projection.revertedEditIDs.count
+        if reverts > revertsSeen {
+            joinsCleared += 1
+            paragraphBreaks.clearJoins()
+        }
+        revertsSeen = reverts
         // A break or join made on a split's second part while the split saved names its temporary ID: resolved.
         let breaks = paragraphBreaks.active(in: projection.turns, runID: runID, keepsTurnsOf: { [review] old in
             review.keepsTurns(of: old, in: runID)
-        }, resolve: { [review] id in review.resolvedTurnID(id) }, alsoHeld: projection.heldTurnTracks)
+        }, resolve: { [review] id in review.resolvedTurnID(id) })
         // The turns as shown: short interjections attached to a neighbour or left out (§5.10).
         var paragraphs = ReviewParagraphs.group(review.shownTurns, breaks: breaks, joins: paragraphBreaks.joins)
         allParagraphs = paragraphs
@@ -977,6 +983,8 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, NSM
                 guard let self else { return }
                 self.problem = error.localizedDescription
                 self.refreshFooter()
+                // A change that failed: every join goes (they are only how rows read).
+                self.clearJoins()
             }
         }
     }
@@ -1425,19 +1433,21 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, NSM
     /// Makes `join`: the window joins each turn of the later row to the paragraph before it
     /// (`ReviewParagraphBreaks.join`, never saved; every turn, so the row stays whole through its new speaker), and
     /// when the rows' speakers differ, the later row's turns take the earlier row's speaker through the review's
-    /// assignment (`ReviewSession.reassign`, undoable with ⌘Z and learned from as any made with the row's pop-up),
-    /// refused when the labels were replaced since the rows were shown. The joins are made at once, so the rows read
-    /// as one while the assignment saves; they then follow that assignment alone (`settleJoins`). Then, asked from
-    /// the field, the field opens again where the rows met (the caret at the start of the later row's first word, or
-    /// at the end of the earlier row's last word for forward Delete), where that word is after the word edits saved
-    /// meanwhile (`joinBoundary`), so typing goes on there; asked from the menu, the joined row is selected. VoiceOver
-    /// hears that the rows were joined.
+    /// assignment (undoable with ⌘Z and learned from as any made with the row's pop-up), refused when the meeting was
+    /// labelled again since the rows were shown. Joins are only how rows read, with the simplest life: made at once,
+    /// and all dropped on any Undo, any change that fails, and any relabel (`clearJoins`). Then, asked from the field,
+    /// the field opens again where the rows met (the caret at the start of the later row's first word, or at the end
+    /// of the earlier row's last word for forward Delete), where that word is after the word edits saved meanwhile
+    /// (`joinBoundary`), so typing goes on there; asked from the menu, the joined row is selected. VoiceOver hears
+    /// that the rows were joined. Nothing of that once the joins were dropped meanwhile (⌘Z pressed, say).
     private func applyJoin(_ join: ReviewParagraphJoin, request: ReviewJoinRequest) {
         let runID = review.projection.runID
-        // The rows the join was asked on: labelled again since (a reload adopted a relabel after it was resolved), a
-        // turn or speaker ID may name another now. The same check goes with the queued assignment (`seenRun`).
+        // The rows the join was asked on: labelled again since, a turn or speaker ID may name another now.
         let seenRun = request.runID ?? runID
-        guard seenRun == runID || review.keepsTurns(of: seenRun, in: runID) else {
+        let sameLabels = { [review] in
+            seenRun == review.projection.runID || review.keepsTurns(of: seenRun, in: review.projection.runID)
+        }
+        guard sameLabels() else {
             problem = Self.joinRelabelled
             refreshFooter()
             return
@@ -1461,113 +1471,36 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, NSM
         }
         // Made here, as a row break is: what the footer said of an earlier change goes.
         clearTransientMessages()
+        for turn in turns { paragraphBreaks.join(turn, runID: runID) }
         guard !join.reassign.isEmpty else {
-            for turn in turns { paragraphBreaks.join(turn, runID: runID) }
             finish()
             return
         }
-        let made = JoinMade(turns: turns, before: turns.map { paragraphBreaks.mark(of: $0.id) }, runID: runID)
-        for turn in turns { paragraphBreaks.join(turn, runID: runID, owner: made.owner) }
-        joinsMade.append(made)
         refresh()
+        let cleared = joinsCleared
+        let target: ReviewAssignTarget = join.speakerID.map { .speaker($0) } ?? .unknown
         perform { [weak self] review in
-            do {
-                try await review.reassign(join.reassign, to: join.speakerID, seenRun: seenRun, following: made.change)
-            } catch {
-                // Refused before it was queued: taken back now. Queued, its state says (`settleJoins`).
-                if review.state(of: made.change) == .notQueued { self?.forgetJoin(made, takingBack: true) }
-                self?.refresh()
-                throw error
-            }
-            guard let self else { return }
-            // Settled away meanwhile (Undo dropped it before it ran, and a refresh took it back): no field, no
-            // announcement, no hint that ⌘Z undoes it.
-            guard self.joinsMade.contains(where: { $0.owner == made.owner }) else {
-                self.refresh()
-                return
-            }
-            switch review.state(of: made.change) {
-            case .notQueued:
-                // It changed nothing (the turns had the speaker already): nothing to follow; the joins stay, as a
-                // join without a speaker change does.
-                self.paragraphBreaks.disown(made.owner)
-                self.forgetJoin(made, takingBack: false)
-            case .undone, .failed:
-                self.forgetJoin(made, takingBack: true)
-                self.refresh()
-                return
-            case .undoing:
-                // ⌘Z was pressed for it while it saved: the person moved on; its revert settles it.
-                self.refresh()
-                return
-            case .pending, .inEffect:
-                break
-            }
+            // Checked again as the assignment is queued: a reload may have adopted a relabel since.
+            guard sameLabels() else { throw HolosError.invalidInput(Self.joinRelabelled) }
+            try await review.assign(join.reassign, to: target)
+            // Dropped meanwhile (⌘Z pressed, a change failed): no field, no announcement.
+            guard let self, self.joinsCleared == cleared else { return }
             finish()
         }
     }
 
-    /// A join that gave the later row's turns the earlier row's speaker: the joins it set (`owner`), what each turn
-    /// had before it, the labels run it was made on, and its speaker change (`change`), which alone decides its fate.
-    @MainActor private struct JoinMade {
-        let owner = UUID().uuidString
-        let change = ReviewChange()
-        var turns: [ProjectedTurn]
-        var before: [ReviewParagraphBreaks.Mark?]
-        var runID: String
-    }
+    /// How many times every join was dropped (`clearJoins`).
+    private var joinsCleared = 0
+    /// How many reverts the labels shown had at the last refresh: one more (an undo saved, here or elsewhere) drops
+    /// every join.
+    private var revertsSeen = 0
 
-    private var joinsMade: [JoinMade] = []
-
-    /// Settles each join made with a speaker change by that change alone (`ReviewSession.state(of:)`: its own saved
-    /// batches in the labels read from disk): queued, saving, or in effect, it stays; undone (⌘Z's revert saved, or
-    /// Undo dropped it before it ran) or failed, it is taken back for good, so the rows never read as one again
-    /// unasked, nor when the same speaker is given to them later. What other changes do to the same turns never
-    /// counts. A join of labels replaced since by a run that does not keep the turns is forgotten.
-    private func settleJoins(runID: String) {
-        guard !joinsMade.isEmpty else { return }
-        // Newest first: a later join taken back puts back an earlier one's mark before that one is settled.
-        for made in joinsMade.reversed() {
-            guard made.runID == runID || review.keepsTurns(of: made.runID, in: runID) else {
-                forgetJoin(made, takingBack: false)
-                continue
-            }
-            switch review.state(of: made.change) {
-            case .notQueued, .pending, .inEffect, .undoing: continue
-            case .undone, .failed: forgetJoin(made, takingBack: true)
-            }
-        }
-    }
-
-    /// Stops following `made`; with `takingBack`, its joins go first (`takeBack`).
-    private func forgetJoin(_ made: JoinMade, takingBack: Bool) {
-        guard let index = joinsMade.firstIndex(where: { $0.owner == made.owner }) else { return }
-        joinsMade.remove(at: index)
-        review.forget(made.change)
-        if takingBack {
-            takenBackJoins.insert(made.owner)
-            takeBack(made)
-        }
-    }
-
-    /// The joins taken back (their owners): a mark of one is never put back.
-    private var takenBackJoins: Set<String> = []
-
-    /// Takes back the joins `made` set, putting back what each turn had before it, only where its join is still the
-    /// turn's mark (a later join or break is never undone by it), by the IDs the turns have now (a split part's
-    /// temporary ID gives way to its saved one); nothing once the labels were replaced by a run that does not keep the
-    /// turns (a turn ID such as "T2" may name another turn there). What a turn had before is never a join already
-    /// taken back (whatever order they were settled in): the turn then gets no mark.
-    private func takeBack(_ made: JoinMade) {
-        let runID = review.projection.runID
-        guard made.runID == runID || review.keepsTurns(of: made.runID, in: runID) else { return }
-        for (turn, mark) in zip(made.turns, made.before) {
-            let id = review.resolvedTurnID(turn.id)
-            var before = mark
-            if case .join(let owner?)? = mark, takenBackJoins.contains(owner) { before = nil }
-            paragraphBreaks.takeBack(made.owner, before: before,
-                                     of: review.projection.turns.first { $0.id == id } ?? turn)
-        }
+    /// Drops every join (Undo, a change that failed, a relabel): rows read as they group on their own again.
+    private func clearJoins() {
+        joinsCleared += 1
+        guard !paragraphBreaks.joins.isEmpty else { return }
+        paragraphBreaks.clearJoins()
+        refresh()
     }
 
     /// Opens the field again where a join from it met the rows: `request.word`, followed through the word moves saved
@@ -1793,6 +1726,8 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, NSM
         } catch is CancellationError {
             return nil
         } catch {
+            // A change that failed: every join goes (they are only how rows read).
+            clearJoins()
             if saved.value {
                 problem = error.localizedDescription
                 refreshFooter()
@@ -1911,12 +1846,13 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, NSM
     var unsavedEditTexts: [String] { unsavedEdits.typedTexts }
 
     private func endBreakCarryOver() {
-        paragraphBreaks.endCarryOver(turns: review.projection.turns, runID: review.projection.runID,
-                                    alsoHeld: review.projection.heldTurnTracks)
+        paragraphBreaks.endCarryOver(turns: review.projection.turns, runID: review.projection.runID)
         refresh()
     }
 
+    /// Undo (⌘Z, the menu): the review's newest change goes back, and every join with it.
     @objc private func undo() {
+        clearJoins()
         perform { review in try await review.undo() }
     }
 

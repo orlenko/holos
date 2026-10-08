@@ -1436,40 +1436,6 @@ func reviewJoiningARowGivesItTheSpeakerBeforeAndUndoPartsThemAgain() async throw
 /// Return splits a turn, Backspace at the start of its second part joins it back: the same speaker, so nothing is
 /// saved; the rows read as before the split. Return there again breaks the row (the split stays in the journal; ⌘Z
 /// still undoes it).
-/// A join's speaker change, followed by its own batches: in effect once saved, undone once Undo's revert is saved;
-/// what other changes do to the turn never counts. Refused when asked on a labels run replaced since.
-@Test(.timeLimit(.minutes(1))) @MainActor
-func reviewAFollowedReassignmentIsSettledByItsOwnBatches() async throws {
-    let temp = try TemporaryDirectory("review")
-    defer { temp.remove() }
-    let (session, run) = try await reviewCustomSession(in: temp, turns: [
-        ReviewTurnSpec(speaker: "system:S1", start: 0, seconds: 2, words: reviewWords(2, prefix: "a")),
-        ReviewTurnSpec(speaker: "system:S2", start: 6, seconds: 2, words: reviewWords(2, prefix: "b")),
-    ])
-    let review = try await reviewOpen(session)
-    let change = ReviewChange()
-    #expect(review.state(of: change) == .notQueued)
-    try await review.reassign(["T2"], to: "system:S1", seenRun: run.id, following: change)
-    #expect(review.state(of: change) == .inEffect)
-    // Another change moves the turn again: still in effect (its own lines are).
-    try await review.assign(["T2"], to: .speaker("system:S2"))
-    #expect(review.state(of: change) == .inEffect)
-    try await review.undo()
-    #expect(review.state(of: change) == .inEffect)
-    try await review.undo()
-    #expect(review.state(of: change) == .undone)
-    // Changing nothing queues nothing.
-    let unchanged = ReviewChange()
-    try await review.reassign(["T1"], to: "system:S1", seenRun: run.id, following: unchanged)
-    #expect(review.state(of: unchanged) == .notQueued)
-    // Asked on a run replaced since by one that does not keep the turns: refused, nothing saved.
-    let lines = try reviewJournal(session).count
-    await #expect(throws: HolosError.self) {
-        try await review.reassign(["T2"], to: "system:S1", seenRun: "another run", following: ReviewChange())
-    }
-    #expect(try reviewJournal(session).count == lines)
-}
-
 @Test(.timeLimit(.minutes(1))) @MainActor
 func reviewASplitJoinedBackReadsAsBeforeTheSplit() async throws {
     let temp = try TemporaryDirectory("review")

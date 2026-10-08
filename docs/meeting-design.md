@@ -7876,26 +7876,15 @@ public enum SessionAudioComposition {
   temporary ID to its saved one; a join replaces a break before the turn and a break a
   join), so the rows read as one whatever kept them apart: a break made here, a split's
   second part, the 3 s gap, the unknown speaker's two tracks (a named speaker's microphone
-  and system-audio turns given to the unknown speaker stay one row). The joins are made at
-  once. Two rules keep them right. A join owns the marks it sets (`ReviewParagraphBreaks`
-  join `owner`), and taking it back touches only marks that are still its own, putting back
-  what each turn had before (never the mark of a join already taken back; joins are settled
-  newest first); a later join or break is never undone by it. A join whose speaker change
-  ⌘Z dropped before it ran, or was asked to undo while it saved (`state(of:)` `undoing`),
-  opens no field and announces nothing. Marks stay for turns the run still holds though
-  none of their words is shown (every word deleted with its segment, or echo alone:
-  `SpeakerProjection.heldTurnTracks`), so a break or join comes back with its words (an
-  undo, a Restore); only a mark whose turn is gone from the run goes. And a join follows
-  its own speaker change alone (`ReviewSession.reassign(_:to:seenRun:following:)` and
-  `state(of:)`: that change's own saved batches in the labels read from disk; never a change
-  or an undo still queued or saving, nor what other changes did to the same turns): queued,
-  saving, saved but not reread, or in effect, it stays; undone (⌘Z's revert saved, or Undo
-  dropped it before it ran) or failed, it is taken back for good, so a later assignment of
-  the same speaker leaves the rows apart, and an undo whose revert cannot be written leaves
-  it. The assignment carries the labels run the rows were shown on: labelled again since, it
-  is refused before anything is queued. Labels replaced by a run that does not keep the turns
-  forget the join without putting anything back (a turn ID may name another turn there). ⌘Z in a word's
-  field with nothing typed in it (as after a join) is the review's undo, not the field's.
+  and system-audio turns given to the unknown speaker stay one row). Joins are only how rows
+  read in this window, with the simplest life: made at once, and all of them dropped (rows
+  then read as they group on their own) on any ⌘Z in the review (whatever it undoes), any
+  change that fails or is refused, any undo saved elsewhere (a command) that the window
+  reads, and any relabel; nothing is put back. A join asked on rows of a labels run
+  replaced since is refused, checked again as its assignment is queued. Joins dropped before
+  the join's assignment came back (⌘Z pressed meanwhile) open no field and announce nothing.
+  ⌘Z in a word's field with nothing typed in it (as after a join) is the review's undo, not
+  the field's.
   A row joined back to the part
   it was split from reads as before the split; the split itself stays in the journal (the
   journal's only way to take it back is a revert, which ⌘Z could not undo in turn), so ⌘Z
@@ -8609,7 +8598,7 @@ whose review is open or still opening):
 | `compositionDoesNotTrimAfterAMissingOrShortChunk` | files as above | next chunk placed whole at 10 s |
 | `compositionLeavesUnreadableChunksSilent` | garbage and truncated chunks between good ones | only their time silent |
 | `trackerReportsEveryPlaybackStateTransition` | loading → off → other reason → ready | every change reported |
-| `ReviewParagraphsTests` | synthetic turns | rows by speaker, 3 s gap, unknown by track, split parts and breaks; Split Turn on a row: split or break; joining a row to the one before (its speaker, joins past breaks, splits and the gap; a join replaces a break and a break a join; kept and dropped as breaks are); the word playing |
+| `ReviewParagraphsTests` | synthetic turns | rows by speaker, 3 s gap, unknown by track, split parts and breaks; Split Turn on a row: split or break; joining a row to the one before (its speaker, joins past breaks, splits and the gap; a join replaces a break and a break a join; kept and dropped as breaks are; clearing joins keeps the breaks); the word playing |
 | `reviewAssigningAParagraphMovesEveryTurnOfItAndUndoRestoresIt` | assign a two-turn row; undo | one `reassignTurns` of both turns; rows join; undo restores turns and rows |
 | `reviewSplittingInsideAParagraphStartsOneThatUndoJoinsAgain` | split inside a row's first turn; undo | the second part starts a row with the next turn; undo joins them |
 | `TurnListViewTests` (HolosAppTests) | the list laid out offscreen | rows joined, word click, fixes and VoiceOver, selection, pop-up and hint, tint through a pause; no warning column: the hint first in the pop-up ("Jim (suggested)") gives its turn alone, uncertain and overlap rows only in VoiceOver and Next Uncertain, the text right after the pop-up |
@@ -8618,7 +8607,7 @@ whose review is open or still opening):
 | `ReviewWordEditTests` | fixture sessions | edit, learn, speaker edits before and after, undo in order and exactly; edit and deletion inside a paragraph; refusals across turns, segments, hidden words; word fixes made again keep an edit |
 | `ReviewSegmentDeletionTests` | fixture sessions | a turn's first, middle, last, and only segment deleted whole: turn text, speakers, text/Markdown/JSON exports, the run's record and emptied turn; undo; Restore from the nearest turn and its undo; a reread plan keeps the emptied turn; an owed head repaired from the recorded move; nothing learned; a live correction refused; no "What you typed: “”"; every turn's times as they were after a deletion and its undo or Restore; every turn deleted, then restored from the full list |
 | `TurnListWordEditTests` (HolosAppTests) | the list laid out offscreen | word clicks play or edit by mode; Return, ⌥Return, Esc, Tab, ⇧Tab; selection kept in one turn; only Esc drops what was typed (mode off, a search filtering the row away, words gone, read-only: queued as an edit); VoiceOver "Edit"; Revert offered per segment (`revertRefusal`); the field follows its words |
-| `ReviewWindowJoinTests` (HolosAppTests) | a review window over a meeting written to a temporary folder (no audio), never shown | ⌘Z in the reopened field undoes the join's speaker; the field reopens where its word is after a word edit saved first; a join made while its split saves survives the saved ID; a named row of two tracks joined to the unknown speaker stays whole; a refused speaker change, or one ⌘Z takes back (saved or still queued), takes the join back; a failed undo keeps it; a change not reread is settled after the reread; a relabel puts nothing on its turns; a later join's marks survive an earlier one; a join follows its own assignment (another queued first, a split part given to the unknown speaker); a join resolved before a relabel is refused |
+| `ReviewWindowJoinTests` (HolosAppTests) | a review window over a meeting written to a temporary folder (no audio), never shown | ⌘Z in the reopened field undoes the join's speaker; the field reopens where its word is after a word edit saved first; a join made while its split saves survives the saved ID; a named row of two tracks joined to the unknown speaker stays whole; joins in a row, and with another assignment queued first, read as one; any ⌘Z, a failed change, an undo saved elsewhere and a relabel drop every join; a join dropped by ⌘Z (queued or saving) opens no field; a join resolved before a relabel is refused |
 | `TurnListJoinTests` (HolosAppTests) | the list laid out offscreen | Backspace at a row's start and forward Delete at its end join rows (another speaker's row takes the speaker before); elsewhere, selected, or typed they edit text; nothing at the meeting's edges, read-only, or outside edit mode; rows found among all grouped; the caret where the rows met; split then joined reads as before and splits again; Join With Previous Turn in the menu and VoiceOver |
 | `ReviewEchoMuteTests` | local-speech intervals (edges, joins, from 0, past the end, none) | the volume schedule; a mix on the microphone track only, read back as scheduled |
 | `playbackKeepsTheMicrophoneOnlyWhereItHasLocalSpeechWhenThereIsEcho` | a call with an echo mask, then `noEcho`, then other audio | a mix on the microphone track only with an echo mask; none otherwise |

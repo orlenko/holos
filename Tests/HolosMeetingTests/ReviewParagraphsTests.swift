@@ -337,23 +337,15 @@ private func paragraphWords(_ paragraph: ReviewParagraph, counts: [Int]) -> [[Re
     #expect(paragraphIDs(ReviewParagraphs.group(given, joins: Set(join.turnIDs))) == [["T1", "T2", "T3"]])
 }
 
-@Test func aJoinTakenBackPutsBackOnlyTheMarksItSetItself() {
-    let t2 = paragraphTurn("T2", "S1", 2.5, 4), t3 = paragraphTurn("T3", "S1", 5, 6)
+@Test func clearingJoinsKeepsTheBreaks() {
+    let t1 = paragraphTurn("T1", "S1", 0, 2), t2 = paragraphTurn("T2", "S1", 2.5, 4), t3 = paragraphTurn("T3", "S1", 9, 10)
     var breaks = ReviewParagraphBreaks()
     breaks.insert(before: t2, runID: "R1")
-    let before = [breaks.mark(of: "T2"), breaks.mark(of: "T3")]
-    #expect(before == [.breakBefore, nil])
-    breaks.join(t2, runID: "R1", owner: "J1")
-    breaks.join(t3, runID: "R1", owner: "J1")
-    #expect(breaks.mark(of: "T2") == .join(owner: "J1") && breaks.mark(of: "T3") == .join(owner: "J1"))
-    // A later join sets T3's mark: J1 taken back leaves it, and puts T2's break back.
-    breaks.join(t3, runID: "R1", owner: "J2")
-    for (turn, mark) in zip([t2, t3], before) { breaks.takeBack("J1", before: mark, of: turn) }
-    #expect(breaks.mark(of: "T2") == .breakBefore && breaks.mark(of: "T3") == .join(owner: "J2"))
-    #expect(breaks.joins == ["T3"])
-    // J2 taken back: what T3 had before J2 comes back (here J1's join), as long as J2's join is still there.
-    breaks.takeBack("J2", before: .join(owner: "J1"), of: t3)
-    #expect(breaks.mark(of: "T3") == .join(owner: "J1"))
-    breaks.takeBack("J2", before: nil, of: t3)
-    #expect(breaks.mark(of: "T3") == .join(owner: "J1"), "No longer J2's: left alone.")
+    breaks.join(t3, runID: "R1")
+    #expect(breaks.active(in: [t1, t2, t3], runID: "R1") == ["T2"] && breaks.joins == ["T3"])
+    breaks.clearJoins()
+    #expect(breaks.joins.isEmpty && breaks.active(in: [t1, t2, t3], runID: "R1") == ["T2"])
+    #expect(paragraphIDs(ReviewParagraphs.group([t1, t2, t3], breaks: ["T2"], joins: breaks.joins))
+        == [["T1"], ["T2"], ["T3"]])
 }
+

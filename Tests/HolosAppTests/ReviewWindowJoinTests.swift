@@ -104,31 +104,6 @@ struct ReviewWindowJoinTests {
         func peek() -> Int { lock.withLock { count } }
     }
 
-    private nonisolated static func setWritable(_ url: URL, _ writable: Bool) {
-        try? FileManager.default.setAttributes([.posixPermissions: writable ? 0o600 : 0o400], ofItemAtPath: url.path)
-    }
-
-    /// Makes the session's event journal unreadable (read when labels are loaded, not when a change is saved), so a
-    /// change is saved and its labels cannot be reread; or readable again.
-    private nonisolated static func blockRereads(_ session: URL, _ blocked: Bool) {
-        let events = SessionPaths.events(session)
-        var isFolder: ObjCBool = false
-        let exists = FileManager.default.fileExists(atPath: events.path, isDirectory: &isFolder)
-        if blocked {
-            if exists {
-                try? FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: events.path)
-            } else {
-                try? FileManager.default.createDirectory(at: events, withIntermediateDirectories: false)
-            }
-        } else if exists {
-            if isFolder.boolValue {
-                try? FileManager.default.removeItem(at: events)
-            } else {
-                try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: events.path)
-            }
-        }
-    }
-
     /// Polls (a budget of checks, never a clock) until `condition` holds.
     private func until(_ condition: () -> Bool) async -> Bool {
         for _ in 0..<4000 {
@@ -249,49 +224,44 @@ struct ReviewWindowJoinTests {
         await window.closeAndWait()
     }
 
-    /// The join's speaker change refused (the labels were changed elsewhere meanwhile): the rows part again, and
-    /// nothing is left to join them later unasked. Here the change made elsewhere gave the turn that very speaker, four
-    /// seconds after the row before: past the gap, they stay two rows.
-    @Test(.timeLimit(.minutes(1))) func aRefusedJoinLeavesNothingToJoinTheRowsLater() async throws {
+    /// A change that fails drops every join, its own and any other: here the join's speaker change is refused (the
+    /// labels were changed elsewhere meanwhile), and the earlier join of T3 to T2 goes too. Rows read as they group on
+    /// their own again (T2 four seconds after T1, T3 six after T2: three rows).
+    @Test(.timeLimit(.minutes(1))) func aFailedChangeDropsEveryJoin() async throws {
         let (window, session) = try await open([Spec(speaker: "S1", start: 0, words: ["amber", "birch"]),
-                                                Spec(speaker: "S2", start: 5, words: ["cedar", "dune"])])
+                                                Spec(speaker: "S2", start: 5, words: ["cedar", "dune"]),
+                                                Spec(speaker: "S2", start: 12, words: ["elm", "fern"])])
+        window.turnList.joinChosen(try #require(window.turnList.joinOffer(row: 2, index: 0)).choice)
+        #expect(rows(window) == [["T1"], ["T2", "T3"]] && window.paragraphJoins == ["T3"])
         // Elsewhere (a command): T2 goes to S1.
         let view = try #require(try SpeakerSessionSnapshot.load(session: session).projection)
         _ = try SpeakerEditor.apply([.reassignTurns(turnIDs: ["T2"], to: "S1")], view: view, session: session,
                                     source: "cli", regenerateExports: false)
-        let offer = try #require(window.turnList.joinOffer(row: 1, index: 0))
-        window.turnList.joinChosen(offer.choice)
-        #expect(window.paragraphJoins == ["T2"], "Joined at once, while the speaker change saves.")
-        // Refused: the labels are read again (T2 is S1's from elsewhere), and the join is taken back.
+        window.turnList.joinChosen(try #require(window.turnList.joinOffer(row: 1, index: 0)).choice)
+        #expect(window.paragraphJoins == ["T2", "T3"], "Joined at once, while the speaker change saves.")
         #expect(await until {
-            window.review.snapshot.journal.edits.count == 1 && speaker(window, "T2") == "S1"
-                && window.paragraphJoins.isEmpty
+            window.review.snapshot.journal.edits.count == 1 && window.paragraphJoins.isEmpty
+                && rows(window) == [["T1"], ["T2"], ["T3"]]
         })
-        #expect(await until { rows(window) == [["T1"], ["T2"]] })
         #expect(journal(session) == [.reassignTurns(turnIDs: ["T2"], to: "S1")], "Only the change made elsewhere.")
         await window.closeAndWait()
     }
 
-    /// ⌘Z takes back a join's speaker change, and the join with it: the same speaker given to the row later (four
-    /// seconds after the row before, past the gap) leaves two rows, as any assignment would.
-    @Test(.timeLimit(.minutes(1))) func undoingAJoinsSpeakerChangeTakesTheJoinBack() async throws {
+    /// Any ⌘Z drops every join, whatever it undoes: here an unrelated rename made after the joins. The same speaker
+    /// given to T2 again later (past the gap) leaves two rows, as any assignment would.
+    @Test(.timeLimit(.minutes(1))) func anyUndoDropsEveryJoin() async throws {
         let (window, session) = try await open([Spec(speaker: "S1", start: 0, words: ["amber", "birch"]),
                                                 Spec(speaker: "S2", start: 5, words: ["cedar", "dune"])])
-        let offer = try #require(window.turnList.joinOffer(row: 1, index: 0))
-        window.turnList.joinChosen(offer.choice)
+        window.turnList.joinChosen(try #require(window.turnList.joinOffer(row: 1, index: 0)).choice)
         #expect(await until { journal(session).count == 1 && rows(window) == [["T1", "T2"]] })
+        try await window.review.apply([.rename(speakerID: "S1", name: "Ash")])
         #expect(window.paragraphJoins == ["T2"])
-        // ⌘Z with the list (no text field) in front.
         window.window.makeFirstResponder(window.turnList.table)
         #expect(window.handleKey(try commandZ(window)))
-        #expect(await until {
-            speaker(window, "T2") == "S2" && window.paragraphJoins.isEmpty && rows(window) == [["T1"], ["T2"]]
-        })
-        // The same speaker given again by hand: a row of its own past the gap, never joined back.
-        try await window.review.assign(["T2"], to: .speaker("S1"))
-        #expect(await until {
-            speaker(window, "T2") == "S1" && window.paragraphJoins.isEmpty && rows(window) == [["T1"], ["T2"]]
-        })
+        #expect(window.paragraphJoins.isEmpty, "At once, as ⌘Z is pressed.")
+        #expect(await until { journal(session).count == 3 })
+        // The join's own speaker change stays (only the rename was undone): T2 is S1's, past the gap, its own row.
+        #expect(await until { speaker(window, "T2") == "S1" && rows(window) == [["T1"], ["T2"]] })
         await window.closeAndWait()
     }
 
@@ -318,99 +288,25 @@ struct ReviewWindowJoinTests {
         await window.closeAndWait()
     }
 
-    /// ⌘Z while the join's speaker change still saves, and the undo then cannot write its revert: the change stays
-    /// (shown again), and so does the join. Only labels read from disk ever take a join back.
-    @Test(.timeLimit(.minutes(1))) func aFailedUndoOfTheJoinsSpeakerChangeKeepsTheJoin() async throws {
+    /// The meeting labelled again (a new run, read by a reload): every join goes.
+    @Test(.timeLimit(.minutes(1))) func aRelabelDropsEveryJoin() async throws {
         let (window, session) = try await open([Spec(speaker: "S1", start: 0, words: ["amber", "birch"]),
-                                                Spec(speaker: "S2", start: 5, words: ["cedar", "dune"])])
-        let edits = SessionPaths.edits(session)
-        let (stream, release) = AsyncStream<Void>.makeStream()
-        let calls = Calls()
-        window.review.beforeEdit = {
-            let call = calls.next()
-            if call == 1 { for await _ in stream {} }
-            if call == 2 { try? FileManager.default.setAttributes([.posixPermissions: 0o400], ofItemAtPath: edits.path) }
-        }
-        let offer = try #require(window.turnList.joinOffer(row: 1, index: 0))
-        window.turnList.joinChosen(offer.choice)
-        #expect(await until { speaker(window, "T2") == "S1" && rows(window) == [["T1", "T2"]] })
-        window.window.makeFirstResponder(window.turnList.table)
-        #expect(window.handleKey(try commandZ(window)))
-        // Undone while saving: shown undone at once.
-        #expect(await until { speaker(window, "T2") == "S2" && rows(window) == [["T1"], ["T2"]] })
-        release.finish()
-        // The revert could not be written: the change is shown again, joined as before.
-        #expect(await until { speaker(window, "T2") == "S1" && rows(window) == [["T1", "T2"]] })
-        #expect(window.paragraphJoins == ["T2"])
-        Self.setWritable(edits, true)
-        window.review.beforeEdit = nil
-        #expect(journal(session) == [.reassignTurns(turnIDs: ["T2"], to: "S1")])
-        await window.closeAndWait()
-    }
-
-    /// The join's speaker change saved but its labels could not be reread (`incomplete`): the join waits, and once the
-    /// labels are read again it is settled as any; ⌘Z then takes it back with the change, and the same speaker given
-    /// later leaves two rows.
-    @Test(.timeLimit(.minutes(1))) func aJoinWhoseChangeCouldNotBeRereadIsTakenBackByUndoLater() async throws {
-        let (window, session) = try await open([Spec(speaker: "S1", start: 0, words: ["amber", "birch"]),
-                                                Spec(speaker: "S2", start: 5, words: ["cedar", "dune"])])
-        window.review.beforeEdit = { Self.blockRereads(session, true) }
-        let offer = try #require(window.turnList.joinOffer(row: 1, index: 0))
-        window.turnList.joinChosen(offer.choice)
-        #expect(await until { journal(session).count == 1 && window.review.reloadProblem != nil })
-        window.review.beforeEdit = nil
-        #expect(window.paragraphJoins == ["T2"])
-        Self.blockRereads(session, false)
-        await window.review.reload()
-        #expect(await until { window.review.reloadProblem == nil && rows(window) == [["T1", "T2"]] })
-        window.window.makeFirstResponder(window.turnList.table)
-        #expect(window.handleKey(try commandZ(window)))
-        #expect(await until {
-            speaker(window, "T2") == "S2" && window.paragraphJoins.isEmpty && rows(window) == [["T1"], ["T2"]]
-        })
-        try await window.review.assign(["T2"], to: .speaker("S1"))
-        #expect(await until {
-            speaker(window, "T2") == "S1" && window.paragraphJoins.isEmpty && rows(window) == [["T1"], ["T2"]]
-        })
-        await window.closeAndWait()
-    }
-
-    /// The join's speaker change refused because the meeting was labelled again meanwhile (a new run whose turns have
-    /// the same IDs): what the turns had before the join is never put on the new run's turns. Here T3 had been joined
-    /// to T2 (six seconds apart); on the new run the three stay apart.
-    @Test(.timeLimit(.minutes(1))) func aJoinRefusedByARelabelPutsNothingOnTheNewRun() async throws {
-        let (window, session) = try await open([Spec(speaker: "S1", start: 0, words: ["amber", "birch"]),
-                                                Spec(speaker: "S2", start: 5, words: ["cedar", "dune"]),
-                                                Spec(speaker: "S2", start: 12, words: ["elm", "fern"])])
-        #expect(rows(window) == [["T1"], ["T2"], ["T3"]])
-        window.turnList.joinChosen(try #require(window.turnList.joinOffer(row: 2, index: 0)).choice)
-        #expect(rows(window) == [["T1"], ["T2", "T3"]])
-        let (stream, release) = AsyncStream<Void>.makeStream()
-        window.review.beforeEdit = { for await _ in stream {} }
+                                                Spec(speaker: "S1", start: 8, words: ["cedar", "dune"])])
         window.turnList.joinChosen(try #require(window.turnList.joinOffer(row: 1, index: 0)).choice)
-        #expect(await until { speaker(window, "T2") == "S1" && rows(window) == [["T1", "T2", "T3"]] })
+        #expect(rows(window) == [["T1", "T2"]])
         let firstRun = window.review.snapshot.run?.id
-        // The window shows the new run as soon as the review reads it, before the refused change comes back.
-        let scheduled = window.review.onChange
-        window.review.onChange = {
-            scheduled?()
-            if window.review.snapshot.run?.id != firstRun { window.refresh() }
-        }
         try relabel(session)
-        release.finish()
+        await window.review.reload()
         #expect(await until {
-            window.review.snapshot.run?.id != firstRun && speaker(window, "T2") == "S2" && window.paragraphJoins.isEmpty
-                && rows(window) == [["T1"], ["T2"], ["T3"]]
+            window.review.snapshot.run?.id != firstRun && window.paragraphJoins.isEmpty
+                && rows(window) == [["T1"], ["T2"]]
         })
-        window.review.beforeEdit = nil
-        #expect(journal(session).isEmpty)
         await window.closeAndWait()
     }
 
-    /// Three speakers' rows, each past the gap: C joined to B, then B and C joined to A. The second join's speaker
-    /// change takes C from B's speaker, which never takes back the first join's work on C (the second join set C's
-    /// mark since): the three stay one row.
-    @Test(.timeLimit(.minutes(1))) func aLaterJoinsMarkIsNeverUndoneByAnEarlierJoin() async throws {
+    /// Three speakers' rows, each past the gap: C joined to B, then B and C joined to A. Both saved, nothing undone:
+    /// the three read as one row.
+    @Test(.timeLimit(.minutes(1))) func twoJoinsInARowReadAsOneRow() async throws {
         let (window, session) = try await open([Spec(speaker: "S1", start: 0, words: ["amber", "birch"]),
                                                 Spec(speaker: "S2", start: 5, words: ["cedar", "dune"]),
                                                 Spec(speaker: "S3", start: 12, words: ["elm", "fern"])])
@@ -593,28 +489,6 @@ struct ReviewWindowJoinTests {
         window.review.beforeEdit = nil
         #expect(window.turnList.wordEdit == nil, "No field opened for a join undone while it saved.")
         #expect(journal(session).first == .reassignTurns(turnIDs: ["T2"], to: "S1"))
-        await window.closeAndWait()
-    }
-
-    /// Two S1 turns past the gap, joined; every word of the later one deleted (its segment emptied, so the turn is
-    /// not shown), then ⌘Z: the words come back, and so does the join.
-    @Test(.timeLimit(.minutes(1))) func aJoinComesBackWithItsTurnsDeletedWords() async throws {
-        let (window, _) = try await open([Spec(speaker: "S1", start: 0, words: ["amber", "birch"]),
-                                          Spec(speaker: "S1", start: 8, words: ["cedar", "dune"])])
-        #expect(rows(window) == [["T1"], ["T2"]])
-        window.turnList.joinChosen(try #require(window.turnList.joinOffer(row: 1, index: 0)).choice)
-        #expect(rows(window) == [["T1", "T2"]])
-        window.setEditMode(true)
-        let list = window.turnList
-        list.table.handleWordClick(row: 0, word: 2, through: 3, extend: false)
-        #expect(list.wordEdit?.words.map(\.text) == ["cedar", "dune"])
-        list.editField.stringValue = ""
-        _ = list.control(list.editField, textView: NSTextView(), doCommandBy: #selector(NSResponder.insertNewline(_:)))
-        #expect(await until { window.review.turn("T2") == nil && rows(window) == [["T1"]] })
-        window.window.makeFirstResponder(list.table)
-        #expect(window.handleKey(try commandZ(window)))
-        #expect(await until { window.review.turn("T2") != nil && rows(window) == [["T1", "T2"]] })
-        #expect(window.paragraphJoins == ["T2"])
         await window.closeAndWait()
     }
 }
