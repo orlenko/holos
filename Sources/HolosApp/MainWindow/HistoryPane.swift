@@ -669,7 +669,7 @@ final class HistoryDetailView: NSView {
         feedback.font = .systemFont(ofSize: 11)
         feedback.textColor = .secondaryLabelColor
         // In a narrow window the labels truncate and the buttons wrap (`actionRow`).
-        for label in [subtitle, heardHeading, restHeading] {
+        for label in [title, subtitle, heardHeading, restHeading] {
             label.lineBreakMode = .byTruncatingTail
             label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         }
@@ -784,6 +784,7 @@ final class HistoryDetailView: NSView {
         content.isHidden = false
         empty.isHidden = true
         title.stringValue = record.app ?? "Unknown app"
+        title.toolTip = title.stringValue  // whole when a narrow window cuts it short
         subtitle.stringValue = dateFormatter.string(from: record.date)
         text.stringValue = record.text
         // A partly written dictation shows both: the whole text, and the rest Copy copies (as Copy Result did).

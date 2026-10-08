@@ -81,6 +81,15 @@ final class PeoplePane: NSViewController, NSTableViewDataSource, NSTableViewDele
         header.distribution = .fill
         suggestBox.target = self
         suggestBox.action = #selector(toggleSuggestions)
+        // The selected person's name goes into these titles: in a narrow window the checkbox wraps and Forget
+        // truncates (its tooltip and VoiceOver label keep the whole title).
+        suggestBox.lineBreakMode = .byWordWrapping
+        suggestBox.usesSingleLineMode = false
+        suggestBox.cell?.wraps = true
+        suggestBox.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        forgetPersonButton.lineBreakMode = .byTruncatingTail
+        forgetPersonButton.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        forgetPersonButton.widthAnchor.constraint(greaterThanOrEqualToConstant: 70).isActive = true
 
         configure(samplesTable, columns: [(.meeting, "Samples", 150), (.date, "", 90), (.condition, "", 45),
                                           (.speech, "", 70), (.forget, "", 70)])
@@ -236,11 +245,14 @@ final class PeoplePane: NSViewController, NSTableViewDataSource, NSTableViewDele
         forgetAllButton.isEnabled = !busy
         let person = selectedPerson
         nameLabel.stringValue = person.map { $0.displayName + ($0.isSelf ? " (you)" : "") } ?? "No person selected"
+        nameLabel.toolTip = person == nil ? nil : nameLabel.stringValue
         renameButton.isEnabled = !busy && person != nil
         suggestBox.title = person.map { "Suggest \($0.displayName) in new meetings" } ?? "Suggest in new meetings"
         suggestBox.state = person?.recognitionEnabled == false ? .off : .on
         suggestBox.isEnabled = !busy && person != nil
         forgetPersonButton.title = person.map { "Forget \($0.displayName)…" } ?? "Forget…"
+        forgetPersonButton.toolTip = forgetPersonButton.title
+        forgetPersonButton.setAccessibilityLabel(forgetPersonButton.title)
         forgetPersonButton.isEnabled = !busy && person != nil
         mergePopUp.removeAllItems()
         mergePopUp.addItem(withTitle: "Merge Into…")

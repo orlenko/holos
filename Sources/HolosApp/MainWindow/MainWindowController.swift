@@ -357,9 +357,14 @@ final class MainSplitViewController: NSSplitViewController {
     private var reportedCollapsed = false
 
     /// Showing the sidebar in a window narrower than the sidebar and the section need: the window grows to the left
-    /// first, so the section keeps its place and its width (clamped to the screen).
+    /// first, so the section keeps its place and its width (clamped to the screen). Growing it can make AppKit show
+    /// a sidebar that narrowing the window hid; then it is already shown, and toggling would hide it again, so what
+    /// was asked (shown or hidden, as decided before the resize) is what decides.
     override func toggleSidebar(_ sender: Any?) {
-        if let sidebar = splitViewItems.first, sidebar.isCollapsed { makeRoom(for: sidebar) }
+        guard let sidebar = splitViewItems.first else { return super.toggleSidebar(sender) }
+        let show = sidebar.isCollapsed
+        if show { makeRoom(for: sidebar) }
+        guard sidebar.isCollapsed == show else { return }
         super.toggleSidebar(sender)
     }
 

@@ -64,7 +64,8 @@ struct MainWindowNarrowTests {
                      try #require(buttons.first { $0.title == "Name Speaker…" })]
         if phase == .saved { whole.append(try #require(buttons.first { $0.title == "Open Review…" })) }
         for button in whole {
-            #expect(button.frame.width >= button.intrinsicContentSize.width - 1, "\(button.title) is squeezed")
+            #expect(button.alignmentRect(forFrame: button.frame).width >= button.intrinsicContentSize.width - 1,
+                    "\(button.title) is squeezed")
             let frame = try #require(button.superview).convert(button.frame, to: live.view)
             #expect(frame.minX >= 0 && frame.maxX <= live.view.bounds.width, "\(button.title) is cut off")
         }
@@ -101,7 +102,7 @@ struct MainWindowNarrowTests {
         for button in buttons {
             let frame = try #require(button.superview).convert(button.frame, to: row)
             #expect(frame.minX >= 0 && frame.maxX <= row.bounds.width, "\(button.title) is cut off")
-            #expect(button.frame.width >= button.intrinsicContentSize.width - 1)
+            #expect(button.alignmentRect(forFrame: button.frame).width >= button.intrinsicContentSize.width - 1)
         }
         let labels = Self.allViews(row).compactMap { $0 as? NSTextField }
         let title = try #require(labels.first { $0.stringValue == entry.title })
@@ -111,6 +112,126 @@ struct MainWindowNarrowTests {
         #expect(buttons.contains { $0.title == "Show in Finder" } == !compact)
         #expect(buttons.contains { $0.accessibilityLabel() == "Show in Finder — \(entry.title)" })
         #expect(Self.brokenConstraints(in: row).isEmpty)
+    }
+
+    /// People with a person selected whose (made-up) name is long: the name goes into the suggestion checkbox,
+    /// which wraps, and into Forget…, which truncates and keeps the whole title in its tooltip.
+    @Test(.timeLimit(.minutes(1)), arguments: [true, false])
+    func peopleWithALongNameFitsTheNarrowestWindow(sidebarHidden: Bool) async throws {
+        let temp = FileManager.default.temporaryDirectory.appendingPathComponent("narrow-people-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: temp) }
+        let store = SpeakerProfileStore(directory: temp.appendingPathComponent("Speakers"))
+        try store.update { $0.profiles = [SpeakerProfile(displayName: Self.longName)] }
+        let pane = PeoplePane(store: store, sessionsRoot: temp)
+        let controller = try Self.window(on: .people, sidebarHidden: sidebarHidden, pane: pane)
+        pane.refresh()
+        // Polls with a budget, never a wall-clock bound: the store is read off the main actor.
+        func forget() -> NSButton? {
+            Self.allViews(pane.view).compactMap { $0 as? NSButton }.first { $0.title == "Forget \(Self.longName)…" }
+        }
+        for _ in 0..<2_000 where forget() == nil { try await Task.sleep(for: .milliseconds(10)) }
+        let content = try #require(controller.window.contentView)
+        content.layoutSubtreeIfNeeded()
+        #expect(content.frame.width == Self.minimumWidth(controller, sidebarHidden: sidebarHidden))
+        #expect(Self.brokenConstraints(in: content).isEmpty)
+        let problems = Self.layoutProblems(in: pane.view)
+        #expect(problems.isEmpty, "\(problems)")
+        let button = try #require(forget())
+        #expect(button.toolTip == button.title)
+        let suggest = Self.allViews(pane.view).compactMap { $0 as? NSButton }
+            .first { $0.title == "Suggest \(Self.longName) in new meetings" }
+        #expect(suggest?.isHiddenOrHasHiddenAncestor == false)
+        SettingsEmbeddingTests.render(controller.window, name: "narrow-people-person-\(sidebarHidden ? "hidden" : "sidebar")")
+    }
+
+    /// Meetings with rows, the selected one's (made-up) name long: rows keep their controls inside them.
+    @Test(arguments: [true, false])
+    func meetingsWithRowsFitTheNarrowestWindow(sidebarHidden: Bool) throws {
+        let pane = try #require(try Self.section(.meetings) as? MeetingsPane)
+        let controller = try Self.window(on: .meetings, sidebarHidden: sidebarHidden, pane: pane)
+        let meetings = [("A", Self.longMeeting, 1.0), ("B", "Standup", 26.0)].map { id, name, hoursAgo in
+            SessionSummary(id: id, directory: URL(fileURLWithPath: "/\(id).holos"), name: name,
+                           createdAt: Date().addingTimeInterval(-hoursAgo * 3600), source: .microphoneAndSystem,
+                           state: .complete, manifestStatus: "complete", transcriptID: "T", speakerState: .labelled,
+                           liveness: .exited)
+        }
+        pane.select(sessionID: "A")
+        pane.show(meetings, people: [:], freeBytes: nil)
+        let content = try #require(controller.window.contentView)
+        content.layoutSubtreeIfNeeded()
+        #expect(content.frame.width == Self.minimumWidth(controller, sidebarHidden: sidebarHidden))
+        #expect(Self.brokenConstraints(in: content).isEmpty)
+        let problems = Self.layoutProblems(in: pane.view) + Self.rowProblems(in: pane.view)
+        #expect(problems.isEmpty, "\(problems)")
+        #expect(Self.allViews(pane.view).contains { $0 is NSTableRowView }, "The rows were laid out.")
+        SettingsEmbeddingTests.render(controller.window, name: "narrow-meetings-rows-\(sidebarHidden ? "hidden" : "sidebar")")
+    }
+
+    /// History with a dictation from an app with a long (made-up) name selected.
+    @Test(arguments: [true, false])
+    func historyWithALongAppNameFitsTheNarrowestWindow(sidebarHidden: Bool) throws {
+        let actions = HistoryPane.Actions(copy: { _ in true }, correct: { _ in }, delete: { _ in }, clear: {},
+                                          audioURL: { _ in nil },
+                                          rerun: { _ in throw CancellationError() }, update: { _, _ in })
+        let pane = HistoryPane(actions: actions)
+        let controller = try Self.window(on: .history, sidebarHidden: sidebarHidden, pane: pane)
+        let app = "Featherstonehaugh Project Planner Professional"
+        let record = DictationRecord(id: UUID(), date: Date(), app: app, language: "en-US",
+                                     text: "move the review to Thursday afternoon after the planning call",
+                                     heard: "move the review to Thursday afternoon after the planning call",
+                                     outcome: .init(kind: .inserted), seconds: 4)
+        pane.update(records: [record], retention: .standard, problem: nil, hidden: 0, unreadable: false)
+        let content = try #require(controller.window.contentView)
+        content.layoutSubtreeIfNeeded()
+        #expect(content.frame.width == Self.minimumWidth(controller, sidebarHidden: sidebarHidden))
+        #expect(Self.brokenConstraints(in: content).isEmpty)
+        let problems = Self.layoutProblems(in: pane.view) + Self.rowProblems(in: pane.view)
+        #expect(problems.isEmpty, "\(problems)")
+        let shown = Self.allViews(pane.view).compactMap { $0 as? NSTextField }
+            .filter { $0.stringValue == app && !$0.isHiddenOrHasHiddenAncestor }
+        #expect(shown.count >= 2, "The row and the detail show the dictation.")
+    }
+
+    /// The rows the buttons wrap onto are worked out in alignment rects, and a frame adds a view's alignment insets
+    /// (a push button's bezel on systems that have one): no view comes out smaller than it asks.
+    @Test func aWrappingRowPlacesViewsByTheirAlignmentRects() {
+        let views = (0..<3).map { _ in InsetView() }
+        let row = WrappingRowView(views: views)
+        row.frame = NSRect(x: 0, y: 0, width: 120, height: 100)
+        row.layoutSubtreeIfNeeded()
+        let rects = views.map { $0.alignmentRect(forFrame: $0.frame) }
+        for rect in rects {
+            #expect(rect.size == InsetView.size)
+            #expect(rect.minX >= 0 && rect.maxX <= row.bounds.width)
+        }
+        // Two fit the first row (50 + 8 + 50), the third goes on the second.
+        #expect(rects[0].minY == rects[1].minY)
+        #expect(rects[2].minY == rects[0].maxY + row.rowSpacing)
+        #expect(rects[1].minX == rects[0].maxX + row.spacing)
+        #expect(row.intrinsicContentSize.height == InsetView.size.height * 2 + row.rowSpacing)
+    }
+
+    /// Showing the sidebar from the menu in a window too narrow for it widens the window; if AppKit shows the
+    /// sidebar itself as the window grows (it hid it when the window narrowed), it stays shown.
+    @Test(.timeLimit(.minutes(1)), arguments: [false, true])
+    func showingTheSidebarInANarrowWindowShowsIt(appKitShowsItOnResize: Bool) async throws {
+        let controller = try Self.window(on: .corrections, sidebarHidden: true)
+        let window = controller.window
+        let split = try #require(window.contentViewController as? NSSplitViewController)
+        #expect(controller.sidebarCollapsed)
+        let observer = NotificationCenter.default.addObserver(forName: NSWindow.didResizeNotification, object: window,
+                                                              queue: nil) { _ in
+            guard appKitShowsItOnResize else { return }
+            MainActor.assumeIsolated { controller.sidebarItem.isCollapsed = false }
+        }
+        defer { NotificationCenter.default.removeObserver(observer) }
+        split.toggleSidebar(nil)
+        // Polls with a budget, never a wall-clock bound: the toggle may animate.
+        for step in 0..<500 where step < 30 || controller.sidebarCollapsed {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(!controller.sidebarCollapsed)
+        #expect(window.contentRect(forFrameRect: window.frame).width >= Self.minimumWidth(controller, sidebarHidden: false))
     }
 
     /// The window's minimum: the section's minimum with the sidebar hidden, the sidebar's and the section's with it.
@@ -247,6 +368,17 @@ struct MainWindowNarrowTests {
         override var acceptsFirstResponder: Bool { true }
     }
 
+    /// A view whose frame is larger than its alignment rect, as a push button's is on systems with a bezel shadow.
+    final class InsetView: NSView {
+        static let size = NSSize(width: 50, height: 20)
+        override var intrinsicContentSize: NSSize { Self.size }
+        override var alignmentRectInsets: NSEdgeInsets { NSEdgeInsets(top: 2, left: 6, bottom: 4, right: 6) }
+    }
+
+    /// Made-up names, long enough to crowd a narrow window.
+    static let longName = "Bartholomew Featherstonehaugh-Montgomery"
+    static let longMeeting = "Quarterly planning review with the whole design and research team"
+
     static func minimumWidth(_ controller: MainWindowController, sidebarHidden: Bool) -> CGFloat {
         guard !sidebarHidden, let split = controller.window.contentViewController as? NSSplitViewController else {
             return MainWindowController.contentMinimumWidth
@@ -256,9 +388,11 @@ struct MainWindowNarrowTests {
     }
 
     /// The main window on `section` at its minimum size (the sidebar hidden or shown), laid out but never shown.
-    static func window(on section: MainSection, sidebarHidden: Bool) throws -> MainWindowController {
+    /// `pane`: the section's view controller, when not the empty one `section(_:)` makes.
+    static func window(on section: MainSection, sidebarHidden: Bool,
+                       pane: NSViewController? = nil) throws -> MainWindowController {
         NSApplication.shared.setActivationPolicy(.prohibited)
-        let made = try Self.section(section)
+        let made = try pane ?? Self.section(section)
         let controller = MainWindowController(autosave: nil) { candidate in
             candidate == section ? made : NSViewController()
         }
@@ -383,16 +517,22 @@ struct MainWindowNarrowTests {
         for view in allViews(pane) where !view.isHiddenOrHasHiddenAncestor && !Self.inTable(view) {
             // A table scrolls its columns sideways inside its scroll view.
             guard view is NSControl, !(view is NSTableView), let superview = view.superview else { continue }
+            // Alignment rects throughout: what intrinsic sizes measure, without a bezel's shadow.
+            let alignment = view.alignmentRect(forFrame: view.frame)
             let container = view.enclosingScrollView?.contentView ?? pane
-            let frame = superview.convert(view.frame, to: container)
+            let frame = superview.convert(alignment, to: container)
             let visible = container.bounds
             if frame.minX < visible.minX - 0.5 || frame.maxX > visible.maxX + 0.5 {
                 problems.append("cut off: \(describe(view)) at \(frame.minX)–\(frame.maxX) of \(visible.width)")
             }
             let intrinsic = view.intrinsicContentSize.width
             if let button = view as? NSButton, !(view is NSPopUpButton), button.cell?.wraps != true,
-               intrinsic != NSView.noIntrinsicMetric, view.frame.width < intrinsic - 1 {
-                problems.append("squeezed: \(describe(view)) \(view.frame.width) of \(intrinsic)")
+               intrinsic != NSView.noIntrinsicMetric, alignment.width < intrinsic - 1 {
+                // A button that truncates its title (a person's name in it) says the whole title in its tooltip.
+                let truncates = [.byTruncatingTail, .byTruncatingMiddle, .byTruncatingHead].contains(button.lineBreakMode)
+                if !truncates || button.toolTip != button.title || alignment.width < 60 {
+                    problems.append("squeezed: \(describe(view)) \(alignment.width) of \(intrinsic)")
+                }
             }
             // A segmented control may be narrower than it asks, as long as each segment holds its label.
             if let segmented = view as? NSSegmentedControl, segmented.segmentCount > 0 {
@@ -412,6 +552,22 @@ struct MainWindowNarrowTests {
                                                              height: .greatestFiniteMagnitude)).height
                 if view.frame.height < needed - 1.5 {
                     problems.append("cut short: \(describe(view)) \(view.frame.height) high of \(needed)")
+                }
+            }
+        }
+        return problems
+    }
+
+    /// Controls and labels in table rows that reach outside their row.
+    static func rowProblems(in pane: NSView) -> [String] {
+        var problems: [String] = []
+        for row in allViews(pane).compactMap({ $0 as? NSTableRowView }) where !row.isHiddenOrHasHiddenAncestor {
+            for view in allViews(row) where view !== row && view is NSControl && !view.isHiddenOrHasHiddenAncestor {
+                guard let superview = view.superview else { continue }
+                let frame = superview.convert(view.alignmentRect(forFrame: view.frame), to: row)
+                if frame.minX < -0.5 || frame.maxX > row.bounds.width + 0.5 {
+                    problems.append("outside its row: \(describe(view)) at \(frame.minX)–\(frame.maxX) of "
+                                    + "\(row.bounds.width)")
                 }
             }
         }

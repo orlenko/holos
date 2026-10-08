@@ -42,7 +42,12 @@ final class WrappingRowView: NSView {
         super.layout()
         let shown = views.filter { !$0.isHidden }
         let placed = Self.frames(of: shown, width: bounds.width, spacing: spacing, rowSpacing: rowSpacing)
-        for (view, frame) in zip(shown, placed.frames) where view.frame != frame { view.frame = frame }
+        // The rows are worked out in alignment rects (what intrinsic sizes measure); a view's frame adds its
+        // alignment insets (a push button's bezel shadow, on systems that have one).
+        for (view, alignment) in zip(shown, placed.frames) {
+            let frame = view.frame(forAlignmentRect: alignment)
+            if view.frame != frame { view.frame = frame }
+        }
         if placed.height != laidOutHeight {
             laidOutHeight = placed.height
             invalidateIntrinsicContentSize()
@@ -55,7 +60,8 @@ final class WrappingRowView: NSView {
         needsLayout = true
     }
 
-    /// The rows each view goes on, left to right and top to bottom, each view centred in its row's height.
+    /// The rows each view goes on, left to right and top to bottom, each view centred in its row's height: the
+    /// views' alignment rects.
     static func frames(of views: [NSView], width: CGFloat, spacing: CGFloat,
                        rowSpacing: CGFloat) -> (frames: [NSRect], height: CGFloat) {
         var rows: [[(NSView, NSSize)]] = []
@@ -85,6 +91,7 @@ final class WrappingRowView: NSView {
         return (frames, y)
     }
 
+    /// The view's alignment-rect size, as Auto Layout measures it.
     private static func size(of view: NSView) -> NSSize {
         let intrinsic = view.intrinsicContentSize
         let fitting = view.fittingSize
