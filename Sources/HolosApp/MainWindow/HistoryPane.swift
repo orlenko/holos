@@ -6,7 +6,7 @@ import HolosCore
 /// happened to it, and its actions. Copy and Copy As Heard are the only ways its text reaches the clipboard.
 @MainActor
 final class HistoryPane: NSViewController, MainSectionContent, NSTableViewDataSource, NSTableViewDelegate,
-    NSMenuItemValidation {
+    NSMenuItemValidation, NSSplitViewDelegate {
     struct Actions {
         /// Copies `text` to the clipboard (only ever on the user's Copy).
         var copy: (_ text: String) -> Bool
@@ -28,11 +28,36 @@ final class HistoryPane: NSViewController, MainSectionContent, NSTableViewDataSo
         case record(DictationRecord)
     }
 
-    /// The list and the detail side by side fit the main window at its narrowest (beside a call's window).
-    static let listMinimumWidth: CGFloat = 150
+    /// The list's narrowest when there is room: its search field's placeholder reads whole.
+    static let listMinimumWidth: CGFloat = 200
+    /// Narrower still only when the window is too narrow for the list's and the detail's minimums side by side (the
+    /// main window at its narrowest, beside a call's window).
+    static let listNarrowestWidth: CGFloat = 150
     static let detailMinimumWidth: CGFloat = 240
+    /// Where the list's width is kept once the divider is dragged.
+    static let listWidthKey = "VoiceIsLocalHistoryListWidth"
+
+    /// The list's width before the divider is dragged: 40% of the section, from 220 to 360 points.
+    static func defaultListWidth(paneWidth: CGFloat) -> CGFloat {
+        min(max((paneWidth * 0.4).rounded(), 220), 360)
+    }
+
+    /// The list's width in a section `paneWidth` wide: the one the divider was dragged to (`preferred`), else the
+    /// default; never under `listMinimumWidth` unless the detail would get less than `detailMinimumWidth`.
+    static func listWidth(preferred: CGFloat?, paneWidth: CGFloat, divider: CGFloat) -> CGFloat {
+        let widest = paneWidth - divider - detailMinimumWidth
+        let wanted = max(preferred ?? defaultListWidth(paneWidth: paneWidth), listMinimumWidth)
+        return max(min(wanted, widest), listNarrowestWidth).rounded()
+    }
 
     private let actions: Actions
+    private let defaults: UserDefaults
+    let split = HistorySplitView()
+    private let listPane = NSView()
+    /// The width the divider was last dragged to (kept in `defaults`); nil until then.
+    private var preferredListWidth: CGFloat?
+    /// The split's width the list was last sized for: the list is sized again when it changes.
+    private var sizedForWidth: CGFloat = 0
     private var records: [DictationRecord] = []
     private var retention = HistoryRetention.standard
     /// Dictations a newer Voice is Local recorded: not listed, but Clear History deletes them.
@@ -57,8 +82,12 @@ final class HistoryPane: NSViewController, MainSectionContent, NSTableViewDataSo
         return formatter
     }()
 
-    init(actions: Actions) {
+    /// `defaults`: where the list's dragged width is kept.
+    init(actions: Actions, defaults: UserDefaults = .standard) {
         self.actions = actions
+        self.defaults = defaults
+        let saved = defaults.double(forKey: Self.listWidthKey)
+        preferredListWidth = saved > 0 ? CGFloat(saved) : nil
         super.init(nibName: nil, bundle: nil)
         view = makeContent()
         detail.onCopy = { [weak self] heard in self?.copySelected(heard: heard) }
@@ -85,7 +114,9 @@ final class HistoryPane: NSViewController, MainSectionContent, NSTableViewDataSo
     // MARK: - Layout
 
     private func makeContent() -> NSView {
-        search.placeholderString = "Search dictations and apps"
+        // Short enough to read whole in the list at its minimum width (`listMinimumWidth`).
+        search.placeholderString = "Search dictations"
+        search.toolTip = "Search the dictations' text and app names"
         search.sendsSearchStringImmediately = true
         search.target = self
         search.action = #selector(searchChanged)
@@ -122,7 +153,6 @@ final class HistoryPane: NSViewController, MainSectionContent, NSTableViewDataSo
         listStack.edgeInsets = NSEdgeInsets(top: 12, left: 12, bottom: 0, right: 12)
         search.widthAnchor.constraint(equalTo: listStack.widthAnchor, constant: -24).isActive = true
         scroll.widthAnchor.constraint(equalTo: listStack.widthAnchor).isActive = true
-        let listPane = NSView()
         listStack.translatesAutoresizingMaskIntoConstraints = false
         emptyLabel.translatesAutoresizingMaskIntoConstraints = false
         listPane.addSubview(listStack)
@@ -135,20 +165,21 @@ final class HistoryPane: NSViewController, MainSectionContent, NSTableViewDataSo
             emptyLabel.centerXAnchor.constraint(equalTo: listPane.centerXAnchor),
             emptyLabel.centerYAnchor.constraint(equalTo: listPane.centerYAnchor),
             emptyLabel.widthAnchor.constraint(lessThanOrEqualTo: listPane.widthAnchor, constant: -40),
-            listPane.widthAnchor.constraint(greaterThanOrEqualToConstant: Self.listMinimumWidth),
+            listPane.widthAnchor.constraint(greaterThanOrEqualToConstant: Self.listNarrowestWidth),
         ])
-
-        let split = NSSplitView()
+        // The list's width is set by moving the divider (`sizeList`), not by a width constraint, so a drag can move
+        // it (a width constraint tied with the detail's holding priority left the split's layout ambiguous, and
+        // AppKit would not move the divider at all). Each time the section's width changes the list gets its width
+        // again (`viewDidLayout`); a drag stops at `listMinimumWidth` (`constrainMinCoordinate`).
         split.isVertical = true
         split.dividerStyle = .thin
-        split.autosaveName = "VoiceIsLocalHistorySplit"
+        split.delegate = self
+        split.onDividerDragged = { [weak self] in self?.dividerDragged() }
         split.addArrangedSubview(listPane)
         split.addArrangedSubview(detail)
-        split.setHoldingPriority(.defaultHigh, forSubviewAt: 0)
+        split.setHoldingPriority(NSLayoutConstraint.Priority(260), forSubviewAt: 0)
+        split.setHoldingPriority(.defaultLow, forSubviewAt: 1)
         detail.widthAnchor.constraint(greaterThanOrEqualToConstant: Self.detailMinimumWidth).isActive = true
-        let listWidth = listPane.widthAnchor.constraint(equalToConstant: 340)
-        listWidth.priority = .defaultLow
-        listWidth.isActive = true
 
         footer.font = .systemFont(ofSize: 11)
         footer.textColor = .secondaryLabelColor
@@ -161,14 +192,70 @@ final class HistoryPane: NSViewController, MainSectionContent, NSTableViewDataSo
         footerRow.edgeInsets = NSEdgeInsets(top: 8, left: 16, bottom: 10, right: 16)
         let separator = NSBox.hairline()
 
-        let root = NSStackView(views: [split, separator, footerRow])
-        root.orientation = .vertical
-        root.spacing = 0
+        // Pinned edge to edge: the split's frame is fully set by constraints, which AppKit needs before it lets the
+        // divider be dragged.
+        let root = NSView()
         for view in [split, separator, footerRow] {
-            view.widthAnchor.constraint(equalTo: root.widthAnchor).isActive = true
+            view.translatesAutoresizingMaskIntoConstraints = false
+            root.addSubview(view)
+            NSLayoutConstraint.activate([
+                view.leadingAnchor.constraint(equalTo: root.leadingAnchor),
+                view.trailingAnchor.constraint(equalTo: root.trailingAnchor),
+            ])
         }
+        NSLayoutConstraint.activate([
+            split.topAnchor.constraint(equalTo: root.topAnchor),
+            separator.topAnchor.constraint(equalTo: split.bottomAnchor),
+            footerRow.topAnchor.constraint(equalTo: separator.bottomAnchor),
+            footerRow.bottomAnchor.constraint(equalTo: root.bottomAnchor),
+        ])
         split.setContentHuggingPriority(.defaultLow, for: .vertical)
+        footerRow.setContentHuggingPriority(.required, for: .vertical)
+        footerRow.setContentCompressionResistancePriority(.required, for: .vertical)
         return root
+    }
+
+    /// The list's width now.
+    var listWidth: CGFloat { listPane.frame.width }
+
+    /// The section changed width (the window resized, the sidebar was shown or hidden): the list gets its width
+    /// again (`listWidth(preferred:paneWidth:divider:)`), so a narrow window does not leave it narrow.
+    override func viewDidLayout() {
+        super.viewDidLayout()
+        let width = split.bounds.width
+        guard width > 0, width != sizedForWidth else { return }
+        sizedForWidth = width
+        sizeList()
+    }
+
+    private func sizeList() {
+        let target = Self.listWidth(preferred: preferredListWidth, paneWidth: split.bounds.width,
+                                    divider: split.dividerThickness)
+        guard abs(listPane.frame.width - target) > 0.5 else { return }
+        split.setPosition(target, ofDividerAt: 0)
+        split.layoutSubtreeIfNeeded()
+    }
+
+    /// A drag of the divider keeps the list `listMinimumWidth` wide (less only when the detail would get less than its
+    /// minimum) and the detail `detailMinimumWidth` wide.
+    func splitView(_ splitView: NSSplitView, constrainMinCoordinate proposedMinimumPosition: CGFloat,
+                   ofSubviewAt dividerIndex: Int) -> CGFloat {
+        max(proposedMinimumPosition, Self.listWidth(preferred: Self.listNarrowestWidth, paneWidth: splitView.bounds.width,
+                                                    divider: splitView.dividerThickness))
+    }
+
+    func splitView(_ splitView: NSSplitView, constrainMaxCoordinate proposedMaximumPosition: CGFloat,
+                   ofSubviewAt dividerIndex: Int) -> CGFloat {
+        let widest = splitView.bounds.width - splitView.dividerThickness - Self.detailMinimumWidth
+        return min(proposedMaximumPosition, max(widest, Self.listNarrowestWidth))
+    }
+
+    /// The divider was dragged: the list's width is kept for the next time, and the next launch.
+    private func dividerDragged() {
+        let width = listPane.frame.width.rounded()
+        guard width > 0, width != preferredListWidth else { return }
+        preferredListWidth = width
+        defaults.set(Double(width), forKey: Self.listWidthKey)
     }
 
     // MARK: - Data
@@ -454,6 +541,19 @@ final class HistoryPane: NSViewController, MainSectionContent, NSTableViewDataSo
         } else if alert.runModal() == .alertFirstButtonReturn {
             action()
         }
+    }
+}
+
+/// History's list and detail. A drag of the divider runs inside `mouseDown` (AppKit tracks it there); when it moved
+/// the divider, `onDividerDragged` says so. Resizing the window moves the divider too, and is not a drag.
+@MainActor
+final class HistorySplitView: NSSplitView {
+    var onDividerDragged: (() -> Void)?
+
+    override func mouseDown(with event: NSEvent) {
+        let before = subviews.first?.frame.width
+        super.mouseDown(with: event)
+        if subviews.first?.frame.width != before { onDividerDragged?() }
     }
 }
 

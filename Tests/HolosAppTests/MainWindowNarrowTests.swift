@@ -287,6 +287,154 @@ struct MainWindowNarrowTests {
         #expect(shown.count >= 2, "The row and the detail show the dictation.")
     }
 
+    /// History with several dictations, opened at the window's narrowest, widened, then set to `width` (the content
+    /// beside the sidebar when it shows): the list gets its default width again (the narrowest window does not leave
+    /// it narrow), its search field's placeholder reads whole whenever there is room for the list's minimum, and
+    /// nothing is cut off or squeezed.
+    @Test(arguments: [CGFloat(400), 480, 560, 700, 900], [true, false])
+    func theHistoryListGetsItsWidthAtEveryWindowWidth(width: CGFloat, sidebarHidden: Bool) throws {
+        let suite = "VoiceIsLocalHistoryTest-\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let (controller, pane) = try Self.history(sidebarHidden: sidebarHidden, defaults: defaults)
+        let content = try #require(controller.window.contentView)
+        let extra = Self.minimumWidth(controller, sidebarHidden: sidebarHidden) - MainWindowController.contentMinimumWidth
+        controller.window.setContentSize(NSSize(width: 1000 + extra, height: MainWindowController.minimumHeight))
+        content.layoutSubtreeIfNeeded()
+        controller.window.setContentSize(NSSize(width: width + extra, height: MainWindowController.minimumHeight))
+        content.layoutSubtreeIfNeeded()
+
+        #expect(Self.brokenConstraints(in: content).isEmpty)
+        let problems = Self.layoutProblems(in: pane.view) + Self.rowProblems(in: pane.view)
+        #expect(problems.isEmpty, "\(problems)")
+        let split = pane.split
+        let room = split.bounds.width
+        #expect(abs(pane.listWidth - HistoryPane.listWidth(preferred: nil, paneWidth: room,
+                                                           divider: split.dividerThickness)) <= 0.5)
+        #expect(split.subviews[1].frame.width >= HistoryPane.detailMinimumWidth - 0.5)
+        if room >= HistoryPane.listMinimumWidth + split.dividerThickness + HistoryPane.detailMinimumWidth {
+            #expect(pane.listWidth >= HistoryPane.listMinimumWidth - 0.5)
+            let search = try #require(pane.searchField)
+            let placeholder = (search.placeholderString ?? "") as NSString
+            let textWidth = try #require(search.cell as? NSSearchFieldCell).searchTextRect(forBounds: search.bounds).width
+            let needed = placeholder.size(withAttributes: [.font: search.font ?? .systemFont(ofSize: 13)]).width
+            #expect(textWidth >= needed, "The placeholder “\(placeholder)” needs \(needed) of \(textWidth).")
+        } else {
+            #expect(pane.listWidth >= HistoryPane.listNarrowestWidth - 0.5)
+        }
+        SettingsEmbeddingTests.render(controller.window,
+                                      name: "history-list-\(Int(width))-\(sidebarHidden ? "hidden" : "sidebar")")
+    }
+
+    /// The divider widens the list up to what leaves the detail its minimum, and narrows it down to the list's
+    /// minimum; the width it was dragged to holds as the window narrows and widens again, and in the next window.
+    @Test(arguments: [true, false])
+    func theDividerWidensTheListAndItsWidthIsKept(sidebarHidden: Bool) throws {
+        let suite = "VoiceIsLocalHistoryTest-\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let (controller, pane) = try Self.history(sidebarHidden: sidebarHidden, defaults: defaults)
+        let content = try #require(controller.window.contentView)
+        let extra = Self.minimumWidth(controller, sidebarHidden: sidebarHidden) - MainWindowController.contentMinimumWidth
+        func resize(_ width: CGFloat) {
+            controller.window.setContentSize(NSSize(width: width + extra, height: MainWindowController.minimumHeight))
+            content.layoutSubtreeIfNeeded()
+        }
+        func drag(_ split: HistorySplitView, to position: CGFloat) {
+            split.setPosition(position, ofDividerAt: 0)
+            content.layoutSubtreeIfNeeded()
+            split.onDividerDragged?()  // what the end of a drag in `mouseDown` reports
+        }
+        resize(900)
+        let split = pane.split
+        let room = split.bounds.width
+        let widest = room - split.dividerThickness - HistoryPane.detailMinimumWidth
+        #expect(abs(pane.listWidth - HistoryPane.defaultListWidth(paneWidth: room)) <= 0.5)
+        #expect(defaults.object(forKey: HistoryPane.listWidthKey) == nil, "Nothing is kept before a drag.")
+
+        drag(split, to: 5_000)
+        #expect(abs(pane.listWidth - widest) <= 0.5, "As wide as leaves the detail its minimum.")
+        drag(split, to: 20)
+        #expect(abs(pane.listWidth - HistoryPane.listMinimumWidth) <= 0.5, "No narrower than the list's minimum.")
+        drag(split, to: 480)
+        #expect(abs(pane.listWidth - 480) <= 0.5)
+        #expect(defaults.double(forKey: HistoryPane.listWidthKey) == 480)
+        #expect(Self.brokenConstraints(in: content).isEmpty)
+        let problems = Self.layoutProblems(in: pane.view) + Self.rowProblems(in: pane.view)
+        #expect(problems.isEmpty, "\(problems)")
+        SettingsEmbeddingTests.render(controller.window, name: "history-dragged-\(sidebarHidden ? "hidden" : "sidebar")")
+
+        // Narrower: the detail keeps its minimum and the list gives way; wider again: the dragged width is back.
+        resize(560)
+        #expect(split.subviews[1].frame.width >= HistoryPane.detailMinimumWidth - 0.5)
+        #expect(pane.listWidth < 480)
+        resize(900)
+        #expect(abs(pane.listWidth - 480) <= 0.5)
+        #expect(defaults.double(forKey: HistoryPane.listWidthKey) == 480, "Resizing the window is not a drag.")
+
+        // The next window (the next launch) starts with it.
+        let next = HistoryPane(actions: Self.historyActions, defaults: defaults)
+        let nextController = try Self.window(on: .history, sidebarHidden: sidebarHidden, pane: next)
+        nextController.window.setContentSize(NSSize(width: 900 + extra, height: MainWindowController.minimumHeight))
+        nextController.window.contentView?.layoutSubtreeIfNeeded()
+        #expect(abs(next.listWidth - 480) <= 0.5)
+    }
+
+    /// The list's width: 40% of the section from 220 to 360 points, or the dragged width; never under the list's
+    /// minimum unless the detail would get less than its own, and never under the narrowest.
+    @Test func theListWidthFollowsTheSection() {
+        let divider: CGFloat = 1
+        #expect(HistoryPane.defaultListWidth(paneWidth: 400) == 220)
+        #expect(HistoryPane.defaultListWidth(paneWidth: 700) == 280)
+        #expect(HistoryPane.defaultListWidth(paneWidth: 1200) == 360)
+        #expect(HistoryPane.listWidth(preferred: nil, paneWidth: 700, divider: divider) == 280)
+        #expect(HistoryPane.listWidth(preferred: 500, paneWidth: 1200, divider: divider) == 500)
+        #expect(HistoryPane.listWidth(preferred: 900, paneWidth: 1000, divider: divider) == CGFloat(759))
+        #expect(HistoryPane.listWidth(preferred: 120, paneWidth: 900, divider: divider) == HistoryPane.listMinimumWidth)
+        #expect(HistoryPane.listWidth(preferred: nil, paneWidth: 480, divider: divider) == 220)
+        #expect(HistoryPane.listWidth(preferred: 400, paneWidth: 480, divider: divider) == 239)
+        #expect(HistoryPane.listWidth(preferred: nil, paneWidth: 400, divider: divider) == 159)
+        #expect(HistoryPane.listWidth(preferred: nil, paneWidth: 300, divider: divider)
+                == HistoryPane.listNarrowestWidth)
+    }
+
+    static let historyActions = HistoryPane.Actions(copy: { _ in true }, correct: { _ in }, delete: { _ in },
+                                                    clear: {}, audioURL: { _ in nil },
+                                                    rerun: { _ in throw CancellationError() }, update: { _, _ in })
+
+    /// History in the main window at its narrowest, with `historyRecords`, keeping its list width in `defaults`.
+    static func history(sidebarHidden: Bool, defaults: UserDefaults) throws -> (MainWindowController, HistoryPane) {
+        let pane = HistoryPane(actions: historyActions, defaults: defaults)
+        let controller = try window(on: .history, sidebarHidden: sidebarHidden, pane: pane)
+        pane.update(records: historyRecords, retention: .standard, problem: nil, hidden: 0, unreadable: false)
+        controller.window.contentView?.layoutSubtreeIfNeeded()
+        return (controller, pane)
+    }
+
+    /// Made-up dictations for History: long app names, a long text, one the fixes changed.
+    static var historyRecords: [DictationRecord] {
+        let now = Date()
+        return [
+            DictationRecord(id: UUID(), date: now.addingTimeInterval(-7200), app: "Notes", language: "en-US",
+                            text: "pick up the blue folder before the train", heard: "pick up the blue folder before the train",
+                            outcome: .init(kind: .inserted), seconds: 3),
+            DictationRecord(id: UUID(), date: now.addingTimeInterval(-3600),
+                            app: "Featherstonehaugh Project Planner Professional", language: "en-US",
+                            text: "move the review to Thursday afternoon after the planning call",
+                            heard: "move the review to Thursday afternoon after the planning call",
+                            outcome: .init(kind: .typed), seconds: 4),
+            DictationRecord(id: UUID(), date: now.addingTimeInterval(-60), app: "Intergalactic Spreadsheet Workshop",
+                            language: "en-US", text: Self.longDictation,
+                            heard: Self.longDictation.replacingOccurrences(of: "Thursday", with: "thirsty day"),
+                            fixes: .init(fillersRemoved: true, corrections: 1),
+                            outcome: .init(kind: .inserted), seconds: 41),
+        ]
+    }
+
+    static let longDictation = "So while the workshop runs long on Thursday we should still send the agenda to "
+        + "everyone in the morning, then collect the notes from each table, write a short summary of what each "
+        + "group decided, and keep a list of the open questions for the follow-up session next week."
+
     /// The rows the buttons wrap onto are worked out in alignment rects, and a frame adds a view's alignment insets
     /// (a push button's bezel on systems that have one): no view comes out smaller than it asks.
     @Test func aWrappingRowPlacesViewsByTheirAlignmentRects() {
