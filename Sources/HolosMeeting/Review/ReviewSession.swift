@@ -221,8 +221,8 @@ public struct ReviewDeletedWords: Sendable, Equatable {
     /// all when it cannot wait any longer, so no edit is dropped without what was typed.
     public var unsavedWordEdits: [String] {
         queue.compactMap { op in
-            guard !op.finished, case .editWords(let request, _) = op.kind, !request.restoresRemoved else { return nil }
-            return TranscriptWordEdit.cleaned(request.text)
+            guard !op.finished, case .editWords(let request, _) = op.kind else { return nil }
+            return Self.typed(request)
         }
     }
 
@@ -233,14 +233,18 @@ public struct ReviewDeletedWords: Sendable, Equatable {
 
     /// The word edits not saved yet when the review began closing that were then refused or failed, each with what was
     /// typed and why, in the order they were queued. Their windows close, so quitting logs them (timeout or not):
-    /// none is dropped without what was typed.
+    /// none is dropped without what was typed. A Restore of deleted words is among them (`restoreDescription`).
     public var failedWordEditsAtClose: [(typed: String, reason: String)] {
         closingWordEdits.compactMap { op -> (typed: String, reason: String)? in
             guard op.finished, op.wordEditResult == nil, case .failure(let error)? = op.result,
-                  !(error is CancellationError), case .editWords(let request, _) = op.kind,
-                  !request.restoresRemoved else { return nil }
-            return (TranscriptWordEdit.cleaned(request.text), error.localizedDescription)
+                  !(error is CancellationError), case .editWords(let request, _) = op.kind else { return nil }
+            return (Self.typed(request), error.localizedDescription)
         } + (refusedAtClose.map { [$0] } ?? [])
+    }
+
+    /// What was typed for `request`, as the close's lists say it; for a Restore, which it is.
+    private nonisolated static func typed(_ request: TranscriptWordEdit.Request) -> String {
+        request.restoresRemoved ? restoreDescription(request.segmentID) : TranscriptWordEdit.cleaned(request.text)
     }
 
     /// The corrections one word edit teaches (the app: `TranscriptEditLearning`).
@@ -1237,6 +1241,14 @@ public struct ReviewDeletedWords: Sendable, Equatable {
     /// text, times, and fixes) and to the turns that held them: a word edit like any other (new transcript revisions,
     /// a speaker head with every speaker edit carried over), one undo takes it back.
     public func restoreDeletedWords(segmentID: String) async throws {
+        try await queueRestoreDeletedWords(segmentID: segmentID)()
+    }
+
+    /// `restoreDeletedWords` with its change queued before this returns, as `queueWordEdit` queues an edit: a close or
+    /// a quit right after finds it there (it is saved before the review closes, and a failure then is reported with
+    /// the other word edits, `failedWordEditsAtClose`). Returns the wait for it; throws when it is refused before it is
+    /// queued.
+    public func queueRestoreDeletedWords(segmentID: String) throws -> @MainActor () async throws -> Void {
         try requireEditable()
         if let blocked = wordEditingBlocked { throw HolosError.invalidInput(blocked) }
         guard let segment = segments[segmentID], segment.removed != nil else {
@@ -1247,7 +1259,13 @@ public struct ReviewDeletedWords: Sendable, Equatable {
         }
         let op = queued(.editWords(.restoring(segmentID: segmentID), segment: segment), optimistic: [])
         op.movesSeen = movesRead
-        try await wait(for: op)
+        return { [self] in try await wait(for: op) }
+    }
+
+    /// How a queued Restore is named where an edit says what was typed (`unsavedWordEdits`, `failedWordEditsAtClose`):
+    /// nothing was typed.
+    nonisolated static func restoreDescription(_ segmentID: String) -> String {
+        "(restore of deleted words, segment \(segmentID))"
     }
 
     /// Replaces shown words with `text` (docs/meeting-design.md §5.10, "Editing words"): `words` are consecutive words

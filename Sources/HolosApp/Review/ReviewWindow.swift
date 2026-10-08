@@ -139,7 +139,7 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, NSM
         didSet { window.title = "\(meetingTitle) — Review" }
     }
 
-    private let window: ReviewKeyWindow
+    let window: ReviewKeyWindow
     private let player = ReviewPlayer()
     private let sidebar = SpeakerSidebarView()
     private let turnList = TurnListView()
@@ -1421,12 +1421,40 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, NSM
 
     /// Restore Deleted “…”: segment `segmentID`'s words, all deleted earlier, come back to the turns that held them.
     /// Its run keeps the turns, as a word edit's does, so the paragraph breaks stay.
-    private func restoreDeleted(_ segmentID: String) {
-        paragraphBreaks.beginCarryOver()
-        perform { [weak self] review in
-            defer { self?.endBreakCarryOver() }
-            try await review.restoreDeletedWords(segmentID: segmentID)
+    /// Queued in the review before this returns, and tracked as a word edit is (`pendingWordEdits`): a close by hand
+    /// right after waits for it and stays open when it fails (the footer says why), and a quit closes the review with
+    /// it queued (`ReviewSession.failedWordEditsAtClose` reports a failure).
+    func restoreDeleted(_ segmentID: String) {
+        clearTransientMessages()
+        let wait: @MainActor () async throws -> Void
+        do {
+            wait = try review.queueRestoreDeletedWords(segmentID: segmentID)
+        } catch {
+            problem = error.localizedDescription
+            refreshFooter()
+            return
         }
+        paragraphBreaks.beginCarryOver()
+        let id = UUID()
+        let movesSeen = review.shownWordMoves.count
+        let epoch = review.wordsEpoch
+        let saving: Task<FailedWordEdit?, Never> = Task { [weak self] () async -> FailedWordEdit? in
+            var failure: FailedWordEdit?
+            do {
+                try await wait()
+            } catch is CancellationError {
+            } catch {
+                let message = "The deleted words were not restored: " + error.localizedDescription
+                failure = FailedWordEdit(words: [], text: "", movesSeen: movesSeen, wordsEpoch: epoch,
+                                         message: message)
+                self?.problem = message
+                self?.refreshFooter()
+            }
+            self?.endBreakCarryOver()
+            self?.pendingWordEdits.removeAll { $0.id == id }
+            return failure
+        }
+        pendingWordEdits.append((id, saving))
     }
 
     // MARK: - Editing words
