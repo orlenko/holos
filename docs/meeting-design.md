@@ -7332,7 +7332,11 @@ Quit Holos
 
 "Stop and Save…" asks: "Stop and save “Council meeting”?" with the informative text
 "Holos then labels speakers, which takes about 2 minutes for a 3-hour meeting. Keep the
-lid open until it finishes." `[Stop and Save]` `[Keep Recording]`.
+lid open until it finishes." `[Stop and Save]` `[Keep Recording]`. The live transcript's
+header and the meeting's menu in Meetings offer the same Pause / Resume and Stop and Save…
+with the same rules and the same path (`MeetingRecordingControls`,
+`HolosAppDelegate.performMeetingRecordingCommand`; docs/design.md "Live transcript"); from
+the main window the question is a sheet on it.
 
 Idle menu: `Name Speakers — Council meeting…` at the top while offered (PR4 opens the
 Meetings window with that session selected; PR9 opens Review), then

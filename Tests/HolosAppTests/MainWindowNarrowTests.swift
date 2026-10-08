@@ -35,9 +35,9 @@ struct MainWindowNarrowTests {
     }
 
     /// The live transcript beside a call: the header keeps ‹ (back), the meeting's name (at least
-    /// `titleMinimumWidth`), its state, and the finished meeting's button; the edit bar keeps Correct Text… and Name
-    /// Speaker….
-    @Test(arguments: [true, false], [LiveMeetingPhase.recording, .saved])
+    /// `titleMinimumWidth`), its state, Pause / Resume and Stop and Save… (a symbol each) while recording, and the
+    /// finished meeting's button once saved; the edit bar keeps Correct Text… and Name Speaker….
+    @Test(arguments: [true, false], [LiveMeetingPhase.recording, .paused, .saved])
     func theLiveTranscriptStaysUsable(sidebarHidden: Bool, phase: LiveMeetingPhase) throws {
         let controller = try Self.window(on: .meetings, sidebarHidden: sidebarHidden)
         let pane = try #require(controller.existingController(for: .meetings) as? MeetingsPane)
@@ -46,12 +46,20 @@ struct MainWindowNarrowTests {
         pane.showLive(sessionID: LiveMeetingViewTests.sessionID, directory: session)
         let live = try #require(pane.children.compactMap { $0 as? LiveMeetingViewController }.first)
         let name = "Quarterly planning with the whole design team"
-        let detail = phase == .saved ? "Saved — 1:02:03" : "0:12:34"
-        live.update(header: LiveMeetingHeader(name: name, phase: phase, detail: detail),
+        let detail = switch phase {
+        case .saved: "Saved — 1:02:03"
+        case .paused: "Paused · 0:12:34"
+        default: "0:12:34"
+        }
+        let controls = phase == .saved ? MeetingRecordingControls.none
+            : MeetingRecordingControls(state: MeetingRecordingControlsTests.active(phase == .paused ? .paused : .recording),
+                                       stopRequested: false, stoppedWhileStarting: false)
+        live.update(header: LiveMeetingHeader(name: name, phase: phase, detail: detail, controls: controls),
                     finishedAction: phase == .saved ? "Open Review…" : nil)
         let window = controller.window
         let content = try #require(window.contentView)
         content.layoutSubtreeIfNeeded()
+        content.layoutSubtreeIfNeeded()  // the compact titles change on the first pass
         let width = Self.minimumWidth(controller, sidebarHidden: sidebarHidden)
         #expect(content.frame.width == width)
         #expect(Self.brokenConstraints(in: content).isEmpty)
@@ -62,7 +70,18 @@ struct MainWindowNarrowTests {
         let back = try #require(buttons.first { $0.accessibilityLabel() == "Back to Meetings" })
         var whole = [back, try #require(buttons.first { $0.title == "Correct Text…" }),
                      try #require(buttons.first { $0.title == "Name Speaker…" })]
-        if phase == .saved { whole.append(try #require(buttons.first { $0.title == "Open Review…" })) }
+        if phase == .saved {
+            whole.append(try #require(buttons.first { $0.title == "Open Review…" }))
+            #expect(!buttons.contains { $0.accessibilityLabel() == "Stop and Save…" })
+        } else {
+            // A symbol each, named for VoiceOver and in their tooltips.
+            let stop = try #require(buttons.first { $0.accessibilityLabel() == "Stop and Save…" })
+            #expect(stop.title.isEmpty && stop.toolTip == "Stop and Save…")
+            let pauseTitle = phase == .paused ? "Resume Recording" : "Pause Recording"
+            let pause = try #require(buttons.first { $0.accessibilityLabel() == pauseTitle })
+            #expect(pause.toolTip == pauseTitle)
+            whole += [stop, pause]
+        }
         for button in whole {
             #expect(button.alignmentRect(forFrame: button.frame).width >= button.intrinsicContentSize.width - 1,
                     "\(button.title) is squeezed")
@@ -80,6 +99,44 @@ struct MainWindowNarrowTests {
             #expect(status.frame.width > 30)
         }
         SettingsEmbeddingTests.render(window, name: "narrow-live-\(phase)-\(sidebarHidden ? "hidden" : "sidebar")")
+    }
+
+    /// Stop and Save… shows its title from `stopTitleWidth` up and only its symbol below; at every width the header
+    /// fits, the clock shows whole, and the title keeps its minimum.
+    @Test(arguments: [CGFloat(400), 520, LiveMeetingViewController.stopTitleWidth - 1,
+                      LiveMeetingViewController.stopTitleWidth, 900])
+    func theStopButtonShowsItsTitleWhenThereIsRoom(width: CGFloat) throws {
+        let controller = try Self.window(on: .meetings, sidebarHidden: true)
+        controller.window.setContentSize(NSSize(width: width, height: MainWindowController.minimumHeight))
+        let pane = try #require(controller.existingController(for: .meetings) as? MeetingsPane)
+        let session = try LiveMeetingViewTests.recordingSession()
+        defer { try? FileManager.default.removeItem(at: session.deletingLastPathComponent()) }
+        pane.showLive(sessionID: LiveMeetingViewTests.sessionID, directory: session)
+        let live = try #require(pane.children.compactMap { $0 as? LiveMeetingViewController }.first)
+        let controls = MeetingRecordingControls(state: MeetingRecordingControlsTests.active(.recording),
+                                                stopRequested: false, stoppedWhileStarting: false)
+        live.update(header: LiveMeetingHeader(name: Self.longMeeting, phase: .recording, detail: "1:02:34",
+                                              controls: controls), finishedAction: nil)
+        let content = try #require(controller.window.contentView)
+        content.layoutSubtreeIfNeeded()
+        content.layoutSubtreeIfNeeded()  // the compact titles change on the first pass
+        #expect(live.view.bounds.width == width)
+        #expect(Self.brokenConstraints(in: content).isEmpty)
+        let problems = Self.layoutProblems(in: live.view)
+        #expect(problems.isEmpty, "\(problems)")
+        let views = Self.allViews(live.view).filter { !$0.isHiddenOrHasHiddenAncestor }
+        let stop = try #require(views.compactMap { $0 as? NSButton }
+            .first { $0.accessibilityLabel() == "Stop and Save…" })
+        #expect(stop.title == (width >= LiveMeetingViewController.stopTitleWidth ? "Stop and Save…" : ""))
+        #expect(stop.toolTip == "Stop and Save…")
+        let frame = try #require(stop.superview).convert(stop.frame, to: live.view)
+        #expect(frame.minX >= 0 && frame.maxX <= live.view.bounds.width)
+        let labels = views.compactMap { $0 as? NSTextField }
+        let clock = try #require(labels.first { $0.stringValue == "1:02:34" })
+        #expect(clock.frame.width >= clock.intrinsicContentSize.width - 1)
+        let title = try #require(labels.first { $0.stringValue == Self.longMeeting })
+        #expect(title.frame.width >= LiveMeetingViewController.titleMinimumWidth - 1)
+        SettingsEmbeddingTests.render(controller.window, name: "live-stop-\(Int(width))")
     }
 
     /// A finished reading's row in the Reading list at the window's narrowest: Share… and Show in Finder become
