@@ -8,6 +8,8 @@ struct LiveMeetingHeader: Equatable {
     var phase: LiveMeetingPhase
     /// "0:12:34", "Saving — labelling speakers 42%", a failure.
     var detail: String
+    /// Stop and Pause / Resume while the app records the meeting (none for a meeting it does not follow).
+    var controls: MeetingRecordingControls = .none
 }
 
 struct LiveTextLearning {
@@ -23,9 +25,10 @@ struct LiveTextLearning {
 /// A meeting's live transcript in the Meetings section (docs/design.md "Live transcript"): its words as they are
 /// spoken, volatile ones in a secondary colour until they are final, with the microphone's echo of the call hidden
 /// (`LiveTranscript`). It follows the newest words while the user is at the bottom; scrolling up stops that and shows
-/// "Jump to Live" (`LiveFollow`). Reads the session four times a second while on screen, off the main actor. Once the
-/// meeting is saved, the header offers what opens a finished meeting (Review or the transcript). The ‹ Meetings
-/// button (Escape) goes back to the list.
+/// "Jump to Live" (`LiveFollow`). Reads the session four times a second while on screen, off the main actor. While the
+/// app records the meeting, the header has Pause / Resume and Stop and Save… beside its state (the menu bar's rules
+/// and path, `MeetingRecordingControls`); once the meeting is saved, what opens a finished meeting (Review or the
+/// transcript). The ‹ Meetings button (Escape) goes back to the list.
 @MainActor
 final class LiveMeetingViewController: NSViewController, NSTextViewDelegate {
     static let refreshInterval: Duration = .milliseconds(250)
@@ -38,6 +41,8 @@ final class LiveMeetingViewController: NSViewController, NSTextViewDelegate {
     /// Reconciles safe correction pairs with the latest live edits. Arguments are the saved learning state, original
     /// recognizer text, and new text. The result records what this edit confirms, newly owns, and displaced.
     private let onLearnText: (LiveHints.CorrectionLearningState, String, String) -> LiveTextLearning
+    /// Stop and Save…, Pause, Resume (the app delegate checks them against the meeting's state again).
+    private let onRecordingCommand: (MeetingRecordingCommand) -> Void
     private var reader: LiveTranscriptReader
     private var header = LiveMeetingHeader(name: "", phase: .starting, detail: "")
     private var paragraphs: [LiveParagraph] = []
@@ -53,6 +58,9 @@ final class LiveMeetingViewController: NSViewController, NSTextViewDelegate {
     private let statusDot = NSImageView()
     private let statusLabel = NSTextField(labelWithString: "")
     private let finishedButton = NSButton()
+    private let pauseButton = NSButton()
+    private let stopButton = NSButton()
+    private let recordingControls = NSStackView()
     private let scroll = NSTextView.scrollableTextView()
     private var textView: NSTextView { scroll.documentView as! NSTextView }
     private let placeholder = NSTextField(wrappingLabelWithString: "")
@@ -65,11 +73,13 @@ final class LiveMeetingViewController: NSViewController, NSTextViewDelegate {
     init(sessionID: String, directory: URL, onBack: @escaping () -> Void, onOpenFinished: @escaping () -> Void,
          onLearnText: @escaping (LiveHints.CorrectionLearningState, String, String) -> LiveTextLearning = {
              _, _, _ in .init()
-         }) {
+         },
+         onRecordingCommand: @escaping (MeetingRecordingCommand) -> Void = { _ in }) {
         self.sessionID = sessionID
         self.onBack = onBack
         self.onOpenFinished = onOpenFinished
         self.onLearnText = onLearnText
+        self.onRecordingCommand = onRecordingCommand
         reader = LiveTranscriptReader(session: directory)
         super.init(nibName: nil, bundle: nil)
     }
@@ -110,12 +120,29 @@ final class LiveMeetingViewController: NSViewController, NSTextViewDelegate {
         finishedButton.action = #selector(openFinished)
         finishedButton.keyEquivalent = "\r"
         finishedButton.isHidden = true
+        // Beside the state while the app records the meeting: Pause / Resume (a symbol) and Stop and Save… (a red
+        // stop symbol, with its title unless the header is narrow). No key equivalents: Escape is ‹ Meetings and
+        // Return the finished meeting's button; Tab (Full Keyboard Access) and VoiceOver reach both.
+        pauseButton.bezelStyle = .push
+        pauseButton.imagePosition = .imageOnly
+        pauseButton.target = self
+        pauseButton.action = #selector(pauseOrResume)
+        pauseButton.isHidden = true
+        stopButton.bezelStyle = .push
+        stopButton.image = NSImage(systemSymbolName: "stop.circle.fill", accessibilityDescription: nil)?
+            .withSymbolConfiguration(NSImage.SymbolConfiguration(paletteColors: [.white, .systemRed]))
+        stopButton.imagePosition = .imageLeading
+        stopButton.target = self
+        stopButton.action = #selector(stopRecording)
 
         let spacer = NSView()
         spacer.setContentHuggingPriority(.init(1), for: .horizontal)
         let status = NSStackView(views: [statusDot, statusLabel])
         status.spacing = 5
-        let bar = NSStackView(views: [backButton, titleLabel, spacer, status, finishedButton])
+        recordingControls.setViews([pauseButton, stopButton], in: .leading)
+        recordingControls.spacing = 6
+        recordingControls.isHidden = true
+        let bar = NSStackView(views: [backButton, titleLabel, spacer, status, recordingControls, finishedButton])
         bar.spacing = 10
         bar.alignment = .centerY
         bar.translatesAutoresizingMaskIntoConstraints = false
@@ -253,7 +280,30 @@ final class LiveMeetingViewController: NSViewController, NSTextViewDelegate {
         statusLabel.setAccessibilityLabel("\(word). \(header.detail)")
         placeholder.stringValue = header.phase.capturing || header.phase == .saving
             ? "Listening… Words appear here as they are spoken." : "Nothing was transcribed."
+        applyRecordingControls(header)
         updateEditButtons()
+    }
+
+    /// Pause / Resume and Stop while the meeting is captured and the app records it; hidden once it saves (the
+    /// finished meeting's button follows), and for a meeting the app does not follow.
+    private func applyRecordingControls(_ header: LiveMeetingHeader) {
+        let controls = header.controls
+        let shown = header.phase.capturing && controls.sessionID == sessionID && controls.stop != nil
+        recordingControls.isHidden = !shown
+        if let stop = controls.stop {
+            stopButton.isEnabled = controls.stopEnabled
+            stopButton.toolTip = stop.title
+            stopButton.setAccessibilityLabel(stop.title)
+            compactStopButton(stopCompact)
+        }
+        pauseButton.isHidden = controls.pause == nil
+        if let pause = controls.pause {
+            pauseButton.image = NSImage(systemSymbolName: pause == .pause ? "pause.fill" : "play.fill",
+                                        accessibilityDescription: pause.title)
+            pauseButton.isEnabled = controls.pauseEnabled
+            pauseButton.toolTip = pause.title
+            pauseButton.setAccessibilityLabel(pause.title)
+        }
     }
 
     /// Starts reading the session (the section came on screen with this view).
@@ -317,6 +367,7 @@ final class LiveMeetingViewController: NSViewController, NSTextViewDelegate {
     override func viewDidLayout() {
         super.viewDidLayout()
         compactBackButton(view.bounds.width < Self.compactWidth)
+        compactStopButton(view.bounds.width < Self.stopTitleWidth)
         guard follow.scrollsToNewWords, !paragraphs.isEmpty else { return }
         updating = true
         textView.scrollToEndOfDocument(nil)
@@ -332,6 +383,20 @@ final class LiveMeetingViewController: NSViewController, NSTextViewDelegate {
         guard backButton.title != title else { return }
         backButton.title = title
         backButton.imagePosition = compact ? .imageOnly : .imageLeading
+    }
+
+    /// Narrower than this, Stop and Save… shows only its red stop symbol (its tooltip and VoiceOver label keep the
+    /// title), so the meeting's name and clock keep their room.
+    nonisolated static let stopTitleWidth: CGFloat = 640
+
+    private var stopCompact = false
+
+    private func compactStopButton(_ compact: Bool) {
+        stopCompact = compact
+        let title = compact ? "" : (header.controls.stop?.title ?? "")
+        guard stopButton.title != title else { return }
+        stopButton.title = title
+        stopButton.imagePosition = compact ? .imageOnly : .imageLeading
     }
 
     // MARK: - Following
@@ -359,6 +424,16 @@ final class LiveMeetingViewController: NSViewController, NSTextViewDelegate {
     @objc private func back() { onBack() }
 
     @objc private func openFinished() { onOpenFinished() }
+
+    @objc private func pauseOrResume() {
+        guard let pause = header.controls.pause, header.controls.pauseEnabled else { return }
+        onRecordingCommand(pause == .pause ? .pause : .resume)
+    }
+
+    @objc private func stopRecording() {
+        guard header.controls.stop != nil, header.controls.stopEnabled else { return }
+        onRecordingCommand(.stop)
+    }
 
     // MARK: - Live corrections
 
