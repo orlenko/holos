@@ -43,7 +43,9 @@ public enum MeetingSelection {
     /// place of one meeting's details. The length counts the meetings that have audio.
     public static func summary(_ meetings: [SessionSummary]) -> String {
         var parts = ["\(meetings.count) meetings selected"]
-        let seconds = meetings.reduce(0.0) { $0 + ($1.savedSeconds.isFinite ? max(0, $1.savedSeconds) : 0) }
+        // A meeting whose audio was deleted keeps its `savedSeconds` in the catalog; it has no length to add.
+        let seconds = meetings.filter { !$0.audioDeleted }
+            .reduce(0.0) { $0 + ($1.savedSeconds.isFinite ? max(0, $1.savedSeconds) : 0) }
         if seconds >= 1 { parts.append(MeetingListFormat.duration(seconds)) }
         parts.append(MeetingFormat.size(meetings.reduce(Int64(0)) { $0 + max(0, $1.bytes) }))
         return parts.joined(separator: " · ")

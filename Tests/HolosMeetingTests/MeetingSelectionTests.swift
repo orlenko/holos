@@ -75,6 +75,13 @@ private let rows: [String?] = [nil, "A", "B", nil, "C", "D", nil, "E"]
     #expect(text == "3 meetings selected · 1 h 20 min · 1.3 GB")
     #expect(MeetingSelection.summary([meeting("A", seconds: 0, bytes: 5_000_000), meeting("B", seconds: 0, bytes: 0)])
             == "2 meetings selected · 5 MB")
+    // A meeting whose audio was deleted keeps its seconds in the catalog, but adds no length.
+    #expect(MeetingSelection.summary([meeting("A", seconds: 600, bytes: 0),
+                                      meeting("N", seconds: 3_000, bytes: 0, audioDeleted: true)])
+            == "2 meetings selected · 10 min · 0 MB")
+    #expect(MeetingSelection.summary([meeting("N", seconds: 3_000, bytes: 0, audioDeleted: true),
+                                      meeting("M", seconds: 1_200, bytes: 0, audioDeleted: true)])
+            == "2 meetings selected · 0 MB")
 }
 
 // MARK: - The plan
