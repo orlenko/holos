@@ -535,6 +535,23 @@ timeline and a larger local-model benchmark are follow-ups.
   logic, the voice order, the speed mapping, and the pipeline's new progress reports are
   unit-tested; the section itself is built and compiled only and has not been seen on screen
   yet (docs/dictation-validation.md "Reading section").
+- Natural voices (docs/design.md "Natural voices"): Reading can use Kyutai's Pocket TTS through
+  FluidAudio 0.17.1, rendered by the bundled `voiceislocal say` (the app does not link
+  FluidAudio). `voiceislocal setup --natural-voices [--language fr]` or Settings › Reading
+  (Download with the size, progress, Cancel, failure shown) installs a pack into
+  `Application Support/Holos/Models/pocket-tts` (English about 530 MB, French about 1.9 GB) and
+  warms it up. Once installed, Automatic reads English with Alba and French with Estelle; 19
+  English voices and Estelle are offered (voices with non-commercial recordings, `cosette` and
+  `jean`, are not). Paragraphs are fed one at a time with a fixed seed (renders are
+  byte-identical), with 0.6 s pauses between paragraphs and 0.9 s after a heading; speed is a
+  time-stretch afterwards; each paragraph is heard back by Apple's recognizer and rendered again
+  or read by an Apple voice when it does not match. Unit-tested with a fake backend (catalog and
+  licences, identifiers, defaults, feeding, pauses, seed, speed, check, re-render, fallback,
+  install and download states, the tool's arguments and Stop); the real model was run from the
+  CLI and the opt-in integration test (English 3.5× real time with the check, which takes about
+  9 % of the time; French about 1× including an 11 s load, 2× after). Not yet: anything through
+  the app (Settings, the menus, Preview, a reading rendered by the bundled tool) seen on screen,
+  a book-length reading, and listening to the speed-changed audio.
 - Dictation history (docs/design.md "Dictation history"): each finished dictation that
   produced text is kept in `Application Support/Holos/History/dictations.jsonl` (0600, one
   JSON line each) with its app, language, text as written and as heard, fixes, outcome,

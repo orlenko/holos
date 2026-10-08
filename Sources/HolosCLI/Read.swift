@@ -159,7 +159,9 @@ struct Read: AsyncParsableCommand {
         let identity = ReadingPipeline.identity(script: script, voiceIdentifier: selected.id, rate: request.rate,
                                                 metadata: metadata)
         if request.printText {
-            let voice = "\(VoiceSelection.displayNames(NativeSpeechRenderer.voices())[selected.id] ?? selected.name) (\(selected.id))"
+            let name = NaturalVoiceCatalog.voice(id: selected.id)?.title
+                ?? VoiceSelection.displayNames(NativeSpeechRenderer.voices())[selected.id] ?? selected.name
+            let voice = "\(name) (\(selected.id))"
             // The file this command would write, resolved as below but with nothing created.
             let file = try ReadingOutput.previewPath(output: request.output, name: name, identity: identity,
                                                      readingsRoot: readings)
@@ -176,7 +178,8 @@ struct Read: AsyncParsableCommand {
             throw HolosError.invalidInput("No reading to resume for \(location.output.path): none was started with this output, or its source, voice, rate, or title has changed since.")
         }
         progress.resumeHint = "To continue, run the same command with --resume --output \"\(request.output ?? location.workDirectory.path)\"."
-        let result = try await ReadingPipeline().render(
+        let renderer = RoutingSpeechRenderer(natural: NaturalVoicesCLI.renderer())
+        let result = try await ReadingPipeline(renderer: renderer).render(
             script: script, voiceIdentifier: selected.id, rate: request.rate, metadata: metadata,
             location: location, resume: request.resume)
         // The file is published: bookkeeping that failed after that is a warning, not a failure.
@@ -241,16 +244,30 @@ let speechRateHelp = ArgumentHelp(
     }
 }
 
-/// `--voice` by name or identifier; without it, the best installed voice for `language`.
-@MainActor func resolveVoice(_ query: String?, language: String?, explainDefault: Bool) throws -> VoiceDescriptor {
+/// `--voice` by name or identifier (an Apple voice, or a natural voice such as "pocket:en:alba"); without it, the
+/// natural voice for `language` once its pack is installed (`allowNatural`), else the best installed Apple voice.
+@MainActor func resolveVoice(_ query: String?, language: String?, explainDefault: Bool,
+                             allowNatural: Bool = true) throws -> VoiceDescriptor {
     let voices = NativeSpeechRenderer.voices()
     if let query {
+        if NaturalVoiceCatalog.isNatural(query), !allowNatural {
+            throw HolosError.unavailable("Natural voices cannot be used here: \(query)")
+        }
+        // An Apple voice of that name goes first ("Alba" could be both); then a natural one.
+        if NaturalVoiceCatalog.isNatural(query) || VoiceSelection.match(query, in: voices, language: language) == nil,
+           allowNatural, let natural = try NaturalVoicesCLI.resolve(query) {
+            return natural.descriptor
+        }
         guard let match = VoiceSelection.match(query, in: voices, language: language) else {
             throw HolosError.unavailable("No installed voice is named \"\(query)\". See: voiceislocal voices list")
         }
         return match
     }
     let wanted = language ?? Locale.preferredLanguages.first ?? "en-US"
+    if allowNatural, let natural = NaturalVoiceCatalog.defaultVoice(language: wanted,
+                                                                   installed: NaturalVoiceModels.installedPacks()) {
+        return natural.descriptor
+    }
     let chosen: VoiceDescriptor
     if let best = NativeSpeechRenderer.bestVoice(language: wanted) {
         chosen = best

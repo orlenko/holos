@@ -79,6 +79,8 @@ struct SetupState {
     /// app's appearance (UserDefaults "appearance").
     var openWindowAtLaunch = true
     var appearance = AppearanceChoice.system
+    /// Settings › Reading › Natural voices: each pack's download.
+    var naturalVoices: [NaturalVoicePack: NaturalVoiceDownload] = [:]
 }
 
 enum SetupAction: Int, CaseIterable {
@@ -97,6 +99,8 @@ enum SetupAction: Int, CaseIterable {
     case toggleMeetingScreenCapture
     /// Settings › Meetings › Final transcript: download the model, and turn the pass after meetings on or off.
     case deepTranscriptionModel, toggleDeepTranscription
+    /// Settings › Reading › Natural voices: download (or cancel) a language pack.
+    case naturalVoicesEnglish, naturalVoicesFrench
     /// Settings › Meetings › Title and summarize meetings with Apple Intelligence.
     case toggleMeetingSummaries
     /// A permission row's System Settings… link (or its Open Settings once granted): only opens the page, while
@@ -190,6 +194,8 @@ final class SettingsPane: NSViewController, MainSectionContent, NSSearchFieldDel
     private let readingSpeedSlider = NSSlider(value: ReadingSpeed.standard, minValue: ReadingSpeed.range.lowerBound,
                                               maxValue: ReadingSpeed.range.upperBound, target: nil, action: nil)
     private let readingSpeedLabel = NSTextField(labelWithString: "")
+    /// The natural voice packs installed when the reading card's voice menu was last filled.
+    private var shownNaturalVoices: Set<NaturalVoicePack> = []
     private var readingFolderDetail: NSTextField?
     private let historyAudioToggle = NSButton(
         checkboxWithTitle: "Keep the audio of dictations (for Run Again)", target: nil, action: nil)
@@ -518,9 +524,9 @@ final class SettingsPane: NSViewController, MainSectionContent, NSSearchFieldDel
         readingVoicePopup.target = self
         readingVoicePopup.action = #selector(readingVoiceChosen(_:))
         readingVoicePopup.setAccessibilityLabel("Default reading voice")
-        addControlRow(.reading, "person.wave.2", "Voice", "Premium voices sound best; add them in System Settings › "
-                      + "Accessibility › Spoken Content",
-                      keywords: ["reading voice", "text to speech", "tts", "premium", "siri"],
+        addControlRow(.reading, "person.wave.2", "Voice", "Natural voices sound best; download them below. Apple's "
+                      + "Premium voices come next; add them in System Settings › Accessibility › Spoken Content",
+                      keywords: ["reading voice", "text to speech", "tts", "premium", "siri", "natural"],
                       control: readingVoicePopup, to: grid)
 
         readingSpeedSlider.numberOfTickMarks = 7
@@ -535,6 +541,13 @@ final class SettingsPane: NSViewController, MainSectionContent, NSSearchFieldDel
         addControlRow(.reading, "gauge.with.needle", "Speed", "0.8× to 1.4× of the voice's normal pace",
                       keywords: ["rate", "pace", "faster", "slower", "reading speed"], control: speed,
                       focus: readingSpeedSlider, to: grid)
+
+        addRow(.naturalVoicesEnglish, "Natural voices (English)", to: grid)
+        addRow(.naturalVoicesFrench, "Natural voices (French)", to: grid)
+        addRowItem(.reading, .naturalVoicesEnglish,
+                   keywords: ["natural", "neural", "pocket", "kyutai", "alba", "download", "voices"])
+        addRowItem(.reading, .naturalVoicesFrench,
+                   keywords: ["natural", "neural", "pocket", "kyutai", "estelle", "french", "download"])
 
         let (text, _, detail) = Self.labels("Save audio files in")
         readingFolderDetail = detail
@@ -998,6 +1011,19 @@ final class SettingsPane: NSViewController, MainSectionContent, NSSearchFieldDel
             set(.deepTranscriptionModel, .problem, "Status unknown (\(other))", button: download)
         case nil:
             set(.deepTranscriptionModel, .pending, "Checking…", button: download, enabled: false)
+        }
+
+        for (action, pack) in [(SetupAction.naturalVoicesEnglish, NaturalVoicePack.english),
+                               (.naturalVoicesFrench, .french)] {
+            let row = (state.naturalVoices[pack] ?? NaturalVoiceDownload(pack: pack)).row
+            set(action, row.done ? .done : row.problem ? .problem : .pending, row.detail, button: row.button,
+                enabled: row.enabled)
+        }
+        // Voices installed since the menus were filled (a download that just ended) are offered.
+        let installed = Set(state.naturalVoices.filter { $0.value.phase == .installed }.keys)
+        if installed != shownNaturalVoices {
+            shownNaturalVoices = installed
+            refreshReadingCard()
         }
 
         let count = state.historyCount

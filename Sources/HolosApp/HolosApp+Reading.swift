@@ -1,4 +1,88 @@
 import AppKit
+import Darwin
+import HolosCore
+import HolosMeeting
+import HolosSynthesis
+import os
+
+/// Settings › Reading's natural voice downloads (docs/design.md "Natural voices"): each pack's state and this app's
+/// running `voiceislocal setup --natural-voices`.
+@MainActor
+final class NaturalVoicesAppState {
+    var downloads: [NaturalVoicePack: NaturalVoiceDownload] = Dictionary(
+        uniqueKeysWithValues: NaturalVoicePack.allCases.map { ($0, NaturalVoiceDownload(pack: $0)) })
+    /// The pid of this app's download per pack, while it runs.
+    var pids: [NaturalVoicePack: Int32] = [:]
+    /// The download's output, followed for its progress.
+    var outputs: [NaturalVoicePack: URL] = [:]
+    /// The launcher of the bundled tool, made on first use.
+    lazy var launcher = MaintenanceLauncher(executable: ChildProcessLauncher.bundledExecutable)
+}
+
+/// Natural voices: the download from Settings › Reading.
+extension HolosAppDelegate {
+    private static let readingLog = Logger(subsystem: "ca.orlenko.holos.app", category: "reading")
+
+    /// Settings › Reading's natural voice row for `pack`: starts its download, or cancels the one running.
+    func toggleNaturalVoiceDownload(_ pack: NaturalVoicePack) {
+        let state = naturalVoices
+        guard var download = state.downloads[pack] else { return }
+        if download.isRunning {
+            if download.cancel(), let pid = state.pids[pack] { kill(pid, SIGTERM) }
+            state.downloads[pack] = download
+            updateSettings()
+            return
+        }
+        guard download.start() else { return }
+        state.downloads[pack] = download
+        let output = Self.temporaryFile("setup-natural")
+        state.outputs[pack] = output
+        let arguments = ["setup", "--natural-voices"] + (pack == .english ? [] : ["--language", pack.languageCode])
+        do {
+            state.pids[pack] = try state.launcher.run(arguments, standardOutput: output, standardError: output) {
+                [weak self] code in self?.naturalVoiceDownloadEnded(pack, code: code)
+            }
+        } catch {
+            state.downloads[pack]?.ended(code: -1, lastLine: error.localizedDescription, installed: false)
+            state.outputs[pack] = nil
+            Self.removeFile(output)
+            updateSettings()
+            return
+        }
+        Self.readingLog.notice("Natural voices download (\(pack.rawValue, privacy: .public)) started")
+        updateSettings()
+        Task { [weak self] in
+            while let self, self.naturalVoices.downloads[pack]?.isRunning == true {
+                if let line = Self.lastLine(output) {
+                    self.naturalVoices.downloads[pack]?.said(line)
+                    self.updateSettings()
+                }
+                try? await Task.sleep(for: .milliseconds(500))
+            }
+        }
+    }
+
+    private func naturalVoiceDownloadEnded(_ pack: NaturalVoicePack, code: Int32) {
+        let state = naturalVoices
+        let output = state.outputs.removeValue(forKey: pack)
+        let last = output.flatMap(Self.lastLine)
+        output.map(Self.removeFile)
+        state.pids[pack] = nil
+        let installed = NaturalVoiceModels.status(pack: pack) == .installed
+        state.downloads[pack]?.ended(code: code, lastLine: last, installed: installed)
+        Self.readingLog.notice("Natural voices download (\(pack.rawValue, privacy: .public)) ended with \(code, privacy: .public)")
+        // The voice menus offer the new voices, and Automatic now picks them.
+        if installed { NotificationCenter.default.post(name: ReadingPreferences.changed, object: nil) }
+        updateSettings()
+    }
+
+    /// Checks the packs' files (a download in Terminal, or one finished while the app was closed).
+    func refreshNaturalVoices() {
+        for pack in NaturalVoicePack.allCases {
+            naturalVoices.downloads[pack]?.checked(NaturalVoiceModels.status(pack: pack))
+        }
+    }
+}
 
 /// The Reading section's part of quitting (docs/design.md "Reading section").
 extension HolosAppDelegate {

@@ -137,6 +137,33 @@ extension ReadingAudioRenderer {
 }
 
 extension NativeSpeechRenderer: ReadingAudioRenderer {}
+extension NaturalSpeechRenderer: ReadingAudioRenderer {}
+
+/// Reads with a natural voice ("pocket:…", see `NaturalVoiceCatalog`) through `natural`, and with any other voice
+/// through `system` (Apple's voices).
+@MainActor public final class RoutingSpeechRenderer: ReadingAudioRenderer {
+    private let system: any ReadingAudioRenderer
+    private let natural: any ReadingAudioRenderer
+
+    public init(system: any ReadingAudioRenderer = NativeSpeechRenderer(), natural: any ReadingAudioRenderer) {
+        self.system = system
+        self.natural = natural
+    }
+
+    private func renderer(for identifier: String?) -> any ReadingAudioRenderer {
+        identifier.map(NaturalVoiceCatalog.isNatural) == true ? natural : system
+    }
+
+    public func render(text: String, voiceIdentifier: String?, rate: Float?, to output: URL)
+        async throws -> RenderedAudio {
+        try await renderer(for: voiceIdentifier).render(text: text, voiceIdentifier: voiceIdentifier, rate: rate,
+                                                        to: output)
+    }
+
+    public func checkVoice(_ identifier: String) throws {
+        try renderer(for: identifier).checkVoice(identifier)
+    }
+}
 
 @MainActor public protocol ReadingAudioJoiner {
     func join(parts: [AudioBookPart], metadata: AudioBookMetadata, to output: URL) async throws -> AudioBookSummary

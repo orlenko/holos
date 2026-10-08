@@ -9,7 +9,7 @@ extension HolosPaths {
         supportRoot(environment: ProcessInfo.processInfo.environment)
     }
 
-    static func supportRoot(environment: [String: String]) -> URL {
+    public static func supportRoot(environment: [String: String]) -> URL {
         if let path = environment["HOLOS_SUPPORT_DIR"], !path.isEmpty {
             return URL(fileURLWithPath: (path as NSString).expandingTildeInPath, isDirectory: true)
         }

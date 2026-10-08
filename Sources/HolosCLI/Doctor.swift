@@ -36,7 +36,10 @@ struct Doctor: AsyncParsableCommand {
             speechAssetStatus: (try? await AppleSpeechEngine.assetStatus(locale: locale, backend: .speech)) ?? "unsupported",
             dictationAssetStatus: (try? await AppleSpeechEngine.assetStatus(locale: locale, backend: .dictation)) ?? "unsupported",
             sessionsDirectory: HolosPaths.sessions.path,
-            speakerModels: speakerModels, deepTranscriptionModel: whisperModel)
+            speakerModels: speakerModels, deepTranscriptionModel: whisperModel,
+            naturalVoices: Dictionary(uniqueKeysWithValues: NaturalVoicePack.allCases.map {
+                ($0.rawValue, NaturalVoiceModels.status(pack: $0))
+            }))
         if json { try Console.json(report); return }
         Console.output("Voice is Local — local capability report")
         Console.output("macOS: \(report.os)")
@@ -53,6 +56,9 @@ struct Doctor: AsyncParsableCommand {
         Console.output("Sessions: \(report.sessionsDirectory)")
         Console.output("Speaker models: \(speakerModels.summary)")
         Console.output("Deep transcription model (\(DeepTranscriptionModel.displayName)): \(whisperModel.summary)")
+        for pack in NaturalVoicePack.allCases {
+            Console.output("Natural voices (\(pack.languageName)): \(report.naturalVoices[pack.rawValue]?.summary ?? "unknown")")
+        }
         Console.output("Install transcription assets with: voiceislocal setup --locale \(locale)")
         if speakerModels != .verified { Console.output("Install speaker models with: voiceislocal setup --speakers") }
         if whisperModel == .notInstalled {
@@ -81,6 +87,8 @@ private struct DoctorReport: Encodable {
     var speakerModels: ModelInstallStatus
     /// "installed", "downloading", or "notInstalled" (docs/meeting-design.md §4.16).
     var deepTranscriptionModel: DeepModelStatus
+    /// Each natural voice pack ("english", "french"): "installed", "downloading", or "notInstalled".
+    var naturalVoices: [String: DeepModelStatus]
 }
 
 struct Setup: AsyncParsableCommand {
@@ -93,21 +101,41 @@ struct Setup: AsyncParsableCommand {
             --whisper downloads the deep transcription model (Whisper large-v3 turbo for WhisperKit, about 1.6 GB, \
             from Hugging Face) into the same folder and loads it once, so voiceislocal session deep-transcribe can \
             transcribe meetings again after they end; an interrupted download resumes. An installed model is kept. \
-            --force downloads either again in any case.
+            --natural-voices downloads the natural Reading voices (Kyutai Pocket TTS, through FluidAudio, from \
+            Hugging Face) for English (about \(NaturalVoicePack.english.downloadSize)), or for French with \
+            --language fr (about \(NaturalVoicePack.french.downloadSize)), into the same folder, and prepares them \
+            for this Mac (the first time takes a few minutes). \
+            --force downloads any of them again in any case.
             """)
     @OptionGroup var recognition: RecognitionOptions
     @Flag(help: "Download and verify the speaker models used to label speakers (network).") var speakers = false
     @Flag(help: "Download and check the deep transcription model used after meetings (network, about 1.6 GB).")
     var whisper = false
-    @Flag(help: "With --speakers or --whisper: download and install the models again even when they are installed.")
+    @Flag(help: "Download and prepare the natural Reading voices (network; English unless --language fr).")
+    var naturalVoices = false
+    @Option(help: ArgumentHelp("With --natural-voices: en (the default) or fr.", valueName: "language"))
+    var language: String?
+    @Flag(help: "With --speakers, --whisper, or --natural-voices: download and install the models again even when they are installed.")
     var force = false
 
     func validate() throws {
-        if force && !speakers && !whisper { throw ValidationError("--force applies only with --speakers or --whisper.") }
-        if speakers && whisper { throw ValidationError("Choose --speakers or --whisper, not both.") }
+        let chosen = [speakers, whisper, naturalVoices].filter { $0 }.count
+        if force && chosen == 0 {
+            throw ValidationError("--force applies only with --speakers, --whisper, or --natural-voices.")
+        }
+        if chosen > 1 { throw ValidationError("Choose one of --speakers, --whisper, and --natural-voices.") }
+        if language != nil && !naturalVoices { throw ValidationError("--language applies only with --natural-voices.") }
+        if let language, NaturalVoicePack.allCases.first(where: { $0.languageCode == language }) == nil {
+            throw ValidationError("--language must be en or fr.")
+        }
     }
 
     mutating func run() async throws {
+        if naturalVoices {
+            let pack = NaturalVoicePack.allCases.first { $0.languageCode == (language ?? "en") } ?? .english
+            try await NaturalVoiceSetup.run(pack: pack, force: force)
+            return
+        }
         if speakers {
             try await SpeakerModelSetup.run(force: force)
             return

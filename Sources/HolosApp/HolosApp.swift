@@ -138,6 +138,8 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
     let history = DictationHistoryService()
     /// The Reading list and the readings being made (HolosApp+Reading.swift).
     let readings = ReadingController()
+    /// Settings › Reading's natural voice downloads (HolosApp+Reading.swift).
+    let naturalVoices = NaturalVoicesAppState()
     /// The dictation in progress, for its History record; nil when there is none or it was refused.
     private var historyDraft: HistoryDraft?
     /// What happened to this dictation's text, for its History record.
@@ -1508,6 +1510,7 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
               let settings = mainWindow.existingController(for: .settings) as? SettingsPane else { return }
         let speakerLabels = speakerLabelsSetupState()
         let deep = deepTranscriptionSetupState()
+        refreshNaturalVoices()
         settings.update(SetupState(
             microphone: AudioCapture.microphonePermission, accessibility: AXIsProcessTrusted(),
             inputMonitoring: CGPreflightListenEventAccess(), inputMonitoringNeeded: inputMonitoringNeeded,
@@ -1532,7 +1535,8 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
             historyRetention: history.retention, historyCount: history.keptCount,
             historyUnreadable: history.unreadable, historyKeepsAudio: history.keepsAudio,
             historyAudioBytes: history.audioBytes,
-            openWindowAtLaunch: openWindowAtLaunch, appearance: appearance))
+            openWindowAtLaunch: openWindowAtLaunch, appearance: appearance,
+            naturalVoices: naturalVoices.downloads))
     }
 
     /// The sidebar's dictation status, independent of meeting recording.
@@ -1603,6 +1607,10 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
             installSpeakerModels()
         case .deepTranscriptionModel:
             installDeepTranscriptionModel()
+        case .naturalVoicesEnglish:
+            toggleNaturalVoiceDownload(.english)
+        case .naturalVoicesFrench:
+            toggleNaturalVoiceDownload(.french)
         case .toggleDeepTranscription:
             toggleDeepTranscription()
         case .toggleMeetingSummaries:

@@ -1,6 +1,7 @@
 import AppKit
 import HolosContent
 import HolosCore
+import HolosMeeting
 import HolosSynthesis
 
 /// Settings › Reading: the default voice and speed of new readings, and the folder their files go to. Kept in
@@ -587,8 +588,7 @@ final class ReadingController {
             return (location, try ReadingOutput.exists(location.workDirectory))
         }
         try Task.checkCancellation()
-        let voiceName = ReadingVoiceMenu.items(NativeSpeechRenderer.voices(), preferredLanguages: [])
-            .first { $0.id == voice.id }?.name ?? voice.name
+        let voiceName = ReadingVoices.name(of: voice)
         update(id) {
             $0.title = metadata.title ?? entry.source.label
             $0.voiceIdentifier = voice.id
@@ -606,7 +606,7 @@ final class ReadingController {
         }
         onChange?()
 
-        let result = try await ReadingPipeline().render(
+        let result = try await ReadingPipeline(renderer: renderer).render(
             script: script, voiceIdentifier: voice.id, rate: rate, metadata: metadata, location: location,
             resume: resume) { [weak self] progress in self?.progressed(id, progress) }
         update(id) {
@@ -678,23 +678,16 @@ final class ReadingController {
     /// The voice the reading was started with; else the one asked for; else the best installed voice for its
     /// language (as `voiceislocal read` picks it).
     static func voice(for entry: ReadingEntry, language: String?) throws -> VoiceDescriptor {
-        let voices = NativeSpeechRenderer.voices()
-        if let fixed = entry.voiceIdentifier ?? entry.requestedVoice {
-            guard let voice = voices.first(where: { $0.id == fixed }) else {
-                throw HolosError.unavailable("The voice \(entry.voiceName ?? fixed) is not installed any more. "
-                    + "Delete this reading and make it again with another voice.")
-            }
-            return voice
-        }
-        let wanted = language ?? Locale.preferredLanguages.first ?? "en-US"
-        if let best = NativeSpeechRenderer.bestVoice(language: wanted) { return best }
-        let fallback = try NativeSpeechRenderer.defaultVoiceIdentifier()
-        guard let voice = voices.first(where: { $0.id == fallback }) else {
-            throw HolosError.unavailable("No speech voice is installed. Add one in System Settings › Accessibility › "
-                + "Spoken Content › System Voice › Manage Voices.")
-        }
-        return voice
+        try ReadingVoices.choose(
+            fixed: entry.voiceIdentifier ?? entry.requestedVoice, fixedName: entry.voiceName, language: language,
+            installed: NaturalVoiceModels.installedPacks(), appleVoices: NativeSpeechRenderer.voices(),
+            bestApple: NativeSpeechRenderer.bestVoice(language:),
+            appleDefault: NativeSpeechRenderer.defaultVoiceIdentifier)
     }
+
+    /// Renders Apple voices in this process and natural voices through the bundled `voiceislocal` tool.
+    private lazy var renderer = RoutingSpeechRenderer(
+        natural: HelperNaturalRenderer(launcher: MaintenanceLauncher(executable: ChildProcessLauncher.bundledExecutable)))
 
     private func progressed(_ id: UUID, _ progress: ReadingRenderProgress) {
         switch progress {

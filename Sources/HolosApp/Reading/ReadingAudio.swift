@@ -5,16 +5,27 @@ import HolosSynthesis
 
 /// ▶ Preview: speaks a short sample with a voice and speed; a second press stops it.
 @MainActor
-final class VoicePreview: NSObject, AVSpeechSynthesizerDelegate {
+final class VoicePreview: NSObject, AVSpeechSynthesizerDelegate, AVAudioPlayerDelegate {
     private var synthesizer: AVSpeechSynthesizer?
+    /// A natural voice's sample: made by the bundled tool (a few seconds), then played.
+    private var natural: Task<Void, Never>?
+    private var player: AVAudioPlayer?
+    /// Renders a natural voice's sample to a file (`HelperNaturalRenderer`).
+    var renderNatural: ((_ text: String, _ voice: String, _ rate: Float?, _ output: URL) async throws -> Void)?
     /// Called when speaking starts or ends.
     var onChange: (() -> Void)?
+    /// A natural sample could not be made.
+    var onError: ((String) -> Void)?
 
-    var isSpeaking: Bool { synthesizer != nil }
+    var isSpeaking: Bool { synthesizer != nil || natural != nil || player != nil }
 
     /// Speaks the sample in `voiceIdentifier`'s language (nil: the best voice for the user's first language).
     func speak(voiceIdentifier: String?, speed: Double) {
         stop()
+        if let voiceIdentifier, let voice = NaturalVoiceCatalog.voice(id: voiceIdentifier) {
+            speakNatural(voice, speed: speed)
+            return
+        }
         let identifier = voiceIdentifier
             ?? NativeSpeechRenderer.bestVoice(language: Locale.preferredLanguages.first ?? "en-US")?.id
         let voice = identifier.flatMap(AVSpeechSynthesisVoice.init(identifier:))
@@ -28,7 +39,54 @@ final class VoicePreview: NSObject, AVSpeechSynthesizerDelegate {
         onChange?()
     }
 
+    /// Makes the sample with the natural voice (into a temporary folder), then plays it.
+    private func speakNatural(_ voice: NaturalVoice, speed: Double) {
+        guard let renderNatural else { return }
+        let text = Self.sample(language: voice.pack.languageCode)
+        let rate = ReadingSpeed.rate(for: speed)
+        natural = Task { [weak self] in
+            let folder = FileManager.default.temporaryDirectory
+                .appendingPathComponent("holos-preview-\(UUID().uuidString)", isDirectory: true)
+            defer { try? FileManager.default.removeItem(at: folder) }
+            do {
+                try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: false,
+                                                        attributes: [.posixPermissions: 0o700])
+                let file = folder.appendingPathComponent("preview.caf")
+                try await renderNatural(text, voice.id, rate, file)
+                try Task.checkCancellation()
+                guard let self else { return }
+                let player = try AVAudioPlayer(contentsOf: file)
+                player.delegate = self
+                self.natural = nil
+                self.player = player
+                player.play()
+            } catch {
+                guard let self, !Task.isCancelled else { return }
+                self.natural = nil
+                self.onError?((error as? LocalizedError)?.errorDescription ?? error.localizedDescription)
+                self.onChange?()
+            }
+        }
+        onChange?()
+    }
+
+    nonisolated func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) {
+        let finished = ObjectIdentifier(player)
+        Task { @MainActor in
+            guard let current = self.player, ObjectIdentifier(current) == finished else { return }
+            self.player = nil
+            self.onChange?()
+        }
+    }
+
     func stop() {
+        if natural != nil || player != nil {
+            natural?.cancel()
+            natural = nil
+            player?.stop()
+            player = nil
+            onChange?()
+        }
         guard let synthesizer else { return }
         self.synthesizer = nil
         // Kept until its didCancel (or didFinish) arrives: it is never freed while it may still call back.
