@@ -981,7 +981,8 @@ extension SpeakerProjection {
             }
             // Same name, same person (`SameNameSpeakers`): speakers whose names match are listed as one, with
             // their turns.
-            let joined = SameNameSpeakers.join(projectedSpeakers, turns: projectedTurns)
+            let joined = SameNameSpeakers.join(projectedSpeakers, turns: projectedTurns,
+                                               people: Set(context.profileNames.keys))
             for member in joined.into.keys { effectiveProfiles[member] = nil }
             let merges = mergeSuggestions(listed: joined.speakers, effectiveProfiles: effectiveProfiles,
                                           context: context)

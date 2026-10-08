@@ -3305,8 +3305,9 @@ neither joins anyone. Two halves keep the rule:
   Review, the CLI, summaries and voice learning) gives the others' turns to it. The one that
   stays keeps its ID, ordinal, name, link and rejections, exactly as a `merge` into it
   would; it adds the others' clusters (in list order), talk time and turn counts. It is
-  chosen as: linked to a person first (a merge keeps only the target's link, so the person
-  and their voice samples stay with it), then more talk time (the person's main voice, and
+  chosen as: linked to a person who still exists first (a merge keeps only the target's
+  link, so the person and their voice samples stay with it; a link to a forgotten person
+  counts for nothing), then more talk time (the person's main voice, and
   the spelling shown most), then the lower ordinal, then the ID. `mergeSuggestions` are
   worked out on the joined list. Edits and fingerprints still see every stored speaker, so
   journals written before the rule replay exactly as before; only their display changes.
@@ -3321,13 +3322,22 @@ neither joins anyone. Two halves keep the rule:
   one (otherwise renaming "Alice" would rename one of her stored speakers and leave the
   other showing as a second Alice); (2) after the batch, each listed speaker the batch
   named, linked, created, merged into, or gave turns to that is now joined with
-  same-named speakers gets them merged into it, at the end of the batch, with the same
-  choice of who stays. So renaming a speaker to a name another one has, a `newSpeaker`
+  same-named speakers gets them merged into it, at the end of the batch. Who stays is
+  decided on the view, before the batch: the speaker the view already lists under that
+  name, when it is in the group (only a name nobody had before falls back to the read
+  side's choice). The batch's own links never decide it, so Review's preview of a change
+  (a link to a person still being created shows as a rename) and the saved batch keep the
+  same speaker, and a change queued on the shown row finds it. A `linkProfile` of the one
+  that stays follows the merges when the batch linked one of the group to a person (the
+  newest such link), or when the one that stays has no link to a person who still exists
+  and another one has: the person, and their voice samples, stay with the meeting, and a
+  link to a forgotten person is replaced. So renaming a speaker to a name another one has, a `newSpeaker`
   with such a name, "This is me", a confirmed suggestion, or Confirm All each leave one
   stored speaker. The merges share the batch's ID: one undo takes back the change and its
   merges, and the voice samples follow the merge as for any merge (`needsSampleRefresh`).
-  A batch with a `revert` is saved as it is. `SpeakerEditor.saved(_:asAsked:)` lets a
-  caller (Review) recognize its batch among the lines read back. Review shows every queued
+  A batch with a `revert` is saved as it is. The lines added are merges before the asked
+  actions, and merges then links after them; `SpeakerEditor.saved(_:asAsked:)` and
+  `withoutJoins` let a caller (Review) recognize its batch among the lines read back. Review shows every queued
   change (an edit, a link, "This is me", Confirm All, an assignment to a person) through
   the same `joiningSameNames` on the labels shown, so what it shows while a change saves is
   what the save writes: a stored speaker the save merges away never reappears meanwhile.

@@ -3720,13 +3720,10 @@ public struct ReviewDeletedWords: Sendable, Equatable {
         }
     }
 
-    /// A saved batch without its merges: the link batches ask for none, so any there are the editor's joins of
-    /// same-named speakers (`SpeakerProjection.joiningSameNames`).
+    /// A saved link batch without the editor's joins of same-named speakers around it (`SpeakerEditor.withoutJoins`):
+    /// merges before it, merges and the kept person's link after it.
     private nonisolated static func withoutMerges(_ batch: [SpeakerEdit]) -> [SpeakerEdit] {
-        batch.filter { edit in
-            if case .merge = edit.action { return false }
-            return true
-        }
+        SpeakerEditor.withoutJoins(batch, action: \.action)
     }
 
     // MARK: - Loading (off the main actor)

@@ -148,6 +148,36 @@ func linkingASpeakerShownJoinedShowsOneSpeakerWhileItSaves() async throws {
 }
 
 @Test(.timeLimit(.minutes(1))) @MainActor
+func namingASpeakerAsAnotherIsNamedKeepsTheShownSpeakerWhenItCreatesThePerson() async throws {
+    let temp = try TemporaryDirectory("review")
+    defer { temp.remove() }
+    let store = sameNameStore(temp)
+    let session = try await sameNameSession(temp)
+    let review = try await sameNameOpen(session, store: store)
+    // S1 is called Alice, with no person behind the name.
+    try await review.apply([.rename(speakerID: "system:S1", name: "Alice")])
+    let gate = sameNameGate()
+    review.beforeEdit = gate.hook
+
+    // The name field names S3 Alice too: nobody is called Alice in People, so the save creates her and links S3.
+    let naming = Task { @MainActor in try await review.setName("alice", speakerID: "system:S3") }
+    #expect(await eventually { gate.entered.value == 1 })
+    #expect(review.projection.speakers.map(\.id) == ["system:S1", "system:S2"])
+    // A change made on the row shown meanwhile: it must still find its speaker once the name is saved.
+    let moving = Task { @MainActor in try await review.assign(["T2"], to: .speaker("system:S1")) }
+    gate.release.finish()
+    try await naming.value
+    try await moving.value
+
+    let alice = try #require(try store.load().profiles.first { $0.displayName == "alice" })
+    #expect(review.projection.speakers.map(\.id) == ["system:S1", "system:S2"])
+    #expect(review.speaker("system:S1")?.profileID == alice.id)
+    #expect(review.projection.turns.first { $0.id == "T2" }?.speakerID == "system:S1")
+    #expect(review.projection.turns.first { $0.id == "T3" }?.speakerID == "system:S1")
+    #expect(review.snapshot.projection == review.projection)
+}
+
+@Test(.timeLimit(.minutes(1))) @MainActor
 func thisIsMeOnASpeakerShownJoinedShowsOneSpeakerWhileItSaves() async throws {
     let temp = try TemporaryDirectory("review")
     defer { temp.remove() }

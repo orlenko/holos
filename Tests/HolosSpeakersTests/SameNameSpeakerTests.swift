@@ -209,16 +209,68 @@ private func turnSpeaker(_ projection: SpeakerProjection, _ id: String) -> Strin
     #expect(turnSpeaker(journal.view, "T3") == "system:S2")
 }
 
-@Test func linkingAPersonAnotherSpeakerIsNamedAsMergesIntoTheLinkedOne() {
+@Test func linkingASpeakerToAPersonOthersAreNamedAsKeepsTheShownOneAndLinksIt() {
     var journal = Journal(names: ["P-ALICE": "Alice"])
     journal.save([.rename(speakerID: "system:S1", name: "Alice")])
     let saved = journal.save([.linkProfile(speakerID: "system:S3", profileID: "P-ALICE"),
                               .rename(speakerID: "system:S3", name: "Alice")])
-    // The linked speaker stays though it talks less: the person and their voice stay with it.
-    #expect(saved.last == .merge(from: "system:S1", into: "system:S3"))
-    #expect(speaker(journal.view, "system:S3")?.profileID == "P-ALICE")
-    #expect(speaker(journal.view, "system:S3")?.memberIDs == ["system:S3"])
-    #expect(turnSpeaker(journal.view, "T1") == "system:S3")
+    // S1 was the Alice shown before the batch, so it stays; the person the batch linked goes with it.
+    #expect(saved.suffix(2) == [.merge(from: "system:S3", into: "system:S1"),
+                                .linkProfile(speakerID: "system:S1", profileID: "P-ALICE")])
+    #expect(speaker(journal.view, "system:S1")?.profileID == "P-ALICE")
+    #expect(speaker(journal.view, "system:S1")?.memberIDs == ["system:S1"])
+    #expect(turnSpeaker(journal.view, "T3") == "system:S1")
+}
+
+@Test func theBatchsOwnLinkNeverChangesWhoStays() {
+    // The name field's link to a person it is creating shows as a rename before it is saved (the person is not
+    // known yet); the shown change and the saved one must keep the same speaker.
+    var journal = Journal()
+    journal.save([.rename(speakerID: "system:S2", name: "Alice")])
+    let view = journal.view
+    let shown = view.joiningSameNames([.rename(speakerID: "system:S3", name: "Alice")])
+    let saved = view.joiningSameNames([.linkProfile(speakerID: "system:S3", profileID: "P-NEW"),
+                                       .rename(speakerID: "system:S3", name: "Alice")])
+    #expect(shown == [.rename(speakerID: "system:S3", name: "Alice"), .merge(from: "system:S3", into: "system:S2")])
+    #expect(saved == [.linkProfile(speakerID: "system:S3", profileID: "P-NEW"),
+                      .rename(speakerID: "system:S3", name: "Alice"),
+                      .merge(from: "system:S3", into: "system:S2"),
+                      .linkProfile(speakerID: "system:S2", profileID: "P-NEW")])
+}
+
+@Test func aLinkToAForgottenPersonGivesWayToTheNewLink() throws {
+    // S1 (8 s) was linked to a person since forgotten (not in the names); S3 (2 s) is now linked to a new Alice.
+    var journal = Journal(names: ["P-NEW": "Alice"])
+    journal.append(.linkProfile(speakerID: "system:S1", profileID: "P-GONE"))
+    journal.append(.rename(speakerID: "system:S1", name: "Alice"))
+    journal.save([.linkProfile(speakerID: "system:S3", profileID: "P-NEW"),
+                  .rename(speakerID: "system:S3", name: "Alice")])
+    let alice = try #require(speaker(journal.view, "system:S1"))
+    #expect(alice.profileID == "P-NEW")
+    #expect(alice.memberIDs == ["system:S1"])
+    #expect(journal.view.turns.filter { $0.speakerID == "system:S1" }.map(\.id) == ["T1", "T3", "T4"])
+}
+
+@Test func onTheReadSideALinkToAForgottenPersonDoesNotCount() throws {
+    // Saved before the rule: S1 (8 s) linked to a forgotten person, S3 (2 s) to an existing one, both called Alice.
+    var journal = Journal(names: ["P-NEW": "Alice"])
+    journal.append(.linkProfile(speakerID: "system:S1", profileID: "P-GONE"))
+    journal.append(.rename(speakerID: "system:S1", name: "Alice"))
+    journal.append(.linkProfile(speakerID: "system:S3", profileID: "P-NEW"))
+    let alice = try #require(speaker(journal.view, "system:S3"))
+    #expect(alice.memberIDs == ["system:S3", "system:S1"])
+    #expect(alice.profileID == "P-NEW")
+}
+
+@Test func aLinkOfTheOthersIsKeptWhenTheOneThatStaysHasNone() {
+    var journal = Journal(names: ["P-ALICE": "Alice"])
+    journal.save([.rename(speakerID: "system:S1", name: "Alice")])
+    // S3 is linked to Alice under another name, then renamed Alice: S1 stays, and takes the link.
+    journal.save([.linkProfile(speakerID: "system:S3", profileID: "P-ALICE"),
+                  .rename(speakerID: "system:S3", name: "Al")])
+    let saved = journal.save([.rename(speakerID: "system:S3", name: "alice")])
+    #expect(saved == [.rename(speakerID: "system:S3", name: "alice"), .merge(from: "system:S3", into: "system:S1"),
+                      .linkProfile(speakerID: "system:S1", profileID: "P-ALICE")])
 }
 
 @Test func anEditOfASpeakerShownJoinedMergesTheJoinedOnesFirst() throws {
