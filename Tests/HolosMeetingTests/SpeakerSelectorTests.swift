@@ -94,15 +94,24 @@ private func selectorError(_ body: () throws -> Void, sourceLocation: SourceLoca
         [SelectorTurn(id: "T1", track: "mic", start: 0, end: 5, speaker: "mic:S1"),
          SelectorTurn(id: "T2", track: "system", start: 0, end: 5, speaker: "system:S1")],
         speakers: [selectorSpeaker("mic:S1", 1), selectorSpeaker("system:S1", 2)],
-        names: ["mic:S1": "Sam", "system:S1": "sam"])
+        names: ["mic:S1": "Sam", "system:S1": "Pat"])
 
     let label = selectorError { _ = try SpeakerSelector.speaker("S1", in: projection) }
     #expect(label.contains("mic:S1") && label.contains("system:S1"))
-    let name = selectorError { _ = try SpeakerSelector.speaker("Sam", in: projection) }
-    #expect(name.contains("mic:S1") && name.contains("system:S1"))
     // The full IDs and the ordinals still pick one each.
     #expect(try SpeakerSelector.speaker("mic:S1", in: projection) == .speaker("mic:S1"))
     #expect(try SpeakerSelector.speaker("2", in: projection) == .speaker("system:S1"))
+}
+
+@Test func speakersWithOneNameAreOneSpeakerToSelect() throws {
+    // Same name, same person: "Sam" and "sam" are listed as one (talk times tie, so the first, mic:S1, stays).
+    let projection = selectorProjection(
+        [SelectorTurn(id: "T1", track: "mic", start: 0, end: 5, speaker: "mic:S1"),
+         SelectorTurn(id: "T2", track: "system", start: 0, end: 5, speaker: "system:S1")],
+        speakers: [selectorSpeaker("mic:S1", 1), selectorSpeaker("system:S1", 2)],
+        names: ["mic:S1": "Sam", "system:S1": "sam"])
+    #expect(try SpeakerSelector.speaker("SAM", in: projection) == .speaker("mic:S1"))
+    #expect(try SpeakerSelector.speaker("S1", in: projection) == .speaker("mic:S1"))
 }
 
 @Test func timeSelectorFindsTurn() throws {

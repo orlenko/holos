@@ -114,7 +114,7 @@ struct Speakers: AsyncParsableCommand {
 
         @Argument(help: "Path to a .holos folder, or a session ID.") var session: String
         @Argument(help: "The turns to move (IDs or times).") var turns: [String]
-        @Option(help: "A speaker, unknown, or new (optionally new:NAME) for a new speaker.") var to: String
+        @Option(help: "A speaker, unknown, or new (optionally new:NAME) for a new speaker; new:NAME with a name a speaker already has gives the turns to that speaker.") var to: String
         @Option(help: "The track (mic or system) for turns given as times.") var track: String?
 
         func validate() throws {
@@ -126,7 +126,12 @@ struct Speakers: AsyncParsableCommand {
             let turnIDs = try SpeakerCommand.turnIDs(turns, track: track, in: loaded.view)
             let action: SpeakerEditAction
             if let name = SpeakerSelector.newSpeakerName(to) {
-                action = .newSpeaker(speakerID: "user:\(UUID().uuidString)", name: name, turnIDs: turnIDs)
+                // Same name, same person: a name a listed speaker already has gives the turns to that speaker.
+                if let name, let existing = loaded.view.speaker(named: name) {
+                    action = .reassignTurns(turnIDs: turnIDs, to: existing.id)
+                } else {
+                    action = .newSpeaker(speakerID: "user:\(UUID().uuidString)", name: name, turnIDs: turnIDs)
+                }
             } else {
                 switch try SpeakerSelector.speaker(to, in: loaded.view) {
                 case .speaker(let speakerID): action = .reassignTurns(turnIDs: turnIDs, to: speakerID)

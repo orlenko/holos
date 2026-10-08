@@ -35,16 +35,21 @@ public struct ProjectedSpeaker: Sendable, Equatable, Identifiable {
     /// Sum of the speaker's turn durations.
     public let talkSeconds: Double
     public let turnCount: Int
+    /// The stored speakers shown as this one: `id` first, then speakers with the same name joined into it (same
+    /// name, same person: `SameNameSpeakers`, docs/meeting-design.md §4.9), whose turns `turns` gives to `id` and
+    /// whose talk time, turns and clusters this speaker counts. Just `[id]` for a speaker nobody shares a name with.
+    public let memberIDs: [String]
 
     public init(id: String, ordinal: Int, name: String, label: String, explicitName: String?, profileID: String?,
                 provenance: LabelProvenance, isAutomatic: Bool, suggestion: SpeakerMatch?,
                 rejectedProfileIDs: [String], clusterIDs: [String], talkSeconds: Double, turnCount: Int,
-                effectiveProfileID: String? = nil) {
+                effectiveProfileID: String? = nil, memberIDs: [String]? = nil) {
         self.id = id; self.ordinal = ordinal; self.name = name; self.label = label
         self.explicitName = explicitName; self.profileID = profileID; self.provenance = provenance
         self.isAutomatic = isAutomatic; self.suggestion = suggestion; self.rejectedProfileIDs = rejectedProfileIDs
         self.clusterIDs = clusterIDs; self.talkSeconds = talkSeconds; self.turnCount = turnCount
         self.effectiveProfileID = effectiveProfileID ?? profileID
+        self.memberIDs = memberIDs ?? [id]
     }
 }
 
@@ -202,7 +207,10 @@ public struct SpeakerProjection: Sendable, Equatable {
     /// 7. Short interjections (`ShortInterjections`, docs/meeting-design.md §5.10) are decided on the turns of step 6:
     ///    `shownTurns` shows them with a neighbour's speaker or leaves them out. `turns` and `speakers` are unchanged.
     ///
-    /// Listed speakers: every speaker with at least one turn shown, plus speakers created by `newSpeaker`.
+    /// Listed speakers: every speaker with at least one turn shown, plus speakers created by `newSpeaker`. Speakers
+    /// whose names match (`SameNameSpeakers`: names the user gave or confirmed, and the channel's; never "Speaker N" or
+    /// an automatic name) are listed as one, which `turns` gives their turns to (`ProjectedSpeaker.memberIDs`); edits
+    /// and fingerprints still see each stored speaker.
     /// `recognition` matches whose profileID is not in `profileNames` (forgotten people) are ignored.
     public static func make(run: DiarizationRun, transcript: Transcript, edits: [SpeakerEdit],
                             recognition: RecognitionResult?, profileNames: [String: String],
@@ -971,9 +979,13 @@ extension SpeakerProjection {
                     turnCount: turnCounts[speaker.id] ?? 0,
                     effectiveProfileID: effectiveProfiles[speaker.id]))
             }
-            let merges = mergeSuggestions(listed: projectedSpeakers, effectiveProfiles: effectiveProfiles,
+            // Same name, same person (`SameNameSpeakers`): speakers whose names match are listed as one, with
+            // their turns.
+            let joined = SameNameSpeakers.join(projectedSpeakers, turns: projectedTurns)
+            for member in joined.into.keys { effectiveProfiles[member] = nil }
+            let merges = mergeSuggestions(listed: joined.speakers, effectiveProfiles: effectiveProfiles,
                                           context: context)
-            return (projectedSpeakers, projectedTurns, merges)
+            return (joined.speakers, joined.turns, merges)
         }
 
         /// The talk time of a turn some of whose words are hidden: the sum of each shown span's time (a span is one run

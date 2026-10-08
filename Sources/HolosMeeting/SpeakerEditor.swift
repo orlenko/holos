@@ -53,6 +53,11 @@ public enum SpeakerEditor {
     ///   the newer changes first).
     /// - Names in `rename` and `newSpeaker` are saved as `cleanName` returns them (one line, no control
     ///   characters), so every name can be typed back as the exports show it.
+    /// - Same name, same person (docs/meeting-design.md §4.9): the batch saved is
+    ///   `view.joiningSameNames(actions)`, which adds the merges that keep one stored speaker per name (a rename to a
+    ///   name another speaker has, a new speaker with such a name, a link to a person another speaker is named as,
+    ///   and an edit of a speaker the view shows joined by name). They share the batch ID, so one undo takes them
+    ///   back with the change. `saved(_:asAsked:)` tells a caller's batch apart in what was saved.
     /// - An action the projection would refuse on the current state (a speaker or turn that does not exist, a split
     ///   at a turn's first word, a merge of a speaker into itself, a `newSpeaker` ID that exists or does not start
     ///   with "user:", …) refuses the whole batch with `HolosError.invalidInput`, so no line is ever written stale.
@@ -136,7 +141,9 @@ public enum SpeakerEditor {
             let at = Date()
             var edits: [SpeakerEdit] = []
             edits.reserveCapacity(actions.count)
-            for action in actions.map(cleaned) {
+            // Same name, same person: a batch that names a speaker as another is named also merges them, and one on
+            // a speaker the view shows joined by name merges the joined ones first (`joiningSameNames`).
+            for action in view.joiningSameNames(actions.map(cleaned)) {
                 let expected = viewState.fingerprint(for: action)
                 guard expected == current.fingerprint(for: action) else { throw refusedStaleView(base.run) }
                 if case .revert(let target) = action,
@@ -293,6 +300,21 @@ public enum SpeakerEditor {
         // Shown turns too: choosing Unknown for a turn shown with a neighbour's speaker (a short interjection, §5.10)
         // changes no stored speaker but keeps it unknown from then on.
         return next.speakers == view.speakers && next.turns == view.turns && next.shownTurns == view.shownTurns
+    }
+
+    /// Whether `saved` (a batch's actions in journal order) is `asked` as `apply` saves it: the same actions, with at
+    /// most the merges of same-named speakers that `SpeakerProjection.joiningSameNames` adds before and after them.
+    /// For a caller that recognizes its own batch among the lines it reads back.
+    public static func saved(_ saved: [SpeakerEditAction], asAsked asked: [SpeakerEditAction]) -> Bool {
+        guard saved.count >= asked.count else { return false }
+        func isMerge(_ action: SpeakerEditAction) -> Bool {
+            if case .merge = action { return true }
+            return false
+        }
+        for start in 0...(saved.count - asked.count) where Array(saved[start..<(start + asked.count)]) == asked {
+            if saved[..<start].allSatisfy(isMerge), saved[(start + asked.count)...].allSatisfy(isMerge) { return true }
+        }
+        return false
     }
 
     // MARK: - Private

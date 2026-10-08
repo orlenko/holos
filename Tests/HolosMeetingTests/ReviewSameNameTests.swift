@@ -1,0 +1,121 @@
+import Foundation
+import HolosCore
+@testable import HolosMeeting
+import HolosSpeakers
+import HolosStorage
+import Testing
+
+// Same name, same person in the review window (docs/meeting-design.md §4.9, "Speakers with the same name"). Names are
+// made up. Helpers are prefixed `sameName`.
+
+@MainActor
+private func sameNameOpen(_ session: URL, store: SpeakerProfileStore? = nil) async throws -> ReviewSession {
+    try await ReviewSession(session: session, profiles: store, maintenance: nil, exportDelay: .seconds(60))
+}
+
+private func sameNameJournal(_ session: URL) throws -> [SpeakerEdit] {
+    try SessionSpeakerStore.readEdits(session: session).edits
+}
+
+private func sameNameStore(_ temp: TemporaryDirectory) -> SpeakerProfileStore {
+    SpeakerProfileStore(directory: temp.url.appendingPathComponent("Support/Speakers", isDirectory: true))
+}
+
+/// T1 S1, T2 S2, T3 S3, T4 S1, T5 S2, T6 S3: five seconds each.
+private func sameNameSession(_ temp: TemporaryDirectory) async throws -> URL {
+    try await SessionFixtures.labelledSession(in: temp.url, speakers: ["S1", "S2", "S3"], duration: 30).session
+}
+
+@Test(.timeLimit(.minutes(1))) @MainActor
+func newSpeakerWithANameInTheMeetingGivesTheTurnsToThatSpeaker() async throws {
+    let temp = try TemporaryDirectory("review")
+    defer { temp.remove() }
+    let session = try await sameNameSession(temp)
+    let review = try await sameNameOpen(session)
+    try await review.setName("Alice", speakerID: "system:S1")
+    let before = review.projection
+
+    // "New Speaker…" in a turn's speaker menu, typed with a name S1 already has.
+    try await review.assign(["T2"], to: .newSpeaker(name: " ALICE "))
+    #expect(try sameNameJournal(session).last?.action == .reassignTurns(turnIDs: ["T2"], to: "system:S1"))
+    #expect(review.projection.turns.first { $0.id == "T2" }?.speakerID == "system:S1")
+    #expect(review.projection.speakers.map(\.id) == ["system:S1", "system:S2", "system:S3"])
+
+    // One undo gives the turn back.
+    try await review.undo()
+    #expect(review.projection.turns == before.turns)
+
+    // Another name still makes a new speaker.
+    try await review.assign(["T2"], to: .newSpeaker(name: "Bob"))
+    #expect(review.projection.speakers.map(\.name) == ["Alice", "Speaker 2", "Speaker 3", "Bob"])
+}
+
+@Test(.timeLimit(.minutes(1))) @MainActor
+func speakersSavedWithOneNameShowAsOneAndRenameAsOne() async throws {
+    let temp = try TemporaryDirectory("review")
+    defer { temp.remove() }
+    let session = try await sameNameSession(temp)
+    // Saved before the rule: "Alice" picked for T2 (a new speaker), and S1 renamed Alice too.
+    try appendWithoutJoining([.newSpeaker(speakerID: "user:A", name: "Alice", turnIDs: ["T2"]),
+                              .rename(speakerID: "system:S1", name: "alice")], session: session)
+    let review = try await sameNameOpen(session)
+    let speakers = review.projection.speakers
+    #expect(speakers.map(\.id) == ["system:S1", "system:S2", "system:S3"])
+    let alice = try #require(speakers.first)
+    #expect(alice.memberIDs == ["system:S1", "user:A"])
+    #expect(alice.turnCount == 3)
+    let hers = review.projection.turns.filter { $0.speakerID == "system:S1" }
+    #expect(hers.map(\.id) == ["T1", "T2", "T4"])
+    #expect(abs(alice.talkSeconds - hers.reduce(0) { $0 + $1.end - $1.start }) < 1e-9)
+    let before = review.projection
+
+    // A rename of the one shown renames her whole, as one change.
+    try await review.setName("Alicia", speakerID: "system:S1")
+    let lines = try sameNameJournal(session)
+    #expect(lines.suffix(2).map(\.action) == [.merge(from: "user:A", into: "system:S1"),
+                                                .rename(speakerID: "system:S1", name: "Alicia")])
+    #expect(review.projection.speakers.map(\.name) == ["Alicia", "Speaker 2", "Speaker 3"])
+    try await review.undo()
+    #expect(review.projection.speakers == before.speakers)
+    #expect(review.projection.turns == before.turns)
+}
+
+@Test(.timeLimit(.minutes(1))) @MainActor
+func assigningAPersonCalledLikeASpeakerGivesTheTurnsToThatSpeakerAndLinksIt() async throws {
+    let temp = try TemporaryDirectory("review")
+    defer { temp.remove() }
+    let store = sameNameStore(temp)
+    let alice = SpeakerProfile(displayName: "Alice")
+    try store.update { $0.profiles.append(alice) }
+    let session = try await sameNameSession(temp)
+    let review = try await sameNameOpen(session, store: store)
+    try await review.apply([.rename(speakerID: "system:S2", name: "alice")])
+
+    try await review.assign(["T3"], to: .person(profileID: alice.id))
+    #expect(review.projection.turns.first { $0.id == "T3" }?.speakerID == "system:S2")
+    #expect(review.speaker("system:S2")?.profileID == alice.id)
+    #expect(review.projection.speakers.filter { $0.name.lowercased() == "alice" }.count == 1)
+    #expect(try store.load().profiles.count == 1)
+
+    // One undo takes back the move and the link.
+    try await review.undo()
+    #expect(review.projection.turns.first { $0.id == "T3" }?.speakerID == "system:S3")
+    #expect(review.speaker("system:S2")?.profileID == nil)
+    #expect(review.speaker("system:S2")?.name == "alice")
+}
+
+@Test(.timeLimit(.minutes(1))) @MainActor
+func namingASpeakerLikeAPersonIgnoresAccentsAndSpaces() async throws {
+    let temp = try TemporaryDirectory("review")
+    defer { temp.remove() }
+    let store = sameNameStore(temp)
+    let zoe = SpeakerProfile(displayName: "Zoë Smith")
+    try store.update { $0.profiles.append(zoe) }
+    let session = try await sameNameSession(temp)
+    let review = try await sameNameOpen(session, store: store)
+
+    try await review.setName(" zoe   smith ", speakerID: "system:S3")
+    #expect(review.speaker("system:S3")?.profileID == zoe.id)
+    #expect(review.speaker("system:S3")?.name == "Zoë Smith")
+    #expect(try store.load().profiles.count == 1)
+}

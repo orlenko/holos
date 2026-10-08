@@ -10,9 +10,11 @@ public enum ReviewAssignTarget: Sendable, Equatable {
     case speaker(String)
     /// The unknown speaker.
     case unknown
-    /// A new speaker of this meeting, optionally named.
+    /// A new speaker of this meeting, optionally named; a name a listed speaker already has gives the turns to that
+    /// speaker instead (same name, same person).
     case newSpeaker(name: String?)
-    /// A known person: the meeting's speaker linked to them, or a new speaker linked to them.
+    /// A known person: the meeting's speaker linked to them, else the one called their name, else a new speaker linked
+    /// to them.
     case person(profileID: String)
 }
 
@@ -928,7 +930,9 @@ public struct ReviewDeletedWords: Sendable, Equatable {
         guard !resolved.isEmpty else { return }
         try validate(resolved)
         if SpeakerEditor.changesNothing(resolved, on: projection) { return }
-        try await enqueue(.edit(resolved, requireCompleteJournal: requireCompleteJournal), optimistic: resolved)
+        // Shown at once as the editor will save it: with the merges that keep one speaker per name.
+        try await enqueue(.edit(resolved, requireCompleteJournal: requireCompleteJournal),
+                          optimistic: projection.joiningSameNames(resolved))
     }
 
     /// This window's newest change: a queued one is dropped (or reverted once saved), else the newest saved batch is
@@ -1019,17 +1023,18 @@ public struct ReviewDeletedWords: Sendable, Equatable {
         }
     }
 
-    /// The known person called `name` (cleaned, ignoring case), the most recently used one when two share it.
+    /// The known person called `name` (compared as `SameNameSpeakers.key` does: ignoring case, accents and extra
+    /// spaces), the most recently used one when two share it.
     private func person(named name: String) -> SpeakerProfile? {
-        guard let clean = SpeakerEditor.cleanName(name) else { return nil }
-        return people.first { $0.displayName.caseInsensitiveCompare(clean) == .orderedSame }
+        guard let key = SameNameSpeakers.key(name) else { return nil }
+        return people.first { SameNameSpeakers.key($0.displayName) == key }
     }
 
     /// A name-field link of `speakerID` to a new person called `name` is queued or saving and not undone.
     private func pendingLinkByName(speakerID: String, name: String) -> Bool {
         queue.contains { op in
             guard !op.undone, case .link(let id, .new(let pending), _, true) = op.kind else { return false }
-            return id == speakerID && pending.caseInsensitiveCompare(name) == .orderedSame
+            return id == speakerID && SameNameSpeakers.key(pending) == SameNameSpeakers.key(name)
         }
     }
 
@@ -1045,6 +1050,11 @@ public struct ReviewDeletedWords: Sendable, Equatable {
         case .unknown:
             try await apply([.reassignTurns(turnIDs: ids, to: nil)])
         case .newSpeaker(let name):
+            // Same name, same person: a name a listed speaker already has gives the turns to that speaker.
+            if let name, let speaker = projection.speaker(named: name) {
+                try await apply([.reassignTurns(turnIDs: ids, to: speaker.id)])
+                return
+            }
             try await apply([.newSpeaker(speakerID: Self.newSpeakerID(), name: name, turnIDs: ids)])
         case .person(let profileID):
             if let speaker = projection.speakers.first(where: { $0.profileID == profileID }) {
@@ -1054,6 +1064,22 @@ public struct ReviewDeletedWords: Sendable, Equatable {
             try requirePeople()
             guard let person = people.first(where: { $0.id == profileID }) else {
                 throw HolosError.invalidInput("That person is not known to Voice is Local any more; reopen the window.")
+            }
+            // A listed speaker already called this person's name is them (same name, same person): the turns go to
+            // it, and it is linked to the person in the same change unless it is linked to someone else or said
+            // "Not <person>".
+            if let speaker = projection.speaker(named: person.displayName) {
+                let move = SpeakerEditAction.reassignTurns(turnIDs: ids, to: speaker.id)
+                guard speaker.profileID == nil, !speaker.rejectedProfileIDs.contains(profileID) else {
+                    try await apply([move])
+                    return
+                }
+                try validate([move])
+                mergeArmed = true
+                try await enqueue(.assignPerson(create: move, speakerID: speaker.id, profileID: profileID,
+                                                learnVoice: learnVoices),
+                                  optimistic: [move, .linkProfile(speakerID: speaker.id, profileID: profileID)])
+                return
             }
             let speakerID = Self.newSpeakerID()
             let create = SpeakerEditAction.newSpeaker(speakerID: speakerID, name: person.displayName, turnIDs: ids)
@@ -1780,6 +1806,8 @@ public struct ReviewDeletedWords: Sendable, Equatable {
             case edit([SpeakerEditAction], requireCompleteJournal: Bool = false)
             /// `byName`: from the name field; a `.new` target is linked to a person of that name existing at save time.
             case link(speakerID: String, target: ProfileTarget, learnVoice: Bool, byName: Bool)
+            /// `create` gives the turns to `speakerID` (a new speaker, or a listed one already called the person's
+            /// name), which is then linked to the person; one change.
             case assignPerson(create: SpeakerEditAction, speakerID: String, profileID: String, learnVoice: Bool)
             case confirmAll(learnVoices: Bool, suggestions: [String: String])
             case markSelf(speakerID: String, learnVoice: Bool)
@@ -1990,7 +2018,7 @@ public struct ReviewDeletedWords: Sendable, Equatable {
             try requireBasis(op)
             let sent = actions.map(resolve)
             try await saveEdit(sent, op: op, requireCompleteJournal: requireCompleteJournal) { batch in
-                batch.map(\.action) == sent
+                SpeakerEditor.saved(batch.map(\.action), asAsked: sent)
             }
         case .link(let speakerID, let asked, let learnVoice, let byName):
             try requireBasis(op)
@@ -2011,7 +2039,7 @@ public struct ReviewDeletedWords: Sendable, Equatable {
         case .assignPerson(let create, let speakerID, let profileID, let learnVoice):
             try requireBasis(op)
             let sent = resolve(create)
-            try await saveEdit([sent], op: op) { batch in batch.map(\.action) == [sent] }
+            try await saveEdit([sent], op: op) { batch in SpeakerEditor.saved(batch.map(\.action), asAsked: [sent]) }
             let view = savedProjection
             try await savePeopleChange(op, matching: Self.linkBatch(speakerID),
                                        learn: learnVoice) { session, store, extractor, deferred in
@@ -3664,9 +3692,11 @@ public struct ReviewDeletedWords: Sendable, Equatable {
         text.split(whereSeparator: { $0.isWhitespace || $0.isNewline }).joined(separator: " ")
     }
 
-    /// linkProfile + rename of `speakerID` (a link, "This is me").
+    /// linkProfile + rename of `speakerID` (a link, "This is me"), with the merges of same-named speakers the editor
+    /// may add around them (`SpeakerEditor.saved(_:asAsked:)`).
     private nonisolated static func linkBatch(_ speakerID: String) -> ([SpeakerEdit]) -> Bool {
-        { batch in
+        { saved in
+            let batch = withoutMerges(saved)
             guard batch.count == 2,
                   case .linkProfile(let linked, _) = batch[0].action, linked == speakerID,
                   case .rename(let renamed, _) = batch[1].action, renamed == speakerID else { return false }
@@ -3674,13 +3704,23 @@ public struct ReviewDeletedWords: Sendable, Equatable {
         }
     }
 
-    /// linkProfile + rename pairs (Confirm All).
-    private nonisolated static func confirmBatch(_ batch: [SpeakerEdit]) -> Bool {
+    /// linkProfile + rename pairs (Confirm All), with the merges of same-named speakers the editor may add.
+    private nonisolated static func confirmBatch(_ saved: [SpeakerEdit]) -> Bool {
+        let batch = withoutMerges(saved)
         guard !batch.isEmpty, batch.count % 2 == 0 else { return false }
         return stride(from: 0, to: batch.count, by: 2).allSatisfy { index in
             guard case .linkProfile(let linked, _) = batch[index].action,
                   case .rename(let renamed, _) = batch[index + 1].action else { return false }
             return linked == renamed
+        }
+    }
+
+    /// A saved batch without its merges: the link batches ask for none, so any there are the editor's joins of
+    /// same-named speakers (`SpeakerProjection.joiningSameNames`).
+    private nonisolated static func withoutMerges(_ batch: [SpeakerEdit]) -> [SpeakerEdit] {
+        batch.filter { edit in
+            if case .merge = edit.action { return false }
+            return true
         }
     }
 
