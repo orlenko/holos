@@ -405,4 +405,107 @@ struct ReviewWindowJoinTests {
         #expect(journal(session).isEmpty)
         await window.closeAndWait()
     }
+
+    /// Three speakers' rows, each past the gap: C joined to B, then B and C joined to A. The second join's speaker
+    /// change takes C from B's speaker, which never takes back the first join's work on C (the second join set C's
+    /// mark since): the three stay one row.
+    @Test(.timeLimit(.minutes(1))) func aLaterJoinsMarkIsNeverUndoneByAnEarlierJoin() async throws {
+        let (window, session) = try await open([Spec(speaker: "S1", start: 0, words: ["amber", "birch"]),
+                                                Spec(speaker: "S2", start: 5, words: ["cedar", "dune"]),
+                                                Spec(speaker: "S3", start: 12, words: ["elm", "fern"])])
+        window.turnList.joinChosen(try #require(window.turnList.joinOffer(row: 2, index: 0)).choice)
+        #expect(await until { journal(session).count == 1 && rows(window) == [["T1"], ["T2", "T3"]] })
+        window.turnList.joinChosen(try #require(window.turnList.joinOffer(row: 1, index: 0)).choice)
+        #expect(await until {
+            // Read back by the review (not only on disk), so the window has settled with both saved.
+            window.review.snapshot.journal.edits.count == 2 && speaker(window, "T3") == "S1"
+        })
+        window.refresh()
+        #expect(rows(window) == [["T1", "T2", "T3"]])
+        #expect(window.paragraphJoins == ["T2", "T3"])
+        await window.closeAndWait()
+    }
+
+    /// A row given to S2 (still saving), then joined back to the S1 row before it: the join follows its own
+    /// assignment, never the speaker the labels had before; once both are saved the rows are one.
+    @Test(.timeLimit(.minutes(1))) func aJoinFollowsItsOwnAssignmentNotTheSpeakerBeforeIt() async throws {
+        let (window, session) = try await open([Spec(speaker: "S1", start: 0, words: ["amber", "birch"]),
+                                                Spec(speaker: "S1", start: 8, words: ["cedar", "dune"]),
+                                                Spec(speaker: "S2", start: 20, words: ["elm", "fern"])])
+        #expect(rows(window) == [["T1"], ["T2"], ["T3"]])
+        let (stream, release) = AsyncStream<Void>.makeStream()
+        window.review.beforeEdit = { for await _ in stream {} }
+        let toS2 = Task { try await window.review.assign(["T2"], to: .speaker("S2")) }
+        #expect(await until { speaker(window, "T2") == "S2" })
+        window.refresh()
+        window.turnList.joinChosen(try #require(window.turnList.joinOffer(row: 1, index: 0)).choice)
+        #expect(await until { speaker(window, "T2") == "S1" && rows(window) == [["T1", "T2"], ["T3"]] })
+        release.finish()
+        try await toS2.value
+        #expect(await until {
+            journal(session) == [.reassignTurns(turnIDs: ["T2"], to: "S2"), .reassignTurns(turnIDs: ["T2"], to: "S1")]
+                && speaker(window, "T2") == "S1" && window.review.snapshot.journal.edits.count == 2
+        })
+        window.review.beforeEdit = nil
+        window.refresh()
+        #expect(rows(window) == [["T1", "T2"], ["T3"]])
+        #expect(window.paragraphJoins == ["T2"])
+        await window.closeAndWait()
+    }
+
+    /// Return splits a named turn and, while the split saves, its first part goes to the unknown speaker and Backspace
+    /// joins the second part back (to the unknown speaker too): the join waits for its own assignment, so the field
+    /// opens again at the join, and ⌘Z later takes the join back with that assignment.
+    @Test(.timeLimit(.minutes(1))) func aJoinOfASplitPartToTheUnknownSpeakerWaitsForItsOwnAssignment() async throws {
+        let (window, session) = try await open([Spec(speaker: "S1", start: 0, words: ["amber", "birch", "cedar"]),
+                                                Spec(speaker: "S2", start: 8, words: ["dune", "elm"])])
+        let (stream, release) = AsyncStream<Void>.makeStream()
+        window.review.beforeEdit = { for await _ in stream {} }
+        window.setEditMode(true)
+        press(window, row: 0, word: 2, caret: 0, #selector(NSResponder.insertNewline(_:)))
+        #expect(await until { rows(window).count == 3 })
+        let part = try #require(rows(window)[1].first)
+        let toUnknown = Task { try await window.review.assign(["T1"], to: .unknown) }
+        #expect(await until { speaker(window, "T1") == nil })
+        window.refresh()
+        press(window, row: 1, word: 0, caret: 0, #selector(NSResponder.deleteBackward(_:)))
+        #expect(await until { speaker(window, part) == nil && rows(window) == [["T1", part], ["T2"]] })
+        release.finish()
+        try await toUnknown.value
+        #expect(await until { journal(session).count == 3 && window.turnList.wordEdit != nil })
+        let saved = window.review.resolvedTurnID(part)
+        #expect(rows(window) == [["T1", saved], ["T2"]])
+        #expect(window.turnList.wordEdit?.words.map(\.text) == ["cedar"])
+        window.review.beforeEdit = nil
+        window.turnList.cancelWordEdit()
+        window.window.makeFirstResponder(window.turnList.table)
+        #expect(window.handleKey(try commandZ(window)))
+        #expect(await until {
+            speaker(window, saved) == "S1" && window.paragraphJoins.isEmpty && rows(window) == [["T1"], [saved], ["T2"]]
+        })
+        await window.closeAndWait()
+    }
+
+    /// A join resolved on rows the meeting was labelled again under before it was made (a reload adopted a relabel in
+    /// between): refused, with nothing saved and no row joined, since its turn and speaker IDs may name others now.
+    @Test(.timeLimit(.minutes(1))) func aJoinResolvedBeforeARelabelIsRefusedAfterIt() async throws {
+        let (window, session) = try await open([Spec(speaker: "S1", start: 0, words: ["amber", "birch"]),
+                                                Spec(speaker: "S2", start: 5, words: ["cedar", "dune"])])
+        let request = try #require(window.turnList.joinRequest(row: 1))
+        guard case .join(let join)? = window.turnList.resolveJoin?(request) else {
+            Issue.record("Expected a join.")
+            return
+        }
+        try relabel(session)
+        await window.review.reload()
+        #expect(await until { window.review.snapshot.run?.id != request.runID })
+        window.turnList.onJoin?(join, request)
+        // Whatever the join queued runs before a change queued after it: let the window's task start, then wait for
+        // one queued behind it.
+        for _ in 0..<10 { await Task.yield() }
+        try await window.review.apply([.rename(speakerID: "S1", name: "Ash")])
+        #expect(journal(session) == [.rename(speakerID: "S1", name: "Ash")])
+        #expect(window.paragraphJoins.isEmpty && rows(window) == [["T1"], ["T2"]])
+        await window.closeAndWait()
+    }
 }

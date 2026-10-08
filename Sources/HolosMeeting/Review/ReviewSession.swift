@@ -18,6 +18,26 @@ public enum ReviewAssignTarget: Sendable, Equatable {
 
 /// A word edit saved in Review (`ReviewSession.editWords`).
 /// Where a split at a word falls (`ReviewSession.splitPlace`).
+/// A change the window follows once queued (`ReviewSession.reassign(_:to:seenRun:following:)`), by identity.
+@MainActor
+public final class ReviewChange {
+    public init() {}
+}
+
+/// Where a followed change stands (`ReviewSession.state(of:)`).
+public enum ReviewChangeState: Sendable, Equatable {
+    /// Not queued: it changed nothing, or was refused before it was queued.
+    case notQueued
+    /// Queued, saving, or saved and not read back yet.
+    case pending
+    /// Saved, and in effect in the labels read from disk.
+    case inEffect
+    /// Taken back: reverted in the labels read from disk, or dropped by Undo before it ran.
+    case undone
+    /// Refused or failed once queued: nothing saved.
+    case failed
+}
+
 public enum ReviewSplitPlace: Sendable, Equatable {
     /// Inside a turn: it splits before `word`.
     case inside(turnID: String, word: WordRef)
@@ -258,6 +278,8 @@ public struct ReviewWord: Sendable, Equatable {
     /// Changes whose lines were saved but whose labels could not be reread (`reloadProblem`), oldest first: still
     /// shown on the saved labels, and claimed (their batches found, their undo entry made) by the next labels read.
     private var unreloaded: [Operation] = []
+    /// Changes the window follows (`reassign(_:to:seenRun:following:)`), until it forgets them.
+    private var followed: [ObjectIdentifier: Operation] = [:]
     /// Bumped whenever `snapshot` is replaced.
     private var savedVersion = 0
     /// The last `savedVersion` that brought changes not made by this window's queue (a reload, a relabel, another
@@ -714,13 +736,6 @@ public struct ReviewWord: Sendable, Equatable {
         return projection.turns.first { $0.id == id }
     }
 
-    /// The turn as the labels last read from disk have it: only changes saved (and reread) show here, never one
-    /// queued, saving, or an undo not saved yet. Nil when the saved labels have no such turn (a split part not saved).
-    public func savedTurn(_ turnID: String) -> ProjectedTurn? {
-        let id = resolvedTurnID(turnID)
-        return savedProjection.turns.first { $0.id == id }
-    }
-
     /// The text the window shows for a turn: its words in the transcript the head run was built from.
     ///
     /// Every place the window reads turn text goes through here (rows, search, previews, the split sheet), and turns
@@ -1015,6 +1030,53 @@ public struct ReviewWord: Sendable, Equatable {
             guard !op.undone, case .link(let id, .new(let pending), _, true) = op.kind else { return false }
             return id == speakerID && pending.caseInsensitiveCompare(name) == .orderedSame
         }
+    }
+
+    /// Gives `turnIDs` to `speakerID` (nil: the unknown speaker) as one change, exactly as `assign` does (undone and
+    /// learned from the same way), which the window follows by `change` (`state(of:)`): a join's speaker change.
+    /// Refused when the labels were replaced since `seenRun` by a run that does not keep the turns (a relabel: turn and
+    /// speaker IDs may name others there). Changing nothing, it queues nothing (`state(of:)` is `.notQueued`).
+    public func reassign(_ turnIDs: [String], to speakerID: String?, seenRun: String,
+                         following change: ReviewChange) async throws {
+        try requireEditable()
+        if seenRun != projection.runID, !keepsTurns(of: seenRun, in: projection.runID) {
+            throw HolosError.invalidInput("The speakers were labelled again since; try the join again.")
+        }
+        var seen = Set<String>()
+        let ids = turnIDs.map(resolvedTurnID).filter { seen.insert($0).inserted }
+        guard !ids.isEmpty else { return }
+        let resolved = [Self.cleaned(resolve(.reassignTurns(turnIDs: ids, to: speakerID)))]
+        try validate(resolved)
+        if SpeakerEditor.changesNothing(resolved, on: projection) { return }
+        let op = queued(.edit(resolved, requireCompleteJournal: false), optimistic: resolved)
+        followed[ObjectIdentifier(change)] = op
+        try await wait(for: op)
+    }
+
+    /// Where a change queued by `reassign` stands, by the batches that very change saved and the labels read from
+    /// disk: never by a change or an undo still queued or saving, nor by what other changes did to the same turns.
+    public func state(of change: ReviewChange) -> ReviewChangeState {
+        guard let op = followed[ObjectIdentifier(change)] else { return .notQueued }
+        if !op.batches.isEmpty {
+            let wanted = Set(op.batches)
+            let applied = Set(savedProjection.appliedEditIDs)
+            let lines = snapshot.journal.edits.filter { wanted.contains($0.batchID ?? $0.id) }
+            guard !lines.isEmpty else { return .pending }
+            return lines.contains { applied.contains($0.id) } ? .inEffect : .undone
+        }
+        guard op.finished else { return .pending }
+        switch op.result {
+        case .failure(let error)?:
+            // Saved, not reread yet: its batches are found when labels are read again.
+            return Self.isIncomplete(error) ? .pending : .failed
+        case .success?, nil:
+            return op.undone ? .undone : .failed
+        }
+    }
+
+    /// The window no longer follows `change`.
+    public func forget(_ change: ReviewChange) {
+        followed[ObjectIdentifier(change)] = nil
     }
 
     /// Moves turns to a speaker, the unknown speaker, a new speaker, or a person, as one change.

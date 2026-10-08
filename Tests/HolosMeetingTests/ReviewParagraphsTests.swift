@@ -337,18 +337,23 @@ private func paragraphWords(_ paragraph: ReviewParagraph, counts: [Int]) -> [[Re
     #expect(paragraphIDs(ReviewParagraphs.group(given, joins: Set(join.turnIDs))) == [["T1", "T2", "T3"]])
 }
 
-@Test func aJoinTakenBackPutsBackWhatTheTurnHad() {
+@Test func aJoinTakenBackPutsBackOnlyTheMarksItSetItself() {
     let t2 = paragraphTurn("T2", "S1", 2.5, 4), t3 = paragraphTurn("T3", "S1", 5, 6)
     var breaks = ReviewParagraphBreaks()
     breaks.insert(before: t2, runID: "R1")
     let before = [breaks.mark(of: "T2"), breaks.mark(of: "T3")]
     #expect(before == [.breakBefore, nil])
-    breaks.join(t2, runID: "R1")
-    breaks.join(t3, runID: "R1")
-    #expect(breaks.mark(of: "T2") == .join && breaks.mark(of: "T3") == .join)
-    // The speaker change refused: the break comes back, the other join goes.
-    for (turn, mark) in zip([t2, t3], before) { breaks.restore(mark, of: turn) }
-    #expect(breaks.mark(of: "T2") == .breakBefore && breaks.mark(of: "T3") == nil && breaks.joins.isEmpty)
-    breaks.restore(.join, of: t3)
+    breaks.join(t2, runID: "R1", owner: "J1")
+    breaks.join(t3, runID: "R1", owner: "J1")
+    #expect(breaks.mark(of: "T2") == .join(owner: "J1") && breaks.mark(of: "T3") == .join(owner: "J1"))
+    // A later join sets T3's mark: J1 taken back leaves it, and puts T2's break back.
+    breaks.join(t3, runID: "R1", owner: "J2")
+    for (turn, mark) in zip([t2, t3], before) { breaks.takeBack("J1", before: mark, of: turn) }
+    #expect(breaks.mark(of: "T2") == .breakBefore && breaks.mark(of: "T3") == .join(owner: "J2"))
     #expect(breaks.joins == ["T3"])
+    // J2 taken back: what T3 had before J2 comes back (here J1's join), as long as J2's join is still there.
+    breaks.takeBack("J2", before: .join(owner: "J1"), of: t3)
+    #expect(breaks.mark(of: "T3") == .join(owner: "J1"))
+    breaks.takeBack("J2", before: nil, of: t3)
+    #expect(breaks.mark(of: "T3") == .join(owner: "J1"), "No longer J2's: left alone.")
 }

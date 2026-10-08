@@ -71,44 +71,68 @@ public struct ReviewParagraphJoin: Sendable, Equatable {
 /// and the joins a row joined to the row before it made (`join`), never saved. They belong to the run they were made
 /// on: a new run drops them (a relabel gives turn IDs such as "T1" to other turns), except one published while the
 /// window reverts a word fix (`beginCarryOver`), which keeps the same turns (their estimated starts may move): there a
-/// break or a join follows its turn by ID and track. Within a run, each goes with its turn. A turn has a break or a
-/// join, never both: the later one asked replaces the other. Pure.
+/// break or a join follows its turn by ID and track. Within a run, each goes with its turn. A turn has one mark at
+/// most: the later one asked replaces the other. A join may name its owner (the window's join that set it), so taking
+/// that join back removes only marks it set itself and that nothing replaced since (`takeBack`). Pure.
 public struct ReviewParagraphBreaks: Sendable, Equatable {
-    /// Turn ID → its track, on `runID`.
-    private var tracks: [String: String] = [:]
-    /// Turns joined to the paragraph before them: turn ID → its track, on `runID`.
-    private var joinTracks: [String: String] = [:]
+    /// What a turn has before it in the window.
+    public enum Mark: Sendable, Equatable {
+        case breakBefore
+        /// Joined to the paragraph before it; `owner` names the join that set it (nil: none to take it back).
+        case join(owner: String?)
+    }
+
+    private struct Held: Sendable, Equatable {
+        var track: String
+        var mark: Mark
+    }
+
+    /// Turn ID → its mark and track, on `runID`.
+    private var marks: [String: Held] = [:]
     private var runID: String?
     /// Word-fix reverts in flight.
     private var carryOvers = 0
 
     public init() {}
 
-    public var isEmpty: Bool { tracks.isEmpty && joinTracks.isEmpty }
+    public var isEmpty: Bool { marks.isEmpty }
 
     /// The turns joined to the paragraph before them (`ReviewParagraphs.group`'s `joins`), as of the last `active`.
-    public var joins: Set<String> { Set(joinTracks.keys) }
+    public var joins: Set<String> {
+        Set(marks.compactMap { id, held in
+            if case .join = held.mark { return id }
+            return nil
+        })
+    }
 
     /// Breaks the paragraph before `turn` of run `runID` (a join before it goes).
     public mutating func insert(before turn: ProjectedTurn, runID: String?) {
         start(runID)
-        tracks[turn.id] = turn.track
-        joinTracks[turn.id] = nil
+        marks[turn.id] = Held(track: turn.track, mark: .breakBefore)
     }
 
     /// Joins `turn` of run `runID` to the paragraph before it (a break before it goes): it reads on in that paragraph
-    /// while it has that paragraph's speaker, whatever the time gap, and also as a split's second part.
-    public mutating func join(_ turn: ProjectedTurn, runID: String?) {
+    /// while it has that paragraph's speaker, whatever the time gap, and also as a split's second part. `owner`: the
+    /// join that sets it, which alone may take it back.
+    public mutating func join(_ turn: ProjectedTurn, runID: String?, owner: String? = nil) {
         start(runID)
-        joinTracks[turn.id] = turn.track
-        tracks[turn.id] = nil
+        marks[turn.id] = Held(track: turn.track, mark: .join(owner: owner))
+    }
+
+    /// The mark before `turnID` (nil: none).
+    public func mark(of turnID: String) -> Mark? { marks[turnID]?.mark }
+
+    /// Takes back the join `owner` set before `turn`, putting back what the turn had before it (`before`), only while
+    /// that join is still the turn's mark: a mark set since (a later join, a break) is never undone by it.
+    public mutating func takeBack(_ owner: String, before: Mark?, of turn: ProjectedTurn) {
+        guard marks[turn.id]?.mark == .join(owner: owner) else { return }
+        marks[turn.id] = before.map { Held(track: turn.track, mark: $0) }
     }
 
     /// A break or join made on another run than the ones held starts afresh.
     private mutating func start(_ runID: String?) {
         guard runID != self.runID else { return }
-        tracks = [:]
-        joinTracks = [:]
+        marks = [:]
         self.runID = runID
     }
 
@@ -120,26 +144,6 @@ public struct ReviewParagraphBreaks: Sendable, Equatable {
     public mutating func endCarryOver(turns: [ProjectedTurn], runID: String?) {
         _ = active(in: turns, runID: runID)
         carryOvers = max(0, carryOvers - 1)
-    }
-
-    /// What a turn has before it in the window.
-    public enum Mark: Sendable, Equatable {
-        case breakBefore
-        case join
-    }
-
-    /// The break or join before `turnID` (nil: neither), to put back with `restore`.
-    public func mark(of turnID: String) -> Mark? {
-        if tracks[turnID] != nil { return .breakBefore }
-        return joinTracks[turnID] != nil ? .join : nil
-    }
-
-    /// Puts back what `turn` had before it (`mark`), replacing what it has now: a join whose speaker change was
-    /// refused is taken back so. Whatever run is held now (one a word edit published since keeps the turns): a run
-    /// that does not keep them drops it all at the next `active` anyway.
-    public mutating func restore(_ mark: Mark?, of turn: ProjectedTurn) {
-        tracks[turn.id] = mark == .breakBefore ? turn.track : nil
-        joinTracks[turn.id] = mark == .join ? turn.track : nil
     }
 
     /// The turns of `turns` (of run `runID`) to break before (`ReviewParagraphs.group`); the joins kept are `joins`
@@ -159,25 +163,17 @@ public struct ReviewParagraphBreaks: Sendable, Equatable {
             let kept = self.runID.map(keepsTurnsOf) ?? false
             self.runID = runID
             guard carryOvers > 0 || kept else {
-                tracks = [:]
-                joinTracks = [:]
+                marks = [:]
                 return []
             }
         }
-        func resolved(_ held: [String: String]) -> [String: String] {
-            Dictionary(held.map { (resolve($0.key), $0.value) }, uniquingKeysWith: { first, _ in first })
-        }
-        let breaks = resolved(tracks)
-        let joined = resolved(joinTracks)
-        var kept: [String: String] = [:]
-        var keptJoins: [String: String] = [:]
+        let held = Dictionary(marks.map { (resolve($0.key), $0.value) }, uniquingKeysWith: { first, _ in first })
+        var kept: [String: Held] = [:]
         for turn in turns {
-            if breaks[turn.id] == turn.track { kept[turn.id] = turn.track }
-            if joined[turn.id] == turn.track { keptJoins[turn.id] = turn.track }
+            if let mark = held[turn.id], mark.track == turn.track { kept[turn.id] = mark }
         }
-        tracks = kept
-        joinTracks = keptJoins
-        return Set(kept.keys)
+        marks = kept
+        return Set(kept.compactMap { $0.value.mark == .breakBefore ? $0.key : nil })
     }
 }
 
