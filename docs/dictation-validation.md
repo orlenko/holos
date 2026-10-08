@@ -120,7 +120,7 @@ recording), then:
    dictation's text.
 6. **Password fields are not recorded**: try to dictate into a password field (and with
    Terminal's Secure Keyboard Entry on); History gets no entry.
-7. **Retention Off stops recording**: Settings › History and privacy › Keep dictations
+7. **Retention Off stops recording**: Settings › Dictation history › Keep dictations
    → Off; when dictations are kept it asks whether to clear them (try Keep Them). Dictate:
    no new entry, and History says it is off. Set it back to 30 days.
 8. **Clear History**: **Clear History…** (History's footer or Settings) asks first, then
@@ -224,7 +224,7 @@ Voice › Manage Voices).
 
 ## Dictation audio and Run Again
 
-Not run yet. With History on (30 days) and Settings › History and privacy › **Keep the
+Not run yet. With History on (30 days) and Settings › Dictation history › **Keep the
 audio of dictations (for Run Again)** on (the default):
 
 1. **Audio is kept**: dictate a sentence with a word the recognizer gets wrong (for

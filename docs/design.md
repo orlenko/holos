@@ -222,13 +222,14 @@ Setup Assistant's permission rows use the same two buttons), Dictation (on/off, 
 speech model, fillers, Apple Intelligence fix, preview and its opacity), Meetings (record
 system audio, deep transcription, titles and summaries with Apple Intelligence, speaker
 labels, a link to People for remembered voices), Reading (default
-voice, speed, output folder), History and privacy (Keep dictations, the count, Clear
-History…, Keep the audio of dictations and its disk use), and Run Setup Assistant…; it polls
+voice, speed, output folder), Dictation history (Keep dictations, the count, Clear
+History…, Keep the audio of dictations and its disk use, and a note that its settings never
+remove meetings, which stay until deleted in Meetings), and Run Setup Assistant…; it polls
 the permissions every second while on screen.
 
 Settings stays one scrolling page, with chapters and a search field (`SettingsChapter`,
 `SettingsChapterTracking`, `SettingsSearch`). The sidebar lists the cards under Settings as
-chapters (General, Permissions, Dictation, Meetings, Reading, History and privacy), always
+chapters (General, Permissions, Dictation, Meetings, Reading, Dictation history), always
 shown and indented under it. Choosing a chapter scrolls its card to the top, smoothly when
 Settings was already on screen (at once with Reduce Motion), and clears a search. While the
 user scrolls, the sidebar marks the chapter whose card has reached the top (within 60 points);
@@ -254,7 +255,7 @@ unless the best match changed. The best match is outlined: Return clears the
 search, scrolls to it, outlines it for a moment, and moves the focus to its control when the
 control can take it (Full Keyboard Access); the sidebar marks its chapter, or, for Run Setup
 Assistant… (below the cards, in no chapter), the chapter at its place as scrolling there would
-mark it (History and privacy at the end of the page). Escape clears the search and returns to where the
+mark it (Dictation history at the end of the page). Escape clears the search and returns to where the
 page was. VoiceOver hears how many settings match and where Return goes. The meeting's live transcript is part of
 Meetings (see "Live transcript"). The Setup Assistant, the meeting start panel, Review
 (Name Speakers), and the dictation preview stay separate windows.
@@ -634,7 +635,7 @@ when the two have the same text.
 
 History can keep each recorded dictation's microphone audio, so a change to the corrections,
 the language, filler removal, or Apple Intelligence's fix can be tried on what was really
-said. Settings › History and privacy › **Keep the audio of dictations (for Run Again)**
+said. Settings › Dictation history › **Keep the audio of dictations (for Run Again)**
 (UserDefaults `historyKeepAudio`, on unless turned off) shows what the audio takes on disk;
 turning it off stops keeping new audio and offers to delete the audio already kept (the text
 stays). History Off keeps no audio either.

@@ -225,7 +225,7 @@ final class HistoryPane: NSViewController, MainSectionContent, NSTableViewDataSo
             } else if retention.records {
                 "No dictations yet.\nEach dictation you finish appears here."
             } else {
-                "History is off.\nTurn it on in Settings › History and privacy."
+                "History is off.\nTurn it on in Settings › Dictation history."
             }
         } else if filtered.isEmpty {
             emptyLabel.stringValue = "No dictations match “\(search.stringValue)”."
