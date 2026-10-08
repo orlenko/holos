@@ -246,15 +246,15 @@ private func paragraphWords(_ paragraph: ReviewParagraph, counts: [Int]) -> [[Re
     #expect(paragraphIDs(rows) == [["T1"], ["T2", "T3"]])
     // Every turn of the later row takes the earlier row's speaker, as its pop-up would give them.
     #expect(ReviewParagraphs.join(rows[1], to: rows[0])
-        == ReviewParagraphJoin(reassign: ["T2", "T3"], speakerID: "S1", turnID: "T2"))
+        == ReviewParagraphJoin(reassign: ["T2", "T3"], speakerID: "S1", turnIDs: ["T2", "T3"]))
     // The unknown speaker before it: they become unknown.
     let unknown = ReviewParagraphs.group([paragraphTurn("T1", nil, 0, 2), paragraphTurn("T2", "S2", 2.5, 4)])
     #expect(ReviewParagraphs.join(unknown[1], to: unknown[0])
-        == ReviewParagraphJoin(reassign: ["T2"], speakerID: nil, turnID: "T2"))
+        == ReviewParagraphJoin(reassign: ["T2"], speakerID: nil, turnIDs: ["T2"]))
     // The same speaker already (a break, a split's second part, the time gap): nothing to reassign.
     let apart = ReviewParagraphs.group([paragraphTurn("T1", "S1", 0, 2), paragraphTurn("T2", "S1", 9, 10)])
     #expect(ReviewParagraphs.join(apart[1], to: apart[0])
-        == ReviewParagraphJoin(reassign: [], speakerID: "S1", turnID: "T2"))
+        == ReviewParagraphJoin(reassign: [], speakerID: "S1", turnIDs: ["T2"]))
 }
 
 @Test func aJoinedTurnReadsOnInTheParagraphBeforeItWhateverKeptThemApart() {
@@ -307,4 +307,48 @@ private func paragraphWords(_ paragraph: ReviewParagraph, counts: [Int]) -> [[Re
     breaks.join(t2, runID: "R3")
     breaks.insert(before: t1, runID: "R4")
     #expect(breaks.joins.isEmpty)
+}
+
+@Test func aJoinOrBreakOnASplitPartStillSavingFollowsItsSavedID() {
+    let t1 = paragraphTurn("T1", "S1", 0, 2)
+    var breaks = ReviewParagraphBreaks()
+    breaks.join(paragraphTurn("T1/tmp", "S1", 2, 3), runID: "R1")
+    breaks.insert(before: paragraphTurn("T2/tmp", "S1", 5, 6), runID: "R1")
+    // Saved: the parts are "T1/e1" and "T2/e2" now.
+    let saved = [t1, paragraphTurn("T1/e1", "S1", 2, 3), paragraphTurn("T2", "S1", 3.5, 5),
+                 paragraphTurn("T2/e2", "S1", 5, 6)]
+    let ids = ["T1/tmp": "T1/e1", "T2/tmp": "T2/e2"]
+    let active = breaks.active(in: saved, runID: "R1", resolve: { ids[$0] ?? $0 })
+    #expect(active == ["T2/e2"] && breaks.joins == ["T1/e1"])
+    #expect(paragraphIDs(ReviewParagraphs.group(saved, breaks: active, joins: breaks.joins))
+        == [["T1", "T1/e1", "T2"], ["T2/e2"]])
+}
+
+@Test func aRowJoinedToTheUnknownSpeakerKeepsItsTracksTogether() {
+    let rows = ReviewParagraphs.group([paragraphTurn("T1", nil, 0, 2), paragraphTurn("T2", "S2", 2.5, 4),
+                                       paragraphTurn("T3", "S2", 4.5, 6, track: "mic")])
+    #expect(paragraphIDs(rows) == [["T1"], ["T2", "T3"]])
+    let join = ReviewParagraphs.join(rows[1], to: rows[0])
+    #expect(join.turnIDs == ["T2", "T3"] && join.turnID == "T2")
+    // Given to the unknown speaker, T3 (microphone) would part from T2 (system audio) by track: every turn is joined.
+    let given = [paragraphTurn("T1", nil, 0, 2), paragraphTurn("T2", nil, 2.5, 4),
+                 paragraphTurn("T3", nil, 4.5, 6, track: "mic")]
+    #expect(paragraphIDs(ReviewParagraphs.group(given, joins: ["T2"])) == [["T1", "T2"], ["T3"]])
+    #expect(paragraphIDs(ReviewParagraphs.group(given, joins: Set(join.turnIDs))) == [["T1", "T2", "T3"]])
+}
+
+@Test func aJoinTakenBackPutsBackWhatTheTurnHad() {
+    let t2 = paragraphTurn("T2", "S1", 2.5, 4), t3 = paragraphTurn("T3", "S1", 5, 6)
+    var breaks = ReviewParagraphBreaks()
+    breaks.insert(before: t2, runID: "R1")
+    let before = [breaks.mark(of: "T2"), breaks.mark(of: "T3")]
+    #expect(before == [.breakBefore, nil])
+    breaks.join(t2, runID: "R1")
+    breaks.join(t3, runID: "R1")
+    #expect(breaks.mark(of: "T2") == .join && breaks.mark(of: "T3") == .join)
+    // The speaker change refused: the break comes back, the other join goes.
+    for (turn, mark) in zip([t2, t3], before) { breaks.restore(mark, of: turn) }
+    #expect(breaks.mark(of: "T2") == .breakBefore && breaks.mark(of: "T3") == nil && breaks.joins.isEmpty)
+    breaks.restore(.join, of: t3)
+    #expect(breaks.joins == ["T3"])
 }

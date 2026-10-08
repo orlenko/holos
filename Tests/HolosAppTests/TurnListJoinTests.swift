@@ -36,7 +36,7 @@ struct TurnListJoinTests {
         if let caret { list.editField.currentEditor()?.selectedRange = NSRange(location: caret, length: 0) }
     }
 
-    private static let s1Joined = ReviewParagraphJoin(reassign: ["T3"], speakerID: "S1", turnID: "T3")
+    private static let s1Joined = ReviewParagraphJoin(reassign: ["T3"], speakerID: "S1", turnIDs: ["T3"])
 
     /// Backspace with the caret at the very start of a row's first word, nothing changed: the row joins the row before
     /// it, taking its speaker (S2's T3 goes to S1). The field closes; the window opens it again where the rows met.
@@ -204,7 +204,7 @@ struct TurnListJoinTests {
         field(list, row: 1, word: 0, caret: 0)
         press(list, #selector(NSResponder.deleteBackward(_:)))
         let join = try #require(joins().first?.join)
-        #expect(join == ReviewParagraphJoin(reassign: [], speakerID: "S1", turnID: "T1/e"))
+        #expect(join == ReviewParagraphJoin(reassign: [], speakerID: "S1", turnIDs: ["T1/e", "T2"]))
         breaks.join(try #require(turns.first { $0.id == join.turnID }), runID: "R1")
         show()
         #expect(list.paragraphs.map(\.turnIDs) == [["T1", "T1/e", "T2"], ["T3"]])

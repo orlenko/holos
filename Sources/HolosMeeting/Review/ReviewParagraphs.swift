@@ -50,14 +50,20 @@ public struct ReviewParagraphJoin: Sendable, Equatable {
     public let reassign: [String]
     /// The earlier row's speaker (nil: the unknown speaker).
     public let speakerID: String?
-    /// The later row's first turn: the window joins it to the paragraph before it (`ReviewParagraphBreaks.join`), so
-    /// the rows read as one whatever kept them apart (a break, a split's second part, the time gap).
-    public let turnID: String
+    /// The later row's turns, in order (never empty): the window joins each to the paragraph before it
+    /// (`ReviewParagraphBreaks.join`), so the rows read as one whatever kept them apart (a break, a split's second
+    /// part, the time gap), and the later row stays whole through its new speaker (a named speaker's microphone and
+    /// system-audio turns given to the unknown speaker would otherwise part by track).
+    public let turnIDs: [String]
 
-    public init(reassign: [String], speakerID: String?, turnID: String) {
+    /// The later row's first turn, where the rows meet.
+    public var turnID: String { turnIDs[0] }
+
+    public init(reassign: [String], speakerID: String?, turnIDs: [String]) {
+        precondition(!turnIDs.isEmpty, "A join joins at least one turn.")
         self.reassign = reassign
         self.speakerID = speakerID
-        self.turnID = turnID
+        self.turnIDs = turnIDs
     }
 }
 
@@ -116,13 +122,35 @@ public struct ReviewParagraphBreaks: Sendable, Equatable {
         carryOvers = max(0, carryOvers - 1)
     }
 
+    /// What a turn has before it in the window.
+    public enum Mark: Sendable, Equatable {
+        case breakBefore
+        case join
+    }
+
+    /// The break or join before `turnID` (nil: neither), to put back with `restore`.
+    public func mark(of turnID: String) -> Mark? {
+        if tracks[turnID] != nil { return .breakBefore }
+        return joinTracks[turnID] != nil ? .join : nil
+    }
+
+    /// Puts back what `turn` had before it (`mark`), replacing what it has now: a join whose speaker change was
+    /// refused is taken back so. Whatever run is held now (one a word edit published since keeps the turns): a run
+    /// that does not keep them drops it all at the next `active` anyway.
+    public mutating func restore(_ mark: Mark?, of turn: ProjectedTurn) {
+        tracks[turn.id] = mark == .breakBefore ? turn.track : nil
+        joinTracks[turn.id] = mark == .join ? turn.track : nil
+    }
+
     /// The turns of `turns` (of run `runID`) to break before (`ReviewParagraphs.group`); the joins kept are `joins`
     /// then. A new run that is not carried over drops every break and join; otherwise each stays while a turn with
     /// its ID and track does. `keepsTurnsOf` says whether `runID` replaced a given earlier run keeping its turns (a
     /// word edit in Review, or its undo, `ReviewSession.keepsTurns`): the breaks and joins of that run are carried
-    /// over too.
+    /// over too. `resolve` gives the ID a turn held now has (`ReviewSession.resolvedTurnID`): a break or join made on
+    /// a split's second part while the split was still saving names its temporary ID, which the saved split replaces.
     public mutating func active(in turns: [ProjectedTurn], runID: String?,
-                                keepsTurnsOf: (String) -> Bool = { _ in false }) -> Set<String> {
+                                keepsTurnsOf: (String) -> Bool = { _ in false },
+                                resolve: (String) -> String = { $0 }) -> Set<String> {
         guard !isEmpty else {
             self.runID = runID
             return []
@@ -136,11 +164,16 @@ public struct ReviewParagraphBreaks: Sendable, Equatable {
                 return []
             }
         }
+        func resolved(_ held: [String: String]) -> [String: String] {
+            Dictionary(held.map { (resolve($0.key), $0.value) }, uniquingKeysWith: { first, _ in first })
+        }
+        let breaks = resolved(tracks)
+        let joined = resolved(joinTracks)
         var kept: [String: String] = [:]
         var keptJoins: [String: String] = [:]
         for turn in turns {
-            if tracks[turn.id] == turn.track { kept[turn.id] = turn.track }
-            if joinTracks[turn.id] == turn.track { keptJoins[turn.id] = turn.track }
+            if breaks[turn.id] == turn.track { kept[turn.id] = turn.track }
+            if joined[turn.id] == turn.track { keptJoins[turn.id] = turn.track }
         }
         tracks = kept
         joinTracks = keptJoins
@@ -244,6 +277,6 @@ public enum ReviewParagraphs {
     /// a split's second part, the time gap) no longer does.
     public static func join(_ later: ReviewParagraph, to earlier: ReviewParagraph) -> ReviewParagraphJoin {
         ReviewParagraphJoin(reassign: later.speakerID == earlier.speakerID ? [] : later.turnIDs,
-                            speakerID: earlier.speakerID, turnID: later.id)
+                            speakerID: earlier.speakerID, turnIDs: later.turnIDs)
     }
 }

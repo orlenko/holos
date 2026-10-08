@@ -14,6 +14,11 @@ struct ReviewJoinRequest: Equatable {
     var word: WordRef
     /// The turn `word` was chosen in (overlapping turns may show a word twice).
     var turnID: String?
+    /// How many of the review's word moves `word` follows, and the words epoch it was chosen under: a word edit
+    /// saved before the join's speaker change moves it (the field opens where it is then); words changed elsewhere
+    /// leave no place to open it.
+    var movesSeen = 0
+    var wordsEpoch = 0
     /// The speaker labels' run the rows were shown from: labelled again since (a new run that did not keep them), a
     /// turn ID may name another turn, so the join is refused.
     var runID: String?
@@ -77,6 +82,7 @@ extension TurnListView {
                                         word: forward ? last.ref : first.ref,
                                         turnID: target.turnID ?? turnID(ofWordAt: target.range.lowerBound,
                                                                         in: target.paragraphID),
+                                        movesSeen: target.movesSeen, wordsEpoch: target.wordsEpoch,
                                         runID: target.runID, fromField: true)
         switch resolveJoin?(request) {
         case .join(let join)?:
@@ -108,7 +114,8 @@ extension TurnListView {
         let shown = paragraphWords(paragraph)
         guard let first = shown.words.first, let turn = shown.turns.first else { return nil }
         return ReviewJoinRequest(paragraphID: paragraph.id, forward: false, word: first.ref,
-                                 turnID: paragraph.turns[turn].id, runID: runID)
+                                 turnID: paragraph.turns[turn].id, movesSeen: wordMoves.count,
+                                 wordsEpoch: wordsEpoch, runID: runID)
     }
 
     /// Join With Previous Turn chosen: the request the menu made, resolved again now. Refused now (the review turned

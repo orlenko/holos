@@ -139,10 +139,11 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, NSM
         didSet { window.title = "\(meetingTitle) — Review" }
     }
 
-    private let window: ReviewKeyWindow
+    /// Internal (as `turnList`) for tests that drive the window.
+    let window: ReviewKeyWindow
     private let player = ReviewPlayer()
     private let sidebar = SpeakerSidebarView()
-    private let turnList = TurnListView()
+    let turnList = TurnListView()
     /// The speakers pane and the turn list; the speakers pane can be hidden (⌥⌘S).
     private lazy var panes = ReviewPanes(speakers: sidebar, list: turnList)
     /// Hides or shows the speakers pane (also View ▸ Hide Speakers, ⌥⌘S).
@@ -199,6 +200,8 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, NSM
     /// Every row as grouped, before a search filters them: a join finds the row before or after the one it is asked
     /// at here, never a row the search left next to it.
     private var allParagraphs: [ReviewParagraph] = []
+    /// The turns joined to the row before them in this window (for tests).
+    var paragraphJoins: Set<String> { paragraphBreaks.joins }
     private var positioned = false
     /// The player state the sidebar and the footer last showed.
     private var shownPlayerState = StateChangeTracker<ReviewPlayer.State>()
@@ -660,9 +663,10 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, NSM
         // A run a word edit or its undo published keeps the turns, and with them the window's paragraph breaks (kept
         // for every turn, a hidden interjection's too).
         let runID = projection.runID
+        // A break or join made on a split's second part while the split saved names its temporary ID: resolved.
         let breaks = paragraphBreaks.active(in: projection.turns, runID: runID, keepsTurnsOf: { [review] old in
             review.keepsTurns(of: old, in: runID)
-        })
+        }, resolve: { [review] id in review.resolvedTurnID(id) })
         // The turns as shown: short interjections attached to a neighbour or left out (§5.10).
         var paragraphs = ReviewParagraphs.group(review.shownTurns, breaks: breaks, joins: paragraphBreaks.joins)
         allParagraphs = paragraphs
@@ -1411,14 +1415,20 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, NSM
         return .join(ReviewParagraphs.join(paragraphs[earlier + 1], to: paragraphs[earlier]))
     }
 
-    /// Makes `join`: the window joins the later row's first turn to the row before it (`ReviewParagraphBreaks.join`,
-    /// never saved), and when the rows' speakers differ, the later row's turns take the earlier row's speaker through
-    /// the review's assignment (undoable with ⌘Z and learned from as any made with the row's pop-up). Then, asked from
-    /// the field, the field opens again where the rows met (the caret at the start of the later row's first word, or
-    /// at the end of the earlier row's last word for forward Delete), so typing goes on there; asked from the menu,
-    /// the joined row is selected. VoiceOver hears that the rows were joined.
+    /// Makes `join`: the window joins each turn of the later row to the paragraph before it
+    /// (`ReviewParagraphBreaks.join`, never saved; every turn, so the row stays whole through its new speaker), and
+    /// when the rows' speakers differ, the later row's turns take the earlier row's speaker through the review's
+    /// assignment (undoable with ⌘Z and learned from as any made with the row's pop-up). The joins are made at once,
+    /// so the rows read as one while the assignment saves; refused or failed, they are taken back (what the turns had
+    /// before them comes back), so a later assignment never joins the rows unasked. Then, asked from the field, the
+    /// field opens again where the rows met (the caret at the start of the later row's first word, or at the end of
+    /// the earlier row's last word for forward Delete), where that word is after the word edits saved meanwhile
+    /// (`joinBoundary`), so typing goes on there; asked from the menu, the joined row is selected. VoiceOver hears
+    /// that the rows were joined.
     private func applyJoin(_ join: ReviewParagraphJoin, request: ReviewJoinRequest) {
-        guard let turn = review.projection.turns.first(where: { $0.id == join.turnID }) else { return }
+        let runID = review.projection.runID
+        let turns = join.turnIDs.compactMap { id in review.projection.turns.first { $0.id == id } }
+        guard !turns.isEmpty else { return }
         // A word's field opened since the join was asked (the speaker change took a while): it keeps the keyboard.
         let fieldsOpened = turnList.fieldsOpened
         let message = join.reassign.isEmpty ? TurnListView.joined : TurnListView.joinedSpeaker
@@ -1431,26 +1441,62 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, NSM
                 ])
             }
             guard !self.turnList.typingElsewhere, self.turnList.fieldsOpened == fieldsOpened else { return }
-            if request.fromField, self.turnList.editingWords,
-               self.turnList.reopenField(at: request.word, atEnd: request.forward, message: message,
-                                         inTurn: request.turnID.map(self.review.resolvedTurnID)) {
-                return
-            }
-            self.turnList.select([join.turnID], scroll: true)
+            if request.fromField, self.turnList.editingWords, self.reopenJoinField(request, message: message) { return }
+            self.turnList.select([self.review.resolvedTurnID(join.turnID)], scroll: true)
         }
         // Made here, as a row break is: what the footer said of an earlier change goes.
         clearTransientMessages()
-        paragraphBreaks.join(turn, runID: review.projection.runID)
+        let before = turns.map { paragraphBreaks.mark(of: $0.id) }
+        for turn in turns { paragraphBreaks.join(turn, runID: runID) }
         guard !join.reassign.isEmpty else {
             finish()
             return
         }
         refresh()
         let target: ReviewAssignTarget = join.speakerID.map { .speaker($0) } ?? .unknown
-        perform { review in
-            try await review.assign(join.reassign, to: target)
+        perform { [weak self] review in
+            do {
+                try await review.assign(join.reassign, to: target)
+            } catch {
+                // Not given the speaker: the rows part again, and nothing is left to join them later unasked. Saved but
+                // not reread (`incomplete`): the speaker change stands, and so do the joins.
+                if case HolosError.incomplete = error { throw error }
+                if let self {
+                    for (turn, mark) in zip(turns, before) {
+                        // By the ID it has now (a split part's temporary ID gives way to its saved one).
+                        let id = self.review.resolvedTurnID(turn.id)
+                        self.paragraphBreaks.restore(mark, of: self.review.projection.turns.first { $0.id == id } ?? turn)
+                    }
+                    self.refresh()
+                }
+                throw error
+            }
             finish()
         }
+    }
+
+    /// Opens the field again where a join from it met the rows: `request.word`, followed through the word moves saved
+    /// since it was chosen (a word edit queued before the join's speaker change saves first), at the same edge; at a
+    /// word deleted meanwhile, the start of the word after it, else the end of the one before. Nothing when the words
+    /// were changed elsewhere since.
+    private func reopenJoinField(_ request: ReviewJoinRequest, message: String) -> Bool {
+        guard request.wordsEpoch == review.wordsEpoch,
+              let place = Self.joinBoundary(request.word, atEnd: request.forward,
+                                            through: review.shownWordMoves.dropFirst(request.movesSeen)) else {
+            return false
+        }
+        let turnID = request.turnID.map(review.resolvedTurnID)
+        if turnList.reopenField(at: place.word, atEnd: place.atEnd, message: message, inTurn: turnID) { return true }
+        guard !place.atEnd, place.word.word > 0 else { return false }
+        return turnList.reopenField(at: WordRef(segmentID: place.word.segmentID, word: place.word.word - 1),
+                                    atEnd: true, message: message, inTurn: turnID)
+    }
+
+    /// Where the edge of `word` (its start; its end, `atEnd`) is after `moves`, as for a split
+    /// (`splitBoundary`).
+    static func joinBoundary(_ word: WordRef, atEnd: Bool,
+                             through moves: ArraySlice<ReviewWordMove>) -> (word: WordRef, atEnd: Bool)? {
+        splitBoundary(ReviewWord(ref: word, text: "", start: 0), atEnd: atEnd, through: moves)
     }
 
     /// Reverts a word fix. It publishes a new run with the same turns, whose estimated starts may move, so the
@@ -1913,8 +1959,14 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, NSM
     /// Seconds ← and → move the play head.
     private static let seekStep = 5.0
 
-    /// Shortcuts of the window (Holos has no main menu to carry them).
-    private func handleKey(_ event: NSEvent) -> Bool {
+    /// Whether ⌘Z undoes typing (the text being edited) rather than the review's newest change: in a text field, but
+    /// not in a word's field with nothing typed in it.
+    static func undoIsTyping(editingText: Bool, inUnchangedWordField: Bool) -> Bool {
+        editingText && !inUnchangedWordField
+    }
+
+    /// Shortcuts of the window (Holos has no main menu to carry them). Internal for tests.
+    func handleKey(_ event: NSEvent) -> Bool {
         let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
             .subtracting([.numericPad, .function, .capsLock])
         guard let key = event.charactersIgnoringModifiers?.lowercased() else { return false }
@@ -1946,7 +1998,13 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, NSM
             window.performClose(nil)
             return true
         case "z":
-            if editingText { return NSApplication.shared.sendAction(Selector(("undo:")), to: nil, from: window) }
+            // A word's field with nothing typed in it (opened again after a join, say) has no typing to undo: ⌘Z is
+            // the review's, as the banner says.
+            let unchangedField = (turnList.wordEdit.map { $0.shown == turnList.editField.stringValue } ?? false)
+                && window.firstResponder === turnList.editField.currentEditor()
+            if Self.undoIsTyping(editingText: editingText, inUnchangedWordField: unchangedField) {
+                return NSApplication.shared.sendAction(Selector(("undo:")), to: nil, from: window)
+            }
             undo()
             return true
         case "x":

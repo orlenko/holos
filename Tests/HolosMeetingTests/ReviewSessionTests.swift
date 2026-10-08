@@ -1415,7 +1415,7 @@ func reviewJoiningARowGivesItTheSpeakerBeforeAndUndoPartsThemAgain() async throw
     let rows = ReviewParagraphs.group(before)
     #expect(rows.map(\.turnIDs) == [["T1"], ["T2", "T3"]])
     let join = ReviewParagraphs.join(rows[1], to: rows[0])
-    #expect(join == ReviewParagraphJoin(reassign: ["T2", "T3"], speakerID: "system:S1", turnID: "T2"))
+    #expect(join == ReviewParagraphJoin(reassign: ["T2", "T3"], speakerID: "system:S1", turnIDs: ["T2", "T3"]))
 
     var breaks = ReviewParagraphBreaks()
     breaks.join(try #require(before.first { $0.id == join.turnID }), runID: review.projection.runID)
