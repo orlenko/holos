@@ -104,6 +104,71 @@ func assigningAPersonCalledLikeASpeakerGivesTheTurnsToThatSpeakerAndLinksIt() as
     #expect(review.speaker("system:S2")?.name == "alice")
 }
 
+/// A hook that holds every save back until `release` finishes the stream; `entered` counts the saves that reached it.
+private func sameNameGate() -> (hook: @Sendable () async -> Void, entered: SharedValue<Int>,
+                                release: AsyncStream<Void>.Continuation) {
+    let (stream, continuation) = AsyncStream<Void>.makeStream()
+    let entered = SharedValue(0)
+    return ({
+        entered.update { $0 += 1 }
+        for await _ in stream {}
+    }, entered, continuation)
+}
+
+@Test(.timeLimit(.minutes(1))) @MainActor
+func linkingASpeakerShownJoinedShowsOneSpeakerWhileItSaves() async throws {
+    let temp = try TemporaryDirectory("review")
+    defer { temp.remove() }
+    let store = sameNameStore(temp)
+    let bob = SpeakerProfile(displayName: "Bob")
+    try store.update { $0.profiles.append(bob) }
+    let session = try await sameNameSession(temp)
+    // Saved before the rule: S1 and S2 both named Alice, shown as one (their talk times tie; S1 stays).
+    try appendWithoutJoining([.rename(speakerID: "system:S1", name: "Alice"),
+                              .rename(speakerID: "system:S2", name: "alice")], session: session)
+    let review = try await sameNameOpen(session, store: store)
+    #expect(review.projection.speakers.map(\.id) == ["system:S1", "system:S3"])
+    let gate = sameNameGate()
+    review.beforeEdit = gate.hook
+
+    // The name field links her to Bob, a known person; the save is held.
+    let linking = Task { @MainActor in try await review.setName("Bob", speakerID: "system:S1") }
+    #expect(await eventually { gate.entered.value == 1 })
+    // Shown as it will be saved: S2 merged into S1, so no second "Alice" comes back meanwhile.
+    #expect(review.projection.speakers.map(\.id) == ["system:S1", "system:S3"])
+    #expect(review.projection.speakers.map(\.name) == ["Bob", "Speaker 3"])
+    #expect(review.projection.turns.first { $0.id == "T2" }?.speakerID == "system:S1")
+    gate.release.finish()
+    try await linking.value
+
+    #expect(review.projection.speakers.map(\.name) == ["Bob", "Speaker 3"])
+    #expect(review.speaker("system:S1")?.profileID == bob.id)
+    #expect(try sameNameJournal(session).contains { $0.action == .merge(from: "system:S2", into: "system:S1") })
+    #expect(review.snapshot.projection == review.projection)
+}
+
+@Test(.timeLimit(.minutes(1))) @MainActor
+func thisIsMeOnASpeakerShownJoinedShowsOneSpeakerWhileItSaves() async throws {
+    let temp = try TemporaryDirectory("review")
+    defer { temp.remove() }
+    let store = sameNameStore(temp)
+    let session = try await sameNameSession(temp)
+    try appendWithoutJoining([.rename(speakerID: "system:S1", name: "Alice"),
+                              .rename(speakerID: "system:S2", name: "alice")], session: session)
+    let review = try await sameNameOpen(session, store: store)
+    let gate = sameNameGate()
+    review.beforeEdit = gate.hook
+
+    let marking = Task { @MainActor in try await review.markSelf(speakerID: "system:S1") }
+    #expect(await eventually { gate.entered.value == 1 })
+    #expect(review.projection.speakers.map(\.id) == ["system:S1", "system:S3"])
+    #expect(!review.projection.speakers.contains { $0.name == "alice" || $0.name == "Alice" })
+    gate.release.finish()
+    try await marking.value
+    #expect(review.projection.speakers.map(\.id) == ["system:S1", "system:S3"])
+    #expect(review.snapshot.projection == review.projection)
+}
+
 @Test(.timeLimit(.minutes(1))) @MainActor
 func namingASpeakerLikeAPersonIgnoresAccentsAndSpaces() async throws {
     let temp = try TemporaryDirectory("review")

@@ -3327,7 +3327,10 @@ neither joins anyone. Two halves keep the rule:
   stored speaker. The merges share the batch's ID: one undo takes back the change and its
   merges, and the voice samples follow the merge as for any merge (`needsSampleRefresh`).
   A batch with a `revert` is saved as it is. `SpeakerEditor.saved(_:asAsked:)` lets a
-  caller (Review) recognize its batch among the lines read back.
+  caller (Review) recognize its batch among the lines read back. Review shows every queued
+  change (an edit, a link, "This is me", Confirm All, an assignment to a person) through
+  the same `joiningSameNames` on the labels shown, so what it shows while a change saves is
+  what the save writes: a stored speaker the save merges away never reappears meanwhile.
 - *Choosing a name that exists.* Review's "New Speaker…" (and `voiceislocal speakers assign
   --to new:NAME`) with a name a listed speaker has gives the turns to that speaker
   (`SpeakerProjection.speaker(named:)`); "Assign to <person>" with a person whose name a

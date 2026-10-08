@@ -930,9 +930,7 @@ public struct ReviewDeletedWords: Sendable, Equatable {
         guard !resolved.isEmpty else { return }
         try validate(resolved)
         if SpeakerEditor.changesNothing(resolved, on: projection) { return }
-        // Shown at once as the editor will save it: with the merges that keep one speaker per name.
-        try await enqueue(.edit(resolved, requireCompleteJournal: requireCompleteJournal),
-                          optimistic: projection.joiningSameNames(resolved))
+        try await enqueue(.edit(resolved, requireCompleteJournal: requireCompleteJournal), optimistic: resolved)
     }
 
     /// This window's newest change: a queued one is dropped (or reverted once saved), else the newest saved batch is
@@ -1897,8 +1895,15 @@ public struct ReviewDeletedWords: Sendable, Equatable {
     }
 
     /// Queues a change at once (it runs once the changes before it ran); `wait` for its outcome.
+    ///
+    /// Every change is shown at once as `SpeakerEditor` will save it (an edit, a link, "This is me", Confirm All, an
+    /// assignment to a person): its actions with the merges that keep one speaker per name
+    /// (`SpeakerProjection.joiningSameNames`, which the editor applies to the saved batch too), worked out on the
+    /// labels shown now. Otherwise a rename of a speaker shown joined by name would show its other stored speaker
+    /// again until the save, and a change queued on that row meanwhile would name a speaker the save merges away.
     private func queued(_ kind: Operation.Kind, optimistic: [SpeakerEditAction]) -> Operation {
-        let op = Operation(kind: kind, basis: savedVersion, runID: snapshot.run?.id, optimistic: optimistic)
+        let shown = optimistic.isEmpty ? [] : projection.joiningSameNames(optimistic)
+        let op = Operation(kind: kind, basis: savedVersion, runID: snapshot.run?.id, optimistic: shown)
         op.movesSeen = wordMoves.count
         // A newer change: voice samples wait for it (`holdSampleSync`); exports alone change no label.
         if case .exports = kind {} else { holdSampleSync() }
