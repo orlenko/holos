@@ -1241,14 +1241,16 @@ public struct ReviewDeletedWords: Sendable, Equatable {
     /// text, times, and fixes) and to the turns that held them: a word edit like any other (new transcript revisions,
     /// a speaker head with every speaker edit carried over), one undo takes it back.
     public func restoreDeletedWords(segmentID: String) async throws {
-        try await queueRestoreDeletedWords(segmentID: segmentID)()
+        _ = try await queueRestoreDeletedWords(segmentID: segmentID)()
     }
 
-    /// `restoreDeletedWords` with its change queued before this returns, as `queueWordEdit` queues an edit: a close or
-    /// a quit right after finds it there (it is saved before the review closes, and a failure then is reported with
-    /// the other word edits, `failedWordEditsAtClose`). Returns the wait for it; throws when it is refused before it is
-    /// queued.
-    public func queueRestoreDeletedWords(segmentID: String) throws -> @MainActor () async throws -> Void {
+    /// `restoreDeletedWords` with its change queued before this returns, exactly as `queueWordEdit` queues an edit: a
+    /// close or a quit right after finds it there (it is saved before the review closes, and a failure then is
+    /// reported with the other word edits, `failedWordEditsAtClose`), and `committed` is called once it is saved, also
+    /// when it then throws because the labels could not be reread (the words are back). Returns the wait for it (what
+    /// was restored); throws when it is refused before it is queued.
+    public func queueRestoreDeletedWords(segmentID: String, committed: ((ReviewWordEdit) -> Void)? = nil) throws
+        -> @MainActor () async throws -> ReviewWordEdit? {
         try requireEditable()
         if let blocked = wordEditingBlocked { throw HolosError.invalidInput(blocked) }
         guard let segment = segments[segmentID], segment.removed != nil else {
@@ -1259,7 +1261,23 @@ public struct ReviewDeletedWords: Sendable, Equatable {
         }
         let op = queued(.editWords(.restoring(segmentID: segmentID), segment: segment), optimistic: [])
         op.movesSeen = movesRead
-        return { [self] in try await wait(for: op) }
+        return waitForWordEdit(op, committed: committed)
+    }
+
+    /// The wait for queued word edit `op` (an edit or a Restore): what it saved, or why not; `committed` is called
+    /// once it is saved, also when it then throws (its labels could not be reread: the change stands).
+    private func waitForWordEdit(_ op: Operation, committed: ((ReviewWordEdit) -> Void)?)
+        -> @MainActor () async throws -> ReviewWordEdit? {
+        { [self] in
+            do {
+                try await wait(for: op)
+            } catch {
+                if let edit = op.wordEditResult { committed?(edit) }
+                throw error
+            }
+            if let edit = op.wordEditResult { committed?(edit) }
+            return op.wordEditResult
+        }
     }
 
     /// How a queued Restore is named where an edit says what was typed (`unsavedWordEdits`, `failedWordEditsAtClose`):
@@ -1315,16 +1333,7 @@ public struct ReviewDeletedWords: Sendable, Equatable {
                                           expecting: expecting, seenEpoch: seenEpoch) else {
             return nil
         }
-        return { [self] in
-            do {
-                try await wait(for: op)
-            } catch {
-                if let edit = op.wordEditResult { committed?(edit) }
-                throw error
-            }
-            if let edit = op.wordEditResult { committed?(edit) }
-            return op.wordEditResult
-        }
+        return waitForWordEdit(op, committed: committed)
     }
 
     /// `editWords` up to its change being queued (no wait); nil when there is nothing to edit.

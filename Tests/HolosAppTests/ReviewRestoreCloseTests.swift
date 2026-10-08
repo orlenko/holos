@@ -12,8 +12,8 @@ import Testing
 /// closes the review with it queued (a quit), and a failure is reported. The text is made up.
 @MainActor
 struct ReviewRestoreCloseTests {
-    /// A finished session with T1 (S1) "We will see." (segment A) and T2 (S2) "Cheers." (segment D), D deleted whole
-    /// in an earlier review; and its folder's parent, to remove.
+    /// A finished session with T1 (S1) "We will see." (segment A), T2 (S2) "Cheers." (segment D), and T3 (S1) "Right
+    /// then." (segment E), D and E deleted whole in an earlier review; and its folder's parent, to remove.
     private func sessionWithDeletedWords() async throws -> (session: URL, root: URL) {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("review-restore-\(UUID().uuidString)")
         func segment(_ id: String, _ words: [String], start: Double) -> TranscriptSegment {
@@ -30,7 +30,8 @@ struct ReviewRestoreCloseTests {
         }
         let transcript = Transcript(source: "fixture", locale: "en-CA", backend: .speech,
                                     segments: [segment("A", ["We", "will", "see."], start: 0),
-                                               segment("D", ["Cheers."], start: 10)])
+                                               segment("D", ["Cheers."], start: 10),
+                                               segment("E", ["Right", "then."], start: 20)])
         let archive = try SessionArchive.create(root: root, name: "Restore fixture", source: .system,
                                                 locale: "en-CA", backend: .speech)
         try await archive.saveTranscript(transcript, writeLegacyExports: false)
@@ -40,7 +41,8 @@ struct ReviewRestoreCloseTests {
         let speakers = ["system:S1", "system:S2"].enumerated().map {
             SessionSpeaker(id: $1, ordinal: $0 + 1, provenance: .diarizer, clusterIDs: [$1])
         }
-        let turns = [("T1", "system:S1", "A", 0.0, 3.0, 3), ("T2", "system:S2", "D", 10.0, 11.0, 1)].map {
+        let turns = [("T1", "system:S1", "A", 0.0, 3.0, 3), ("T2", "system:S2", "D", 10.0, 11.0, 1),
+                     ("T3", "system:S1", "E", 20.0, 22.0, 2)].map {
             SpeakerTurn(id: $0.0, track: "system", start: $0.3, end: $0.4, speakerID: $0.1, clusterID: $0.1,
                         spans: [WordSpan(segmentID: $0.2, first: 0, end: $0.5)], assignmentScore: 1,
                         timing: .measured)
@@ -58,6 +60,7 @@ struct ReviewRestoreCloseTests {
         let first = try await ReviewSession(session: session, profiles: nil, maintenance: nil,
                                             exportDelay: .seconds(60))
         try await first.editWords(first.words(of: "T2").map(\.ref), to: "")
+        try await first.editWords(first.words(of: "T3").map(\.ref), to: "")
         await first.close()
         return (session, root)
     }
@@ -77,7 +80,7 @@ struct ReviewRestoreCloseTests {
         let (session, root) = try await sessionWithDeletedWords()
         defer { try? FileManager.default.removeItem(at: root) }
         let window = try await window(session)
-        #expect(window.review.deletedWords().map(\.segmentID) == ["D"])
+        #expect(window.review.deletedWords().map(\.segmentID) == ["D", "E"])
         window.restoreDeleted("D")
         await window.closeAndWait()
         #expect(try restored(session))
@@ -123,5 +126,52 @@ struct ReviewRestoreCloseTests {
         #expect(window.isClosing)
         await window.closeAndWait()
         #expect(try restored(session))
+    }
+
+    /// While a close by hand waits for an earlier save, no other Restore can be asked for (as no field opens): the
+    /// menu offers none, and one asked for anyway is not queued, so nothing is left running after the window closes.
+    @Test(.timeLimit(.minutes(1))) func noRestoreIsMadeWhileACloseWaitsForAnEarlierSave() async throws {
+        let (session, root) = try await sessionWithDeletedWords()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let window = try await window(session)
+        #expect(window.restorableDeletedWords.map(\.segmentID) == ["D", "E"])
+        let (gate, release) = AsyncStream<Void>.makeStream()
+        window.review.beforeEdit = { for await _ in gate {} }
+        window.restoreDeleted("D")
+        #expect(!window.windowShouldClose(window.window))
+        // The close waits for D: E is neither offered nor made.
+        #expect(window.restorableDeletedWords.isEmpty)
+        let menuItem = NSMenuItem(title: ReviewWindow.restoreDeletedWordsTitle,
+                                  action: #selector(ReviewWindow.restoreDeletedWords(_:)), keyEquivalent: "")
+        #expect(!window.validateMenuItem(menuItem))
+        let queued = window.review.queuedOperations
+        window.restoreDeleted("E")
+        #expect(window.review.queuedOperations == queued)
+        release.finish()
+        for _ in 0..<3_000 where !window.isClosing { try await Task.sleep(for: .milliseconds(10)) }
+        await window.closeAndWait()
+        let current = try #require(try SessionFiles.currentTranscript(session: session))
+        #expect(current.segments.first { $0.id == "D" }?.removed == nil)
+        #expect(current.segments.first { $0.id == "E" }?.removed != nil, "Never asked for while the close waited.")
+    }
+
+    /// A Restore saved whose speaker head then could not be published (the labels cannot be reread): the words are
+    /// back, so it is no failure. A close by hand right after closes, and nothing is held as an edit not saved.
+    @Test(.timeLimit(.minutes(1))) func aRestoreSavedBeforeItsRereadFailedIsNoFailure() async throws {
+        let (session, root) = try await sessionWithDeletedWords()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let window = try await window(session)
+        let (gate, release) = AsyncStream<Void>.makeStream()
+        window.review.beforeEdit = { for await _ in gate {} }
+        window.review.beforeHeadPublish = { throw HolosError.io("the speaker head is read-only") }
+        window.restoreDeleted("D")
+        #expect(!window.windowShouldClose(window.window))
+        release.finish()
+        for _ in 0..<3_000 where !window.isClosing { try await Task.sleep(for: .milliseconds(10)) }
+        #expect(window.isClosing, "Saved: the close goes on.")
+        #expect(window.unsavedEditTexts.isEmpty)
+        await window.closeAndWait()
+        #expect(try restored(session))
+        #expect(window.review.failedWordEditsAtClose.isEmpty)
     }
 }

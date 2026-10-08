@@ -8202,11 +8202,15 @@ shown, Otter-style.
     while there is one. A Restore is an edit like any other (`Request.restoresRemoved`) that
     puts back exactly what `removed` kept in both layers (a fixed revision the fixed words,
     unless they no longer lie over the unfixed ones, which then come back in both; refused
-    when what was kept is damaged), and one undo takes it back. Like a field's edit, it is
-    queued in the review at once (`queueRestoreDeletedWords`) and tracked by the window: a
-    close by hand right after waits for it and stays open when it fails (the footer says
-    why), and a quit closes the review with it queued, a failure logged with the other word
-    edits (`failedWordEditsAtClose`). It is offered only while the run records the turns that held the
+    when what was kept is damaged), and one undo takes it back. For the window it is a word
+    edit, made the one way every edit is (`trackWordChange`): offered and made only while a
+    field could open (not while a close by hand waits for earlier saves), queued in the review
+    at once (`queueRestoreDeletedWords`), saved once its `committed` says so (also when the
+    labels could not be reread afterwards: the words are back), and tracked, so a close by
+    hand right after waits for it and stays open when it was not saved (the footer says why;
+    nothing was typed, so it is never held as an edit to type again), and a quit closes the
+    review with it queued, a failure logged with the other word edits
+    (`failedWordEditsAtClose`). It is offered only while the run records the turns that held the
     words: after Label Again (a new labelling, which gives the empty segment no turn) the
     words stay deleted.
   - *Learning.* Nothing: the segment keeps no mark, the edit is a deletion, and no correction
