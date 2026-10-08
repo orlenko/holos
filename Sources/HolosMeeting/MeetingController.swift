@@ -512,6 +512,28 @@ struct MeetingControllerTuning: Sendable {
         return true
     }
 
+    /// Registers the app's use of each free meeting of `sessionIDs` for `doing` at once (one change reported): a
+    /// deletion of several meetings reserves them all, so no background job starts on one still waiting its turn.
+    /// Returns those registered.
+    public func beginUsing(_ sessionIDs: [String], for doing: String) -> Set<String> {
+        var registered: Set<String> = []
+        for id in sessionIDs where sessionsInUse[id] == nil {
+            sessionsInUse[id] = doing
+            registered.insert(id)
+        }
+        if !registered.isEmpty { onSessionsInUseChanged() }
+        return registered
+    }
+
+    /// Hands the app's use of `sessionID` over to `doing` without releasing it in between (a reserved meeting whose
+    /// turn came); false, with nothing registered, when the app does not use it.
+    public func continueUsing(_ sessionID: String, for doing: String) -> Bool {
+        guard sessionsInUse[sessionID] != nil else { return false }
+        sessionsInUse[sessionID] = doing
+        onSessionsInUseChanged()
+        return true
+    }
+
     /// Ends the app's use of `sessionID`, then derives the naming offer again: the use may have labelled, deleted, or
     /// changed the meeting.
     public func endUsing(_ sessionID: String) {
@@ -519,6 +541,9 @@ struct MeetingControllerTuning: Sendable {
         onSessionsInUseChanged()
         refreshNamingOffer()
     }
+
+    /// What the app is doing to `sessionID` now (`sessionsInUse`), or nil.
+    public func use(of sessionID: String) -> String? { sessionsInUse[sessionID] }
 
     /// `speakerLabelsReady` off the main actor: it loads the session's speaker snapshot (§1.3).
     private nonisolated static func speakerLabelsReadyOffMain(session: URL) async -> Bool {

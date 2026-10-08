@@ -232,18 +232,59 @@ public enum MeetingBulkRun {
         public var cancelled = false
     }
 
-    /// `progress(done)` before each meeting; `each` returns nil when the meeting was done, else why not.
+    /// The meetings a confirmed deletion holds (`reserve`), and those it could not because the app was already
+    /// working on them.
+    public struct Reservation: Sendable, Equatable {
+        public var reserved: [SessionSummary]
+        public var refused: [Failure]
+    }
+
+    /// Reserves every target at once in the app's meetings in use (`MeetingController.sessionsInUse`) as `waiting`,
+    /// right after the confirmation: the background jobs (automatic relabel, summaries, final transcripts, the echo
+    /// catch-up) skip meetings in use, so none starts on one still waiting its turn. A target the app already works on
+    /// is refused, with why.
     @MainActor
-    public static func run(_ targets: [SessionSummary], progress: (Int) -> Void,
-                           each: (SessionSummary) async -> String?) async -> Result {
-        var result = Result()
+    public static func reserve(_ targets: [SessionSummary], waiting: String,
+                               in uses: some MeetingUseRegistry) -> Reservation {
+        var before: [String: String] = [:]
+        for summary in targets { before[summary.id] = uses.use(of: summary.id) }
+        let registered = uses.beginUsing(targets.map(\.id), for: waiting)
+        var reservation = Reservation(reserved: [], refused: [])
+        for summary in targets {
+            if registered.contains(summary.id) {
+                reservation.reserved.append(summary)
+            } else {
+                reservation.refused.append(Failure(
+                    id: summary.id, title: summary.displayTitle,
+                    message: "Voice is Local is working on it" + (before[summary.id].map { " (\($0))" } ?? "") + "."))
+            }
+        }
+        return reservation
+    }
+
+    /// Runs the reserved meetings one at a time: `progress(done)` before each (the refused ones count as done), then
+    /// `each` with the meeting still reserved, which takes the reservation over (`MeetingController.continueUsing`)
+    /// and ends it, and returns nil when the meeting was done, else why not. A reservation `each` left as it was is
+    /// released after it; on a cancel (Quit Now) every one still waiting is released before the run returns, so no
+    /// meeting stays marked in use.
+    @MainActor
+    public static func run(_ reservation: Reservation, waiting: String, uses: some MeetingUseRegistry,
+                           progress: (Int) -> Void, each: (SessionSummary) async -> String?) async -> Result {
+        var result = Result(failures: reservation.refused)
+        let targets = reservation.reserved
+        func releaseIfWaiting(_ id: String) {
+            if uses.use(of: id) == waiting { uses.endUsing(id) }
+        }
         for (index, summary) in targets.enumerated() {
             if Task.isCancelled {
                 result.cancelled = true
+                for left in targets[index...] { releaseIfWaiting(left.id) }
                 break
             }
-            progress(index)
-            if let failure = await each(summary) {
+            progress(reservation.refused.count + index)
+            let failure = await each(summary)
+            releaseIfWaiting(summary.id)
+            if let failure {
                 result.failures.append(Failure(id: summary.id, title: summary.displayTitle, message: failure))
             } else {
                 result.succeeded.append(summary.id)
@@ -251,7 +292,31 @@ public enum MeetingBulkRun {
         }
         return result
     }
+
+    /// The question a quit asks while a deletion of several meetings has `remaining` meetings still to go.
+    public static func quitQuestion(remaining: Int, action: MeetingBulkPlan.Action)
+        -> (title: String, text: String, wait: String, quit: String) {
+        let what = action == .deleteMeeting ? "deleting meetings" : "deleting the audio of meetings"
+        let left = remaining == 1 ? "1 selected meeting is" : "\(remaining) selected meetings are"
+        return ("Voice is Local is still \(what).",
+                "\(left) still to go. Finish Deleting goes on and quits when it is done. Quit Now quits once the "
+                    + "meeting being deleted now is done, and leaves the others as they are.",
+                "Finish Deleting", "Quit Now")
+    }
 }
+
+/// The app's register of the meetings it works on (`MeetingController.sessionsInUse`), as a deletion of several
+/// meetings uses it.
+@MainActor
+public protocol MeetingUseRegistry: AnyObject {
+    /// Registers each free meeting of `sessionIDs` for `doing`; returns those registered.
+    func beginUsing(_ sessionIDs: [String], for doing: String) -> Set<String>
+    func endUsing(_ sessionID: String)
+    /// What the app is doing to the meeting, or nil.
+    func use(of sessionID: String) -> String?
+}
+
+extension MeetingController: MeetingUseRegistry {}
 
 extension MeetingSelection {
     /// At most 60 characters of a title, on one line, for alerts.

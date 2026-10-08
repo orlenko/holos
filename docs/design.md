@@ -1175,9 +1175,14 @@ how many selected meetings are skipped and why (being recorded, being saved, bei
 Voice is Local or held by another command, no audio to delete). The deletions then run one
 meeting at a time through the single deletion's own path (registered as in use, a Review of it
 closed or paused as for one meeting, the `voiceislocal session delete` child holding the lease
-and locks), off the main thread; the meetings still waiting are badged and treated as in use,
-the status line shows the progress, a meeting that fails does not stop the rest, and one alert
-at the end lists those that failed and why. A right-click on a row of the selection acts on
+and locks), off the main thread. Right after the confirmation every target is reserved in the
+app's meetings in use ("Waiting to move to the Trash…"), so no background job (speaker
+relabel, summary, final transcript, echo catch-up) starts on one still waiting its turn; each
+turn takes its reservation over. The status line shows the progress, a meeting that fails does
+not stop the rest, and one alert at the end lists those that failed and why. Quitting meanwhile
+asks first: Finish Deleting quits once the run ended, Quit Now once the meeting being deleted
+now is done (the rest are left as they are and released), Cancel keeps running. A damaged
+meeting is skipped by Delete Audio as damaged, since its audio may still be there. A right-click on a row of the selection acts on
 all of it (Show N in Finder, Delete Audio of N Meetings…, Delete N Meetings…); a right-click on
 another row selects that row and acts on it alone, as in the Finder.
 

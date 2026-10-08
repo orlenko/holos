@@ -143,10 +143,16 @@ private let rows: [String?] = [nil, "A", "B", nil, "C", "D", nil, "E"]
     let targets = [meeting("A"), meeting("B", name: "Design sync"), meeting("C")]
     var calls: [String] = []
     var progress: [Int] = []
-    let result = await MeetingBulkRun.run(targets, progress: { progress.append($0) }) { summary in
+    let uses = FakeUses()
+    func reserved(_ targets: [SessionSummary]) -> MeetingBulkRun.Reservation {
+        MeetingBulkRun.reserve(targets, waiting: "Waiting", in: uses)
+    }
+    let result = await MeetingBulkRun.run(reserved(targets), waiting: "Waiting", uses: uses,
+                                          progress: { progress.append($0) }) { summary in
         calls.append(summary.id)
         return summary.id == "B" ? "Another process holds the meeting." : nil
     }
+    #expect(uses.inUse.isEmpty, "Every reservation released.")
     #expect(calls == ["A", "B", "C"], "Each meeting in turn, the failure not stopping the rest.")
     #expect(progress == [0, 1, 2])
     #expect(result.succeeded == ["A", "C"])
@@ -158,10 +164,44 @@ private let rows: [String?] = [nil, "A", "B", nil, "C", "D", nil, "E"]
     #expect(report?.text == "Not moved to the Trash:\n“Design sync”: Another process holds the meeting.")
     #expect(plan.progressText(done: 1) == "Moving 2 of 3 meetings to the Trash…")
 
-    let clean = await MeetingBulkRun.run(targets, progress: { _ in }) { _ in nil }
+    let clean = await MeetingBulkRun.run(reserved(targets), waiting: "Waiting", uses: uses, progress: { _ in }) { _ in
+        nil
+    }
     #expect(plan.report(clean) == nil, "No alert when every deletion succeeded.")
     let audio = MeetingBulkPlan(action: .deleteAudio, selected: targets, allowed: { _ in true }, inUse: { _ in false })
-    let failed = await MeetingBulkRun.run(targets, progress: { _ in }) { _ in "Busy." }
+    let failed = await MeetingBulkRun.run(reserved(targets), waiting: "Waiting", uses: uses, progress: { _ in }) { _ in
+        "Busy."
+    }
     #expect(audio.report(failed)?.title == "Voice is Local could not delete the audio of the meetings.")
     #expect(audio.progressText(done: 0) == "Deleting the audio of 1 of 3 meetings…")
+    #expect(uses.inUse.isEmpty)
+}
+
+@Test func aQuitDuringADeletionOfSeveralAsksWhetherToFinish() {
+    let question = MeetingBulkRun.quitQuestion(remaining: 3, action: .deleteMeeting)
+    #expect(question.title == "Voice is Local is still deleting meetings.")
+    #expect(question.text.hasPrefix("3 selected meetings are still to go."))
+    #expect(question.wait == "Finish Deleting")
+    #expect(question.quit == "Quit Now")
+    #expect(MeetingBulkRun.quitQuestion(remaining: 1, action: .deleteAudio).text
+        .hasPrefix("1 selected meeting is still to go."))
+}
+
+/// `MeetingController.sessionsInUse` in memory.
+@MainActor
+private final class FakeUses: MeetingUseRegistry {
+    var inUse: [String: String] = [:]
+
+    func beginUsing(_ sessionIDs: [String], for doing: String) -> Set<String> {
+        var registered: Set<String> = []
+        for id in sessionIDs where inUse[id] == nil {
+            inUse[id] = doing
+            registered.insert(id)
+        }
+        return registered
+    }
+
+    func endUsing(_ sessionID: String) { inUse[sessionID] = nil }
+
+    func use(of sessionID: String) -> String? { inUse[sessionID] }
 }

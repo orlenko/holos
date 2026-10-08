@@ -59,8 +59,12 @@ final class MeetingAppState {
     var automaticHolds: [String: ReviewMaintenance.Hold] = [:]
     /// How many maintenance commands have ended per meeting, so a review that opened meanwhile rereads it.
     var maintenanceEnded: [String: Int] = [:]
-    /// A deletion of several meetings from Meetings, one at a time (`performBulkMeetingAction`).
+    /// A deletion of several meetings from Meetings, one at a time (`performBulkMeetingAction`): its action, how many
+    /// meetings it has still to do (what a quit says), and whether a quit waits for it.
     var bulkRun: Task<Void, Never>?
+    var bulkAction: MeetingBulkPlan.Action?
+    var bulkRemaining = 0
+    var bulkQuitting = false
     /// Holos is quitting: review windows close without alerts.
     var quitting = false
     var savingWindow: NSWindow?
@@ -768,9 +772,12 @@ extension HolosAppDelegate: NSMenuDelegate {
     /// the meetings skipped and why, then each meeting in turn through the single deletion's path
     /// (`startMeetingCommand`: registered as in use, its review let go, the voice samples forgotten when asked, the
     /// `voiceislocal session delete` child holding the lease and locks). A meeting that fails does not stop the rest;
-    /// one alert lists the failures at the end. The list shows the meetings still waiting and the progress meanwhile.
+    /// one alert lists the failures at the end. Right after the confirmation every target is reserved in
+    /// `sessionsInUse` ("Waiting to …", `MeetingBulkRun.reserve`), so no background job starts on one still waiting;
+    /// each meeting's turn takes its reservation over (`startMeetingCommand(reserved:)`). The list shows the waiting
+    /// meetings and the progress meanwhile; a quit asks whether to finish first (`meetingShouldTerminate`).
     func performBulkMeetingAction(_ action: MeetingsPane.Action, _ plan: MeetingBulkPlan) {
-        guard meeting.controller != nil else { return }
+        guard let controller = meeting.controller else { return }
         guard meeting.bulkRun == nil else {
             showMeetingAlert("Voice is Local is still deleting the meetings selected before.",
                              "Try again when it finishes; the Meetings list shows its progress.")
@@ -788,29 +795,79 @@ extension HolosAppDelegate: NSMenuDelegate {
         case .deleteAudio:
             guard confirm(plan.confirmationTitle, plan.confirmationText, button: plan.confirmationButton) else { return }
         }
-        let badge = plan.action == .deleteMeeting ? "Waiting to move to the Trash" : "Waiting to delete audio"
-        meeting.bulkRun = Task { [weak self] in
-            var queued = Set(plan.targets.map(\.id))
-            let result = await MeetingBulkRun.run(plan.targets, progress: { done in
-                self?.meeting.meetingsPane?.update(bulk: .init(queued: queued, badge: badge,
-                                                               status: plan.progressText(done: done)))
+        let waiting = plan.action == .deleteMeeting ? "Waiting to move to the Trash…" : "Waiting to delete audio…"
+        // At once, before anything else runs on the main actor: the background schedulers check `sessionsInUse`.
+        let reservation = MeetingBulkRun.reserve(plan.targets, waiting: waiting, in: controller)
+        meeting.bulkAction = plan.action
+        meeting.bulkRemaining = plan.targets.count
+        meeting.bulkRun = Task { [weak self, controller] in
+            let result = await MeetingBulkRun.run(reservation, waiting: waiting, uses: controller, progress: { done in
+                self?.meeting.bulkRemaining = plan.targets.count - done
+                self?.meeting.meetingsPane?.update(bulkStatus: plan.progressText(done: done))
             }, each: { summary in
-                defer { queued.remove(summary.id) }
                 guard let self else { return "Voice is Local stopped." }
                 let (arguments, doing) = Self.deletion(plan.action, path: summary.directory.path)
                 return await withCheckedContinuation { continuation in
                     self.startMeetingCommand(action, summary, arguments: arguments, doing: doing,
-                                             forgetSamples: forgetSamples) { failure in
+                                             forgetSamples: forgetSamples, reserved: true) { failure in
                         continuation.resume(returning: failure)
                     }
                 }
             })
             guard let self else { return }
             self.meeting.bulkRun = nil
-            self.meeting.meetingsPane?.update(bulk: nil)
+            self.meeting.bulkAction = nil
+            self.meeting.bulkRemaining = 0
+            self.meeting.meetingsPane?.update(bulkStatus: nil)
             self.meeting.meetingsPane?.refresh()
-            if let report = plan.report(result) { self.showMeetingAlert(report.title, report.text) }
+            guard let report = plan.report(result) else { return }
+            // Quitting (Finish Deleting or Quit Now): logged, not an alert that would hold up the quit.
+            if self.meeting.bulkQuitting || result.cancelled {
+                Self.meetingLog.error("Deletion of several meetings ended with \(result.failures.count, privacy: .public) not done while quitting")
+                return
+            }
+            self.showMeetingAlert(report.title, report.text)
         }
+    }
+
+    /// A quit while a deletion of several meetings runs: asks whether to finish it first (Finish Deleting) or to quit
+    /// once the meeting being deleted now is done (Quit Now, the others left as they are; their reservations are
+    /// released), or cancels. Either way the quit waits for the run to end, then goes on as `meetingShouldTerminate`
+    /// would have; nil when no deletion runs.
+    private func quitAfterBulkDeletion() -> NSApplication.TerminateReply? {
+        guard let run = meeting.bulkRun, let action = meeting.bulkAction else { return nil }
+        let question = MeetingBulkRun.quitQuestion(remaining: max(1, meeting.bulkRemaining), action: action)
+        let alert = NSAlert()
+        alert.messageText = question.title
+        alert.informativeText = question.text
+        alert.addButton(withTitle: question.wait)
+        alert.addButton(withTitle: question.quit)
+        alert.addButton(withTitle: "Cancel")
+        NSApplication.shared.activate()
+        let response = alert.runModal()
+        guard response == .alertFirstButtonReturn || response == .alertSecondButtonReturn else {
+            return .terminateCancel
+        }
+        meeting.bulkQuitting = true
+        if response == .alertSecondButtonReturn { run.cancel() }
+        Task { [weak self] in
+            await run.value
+            guard let self else {
+                NSApplication.shared.reply(toApplicationShouldTerminate: true)
+                return
+            }
+            self.meeting.bulkQuitting = false
+            switch self.meetingShouldTerminate() {
+            case .terminateNow: NSApplication.shared.reply(toApplicationShouldTerminate: true)
+            case .terminateCancel:
+                self.reopenAfterQuit = false
+                self.readings.quitCancelled()
+                NSApplication.shared.reply(toApplicationShouldTerminate: false)
+            case .terminateLater: break  // that path replies itself
+            @unknown default: NSApplication.shared.reply(toApplicationShouldTerminate: true)
+            }
+        }
+        return .terminateLater
     }
 
     /// The one confirmation of a deletion of several meetings, with "Also forget voice samples learned from these
@@ -833,16 +890,20 @@ extension HolosAppDelegate: NSMenuDelegate {
     /// "Also forget voice samples" forgets them first, after the review closed and before the meeting moves.
     ///
     /// `completion` (a deletion of several meetings): called once when the command ended, with nil when it succeeded,
-    /// else why not; it then takes the place of the alerts about this meeting.
+    /// else why not; it then takes the place of the alerts about this meeting. `reserved`: the deletion of several
+    /// already holds the meeting in `sessionsInUse` (`MeetingBulkRun.reserve`), and this takes that use over without
+    /// releasing it in between.
     private func startMeetingCommand(_ action: MeetingsPane.Action, _ summary: SessionSummary, arguments: [String],
-                                     doing: String, forgetSamples: Bool = false,
+                                     doing: String, forgetSamples: Bool = false, reserved: Bool = false,
                                      completion: ((String?) -> Void)? = nil) {
         guard meeting.maintenance != nil, let controller = meeting.controller else {
             completion?("Voice is Local cannot run meeting commands now.")
             return
         }
         // The automatic relabel or another command may have taken the meeting while the confirmation was open.
-        guard controller.beginUsing(summary.id, for: doing) else {
+        let registered = reserved ? controller.continueUsing(summary.id, for: doing)
+            : controller.beginUsing(summary.id, for: doing)
+        guard registered else {
             if let completion {
                 let doing = controller.sessionsInUse[summary.id]
                 completion("Voice is Local is working on it" + (doing.map { " (\($0))" } ?? "") + ".")
@@ -1485,6 +1546,8 @@ extension HolosAppDelegate: NSMenuDelegate {
     /// minutes for the transcript) or Cancel. An in-process meeting that is still saving its transcript is waited for.
     /// Open review windows close first in every case, so their last changes reach the transcript files.
     func meetingShouldTerminate() -> NSApplication.TerminateReply {
+        // A deletion of several meetings asks first, and the rest of this is asked once it ended.
+        if let reply = quitAfterBulkDeletion() { return reply }
         guard let controller = meeting.controller else { return quitAfterClosingReviews() }
         // Whether this process runs the recording, not which launcher is configured: in in-process mode Holos can
         // still follow a meeting started in a terminal, which quitting does not end.

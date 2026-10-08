@@ -97,15 +97,18 @@ struct MeetingsMultiSelectTests {
 
     @Test func whileADeletionOfSeveralRunsItsMeetingsWaitAsInUse() throws {
         let fixture = try Fixture()
-        fixture.pane.update(bulk: .init(queued: ["A", "B"], badge: "Waiting to move to the Trash",
-                                        status: "Moving 1 of 2 meetings to the Trash…"))
+        // The app reserves them in its meetings in use (`MeetingBulkRun.reserve`), which the list shows.
+        fixture.pane.update(running: ["A": "Waiting to move to the Trash…", "B": "Moving to the Trash…"])
+        fixture.pane.update(bulkStatus: "Moving 1 of 2 meetings to the Trash…")
         fixture.select(["A"])
         #expect(try !fixture.button("Delete Meeting…").isEnabled)
         #expect(fixture.pane.statusText.hasPrefix("Moving 1 of 2 meetings to the Trash…"))
         let a = try #require(fixture.meetings.first { $0.id == "A" })
-        #expect(fixture.pane.badges(a, livePhase: nil).contains { $0.text == "Waiting to move to the Trash" })
-        fixture.pane.update(bulk: nil)
+        #expect(fixture.pane.badges(a, livePhase: nil).contains { $0.text == "Waiting to move to the Trash…" })
+        fixture.pane.update(running: [:])
+        fixture.pane.update(bulkStatus: nil)
         #expect(try fixture.button("Delete Meeting…").isEnabled)
+        #expect(!fixture.pane.statusText.contains("Moving"))
     }
 
     @Test func severalSelectedShowASummaryAndOnlyTheActionsForAll() throws {

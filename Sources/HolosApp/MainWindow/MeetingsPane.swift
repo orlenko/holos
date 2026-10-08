@@ -83,14 +83,9 @@ final class MeetingsPane: NSViewController, NSTableViewDataSource, NSTableViewDe
     /// Delete Meeting… or Delete Audio… on several selected meetings (the app delegate confirms once, then deletes each
     /// through the single deletion's path).
     var performBulk: ((Action, MeetingBulkPlan) -> Void)?
-    /// A deletion of several meetings running (`update(bulk:)`): the meetings still waiting, their badge, and the
-    /// status line.
-    struct BulkProgress: Equatable {
-        var queued: Set<String>
-        var badge: String
-        var status: String
-    }
-    private var bulk: BulkProgress?
+    /// A deletion of several meetings running (`update(bulkStatus:)`): its progress on the status line. The meetings
+    /// still waiting are in `running` ("Waiting to move to the Trash…"), reserved in the app's meetings in use.
+    private var bulkStatus: String?
     /// The selection count VoiceOver was last told about.
     private var announcedCount = 0
     /// The meeting's menu: Make Final Transcript Now (true) and Cancel Final Transcript (false) (§4.16).
@@ -428,12 +423,10 @@ final class MeetingsPane: NSViewController, NSTableViewDataSource, NSTableViewDe
         reloadKeepingSelection()
     }
 
-    /// A deletion of several meetings: the meetings still waiting (each badged, and treated as in use), and the
-    /// status line; nil once it ended.
-    func update(bulk: BulkProgress?) {
-        guard bulk != self.bulk else { return }
-        self.bulk = bulk
-        reloadKeepingSelection()
+    /// A deletion of several meetings: its progress for the status line; nil once it ended.
+    func update(bulkStatus: String?) {
+        guard bulkStatus != self.bulkStatus else { return }
+        self.bulkStatus = bulkStatus
         updateButtons()
     }
 
@@ -588,9 +581,9 @@ final class MeetingsPane: NSViewController, NSTableViewDataSource, NSTableViewDe
         table.selectedRowIndexes.count == 1 ? session(at: table.selectedRow) : nil
     }
 
-    /// Voice is Local works on the meeting: a command (`running`), or it waits in a deletion of several.
+    /// Voice is Local works on the meeting (`running`): a command, or it waits in a deletion of several.
     private func isBusy(_ summary: SessionSummary) -> Bool {
-        running[summary.id] != nil || bulk?.queued.contains(summary.id) == true
+        running[summary.id] != nil
     }
 
     @objc private func searchChanged() {
@@ -657,11 +650,10 @@ final class MeetingsPane: NSViewController, NSTableViewDataSource, NSTableViewDe
         return text
     }
 
-    /// What a command, a deletion of several meetings, a final transcript, the summary, or the echo catch-up is doing
-    /// to the meeting now.
+    /// What a command (or a deletion of several meetings), a final transcript, the summary, or the echo catch-up is
+    /// doing to the meeting now.
     private func working(_ summary: SessionSummary) -> String? {
-        running[summary.id] ?? (bulk?.queued.contains(summary.id) == true ? bulk?.badge : nil)
-            ?? deepStates[summary.id] ?? (summarizing == summary.id ? "Writing summary…" : nil)
+        running[summary.id] ?? deepStates[summary.id] ?? (summarizing == summary.id ? "Writing summary…" : nil)
             ?? echoStates[summary.id]
     }
 
@@ -795,7 +787,7 @@ final class MeetingsPane: NSViewController, NSTableViewDataSource, NSTableViewDe
             buttons["Clean Up"]?.isHidden = cleanUpHidden
             actionRows.forEach { $0.viewsChanged() }
         }
-        let progress = bulk.map { [$0.status] } ?? []
+        let progress = bulkStatus.map { [$0] } ?? []
         if selected.count > 1 {
             statusLabel.stringValue = (progress + [MeetingSelection.summary(selected)]).joined(separator: " ")
         } else if let summary {
