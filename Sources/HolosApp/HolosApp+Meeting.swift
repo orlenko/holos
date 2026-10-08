@@ -224,9 +224,7 @@ extension HolosAppDelegate: NSMenuDelegate {
             meeting.headlineItem = headline
             if let notice = meeting.notice { menu.addItem(disabledLine(notice, indent: 1)) }
             if let source = sourceNotice(controller) { menu.addItem(disabledLine(source, indent: 1)) }
-            let stop = item("Stop Recording", #selector(stopMeetingStart))
-            stop.isEnabled = !stopping
-            menu.addItem(stop)
+            addRecordingControls(MeetingRecordingControls(controller), to: menu)
         case .active(_, let status):
             addRecordingItems(status, to: menu)
         case .finishing(_, let status):
@@ -264,21 +262,28 @@ extension HolosAppDelegate: NSMenuDelegate {
         if let controller = meeting.controller, let source = sourceNotice(controller) {
             menu.addItem(disabledLine(source, indent: 1))
         }
-        let stopping = status.phase == .stopping
-        if status.phase == .paused {
-            menu.addItem(item("Resume Recording", #selector(resumeMeetingRecording)))
-        } else {
-            let pause = item("Pause Recording", #selector(pauseMeetingRecording))
-            pause.isEnabled = status.phase == .recording || status.phase == .waiting
-            menu.addItem(pause)
+        addRecordingControls(MeetingRecordingControls(meeting.controller), to: menu)
+    }
+
+    /// Pause or Resume Recording, Add Marker…, Show Live Transcript…, and Stop and Save… while a meeting records;
+    /// Stop Recording while it starts (`MeetingRecordingControls`, the rules the live transcript's header and the
+    /// meeting's menu in Meetings follow too).
+    private func addRecordingControls(_ controls: MeetingRecordingControls, to menu: NSMenu) {
+        if let pause = controls.pause {
+            let entry = item(pause.title, pause == .pause ? #selector(pauseMeetingRecording)
+                                                          : #selector(resumeMeetingRecording))
+            entry.isEnabled = controls.pauseEnabled
+            menu.addItem(entry)
+            let marker = item("Add Marker…", #selector(addMeetingMarker))
+            marker.isEnabled = controls.markerEnabled
+            menu.addItem(marker)
+            menu.addItem(item("Show Live Transcript…", #selector(showLiveTranscript)))
         }
-        let marker = item("Add Marker…", #selector(addMeetingMarker))
-        marker.isEnabled = !stopping && status.phase != .starting
-        menu.addItem(marker)
-        menu.addItem(item("Show Live Transcript…", #selector(showLiveTranscript)))
-        let stop = item("Stop and Save…", #selector(stopMeetingRecording))
-        stop.isEnabled = !stopping && meeting.controller?.reducer.stopRequested != true
-        menu.addItem(stop)
+        if let stop = controls.stop {
+            let entry = item(stop.title, #selector(stopMeetingRecording))
+            entry.isEnabled = controls.stopEnabled
+            menu.addItem(entry)
+        }
     }
 
     func addAboutItem(to menu: NSMenu) {
@@ -521,25 +526,46 @@ extension HolosAppDelegate: NSMenuDelegate {
         return nil
     }
 
-    @objc func stopMeetingRecording() {
-        guard let controller = meeting.controller, case .active(_, let status) = controller.state else { return }
+    /// The menu bar's Stop and Save… (Stop Recording while the meeting starts).
+    @objc func stopMeetingRecording() { performMeetingRecordingCommand(.stop) }
+
+    @objc func pauseMeetingRecording() { performMeetingRecordingCommand(.pause) }
+
+    @objc func resumeMeetingRecording() { performMeetingRecordingCommand(.resume) }
+
+    /// Stop, Pause, and Resume of the followed meeting from the menu bar, the live transcript's header, or the
+    /// meeting's menu in Meetings: one path with the menu bar's rules (`MeetingRecordingCommands.perform`).
+    /// `sessionID`: the meeting the control was shown for (nil: the one followed). `window`: the window the control is
+    /// in, where Stop and Save…'s question shows as a sheet; without one it is a modal alert, as from the menu bar.
+    func performMeetingRecordingCommand(_ command: MeetingRecordingCommand, sessionID: String? = nil,
+                                        window: NSWindow? = nil) {
+        guard let controller = meeting.controller else { return }
+        MeetingRecordingCommands.perform(command, on: controller, sessionID: sessionID) { [weak self] question, answer in
+            self?.askToStopMeeting(question, window: window) { [weak self] confirmed in
+                answer(confirmed)
+                self?.meeting.meetingsPane?.refreshLiveHeader()
+            }
+        }
+        // A stop asked for leaves the state as it was until the recorder answers: the header's Stop turns off now.
+        meeting.meetingsPane?.refreshLiveHeader()
+    }
+
+    private func askToStopMeeting(_ question: MeetingRecordingCommands.StopQuestion, window: NSWindow?,
+                                  answer: @escaping @MainActor (Bool) -> Void) {
         let alert = NSAlert()
-        alert.messageText = "Stop and save “\(Self.short(status.name))”?"
-        alert.informativeText = "Voice is Local then labels speakers, which takes about 2 minutes for a 3-hour meeting, or about 5 when it also detects languages. Keep the lid open until it finishes; the next meeting can start once it has."
-        alert.addButton(withTitle: "Stop and Save")
-        alert.addButton(withTitle: "Keep Recording")
+        alert.messageText = question.message
+        alert.informativeText = question.information
+        alert.addButton(withTitle: MeetingRecordingCommands.StopQuestion.stopButton)
+        alert.addButton(withTitle: MeetingRecordingCommands.StopQuestion.keepButton)
+        if let window, window.isVisible, window.attachedSheet == nil {
+            alert.beginSheetModal(for: window) { response in
+                MainActor.assumeIsolated { answer(response == .alertFirstButtonReturn) }
+            }
+            return
+        }
         NSApplication.shared.activate()
-        guard alert.runModal() == .alertFirstButtonReturn else { return }
-        controller.confirmStop()
+        answer(alert.runModal() == .alertFirstButtonReturn)
     }
-
-    @objc func stopMeetingStart() {
-        meeting.controller?.confirmStop()
-    }
-
-    @objc func pauseMeetingRecording() { meeting.controller?.pause() }
-
-    @objc func resumeMeetingRecording() { meeting.controller?.resume() }
 
     @objc func addMeetingMarker() {
         guard let controller = meeting.controller, case .active = controller.state else { return }
@@ -600,7 +626,9 @@ extension HolosAppDelegate: NSMenuDelegate {
                 detail = summary.map(MeetingsPane.stateText) ?? "Failed"
             }
         }
-        return LiveMeetingHeader(name: name, phase: phase, detail: detail)
+        // Stop and Pause for the meeting the app follows (a meeting the voiceislocal tool records has none here).
+        let controls = follows ? MeetingRecordingControls(meeting.controller) : .none
+        return LiveMeetingHeader(name: name, phase: phase, detail: detail, controls: controls)
     }
 
     @objc func showMeetings() {
@@ -671,6 +699,11 @@ extension HolosAppDelegate: NSMenuDelegate {
         // transcript's header follows the list).
         pane.onTitleChanged = { [weak self] id in self?.refreshReviewTitle(id) }
         pane.runRename = { [weak self] summary, request in self?.runRename(summary, request) }
+        // The live transcript's Stop and Save… and Pause / Resume, and the meeting's menu: the menu bar's path, with
+        // Stop's question as a sheet on the main window.
+        pane.onRecordingCommand = { [weak self, weak pane] command, sessionID in
+            self?.performMeetingRecordingCommand(command, sessionID: sessionID, window: pane?.view.window)
+        }
         pane.update(summarizing: meeting.summaries.running?.sessionID)
         pane.update(meetingState: controller.state)
         meeting.meetingsPane = pane

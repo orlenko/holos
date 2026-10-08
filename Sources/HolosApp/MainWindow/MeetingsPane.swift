@@ -88,6 +88,9 @@ final class MeetingsPane: NSViewController, NSTableViewDataSource, NSTableViewDe
     var summaryUnavailableReason: () -> String? = { nil }
     /// Runs a rename (the app delegate: `MeetingRenameRun`); `renameEnded` reports.
     var runRename: ((SessionSummary, MeetingRenameRequest) -> Void)?
+    /// Stop and Save…, Pause, or Resume of the meeting (its ID) being recorded, from the live transcript's header or
+    /// the meeting's menu (the app delegate: `performMeetingRecordingCommand`, the menu bar's path).
+    var onRecordingCommand: ((MeetingRecordingCommand, String) -> Void)?
     /// The title a meeting shows changed (its ID): a rename here, or a change the catalog read shows (a rename in
     /// Terminal, a new generated title). Review follows; the live transcript's header follows the list.
     var onTitleChanged: ((String) -> Void)?
@@ -289,7 +292,7 @@ final class MeetingsPane: NSViewController, NSTableViewDataSource, NSTableViewDe
             reloadKeepingSelection()
             updateButtons()
         }
-        updateLiveHeader()
+        refreshLiveHeader()
     }
 
     /// Shows the live transcript of the meeting in `directory` in place of the list (opening a live meeting, the menu
@@ -304,12 +307,13 @@ final class MeetingsPane: NSViewController, NSTableViewDataSource, NSTableViewDe
             sessionID: sessionID, directory: directory,
             onBack: { [weak self] in self?.showList() },
             onOpenFinished: { [weak self] in self?.openFinished(sessionID) },
-            onLearnText: learnLiveText)
+            onLearnText: learnLiveText,
+            onRecordingCommand: { [weak self] command in self?.onRecordingCommand?(command, sessionID) })
         live = controller
         addChild(controller)
         listView.isHidden = true
         Self.fill(view, with: controller.view)
-        updateLiveHeader()
+        refreshLiveHeader()
         if onScreen { controller.start() }
         view.window?.makeFirstResponder(controller.preferredFirstResponder)
     }
@@ -331,7 +335,9 @@ final class MeetingsPane: NSViewController, NSTableViewDataSource, NSTableViewDe
         self.live = nil
     }
 
-    private func updateLiveHeader() {
+    /// The live transcript's header as the app delegate describes the meeting now (a command just sent changes its
+    /// controls before the meeting's state does).
+    func refreshLiveHeader() {
         guard let live else { return }
         let summary = sessions.first { $0.id == live.sessionID }
         let header = liveHeader(live.sessionID, summary)
@@ -376,7 +382,7 @@ final class MeetingsPane: NSViewController, NSTableViewDataSource, NSTableViewDe
         reloadKeepingSelection()
         updateButtons()
         // A saved live view switches between Open Review and Open Transcript as commands begin and end.
-        updateLiveHeader()
+        refreshLiveHeader()
     }
 
     /// The deep transcription passes queued or running (§4.16).
@@ -478,7 +484,7 @@ final class MeetingsPane: NSViewController, NSTableViewDataSource, NSTableViewDe
         footer.stringValue = "Meetings use \(MeetingFormat.gigabytes(used))"
             + (freeBytes.map { " · \(MeetingFormat.gigabytes($0)) free" } ?? "")
         updateButtons()
-        updateLiveHeader()
+        refreshLiveHeader()
     }
 
     /// Rebuilds the rows from `sessions` and the search, keeping the meeting `id` selected. Not while a name is edited
@@ -973,7 +979,7 @@ final class MeetingsPane: NSViewController, NSTableViewDataSource, NSTableViewDe
             // The manifest's copy follows when the rename wrote it; the next read of the catalog says.
             sessions[index].manifestName = name
             reloadKeepingSelection()
-            updateLiveHeader()
+            refreshLiveHeader()
             onTitleChanged?(id)
         }
         refresh()
@@ -1078,7 +1084,8 @@ final class PreviewingWindow: NSWindow {
 extension MeetingsPane: NSMenuDelegate {
     /// The row clicked, which becomes the selection: the item double-click and Return use, named for what it opens
     /// (Open Live Transcript, Open Review, or Open Transcript), then Review… and Show Transcript File unless that item
-    /// already does the same (`MeetingOpenPolicy.menuItems`), Show in Finder, Save Transcript As…; Rename… (⌘R),
+    /// already does the same (`MeetingOpenPolicy.menuItems`), Show in Finder, Save Transcript As…; while the app
+    /// records the meeting, Pause / Resume Recording and Stop and Save… (the menu bar's); Rename… (⌘R),
     /// while the user's name hides a generated title Use Generated Title, and after a rename whose transcript files
     /// could not be rewritten Update Transcript Files;
     /// Summarize Again; Make Final Transcript Now (also for a meeting queued automatically, which
@@ -1114,6 +1121,7 @@ extension MeetingsPane: NSMenuDelegate {
         }
         add("Show in Finder", #selector(showInFinder), enabled.contains(.showInFinder))
         add("Save Transcript As…", #selector(saveTranscript), enabled.contains(.saveTranscript))
+        addRecordingItems(for: summary, isLive: isLive, to: menu)
 
         menu.addItem(.separator())
         let rename = NSMenuItem(title: "Rename…", action: #selector(renameSelected), keyEquivalent: "r")
@@ -1199,6 +1207,38 @@ extension MeetingsPane: NSMenuDelegate {
         add("Label Speakers", #selector(labelSpeakers), enabled.contains(.labelSpeakers))
         add("Delete Audio…", #selector(deleteAudio), enabled.contains(.deleteAudio))
         add("Delete Meeting…", #selector(deleteMeeting), enabled.contains(.deleteMeeting))
+    }
+
+    /// The meeting the app records: Pause or Resume Recording and Stop and Save… (Stop Recording while it starts),
+    /// enabled as the menu bar's (`MeetingRecordingControls`); the app delegate checks them again when one is chosen.
+    func addRecordingItems(for summary: SessionSummary, isLive: Bool, to menu: NSMenu) {
+        guard isLive, onRecordingCommand != nil else { return }
+        let controls = liveHeader(summary.id, summary).controls
+        guard controls.sessionID == summary.id, let stop = controls.stop else { return }
+        menu.addItem(.separator())
+        func add(_ title: String, _ action: Selector, _ isEnabled: Bool) {
+            let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
+            item.target = self
+            item.representedObject = summary.id
+            item.isEnabled = isEnabled
+            menu.addItem(item)
+        }
+        if let pause = controls.pause {
+            add(pause.title, pause == .pause ? #selector(pauseRecording(_:)) : #selector(resumeRecording(_:)),
+                controls.pauseEnabled)
+        }
+        add(stop.title, #selector(stopRecording(_:)), controls.stopEnabled)
+    }
+
+    @objc private func pauseRecording(_ sender: NSMenuItem) { recordingCommand(.pause, sender) }
+
+    @objc private func resumeRecording(_ sender: NSMenuItem) { recordingCommand(.resume, sender) }
+
+    @objc private func stopRecording(_ sender: NSMenuItem) { recordingCommand(.stop, sender) }
+
+    private func recordingCommand(_ command: MeetingRecordingCommand, _ sender: NSMenuItem) {
+        guard let id = sender.representedObject as? String else { return }
+        onRecordingCommand?(command, id)
     }
 
     @objc private func summarizeAgain(_ sender: NSMenuItem) {
