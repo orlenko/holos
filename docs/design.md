@@ -1162,8 +1162,9 @@ Several meetings can be selected as in any Mac list: click, ⇧-click for a rang
 or remove one, ⌘A for all, ⇧↑/↓ to extend. Day headers are never selected; a range over one
 selects the meetings on both sides. The selection is kept by meeting, not by row, when the list
 is read again (every 2 s, and as a meeting records or a command works on one), and once every
-selected meeting is deleted the meeting after them is selected (the one before when they were
-last). With several selected, the line under the buttons sums them up ("5 meetings selected ·
+selected meeting is deleted the meeting after the first of them is selected (the one before when
+they were last); for a deletion of several, once it ended, from the list as it was when it began,
+however the refreshes in between saw them go. With several selected, the line under the buttons sums them up ("5 meetings selected ·
 3 h 12 min · 1.2 GB") and VoiceOver announces the count. Show in Finder reveals all of them;
 Delete Meeting… (also ⌫ and ⌘⌫) and Delete Audio… act on every selected meeting that
 `MeetingActionPolicy` allows, the rule a single deletion follows; the actions for one meeting
@@ -1181,7 +1182,8 @@ relabel, summary, final transcript, echo catch-up) starts on one still waiting i
 turn takes its reservation over. The status line shows the progress, a meeting that fails does
 not stop the rest, and one alert at the end lists those that failed and why. Quitting meanwhile
 asks first: Finish Deleting quits once the run ended, Quit Now once the meeting being deleted
-now is done (the rest are left as they are and released), Cancel keeps running. A damaged
+now is done (the rest are left as they are and released), Cancel keeps running. The list of
+failures then waits for the quit, and is shown if the quit does not go ahead after all. A damaged
 meeting is skipped by Delete Audio as damaged, since its audio may still be there. A right-click on a row of the selection acts on
 all of it (Show N in Finder, Delete Audio of N Meetings…, Delete N Meetings…); a right-click on
 another row selects that row and acts on it alone, as in the Finder.

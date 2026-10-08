@@ -65,6 +65,8 @@ final class MeetingAppState {
     var bulkAction: MeetingBulkPlan.Action?
     var bulkRemaining = 0
     var bulkQuitting = false
+    /// Its failure report while a quit waits on it, shown if the quit does not go ahead.
+    var bulkReport = MeetingBulkReportHold()
     /// Holos is quitting: review windows close without alerts.
     var quitting = false
     var savingWindow: NSWindow?
@@ -800,6 +802,8 @@ extension HolosAppDelegate: NSMenuDelegate {
         let reservation = MeetingBulkRun.reserve(plan.targets, waiting: waiting, in: controller)
         meeting.bulkAction = plan.action
         meeting.bulkRemaining = plan.targets.count
+        // The list remembers its order now, to select the meeting after the first deleted one once the run ended.
+        meeting.meetingsPane?.bulkDeletionStarted(plan.targets.map(\.id))
         meeting.bulkRun = Task { [weak self, controller] in
             let result = await MeetingBulkRun.run(reservation, waiting: waiting, uses: controller, progress: { done in
                 self?.meeting.bulkRemaining = plan.targets.count - done
@@ -819,15 +823,25 @@ extension HolosAppDelegate: NSMenuDelegate {
             self.meeting.bulkAction = nil
             self.meeting.bulkRemaining = 0
             self.meeting.meetingsPane?.update(bulkStatus: nil)
-            self.meeting.meetingsPane?.refresh()
-            guard let report = plan.report(result) else { return }
-            // Quitting (Finish Deleting or Quit Now): logged, not an alert that would hold up the quit.
-            if self.meeting.bulkQuitting || result.cancelled {
+            self.meeting.meetingsPane?.bulkDeletionEnded()
+            let report = plan.report(result).map { MeetingBulkReportHold.Report(title: $0.title, text: $0.text) }
+            // Quitting (Finish Deleting or Quit Now): held, not an alert that would hold up the quit; shown if the
+            // quit does not go ahead (`bulkQuitDecided`).
+            let quitting = self.meeting.bulkQuitting || result.cancelled
+            if quitting, report != nil {
                 Self.meetingLog.error("Deletion of several meetings ended with \(result.failures.count, privacy: .public) not done while quitting")
-                return
             }
-            self.showMeetingAlert(report.title, report.text)
+            if let shown = self.meeting.bulkReport.runEnded(report, quitting: quitting) {
+                self.showMeetingAlert(shown.title, shown.text)
+            }
         }
+    }
+
+    /// The quit that waited for a deletion of several meetings was decided: when it did not go ahead, the report of
+    /// the meetings not done is shown after all.
+    private func bulkQuitDecided(terminating: Bool) {
+        guard let report = meeting.bulkReport.quitEnded(terminating: terminating) else { return }
+        showMeetingAlert(report.title, report.text)
     }
 
     /// A quit while a deletion of several meetings runs: asks whether to finish it first (Finish Deleting) or to quit
@@ -858,12 +872,15 @@ extension HolosAppDelegate: NSMenuDelegate {
             }
             self.meeting.bulkQuitting = false
             switch self.meetingShouldTerminate() {
-            case .terminateNow: NSApplication.shared.reply(toApplicationShouldTerminate: true)
+            case .terminateNow:
+                self.bulkQuitDecided(terminating: true)
+                NSApplication.shared.reply(toApplicationShouldTerminate: true)
             case .terminateCancel:
                 self.reopenAfterQuit = false
                 self.readings.quitCancelled()
                 NSApplication.shared.reply(toApplicationShouldTerminate: false)
-            case .terminateLater: break  // that path replies itself
+                self.bulkQuitDecided(terminating: false)
+            case .terminateLater: break  // that path replies itself, and decides the held report (`bulkQuitDecided`)
             @unknown default: NSApplication.shared.reply(toApplicationShouldTerminate: true)
             }
         }
@@ -1612,6 +1629,8 @@ extension HolosAppDelegate: NSMenuDelegate {
             self?.meeting.savingWindow?.close()
             if !undelivered, let self { await self.closeReviews(Array(self.meeting.reviewWindows.values)) }
             NSApplication.shared.reply(toApplicationShouldTerminate: !undelivered)
+            // A deletion of several meetings this quit waited for: its report, if the quit did not go ahead.
+            self?.bulkQuitDecided(terminating: !undelivered)
             if undelivered, let self {
                 self.reopenAfterQuit = false  // the quit was cancelled: a later quit must not reopen
                 self.readings.quitCancelled()  // readings kept for the next launch continue now

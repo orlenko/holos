@@ -307,6 +307,40 @@ public enum MeetingBulkRun {
     }
 }
 
+/// The report of a deletion of several meetings that ended while a quit waited for it (Finish Deleting, Quit Now):
+/// held instead of shown, so no alert holds up the quit, and shown after all when the quit does not go ahead (another
+/// question was cancelled, a recording could not be stopped), so the user still learns which meetings were not done.
+public struct MeetingBulkReportHold: Sendable, Equatable {
+    public struct Report: Sendable, Equatable {
+        public var title: String
+        public var text: String
+
+        public init(title: String, text: String) {
+            self.title = title
+            self.text = text
+        }
+    }
+
+    public private(set) var held: Report?
+
+    public init() {}
+
+    /// The run ended with `report` (nil: nothing failed): returns it to show now, or nil while `quitting`, when it is
+    /// held until the quit is decided.
+    public mutating func runEnded(_ report: Report?, quitting: Bool) -> Report? {
+        guard quitting else { return report }
+        held = report
+        return nil
+    }
+
+    /// The quit was decided: the held report to show now when it was cancelled (`terminating` false); dropped when
+    /// the app quits.
+    public mutating func quitEnded(terminating: Bool) -> Report? {
+        defer { held = nil }
+        return terminating ? nil : held
+    }
+}
+
 /// The app's register of the meetings it works on (`MeetingController.sessionsInUse`), as a deletion of several
 /// meetings uses it.
 @MainActor

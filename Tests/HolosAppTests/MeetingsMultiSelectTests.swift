@@ -56,6 +56,36 @@ struct MeetingsMultiSelectTests {
         #expect(fixture.pane.selectedSessionIDs == ["D"])
     }
 
+    /// Rows A, B, C, D with A and C deleted together: B is selected whether a refresh lands between the two deletions
+    /// or both go in one, and a meeting chosen while the deletion runs is kept.
+    @Test(arguments: [true, false])
+    func afterADeletionOfSeveralTheSelectionDoesNotDependOnRefreshTiming(refreshBetween: Bool) throws {
+        let fixture = try Fixture()
+        fixture.select(["A", "C"])
+        fixture.pane.bulkDeletionStarted(["A", "C"])
+        if refreshBetween {
+            fixture.pane.show(fixture.meetings.filter { $0.id != "A" }, people: [:], freeBytes: nil)
+            #expect(fixture.pane.selectedSessionIDs == ["C"])
+        }
+        let afterBoth = fixture.meetings.filter { !["A", "C"].contains($0.id) }
+        fixture.pane.show(afterBoth, people: [:], freeBytes: nil)
+        #expect(fixture.pane.selectedSessionIDs.isEmpty, "Chosen once the deletion ended, not from what is left now.")
+        fixture.pane.bulkDeletionEnded()
+        fixture.pane.show(afterBoth, people: [:], freeBytes: nil)
+        #expect(fixture.pane.selectedSessionIDs == ["B"])
+
+        // A meeting the user chose meanwhile stays selected.
+        fixture.pane.show(fixture.meetings, people: [:], freeBytes: nil)
+        fixture.select(["A", "C"])
+        fixture.pane.bulkDeletionStarted(["A", "C"])
+        fixture.pane.show(fixture.meetings.filter { $0.id != "A" }, people: [:], freeBytes: nil)
+        fixture.select(["E"])
+        fixture.pane.show(afterBoth, people: [:], freeBytes: nil)
+        fixture.pane.bulkDeletionEnded()
+        fixture.pane.show(afterBoth, people: [:], freeBytes: nil)
+        #expect(fixture.pane.selectedSessionIDs == ["E"])
+    }
+
     @Test func deleteMeetingOnSeveralRunsOnThoseThatAllowItAndSkipsTheOthers() throws {
         var bulk: [(MeetingsPane.Action, MeetingBulkPlan)] = []
         var single: [(MeetingsPane.Action, String)] = []

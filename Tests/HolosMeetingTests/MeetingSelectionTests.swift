@@ -194,6 +194,26 @@ private let rows: [String?] = [nil, "A", "B", nil, "C", "D", nil, "E"]
         .hasPrefix("1 selected meeting is still to go."))
 }
 
+@Test func aReportHeldForAQuitIsShownWhenTheQuitDoesNotGoAhead() {
+    let report = MeetingBulkReportHold.Report(title: "Voice is Local deleted 2 of 3 meetings.",
+                                              text: "Not moved to the Trash:\n“Design sync”: Busy.")
+    var hold = MeetingBulkReportHold()
+    // Not quitting: shown at once.
+    #expect(hold.runEnded(report, quitting: false) == report)
+    #expect(hold.held == nil)
+    // Quitting (Finish Deleting, Quit Now): held, then shown when another question cancels the quit.
+    #expect(hold.runEnded(report, quitting: true) == nil)
+    #expect(hold.quitEnded(terminating: false) == report)
+    #expect(hold.quitEnded(terminating: false) == nil, "Shown once.")
+    // The quit goes ahead: dropped.
+    _ = hold.runEnded(report, quitting: true)
+    #expect(hold.quitEnded(terminating: true) == nil)
+    #expect(hold.held == nil)
+    // Nothing failed: nothing to show either way.
+    #expect(hold.runEnded(nil, quitting: true) == nil)
+    #expect(hold.quitEnded(terminating: false) == nil)
+}
+
 /// `MeetingController.sessionsInUse` in memory.
 @MainActor
 private final class FakeUses: MeetingUseRegistry {

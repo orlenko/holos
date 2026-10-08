@@ -86,6 +86,17 @@ final class MeetingsPane: NSViewController, NSTableViewDataSource, NSTableViewDe
     /// A deletion of several meetings running (`update(bulkStatus:)`): its progress on the status line. The meetings
     /// still waiting are in `running` ("Waiting to move to the Trash…"), reserved in the app's meetings in use.
     private var bulkStatus: String?
+    /// A deletion of several meetings as the list was when it began (`bulkDeletionStarted`): its targets and the
+    /// shown order then; `endedAfterRead`, once it ended, the last read begun before (a later one picks the selection).
+    private struct BulkSelection {
+        var targets: Set<String>
+        var order: [String]
+        var endedAfterRead: Int?
+    }
+    private var bulkSelection: BulkSelection?
+    /// Reads of the catalog begun (`refresh`), and one more asked for while a read ran.
+    private var readsStarted = 0
+    private var refreshAgain = false
     /// The selection count VoiceOver was last told about.
     private var announcedCount = 0
     /// The meeting's menu: Make Final Transcript Now (true) and Cancel Final Transcript (false) (§4.16).
@@ -430,10 +441,34 @@ final class MeetingsPane: NSViewController, NSTableViewDataSource, NSTableViewDe
         updateButtons()
     }
 
-    /// Reads the catalog off the main actor, then shows it.
+    /// A deletion of several meetings began on `targets`: the list keeps its order now. While the deletion runs, a
+    /// selection its deletions empty stays empty, whatever order the refreshes see them go in; once it ended
+    /// (`bulkDeletionEnded`), the next read selects the meeting after the first deleted one in that order.
+    func bulkDeletionStarted(_ targets: [String]) {
+        bulkSelection = BulkSelection(targets: Set(targets), order: rowIDs.compactMap { $0 })
+    }
+
+    /// The deletion of several meetings ended: the list is read again, and that read picks the selection.
+    func bulkDeletionEnded() {
+        guard var selection = bulkSelection else {
+            refresh()
+            return
+        }
+        selection.endedAfterRead = readsStarted
+        bulkSelection = selection
+        refresh()
+    }
+
+    /// Reads the catalog off the main actor, then shows it. Asked while a read runs: once more after it, so what
+    /// changed meanwhile (a deletion just ended) is seen.
     func refresh() {
-        guard !loading else { return }
+        guard !loading else {
+            refreshAgain = true
+            return
+        }
         loading = true
+        readsStarted += 1
+        let read = readsStarted
         let root = self.root
         let cache = peopleCache
         Task { [weak self] in
@@ -479,12 +514,17 @@ final class MeetingsPane: NSViewController, NSTableViewDataSource, NSTableViewDe
             for id in listed.4 where self.running[id] == nil {
                 PendingExports().clear(id, ifGeneration: reviewGenerations[id] ?? 0)
             }
-            self.show(listed.0, people: listed.1, freeBytes: listed.2)
+            self.show(listed.0, people: listed.1, freeBytes: listed.2, read: read)
+            if self.refreshAgain {
+                self.refreshAgain = false
+                self.refresh()
+            }
         }
     }
 
-    /// Shows the catalog as read: the meetings, the people each one's labels name, and the free space.
-    func show(_ listed: [SessionSummary], people: [String: [String]], freeBytes: Int64?) {
+    /// Shows the catalog as read: the meetings, the people each one's labels name, and the free space. `read`: the
+    /// number of the read it comes from (`readsStarted`); nil for a listing given directly, taken as the latest.
+    func show(_ listed: [SessionSummary], people: [String: [String]], freeBytes: Int64?, read: Int? = nil) {
         let requested = pendingSelection
         var selected = requested.map { Set([$0]) } ?? selectedIDs
         let previouslyShown = rowIDs.compactMap { $0 }
@@ -502,7 +542,22 @@ final class MeetingsPane: NSViewController, NSTableViewDataSource, NSTableViewDe
         // Every selected meeting is gone (deleted, here or elsewhere): the meeting after them is selected, as in the
         // Finder, so the keyboard can go on from there.
         let listedIDs = Set(sessions.map(\.id))
-        if requested == nil, !selected.isEmpty, selected.isDisjoint(with: listedIDs) {
+        if requested == nil, let bulk = bulkSelection {
+            if let ended = bulk.endedAfterRead, read.map({ $0 > ended }) ?? true {
+                // A read begun after the deletion of several ended: unless a meeting chosen meanwhile is still
+                // listed, the meeting after the first deleted one in the order the list had when it began.
+                bulkSelection = nil
+                if selected.isDisjoint(with: listedIDs) {
+                    let remaining = Set(shownSessions().map(\.id))
+                    selected = MeetingSelection.successor(of: bulk.targets.subtracting(listedIDs),
+                                                          previous: bulk.order, remaining: remaining)
+                        .map { [$0] } ?? []
+                }
+            } else if !selected.isEmpty, selected.isDisjoint(with: listedIDs) {
+                // Emptied by its deletions while it runs: chosen once it ended.
+                selected = []
+            }
+        } else if requested == nil, !selected.isEmpty, selected.isDisjoint(with: listedIDs) {
             let remaining = Set(shownSessions().map(\.id))
             selected = MeetingSelection.successor(of: selected, previous: previouslyShown, remaining: remaining)
                 .map { [$0] } ?? []
