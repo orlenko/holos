@@ -212,7 +212,8 @@ its width goes down to 400 points with the sidebar hidden (the section's minimum
 601 with it shown (the sidebar's 200, the divider, and the section's 400). Every section
 fits 400 points: rows of buttons wrap (Meetings, History), labels truncate or wrap,
 checkbox titles in Settings wrap, People's tables scroll sideways, the live transcript's
-‹ Meetings and a reading's Share… and Show in Finder show only their symbols. The window
+‹ Meetings and Stop and Save… and a reading's Share… and Show in Finder show only their
+symbols. The window
 remembers its frame and sidebar width, and opens from the menu's
 **Open Voice is Local** (⌘0), from History / Meetings / Settings… there, from the main
 menu's Go and Window menus (shown while the window is key), and from every "Setup…"
@@ -329,7 +330,21 @@ The live transcript (`LiveMeetingViewController`) replaces the list inside Meeti
 header with ‹ Meetings (also Escape) back to the list (the meeting stays selected), the
 meeting's name, and its state (a red dot and the clock while recording; orange while
 starting or paused; blue "Saving … — labelling speakers 42%" after the stop; green
-"Saved" once done), then the words. One paragraph per turn of a track: a small header
+"Saved" once done), then the words. Beside the state, while the app records the meeting
+(starting, recording, paused), are **Pause** / **Resume** (a pause or play symbol) and
+**Stop and Save…** (a red stop symbol with its title, only the symbol below 640 points so the
+name and clock keep their room; "Stop Recording" while the recorder starts); their tooltips
+and VoiceOver labels always name them. They follow the menu bar's Pause Recording / Resume
+Recording and Stop and Save… exactly (`MeetingRecordingControls`): Pause only while
+recording or waiting for audio, Resume while paused, Stop off once a stop was asked for or
+the recorder is stopping; and they take its path (`performMeetingRecordingCommand`, which
+checks the rules again): the same question, shown as a sheet on the main window (a modal
+alert from the menu bar), then `MeetingController.confirmStop()`. They hide once the meeting
+saves, and a meeting the `voiceislocal` tool records has none. They have no key equivalents
+(Escape is ‹ Meetings, Return the finished meeting's button; ⌘. would be Escape too); Tab
+with Full Keyboard Access and VoiceOver reach them. The meeting's menu in the list (a
+right-click on its row) offers the same Pause Recording / Resume Recording and Stop and
+Save… while it records. One paragraph per turn of a track: a small header
 (a blue dot for Mic, purple for System, the track, the session time) over its words.
 Words appear as they are spoken: the recorder writes the words live speech has heard but
 not finalized (volatile results) to the session's `live.json` at most every 200 ms
