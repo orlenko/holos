@@ -258,10 +258,10 @@ final class TurnTextView: NSTextView {
     var onEditWord: ((Int) -> Bool)?
     /// Words can be edited now (the list's `canEditWords`): the "Edit" actions are offered only then.
     var canEditWord: (() -> Bool)?
-    /// VoiceOver's "Split Turn Before “word”" (word `index` of the text), as the context menu's Split Turn Here: the
-    /// split there (nil where none is offered: a row's first word, edit mode). Chosen, it is checked then
-    /// (`onSplitChosen`), and a refusal says why.
-    var splitChoice: ((Int) -> SplitChoice?)?
+    /// VoiceOver's "Split Turn Before “word”", as the context menu's Split Turn Here: the split before each word of
+    /// the text, by index (nil where none is offered: a row's first word; empty in edit mode), asked once per listing
+    /// of the actions. Chosen, it is checked then (`onSplitChosen`), and a refusal says why.
+    var splitChoices: (() -> [SplitChoice?])?
     var onSplitChosen: ((SplitChoice) -> Void)?
     /// Edit mode: the pointer over the text is an I-beam.
     var editingWords = false {
@@ -378,6 +378,7 @@ final class TurnTextView: NSTextView {
     override func accessibilityCustomActions() -> [NSAccessibilityCustomAction]? {
         var actions: [NSAccessibilityCustomAction] = []
         var offeredFixes = Set<[String]>()
+        let splits = splitChoices?() ?? []
         for (index, start) in wordStarts.enumerated() {
             let word = index < wordTexts.count ? wordTexts[index].trimmingCharacters(in: .whitespacesAndNewlines) : ""
             let revertible = index < wordRevertible.count ? wordRevertible[index] : true
@@ -394,7 +395,7 @@ final class TurnTextView: NSTextView {
                     self?.onEditWord?(index) ?? false
                 })
             }
-            if let choice = splitChoice?(index) {
+            if index < splits.count, let choice = splits[index] {
                 actions.append(NSAccessibilityCustomAction(name: "Split Turn Before “\(word)”") { [weak self] in
                     guard let onSplitChosen = self?.onSplitChosen else { return false }
                     onSplitChosen(choice)
@@ -850,9 +851,9 @@ final class TurnListView: NSView, NSTableViewDataSource, NSTableViewDelegate {
                 return self.wordEdit != nil
             }
             // Not in edit mode, as the context menu (Return at a word's start splits there).
-            cell.bodyText.splitChoice = { [weak self, weak cell] index in
-                guard let self, let cell, !self.editingWords else { return nil }
-                return self.splitRequest(row: self.table.row(for: cell), index: index).map(SplitChoice.init)
+            cell.bodyText.splitChoices = { [weak self, weak cell] in
+                guard let self, let cell, !self.editingWords else { return [] }
+                return self.splitRequests(row: self.table.row(for: cell)).map { $0.map(SplitChoice.init) }
             }
             cell.bodyText.onSplitChosen = { [weak self] choice in self?.splitChosen(choice) }
             return cell

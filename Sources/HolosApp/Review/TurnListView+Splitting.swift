@@ -95,10 +95,22 @@ extension TurnListView {
     /// word twice, and the split is its turn's): nil on the row's first word, where there is nothing to split from.
     func splitRequest(row: Int, index: Int) -> ReviewSplitRequest? {
         guard row >= 0, row < paragraphs.count else { return nil }
+        return splitRequest(in: paragraphs[row], shown: paragraphWords(paragraphs[row]), index: index)
+    }
+
+    /// `splitRequest(row:index:)` for every word of `row`, its words worked out once (VoiceOver's actions list one per
+    /// word).
+    func splitRequests(row: Int) -> [ReviewSplitRequest?] {
+        guard row >= 0, row < paragraphs.count else { return [] }
         let shown = paragraphWords(paragraphs[row])
+        return shown.words.indices.map { splitRequest(in: paragraphs[row], shown: shown, index: $0) }
+    }
+
+    private func splitRequest(in paragraph: ReviewParagraph, shown: (words: [ReviewWord], turns: [Int]),
+                              index: Int) -> ReviewSplitRequest? {
         guard index > 0, index < shown.words.count, index < shown.turns.count else { return nil }
         return ReviewSplitRequest(word: shown.words[index].ref, after: false,
-                                  turnID: paragraphs[row].turns[shown.turns[index]].id,
+                                  turnID: paragraph.turns[shown.turns[index]].id,
                                   movesSeen: wordMoves.count, wordsEpoch: wordsEpoch, runID: runID)
     }
 

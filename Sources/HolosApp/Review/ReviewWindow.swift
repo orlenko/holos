@@ -941,10 +941,7 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, NSM
 
     /// Runs one change; its error shows in the footer until the next action.
     private func perform(_ change: @escaping @MainActor (ReviewSession) async throws -> Void) {
-        problem = nil
-        notice = nil
-        offeredTerm = nil
-        refreshFooter()
+        clearTransientMessages()
         let review = self.review
         Task { [weak self] in
             do {
@@ -957,6 +954,14 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, NSM
                 self.refreshFooter()
             }
         }
+    }
+
+    /// A change begins: the footer stops saying what happened to the one before (a problem, a notice, a term offered).
+    private func clearTransientMessages() {
+        problem = nil
+        notice = nil
+        offeredTerm = nil
+        refreshFooter()
     }
 
     /// Play/Pause (the bar's button, Space, K): pauses, or plays on from the play head (from the start once the
@@ -1207,6 +1212,9 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, NSM
             }
         case .breakBefore(let turnID):
             guard let turn = review.projection.turns.first(where: { $0.id == turnID }) else { return }
+            // Made here, not through `perform`: what the footer said of an earlier change (a split refused) goes, as
+            // it does for any change.
+            clearTransientMessages()
             paragraphBreaks.insert(before: turn, runID: review.projection.runID)
             refresh()
             turnList.select([turnID], scroll: true)

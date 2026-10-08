@@ -731,6 +731,18 @@ struct TurnListWordEditTests {
         }
         #expect(splitActions().map(\.name)
             == ["Split Turn Before “beta”", "Split Turn Before “gamma”", "Split Turn Before “delta”"])
+        // The row's words are worked out once per listing, not once per word (a long paragraph lists many).
+        let choices = text.splitChoices
+        var asked = 0
+        text.splitChoices = {
+            asked += 1
+            return choices?() ?? []
+        }
+        #expect(splitActions().count == 3 && asked == 1)
+        text.splitChoices = choices
+        // Each the same request the context menu makes at that word.
+        #expect(list.splitRequests(row: 0) == (0..<4).map { list.splitRequest(row: 0, index: $0) })
+        #expect(list.splitRequests(row: 0).first == .some(nil) && list.splitRequests(row: 9).isEmpty)
         let beta = try #require(splitActions().first)
         #expect(beta.handler?() == true)
         let betaRef = try #require(TurnListViewTests.words["T1"]?[1]).ref
