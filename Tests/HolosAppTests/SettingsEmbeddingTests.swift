@@ -8,8 +8,11 @@ import Testing
 /// the search field had no height of its own and, in some windows, took all the height and left the page none.
 @MainActor
 struct SettingsEmbeddingTests {
-    /// Window content sizes: the default, the minimum, and tall ones like the user's (900 × 950 points and larger).
-    nonisolated static let sizes = [NSSize(width: 1280, height: 800), NSSize(width: 900, height: 560),
+    /// Window content sizes: the default; the minimum with the sidebar shown (its 200 points, the divider, and the
+    /// section's 400), and narrow ones beside a call's window; tall ones like the user's (900 × 950 points and
+    /// larger). The minimum with the sidebar hidden (400 × 560) is in `MainWindowNarrowTests`.
+    nonisolated static let sizes = [NSSize(width: 1280, height: 800), NSSize(width: 601, height: 560),
+                        NSSize(width: 700, height: 560), NSSize(width: 900, height: 560),
                         NSSize(width: 900, height: 950), NSSize(width: 1000, height: 1300),
                         NSSize(width: 1600, height: 1900)]
 

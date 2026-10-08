@@ -97,13 +97,15 @@ final class RerunComparisonView: NSView {
     private var values: [String: NSTextField] = [:]
     private let copyButton = NSButton(title: "Copy New Result", target: nil, action: nil)
     private let updateButton = NSButton(title: "Update History…", target: nil, action: nil)
-    private let buttons: NSStackView
+    private let buttons: WrappingRowView
     private static let rows = ["Heard then", "Heard now", "Written then", "Written now", "Steps", "Different"]
 
     override init(frame frameRect: NSRect) {
-        buttons = NSStackView(views: [copyButton, updateButton])
+        buttons = WrappingRowView(views: [copyButton, updateButton])
         super.init(frame: frameRect)
         heading.font = .systemFont(ofSize: 12, weight: .semibold)
+        heading.lineBreakMode = .byTruncatingTail
+        heading.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         status.font = .systemFont(ofSize: 12)
         status.textColor = .secondaryLabelColor
         spinner.style = .spinning
@@ -134,7 +136,6 @@ final class RerunComparisonView: NSView {
             button.bezelStyle = .push
             button.controlSize = .small
         }
-        buttons.spacing = 8
         let top = NSStackView(views: [heading, spinner])
         top.spacing = 6
         let stack = NSStackView(views: [top, status, grid, buttons])
@@ -155,6 +156,7 @@ final class RerunComparisonView: NSView {
             stack.trailingAnchor.constraint(equalTo: box.trailingAnchor, constant: -12),
             stack.topAnchor.constraint(equalTo: box.topAnchor, constant: 10),
             stack.bottomAnchor.constraint(equalTo: box.bottomAnchor, constant: -10),
+            buttons.widthAnchor.constraint(equalTo: stack.widthAnchor),
         ])
         setAccessibilityElement(true)
         setAccessibilityRole(.group)
@@ -166,9 +168,10 @@ final class RerunComparisonView: NSView {
 
     override func layout() {
         super.layout()
-        let width = max(160, bounds.width - 24 - 110)
+        // Small floors, so a narrow window (the History detail at its narrowest) is not held wider.
+        let width = max(60, bounds.width - 24 - 110)
         for label in values.values where label.preferredMaxLayoutWidth != width { label.preferredMaxLayoutWidth = width }
-        let statusWidth = max(160, bounds.width - 24)
+        let statusWidth = max(80, bounds.width - 24)
         if status.preferredMaxLayoutWidth != statusWidth { status.preferredMaxLayoutWidth = statusWidth }
     }
 

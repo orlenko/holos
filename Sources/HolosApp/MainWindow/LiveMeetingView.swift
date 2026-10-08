@@ -29,6 +29,8 @@ struct LiveTextLearning {
 @MainActor
 final class LiveMeetingViewController: NSViewController, NSTextViewDelegate {
     static let refreshInterval: Duration = .milliseconds(250)
+    /// The meeting's name keeps this much of the header before the status gives way.
+    static let titleMinimumWidth: CGFloat = 80
 
     let sessionID: String
     private let onBack: () -> Void
@@ -87,16 +89,22 @@ final class LiveMeetingViewController: NSViewController, NSTextViewDelegate {
         backButton.toolTip = "Back to all meetings (Escape)"
         backButton.setAccessibilityLabel("Back to Meetings")
 
+        // In a narrow window (beside the call's) the name gives way first, down to `titleMinimumWidth`, then the
+        // status; the buttons keep their size.
         titleLabel.font = .systemFont(ofSize: 15, weight: .semibold)
         titleLabel.lineBreakMode = .byTruncatingTail
         titleLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        let titleMinimum = titleLabel.widthAnchor.constraint(greaterThanOrEqualToConstant: Self.titleMinimumWidth)
+        titleMinimum.priority = NSLayoutConstraint.Priority(NSLayoutConstraint.Priority.defaultLow.rawValue + 2)
+        titleMinimum.isActive = true
         statusDot.image = NSImage(systemSymbolName: "circle.fill", accessibilityDescription: nil)
         statusDot.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 9, weight: .regular)
         statusDot.setAccessibilityElement(false)
         statusLabel.font = .monospacedDigitSystemFont(ofSize: 12, weight: .regular)
         statusLabel.textColor = .secondaryLabelColor
         statusLabel.lineBreakMode = .byTruncatingTail
-        statusLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        statusLabel.setContentCompressionResistancePriority(
+            NSLayoutConstraint.Priority(NSLayoutConstraint.Priority.defaultLow.rawValue + 1), for: .horizontal)
         finishedButton.bezelStyle = .push
         finishedButton.target = self
         finishedButton.action = #selector(openFinished)
@@ -308,10 +316,22 @@ final class LiveMeetingViewController: NSViewController, NSTextViewDelegate {
 
     override func viewDidLayout() {
         super.viewDidLayout()
+        compactBackButton(view.bounds.width < Self.compactWidth)
         guard follow.scrollsToNewWords, !paragraphs.isEmpty else { return }
         updating = true
         textView.scrollToEndOfDocument(nil)
         updating = false
+    }
+
+    /// Narrower than this (the window beside a call's), the back button shows only its chevron, leaving the header to
+    /// the meeting's name and state; its tooltip and VoiceOver label still say where it goes.
+    static let compactWidth: CGFloat = 520
+
+    private func compactBackButton(_ compact: Bool) {
+        let title = compact ? "" : "Meetings"
+        guard backButton.title != title else { return }
+        backButton.title = title
+        backButton.imagePosition = compact ? .imageOnly : .imageLeading
     }
 
     // MARK: - Following
@@ -409,7 +429,7 @@ final class LiveMeetingViewController: NSViewController, NSTextViewDelegate {
             }
         }
         if !problems.isEmpty {
-            editStatus.stringValue = "Timed correction saved; " + problems.joined(separator: "; ")
+            showEditStatus("Timed correction saved; " + problems.joined(separator: "; "))
         }
     }
 
@@ -434,15 +454,21 @@ final class LiveMeetingViewController: NSViewController, NSTextViewDelegate {
         _ = save(hint, success: "Speaker name saved")
     }
 
+    /// The edit bar's status, whole in its tooltip when a narrow window cuts it short.
+    private func showEditStatus(_ text: String) {
+        editStatus.stringValue = text
+        editStatus.toolTip = text
+    }
+
     @discardableResult
     private func save(_ hint: LiveHint, success: String) -> [LiveHint]? {
         guard header.phase.capturing else {
-            editStatus.stringValue = "The meeting is no longer recording; this change was not saved."
+            showEditStatus("The meeting is no longer recording; this change was not saved.")
             return nil
         }
         do {
             let saved = try LiveHintStore.append(hint, session: reader.session)
-            editStatus.stringValue = success
+            showEditStatus(success)
             refresh()
             return saved.hints
         } catch {

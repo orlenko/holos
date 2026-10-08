@@ -50,6 +50,8 @@ final class MeetingsPane: NSViewController, NSTableViewDataSource, NSTableViewDe
     private let footer = NSTextField(labelWithString: "")
     private let statusLabel = NSTextField(labelWithString: "")
     private var buttons: [String: NSButton] = [:]
+    /// The rows of `buttons` under the list; they wrap when the section is narrow.
+    private var actionRows: [WrappingRowView] = []
     /// Every meeting, in list order (`MeetingOpenPolicy.ordered`).
     private var sessions: [SessionSummary] = []
     /// What the table shows: the meetings that match the search, under their day headers.
@@ -154,19 +156,19 @@ final class MeetingsPane: NSViewController, NSTableViewDataSource, NSTableViewDe
         emptyLabel.isHidden = true
         emptyLabel.translatesAutoresizingMaskIntoConstraints = false
 
-        let row = NSStackView(views: [
+        // Rows that wrap, so the section fits the window at its narrowest (beside a call's window).
+        let row = WrappingRowView(views: [
             button("Live Transcript", #selector(showLiveTranscript)),
             button("Review…", #selector(review)),
             button("Recover…", #selector(recover)), button("Label Speakers", #selector(labelSpeakers)),
             button("Show in Finder", #selector(showInFinder)), button("Open Transcript", #selector(openTranscript)),
             button("Save Transcript As…", #selector(saveTranscript)),
         ])
-        row.spacing = 8
-        let second = NSStackView(views: [
+        let second = WrappingRowView(views: [
             button("Delete Audio…", #selector(deleteAudio)), button("Delete Meeting…", #selector(deleteMeeting)),
             button("Clean Up", #selector(cleanUp)),
         ])
-        second.spacing = 8
+        actionRows = [row, second]
         statusLabel.textColor = .secondaryLabelColor
         statusLabel.font = .systemFont(ofSize: 12)
         statusLabel.lineBreakMode = .byTruncatingTail
@@ -189,6 +191,8 @@ final class MeetingsPane: NSViewController, NSTableViewDataSource, NSTableViewDe
             search.widthAnchor.constraint(equalTo: stack.widthAnchor),
             scroll.widthAnchor.constraint(equalTo: stack.widthAnchor),
             scroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 200),
+            row.widthAnchor.constraint(equalTo: stack.widthAnchor),
+            second.widthAnchor.constraint(equalTo: stack.widthAnchor),
             statusLabel.widthAnchor.constraint(lessThanOrEqualTo: stack.widthAnchor),
             emptyLabel.centerXAnchor.constraint(equalTo: scroll.centerXAnchor),
             emptyLabel.centerYAnchor.constraint(equalTo: scroll.centerYAnchor),
@@ -682,7 +686,11 @@ final class MeetingsPane: NSViewController, NSTableViewDataSource, NSTableViewDe
             ?? false
         let enabled = enabledActions(summary)
         for (title, action) in Self.buttonActions { buttons[title]?.isEnabled = enabled.contains(action) }
-        buttons["Clean Up"]?.isHidden = (summary?.derivedBytes ?? 0) == 0
+        let cleanUpHidden = (summary?.derivedBytes ?? 0) == 0
+        if buttons["Clean Up"]?.isHidden != cleanUpHidden {
+            buttons["Clean Up"]?.isHidden = cleanUpHidden
+            actionRows.forEach { $0.viewsChanged() }
+        }
         if let summary {
             var parts: [String] = []
             if let doing = running[summary.id] { parts.append(doing) }

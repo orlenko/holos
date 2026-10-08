@@ -90,13 +90,30 @@ struct MainStatus: Equatable {
 
 /// The one main window: a sidebar of sections and the selected section's content (NSSplitViewController). Sections
 /// are created on first use (`makeSection`) and kept, so each keeps its state while another is shown. The window
-/// remembers its frame; closing it keeps everything for the next opening.
+/// remembers its frame, the sidebar's width, and whether the sidebar is hidden; closing it keeps everything for the
+/// next opening. The sidebar can be hidden (View ▸ Hide Sidebar ⌃⌘S, the toolbar's sidebar button, or a drag of the
+/// divider), so the window can be narrow enough to sit beside a call's window.
 @MainActor
-final class MainWindowController: NSObject, NSWindowDelegate {
+final class MainWindowController: NSObject, NSWindowDelegate, NSToolbarDelegate {
+    /// The narrowest the section content gets: the whole window's width with the sidebar hidden.
+    static let contentMinimumWidth: CGFloat = 400
+    static let sidebarMinimumWidth: CGFloat = 200
+    static let minimumHeight: CGFloat = 560
+
+    /// Where the window keeps the sidebar's width (the split view's autosave) and whether it is hidden (a
+    /// UserDefaults key), for the next opening and the next launch.
+    struct Autosave {
+        var split: String
+        var sidebarHidden: String
+        static let standard = Autosave(split: "VoiceIsLocalMainSplit", sidebarHidden: "mainWindowSidebarHidden")
+    }
+
     /// Internal so tests can lay a section out in the real window without showing it (`select(_:)`).
     let window: PreviewingWindow
-    private let split = NSSplitViewController()
-    private let sidebar: SidebarViewController
+    private let split = MainSplitViewController()
+    /// Internal for tests, which hide and show the sidebar without the animation (`isCollapsed`).
+    let sidebarItem: NSSplitViewItem
+    let sidebar: SidebarViewController
     private let container = SectionContainerViewController()
     private let makeSection: (MainSection) -> NSViewController
     private var sections: [MainSection: NSViewController] = [:]
@@ -119,9 +136,11 @@ final class MainWindowController: NSObject, NSWindowDelegate {
         window.makeKeyAndOrderFront(nil)
     }
 
-    init(makeSection: @escaping (MainSection) -> NSViewController) {
+    /// `autosave`: where the sidebar's width and hidden state are kept (nil: not kept; tests).
+    init(autosave: Autosave? = .standard, makeSection: @escaping (MainSection) -> NSViewController) {
         self.makeSection = makeSection
         sidebar = SidebarViewController()
+        sidebarItem = NSSplitViewItem(sidebarWithViewController: sidebar)
         window = PreviewingWindow(contentRect: NSRect(x: 0, y: 0, width: 1280, height: 800),
                                   styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
                                   backing: .buffered, defer: true)
@@ -129,10 +148,14 @@ final class MainWindowController: NSObject, NSWindowDelegate {
         window.title = "Voice is Local"
         window.isReleasedWhenClosed = false
         window.delegate = self
-        window.contentMinSize = NSSize(width: 900, height: 560)
+        // The width with the sidebar hidden; with it shown, the split view's constraints (sidebar and content minimum
+        // widths) keep the window wider.
+        window.contentMinSize = NSSize(width: Self.contentMinimumWidth, height: Self.minimumHeight)
         window.toolbarStyle = .unified
         let toolbar = NSToolbar(identifier: "VoiceIsLocalMainToolbar")
         toolbar.displayMode = .iconOnly
+        toolbar.allowsUserCustomization = false
+        toolbar.delegate = self
         window.toolbar = toolbar
         window.collectionBehavior = [.moveToActiveSpace, .fullScreenPrimary]
         window.hidesOnDeactivate = false
@@ -147,15 +170,22 @@ final class MainWindowController: NSObject, NSWindowDelegate {
             }
         }
         sidebar.onSelectChapter = { [weak self] chapter in self?.showSettings(chapter: chapter) }
-        let sidebarItem = NSSplitViewItem(sidebarWithViewController: sidebar)
-        sidebarItem.minimumThickness = 200
+        sidebarItem.minimumThickness = Self.sidebarMinimumWidth
         sidebarItem.maximumThickness = 320
-        sidebarItem.canCollapse = false
+        sidebarItem.canCollapse = true
         let contentItem = NSSplitViewItem(viewController: container)
-        contentItem.minimumThickness = 600
+        contentItem.minimumThickness = Self.contentMinimumWidth
         split.addSplitViewItem(sidebarItem)
         split.addSplitViewItem(contentItem)
-        split.splitView.autosaveName = "VoiceIsLocalMainSplit"
+        split.splitView.autosaveName = autosave?.split
+        // Hidden as it was left (the split view's autosave is not relied on for that).
+        if let key = autosave?.sidebarHidden, UserDefaults.standard.bool(forKey: key) {
+            sidebarItem.isCollapsed = true
+        }
+        split.onSidebarCollapsedChange = { [weak self] collapsed in
+            if let key = autosave?.sidebarHidden { UserDefaults.standard.set(collapsed, forKey: key) }
+            if collapsed { self?.sidebarDidCollapse() }
+        }
         window.contentViewController = split
 
         // Frame: the saved one, else 1280 × 800 (or what fits the screen), centred.
@@ -256,6 +286,38 @@ final class MainWindowController: NSObject, NSWindowDelegate {
         }
     }
 
+    /// The sidebar is hidden.
+    var sidebarCollapsed: Bool { sidebarItem.isCollapsed }
+
+    /// The sidebar was hidden: the keyboard focus, if it was in the sidebar (or AppKit gave it to the window as the
+    /// sidebar went), goes to the section (its preferred view, else the window, from where Tab enters the section),
+    /// so it is never left in a view no one sees.
+    private func sidebarDidCollapse() {
+        let responder = window.firstResponder
+        let inSidebar = (responder as? NSView)?.isDescendant(of: sidebar.view) == true
+        guard inSidebar || responder === window else { return }
+        let preferred = current.flatMap { sectionContent($0)?.preferredFirstResponder }
+        if let preferred, !preferred.isHiddenOrHasHiddenAncestor, window.makeFirstResponder(preferred) { return }
+        window.makeFirstResponder(nil)
+    }
+
+    // MARK: - NSToolbarDelegate
+
+    /// The sidebar button over the sidebar (by the window's buttons when it is hidden), then the title.
+    func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
+        [.toggleSidebar, .sidebarTrackingSeparator]
+    }
+
+    func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
+        toolbarDefaultItemIdentifiers(toolbar)
+    }
+
+    /// Only AppKit's own items, which it makes itself.
+    func toolbar(_ toolbar: NSToolbar, itemForItemIdentifier itemIdentifier: NSToolbarItem.Identifier,
+                 willBeInsertedIntoToolbar flag: Bool) -> NSToolbarItem? {
+        nil
+    }
+
     // MARK: - NSWindowDelegate
 
     func windowWillClose(_ notification: Notification) {
@@ -281,6 +343,55 @@ enum QLPreviewPanelCloser {
         }
         panel.orderOut(nil)
         return true
+    }
+}
+
+// MARK: - Split view
+
+/// The main window's split view controller: AppKit's, which answers View ▸ Hide Sidebar / Show Sidebar and the
+/// toolbar's sidebar button (`toggleSidebar(_:)`), and tells when the sidebar was hidden or shown, by either of them
+/// or by a drag of the divider.
+@MainActor
+final class MainSplitViewController: NSSplitViewController {
+    var onSidebarCollapsedChange: ((Bool) -> Void)?
+    private var reportedCollapsed = false
+
+    /// Showing the sidebar in a window narrower than the sidebar and the section need: the window grows to the left
+    /// first, so the section keeps its place and its width (clamped to the screen).
+    override func toggleSidebar(_ sender: Any?) {
+        if let sidebar = splitViewItems.first, sidebar.isCollapsed { makeRoom(for: sidebar) }
+        super.toggleSidebar(sender)
+    }
+
+    private func makeRoom(for sidebar: NSSplitViewItem) {
+        guard let window = view.window, !window.styleMask.contains(.fullScreen) else { return }
+        let needed = splitViewItems.reduce(0) { $0 + $1.minimumThickness } + splitView.dividerThickness
+        let content = window.contentRect(forFrameRect: window.frame)
+        guard content.width < needed else { return }
+        var frame = window.frame
+        frame.size.width += needed - content.width
+        frame.origin.x -= needed - content.width
+        if let screen = window.screen?.visibleFrame {
+            frame.origin.x = min(max(frame.origin.x, screen.minX), max(screen.minX, screen.maxX - frame.width))
+        }
+        window.setFrame(frame, display: true)
+    }
+
+    override func splitViewDidResizeSubviews(_ notification: Notification) {
+        super.splitViewDidResizeSubviews(notification)
+        reportCollapse()
+    }
+
+    override func viewDidLayout() {
+        super.viewDidLayout()
+        reportCollapse()
+    }
+
+    private func reportCollapse() {
+        let collapsed = splitViewItems.first?.isCollapsed ?? false
+        guard collapsed != reportedCollapsed else { return }
+        reportedCollapsed = collapsed
+        onSidebarCollapsedChange?(collapsed)
     }
 }
 

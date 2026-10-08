@@ -28,6 +28,10 @@ final class HistoryPane: NSViewController, MainSectionContent, NSTableViewDataSo
         case record(DictationRecord)
     }
 
+    /// The list and the detail side by side fit the main window at its narrowest (beside a call's window).
+    static let listMinimumWidth: CGFloat = 150
+    static let detailMinimumWidth: CGFloat = 240
+
     private let actions: Actions
     private var records: [DictationRecord] = []
     private var retention = HistoryRetention.standard
@@ -131,7 +135,7 @@ final class HistoryPane: NSViewController, MainSectionContent, NSTableViewDataSo
             emptyLabel.centerXAnchor.constraint(equalTo: listPane.centerXAnchor),
             emptyLabel.centerYAnchor.constraint(equalTo: listPane.centerYAnchor),
             emptyLabel.widthAnchor.constraint(lessThanOrEqualTo: listPane.widthAnchor, constant: -40),
-            listPane.widthAnchor.constraint(greaterThanOrEqualToConstant: 280),
+            listPane.widthAnchor.constraint(greaterThanOrEqualToConstant: Self.listMinimumWidth),
         ])
 
         let split = NSSplitView()
@@ -141,7 +145,7 @@ final class HistoryPane: NSViewController, MainSectionContent, NSTableViewDataSo
         split.addArrangedSubview(listPane)
         split.addArrangedSubview(detail)
         split.setHoldingPriority(.defaultHigh, forSubviewAt: 0)
-        detail.widthAnchor.constraint(greaterThanOrEqualToConstant: 320).isActive = true
+        detail.widthAnchor.constraint(greaterThanOrEqualToConstant: Self.detailMinimumWidth).isActive = true
         let listWidth = listPane.widthAnchor.constraint(equalToConstant: 340)
         listWidth.priority = .defaultLow
         listWidth.isActive = true
@@ -599,6 +603,9 @@ final class HistoryDetailView: NSView {
     private let correctButton = NSButton(title: "Correct…", target: nil, action: nil)
     private let deleteButton = NSButton(title: "Delete…", target: nil, action: nil)
     private let feedback = NSTextField(labelWithString: "")
+    /// Copy, Copy As Heard, Correct…, Delete…, and the feedback, wrapping when the detail is narrow.
+    private lazy var actionRow = WrappingRowView(views: [copyButton, copyHeardButton, correctButton, deleteButton,
+                                                         feedback])
     private let content = NSStackView()
     private let empty = NSTextField(labelWithString: "")
     private var feedbackTask: Task<Void, Never>?
@@ -661,8 +668,14 @@ final class HistoryDetailView: NSView {
         deleteButton.toolTip = "Delete this dictation from History (⌫ in the list)"
         feedback.font = .systemFont(ofSize: 11)
         feedback.textColor = .secondaryLabelColor
-        let buttons = NSStackView(views: [copyButton, copyHeardButton, correctButton, deleteButton, feedback])
-        buttons.spacing = 8
+        // In a narrow window the labels truncate and the buttons wrap (`actionRow`).
+        for label in [subtitle, heardHeading, restHeading] {
+            label.lineBreakMode = .byTruncatingTail
+            label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        }
+        audioTime.lineBreakMode = .byTruncatingTail
+        audioTime.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        let buttons = actionRow
 
         playButton.target = self
         playButton.action = #selector(playPressed)
@@ -699,6 +712,7 @@ final class HistoryDetailView: NSView {
             content.addArrangedSubview(view)
         }
         comparison.widthAnchor.constraint(equalTo: content.widthAnchor).isActive = true
+        buttons.widthAnchor.constraint(equalTo: content.widthAnchor).isActive = true
         content.orientation = .vertical
         content.alignment = .leading
         content.spacing = 12
@@ -743,9 +757,10 @@ final class HistoryDetailView: NSView {
     /// Wrapping labels need the width they wrap at.
     override func layout() {
         super.layout()
-        let width = max(200, bounds.width - 48)
+        // Small floors, so the detail at its narrowest (`HistoryPane.detailMinimumWidth`) is not held wider.
+        let width = max(100, bounds.width - 48)
         for label in [text, heard, rest] + Array(values.values) {
-            let target = label === text || label === heard || label === rest ? width : max(120, width - 90)
+            let target = label === text || label === heard || label === rest ? width : max(60, width - 90)
             if label.preferredMaxLayoutWidth != target { label.preferredMaxLayoutWidth = target }
         }
     }
@@ -783,6 +798,7 @@ final class HistoryDetailView: NSView {
         heard.isHidden = !differs
         copyHeardButton.isHidden = !differs
         copyHeardButton.isEnabled = differs  // a hidden button must not answer ⇧⌘C either
+        actionRow.viewsChanged()
         if differs { heard.attributedStringValue = Self.highlighted(record.heard, comparedTo: record.text) }
         values["Result"]?.stringValue = record.resultText
         values["Language"]?.stringValue = DictationLanguage.name(of: record.language)
@@ -805,12 +821,14 @@ final class HistoryDetailView: NSView {
             playButton.image = NSImage(systemSymbolName: playing ? "pause.fill" : "play.fill",
                                        accessibilityDescription: nil)
             audioTime.stringValue = time
+            audioTime.toolTip = nil
             runAgainButton.isHidden = false
             runAgainButton.isEnabled = !running
         case .missing(let reason):
             playButton.isHidden = true
             playButton.isEnabled = false
             audioTime.stringValue = reason
+            audioTime.toolTip = reason  // whole when a narrow window cuts it short
             runAgainButton.isHidden = true
             runAgainButton.isEnabled = false  // a hidden button must not answer ⌘R either
         }
@@ -825,11 +843,13 @@ final class HistoryDetailView: NSView {
 
     func showFeedback(_ message: String) {
         feedback.stringValue = message
+        actionRow.viewsChanged()
         feedbackTask?.cancel()
         feedbackTask = Task { [weak self] in
             try? await Task.sleep(for: .seconds(3))
             guard !Task.isCancelled else { return }
             self?.feedback.stringValue = ""
+            self?.actionRow.viewsChanged()
         }
     }
 

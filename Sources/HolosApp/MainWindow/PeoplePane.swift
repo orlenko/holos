@@ -73,6 +73,7 @@ final class PeoplePane: NSViewController, NSTableViewDataSource, NSTableViewDele
 
         nameLabel.font = .boldSystemFont(ofSize: 15)
         nameLabel.lineBreakMode = .byTruncatingTail
+        nameLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         renameButton.target = self
         renameButton.action = #selector(renamePerson)
         renameButton.bezelStyle = .push
@@ -106,7 +107,12 @@ final class PeoplePane: NSViewController, NSTableViewDataSource, NSTableViewDele
         split.orientation = .horizontal
         split.alignment = .top
         split.spacing = 12
-        peopleScroll.widthAnchor.constraint(equalToConstant: 250).isActive = true
+        // 250 points, narrower when the window is (beside a call's window), down to what keeps names readable.
+        let peopleWidth = peopleScroll.widthAnchor.constraint(equalToConstant: 250)
+        peopleWidth.priority = NSLayoutConstraint.Priority(260)  // over the detail's hugging: the detail takes the rest
+        peopleWidth.isActive = true
+        peopleScroll.widthAnchor.constraint(greaterThanOrEqualToConstant: 130).isActive = true
+        peopleScroll.widthAnchor.constraint(lessThanOrEqualToConstant: 250).isActive = true
         peopleScroll.heightAnchor.constraint(equalTo: split.heightAnchor).isActive = true
         detail.heightAnchor.constraint(equalTo: split.heightAnchor).isActive = true
 
@@ -159,6 +165,9 @@ final class PeoplePane: NSViewController, NSTableViewDataSource, NSTableViewDele
         let scroll = NSScrollView()
         scroll.documentView = table
         scroll.hasVerticalScroller = true
+        // In a narrow window the columns scroll sideways rather than holding the window wider.
+        scroll.hasHorizontalScroller = true
+        scroll.autohidesScrollers = true
         scroll.borderType = .bezelBorder
         return scroll
     }

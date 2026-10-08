@@ -245,6 +245,11 @@ final class SettingsPane: NSViewController, MainSectionContent, NSSearchFieldDel
         noMatches.font = .systemFont(ofSize: 13)
         noMatches.textColor = .secondaryLabelColor
         noMatches.isHidden = true
+        for checkbox in [openAtLaunchToggle, fillerToggle, previewToggle, aiFixToggle, spokenCodeToggle,
+                         spokenCodeBackticksToggle, recordSystemAudioToggle, screenCaptureToggle,
+                         deepTranscriptionToggle, meetingSummariesToggle, historyAudioToggle] {
+            Self.wrapsTitle(checkbox)
+        }
         let stack = NSStackView(views: [
             noMatches, generalCard(), permissionsCard(), dictationCard(), meetingsCard(), readingCard(), historyCard(),
             assistantFooter(),
@@ -417,7 +422,10 @@ final class SettingsPane: NSViewController, MainSectionContent, NSSearchFieldDel
         opacitySlider.action = #selector(opacityChanged(_:))
         opacitySlider.isContinuous = true
         opacitySlider.setAccessibilityLabel("Dictation preview opacity")
-        opacitySlider.widthAnchor.constraint(equalToConstant: 200).isActive = true
+        let opacityWidth = opacitySlider.widthAnchor.constraint(equalToConstant: 200)
+        opacityWidth.priority = .defaultLow  // narrower in a narrow window
+        opacityWidth.isActive = true
+        opacitySlider.widthAnchor.constraint(greaterThanOrEqualToConstant: 80).isActive = true
         opacityValue.font = .monospacedDigitSystemFont(ofSize: 12, weight: .regular)
         opacityValue.textColor = .secondaryLabelColor
         let opacityRow = NSStackView(views: [NSTextField(labelWithString: "Preview opacity"), opacitySlider,
@@ -772,7 +780,14 @@ final class SettingsPane: NSViewController, MainSectionContent, NSSearchFieldDel
         let icon = NSImageView(image: NSImage(systemSymbolName: symbol, accessibilityDescription: nil) ?? NSImage())
         icon.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 17, weight: .regular)
         icon.contentTintColor = .secondaryLabelColor
-        control.widthAnchor.constraint(equalToConstant: 200).isActive = true
+        // 200 points; narrower in a narrow window, once the title column has given way (`labels`).
+        let controlWidth = control.widthAnchor.constraint(equalToConstant: 200)
+        controlWidth.priority = NSLayoutConstraint.Priority(270)
+        controlWidth.isActive = true
+        // A segmented control keeps room for its labels; a pop-up truncates its title.
+        control.widthAnchor.constraint(greaterThanOrEqualToConstant: control is NSSegmentedControl ? 160 : 140)
+            .isActive = true
+        control.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         grid.addRow(with: [icon, text, control])
         finishRow(in: grid)
         items.append(SearchItem(chapter: chapter, entry: SettingsSearch.Entry(title: title, caption: detailText,
@@ -780,28 +795,45 @@ final class SettingsPane: NSViewController, MainSectionContent, NSSearchFieldDel
                                 grid: grid, gridAnchor: icon, focus: focus ?? control))
     }
 
-    /// A row's bold title over its detail line.
+    /// A row's bold title over its detail line: `textWidth` wide, narrower in a narrow window (the detail wraps at
+    /// the width it gets; the title truncates last).
     private static func labels(_ title: String) -> (NSStackView, title: NSTextField, detail: NSTextField) {
         let titleLabel = NSTextField(labelWithString: title)
         titleLabel.font = .systemFont(ofSize: 13, weight: .semibold)
+        titleLabel.lineBreakMode = .byTruncatingTail
+        titleLabel.setContentCompressionResistancePriority(NSLayoutConstraint.Priority(300), for: .horizontal)
         let detail = NSTextField(wrappingLabelWithString: "")
         detail.font = .systemFont(ofSize: 12)
         detail.textColor = .secondaryLabelColor
-        detail.preferredMaxLayoutWidth = textWidth
         let text = NSStackView(views: [titleLabel, detail])
         text.orientation = .vertical
         text.alignment = .leading
         text.spacing = 2
-        text.widthAnchor.constraint(equalToConstant: textWidth).isActive = true
+        text.widthAnchor.constraint(lessThanOrEqualToConstant: textWidth).isActive = true
+        let preferred = text.widthAnchor.constraint(equalToConstant: textWidth)
+        preferred.priority = NSLayoutConstraint.Priority(260)
+        preferred.isActive = true
+        // Below this the control gives way first (`addControlRow`), so the detail never wraps a word a line.
+        let readable = text.widthAnchor.constraint(greaterThanOrEqualToConstant: 120)
+        readable.priority = NSLayoutConstraint.Priority(280)
+        readable.isActive = true
         return (text, titleLabel, detail)
     }
 
+    /// A note under a setting; it wraps at the width it gets (the card's).
     private static func note(_ text: String) -> NSTextField {
         let note = NSTextField(wrappingLabelWithString: text)
         note.font = .systemFont(ofSize: 11)
         note.textColor = .secondaryLabelColor
-        note.preferredMaxLayoutWidth = 560
         return note
+    }
+
+    /// A checkbox whose title wraps when the card is narrower than it (the window beside a call's window).
+    private static func wrapsTitle(_ checkbox: NSButton) {
+        checkbox.lineBreakMode = .byWordWrapping
+        checkbox.usesSingleLineMode = false
+        checkbox.cell?.wraps = true
+        checkbox.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
     }
 
     // MARK: - State
