@@ -657,6 +657,21 @@ written, the only form History keeps. Corrections knows which dictation it holds
 so learning from an older one never replaces what Correct Last Dictation opens, even
 when the two have the same text.
 
+The History section (`HistoryPane`) shows the list (a search field, "Search dictations",
+over the dictations grouped by day) and the selected dictation's detail side by side, split
+by a divider. The list starts at 40% of the section's width, from 220 to 360 points; the
+divider widens it until the detail is down to its minimum (240 points) and narrows it to
+200 points, where the search field's placeholder still reads whole. The width a drag leaves
+is kept for the next opening and launch (UserDefaults `VoiceIsLocalHistoryListWidth`);
+resizing the window is not a drag. Whenever the section's width changes the list gets its
+width again (the default for the new width, or the dragged one) as far as the detail keeps
+its minimum; it goes under 200 points, down to 150, only when the window is too narrow for
+both minimums (400 points with the sidebar hidden), and once the window widens again the
+list returns to its width rather than staying where the narrow window left it. The
+list's width is set by moving the divider (`setPosition`), never by a width constraint: a
+preferred-width constraint at the detail's holding priority left the split's layout
+ambiguous, and AppKit then refused to move the divider at all.
+
 ### Dictation audio and Run Again
 
 History can keep each recorded dictation's microphone audio, so a change to the corrections,
