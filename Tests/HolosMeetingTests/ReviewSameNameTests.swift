@@ -72,8 +72,8 @@ func speakersSavedWithOneNameShowAsOneAndRenameAsOne() async throws {
     // A rename of the one shown renames her whole, as one change.
     try await review.setName("Alicia", speakerID: "system:S1")
     let lines = try sameNameJournal(session)
-    #expect(lines.suffix(2).map(\.action) == [.merge(from: "user:A", into: "system:S1"),
-                                                .rename(speakerID: "system:S1", name: "Alicia")])
+    #expect(lines.suffix(2).map(\.action) == [.rename(speakerID: "system:S1", name: "Alicia"),
+                                                .merge(from: "user:A", into: "system:S1")])
     #expect(review.projection.speakers.map(\.name) == ["Alicia", "Speaker 2", "Speaker 3"])
     try await review.undo()
     #expect(review.projection.speakers == before.speakers)

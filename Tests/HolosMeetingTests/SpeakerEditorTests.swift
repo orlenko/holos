@@ -779,12 +779,12 @@ func appendWithoutJoining(_ actions: [SpeakerEditAction], session: URL) throws {
     #expect(bob.memberIDs == ["system:S1", "system:S3"])
     #expect(view.speakers.count == 2)
 
-    // Renaming him renames all of him: the joined speaker is merged in first, in the same batch.
+    // Renaming him renames all of him: the joined speaker is merged in, in the same batch.
     let result = try SpeakerEditor.apply([.rename(speakerID: bob.id, name: "Robert")], view: view, session: session,
                                          source: "cli", regenerateExports: false)
     let lines = try editorJournal(session)
-    #expect(lines.suffix(2).map(\.action) == [.merge(from: "system:S3", into: "system:S1"),
-                                                .rename(speakerID: "system:S1", name: "Robert")])
+    #expect(lines.suffix(2).map(\.action) == [.rename(speakerID: "system:S1", name: "Robert"),
+                                                .merge(from: "system:S3", into: "system:S1")])
     let after = try #require(result.snapshot.projection)
     #expect(after.speakers.map(\.name) == ["Robert", "Speaker 2"])
 }

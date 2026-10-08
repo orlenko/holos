@@ -214,8 +214,8 @@ public struct SpeakerProjection: Sendable, Equatable {
     ///    `shownTurns` shows them with a neighbour's speaker or leaves them out. `turns` and `speakers` are unchanged.
     ///
     /// Listed speakers: every speaker with at least one turn shown, plus speakers created by `newSpeaker`. Speakers
-    /// whose names match (`SameNameSpeakers`: names the user gave, the channel's, and links to one person, read from
-    /// the journal alone, never `profileNames`; never "Speaker N" or an automatic name) are listed as one, which
+    /// whose names match (`SameNameSpeakers`: the names the user gave and the channel's, read from the journal alone,
+    /// never links or `profileNames`; never "Speaker N" or an automatic name) are listed as one, which
     /// `turns` gives their turns to (`ProjectedSpeaker.memberIDs`); edits and fingerprints still see each stored
     /// speaker.
     /// `recognition` matches whose profileID is not in `profileNames` (forgotten people) are ignored.
@@ -953,7 +953,7 @@ extension SpeakerProjection {
                 describe($0, talk: talk[$0.id] ?? 0, turns: turnCounts[$0.id] ?? 0, memberIDs: nil, context: context)
             }
 
-            // Same name, same person (`SameNameSpeakers.joins`): stored speakers whose names (or people) match are
+            // Same name, same person (`SameNameSpeakers.joins`): stored speakers whose names match are
             // listed as the lowest-ordinal one, with all their turns. From the journal's state alone.
             let joins = SameNameSpeakers.joins(speakers, turns: turns)
             guard !joins.isEmpty else {

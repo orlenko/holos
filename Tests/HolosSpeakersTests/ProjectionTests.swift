@@ -527,18 +527,14 @@ private func compacted(_ raw: String) -> String {
     #expect(s2.suggestion == nil)
 }
 
-@Test func speakersLinkedToOneProfileAreListedAsOne() throws {
+@Test func speakersLinkedToOneProfileSuggestAMerge() {
+    // Links alone never join speakers (same name, same person is about the names the user gave): two speakers
+    // linked to one person with no name of their own stay two, and a merge is suggested.
     var journal = Journal(names: people)
     journal.append(.linkProfile(speakerID: "system:S3", profileID: "P-JIM"), id: "E1")
     journal.append(.linkProfile(speakerID: "system:S1", profileID: "P-JIM"), id: "E2")
-    // Both are called Jim, so they are one person (same name, same person): S1 has more talk time and stays.
-    let joined = try #require(speaker(journal.view, "system:S1"))
-    #expect(joined.memberIDs == ["system:S1", "system:S3"])
-    #expect(speaker(journal.view, "system:S3") == nil)
-    #expect(journal.view.mergeSuggestions.isEmpty)
+    #expect(journal.view.mergeSuggestions == [MergeSuggestion(speakerIDs: ["system:S1", "system:S3"], profileID: "P-JIM")])
     journal.append(.merge(from: "system:S3", into: "system:S1"), id: "E3")
-    #expect(speaker(journal.view, "system:S1")?.memberIDs == ["system:S1"])
-    #expect(speaker(journal.view, "system:S1")?.talkSeconds == joined.talkSeconds)
     #expect(journal.view.mergeSuggestions.isEmpty)
 }
 

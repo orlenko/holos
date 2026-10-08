@@ -50,80 +50,68 @@ public enum SameNameSpeakers {
         }
     }
 
-    /// What makes a stored speaker the same person as another, from the journal's state alone: its name (the name the
-    /// user gave, or the channel speaker's own, "Me"), as `name:<key>`, and the person it is linked to, as
-    /// `person:<ID>` (speakers linked to one person are that person, whatever names they show). Empty for a speaker
-    /// with neither: a "Speaker N", or one named only by an automatic match.
-    static func keys(of speaker: SpeakerProjection.SpeakerState) -> [String] {
-        var keys: [String] = []
+    /// The name a stored speaker is joined by, from the journal's state alone: the name the user gave (`rename`,
+    /// `newSpeaker`), else the channel speaker's own ("Me"), as `key` compares them. Nil for a speaker with neither:
+    /// a "Speaker N", or one named only by a link or an automatic match. Links never join anyone: the rule is about
+    /// names, and two speakers linked to one person under different names stay two.
+    static func nameKey(of speaker: SpeakerProjection.SpeakerState) -> String? {
         let name = speaker.explicitName ?? (speaker.isChannel ? speaker.channelName ?? "Me" : nil)
-        if let name, let key = key(name) { keys.append("name:" + key) }
-        if let profileID = speaker.profileID { keys.append("person:" + profileID) }
-        return keys
+        return name.flatMap(key)
     }
 
     /// Which stored speakers are shown as one, worked out on the journal's state alone (`speakers` and `turns` of
-    /// `SpeakerProjection.State`): never the people store, recognition, the echo mask or talk time, so every reader of
-    /// a meeting, and a change's preview and its save, join the same speakers into the same one.
+    /// `SpeakerProjection.State`): never links, the people store, recognition, the echo mask or talk time, so every
+    /// reader of a meeting, and a change's preview and its save, join the same speakers into the same one.
     struct Joins: Sendable, Equatable {
         /// Joined stored speaker → the one it is shown as.
         var into: [String: String] = [:]
         /// The one shown → every stored speaker it shows, itself first, then by (ordinal, ID).
         var members: [String: [String]] = [:]
-        /// The one shown → the person they are: its own link, else the first link of the others (in `members` order).
+        /// The one shown → the person they are (`person(of:in:)`).
         var person: [String: String] = [:]
-        /// Joined speakers (the one shown never is) linked to another person than `person`: their voice is that
-        /// person's, so their turns stay out of voice learning.
+        /// Joined speakers linked to another person than `person`: their voice is that person's, so their turns stay
+        /// out of voice learning.
         var otherPerson = Set<String>()
 
         var isEmpty: Bool { into.isEmpty }
     }
 
-    /// The stored speakers that share a key (`keys(of:)`), directly or through another, among those that hold a turn
-    /// with words or were created by `newSpeaker`. The one shown is the lowest (ordinal, ID): fixed by the journal
-    /// (a newer speaker never takes over an older one's place), whatever links, talk time or masks say.
+    /// The stored speakers with one name (`nameKey`), among those that hold a turn with words or were created by
+    /// `newSpeaker`. The one shown is the lowest (ordinal, ID): fixed by the journal (a newer speaker never takes over
+    /// an older one's place), whatever links, talk time or masks say.
     static func joins(_ speakers: [String: SpeakerProjection.SpeakerState],
                       turns: [SpeakerProjection.TurnState]) -> Joins {
         var holding = Set<String>()
         for turn in turns where !turn.spans.isEmpty { if let id = turn.speakerID { holding.insert(id) } }
-        let candidates = speakers.values
-            .filter { (holding.contains($0.id) || $0.isUserCreated) && !keys(of: $0).isEmpty }
-            .sorted { ($0.ordinal, $0.id) < ($1.ordinal, $1.id) }
-        var parent = Array(candidates.indices)
-        func root(_ index: Int) -> Int {
-            var index = index
-            while parent[index] != index {
-                parent[index] = parent[parent[index]]
-                index = parent[index]
-            }
-            return index
+        var byName: [String: [SpeakerProjection.SpeakerState]] = [:]
+        for speaker in speakers.values where holding.contains(speaker.id) || speaker.isUserCreated {
+            if let key = nameKey(of: speaker) { byName[key, default: []].append(speaker) }
         }
-        var owner: [String: Int] = [:]
-        for (index, speaker) in candidates.enumerated() {
-            for key in keys(of: speaker) {
-                if let other = owner[key] {
-                    let (a, b) = (root(other), root(index))
-                    if a != b { parent[max(a, b)] = min(a, b) }
-                } else {
-                    owner[key] = index
-                }
-            }
-        }
-        var groups: [Int: [SpeakerProjection.SpeakerState]] = [:]
-        for index in candidates.indices { groups[root(index), default: []].append(candidates[index]) }
         var joins = Joins()
-        for group in groups.values where group.count > 1 {
-            // `candidates` is in (ordinal, ID) order and so is each group: the first is the one shown.
-            let shown = group[0]
-            joins.members[shown.id] = group.map(\.id)
-            let person = shown.profileID ?? group.lazy.compactMap(\.profileID).first
+        for group in byName.values where group.count > 1 {
+            let ordered = group.sorted(by: precedes)
+            let shown = ordered[0]
+            joins.members[shown.id] = ordered.map(\.id)
+            let person = person(of: ordered, staying: shown)
             if let person { joins.person[shown.id] = person }
-            for member in group.dropFirst() {
+            for member in ordered.dropFirst() {
                 joins.into[member.id] = shown.id
                 if let linked = member.profileID, linked != person { joins.otherPerson.insert(member.id) }
             }
         }
         return joins
+    }
+
+    /// (ordinal, ID) order: the first of a group is the one that stays.
+    static func precedes(_ left: SpeakerProjection.SpeakerState, _ right: SpeakerProjection.SpeakerState) -> Bool {
+        (left.ordinal, left.id) < (right.ordinal, right.id)
+    }
+
+    /// The person a group of one name is: the link of the one that stays, else the link of the lowest (ordinal, ID)
+    /// other one that has a link. Nil when none has one.
+    static func person(of members: [SpeakerProjection.SpeakerState],
+                       staying: SpeakerProjection.SpeakerState) -> String? {
+        staying.profileID ?? members.sorted(by: precedes).lazy.compactMap(\.profileID).first
     }
 }
 
@@ -151,26 +139,18 @@ extension SpeakerProjection {
     /// name (docs/meeting-design.md §4.9, "Speakers with the same name"). `SpeakerEditor` works it out under the
     /// speaker lock on the current labels; Review shows its queued changes through it on the labels shown.
     ///
-    /// 1. An action on a speaker this view shows joined with others (`ProjectedSpeaker.memberIDs`: a journal saved
-    ///    before this rule, or names carried over by Label Again) — a rename, a link, a rejection, or a merge from or
-    ///    into it — first merges the joined speakers into the one listed, at the start of the batch (linking it to the
-    ///    group's person as shown, unless the batch links it), and names that one. Otherwise renaming "Alice" would
-    ///    rename only one of her stored speakers and leave the other showing as a second "Alice".
-    /// 2. After the batch, each speaker the batch named, linked, created, merged into, or gave turns to that is now
-    ///    joined with others gets them merged into one, at the end of the batch: renaming a speaker "Alice" when
-    ///    another one is called Alice, a new speaker named Alice, "This is me", or a confirmed suggestion all leave one
-    ///    speaker. The one that stays is the one the labels after the batch show them as: the lowest (ordinal, ID)
-    ///    (`SameNameSpeakers.joins`), so a preview and its save, and every reader, keep the same one.
+    /// The asked actions come first, naming the speaker listed for one shown joined with others (a merge of such a
+    /// speaker also moves the others it shows). Then, worked out once on the labels after them, each group the batch
+    /// touched becomes one stored speaker: the speakers of one name (`SameNameSpeakers.joins`), together with those a
+    /// speaker the batch named, linked, rejected or merged into was shown joined with (renaming "Alice" renames all
+    /// of her). The one that stays is the lowest (ordinal, ID). Its person is the one the batch itself linked any of
+    /// them to (the last such link), else its own link, else the link of the lowest (ordinal, ID) other one that has
+    /// a link. The lines added, at the end: `excludeFromEnrollment` of the turns of each of them linked to another
+    /// person (their voice is that person's), the merges, then a `linkProfile` of the one that stays when its link is
+    /// not that person.
     ///
-    /// The one that stays is linked to the newest person the batch linked any of them to, else keeps its own link,
-    /// else takes the first link of the others. A merged speaker (or the one that stays) linked to another person
-    /// than that has its turns kept out of voice learning first (`excludeFromEnrollment`), so no voice sample moves
-    /// from one person to another.
-    ///
-    /// The lines added are merges and exclusions at the start, and exclusions, merges and a link at the end
-    /// (`SpeakerEditor.saved(_:asAsked:)`). Every line is in the caller's batch, so one undo takes back the change
-    /// and everything added for it. A batch with a `revert` (an undo) is returned as it is, and so is one this view
-    /// refuses (the editor reports why).
+    /// Every line is in the caller's batch, so one undo takes back the change and everything added for it. A batch
+    /// with a `revert` (an undo) is returned as it is, and so is one this view refuses (the editor reports why).
     public func joiningSameNames(_ actions: [SpeakerEditAction]) -> [SpeakerEditAction] {
         joiningSameNamesMarked(actions).map(\.action)
     }
@@ -182,104 +162,108 @@ extension SpeakerProjection {
         guard !actions.contains(where: { if case .revert = $0 { true } else { false } }) else {
             return actions.map { ($0, false) }
         }
-        // Step 1: the joined groups the batch acts on, merged first, as the read side shows them.
+        // The asked actions, naming listed speakers; the shown groups they act on are kept together below.
         var shownAs: [String: ProjectedSpeaker] = [:]
         for speaker in speakers where speaker.memberIDs.count > 1 {
             for member in speaker.memberIDs { shownAs[member] = speaker }
         }
-        // The batch's own links of a listed speaker: it then says who that speaker is itself.
-        var linkedHere = Set<String>()
-        for action in actions {
-            if case .linkProfile(let speakerID, _) = action { linkedHere.insert(shownAs[speakerID]?.id ?? speakerID) }
-        }
-        var prefix: [SpeakerEditAction] = []
-        var opened = Set<String>()
+        var together: [[String]] = []
         func listed(_ speakerID: String) -> String {
             guard let speaker = shownAs[speakerID] else { return speakerID }
-            if opened.insert(speaker.id).inserted {
-                for member in speaker.memberIDs.dropFirst() {
-                    if let person = state.speakers[member]?.profileID, person != speaker.profileID {
-                        let turns = state.voiceTurns(of: member)
-                        if !turns.isEmpty { prefix.append(.excludeFromEnrollment(turnIDs: turns)) }
-                    }
-                    prefix.append(.merge(from: member, into: speaker.id))
-                }
-                // Shown with the person of the group (`SameNameSpeakers.Joins.person`), which a merge alone would
-                // drop when only a joined speaker was linked; unless the batch links it itself.
-                if let person = speaker.profileID, state.speakers[speaker.id]?.profileID != person,
-                   !linkedHere.contains(speaker.id) {
-                    prefix.append(.linkProfile(speakerID: speaker.id, profileID: person))
-                }
-            }
+            together.append(speaker.memberIDs)
             return speaker.id
         }
-        var body: [SpeakerEditAction] = []
+        var result: [(action: SpeakerEditAction, added: Bool)] = []
+        var linked: [(speakerID: String, profileID: String)] = []
+        var named = Set<String>()
         for action in actions {
             switch action {
             case .rename(let speakerID, let name):
-                body.append(.rename(speakerID: listed(speakerID), name: name))
+                let id = listed(speakerID)
+                named.insert(id)
+                result.append((.rename(speakerID: id, name: name), false))
             case .linkProfile(let speakerID, let profileID):
-                body.append(.linkProfile(speakerID: listed(speakerID), profileID: profileID))
+                let id = listed(speakerID)
+                named.insert(id)
+                linked.append((id, profileID))
+                result.append((.linkProfile(speakerID: id, profileID: profileID), false))
             case .rejectProfile(let speakerID, let profileID):
-                body.append(.rejectProfile(speakerID: listed(speakerID), profileID: profileID))
+                result.append((.rejectProfile(speakerID: listed(speakerID), profileID: profileID), false))
             case .merge(let from, let into):
-                let source = listed(from)
                 let target = listed(into)
-                // Two speakers already shown as one: the merges of step 1 made them one stored speaker too. A merge
-                // of a speaker into itself stays, so the editor refuses it as before.
-                if source != target || from == into { body.append(.merge(from: source, into: target)) }
-            case .reassignTurns, .splitTurn, .newSpeaker, .excludeFromEnrollment, .revert:
-                body.append(action)
-            }
-        }
-        var result = prefix.map { ($0, true) } + body.map { ($0, false) }
-
-        // Step 2: speakers the batch names that now share a name (or a person) with others.
-        var links: [(speakerID: String, profileID: String)] = []
-        var named = Set<String>()
-        for (action, _) in result {
-            switch action {
-            case .rename(let speakerID, _):
-                named.insert(speakerID)
-            case .linkProfile(let speakerID, let profileID):
-                named.insert(speakerID)
-                links.append((speakerID, profileID))
-            case .merge(_, let into):
-                named.insert(into)
+                named.insert(target)
+                guard let source = shownAs[from] else {
+                    result.append((.merge(from: from, into: target), false))
+                    continue
+                }
+                // A speaker shown joined with others moves with them.
+                if source.id == target, from != into {
+                    together.append(source.memberIDs)
+                    continue
+                }
+                result.append((.merge(from: source.id, into: target), false))
+                for member in source.memberIDs.dropFirst() where member != target {
+                    result.append((.merge(from: member, into: target), true))
+                }
             case .newSpeaker(let speakerID, _, _):
                 named.insert(speakerID)
+                result.append((action, false))
             case .reassignTurns(_, let to):
                 if let to { named.insert(to) }
-            case .rejectProfile, .splitTurn, .excludeFromEnrollment, .revert:
-                break
+                result.append((action, false))
+            case .splitTurn, .excludeFromEnrollment, .revert:
+                result.append((action, false))
             }
         }
+
+        // The labels after them.
         var after = self
         for (action, _) in result {
             let id = UUID().uuidString
             after = after.applying(action, editID: id)
-            if after.staleEdits.contains(where: { $0.editID == id }) { return result.map { ($0.0, $0.1) } }
+            if after.staleEdits.contains(where: { $0.editID == id }) { return result }
         }
-        for group in after.speakers where group.memberIDs.count > 1 && !named.isDisjoint(with: group.memberIDs) {
-            // Who stays: the one the labels after the batch show them as, the lowest (ordinal, ID) of them
-            // (`SameNameSpeakers.joins`), the same on any view, for a preview and its save alike.
-            let members = group.memberIDs
-            let stays = group.id
-            // The person they are: the newest the batch linked any of them to, else the one that stays is linked to,
-            // else the first another one is linked to.
-            let current = after.state.speakers[stays]?.profileID
-            let kept = links.last { members.contains($0.speakerID) }?.profileID
-                ?? current ?? members.lazy.compactMap { after.state.speakers[$0]?.profileID }.first
-            // Linked to another person: its voice is that person's, so its turns stay out of voice learning.
+        let stored = after.state.speakers
+        // Groups: the speakers of one name, and the shown groups the batch acted on.
+        let joins = SameNameSpeakers.joins(stored, turns: after.state.turns)
+        var parent: [String: String] = [:]
+        func root(_ id: String) -> String {
+            var id = id
+            while let up = parent[id], up != id { id = up }
+            return id
+        }
+        func unite(_ ids: [String]) {
+            let present = ids.filter { stored[$0] != nil }
+            guard let first = present.first else { return }
+            for id in present { if parent[id] == nil { parent[id] = id } }
+            for id in present.dropFirst() {
+                let (a, b) = (root(first), root(id))
+                if a != b { parent[b] = a }
+            }
+        }
+        for members in joins.members.values { unite(members) }
+        for members in together { unite(members) }
+        var groups: [String: [SpeakerState]] = [:]
+        for id in parent.keys { if let speaker = stored[id] { groups[root(id), default: []].append(speaker) } }
+        let touched = named.union(together.joined())
+        for members in groups.values.map({ $0.sorted(by: SameNameSpeakers.precedes) })
+            .sorted(by: { SameNameSpeakers.precedes($0[0], $1[0]) })
+        where members.count > 1 && members.contains(where: { touched.contains($0.id) }) {
+            let stays = members[0]
+            let ids = Set(members.map(\.id))
+            let person = linked.last { ids.contains($0.speakerID) }?.profileID
+                ?? SameNameSpeakers.person(of: members, staying: stays)
             for member in members {
-                guard let person = after.state.speakers[member]?.profileID, person != kept else { continue }
-                let turns = after.state.voiceTurns(of: member)
+                guard let link = member.profileID, link != person else { continue }
+                let turns = after.state.voiceTurns(of: member.id)
                 if !turns.isEmpty { result.append((.excludeFromEnrollment(turnIDs: turns), true)) }
             }
-            result += members.filter { $0 != stays }.map { (.merge(from: $0, into: stays), true) }
-            if let kept, kept != current { result.append((.linkProfile(speakerID: stays, profileID: kept), true)) }
+            for member in members.dropFirst() { result.append((.merge(from: member.id, into: stays.id), true)) }
+            if let person, person != stays.profileID {
+                result.append((.linkProfile(speakerID: stays.id, profileID: person), true))
+            }
         }
-        return result.map { ($0.0, $0.1) }
+        return result
     }
 }
 
