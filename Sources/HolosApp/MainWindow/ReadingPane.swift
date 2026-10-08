@@ -97,7 +97,7 @@ final class ReadingPane: NSViewController, MainSectionContent, NSTableViewDataSo
         let voiceWidth = voicePopup.widthAnchor.constraint(equalToConstant: 340)
         voiceWidth.priority = .defaultLow
         voiceWidth.isActive = true
-        voicePopup.widthAnchor.constraint(greaterThanOrEqualToConstant: 180).isActive = true
+        voicePopup.widthAnchor.constraint(greaterThanOrEqualToConstant: 140).isActive = true
         voicePopup.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         previewButton.target = self
         previewButton.action = #selector(togglePreview)
@@ -108,7 +108,11 @@ final class ReadingPane: NSViewController, MainSectionContent, NSTableViewDataSo
         speedSlider.target = self
         speedSlider.action = #selector(speedChanged)
         speedSlider.setAccessibilityLabel("Speed")
-        speedSlider.widthAnchor.constraint(equalToConstant: 150).isActive = true
+        // 150 points, narrower in a narrow window so Make Audio stays in the card.
+        let speedWidth = speedSlider.widthAnchor.constraint(equalToConstant: 150)
+        speedWidth.priority = .defaultLow
+        speedWidth.isActive = true
+        speedSlider.widthAnchor.constraint(greaterThanOrEqualToConstant: 70).isActive = true
         speedLabel.font = .monospacedDigitSystemFont(ofSize: 12, weight: .regular)
         speedLabel.textColor = .secondaryLabelColor
         makeButton.target = self
@@ -123,8 +127,8 @@ final class ReadingPane: NSViewController, MainSectionContent, NSTableViewDataSo
         let sourceRow = NSStackView(views: [field, chooseButton])
         sourceRow.spacing = 8
         field.setContentHuggingPriority(.defaultLow, for: .horizontal)
-        // Two rows, so everything fits the section's narrowest width (600 pt, the window at 900 pt): the voice with
-        // Preview, then the speed with Make Audio at the end.
+        // Two rows, so everything fits the section's narrowest width (400 pt, the window with its sidebar hidden):
+        // the voice with Preview, then the speed with Make Audio at the end.
         let voiceLabel = NSTextField(labelWithString: "Voice")
         let speedTitle = NSTextField(labelWithString: "Speed")
         for label in [voiceLabel, speedTitle] {
@@ -796,6 +800,15 @@ final class ReadingRowView: NSTableCellView {
     private let revealButton = NSButton(title: "Show in Finder", target: nil, action: nil)
     private let deleteButton = NSButton(title: "Delete…", target: nil, action: nil)
     private var primaryAction: Action = .play
+    /// Share… and Show in Finder show only their symbols, in a row narrower than `compactWidth`.
+    private var compact = false
+    /// The playback position has something to show (the reading is loaded in the player).
+    private var showsPosition = false
+    /// Narrower than this (the window beside a call's), Share… and Show in Finder are symbols and the playback
+    /// position is left out, so the title keeps some room.
+    static let compactWidth: CGFloat = 520
+    private static let compactSymbols: [String: String] = ["Share…": "square.and.arrow.up",
+                                                           "Show in Finder": "folder"]
 
     var shareAnchor: NSView { shareButton }
 
@@ -825,6 +838,7 @@ final class ReadingRowView: NSTableCellView {
             button.controlSize = .small
         }
         shareButton.toolTip = "Send the audio file with AirDrop, Messages, Mail… (⇧⌘S)"
+        revealButton.toolTip = "Show the audio file in Finder"
         deleteButton.toolTip = "Delete this reading and its audio file (⌫)"
         textField = title
 
@@ -858,6 +872,32 @@ final class ReadingRowView: NSTableCellView {
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
 
+    override func layout() {
+        super.layout()
+        setCompact(bounds.width < Self.compactWidth)
+    }
+
+    private func setCompact(_ compact: Bool) {
+        guard compact != self.compact else { return }
+        self.compact = compact
+        position.isHidden = !showsPosition || compact
+        for button in [shareButton, revealButton] {
+            let name = fullTitle(button)
+            button.title = compact ? "" : name
+            button.image = compact
+                ? Self.compactSymbols[name].flatMap { NSImage(systemSymbolName: $0, accessibilityDescription: name) }
+                : nil
+            button.imagePosition = compact ? .imageOnly : .noImage
+        }
+    }
+
+    /// A button's title, also while it shows only its symbol.
+    private func fullTitle(_ button: NSButton) -> String {
+        if button === shareButton { return "Share…" }
+        if button === revealButton { return "Show in Finder" }
+        return button.title
+    }
+
     func show(_ entry: ReadingEntry, activity: ReadingController.Activity?, fileProblem: ReadingController.FileProblem?,
               size: Int64?, playback: Playback?) {
         entryID = entry.id
@@ -865,7 +905,7 @@ final class ReadingRowView: NSTableCellView {
         source.stringValue = entry.source.label
         status.textColor = .secondaryLabelColor
         progress.isHidden = true
-        position.isHidden = true
+        showsPosition = false
         var buttons: [NSButton] = []
         switch entry.state {
         case .queued:
@@ -917,7 +957,7 @@ final class ReadingRowView: NSTableCellView {
             let playing = playback?.playing ?? false
             setPrimary(playing ? "❚❚ Pause" : "▶ Play", .play, help: "Play or pause here (Space)")
             if let current = playback?.current, let duration = playback?.duration {
-                position.isHidden = false
+                showsPosition = true
                 position.stringValue = "\(ReadingLibrary.clockText(current)) / \(ReadingLibrary.clockText(duration))"
             }
             buttons = [primary, shareButton, revealButton, deleteButton]
@@ -936,10 +976,11 @@ final class ReadingRowView: NSTableCellView {
         for button in [primary, shareButton, revealButton, deleteButton] {
             button.isHidden = !buttons.contains(button)
         }
+        position.isHidden = !showsPosition || compact
         status.toolTip = status.stringValue
         let label = [entry.title, entry.source.label, status.stringValue].joined(separator: ", ")
         setAccessibilityLabel(label)
-        for button in buttons { button.setAccessibilityLabel("\(button.title) — \(entry.title)") }
+        for button in buttons { button.setAccessibilityLabel("\(fullTitle(button)) — \(entry.title)") }
     }
 
     private func setPrimary(_ title: String, _ action: Action, help: String) {

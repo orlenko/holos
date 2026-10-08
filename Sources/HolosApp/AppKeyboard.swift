@@ -39,7 +39,8 @@ enum AppKeyboard {
         return textView.isEditable
     }
 
-    private static func mainMenu() -> NSMenu {
+    /// Internal so tests can check its key equivalents.
+    static func mainMenu() -> NSMenu {
         let main = NSMenu()
         func submenu(_ title: String, _ items: [NSMenuItem]) {
             let menu = NSMenu(title: title)
@@ -73,9 +74,12 @@ enum AppKeyboard {
             .separator(),
             item("Find…", Selector(("focusSearch:")), "f"),
         ])
-        // The key review window answers these (ReviewWindow, its delegate) and names them as they apply to it; with no
-        // review window in front they are disabled.
+        // The main window's split view controller answers Hide Sidebar / Show Sidebar and names it as the sidebar is
+        // (NSSplitViewController). The key review window answers the others (ReviewWindow, its delegate) and names
+        // them as they apply to it; with no review window in front they are disabled.
         submenu("View", [
+            item("Hide Sidebar", #selector(NSSplitViewController.toggleSidebar(_:)), "s", [.command, .control]),
+            .separator(),
             item(ReviewWindow.speakersTitle(hidden: false), Selector(("toggleSpeakers:")), "s", [.command, .option]),
             item("Show Short Interjections", Selector(("toggleShortInterjections:")), ""),
         ])

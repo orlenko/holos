@@ -201,8 +201,19 @@ native source-list sidebar and the selected section's content. Sections: Dictati
 History (⌘1), Corrections (⌘2); Meetings › Meetings (⌘3), People (⌘4); Listen › Reading
 (⌘5, see "Reading section"); Settings (⌘,). A status card at
 the sidebar's bottom shows the dictation state and message, independently of any
-meeting recording. The window is 1280 × 800 by default
-(900 × 560 at least), remembers its frame and sidebar width, and opens from the menu's
+meeting recording. The sidebar can be hidden, so the window fits beside a call's window
+(Teams, Zoom) during a meeting: View › **Hide Sidebar** / **Show Sidebar** (⌃⌘S), the
+toolbar's sidebar button, or a drag of the divider to the edge. Hidden, the section takes the
+whole window, ⌘1–⌘5, ⌘, and the menus still choose sections, and the keyboard focus moves
+from the sidebar to the section; it stays hidden for the next opening and launch
+(UserDefaults `mainWindowSidebarHidden`). Showing it in a window too narrow for it widens
+the window to the left. The window is 1280 × 800 by default and at least 560 points high;
+its width goes down to 400 points with the sidebar hidden (the section's minimum) and to
+601 with it shown (the sidebar's 200, the divider, and the section's 400). Every section
+fits 400 points: rows of buttons wrap (Meetings, History), labels truncate or wrap,
+checkbox titles in Settings wrap, People's tables scroll sideways, the live transcript's
+‹ Meetings and a reading's Share… and Show in Finder show only their symbols. The window
+remembers its frame and sidebar width, and opens from the menu's
 **Open Voice is Local** (⌘0), from History / Meetings / Settings… there, from the main
 menu's Go and Window menus (shown while the window is key), and from every "Setup…"
 path (the launch with dictation off, a refused enable, the assistant's "Open Settings").
