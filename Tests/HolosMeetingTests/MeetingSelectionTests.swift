@@ -113,6 +113,14 @@ private let rows: [String?] = [nil, "A", "B", nil, "C", "D", nil, "E"]
     #expect(plan.confirmationTitle == "Delete the audio of 2 meetings?")
     #expect(plan.skipText == "2 of the selected meetings are skipped: 2 with no audio to delete.")
     #expect(plan.confirmationButton == "Delete Audio")
+
+    // A damaged meeting may still have its audio: it is skipped as damaged, not as having none.
+    let damaged = MeetingBulkPlan(
+        action: .deleteAudio, selected: [meeting("A"), meeting("X", state: .damaged)],
+        allowed: { MeetingActionPolicy.enabled($0, inUse: false, hasExport: false).contains(.deleteAudio) },
+        inUse: { _ in false })
+    #expect(damaged.skipped.map(\.reason) == [.damaged])
+    #expect(damaged.skipText == "1 of the selected meetings is skipped: 1 with a damaged record.")
 }
 
 @Test func oneMeetingLeftIsNamed() {

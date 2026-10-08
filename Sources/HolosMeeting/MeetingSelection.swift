@@ -66,6 +66,8 @@ public struct MeetingBulkPlan: Sendable, Equatable {
         case inUse
         /// Another process (a `voiceislocal` command in Terminal) holds it.
         case heldElsewhere
+        /// Its manifest cannot be read (`damaged`): the deletion of its audio needs it, though the audio may be there.
+        case damaged
         /// Delete Audio: its audio is already deleted, or it has none.
         case noAudio
         /// Its record cannot be read well enough to delete it.
@@ -78,6 +80,7 @@ public struct MeetingBulkPlan: Sendable, Equatable {
             case .saving: "\(count) being saved"
             case .inUse: "\(count) that Voice is Local is working on"
             case .heldElsewhere: "\(count) in use by another Voice is Local command"
+            case .damaged: "\(count) with a damaged record"
             case .noAudio: "\(count) with no audio to delete"
             case .cannotDelete: "\(count) that cannot be deleted now"
             }
@@ -121,6 +124,8 @@ public struct MeetingBulkPlan: Sendable, Equatable {
         if summary.state == .processing || summary.liveness == .processing { return .saving }
         if inUse { return .inUse }
         if MeetingActionPolicy.isLive(summary) { return .heldElsewhere }
+        // `deletesAudio` is false for a damaged meeting too, whose audio may still be there.
+        if summary.state == .damaged { return .damaged }
         if action == .deleteAudio, !MeetingActionPolicy.deletesAudio(summary) { return .noAudio }
         return .cannotDelete
     }
