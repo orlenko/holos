@@ -36,11 +36,20 @@ public struct AcousticEchoMask: Sendable, Equatable {
     public static let playbackLeadSeconds = 0.064
     /// and by this much after.
     public static let playbackTailSeconds = 0.2
+    /// A stretch is kept only when at least this many of its local frames (48 ms: the shortest local run the
+    /// analysis's 5-frame smoothing leaves)
+    public static let playbackEvidenceFrames = 3
+    /// have the predicted echo more than this many decibels below the microphone (three quarters of the sound or
+    /// more is not the call). Local frames where the prediction is near the microphone's level, or above it, are
+    /// the echo cancelled poorly: on real calls they come scattered through the call's speech in runs of a few
+    /// frames, and alone they would open the microphone onto the echo.
+    public static let playbackEvidenceDB = -6.0
 
     /// `FrameClass` raw values, one per frame.
     public let classes: [UInt8]
     /// The predicted echo level relative to the microphone (dB(echo) − dB(mic)), in `levelStepDB` steps, clamped to
-    /// the Int8 range; only words without active frames use it.
+    /// the Int8 range (no predicted echo or no microphone sound: the lowest). Words without active frames use it, and
+    /// review playback (`localSpeechIntervals`).
     public let echoLevels: [Int8]
 
     /// Nil when the counts differ or a class is not a `FrameClass`.
@@ -117,26 +126,33 @@ public struct AcousticEchoMask: Sendable, Equatable {
     }
 
     /// Session-time intervals where the microphone has speech of its own, for review playback: runs of local frames
-    /// (each frame covering one hop around its centre), joined across gaps shorter than `playbackMergeGapSeconds`,
-    /// then widened by `playbackLeadSeconds` before (not below 0) and `playbackTailSeconds` after, and joined again
-    /// where they meet. In start order, disjoint.
+    /// (each frame covering one hop around its centre), joined across gaps shorter than `playbackMergeGapSeconds`
+    /// into stretches; a stretch is kept only when at least `playbackEvidenceFrames` of its local frames have the
+    /// predicted echo below `playbackEvidenceDB` (a kept stretch keeps all its runs, so speech over the call keeps
+    /// its quieter syllables and its first one). Kept stretches are widened by `playbackLeadSeconds` before (not
+    /// below 0) and `playbackTailSeconds` after, and joined again where they meet. In start order, disjoint.
     public func localSpeechIntervals() -> [Interval] {
-        var runs: [Interval] = []
+        var stretches: [(interval: Interval, evidence: Int)] = []
         var frame = 0
         while frame < frameCount {
             guard frameClass(frame) == .local else { frame += 1; continue }
             let first = frame
-            while frame < frameCount, frameClass(frame) == .local { frame += 1 }
+            var evidence = 0
+            while frame < frameCount, frameClass(frame) == .local {
+                if Double(echoLevels[frame]) * Self.levelStepDB < Self.playbackEvidenceDB { evidence += 1 }
+                frame += 1
+            }
             let start = Self.centre(ofFrame: first) - Self.hopSeconds / 2
             let end = Self.centre(ofFrame: frame - 1) + Self.hopSeconds / 2
-            if let last = runs.last, start - last.end < Self.playbackMergeGapSeconds {
-                runs[runs.count - 1].end = end
+            if let last = stretches.last, start - last.interval.end < Self.playbackMergeGapSeconds {
+                stretches[stretches.count - 1].interval.end = end
+                stretches[stretches.count - 1].evidence += evidence
             } else {
-                runs.append(Interval(start: start, end: end))
+                stretches.append((Interval(start: start, end: end), evidence))
             }
         }
         var padded: [Interval] = []
-        for run in runs {
+        for (run, evidence) in stretches where evidence >= Self.playbackEvidenceFrames {
             let interval = Interval(start: max(0, run.start - Self.playbackLeadSeconds),
                                     end: run.end + Self.playbackTailSeconds)
             if let last = padded.last, interval.start <= last.end {

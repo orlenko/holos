@@ -257,8 +257,8 @@ func compositionLeavesUnreadableChunksSilent() async throws {
 
 // MARK: - Echo-free playback
 
-/// An echo mask of `seconds` of 16 ms frames, echo everywhere but local speech in `local`, saved for `manifest` with
-/// `verdict` (no frames unless `echo`).
+/// An echo mask of `seconds` of 16 ms frames, echo everywhere but local speech in `local` (the predicted echo 20 dB
+/// below the microphone there, 0 dB elsewhere), saved for `manifest` with `verdict` (no frames unless `echo`).
 private func compositionSaveMask(_ session: URL, manifest: SessionManifest, seconds: Double,
                                  local: ClosedRange<Double>, verdict: EchoAnalysis.Verdict = .echo) throws
     -> AcousticEchoMask? {
@@ -266,7 +266,7 @@ private func compositionSaveMask(_ session: URL, manifest: SessionManifest, seco
     let classes = (0..<count).map { frame -> UInt8 in
         local.contains(AcousticEchoMask.centre(ofFrame: frame)) ? 2 : 1
     }
-    let mask = verdict == .echo ? AcousticEchoMask(classes: classes, echoLevels: classes.map { _ in 0 }) : nil
+    let mask = verdict == .echo ? AcousticEchoMask(classes: classes, echoLevels: classes.map { $0 == 2 ? -40 : 0 }) : nil
     let frames = mask.map { mask in
         EchoMaskRecord.Frames(count: count, hopSeconds: AcousticEchoMask.hopSeconds,
                               firstCentreSeconds: AcousticEchoMask.firstCentreSeconds,
