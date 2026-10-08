@@ -192,9 +192,13 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, NSM
     /// What the last action did, when it says so (a term added to the word list), until the next action.
     private var notice: String?
     private var query = ""
-    /// Where "Split Turn" broke a paragraph without splitting a turn: the window's view only, never saved; kept with
-    /// its turn on its run and through this window's word-fix reverts, dropped by any other new run (a relabel).
+    /// Where "Split Turn" broke a paragraph without splitting a turn, and where a row was joined to the row before
+    /// it: the window's view only, never saved; kept with its turn on its run and through this window's word-fix
+    /// reverts, dropped by any other new run (a relabel).
     private var paragraphBreaks = ReviewParagraphBreaks()
+    /// Every row as grouped, before a search filters them: a join finds the row before or after the one it is asked
+    /// at here, never a row the search left next to it.
+    private var allParagraphs: [ReviewParagraph] = []
     private var positioned = false
     /// The player state the sidebar and the footer last showed.
     private var shownPlayerState = StateChangeTracker<ReviewPlayer.State>()
@@ -596,6 +600,15 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, NSM
             self?.problem = why
             self?.refreshFooter()
         }
+        // Backspace at a row's start in edit mode (forward Delete at its end), or Join With Previous Turn.
+        turnList.resolveJoin = { [weak self] request in
+            self?.resolveJoin(request) ?? .refused("The review is closing.")
+        }
+        turnList.onJoin = { [weak self] join, request in self?.applyJoin(join, request: request) }
+        turnList.onJoinRefused = { [weak self] why in
+            self?.problem = why
+            self?.refreshFooter()
+        }
         // The review turned read-only with a field open (an earlier edit's labels could not be reread, say): its edit
         // is queued all the same, and waits for the reread as the changes before it do.
         turnList.onKeepWordEdit = { [weak self] words, text, movesSeen, wordsEpoch in
@@ -651,7 +664,8 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, NSM
             review.keepsTurns(of: old, in: runID)
         })
         // The turns as shown: short interjections attached to a neighbour or left out (§5.10).
-        var paragraphs = ReviewParagraphs.group(review.shownTurns, breaks: breaks)
+        var paragraphs = ReviewParagraphs.group(review.shownTurns, breaks: breaks, joins: paragraphBreaks.joins)
+        allParagraphs = paragraphs
         // A search shows the paragraphs with a matching turn, whole.
         if !query.isEmpty {
             let matching = Set(review.turns(matching: query).map(\.id))
@@ -1362,6 +1376,80 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, NSM
             return .split(.breakBefore(turnID: paragraph.turns[index + 1].id))
         case nil:
             return .refused("Those words are no longer shown; try the split again.")
+        }
+    }
+
+    // MARK: - Joining rows
+
+    /// What a join asked at a row's edge makes now (`TurnListView.resolveJoin`): checked as a split is (the review
+    /// editable, the same labels run), then found among every row grouped (`joinResolution`).
+    private func resolveJoin(_ request: ReviewJoinRequest) -> ReviewJoinResolution {
+        // Held read-only (a maintenance command, labels that could not be reread): no join, as no split.
+        guard review.isEditable else {
+            return .refused(review.pauseReason ?? review.reloadProblem ?? "This meeting cannot be changed right now.")
+        }
+        if let seen = request.runID, seen != review.projection.runID,
+           !review.keepsTurns(of: seen, in: review.projection.runID) {
+            return .refused(Self.joinRelabelled)
+        }
+        return Self.joinResolution(paragraphID: review.resolvedTurnID(request.paragraphID), forward: request.forward,
+                                   paragraphs: allParagraphs)
+    }
+
+    static let joinRelabelled = "The speakers were labelled again since; try the join again."
+    static let joinNotShown = "That turn no longer starts a row; try the join again."
+
+    /// `resolveJoin`'s rule over every row grouped (`paragraphs`, before a search filters them): the row
+    /// `paragraphID` joins the row before it (with `forward`, the row after it joins it). Nothing to join with at the
+    /// meeting's first row (last, `forward`); refused when no row starts with that turn any more.
+    static func joinResolution(paragraphID: String, forward: Bool,
+                               paragraphs: [ReviewParagraph]) -> ReviewJoinResolution {
+        guard let index = paragraphs.firstIndex(where: { $0.id == paragraphID }) else { return .refused(joinNotShown) }
+        let earlier = forward ? index : index - 1
+        guard earlier >= 0 else { return .nothing(TurnListView.nothingBefore) }
+        guard earlier + 1 < paragraphs.count else { return .nothing(TurnListView.nothingAfter) }
+        return .join(ReviewParagraphs.join(paragraphs[earlier + 1], to: paragraphs[earlier]))
+    }
+
+    /// Makes `join`: the window joins the later row's first turn to the row before it (`ReviewParagraphBreaks.join`,
+    /// never saved), and when the rows' speakers differ, the later row's turns take the earlier row's speaker through
+    /// the review's assignment (undoable with ⌘Z and learned from as any made with the row's pop-up). Then, asked from
+    /// the field, the field opens again where the rows met (the caret at the start of the later row's first word, or
+    /// at the end of the earlier row's last word for forward Delete), so typing goes on there; asked from the menu,
+    /// the joined row is selected. VoiceOver hears that the rows were joined.
+    private func applyJoin(_ join: ReviewParagraphJoin, request: ReviewJoinRequest) {
+        guard let turn = review.projection.turns.first(where: { $0.id == join.turnID }) else { return }
+        // A word's field opened since the join was asked (the speaker change took a while): it keeps the keyboard.
+        let fieldsOpened = turnList.fieldsOpened
+        let message = join.reassign.isEmpty ? TurnListView.joined : TurnListView.joinedSpeaker
+        let finish = { [weak self] in
+            guard let self else { return }
+            self.refresh()
+            if NSWorkspace.shared.isVoiceOverEnabled {
+                NSAccessibility.post(element: self.window, notification: .announcementRequested, userInfo: [
+                    .announcement: message, .priority: NSAccessibilityPriorityLevel.medium.rawValue,
+                ])
+            }
+            guard !self.turnList.typingElsewhere, self.turnList.fieldsOpened == fieldsOpened else { return }
+            if request.fromField, self.turnList.editingWords,
+               self.turnList.reopenField(at: request.word, atEnd: request.forward, message: message,
+                                         inTurn: request.turnID.map(self.review.resolvedTurnID)) {
+                return
+            }
+            self.turnList.select([join.turnID], scroll: true)
+        }
+        // Made here, as a row break is: what the footer said of an earlier change goes.
+        clearTransientMessages()
+        paragraphBreaks.join(turn, runID: review.projection.runID)
+        guard !join.reassign.isEmpty else {
+            finish()
+            return
+        }
+        refresh()
+        let target: ReviewAssignTarget = join.speakerID.map { .speaker($0) } ?? .unknown
+        perform { review in
+            try await review.assign(join.reassign, to: target)
+            finish()
         }
     }
 

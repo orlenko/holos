@@ -1397,3 +1397,78 @@ func reviewSplittingInsideAParagraphStartsOneThatUndoJoinsAgain() async throws {
     #expect(review.projection.turns == before)
     #expect(reviewParagraphs(review) == [["T1", "T2"]])
 }
+
+/// Backspace at the start of a row (Join With Previous Turn): the later row's turns take the speaker before them as
+/// one assignment, as the row's pop-up gives it, and the window joins the rows across the time gap; ⌘Z gives them
+/// their speaker back, and the rows part again.
+@Test(.timeLimit(.minutes(1))) @MainActor
+func reviewJoiningARowGivesItTheSpeakerBeforeAndUndoPartsThemAgain() async throws {
+    let temp = try TemporaryDirectory("review")
+    defer { temp.remove() }
+    let (session, _) = try await reviewCustomSession(in: temp, turns: [
+        ReviewTurnSpec(speaker: "system:S1", start: 0, seconds: 2, words: reviewWords(2, prefix: "a")),
+        ReviewTurnSpec(speaker: "system:S2", start: 6, seconds: 2, words: reviewWords(2, prefix: "b")),
+        ReviewTurnSpec(speaker: "system:S2", start: 9, seconds: 2, words: reviewWords(2, prefix: "c")),
+    ])
+    let review = try await reviewOpen(session)
+    let before = review.projection.turns
+    let rows = ReviewParagraphs.group(before)
+    #expect(rows.map(\.turnIDs) == [["T1"], ["T2", "T3"]])
+    let join = ReviewParagraphs.join(rows[1], to: rows[0])
+    #expect(join == ReviewParagraphJoin(reassign: ["T2", "T3"], speakerID: "system:S1", turnID: "T2"))
+
+    var breaks = ReviewParagraphBreaks()
+    breaks.join(try #require(before.first { $0.id == join.turnID }), runID: review.projection.runID)
+    try await review.assign(join.reassign, to: .speaker(try #require(join.speakerID)))
+    #expect(try reviewJournal(session).map(\.action) == [.reassignTurns(turnIDs: ["T2", "T3"], to: "system:S1")])
+    func shown() -> [[String]] {
+        let active = breaks.active(in: review.projection.turns, runID: review.projection.runID)
+        return ReviewParagraphs.group(review.projection.turns, breaks: active, joins: breaks.joins).map(\.turnIDs)
+    }
+    // Four seconds apart, more than the gap: joined all the same.
+    #expect(shown() == [["T1", "T2", "T3"]])
+
+    try await review.undo()
+    #expect(review.projection.turns == before)
+    #expect(shown() == [["T1"], ["T2", "T3"]])
+}
+
+/// Return splits a turn, Backspace at the start of its second part joins it back: the same speaker, so nothing is
+/// saved; the rows read as before the split. Return there again breaks the row (the split stays in the journal; ⌘Z
+/// still undoes it).
+@Test(.timeLimit(.minutes(1))) @MainActor
+func reviewASplitJoinedBackReadsAsBeforeTheSplit() async throws {
+    let temp = try TemporaryDirectory("review")
+    defer { temp.remove() }
+    let (session, _) = try await reviewCustomSession(in: temp, turns: [
+        ReviewTurnSpec(speaker: "system:S1", start: 0, seconds: 4, words: reviewWords(4, prefix: "a")),
+        ReviewTurnSpec(speaker: "system:S1", start: 5, seconds: 2, words: reviewWords(2, prefix: "b")),
+    ])
+    let review = try await reviewOpen(session)
+    let before = review.projection.turns
+    let text = ReviewParagraphs.group(before).map { $0.turns.map { review.text(of: $0) }.joined(separator: " ") }
+    let word = try #require(review.words(of: "T1").dropFirst(2).first).ref
+    try await review.split(turnID: "T1", at: word)
+    let journal = try reviewJournal(session)
+    var breaks = ReviewParagraphBreaks()
+    func shown() -> [ReviewParagraph] {
+        let active = breaks.active(in: review.projection.turns, runID: review.projection.runID)
+        return ReviewParagraphs.group(review.projection.turns, breaks: active, joins: breaks.joins)
+    }
+    let split = shown()
+    #expect(split.count == 2)
+    let join = ReviewParagraphs.join(split[1], to: split[0])
+    #expect(join.reassign.isEmpty && join.turnID.hasPrefix("T1/"))
+    breaks.join(try #require(review.turn(join.turnID)), runID: review.projection.runID)
+    let joined = shown()
+    #expect(joined.count == 1)
+    #expect(joined.map { $0.turns.map { review.text(of: $0) }.joined(separator: " ") } == text)
+    #expect(try reviewJournal(session) == journal, "Nothing saved.")
+    // Return at the start of the same word: it starts the part's turn, so the row breaks there again.
+    let place = try review.splitPlace(at: word, after: false, seenMoves: nil, seenEpoch: nil)
+    #expect(place == .turnStart(turnID: join.turnID))
+    breaks.insert(before: try #require(review.turn(join.turnID)), runID: review.projection.runID)
+    #expect(shown().count == 2)
+    try await review.undo()
+    #expect(review.projection.turns == before)
+}

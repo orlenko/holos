@@ -48,7 +48,9 @@ final class WordEditField: NSTextField {
         setAccessibilityLabel("Edit words")
         setAccessibilityHelp("Return saves, Option-Return saves and adds it to the word list, Tab saves and edits the "
                              + "next word, Escape cancels. With nothing changed, Return with the cursor at the start "
-                             + "splits the turn before the word, and at the end, after it.")
+                             + "splits the turn before the word, and at the end, after it. Delete with the cursor at "
+                             + "the start of a turn joins it to the turn before, and Forward Delete at the end of a "
+                             + "turn joins the next one to it.")
     }
 
     convenience init() { self.init(frame: .zero) }
@@ -424,6 +426,12 @@ extension TurnListView: NSTextFieldDelegate {
             commitWordEdit(addTerm: false, advance: .next)
         case #selector(NSResponder.insertBacktab(_:)):
             commitWordEdit(addTerm: false, advance: .previous)
+        // Backspace at the very start of a row (forward Delete at its very end) with nothing changed joins the rows
+        // there; anywhere else they edit the text as always.
+        case #selector(NSResponder.deleteBackward(_:)):
+            return joinFromField(forward: false)
+        case #selector(NSResponder.deleteForward(_:)):
+            return joinFromField(forward: true)
         default:
             return false
         }

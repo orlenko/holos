@@ -185,6 +185,11 @@ final class TurnTableView: NSTableView {
     var splitOffer: ((_ row: Int, _ word: ReviewWord, _ index: Int) -> (choice: SplitChoice, refusal: String?)?)?
     /// Split Turn Here chosen: the split the menu offered, as it was when the menu opened.
     var onSplitChosen: ((SplitChoice) -> Void)?
+    /// Join With Previous Turn on `row`'s first word: nil when none is offered (another word, the meeting's first
+    /// row), else the item's request and why it cannot be made (nil when it can).
+    var joinOffer: ((_ row: Int, _ index: Int) -> (choice: JoinChoice, refusal: String?)?)?
+    /// Join With Previous Turn chosen: the join the menu offered.
+    var onJoinChosen: ((JoinChoice) -> Void)?
 
     override func menu(for event: NSEvent) -> NSMenu? {
         let point = convert(event.locationInWindow, from: nil)
@@ -221,6 +226,15 @@ final class TurnTableView: NSTableView {
                 + "until you change it."
             menu.addItem(item)
         }
+        // On a row's first word, as Split Turn Here: not in edit mode, where Backspace at the row's start joins.
+        if !editingWords, word != nil, let index, let offer = joinOffer?(row, index) {
+            let item = NSMenuItem(title: TurnListView.joinTitle, action: #selector(joinHere(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = offer.choice
+            item.isEnabled = offer.refusal == nil
+            item.toolTip = offer.refusal ?? TurnListView.joinHelp
+            menu.addItem(item)
+        }
         return menu
     }
 
@@ -232,6 +246,11 @@ final class TurnTableView: NSTableView {
     @objc private func splitHere(_ sender: NSMenuItem) {
         guard let choice = sender.representedObject as? SplitChoice else { return }
         onSplitChosen?(choice)
+    }
+
+    @objc private func joinHere(_ sender: NSMenuItem) {
+        guard let choice = sender.representedObject as? JoinChoice else { return }
+        onJoinChosen?(choice)
     }
 }
 
@@ -263,6 +282,11 @@ final class TurnTextView: NSTextView {
     /// of the actions. Chosen, it is checked then (`onSplitChosen`), and a refusal says why.
     var splitChoices: (() -> [SplitChoice?])?
     var onSplitChosen: ((SplitChoice) -> Void)?
+    /// VoiceOver's "Join With Previous Turn", as the context menu's item on the row's first word: nil where none is
+    /// offered (the meeting's first row; in edit mode, where Backspace at the row's start joins). Chosen, it is
+    /// checked then (`onJoinChosen`), and a refusal says why.
+    var joinChoice: (() -> JoinChoice?)?
+    var onJoinChosen: ((JoinChoice) -> Void)?
     /// Edit mode: the pointer over the text is an I-beam.
     var editingWords = false {
         didSet { if editingWords != oldValue { window?.invalidateCursorRects(for: self) } }
@@ -379,6 +403,13 @@ final class TurnTextView: NSTextView {
         var actions: [NSAccessibilityCustomAction] = []
         var offeredFixes = Set<[String]>()
         let splits = splitChoices?() ?? []
+        if !wordStarts.isEmpty, let join = joinChoice?() {
+            actions.append(NSAccessibilityCustomAction(name: TurnListView.joinTitle) { [weak self] in
+                guard let onJoinChosen = self?.onJoinChosen else { return false }
+                onJoinChosen(join)
+                return true
+            })
+        }
         for (index, start) in wordStarts.enumerated() {
             let word = index < wordTexts.count ? wordTexts[index].trimmingCharacters(in: .whitespacesAndNewlines) : ""
             let revertible = index < wordRevertible.count ? wordRevertible[index] : true
@@ -574,6 +605,15 @@ final class TurnListView: NSView, NSTableViewDataSource, NSTableViewDelegate {
     /// A split chosen from a word's menu was refused when it was made (the words changed while the menu was open):
     /// why, for the window to say.
     var onSplitRefused: ((String) -> Void)?
+    /// Join a row to the row before it (`TurnListView+Joining`): Backspace at the start of a row's first word in edit
+    /// mode (forward Delete at the end of the row before), or Join With Previous Turn on a row's first word: `join`, as
+    /// `resolveJoin` gave it for `request`.
+    var onJoin: ((_ join: ReviewParagraphJoin, _ request: ReviewJoinRequest) -> Void)?
+    /// What a join request makes now: the rows as the window has them (all of them, a search hiding some), and the
+    /// review's state (`ReviewWindow.resolveJoin`).
+    var resolveJoin: ((ReviewJoinRequest) -> ReviewJoinResolution)?
+    /// A join chosen from a word's menu or VoiceOver was refused when it was made: why, for the window to say.
+    var onJoinRefused: ((String) -> Void)?
     /// Opens a row's speaker pop-up after a split, so the second part can be given its speaker at once (tests record
     /// it instead: a pop-up's menu tracks the mouse until it closes).
     var openSpeakerMenu: (NSPopUpButton) -> Void = { popUp in
@@ -681,6 +721,8 @@ final class TurnListView: NSView, NSTableViewDataSource, NSTableViewDelegate {
         }
         table.splitOffer = { [weak self] row, word, index in self?.splitOffer(row: row, word: word, index: index) }
         table.onSplitChosen = { [weak self] choice in self?.splitChosen(choice) }
+        table.joinOffer = { [weak self] row, index in self?.joinOffer(row: row, index: index) }
+        table.onJoinChosen = { [weak self] choice in self?.joinChosen(choice) }
         table.onEditClickBegan = { [weak self] extend in self?.editClickBegan(extend: extend) }
         table.onEditClickEnded = { [weak self] in self?.editClickEnded() }
         editField.delegate = self
@@ -856,6 +898,11 @@ final class TurnListView: NSView, NSTableViewDataSource, NSTableViewDelegate {
                 return self.splitRequests(row: self.table.row(for: cell)).map { $0.map(SplitChoice.init) }
             }
             cell.bodyText.onSplitChosen = { [weak self] choice in self?.splitChosen(choice) }
+            cell.bodyText.joinChoice = { [weak self, weak cell] in
+                guard let self, let cell, !self.editingWords else { return nil }
+                return self.joinOffer(row: self.table.row(for: cell), index: 0)?.choice
+            }
+            cell.bodyText.onJoinChosen = { [weak self] choice in self?.joinChosen(choice) }
             return cell
         }()
         cell.bodyText.editingWords = editingWords
