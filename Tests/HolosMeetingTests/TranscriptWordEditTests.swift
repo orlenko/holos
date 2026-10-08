@@ -170,9 +170,168 @@ private func editRanged(_ text: String, _ ranges: [(Int, Int)], id: String = "S1
     #expect(fenced.transcript.segments[0].fixes == [TranscriptWordFix(first: 0, end: 1, heard: "I um",
                                                                       kind: .reviewEdit, heardWords: 2,
                                                                       deleted: true)])
-    // A segment never loses all its words.
+    // A segment's every word deleted goes with the segment (`aSegmentsEveryWordDeletedGoesWithItAndComesBackExactly`).
     let lone = editTranscript([editSegment(["um"])])
-    #expect(throws: HolosError.self) { try TranscriptWordEdit.editing(editRequest(0, 1, ""), in: lone, base: nil) }
+    let gone = try #require(try TranscriptWordEdit.editing(editRequest(0, 1, ""), in: lone, base: nil))
+    #expect(gone.transcript.segments[0].text.isEmpty && gone.transcript.segments[0].removed != nil)
+}
+
+@Test func aSegmentsEveryWordDeletedGoesWithItAndComesBackExactly() throws {
+    let current = editTranscript([editSegment(["That", "sounds", "fine?"]),
+                                  editSegment(["Thanks,"], id: "S2", start: 3),
+                                  editSegment(["Right", "then."], id: "S3", start: 4)])
+    let result = try #require(try TranscriptWordEdit.editing(editRequest(0, 1, "", segment: "S2"), in: current,
+                                                              base: nil))
+    let emptied = result.transcript.segments[1]
+    let original = current.segments[1]
+    // The segment stays (its ID, times, and track), with no text, words, or fixes; what it held is kept beside it.
+    #expect(emptied.id == "S2" && emptied.start == original.start && emptied.end == original.end)
+    #expect(emptied.track == original.track)
+    #expect(emptied.text.isEmpty && emptied.words.isEmpty && emptied.fixes == nil)
+    #expect(emptied.removed == TranscriptRemovedWords(text: "Thanks,", words: original.words, fixes: nil))
+    #expect(WordTiming.effectiveWords(of: emptied).isEmpty && !TranscriptWordEdit.isDamaged(emptied))
+    #expect(result.transcript.segments[0] == current.segments[0] && result.transcript.segments[2] == current.segments[2])
+    #expect(result.transcript.text == "That sounds fine? Right then.", "No empty piece, no double space.")
+    #expect(result.deletion && result.meant.isEmpty && result.shown == "Thanks," && result.holdsDeleted)
+    #expect(result.before == nil && result.after == nil)
+    // Every word, replaced by none: the labels' move, and the field's.
+    let move = ReviewWordMove(segmentID: "S2", replaced: 0..<1, replacement: 0..<0)
+    #expect(result.move == move && result.labelsMove == move)
+    #expect(result.move.map(WordRef(segmentID: "S2", word: 0)).replaced, "A field on the word is never followed.")
+    #expect(result.transcript.liveCorrectedFrom == current.id && result.transcript.fixedFrom == nil)
+    #expect(result.base == nil)
+    #expect(TranscriptWordEdit.hasReviewEdits(result.transcript), "A pass that replaces the transcript keeps it.")
+    #expect(TranscriptWordEdit.removedText(of: emptied, fixed: false) == "Thanks,")
+    // Nothing more to delete or edit there.
+    #expect(throws: HolosError.self) {
+        try TranscriptWordEdit.editing(editRequest(0, 1, "", segment: "S2"), in: result.transcript, base: nil)
+    }
+
+    // The Restore: the recognizer's words back exactly, their times included.
+    let restored = try #require(try TranscriptWordEdit.editing(.restoring(segmentID: "S2"), in: result.transcript,
+                                                                base: nil))
+    #expect(restored.transcript.segments == current.segments)
+    #expect(restored.move == ReviewWordMove(segmentID: "S2", replaced: 0..<0, replacement: 0..<1))
+    #expect(restored.labelsMove == restored.move && !restored.deletion && restored.meant == "Thanks,")
+    #expect(!TranscriptWordEdit.hasReviewEdits(restored.transcript))
+    // Restoring words that are not deleted is refused.
+    let refusal = #expect(throws: HolosError.self) {
+        try TranscriptWordEdit.editing(.restoring(segmentID: "S2"), in: current, base: nil)
+    }
+    #expect(refusal?.localizedDescription == "Those words are no longer deleted; reload and try again.")
+}
+
+@Test func aSegmentsEveryWordDeletedInAFixedTranscriptGoesFromItsBaseToo() async throws {
+    let base = editTranscript([editSegment(["ask", "now"]), editSegment(["thanks", "cloud"], id: "S2", start: 3)])
+    let corrections = [Correction(heard: "cloud", meant: "Claude")]
+    let fixed = try await editFixed(base, corrections)
+    #expect(fixed.segments[1].text == "thanks Claude")
+    let result = try #require(try TranscriptWordEdit.editing(editRequest(0, 2, "", segment: "S2"), in: fixed,
+                                                              base: base))
+    let newBase = try #require(result.base)
+    #expect(result.transcript.fixedFrom == newBase.id && newBase.fixedFrom == nil)
+    #expect(newBase.liveCorrectedFrom == base.id && result.transcript.liveCorrectedFrom == base.id)
+    // One record in both layers: the recognizer's words, and the fixed ones (their automatic fix with them).
+    let kept = try #require(result.transcript.segments[1].removed)
+    #expect(newBase.segments[1].removed == kept && newBase.segments[1].text.isEmpty)
+    #expect(kept.text == "thanks cloud" && kept.fixes == nil)
+    #expect(kept.fixed?.text == "thanks Claude" && kept.fixed?.fixes?.map(\.kind) == [.correction])
+    #expect(newBase.segments[0] == base.segments[0])
+    #expect(TranscriptWordEdit.removedText(of: result.transcript.segments[1], fixed: true) == "thanks Claude")
+    #expect(TranscriptWordEdit.removedText(of: newBase.segments[1], fixed: false) == "thanks cloud")
+
+    // Word fixes made again from the new base keep the deletion (nothing to fix in an empty segment), and the record.
+    let again = try await editFixed(newBase, corrections)
+    #expect(again.segments[1].text.isEmpty && again.segments[1].removed == kept)
+    #expect(again.segments[0] == result.transcript.segments[0])
+
+    // Restored from the edited revision, and from the one word fixes made again: as it was, its fix with it, and the
+    // base the recognizer's words.
+    for current in [result.transcript, again] {
+        let restored = try #require(try TranscriptWordEdit.editing(.restoring(segmentID: "S2"), in: current,
+                                                                    base: newBase))
+        #expect(restored.transcript.segments == fixed.segments)
+        #expect(restored.base?.segments == base.segments)
+        #expect(restored.meant == "thanks Claude")
+        // Then edited as before: the fix and its unfixed words still match.
+        let edited = try #require(try TranscriptWordEdit.editing(editRequest(1, 2, "Claudia", segment: "S2"),
+                                                                  in: restored.transcript, base: restored.base))
+        #expect(edited.transcript.segments[1].text == "thanks Claudia" && edited.heard == "cloud")
+    }
+
+    // Fixed words kept that no longer match the unfixed ones give way to them (as words not fixed yet).
+    var stale = again
+    stale.segments[1].removed?.fixed = TranscriptSegmentWords(text: "other words", words: [
+        TimedWord(text: "other", start: 3, end: 3.8, utf16Offset: 0, utf16Length: 5),
+        TimedWord(text: "words", start: 4, end: 4.8, utf16Offset: 6, utf16Length: 5),
+    ])
+    let fallback = try #require(try TranscriptWordEdit.editing(.restoring(segmentID: "S2"), in: stale, base: newBase))
+    #expect(fallback.transcript.segments[1] == base.segments[1])
+}
+
+/// An automatic fix whose recorded count of recognizer words does not lie over what it matched in the unfixed revision
+/// (a wrong but positive `heardWords`): the segment is not deleted whole, as no edit of it is made, since the two
+/// records kept could never be restored together.
+@Test func aSegmentWhoseFixDoesNotMatchItsUnfixedWordsIsNotDeletedWhole() async throws {
+    let base = editTranscript([editSegment(["thanks", "big", "cloud"], id: "S2")])
+    let fixed = try await editFixed(base, [Correction(heard: "cloud", meant: "Claude")])
+    var wrong = fixed
+    wrong.segments[0].fixes?[0].heardWords = 2
+    #expect(!TranscriptWordEdit.isDamaged(wrong.segments[0]), "Sound on its own: only the unfixed words tell.")
+    let refusal = #expect(throws: HolosError.self) {
+        try TranscriptWordEdit.editing(editRequest(0, 3, "", segment: "S2"), in: wrong, base: base)
+    }
+    #expect(refusal?.localizedDescription == "These words cannot be matched to the transcript they were fixed from.")
+    // The same words with the right count are deleted, and restored.
+    let deleted = try #require(try TranscriptWordEdit.editing(editRequest(0, 3, "", segment: "S2"), in: fixed,
+                                                               base: base))
+    let restored = try #require(try TranscriptWordEdit.editing(.restoring(segmentID: "S2"), in: deleted.transcript,
+                                                                base: deleted.base))
+    #expect(restored.transcript.segments == fixed.segments)
+}
+
+@Test func aSegmentWithAWordCorrectedWhileRecordingIsNotDeletedWhole() throws {
+    var segment = editSegment(["um", "thing"])
+    segment.fixes = [TranscriptWordFix(first: 1, end: 2, heard: "think", kind: .liveCorrection, heardWords: 1)]
+    let refusal = #expect(throws: HolosError.self) {
+        try TranscriptWordEdit.editing(editRequest(0, 2, ""), in: editTranscript([segment]), base: nil)
+    }
+    #expect(refusal?.localizedDescription == TranscriptWordEdit.liveCorrected.localizedDescription)
+    // Words beside another turn's (not editable here) are neither merged into them nor taken with the segment.
+    let fenced = #expect(throws: HolosError.self) {
+        try TranscriptWordEdit.editing(editRequest(0, 1, ""), in: editTranscript([editSegment(["um", "yes"])]),
+                                       base: nil, editable: { $0 == 0 })
+    }
+    #expect(fenced?.localizedDescription.contains("every word of their segment") == true)
+}
+
+@Test func deletedWordsKeptBesideWordsOfTheirOwnAreDamaged() throws {
+    var segment = editSegment(["Thanks,"])
+    segment.removed = TranscriptRemovedWords(text: "Thanks,", words: segment.words)
+    #expect(TranscriptWordEdit.isDamaged(segment), "Which of the two it holds cannot be told.")
+    // A kept record whose words do not fit its text is never restored.
+    let emptied = TranscriptSegment(id: "S1", start: 0, end: 1, text: "", track: "system", removed:
+        TranscriptRemovedWords(text: "Hi", words: [TimedWord(text: "Hello", start: 0, end: 1, utf16Offset: 0,
+                                                             utf16Length: 5)]))
+    #expect(!TranscriptWordEdit.isDamaged(emptied))
+    let refusal = #expect(throws: HolosError.self) {
+        try TranscriptWordEdit.editing(.restoring(segmentID: "S1"), in: editTranscript([emptied]), base: nil)
+    }
+    #expect(refusal?.localizedDescription == TranscriptWordEdit.damagedMarks.localizedDescription)
+}
+
+/// An older Voice is Local decodes a segment without knowing `removed`: it reads one with no text and no words, so it
+/// shows and exports nothing of the deleted words. A segment with nothing deleted encodes as before.
+@Test func anOlderBuildReadsADeletedSegmentAsOneWithNoWords() throws {
+    struct OlderSegment: Decodable { var id: String; var text: String; var words: [TimedWord] }
+    let current = editTranscript([editSegment(["Thanks,"])])
+    let result = try #require(try TranscriptWordEdit.editing(editRequest(0, 1, ""), in: current, base: nil))
+    let data = try JSONEncoder().encode(result.transcript.segments[0])
+    let older = try JSONDecoder().decode(OlderSegment.self, from: data)
+    #expect(older.id == "S1" && older.text.isEmpty && older.words.isEmpty)
+    #expect(try JSONDecoder().decode(TranscriptSegment.self, from: data) == result.transcript.segments[0])
+    let plain = String(decoding: try JSONEncoder().encode(current.segments[0]), as: UTF8.self)
+    #expect(!plain.contains("removed"))
 }
 
 @Test func aDeletionBesideAWordCorrectedWhileRecordingGoesIntoTheOtherNeighbour() throws {

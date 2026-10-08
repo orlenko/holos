@@ -32,7 +32,8 @@ public struct ReviewWordEdit: Sendable, Equatable {
     public let heard: String
     /// The span's new text.
     public let meant: String
-    /// The words were deleted (merged into a neighbour, which `meant` is).
+    /// The words were deleted: merged into a neighbour, which `meant` is, or removed with their whole segment (`meant`
+    /// is empty).
     public let deletion: Bool
     /// The shown words just before and after the span in its segment, when there are some.
     public let before: String?
@@ -78,6 +79,23 @@ public struct ReviewWord: Sendable, Equatable {
                 shown: String? = nil) {
         self.ref = ref; self.text = text; self.start = start; self.fix = fix; self.revertible = revertible
         self.shown = shown ?? text.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+}
+
+/// A segment whose every word was deleted in Review (`TranscriptSegment.removed`), as the window offers to restore it
+/// (`ReviewSession.deletedWords(near:)`).
+public struct ReviewDeletedWords: Sendable, Equatable {
+    public let segmentID: String
+    /// The words as they showed before they were deleted.
+    public let text: String
+    /// Session times and track of the segment.
+    public let start: Double
+    public let end: Double
+    public let track: String?
+
+    public init(segmentID: String, text: String, start: Double, end: Double? = nil, track: String? = nil) {
+        self.segmentID = segmentID; self.text = text; self.start = start; self.end = end ?? start
+        self.track = track
     }
 }
 
@@ -204,7 +222,7 @@ public struct ReviewWord: Sendable, Equatable {
     public var unsavedWordEdits: [String] {
         queue.compactMap { op in
             guard !op.finished, case .editWords(let request, _) = op.kind else { return nil }
-            return TranscriptWordEdit.cleaned(request.text)
+            return Self.typed(request)
         }
     }
 
@@ -215,13 +233,18 @@ public struct ReviewWord: Sendable, Equatable {
 
     /// The word edits not saved yet when the review began closing that were then refused or failed, each with what was
     /// typed and why, in the order they were queued. Their windows close, so quitting logs them (timeout or not):
-    /// none is dropped without what was typed.
+    /// none is dropped without what was typed. A Restore of deleted words is among them (`restoreDescription`).
     public var failedWordEditsAtClose: [(typed: String, reason: String)] {
         closingWordEdits.compactMap { op -> (typed: String, reason: String)? in
             guard op.finished, op.wordEditResult == nil, case .failure(let error)? = op.result,
                   !(error is CancellationError), case .editWords(let request, _) = op.kind else { return nil }
-            return (TranscriptWordEdit.cleaned(request.text), error.localizedDescription)
+            return (Self.typed(request), error.localizedDescription)
         } + (refusedAtClose.map { [$0] } ?? [])
+    }
+
+    /// What was typed for `request`, as the close's lists say it; for a Restore, which it is.
+    private nonisolated static func typed(_ request: TranscriptWordEdit.Request) -> String {
+        request.restoresRemoved ? restoreDescription(request.segmentID) : TranscriptWordEdit.cleaned(request.text)
     }
 
     /// The corrections one word edit teaches (the app: `TranscriptEditLearning`).
@@ -1174,6 +1197,95 @@ public struct ReviewWord: Sendable, Equatable {
         try await wait(for: op)
     }
 
+    /// Every segment whose every word was deleted (here, or in an earlier review: `TranscriptSegment.removed`) that a
+    /// Restore can bring back, in time order, whether or not a turn is listed near it (Edit ▸ Restore Deleted Words
+    /// lists them all, so none is out of reach when every turn around it went too). Only while words can be edited,
+    /// and only those whose turns the labels record (`DiarizationRun.removedSegments`; not after the speakers were
+    /// labelled again).
+    public func deletedWords() -> [ReviewDeletedWords] {
+        guard canEditWords, let run = snapshot.run, let records = run.removedSegments, !records.isEmpty else {
+            return []
+        }
+        let fixed = snapshot.transcript.fixedFrom != nil
+        var found: [ReviewDeletedWords] = []
+        for record in records {
+            guard let segment = segments[record.segmentID], segment.removed != nil,
+                  SpeakerTranscriptRetarget.canRestore(record.segmentID, in: run),
+                  let text = TranscriptWordEdit.removedText(of: segment, fixed: fixed), !text.isEmpty else { continue }
+            found.append(ReviewDeletedWords(segmentID: segment.id, text: text, start: segment.start,
+                                            end: segment.end, track: segment.track))
+        }
+        return found.sorted { $0.start < $1.start }
+    }
+
+    /// `deletedWords()` offered from turn `turnID` (its row's menu, VoiceOver). Each is offered from one listed turn:
+    /// the one nearest it in time, of its own track when that track has one listed (the turn that held it may be gone
+    /// with it).
+    public func deletedWords(near turnID: String) -> [ReviewDeletedWords] {
+        let all = deletedWords()
+        guard !all.isEmpty else { return [] }
+        let id = resolvedTurnID(turnID)
+        let listed = shownTurns
+        guard listed.contains(where: { $0.id == id }) else { return [] }
+        return all.filter { deleted in
+            // Its own track first, then the time between them (none when they overlap); the earlier turn on a tie.
+            func distance(_ turn: ProjectedTurn) -> (Int, Double) {
+                (turn.track == deleted.track ? 0 : 1,
+                 max(0, turn.start - deleted.end, deleted.start - turn.end))
+            }
+            return listed.min(by: { distance($0) < distance($1) })?.id == id
+        }
+    }
+
+    /// Brings back the words of segment `segmentID`, all deleted earlier (`deletedWords(near:)`), as they were (their
+    /// text, times, and fixes) and to the turns that held them: a word edit like any other (new transcript revisions,
+    /// a speaker head with every speaker edit carried over), one undo takes it back.
+    public func restoreDeletedWords(segmentID: String) async throws {
+        _ = try await queueRestoreDeletedWords(segmentID: segmentID)()
+    }
+
+    /// `restoreDeletedWords` with its change queued before this returns, exactly as `queueWordEdit` queues an edit: a
+    /// close or a quit right after finds it there (it is saved before the review closes, and a failure then is
+    /// reported with the other word edits, `failedWordEditsAtClose`), and `committed` is called once it is saved, also
+    /// when it then throws because the labels could not be reread (the words are back). Returns the wait for it (what
+    /// was restored); throws when it is refused before it is queued.
+    public func queueRestoreDeletedWords(segmentID: String, committed: ((ReviewWordEdit) -> Void)? = nil) throws
+        -> @MainActor () async throws -> ReviewWordEdit? {
+        try requireEditable()
+        if let blocked = wordEditingBlocked { throw HolosError.invalidInput(blocked) }
+        guard let segment = segments[segmentID], segment.removed != nil else {
+            throw HolosError.invalidInput("Those words are no longer deleted; reload and try again.")
+        }
+        guard SpeakerTranscriptRetarget.canRestore(segmentID, in: snapshot.run) else {
+            throw SpeakerTranscriptRetarget.notRestorable
+        }
+        let op = queued(.editWords(.restoring(segmentID: segmentID), segment: segment), optimistic: [])
+        op.movesSeen = movesRead
+        return waitForWordEdit(op, committed: committed)
+    }
+
+    /// The wait for queued word edit `op` (an edit or a Restore): what it saved, or why not; `committed` is called
+    /// once it is saved, also when it then throws (its labels could not be reread: the change stands).
+    private func waitForWordEdit(_ op: Operation, committed: ((ReviewWordEdit) -> Void)?)
+        -> @MainActor () async throws -> ReviewWordEdit? {
+        { [self] in
+            do {
+                try await wait(for: op)
+            } catch {
+                if let edit = op.wordEditResult { committed?(edit) }
+                throw error
+            }
+            if let edit = op.wordEditResult { committed?(edit) }
+            return op.wordEditResult
+        }
+    }
+
+    /// How a queued Restore is named where an edit says what was typed (`unsavedWordEdits`, `failedWordEditsAtClose`):
+    /// nothing was typed.
+    nonisolated static func restoreDescription(_ segmentID: String) -> String {
+        "(restore of deleted words, segment \(segmentID))"
+    }
+
     /// Replaces shown words with `text` (docs/meeting-design.md §5.10, "Editing words"): `words` are consecutive words
     /// of one segment, all shown in one turn (never a word the echo mask hides); `text` may have more or fewer words,
     /// or none (a deletion). Publishes new transcript revisions and a speaker head with every speaker edit carried
@@ -1221,16 +1333,7 @@ public struct ReviewWord: Sendable, Equatable {
                                           expecting: expecting, seenEpoch: seenEpoch) else {
             return nil
         }
-        return { [self] in
-            do {
-                try await wait(for: op)
-            } catch {
-                if let edit = op.wordEditResult { committed?(edit) }
-                throw error
-            }
-            if let edit = op.wordEditResult { committed?(edit) }
-            return op.wordEditResult
-        }
+        return waitForWordEdit(op, committed: committed)
     }
 
     /// `editWords` up to its change being queued (no wait); nil when there is nothing to edit.
@@ -1239,8 +1342,8 @@ public struct ReviewWord: Sendable, Equatable {
                                 seenEpoch: Int? = nil, verbatim: Bool = false) throws -> Operation? {
         try requireEditable(whileUnread: whileUnread)
         if let seenEpoch, seenEpoch != wordsEpoch {
-            throw HolosError.invalidInput("The words were changed elsewhere while you edited them; edit them again "
-                                          + "(what you typed: “\(TranscriptWordEdit.cleaned(text))”).")
+            throw HolosError.invalidInput("The words were changed elsewhere while you edited them; edit them again"
+                                          + TranscriptWordEdit.typedAside(text) + ".")
         }
         guard !snapshot.transcriptChanged else { throw Self.labelAgainFirst }
         guard snapshot.journal.isComplete else { throw Self.speakerChangesUnreadable }
@@ -1256,8 +1359,8 @@ public struct ReviewWord: Sendable, Equatable {
                 : ArraySlice(wordMoves[movesRead..<min(seen, wordMoves.count)].reversed().map(\.inverse))
             let followed = Self.follow(words, through: moves)
             guard !followed.replaced else {
-                throw HolosError.invalidInput("Those words changed while you edited them; edit them again (what you "
-                                              + "typed: “\(TranscriptWordEdit.cleaned(text))”).")
+                throw HolosError.invalidInput("Those words changed while you edited them; edit them again"
+                                              + TranscriptWordEdit.typedAside(text) + ".")
             }
             words = followed.refs
         }
@@ -1270,7 +1373,7 @@ public struct ReviewWord: Sendable, Equatable {
                     TranscriptWordEdit.shownText(of: segment, first: word.word, end: word.word + 1) == shown
                 }) else {
                     throw HolosError.invalidInput("Those words were changed elsewhere while you edited them; edit "
-                                                  + "them again (what you typed: “\(TranscriptWordEdit.cleaned(text))”).")
+                                                  + "them again" + TranscriptWordEdit.typedAside(text) + ".")
                 }
             }
         }
@@ -1513,13 +1616,9 @@ public struct ReviewWord: Sendable, Equatable {
         // The edit was queued before the exports, so it has run (or waits behind labels that could not be reread).
         guard let typed else { return nil }
         if case .failure(let error)? = typedEdit?.result { refusal = error }
-        let words = TranscriptWordEdit.cleaned(typed.text)
-        if let refusal {
-            let message = refusal.localizedDescription
-            return message.contains("“\(words)”") ? message : message + " What you typed: “\(words)”."
-        }
+        if let refusal { return TranscriptWordEdit.withTyped(refusal.localizedDescription, typed.text) }
         if let typedEdit, !typedEdit.finished {
-            return "The edit waits until the speaker labels are reread. What you typed: “\(words)”."
+            return "The edit waits until the speaker labels are reread." + TranscriptWordEdit.typedNote(typed.text)
         }
         return nil
     }
@@ -1589,8 +1688,8 @@ public struct ReviewWord: Sendable, Equatable {
         for op in held {
             var message = "The review closed before the speaker labels could be reread, so a change was not saved."
             if case .editWords(let request, _) = op.kind {
-                message = "The review closed before the speaker labels could be reread, so an edit was not saved "
-                    + "(what you typed: “\(TranscriptWordEdit.cleaned(request.text))”)."
+                message = "The review closed before the speaker labels could be reread, so an edit was not saved"
+                    + TranscriptWordEdit.typedAside(request.text) + "."
             }
             op.finish(.failure(HolosError.unavailable(message)))
         }
@@ -2103,10 +2202,15 @@ public struct ReviewWord: Sendable, Equatable {
         // What was typed is said, so a refused edit never loses it.
         let typed = TranscriptWordEdit.cleaned(asked.text)
         let changed = HolosError.invalidInput("Those words changed while the edit waited to be saved; edit them again"
-            + (typed.isEmpty ? "." : " (what you typed: “\(typed)”)."))
+            + TranscriptWordEdit.typedAside(typed) + ".")
         var request = asked
         let moves = wordMoves.dropFirst(op.movesSeen).filter { $0.segmentID == asked.segmentID }
-        if moves.isEmpty {
+        if asked.restoresRemoved {
+            // A Restore names no word: the segment must hold the deleted words still, as it did when asked.
+            guard moves.isEmpty, segments[asked.segmentID] == segment else {
+                throw HolosError.invalidInput("Those deleted words changed meanwhile; reload and try again.")
+            }
+        } else if moves.isEmpty {
             guard segments[asked.segmentID] == segment else { throw changed }
         } else {
             // Moved, the words must still read as they did, and none of them may be one an earlier edit replaced.
@@ -3160,7 +3264,7 @@ public struct ReviewWord: Sendable, Equatable {
     /// silently.
     private func staleRefusal(_ op: Operation) -> HolosError {
         guard case .editWords(let request, _) = op.kind else { return .unavailable(Self.changedElsewhere) }
-        return .unavailable(Self.changedElsewhere + " What you typed: “\(TranscriptWordEdit.cleaned(request.text))”.")
+        return .unavailable(Self.changedElsewhere + TranscriptWordEdit.typedNote(request.text))
     }
 
     /// Records the saved IDs of the turns a change's splits created (its lines are its actions, in order).

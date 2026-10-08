@@ -47,10 +47,21 @@ public enum TranscriptWordEdit {
         /// wrote (a Review edit's `heard`, two spaces or a line break included). Typed text has each run of whitespace
         /// made one space.
         public var verbatim: Bool
+        /// Brings back the words of segment `segmentID`, all deleted earlier (`TranscriptSegment.removed`), as they
+        /// were: a Restore. `first`, `end`, and `text` are not read.
+        public var restoresRemoved: Bool
 
         public init(segmentID: String, first: Int, end: Int, text: String, verbatim: Bool = false) {
             self.segmentID = segmentID; self.first = first; self.end = end; self.text = text
             self.verbatim = verbatim
+            restoresRemoved = false
+        }
+
+        /// The Restore of segment `segmentID`'s deleted words (`restoresRemoved`).
+        public static func restoring(segmentID: String) -> Request {
+            var request = Request(segmentID: segmentID, first: 0, end: 0, text: "")
+            request.restoresRemoved = true
+            return request
         }
     }
 
@@ -67,7 +78,8 @@ public enum TranscriptWordEdit {
         public var meant: String
         /// The span's text before the edit, as the review showed it.
         public var shown: String
-        /// The words were deleted (merged into a neighbouring word, which `meant` is).
+        /// The words were deleted: merged into a neighbouring word, which `meant` is, or, when they were every word of
+        /// their segment, removed with it (`meant` is empty, `TranscriptSegment.removed`).
         public var deletion: Bool
         /// The shown words just before and after the span in its segment (learning context), when there are some.
         public var before: String?
@@ -76,7 +88,8 @@ public enum TranscriptWordEdit {
         public var move: ReviewWordMove
         /// The whole edited span's move, with the words it took in around the selection (a deletion's neighbour, the
         /// rest of a mark): every one of them is in the edited turn and its replacement is never empty, so the speaker
-        /// labels map by it, and by its inverse when the edit is undone (`SpeakerTranscriptRetarget.plan`).
+        /// labels map by it, and by its inverse when the edit is undone (`SpeakerTranscriptRetarget.plan`). Only a
+        /// segment's every word, deleted, is replaced by none, and only a Restore of them replaces none.
         public var labelsMove: ReviewWordMove
         /// `heard` holds deleted words (this edit is a deletion, or it took in an earlier one: "um cloud" for a word
         /// "um" was merged into): it is not what the recognizer wrote for the new text, so it is never offered as
@@ -88,7 +101,10 @@ public enum TranscriptWordEdit {
     /// the recognizer wrote (`reviewRevert`). A pass that would replace the transcript (deep transcription, language
     /// detection) leaves both alone unless forced.
     public static func hasReviewEdits(_ transcript: Transcript) -> Bool {
-        transcript.segments.contains { ($0.fixes ?? []).contains { $0.kind == .reviewEdit || $0.kind == .reviewRevert } }
+        transcript.segments.contains { segment in
+            segment.removed != nil
+                || (segment.fixes ?? []).contains { $0.kind == .reviewEdit || $0.kind == .reviewRevert }
+        }
     }
 
     /// `text` trimmed, each run of whitespace one space.
@@ -96,10 +112,31 @@ public enum TranscriptWordEdit {
         text.split(whereSeparator: \.isWhitespace).joined(separator: " ")
     }
 
+    /// " What you typed: “…”." for a message about an edit not saved, so what was typed is never lost; empty when
+    /// nothing was typed (a deletion: there is nothing to keep).
+    public static func typedNote(_ text: String) -> String {
+        let typed = cleaned(text)
+        return typed.isEmpty ? "" : " What you typed: “\(typed)”."
+    }
+
+    /// `typedNote` as an aside inside a sentence: " (what you typed: “…”)", empty when nothing was typed.
+    public static func typedAside(_ text: String) -> String {
+        let typed = cleaned(text)
+        return typed.isEmpty ? "" : " (what you typed: “\(typed)”)"
+    }
+
+    /// `message` ending with what was typed (`typedNote`), unless it says it already or nothing was typed.
+    public static func withTyped(_ message: String, _ text: String) -> String {
+        let typed = cleaned(text)
+        return typed.isEmpty || message.contains("“\(typed)”") ? message : message + typedNote(typed)
+    }
+
     /// The edit made on `current`, whose `fixedFrom` revision is `base` (nil when `current` has none). `editable` says
     /// which word indices of the segment the edit may take in: a deletion is merged into the next such word (else the
-    /// previous one), and the span grows to whole word-fix marks; every word it ends up with must be editable. Nil when
-    /// the text would not change. Throws `invalidInput` with a message for the person when the edit cannot be made.
+    /// previous one), and the span grows to whole word-fix marks; every word it ends up with must be editable. A
+    /// deletion of every word of the segment removes them with it (`removingSegment`), and a Restore brings them back
+    /// (`Request.restoresRemoved`). Nil when the text would not change. Throws `invalidInput` with a message for the
+    /// person when the edit cannot be made.
     public static func editing(_ request: Request, in current: Transcript, base: Transcript?,
                                editable: (Int) -> Bool = { _ in true }, now: Date = Date()) throws -> Result? {
         func trimmed(_ text: String) -> String { text.trimmingCharacters(in: .whitespacesAndNewlines) }
@@ -109,12 +146,17 @@ public enum TranscriptWordEdit {
         guard let index = current.segments.firstIndex(where: { $0.id == request.segmentID }) else {
             throw HolosError.invalidInput("Those words are no longer in the transcript; reload and try again.")
         }
+        if request.restoresRemoved { return try restoringRemoved(at: index, in: current, base: base, now: now) }
         let segment = current.segments[index]
         let words = WordTiming.effectiveWords(of: segment)
         guard request.first >= 0, request.first < request.end, request.end <= words.count else {
             throw HolosError.invalidInput("Those words are no longer in the transcript; reload and try again.")
         }
         guard (request.first..<request.end).allSatisfy(editable) else { throw notShown }
+        // Every word of the segment deleted: nothing in it is left to carry them, so they go with the segment.
+        if text.isEmpty, request.first == 0, request.end == words.count {
+            return try removingSegment(at: index, in: current, base: base, now: now)
+        }
         guard var working = WordFixes.Working(segment, preservingExistingFixes: true) else {
             throw damagedMarks
         }
@@ -154,11 +196,11 @@ public enum TranscriptWordEdit {
                 (lower, upper) = carrier
             } else if hasNeighbour {
                 throw notShown
-            } else if words.count == request.end - request.first {
-                throw HolosError.invalidInput("A segment cannot lose all its words yet; leave at least one word.")
             } else {
+                // The rest of the segment is another turn's, or hidden as echo: the words can neither go into a
+                // neighbour nor leave with the whole segment.
                 throw HolosError.invalidInput("These words can be deleted only with a word beside them in the same "
-                                              + "turn; change them instead.")
+                                              + "turn, or with every word of their segment; change them instead.")
             }
         }
         // A mark is never split: the span takes in every fix it touches.
@@ -166,9 +208,7 @@ public enum TranscriptWordEdit {
         (lower, upper) = taken
         let touched = fixes.filter { $0.first < upper && lower < $0.end }
         if touched.contains(where: { $0.kind == .liveCorrection }) { throw liveCorrected }
-        guard touched.allSatisfy({ editableKinds.contains($0.kind) }) else {
-            throw HolosError.invalidInput("These words were changed by a newer Voice is Local and cannot be edited here.")
-        }
+        guard touched.allSatisfy({ editableKinds.contains($0.kind) }) else { throw newerFix }
 
         let utf16 = Array(segment.text.utf16)
         func characters(_ words: [EffectiveWord], _ range: Range<Int>) -> Range<Int> {
@@ -313,6 +353,174 @@ public enum TranscriptWordEdit {
                       labelsMove: labelsMove, holdsDeleted: deleted == true)
     }
 
+    /// Every word of segment `index` of `current` deleted (docs/meeting-design.md §5.10, "Editing words"): the segment
+    /// stays, with its ID and times, but with no text, words, or fixes, and what it held is kept beside it
+    /// (`TranscriptSegment.removed`) so an undo or a Restore brings it back exactly. Made in the unfixed revision too
+    /// (`current.fixedFrom`, `base`), with the words that one holds there, so automatic word fixes made again later keep
+    /// the deletion. Refused for words corrected while the meeting was recording, as any edit of them is, and for a
+    /// fix a newer version wrote.
+    private static func removingSegment(at index: Int, in current: Transcript, base: Transcript?,
+                                        now: Date) throws -> Result {
+        let segment = current.segments[index]
+        let fixes = segment.fixes ?? []
+        if fixes.contains(where: { $0.kind == .liveCorrection }) { throw liveCorrected }
+        guard fixes.allSatisfy({ editableKinds.contains($0.kind) }) else { throw newerFix }
+        let words = WordTiming.effectiveWords(of: segment)
+        let shown = shownText(of: segment, first: 0, end: words.count) ?? ""
+        var result = current
+        result.id = UUID().uuidString
+        result.createdAt = now
+        result.segments[index] = removingWords(of: segment, record: record(of: segment))
+        var newBase: Transcript?
+        if let baseID = current.fixedFrom {
+            guard let base, base.id == baseID else {
+                throw HolosError.invalidInput("The transcript the words were fixed from cannot be read.")
+            }
+            guard let baseIndex = base.segments.firstIndex(where: { $0.id == segment.id }),
+                  base.segments[baseIndex].removed == nil,
+                  !WordTiming.effectiveWords(of: base.segments[baseIndex]).isEmpty else {
+                throw HolosError.invalidInput("These words cannot be matched to the transcript they were fixed from.")
+            }
+            // The fixed words must correspond to the unfixed ones as a fix and its unfixed words do (each automatic
+            // fix's count of recognizer words over what it matched, `baseBounds`), as for any edit: otherwise the two
+            // records kept could never be restored together. Refused as an edit of them is.
+            let baseSegment = base.segments[baseIndex]
+            guard baseBounds(fixes: fixes, current: words, base: WordTiming.effectiveWords(of: baseSegment),
+                             baseText: Array(baseSegment.text.utf16)) != nil else {
+                let older = fixes.contains { ($0.kind == .correction || $0.kind == .term) && $0.heardWords == nil }
+                throw older ? olderFix
+                    : HolosError.invalidInput("These words cannot be matched to the transcript they were fixed from.")
+            }
+            // One record in both revisions: the unfixed words, and the fixed ones beside them. Word fixes made again
+            // from the unfixed revision copy its segment, record and all, so a Restore there still brings back the
+            // fixed words, their automatic fixes with them.
+            var kept = record(of: baseSegment)
+            kept.fixed = TranscriptSegmentWords(text: segment.text, words: segment.words, fixes: segment.fixes)
+            result.segments[index] = removingWords(of: segment, record: kept)
+            var edited = base
+            edited.id = UUID().uuidString
+            edited.createdAt = now
+            edited.fixedFrom = nil
+            edited.liveCorrectedFrom = base.liveCorrectedFrom ?? base.id
+            edited.segments[baseIndex] = removingWords(of: baseSegment, record: kept)
+            newBase = edited
+            result.fixedFrom = edited.id
+            result.liveCorrectedFrom = edited.liveCorrectedFrom
+        } else {
+            result.liveCorrectedFrom = current.liveCorrectedFrom ?? current.id
+        }
+        // Every word of the segment, replaced by none: the speaker labels lose them, and the turns that held them are
+        // recorded so the words go back to them (`SpeakerTranscriptRetarget.plan`).
+        let move = ReviewWordMove(segmentID: segment.id, replaced: 0..<words.count, replacement: 0..<0)
+        return Result(transcript: result, base: newBase, heard: cleaned(shown), meant: "", shown: shown,
+                      deletion: true, before: nil, after: nil, move: move, labelsMove: move, holdsDeleted: true)
+    }
+
+    /// A Restore: segment `index` of `current`, whose words were all deleted (`TranscriptSegment.removed`), with them
+    /// back as they were (text, timed words, fixes), in the unfixed revision too: a fixed revision takes the fixed
+    /// words kept (`TranscriptRemovedWords.fixed`), the unfixed one its own. Refused when the segment holds no deleted
+    /// words, or what it kept cannot be trusted (`isDamaged`) or does not match the unfixed revision's.
+    private static func restoringRemoved(at index: Int, in current: Transcript, base: Transcript?,
+                                         now: Date) throws -> Result {
+        let segment = current.segments[index]
+        guard segment.removed != nil else {
+            throw HolosError.invalidInput("Those words are no longer deleted; reload and try again.")
+        }
+        var restored = restoringWords(of: segment, fixed: current.fixedFrom != nil)
+        guard !WordTiming.effectiveWords(of: restored).isEmpty, !isDamaged(restored) else { throw damagedMarks }
+        var result = current
+        result.id = UUID().uuidString
+        result.createdAt = now
+        var newBase: Transcript?
+        if let baseID = current.fixedFrom {
+            guard let base, base.id == baseID else {
+                throw HolosError.invalidInput("The transcript the words were fixed from cannot be read.")
+            }
+            let unmatched = HolosError.invalidInput(
+                "These words cannot be matched to the transcript they were fixed from, so they cannot be restored.")
+            guard let baseIndex = base.segments.firstIndex(where: { $0.id == segment.id }),
+                  base.segments[baseIndex].removed != nil else { throw unmatched }
+            let restoredBase = restoringWords(of: base.segments[baseIndex], fixed: false)
+            let baseWords = WordTiming.effectiveWords(of: restoredBase)
+            guard !baseWords.isEmpty, !isDamaged(restoredBase) else { throw damagedMarks }
+            // The two revisions' words must still correspond as a fix and its unfixed words do, or no edit or revert
+            // of them could be made afterwards. Fixed words kept that do not (the unfixed revision's changed since)
+            // give way to the unfixed ones, as a word-fix pass leaves words it has not fixed yet.
+            func corresponds(_ candidate: TranscriptSegment) -> Bool {
+                baseBounds(fixes: candidate.fixes ?? [], current: WordTiming.effectiveWords(of: candidate),
+                           base: baseWords, baseText: Array(restoredBase.text.utf16)) != nil
+            }
+            if !corresponds(restored) {
+                let unfixed = restoringWords(of: segment, fixed: false)
+                guard !isDamaged(unfixed), !WordTiming.effectiveWords(of: unfixed).isEmpty, corresponds(unfixed) else {
+                    throw unmatched
+                }
+                restored = unfixed
+            }
+            var edited = base
+            edited.id = UUID().uuidString
+            edited.createdAt = now
+            edited.fixedFrom = nil
+            edited.liveCorrectedFrom = base.liveCorrectedFrom ?? base.id
+            edited.segments[baseIndex] = restoredBase
+            newBase = edited
+            result.fixedFrom = edited.id
+            result.liveCorrectedFrom = edited.liveCorrectedFrom
+        } else {
+            result.liveCorrectedFrom = current.liveCorrectedFrom ?? current.id
+        }
+        result.segments[index] = restored
+        let words = WordTiming.effectiveWords(of: restored)
+        let meant = shownText(of: restored, first: 0, end: words.count) ?? ""
+        let move = ReviewWordMove(segmentID: segment.id, replaced: 0..<0, replacement: 0..<words.count)
+        return Result(transcript: result, base: newBase, heard: "", meant: cleaned(meant), shown: "", deletion: false,
+                      before: nil, after: nil, move: move, labelsMove: move)
+    }
+
+    /// What `segment` holds, as a deleted segment keeps it (`TranscriptRemovedWords`, with no fixed words).
+    private static func record(of segment: TranscriptSegment) -> TranscriptRemovedWords {
+        TranscriptRemovedWords(text: segment.text, words: segment.words, fixes: segment.fixes)
+    }
+
+    /// `segment` with every word gone, `record` (what it held) kept in `removed`.
+    static func removingWords(of segment: TranscriptSegment, record: TranscriptRemovedWords) -> TranscriptSegment {
+        var emptied = segment
+        emptied.removed = record
+        emptied.text = ""
+        emptied.words = []
+        emptied.fixes = nil
+        return emptied
+    }
+
+    /// `segment` with the words it held before they were all deleted (`removed`) back: with `fixed`, in a fixed
+    /// revision, the fixed words kept when there are some (`TranscriptRemovedWords.fixed`), else the unfixed ones.
+    static func restoringWords(of segment: TranscriptSegment, fixed: Bool) -> TranscriptSegment {
+        guard let removed = segment.removed else { return segment }
+        var restored = segment
+        if fixed, let words = removed.fixed {
+            restored.text = words.text
+            restored.words = words.words
+            restored.fixes = words.fixes
+        } else {
+            restored.text = removed.text
+            restored.words = removed.words
+            restored.fixes = removed.fixes
+        }
+        restored.removed = nil
+        return restored
+    }
+
+    /// The text of `segment`'s deleted words as it showed them before (`TranscriptSegment.removed`), each run of
+    /// whitespace one space; nil when the segment has none. `fixed`: the segment is of a fixed revision, which shows
+    /// the fixed words kept.
+    public static func removedText(of segment: TranscriptSegment, fixed: Bool) -> String? {
+        guard segment.removed != nil else { return nil }
+        let restored = restoringWords(of: segment, fixed: fixed)
+        let words = WordTiming.effectiveWords(of: restored)
+        return shownText(first: 0, end: words.count, words: words, utf16: Array(restored.text.utf16)).map(cleaned)
+            ?? cleaned(restored.text)
+    }
+
     /// The text words `range` of a segment show, as the review and the exports show it (`TranscriptText`): from the
     /// first word's offset (the text's start for the segment's first word) to the next word's offset (the text's end
     /// after its last word), without the whitespace at either end. So a word's punctuation that the recognizer did
@@ -379,8 +587,13 @@ public enum TranscriptWordEdit {
     ///   boundary inside a character written as a surrogate pair, or reads otherwise than the word's text;
     /// - a fix mark that is not sound (`isSound`), since every edit takes in the marks it touches;
     /// - two marks over the same word: each word has at most one fix (a fix never overlaps another), and an edit or a
-    ///   mapping reading either would take the wrong one.
+    ///   mapping reading either would take the wrong one;
+    /// - deleted words kept (`removed`) beside text, words, or fixes of its own: a segment whose words were all
+    ///   deleted has none, and which of the two it holds could not be told.
     public static func isDamaged(_ segment: TranscriptSegment) -> Bool {
+        if segment.removed != nil, !segment.text.isEmpty || !segment.words.isEmpty || segment.fixes != nil {
+            return true
+        }
         let words = WordTiming.effectiveWords(of: segment)
         let utf16 = Array(segment.text.utf16)
         // A boundary between the two halves of a character written as a surrogate pair ("😀"): an edit there would
@@ -430,6 +643,10 @@ public enum TranscriptWordEdit {
 
     /// An edit refused because its segment's word positions or fix marks are damaged.
     public static let damagedMarks = HolosError.invalidInput("That segment's word positions cannot be edited safely.")
+
+    /// An edit refused because it takes in a fix of a kind a newer version wrote (`editableKinds`).
+    static let newerFix = HolosError.invalidInput(
+        "These words were changed by a newer Voice is Local and cannot be edited here.")
 
     /// An edit refused because its words do not all belong to the same speaker turns (turns that overlap hold some of
     /// them): its new words would belong to every turn of every word it replaced, and its undo could not give each

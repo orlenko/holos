@@ -66,13 +66,18 @@ public struct CorrectionList: Codable, Sendable, Equatable {
     /// - otherwise `learnReplacingTaught`: a phrase the list lacks is added; one still holding the value this meeting
     ///   taught takes the new one; one holding anything else (an external or another meeting's value, or the same
     ///   value set before) keeps it, and is not recorded as the meeting's.
+    /// - a lesson whose value is empty (words deleted in Review) is never taught: dictation would drop the phrase
+    ///   everywhere.
     /// Returns what was put in the list, recorded as the meeting's (one value per phrase, the later replacing).
     @discardableResult
     public mutating func learnFromReview(_ learned: [Correction], meeting: String) -> [Correction] {
         var taught = taught(byMeeting: meeting)
         // Phrase and value kept apart (never joined into one string, where decoded text could make two lessons one).
         let known = Set(taught.map { Correction(heard: Self.key($0.heard), meant: $0.meant) })
-        let new = learned.filter { !known.contains(Correction(heard: Self.key($0.heard), meant: $0.meant)) }
+        let new = learned.filter {
+            !$0.meant.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                && !known.contains(Correction(heard: Self.key($0.heard), meant: $0.meant))
+        }
         let applied = learnReplacingTaught(new, taught: taught)
         guard !applied.isEmpty else { return [] }
         for correction in applied {

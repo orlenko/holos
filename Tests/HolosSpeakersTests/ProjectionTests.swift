@@ -1263,8 +1263,10 @@ private func actionName(_ action: SpeakerEditAction) -> String {
         id: runID, sessionID: "SESSION", createdAt: fixedDate, transcriptID: "TRANSCRIPT", engine: nil,
         alignment: AlignmentInfo(version: 1, parameters: .v1), tracks: [],
         speakers: [SessionSpeaker(id: "system:S1", ordinal: 1, provenance: .diarizer, clusterIDs: ["system:S1"])],
+        // Each turn has a word (a turn without any is not shown).
         turns: turns.map { SpeakerTurn(id: $0.0, track: $0.1, start: $0.2, end: $0.2 + 1, speakerID: "system:S1",
-                                       clusterID: "system:S1", spans: [], assignmentScore: 1, timing: .measured) })
+                                       clusterID: "system:S1", spans: [WordSpan(segmentID: "seg-T1", first: 0, end: 1)],
+                                       assignmentScore: 1, timing: .measured) })
     let projection = SpeakerProjection.make(run: run, transcript: fixtureTranscript, edits: [], recognition: nil,
                                             profileNames: [:])
     #expect(projection.turns.map(\.id) == ["T1", "T2", "T9", "T10"])
@@ -1280,4 +1282,60 @@ private func actionName(_ action: SpeakerEditAction) -> String {
     #expect(s3.clusterIDs == ["system:S3"])
     #expect(s3.turnCount == 2)
     #expect(projection.turns.allSatisfy { !$0.reassigned })
+}
+
+/// `fixtureTranscript` with segment `id`'s every word deleted in Review: no text or words, what it held kept.
+private func transcriptWithoutWords(of id: String) throws -> Transcript {
+    var transcript = fixtureTranscript
+    let index = try #require(transcript.segments.firstIndex { $0.id == id })
+    let held = transcript.segments[index]
+    transcript.segments[index].removed = TranscriptRemovedWords(text: held.text, words: held.words)
+    transcript.segments[index].text = ""
+    transcript.segments[index].words = []
+    return transcript
+}
+
+/// A turn whose every word was deleted in Review with its segment keeps its ID in the run with no words
+/// (`DiarizationRun.removedSegments`): it is not shown, counts for no speaker, and no export has it, yet the edits
+/// naming it still apply (they carry over to the run, and back when the words are restored).
+@Test func aTurnWithoutWordsIsNotShownButItsEditsStillApply() throws {
+    let transcript = try transcriptWithoutWords(of: "seg-T2")
+    var run = fixtureRun
+    run.turns[1].spans = []
+    run.removedSegments = [RemovedSegmentTurns(segmentID: "seg-T2", turnIDs: ["T2"])]
+    let assign = edit(.reassignTurns(turnIDs: ["T2"], to: "system:S1"), id: "E1")
+    let projection = SpeakerProjection.make(run: run, transcript: transcript, edits: [assign], recognition: nil,
+                                            profileNames: [:])
+    #expect(!projection.turns.contains { $0.id == "T2" } && !projection.shownTurns.contains { $0.id == "T2" })
+    #expect(projection.appliedEditIDs == ["E1"] && projection.staleEdits.isEmpty)
+    #expect(speaker(projection, "system:S2")?.turnCount == 1, "Only T5 is left for S2.")
+    #expect(speaker(projection, "system:S1")?.turnCount == 3)
+    // A speaker whose every turn lost all its words is not listed.
+    run.turns[4].spans = []
+    let alone = SpeakerProjection.make(run: run, transcript: transcript, edits: [], recognition: nil,
+                                       profileNames: [:])
+    #expect(speaker(alone, "system:S2") == nil)
+    let document = ExportDocument(
+        metadata: ExportMetadata(sessionID: "SESSION", name: "Fixture", createdAt: fixedDate, durationSeconds: 70,
+                                 source: .microphoneAndSystem, locale: "en-US", backend: .speech,
+                                 timeZone: TimeZone(identifier: "UTC")!),
+        transcript: transcript, run: run, projection: alone)
+    let text = String(decoding: try TranscriptExporter.render(document, format: .txt), as: UTF8.self)
+    #expect(!text.contains("Speaker 2") && !text.contains("\n\n\n"))
+    #expect(!TranscriptExporter.blocks(document).flatMap(\.turnIDs).contains("T2"))
+}
+
+/// A run made again (Label Again) on a transcript whose segment lost every word gives that segment no turn, so the
+/// deletion stays.
+@Test func aSegmentWithoutWordsIsInNoTurnWhenLabelledAgain() throws {
+    let transcript = try transcriptWithoutWords(of: "seg-T2")
+    let result = SpeakerRunBuilder.build(
+        sessionID: "SESSION", transcript: transcript,
+        tracks: [.init(track: "system", policy: .diarized,
+                       output: FakeDiarizer.alternating(speakers: ["S1", "S2"], turnSeconds: 10, duration: 70)),
+                 .init(track: "mic", policy: .channel(speakerID: "mic:me", displayName: "Me"))],
+        engine: .fake)
+    #expect(!result.run.turns.isEmpty)
+    #expect(!result.run.turns.flatMap(\.spans).contains { $0.segmentID == "seg-T2" })
+    #expect(result.run.turns.allSatisfy { !$0.spans.isEmpty })
 }

@@ -64,12 +64,80 @@ enum SpeakerTranscriptRetarget {
         run.labelling = oldRun.labelling ?? oldRun.id
         run.createdAt = now
         run.transcriptID = transcript.id
+        // A segment's every word deleted (`TranscriptSegment.removed`): the turns that held them are recorded, and
+        // a turn left with no words stays, with none, so speaker edits naming it carry over and the words can come
+        // back to it. Restored (an undo, a Restore): they go back to the turns recorded.
+        let removal = move.flatMap { $0.replacement.isEmpty && !$0.replaced.isEmpty ? $0 : nil }
+        let restoration = move.flatMap { $0.replaced.isEmpty && !$0.replacement.isEmpty ? $0 : nil }
+        var restoredTo = Set<String>()
+        // The times each turn had before a deletion, for a turn holding the same words again (`before`): this
+        // segment's first, then those of the segments still deleted (several deleted from one turn come back in any
+        // order: the turn's words match the snapshot taken before the first of them only once all are back).
+        var timesBefore: [String: [SpeakerTurnTimes]] = [:]
+        if let restoration {
+            let records = oldRun.removedSegments ?? []
+            let record = records.first { $0.segmentID == restoration.segmentID }
+            let held = Set(record?.turnIDs ?? [])
+            restoredTo = Set(oldRun.turns.map(\.id).filter(held.contains))
+            guard !restoredTo.isEmpty else { throw notRestorable }
+            let ordered = (record.map { [$0] } ?? []) + records.filter { $0.segmentID != restoration.segmentID }
+            for times in ordered.flatMap({ $0.before ?? [] }) where restoredTo.contains(times.turnID) {
+                timesBefore[times.turnID, default: []].append(times)
+            }
+            // The segment's own snapshots stay with the segments still deleted from the same turns, so the times
+            // before the first deletion are found whichever order the words come back in.
+            var remaining = records.filter { $0.segmentID != restoration.segmentID }
+            for index in remaining.indices {
+                for times in record?.before ?? [] where remaining[index].turnIDs.contains(times.turnID)
+                    && !(remaining[index].before ?? []).contains(where: {
+                        $0.turnID == times.turnID && $0.spans == times.spans
+                    }) {
+                    remaining[index].before = (remaining[index].before ?? []) + [times]
+                }
+            }
+            run.removedSegments = Self.records(remaining)
+        }
+        if let removal {
+            let holders = oldRun.turns.filter { turn in
+                turn.spans.contains {
+                    $0.segmentID == removal.segmentID && $0.first < removal.replaced.upperBound
+                        && removal.replaced.lowerBound < $0.end
+                }
+            }
+            let record = RemovedSegmentTurns(
+                segmentID: removal.segmentID, turnIDs: holders.map(\.id),
+                before: holders.map {
+                    SpeakerTurnTimes(turnID: $0.id, spans: $0.spans, start: $0.start, end: $0.end, timing: $0.timing)
+                })
+            run.removedSegments = (oldRun.removedSegments ?? []).filter { $0.segmentID != removal.segmentID } + [record]
+        }
         // Cancellation is checked per segment (`Mapping`), turn, and speaker edit: a plan of a long meeting stops soon
         // when nothing will use it.
         run.turns = try oldRun.turns.map { turn in
             try Task.checkCancellation()
             var moved = turn
-            moved.spans = try mapping.spans(turn.spans, turnID: turn.id)
+            let restored = restoration.map { restoration in
+                restoredTo.contains(turn.id)
+                    ? restoration.replacement.map { WordRef(segmentID: restoration.segmentID, word: $0) } : []
+            } ?? []
+            moved.spans = mapping.spansAllowingEmpty(turn.spans, adding: restored)
+            if moved.spans.isEmpty {
+                // Its words were all deleted with their segment, now or earlier: it stays, with no words (its times
+                // as they were; no view shows it). Any other turn losing every word cannot be kept.
+                guard turn.spans.isEmpty || removal != nil else {
+                    throw HolosError.invalidInput("Speaker labels cannot be kept across this word change (turn "
+                                                  + "\(turn.id)).")
+                }
+                return moved
+            }
+            // Its words back as they were before the deletion: the times the labelling gave it then (the same audio),
+            // never worked out again from the words, so a deletion and its undo or Restore leave it as it was.
+            if let before = timesBefore[turn.id]?.first(where: { $0.spans == moved.spans }) {
+                moved.start = before.start
+                moved.end = before.end
+                moved.timing = before.timing
+                return moved
+            }
             let timing = try mapping.timing(of: moved.spans, turnID: turn.id)
             // Words of the same times: the same audio, and the times the labelling gave it stay.
             if mapping.sameTimes(turn.spans, moved.spans) { return moved }
@@ -108,6 +176,27 @@ enum SpeakerTranscriptRetarget {
         voiceData?.runID = run.id
         voiceData?.createdAt = now
         return Plan(run: run, edits: edits, recognition: recognition, voiceData: voiceData)
+    }
+
+    /// A Restore (or an undo) of a segment's deleted words refused because the labels do not record the turns that held
+    /// them (`DiarizationRun.removedSegments`): the speakers were labelled again since the words were deleted.
+    static let notRestorable = HolosError.invalidInput(
+        "The speakers were labelled again after these words were deleted, so no speaker turn is known to hold them; "
+            + "they stay deleted.")
+
+    /// Whether `run` records the turns that held segment `segmentID`'s deleted words, and one of them is still there: a
+    /// Restore can give them back (`plan`).
+    static func canRestore(_ segmentID: String, in run: DiarizationRun?) -> Bool {
+        guard let run, let held = run.removedSegments?.first(where: { $0.segmentID == segmentID })?.turnIDs else {
+            return false
+        }
+        let known = Set(held)
+        return run.turns.contains { known.contains($0.id) }
+    }
+
+    /// `records`, nil when there are none (so a run without any encodes as before).
+    private static func records(_ records: [RemovedSegmentTurns]?) -> [RemovedSegmentTurns]? {
+        records.flatMap { $0.isEmpty ? nil : $0 }
     }
 
     /// Writes everything that may safely be orphaned before the transcript pointer changes. The head is published
@@ -421,7 +510,8 @@ enum SpeakerTranscriptRetarget {
 
         /// A Review word edit's (or its undo's) mapping: in `move`'s segment, words before the replaced ones keep their
         /// index, words after shift by the change in count, and each replacement word is owned by every replaced word;
-        /// every other segment keeps its words as they are.
+        /// every other segment keeps its words as they are. A move of a whole segment's words to none (all deleted) or
+        /// from none (restored) leaves the restored words without an owner here (`plan` gives them theirs).
         init(from old: Transcript, to new: Transcript, move: ReviewWordMove, undo: Bool) throws {
             let changed = HolosError.invalidInput("The edited transcript does not match the speaker labels' words.")
             let oldSegments = Dictionary(old.segments.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
@@ -440,7 +530,19 @@ enum SpeakerTranscriptRetarget {
                 let newWords = WordTiming.effectiveWords(of: segment)
                 let ref = { (word: Int) in WordRef(segmentID: segment.id, word: word) }
                 let owners: [[WordRef]]
-                if segment.id == move.segmentID {
+                if segment.id == move.segmentID, move.replaced.isEmpty != move.replacement.isEmpty {
+                    // Every word of the segment deleted with it (`TranscriptSegment.removed`), or all brought back
+                    // (an undo, a Restore): all of them, from none or to none, and the segment says so on that side.
+                    let removes = move.replacement.isEmpty
+                    let whole = removes
+                        ? newWords.isEmpty && segment.removed != nil && before.removed == nil
+                            && move.replaced == 0..<oldWords.count
+                        : oldWords.isEmpty && before.removed != nil && segment.removed == nil
+                            && move.replacement == 0..<newWords.count
+                    guard whole else { throw changed }
+                    // Restored words have no old word to own them: the plan gives them to the turns that held them.
+                    owners = newWords.indices.map { _ in [] }
+                } else if segment.id == move.segmentID {
                     // Both ranges within their words before any count is used (a move read from a damaged journal
                     // can hold any numbers), then compared without adding, so nothing can overflow. Neither is ever
                     // empty (an edit, and its undo, replace words by words): an empty one would leave words with no
@@ -559,9 +661,9 @@ enum SpeakerTranscriptRetarget {
 
         /// The new words owned by a word of `spans` (old words), as spans in transcript order. Only the spans' own
         /// words are read (`owned`), each within the old words some new word names (a span read from disk can hold
-        /// any numbers).
-        func spansAllowingEmpty(_ spans: [WordSpan]) -> [WordSpan] {
-            var found = Set<WordRef>()
+        /// any numbers). `adding`: new words given besides (restored words, which no old word owns).
+        func spansAllowingEmpty(_ spans: [WordSpan], adding: [WordRef] = []) -> [WordSpan] {
+            var found = Set<WordRef>(adding)
             for span in spans {
                 let end = min(span.end, ownedEnd[span.segmentID] ?? 0)
                 let first = max(span.first, 0)

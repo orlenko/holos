@@ -1028,6 +1028,50 @@ struct TurnListWordEditTests {
                 "The context menu follows the same rule.")
     }
 
+    /// Words deleted with their whole segment are restored from the menu of the row of the turn nearest them (the
+    /// review says which, `ReviewSession.deletedWords(near:)`), and by VoiceOver; only while words can be edited.
+    @Test func deletedWordsAreOfferedForARestoreFromTheirRow() throws {
+        let (list, _) = editingList()
+        let deleted = ReviewDeletedWords(segmentID: "X", text: "Thanks,", start: 5)
+        list.deletedWords = { $0 == "T2" ? [deleted] : [] }
+        var restored: [String] = []
+        list.onRestoreDeleted = { restored.append($0) }
+        let cell = try TurnListViewTests.cell(list, row: 0)
+        let menu = list.table.wordMenu(row: 0, cell: cell, word: cell.bodyText.reviewWord(at: 0), index: 0)
+        let item = try #require(menu.items.first { $0.title == "Restore Deleted “Thanks,”" })
+        #expect(item.isEnabled)
+        menu.performActionForItem(at: menu.index(of: item))
+        #expect(restored == ["X"])
+        let other = try TurnListViewTests.cell(list, row: 1)
+        #expect(!list.table.wordMenu(row: 1, cell: other, word: other.bodyText.reviewWord(at: 0), index: 0).items
+            .contains { $0.title.hasPrefix("Restore Deleted") }, "Only from the row of the turn nearest them.")
+        let names = (cell.bodyText.accessibilityCustomActions() ?? []).map(\.name)
+        #expect(names.contains("Restore Deleted “Thanks,”"))
+        list.canEditWords = false
+        #expect(!list.table.wordMenu(row: 0, cell: cell, word: cell.bodyText.reviewWord(at: 0), index: 0).items
+            .contains { $0.title.hasPrefix("Restore Deleted") })
+        #expect(!((cell.bodyText.accessibilityCustomActions() ?? []).map(\.name).contains("Restore Deleted “Thanks,”")))
+        // Edit ▸ Restore Deleted Words… lists every deleted segment, whether or not a turn is shown near it.
+        NSApplication.shared.setActivationPolicy(.prohibited)  // `NSApp`, which the menu's Window items need
+        let edit = try #require(AppKeyboard.mainMenu().items.first { $0.title == "Edit" }?.submenu)
+        #expect(edit.items.contains {
+            $0.title == ReviewWindow.restoreDeletedWordsTitle && $0.action == #selector(ReviewWindow.restoreDeletedWords(_:))
+        })
+        final class Receiver: NSObject {
+            var chosen: [String] = []
+            @objc func chose(_ sender: NSMenuItem) { chosen.append(sender.representedObject as? String ?? "") }
+        }
+        let receiver = Receiver()
+        let all = ReviewWindow.restoreMenu([deleted, ReviewDeletedWords(segmentID: "Z", text: "Cheers.", start: 70)],
+                                           target: receiver, action: #selector(Receiver.chose(_:)))
+        #expect(all.items.map(\.title) == ["00:05  Restore Deleted “Thanks,”", "01:10  Restore Deleted “Cheers.”"])
+        all.performActionForItem(at: 1)
+        #expect(receiver.chosen == ["Z"])
+        // A long text is shortened in the title.
+        let long = ReviewDeletedWords(segmentID: "Y", text: String(repeating: "word ", count: 20), start: 0)
+        #expect(TurnTextView.restoreTitle(long).count < 60)
+    }
+
     @Test func theFieldFollowsItsWordsWhenAnEditEarlierInTheSegmentSaves() throws {
         let (list, saved) = editingList()
         var messages: [String?] = []

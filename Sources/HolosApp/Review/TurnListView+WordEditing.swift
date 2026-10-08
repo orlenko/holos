@@ -296,8 +296,7 @@ extension TurnListView: NSTextFieldDelegate {
             let typed = editField.stringValue
             closeEditField()
             let changed = TranscriptWordEdit.cleaned(typed) != TranscriptWordEdit.cleaned(target.shown)
-            onEditMessage?(changed ? Self.changedElsewhere + " What you typed: “\(TranscriptWordEdit.cleaned(typed))”."
-                                   : Self.changedElsewhere)
+            onEditMessage?(changed ? Self.changedElsewhere + TranscriptWordEdit.typedNote(typed) : Self.changedElsewhere)
             return
         }
         guard editingWords, editable, canEditWords,
