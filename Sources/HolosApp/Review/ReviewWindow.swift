@@ -663,6 +663,7 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, NSM
         // A run a word edit or its undo published keeps the turns, and with them the window's paragraph breaks (kept
         // for every turn, a hidden interjection's too).
         let runID = projection.runID
+        takeBackUndoneJoins(runID: runID)
         // A break or join made on a split's second part while the split saved names its temporary ID: resolved.
         let breaks = paragraphBreaks.active(in: projection.turns, runID: runID, keepsTurnsOf: { [review] old in
             review.keepsTurns(of: old, in: runID)
@@ -1454,24 +1455,70 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, NSM
         }
         refresh()
         let target: ReviewAssignTarget = join.speakerID.map { .speaker($0) } ?? .unknown
+        let made = JoinMade(turns: turns, before: before, runID: runID, batches: [])
         perform { [weak self] review in
+            let batches: [String]
             do {
-                try await review.assign(join.reassign, to: target)
+                batches = try await review.assign(join.reassign, to: target)
             } catch {
                 // Not given the speaker: the rows part again, and nothing is left to join them later unasked. Saved but
                 // not reread (`incomplete`): the speaker change stands, and so do the joins.
                 if case HolosError.incomplete = error { throw error }
                 if let self {
-                    for (turn, mark) in zip(turns, before) {
-                        // By the ID it has now (a split part's temporary ID gives way to its saved one).
-                        let id = self.review.resolvedTurnID(turn.id)
-                        self.paragraphBreaks.restore(mark, of: self.review.projection.turns.first { $0.id == id } ?? turn)
-                    }
+                    self.takeBack(made)
                     self.refresh()
                 }
                 throw error
             }
+            guard let self else { return }
+            // Dropped by Undo before it ran (nothing saved, the turns keep their speaker): taken back at once. Saved:
+            // taken back when Undo reverts it (`refresh`).
+            if batches.isEmpty {
+                if join.reassign.contains(where: { review.turn($0)?.speakerID != join.speakerID }) {
+                    self.takeBack(made)
+                    self.refresh()
+                    return
+                }
+            } else {
+                self.joinsMade.append(JoinMade(turns: turns, before: before, runID: runID, batches: batches))
+            }
             finish()
+        }
+    }
+
+    /// A join whose rows' speakers differed: its turns, what each had before it, the labels run it was made on, and
+    /// the journal batches of its speaker change. Undo reverting that change takes the joins back (`refresh`), so the
+    /// rows never read as one again unasked, nor when the same speaker is given to them later.
+    private struct JoinMade {
+        var turns: [ProjectedTurn]
+        var before: [ReviewParagraphBreaks.Mark?]
+        var runID: String
+        var batches: [String]
+    }
+
+    /// The joins made with a speaker change still in effect.
+    private var joinsMade: [JoinMade] = []
+
+    /// Puts back what `made`'s turns had before the join, by the IDs they have now (a split part's temporary ID gives
+    /// way to its saved one).
+    private func takeBack(_ made: JoinMade) {
+        for (turn, mark) in zip(made.turns, made.before) {
+            let id = review.resolvedTurnID(turn.id)
+            paragraphBreaks.restore(mark, of: review.projection.turns.first { $0.id == id } ?? turn)
+        }
+    }
+
+    /// Joins whose speaker change Undo took back are taken back too; those of labels replaced since (a relabel, whose
+    /// run drops every join) are forgotten.
+    private func takeBackUndoneJoins(runID: String) {
+        guard !joinsMade.isEmpty else { return }
+        joinsMade.removeAll { made in
+            guard made.runID == runID || review.keepsTurns(of: made.runID, in: runID) else { return true }
+            guard review.inEffect(batches: made.batches) else {
+                takeBack(made)
+                return true
+            }
+            return false
         }
     }
 

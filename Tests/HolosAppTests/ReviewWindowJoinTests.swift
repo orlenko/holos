@@ -225,4 +225,50 @@ struct ReviewWindowJoinTests {
         #expect(journal(session) == [.reassignTurns(turnIDs: ["T2"], to: "S1")], "Only the change made elsewhere.")
         await window.closeAndWait()
     }
+
+    /// ⌘Z takes back a join's speaker change, and the join with it: the same speaker given to the row later (four
+    /// seconds after the row before, past the gap) leaves two rows, as any assignment would.
+    @Test(.timeLimit(.minutes(1))) func undoingAJoinsSpeakerChangeTakesTheJoinBack() async throws {
+        let (window, session) = try await open([Spec(speaker: "S1", start: 0, words: ["amber", "birch"]),
+                                                Spec(speaker: "S2", start: 5, words: ["cedar", "dune"])])
+        let offer = try #require(window.turnList.joinOffer(row: 1, index: 0))
+        window.turnList.joinChosen(offer.choice)
+        #expect(await until { journal(session).count == 1 && rows(window) == [["T1", "T2"]] })
+        #expect(window.paragraphJoins == ["T2"])
+        // ⌘Z with the list (no text field) in front.
+        window.window.makeFirstResponder(window.turnList.table)
+        #expect(window.handleKey(try commandZ(window)))
+        #expect(await until {
+            speaker(window, "T2") == "S2" && window.paragraphJoins.isEmpty && rows(window) == [["T1"], ["T2"]]
+        })
+        // The same speaker given again by hand: a row of its own past the gap, never joined back.
+        try await window.review.assign(["T2"], to: .speaker("S1"))
+        #expect(await until {
+            speaker(window, "T2") == "S1" && window.paragraphJoins.isEmpty && rows(window) == [["T1"], ["T2"]]
+        })
+        await window.closeAndWait()
+    }
+
+    /// ⌘Z before the join's speaker change was saved drops that change: the join goes with it.
+    @Test(.timeLimit(.minutes(1))) func undoingAJoinBeforeItsSpeakerChangeSavesTakesTheJoinBack() async throws {
+        let (window, session) = try await open([Spec(speaker: "S1", start: 0, words: ["amber", "birch"]),
+                                                Spec(speaker: "S2", start: 5, words: ["cedar", "dune"])])
+        // A change already saving holds the queue, so the join's speaker change waits behind it.
+        let (stream, release) = AsyncStream<Void>.makeStream()
+        window.review.beforeEdit = { for await _ in stream {} }
+        let held = Task { try await window.review.setName("Ash", speakerID: "S1") }
+        #expect(await until { window.review.canUndo })
+        let offer = try #require(window.turnList.joinOffer(row: 1, index: 0))
+        window.turnList.joinChosen(offer.choice)
+        #expect(await until { speaker(window, "T2") == "S1" && window.paragraphJoins == ["T2"] })
+        window.window.makeFirstResponder(window.turnList.table)
+        #expect(window.handleKey(try commandZ(window)))
+        release.finish()
+        _ = try await held.value
+        #expect(await until {
+            speaker(window, "T2") == "S2" && window.paragraphJoins.isEmpty && rows(window) == [["T1"], ["T2"]]
+        })
+        #expect(!journal(session).contains(.reassignTurns(turnIDs: ["T2"], to: "S1")))
+        await window.closeAndWait()
+    }
 }
