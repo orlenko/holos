@@ -777,6 +777,11 @@ struct TurnListWordEditTests {
         #expect(!list.focusSpeaker(startingAt: beta.ref) && opened.count == 1)
         name.removeFromSuperview()
         #expect(!list.focusSpeaker(startingAt: WordRef(segmentID: "T9", word: 0)), "No row starts there.")
+        // As it is about to open: never while its window is not the key one (the person typing in another window),
+        // nor with no window.
+        #expect(list.window?.isKeyWindow != true)
+        #expect(!TurnListView.mayOpenSpeakerMenu(in: list.window))
+        #expect(!TurnListView.mayOpenSpeakerMenu(in: nil))
     }
 
     /// A field opened in a split's second part while the split still saves (its row has the part's temporary ID)

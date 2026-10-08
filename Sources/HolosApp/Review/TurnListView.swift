@@ -576,7 +576,17 @@ final class TurnListView: NSView, NSTableViewDataSource, NSTableViewDelegate {
     /// Opens a row's speaker pop-up after a split, so the second part can be given its speaker at once (tests record
     /// it instead: a pop-up's menu tracks the mouse until it closes).
     var openSpeakerMenu: (NSPopUpButton) -> Void = { popUp in
-        DispatchQueue.main.async { popUp.performClick(nil) }
+        DispatchQueue.main.async {
+            guard TurnListView.mayOpenSpeakerMenu(in: popUp.window) else { return }
+            popUp.performClick(nil)
+        }
+    }
+
+    /// Whether the pop-up may open now, as it is about to: its window has the keyboard (the person may have gone on
+    /// to type in another window while the split saved) and no text field in it is being typed in.
+    static func mayOpenSpeakerMenu(in window: NSWindow?) -> Bool {
+        guard let window, window.isKeyWindow else { return false }
+        return (window.firstResponder as? NSText)?.isFieldEditor != true
     }
     /// Words can be edited now (`ReviewSession.canEditWords`); edit mode shows, but a click opens no field, otherwise.
     var canEditWords = true {
