@@ -834,6 +834,43 @@ func forgetPersonRemovesSamplesAndVoiceEntries() async throws {
     #expect(try store.pendingForgets().isEmpty)
 }
 
+/// A processed session whose two speakers were saved, before same name meant same speaker, as two people both called
+/// Alex: mic:S1 (T1, T3) linked to ALEX-1, mic:S2 (T2, T4) to ALEX-2. The meeting shows them as one speaker.
+private func profileTwoAlexes(_ temp: TemporaryDirectory,
+                              store: SpeakerProfileStore) async throws -> (session: URL, runID: String) {
+    try store.update {
+        $0.rememberVoices = true
+        $0.profiles = [SpeakerProfile(id: "ALEX-1", displayName: "Alex"),
+                       SpeakerProfile(id: "ALEX-2", displayName: "Alex")]
+    }
+    let (session, record) = try await profileProcessedSession(in: temp, store: nil, forceVoiceData: true)
+    let runID = try #require(record.runID)
+    try appendWithoutJoining([.linkProfile(speakerID: "mic:S1", profileID: "ALEX-1"),
+                              .rename(speakerID: "mic:S1", name: "Alex"),
+                              .linkProfile(speakerID: "mic:S2", profileID: "ALEX-2"),
+                              .rename(speakerID: "mic:S2", name: "Alex")], session: session)
+    #expect(try SessionFixtures.view(session).speakers.map(\.memberIDs) == [["mic:S1", "mic:S2"]])
+    return (session, runID)
+}
+
+@Test(.timeLimit(.minutes(1)))
+func forgettingOneOfTwoPeopleShownAsOneSpeakerRemovesOnlyTheirVoiceData() async throws {
+    for (forgotten, kept, keptTurns) in [("ALEX-2", "mic:S1", ["T1", "T3"]), ("ALEX-1", "mic:S2", ["T2", "T4"])] {
+        let temp = try TemporaryDirectory("profiles")
+        defer { temp.remove() }
+        let store = profileStore(temp)
+        let (session, runID) = try await profileTwoAlexes(temp, store: store)
+        let before = try #require(try SessionSpeakerStore.readVoiceData(runID: runID, session: session))
+        #expect(Set(before.centroids.keys) == ["mic:S1", "mic:S2"])
+
+        try VoiceProfileService.forget(profileID: forgotten, store: store, sessionsRoot: temp.url)
+
+        let voice = try #require(try SessionSpeakerStore.readVoiceData(runID: runID, session: session))
+        #expect(Array(voice.centroids.keys) == [kept], "Forgetting \(forgotten)")
+        #expect(voice.turnEmbeddings.map(\.turnID).sorted() == keptTurns, "Forgetting \(forgotten)")
+    }
+}
+
 @Test(.timeLimit(.minutes(1)))
 func forgetAllRemovesVoiceFilesKeepsNames() async throws {
     let temp = try TemporaryDirectory("profiles")

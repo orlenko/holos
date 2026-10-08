@@ -1694,11 +1694,13 @@ public enum VoiceProfileService {
             return false
         }
         // The effective person, not just the link: a speaker this meeting names automatically is theirs too, and
-        // a rejection, a link to somebody else or an explicit name has already taken that back.
-        let speakers = projection.speakers.filter { isThePerson($0.effectiveProfileID) }
+        // a rejection, a link to somebody else or an explicit name has already taken that back. Per stored speaker,
+        // before same-named speakers are shown as one (`unjoinedSpeakers`): two joined speakers linked to two people
+        // each hold that person's voice, and forgetting one must take exactly theirs.
+        let speakers = projection.unjoinedSpeakers.filter { isThePerson($0.effectiveProfileID) }
         let speakerIDs = Set(speakers.map(\.id))
         let clusters = Set(speakers.flatMap(\.clusterIDs))
-        let spoken = projection.turns.filter { $0.speakerID.map(speakerIDs.contains) ?? false }
+        let spoken = projection.unjoinedTurns.filter { $0.speakerID.map(speakerIDs.contains) ?? false }
         let turns = Set(spoken.map { String($0.id.prefix { $0 != "/" }) })
         // A centroid is the machine's average of its cluster's speech. When the user moved a turn of this person to
         // a speaker that does not own its cluster (a reassignment, or a speaker the user made), that cluster's

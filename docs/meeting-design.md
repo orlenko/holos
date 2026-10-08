@@ -3309,14 +3309,21 @@ suggestions away and nothing else. Two halves keep the rule:
 - *Read side (every meeting, nothing written).* After step 5, the projection lists each
   group as one: `speakers` has one entry, `ProjectedSpeaker.memberIDs` lists the stored
   IDs it shows (its own first), and `turns` (so `shownTurns`, the exports, Review, the
-  CLI, summaries and voice learning) gives the others' turns to it. The one that stays
-  keeps its ID, ordinal, name, link and rejections, exactly as a `merge` into it would; it
-  adds the others' clusters (in list order), talk time and turn counts. It is chosen from
-  the projection alone: linked to a person first (a merge keeps only the target's link),
-  then more talk time (the person's main voice, and the spelling shown most), then the
-  lower ordinal, then the ID. A joined speaker linked to another person than the one that
-  stays keeps that person's voice: its turns show as kept out of voice learning
-  (`excludedFromEnrollment`), so no sample moves from one person to another.
+  CLI, summaries and voice learning) gives the others' turns to it. The groups are worked
+  out on the journal's state (`SameNameSpeakers.joins`: stored speakers that hold a turn
+  with words, or were made by `newSpeaker`), never on recognition, the echo mask, talk
+  time or the people store, so every reader of a meeting shows the same groups as the
+  same speaker. The one shown is the lowest (ordinal, ID) of the group: fixed by the
+  journal, so a newer speaker never takes an older one's place, and a change's preview
+  and its save keep the same row. It keeps its ID, ordinal, name and rejections, exactly
+  as a `merge` into it would, and shows the group's person: its own link, else the first
+  link of the others (in (ordinal, ID) order); it adds the others' clusters, talk time and
+  turn counts. A joined speaker linked to another person than that keeps that person's
+  voice: its turns show as kept out of voice learning (`excludedFromEnrollment`), so no
+  sample moves from one person to another. `unjoinedSpeakers` and `unjoinedTurns` keep
+  every stored speaker as it is, with its own link and turns; voice data reads them
+  (forgetting a person removes exactly the clusters and turns of the stored speakers
+  linked to them, never those of a same-named speaker linked to somebody else).
   `mergeSuggestions` are worked out on the joined list. Edits and fingerprints still see
   every stored speaker, so journals written before the rule replay exactly as before; only
   their display changes. This is what shows a journal like "a new speaker named Alice for
@@ -3331,15 +3338,16 @@ suggestions away and nothing else. Two halves keep the rule:
   fingerprints; the caller's own lines must match its view as always:
   (1) a rename, link, rejection, or merge of a speaker shown joined first merges the joined
   stored speakers into the one listed, at the start of the batch, as the read side shows
-  them, and names that one (otherwise renaming "Alice" would rename one of her stored
-  speakers and leave the other showing as a second Alice); (2) after the batch, each
-  speaker the batch named, linked, created, merged into, or gave turns to that is now
-  joined with others gets them merged into one, at the end of the batch. Who stays is
-  decided on the labels before the batch: the speaker already listed under one of the
-  group's names or people, when one is in the group (else the read side's choice). The
-  batch's own links never decide it, so Review's preview of a change (a link to a person
-  still being created shows as a rename) and the saved batch keep the same speaker, and a
-  change queued on the shown row finds it. The person the merged speaker is linked to is
+  them (with a link to the group's person when only a joined one had it, unless the batch
+  links that speaker itself), and names that one (otherwise renaming "Alice" would rename
+  one of her stored speakers and leave the other showing as a second Alice); (2) after the
+  batch, each speaker the batch named, linked, created, merged into, or gave turns to that
+  is now joined with others gets them merged into one, at the end of the batch. The one
+  that stays is the one the labels after the batch show them as: the lowest (ordinal, ID),
+  worked out by the same `SameNameSpeakers.joins` the read side uses. Links never decide
+  it, so Review's preview of a change (a link to a person still being created shows as a
+  rename) and the saved batch keep the same speaker, and a change queued on the shown row
+  finds it. The person the merged speaker is linked to is
   the newest the batch linked any of them to, else the one that stays is linked to, else
   the first another one is linked to; a `linkProfile` follows the merges when that changes
   the link of the one that stays. A speaker of the group linked to another person (the
@@ -3349,8 +3357,9 @@ suggestions away and nothing else. Two halves keep the rule:
   name, "This is me", a confirmed suggestion, or Confirm All each leave one stored
   speaker. Everything added shares the batch's ID: one undo takes back the change and all
   of it, and voice samples follow as for any merge (`needsSampleRefresh`). A batch with a
-  `revert` is saved as it is. The lines added are merges and exclusions before the asked
-  actions, and exclusions, merges and a link after them; `SpeakerEditor.saved(_:asAsked:)`
+  `revert` is saved as it is. The lines added are exclusions, merges and a link before the
+  asked actions (the link only in a batch that does not link that speaker itself), and
+  exclusions, merges and a link after them; `SpeakerEditor.saved(_:asAsked:)`
   and `withoutJoins` let a caller (Review) recognize its batch among the lines read back.
   Review shows every queued change (an edit, a link, "This is me", Confirm All, an
   assignment to a person) through the same `joiningSameNames` on the labels shown, so what

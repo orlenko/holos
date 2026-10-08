@@ -133,19 +133,84 @@ private func turnSpeaker(_ projection: SpeakerProjection, _ id: String) -> Strin
     #expect(view.fingerprint(for: .rename(speakerID: "user:A", name: nil))?.contains("present") == true)
 }
 
-@Test func theSpeakerLinkedToAPersonStaysWhateverItsTalkTime() throws {
+@Test func theLowestOrdinalStaysAndTakesTheGroupsLink() throws {
+    // S3 (the person's link) and S1 (the lowest ordinal) are both Alice: S1 is shown, linked to the person.
     var journal = Journal(names: ["P-ALICE": "Alice"])
     journal.append(.linkProfile(speakerID: "system:S3", profileID: "P-ALICE"))
     journal.append(.rename(speakerID: "system:S3", name: "Alice"))
     journal.append(.rename(speakerID: "system:S1", name: "ALICE"))
-    let alice = try #require(speaker(journal.view, "system:S3"))
-    #expect(alice.name == "Alice")
+    let alice = try #require(speaker(journal.view, "system:S1"))
+    #expect(alice.name == "ALICE")
     #expect(alice.profileID == "P-ALICE")
-    #expect(alice.memberIDs == ["system:S3", "system:S1"])
-    #expect(alice.clusterIDs == ["system:S3", "system:S1"])
+    #expect(alice.memberIDs == ["system:S1", "system:S3"])
+    #expect(alice.clusterIDs == ["system:S1", "system:S3"])
     #expect(alice.talkSeconds == 10)
-    #expect(speaker(journal.view, "system:S1") == nil)
-    #expect(turnSpeaker(journal.view, "T1") == "system:S3")
+    #expect(speaker(journal.view, "system:S3") == nil)
+    #expect(turnSpeaker(journal.view, "T3") == "system:S1")
+}
+
+@Test func eachStoredSpeakerStaysReadableForVoiceData() {
+    var journal = Journal(names: ["P-ALICE": "Alice"])
+    journal.append(.linkProfile(speakerID: "system:S3", profileID: "P-ALICE"))
+    journal.append(.rename(speakerID: "system:S3", name: "Alice"))
+    journal.append(.rename(speakerID: "system:S1", name: "ALICE"))
+    let view = journal.view
+    #expect(view.unjoinedSpeakers.map(\.id) == ["system:S1", "system:S2", "system:S3", "mic:me"])
+    #expect(view.unjoinedSpeakers.first { $0.id == "system:S3" }?.profileID == "P-ALICE")
+    #expect(view.unjoinedSpeakers.first { $0.id == "system:S1" }?.profileID == nil)
+    #expect(view.unjoinedTurns.first { $0.id == "T3" }?.speakerID == "system:S3")
+}
+
+@Test func whoIsShownNeverDependsOnTalkTime() {
+    // S3 (2 s, ordinal 3) and a new speaker (5 s, ordinal 5) are both Bob: S3 is shown, whoever talks longer.
+    var journal = Journal()
+    journal.append(.newSpeaker(speakerID: "user:B", name: "Bob", turnIDs: ["T5"]))
+    journal.append(.rename(speakerID: "system:S3", name: "Bob"))
+    #expect(journal.view.speakers.first { $0.name == "Bob" }?.id == "system:S3")
+    #expect(journal.view.speakers.first { $0.name == "Bob" }?.memberIDs == ["system:S3", "user:B"])
+}
+
+@Test func whoIsShownIsTheSameWithAndWithoutTheEchoMask() throws {
+    // A reader without the echo mask (the post-processor's) and one with it (Review) must show the same speaker:
+    // S1 (4 s) and the microphone's speaker (6 s, 4 of them echo) are both called Me.
+    let system = TurnSpec(id: "A1", start: 0, speaker: "system:S1", words: 4)
+    let microphone = TurnSpec(id: "M1", start: 10, speaker: "mic:me", words: 6, track: "mic")
+    let callTranscript = Transcript(id: "CALL", createdAt: fixedDate, source: "mic+system", locale: "en-US",
+                                    backend: .speech, segments: [segment(system), segment(microphone)])
+    let callRun = DiarizationRun(
+        id: "RUN-CALL", sessionID: "SESSION", createdAt: fixedDate, transcriptID: "CALL", engine: nil,
+        alignment: AlignmentInfo(version: 1, parameters: .v1),
+        tracks: [TrackDiarization(track: "system", policy: .diarized),
+                 TrackDiarization(track: "mic", policy: .channel(speakerID: "mic:me", displayName: "Me"))],
+        speakers: [SessionSpeaker(id: "system:S1", ordinal: 1, provenance: .diarizer, clusterIDs: ["system:S1"]),
+                   SessionSpeaker(id: "mic:me", ordinal: 2, displayName: "Me", provenance: .channelAssumption)],
+        turns: [system, microphone].map { spec in
+            SpeakerTurn(id: spec.id, track: spec.track, start: spec.start, end: spec.start + Double(spec.words),
+                        speakerID: spec.speaker, clusterID: spec.track == "mic" ? nil : spec.speaker,
+                        spans: [WordSpan(segmentID: "seg-\(spec.id)", first: 0, end: spec.words)],
+                        assignmentScore: 0.9, timing: .measured)
+        })
+    let edits = [SpeakerEdit(id: "E1", baseRunID: "RUN-CALL", at: fixedDate, source: "cli",
+                             action: .rename(speakerID: "system:S1", name: "me"))]
+    // Echo over the microphone's first four words (10–14 s), the microphone's own voice elsewhere.
+    let frames = Int(17 / AcousticEchoMask.hopSeconds)
+    let classes: [AcousticEchoMask.FrameClass] = (0..<frames).map { frame in
+        let centre = AcousticEchoMask.firstCentreSeconds + Double(frame) * AcousticEchoMask.hopSeconds
+        return centre >= 10 && centre < 14 ? .echo : .local
+    }
+    let mask = try #require(AcousticEchoMask(classes: classes.map(\.rawValue),
+                                             echoLevels: [Int8](repeating: -40, count: frames)))
+    let plain = SpeakerProjection.make(run: callRun, transcript: callTranscript, edits: edits, recognition: nil,
+                                       profileNames: [:])
+    let masked = SpeakerProjection.make(run: callRun, transcript: callTranscript, edits: edits, recognition: nil,
+                                        profileNames: [:], acousticEcho: mask)
+    // The mask does hide the microphone's echo, so the talk times compare the other way round with it.
+    let micPlain = try #require(plain.turns.first { $0.id == "M1" }.map { $0.end - $0.start })
+    let micMasked = try #require(masked.turns.first { $0.id == "M1" }.map { $0.end - $0.start })
+    #expect(micPlain > 4 && micMasked < 4)
+    #expect(plain.speakers.map(\.id) == ["system:S1"])
+    #expect(masked.speakers.map(\.id) == ["system:S1"])
+    #expect(plain.speakers.map(\.memberIDs) == masked.speakers.map(\.memberIDs))
 }
 
 @Test func differentNamesStaySeparate() {
@@ -221,6 +286,23 @@ private func turnSpeaker(_ projection: SpeakerProjection, _ id: String) -> Strin
     #expect(speaker(journal.view, "system:S1")?.profileID == "P-ALICE")
     #expect(speaker(journal.view, "system:S1")?.memberIDs == ["system:S1"])
     #expect(turnSpeaker(journal.view, "T3") == "system:S1")
+}
+
+@Test func renamingALinkedSpeakerToAnotherSpeakersNameKeepsTheSameOneInPreviewAndSave() {
+    // S1 is linked to Bob; a new speaker is called Alice. S1 is then named Alice by the name field, which links a
+    // person it is creating: shown as a rename, saved with the link. Both keep S1 (the lower ordinal).
+    var journal = Journal(names: ["P-BOB": "Bob"])
+    journal.save([.linkProfile(speakerID: "system:S1", profileID: "P-BOB"),
+                  .rename(speakerID: "system:S1", name: "Bob")])
+    journal.save([.newSpeaker(speakerID: "user:A", name: "Alice", turnIDs: ["T5"])])
+    let view = journal.view
+    let shown = view.joiningSameNames([.rename(speakerID: "system:S1", name: "Alice")])
+    let saved = view.joiningSameNames([.linkProfile(speakerID: "system:S1", profileID: "P-ALICE"),
+                                       .rename(speakerID: "system:S1", name: "Alice")])
+    #expect(shown == [.rename(speakerID: "system:S1", name: "Alice"), .merge(from: "user:A", into: "system:S1")])
+    #expect(saved == [.linkProfile(speakerID: "system:S1", profileID: "P-ALICE"),
+                      .rename(speakerID: "system:S1", name: "Alice"),
+                      .merge(from: "user:A", into: "system:S1")])
 }
 
 @Test func theBatchsOwnLinkNeverChangesWhoStays() {

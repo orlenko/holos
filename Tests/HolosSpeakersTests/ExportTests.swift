@@ -687,19 +687,18 @@ private func unescapedLiteral(_ markdown: String) -> String? {
     ])
     let exported = document(meeting, projection: view)
     let markdown = try rendered(exported, .md)
-    // Alice: 4 s (the new speaker, which talks longer and so stays) + 2 s; Bob: 1 s + 1 s (a tie: the lower ordinal,
-    // S3, stays).
-    #expect(markdown.contains("- Participants: ALICE (00:06), Speaker 1 (00:03), Bob (00:02)\n"))
+    // Alice: 2 s + 4 s, shown as S2 (the lower ordinal) with its spelling; Bob: 1 s + 1 s, shown as S3.
+    #expect(markdown.contains("- Participants: Alice (00:06), Speaker 1 (00:03), Bob (00:02)\n"))
     // One person's turns read as one block, as one speaker's do.
     let text = try rendered(exported, .txt)
-    #expect(text.hasPrefix("Speaker 1  00:05\none two three\n\nALICE  00:10\n"))
-    #expect(text.components(separatedBy: "ALICE  ").count == 2)
+    #expect(text.hasPrefix("Speaker 1  00:05\none two three\n\nAlice  00:10\n"))
+    #expect(text.components(separatedBy: "Alice  ").count == 2)
     #expect(text.components(separatedBy: "Bob  ").count == 2)
     let speakers = try #require(try json(exported)["speakers"] as? [[String: Any]])
     #expect(speakers.count == 3)
     for format in ExportFormat.allCases {
         let text = try rendered(exported, format)
-        #expect(!text.contains("Alice"), "\(format)")
+        #expect(!text.contains("ALICE"), "\(format)")
         #expect(!text.contains("user:B"), "\(format)")
     }
 }

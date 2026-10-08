@@ -308,13 +308,15 @@ public enum SpeakerEditor {
     }
 
     /// Whether `saved` (a batch's actions in journal order) is `asked` as `apply` saves it: the same actions, with at
-    /// most what `SpeakerProjection.joiningSameNames` adds for same-named speakers (merges and exclusions from voice
-    /// learning before them; those, then a link, after them). For a caller that recognizes its own batch among the
+    /// most what `SpeakerProjection.joiningSameNames` adds for same-named speakers (exclusions from voice learning,
+    /// merges and links, before and after them). For a caller that recognizes its own batch among the
     /// lines it reads back.
     public static func saved(_ saved: [SpeakerEditAction], asAsked asked: [SpeakerEditAction]) -> Bool {
         guard saved.count >= asked.count else { return false }
         for start in 0...(saved.count - asked.count) where Array(saved[start..<(start + asked.count)]) == asked {
-            if isJoinPrefix(saved[..<start]), isJoinSuffix(saved[(start + asked.count)...]) { return true }
+            // Before them, also the link of a speaker shown joined to its group's person (never in a batch that
+            // links that speaker itself, so `withoutJoins` need not strip it).
+            if isJoinSuffix(saved[..<start]), isJoinSuffix(saved[(start + asked.count)...]) { return true }
         }
         return false
     }
