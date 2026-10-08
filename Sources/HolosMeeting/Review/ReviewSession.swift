@@ -714,6 +714,13 @@ public struct ReviewWord: Sendable, Equatable {
         return projection.turns.first { $0.id == id }
     }
 
+    /// The turn as the labels last read from disk have it: only changes saved (and reread) show here, never one
+    /// queued, saving, or an undo not saved yet. Nil when the saved labels have no such turn (a split part not saved).
+    public func savedTurn(_ turnID: String) -> ProjectedTurn? {
+        let id = resolvedTurnID(turnID)
+        return savedProjection.turns.first { $0.id == id }
+    }
+
     /// The text the window shows for a turn: its words in the transcript the head run was built from.
     ///
     /// Every place the window reads turn text goes through here (rows, search, previews, the split sheet), and turns
@@ -898,28 +905,14 @@ public struct ReviewWord: Sendable, Equatable {
     }
 
     /// `requireCompleteJournal`: refused under the speaker lock when the edit journal has a line this build cannot
-    /// read (an automatic change made from matches that such a line may contradict). Returns the journal batches it
-    /// saved (`inEffect`): none when it changed nothing, or Undo dropped it before it ran.
-    @discardableResult
-    private func apply(_ actions: [SpeakerEditAction], requireCompleteJournal: Bool) async throws -> [String] {
+    /// read (an automatic change made from matches that such a line may contradict).
+    private func apply(_ actions: [SpeakerEditAction], requireCompleteJournal: Bool) async throws {
         try requireEditable()
         let resolved = actions.map { Self.cleaned(resolve($0)) }
-        guard !resolved.isEmpty else { return [] }
+        guard !resolved.isEmpty else { return }
         try validate(resolved)
-        if SpeakerEditor.changesNothing(resolved, on: projection) { return [] }
-        let op = try await enqueue(.edit(resolved, requireCompleteJournal: requireCompleteJournal),
-                                   optimistic: resolved)
-        return op.batches
-    }
-
-    /// Whether a change saved as `batches` (what `assign` returned) is still in effect: false once Undo took it back
-    /// (a word edit's new run carries its lines over with their IDs, so it stays in effect through one), and for no
-    /// batch at all.
-    public func inEffect(batches: [String]) -> Bool {
-        guard !batches.isEmpty else { return false }
-        let wanted = Set(batches)
-        let applied = Set(projection.appliedEditIDs)
-        return snapshot.journal.edits.contains { wanted.contains($0.batchID ?? $0.id) && applied.contains($0.id) }
+        if SpeakerEditor.changesNothing(resolved, on: projection) { return }
+        try await enqueue(.edit(resolved, requireCompleteJournal: requireCompleteJournal), optimistic: resolved)
     }
 
     /// This window's newest change: a queued one is dropped (or reverted once saved), else the newest saved batch is
@@ -1024,26 +1017,23 @@ public struct ReviewWord: Sendable, Equatable {
         }
     }
 
-    /// Moves turns to a speaker, the unknown speaker, a new speaker, or a person, as one change. Returns the journal
-    /// batches it saved (`inEffect` tells when Undo took them back); none when it changed nothing or Undo dropped it
-    /// before it ran.
-    @discardableResult
-    public func assign(_ turnIDs: [String], to target: ReviewAssignTarget) async throws -> [String] {
+    /// Moves turns to a speaker, the unknown speaker, a new speaker, or a person, as one change.
+    public func assign(_ turnIDs: [String], to target: ReviewAssignTarget) async throws {
         try requireEditable()
         var seen = Set<String>()
         let ids = turnIDs.map(resolvedTurnID).filter { seen.insert($0).inserted }
-        guard !ids.isEmpty else { return [] }
+        guard !ids.isEmpty else { return }
         switch target {
         case .speaker(let speakerID):
-            return try await apply([.reassignTurns(turnIDs: ids, to: speakerID)], requireCompleteJournal: false)
+            try await apply([.reassignTurns(turnIDs: ids, to: speakerID)])
         case .unknown:
-            return try await apply([.reassignTurns(turnIDs: ids, to: nil)], requireCompleteJournal: false)
+            try await apply([.reassignTurns(turnIDs: ids, to: nil)])
         case .newSpeaker(let name):
-            return try await apply([.newSpeaker(speakerID: Self.newSpeakerID(), name: name, turnIDs: ids)],
-                                   requireCompleteJournal: false)
+            try await apply([.newSpeaker(speakerID: Self.newSpeakerID(), name: name, turnIDs: ids)])
         case .person(let profileID):
             if let speaker = projection.speakers.first(where: { $0.profileID == profileID }) {
-                return try await apply([.reassignTurns(turnIDs: ids, to: speaker.id)], requireCompleteJournal: false)
+                try await apply([.reassignTurns(turnIDs: ids, to: speaker.id)])
+                return
             }
             try requirePeople()
             guard let person = people.first(where: { $0.id == profileID }) else {
@@ -1053,10 +1043,9 @@ public struct ReviewWord: Sendable, Equatable {
             let create = SpeakerEditAction.newSpeaker(speakerID: speakerID, name: person.displayName, turnIDs: ids)
             try validate([create])
             mergeArmed = true
-            let op = try await enqueue(.assignPerson(create: create, speakerID: speakerID, profileID: profileID,
-                                                     learnVoice: learnVoices),
-                                       optimistic: [create, .linkProfile(speakerID: speakerID, profileID: profileID)])
-            return op.batches
+            try await enqueue(.assignPerson(create: create, speakerID: speakerID, profileID: profileID,
+                                            learnVoice: learnVoices),
+                              optimistic: [create, .linkProfile(speakerID: speakerID, profileID: profileID)])
         }
     }
 

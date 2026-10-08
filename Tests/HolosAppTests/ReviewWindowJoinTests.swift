@@ -83,6 +83,51 @@ struct ReviewWindowJoinTests {
 
     private static var retained: [ReviewWindow] = []
 
+    /// Labels the meeting again elsewhere (a command): a new head run with the same turns, IDs and speakers.
+    private func relabel(_ session: URL) throws {
+        let snapshot = try SpeakerSessionSnapshot.load(session: session)
+        let old = try #require(snapshot.run)
+        let run = DiarizationRun(sessionID: old.sessionID, transcriptID: old.transcriptID, engine: old.engine,
+                                 alignment: old.alignment, tracks: old.tracks, speakers: old.speakers,
+                                 turns: old.turns)
+        try SessionArchive.withSpeakerLock(at: session) {
+            try SessionSpeakerStore.writeRun(run, session: session)
+            try SessionSpeakerStore.writeHead(SpeakerHead(runID: run.id), session: session)
+        }
+    }
+
+    /// Counts calls from any thread (the review's save hook runs off the main actor).
+    private final class Calls: @unchecked Sendable {
+        private let lock = NSLock()
+        private var count = 0
+        func next() -> Int { lock.withLock { count += 1; return count } }
+    }
+
+    private nonisolated static func setWritable(_ url: URL, _ writable: Bool) {
+        try? FileManager.default.setAttributes([.posixPermissions: writable ? 0o600 : 0o400], ofItemAtPath: url.path)
+    }
+
+    /// Makes the session's event journal unreadable (read when labels are loaded, not when a change is saved), so a
+    /// change is saved and its labels cannot be reread; or readable again.
+    private nonisolated static func blockRereads(_ session: URL, _ blocked: Bool) {
+        let events = SessionPaths.events(session)
+        var isFolder: ObjCBool = false
+        let exists = FileManager.default.fileExists(atPath: events.path, isDirectory: &isFolder)
+        if blocked {
+            if exists {
+                try? FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: events.path)
+            } else {
+                try? FileManager.default.createDirectory(at: events, withIntermediateDirectories: false)
+            }
+        } else if exists {
+            if isFolder.boolValue {
+                try? FileManager.default.removeItem(at: events)
+            } else {
+                try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: events.path)
+            }
+        }
+    }
+
     /// Polls (a budget of checks, never a clock) until `condition` holds.
     private func until(_ condition: () -> Bool) async -> Bool {
         for _ in 0..<4000 {
@@ -269,6 +314,95 @@ struct ReviewWindowJoinTests {
             speaker(window, "T2") == "S2" && window.paragraphJoins.isEmpty && rows(window) == [["T1"], ["T2"]]
         })
         #expect(!journal(session).contains(.reassignTurns(turnIDs: ["T2"], to: "S1")))
+        await window.closeAndWait()
+    }
+
+    /// ⌘Z while the join's speaker change still saves, and the undo then cannot write its revert: the change stays
+    /// (shown again), and so does the join. Only labels read from disk ever take a join back.
+    @Test(.timeLimit(.minutes(1))) func aFailedUndoOfTheJoinsSpeakerChangeKeepsTheJoin() async throws {
+        let (window, session) = try await open([Spec(speaker: "S1", start: 0, words: ["amber", "birch"]),
+                                                Spec(speaker: "S2", start: 5, words: ["cedar", "dune"])])
+        let edits = SessionPaths.edits(session)
+        let (stream, release) = AsyncStream<Void>.makeStream()
+        let calls = Calls()
+        window.review.beforeEdit = {
+            let call = calls.next()
+            if call == 1 { for await _ in stream {} }
+            if call == 2 { try? FileManager.default.setAttributes([.posixPermissions: 0o400], ofItemAtPath: edits.path) }
+        }
+        let offer = try #require(window.turnList.joinOffer(row: 1, index: 0))
+        window.turnList.joinChosen(offer.choice)
+        #expect(await until { speaker(window, "T2") == "S1" && rows(window) == [["T1", "T2"]] })
+        window.window.makeFirstResponder(window.turnList.table)
+        #expect(window.handleKey(try commandZ(window)))
+        // Undone while saving: shown undone at once.
+        #expect(await until { speaker(window, "T2") == "S2" && rows(window) == [["T1"], ["T2"]] })
+        release.finish()
+        // The revert could not be written: the change is shown again, joined as before.
+        #expect(await until { speaker(window, "T2") == "S1" && rows(window) == [["T1", "T2"]] })
+        #expect(window.paragraphJoins == ["T2"])
+        Self.setWritable(edits, true)
+        window.review.beforeEdit = nil
+        #expect(journal(session) == [.reassignTurns(turnIDs: ["T2"], to: "S1")])
+        await window.closeAndWait()
+    }
+
+    /// The join's speaker change saved but its labels could not be reread (`incomplete`): the join waits, and once the
+    /// labels are read again it is settled as any; ⌘Z then takes it back with the change, and the same speaker given
+    /// later leaves two rows.
+    @Test(.timeLimit(.minutes(1))) func aJoinWhoseChangeCouldNotBeRereadIsTakenBackByUndoLater() async throws {
+        let (window, session) = try await open([Spec(speaker: "S1", start: 0, words: ["amber", "birch"]),
+                                                Spec(speaker: "S2", start: 5, words: ["cedar", "dune"])])
+        window.review.beforeEdit = { Self.blockRereads(session, true) }
+        let offer = try #require(window.turnList.joinOffer(row: 1, index: 0))
+        window.turnList.joinChosen(offer.choice)
+        #expect(await until { journal(session).count == 1 && window.review.reloadProblem != nil })
+        window.review.beforeEdit = nil
+        #expect(window.paragraphJoins == ["T2"])
+        Self.blockRereads(session, false)
+        await window.review.reload()
+        #expect(await until { window.review.reloadProblem == nil && rows(window) == [["T1", "T2"]] })
+        window.window.makeFirstResponder(window.turnList.table)
+        #expect(window.handleKey(try commandZ(window)))
+        #expect(await until {
+            speaker(window, "T2") == "S2" && window.paragraphJoins.isEmpty && rows(window) == [["T1"], ["T2"]]
+        })
+        try await window.review.assign(["T2"], to: .speaker("S1"))
+        #expect(await until {
+            speaker(window, "T2") == "S1" && window.paragraphJoins.isEmpty && rows(window) == [["T1"], ["T2"]]
+        })
+        await window.closeAndWait()
+    }
+
+    /// The join's speaker change refused because the meeting was labelled again meanwhile (a new run whose turns have
+    /// the same IDs): what the turns had before the join is never put on the new run's turns. Here T3 had been joined
+    /// to T2 (six seconds apart); on the new run the three stay apart.
+    @Test(.timeLimit(.minutes(1))) func aJoinRefusedByARelabelPutsNothingOnTheNewRun() async throws {
+        let (window, session) = try await open([Spec(speaker: "S1", start: 0, words: ["amber", "birch"]),
+                                                Spec(speaker: "S2", start: 5, words: ["cedar", "dune"]),
+                                                Spec(speaker: "S2", start: 12, words: ["elm", "fern"])])
+        #expect(rows(window) == [["T1"], ["T2"], ["T3"]])
+        window.turnList.joinChosen(try #require(window.turnList.joinOffer(row: 2, index: 0)).choice)
+        #expect(rows(window) == [["T1"], ["T2", "T3"]])
+        let (stream, release) = AsyncStream<Void>.makeStream()
+        window.review.beforeEdit = { for await _ in stream {} }
+        window.turnList.joinChosen(try #require(window.turnList.joinOffer(row: 1, index: 0)).choice)
+        #expect(await until { speaker(window, "T2") == "S1" && rows(window) == [["T1", "T2", "T3"]] })
+        let firstRun = window.review.snapshot.run?.id
+        // The window shows the new run as soon as the review reads it, before the refused change comes back.
+        let scheduled = window.review.onChange
+        window.review.onChange = {
+            scheduled?()
+            if window.review.snapshot.run?.id != firstRun { window.refresh() }
+        }
+        try relabel(session)
+        release.finish()
+        #expect(await until {
+            window.review.snapshot.run?.id != firstRun && speaker(window, "T2") == "S2" && window.paragraphJoins.isEmpty
+                && rows(window) == [["T1"], ["T2"], ["T3"]]
+        })
+        window.review.beforeEdit = nil
+        #expect(journal(session).isEmpty)
         await window.closeAndWait()
     }
 }
