@@ -314,6 +314,40 @@ func wordsDeletedFromEveryTurnCanStillBeRestored() async throws {
     await later.close()
 }
 
+/// Every segment of one turn deleted, then brought back in any order (the same, the reverse, mixed, an undo among the
+/// Restores): once all its words are back, the turn has the times it had before the first deletion, never times worked
+/// out from the words (its last word ends at 5.8 s, the turn at 6 s).
+@Test(.timeLimit(.minutes(1))) @MainActor
+func aTurnsDeletionsRestoredInAnyOrderGiveItsTimesBack() async throws {
+    let orders: [(name: String, deleted: [String], undoFirst: Bool, restores: [String])] = [
+        ("same order", ["A", "B", "C"], false, ["A", "B", "C"]),
+        ("reverse order", ["A", "B", "C"], false, ["C", "B", "A"]),
+        ("mixed order", ["A", "B", "C"], false, ["B", "A", "C"]),
+        ("undo then Restore", ["A", "B", "C"], true, ["A", "B"]),
+        ("two, same order", ["A", "B"], false, ["A", "B"]),
+        ("two, reverse order", ["A", "B"], false, ["B", "A"]),
+    ]
+    for order in orders {
+        let temp = try TemporaryDirectory("review")
+        defer { temp.remove() }
+        let session = try await deletionSession(in: temp, deletionTurns)
+        let before = try deletionTurnTimes(session)
+        #expect(before.first?.end == 6)
+        let review = try await deletionOpen(session)
+        for segmentID in order.deleted {
+            try await review.editWords(deletionRefs(review, "T1", segment: segmentID), to: "")
+        }
+        #expect((review.turn("T1") == nil) == (order.deleted.count == 3), "\(order.name)")
+        // An undo restores the last deletion (C); the others are restored from the list, in this window.
+        if order.undoFirst { try await review.undo() }
+        for segmentID in order.restores { try await review.restoreDeletedWords(segmentID: segmentID) }
+        #expect(try deletionTurnTimes(session) == before, "\(order.name)")
+        #expect(review.turn("T1")?.end == 6, "\(order.name)")
+        #expect(try deletionHeadRun(session).removedSegments == nil, "\(order.name)")
+        await review.close()
+    }
+}
+
 /// Deleting a word that was heard from line noise teaches nothing: no correction maps it to nothing, while an edit
 /// beside it still teaches its own.
 @Test(.timeLimit(.minutes(1))) @MainActor

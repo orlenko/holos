@@ -8179,6 +8179,9 @@ shown, Otter-style.
     times just before (`before`): a turn holding those same words again when they come back
     takes those times again, never times worked out from the words, so a deletion and its
     undo or Restore leave every turn's times, and what is learned from them, as they were.
+    Several segments deleted from one turn come back in any order: a Restore hands its
+    snapshots on to the segments of the same turns still deleted, so once every word is back
+    the turn matches the snapshot taken before the first deletion.
     A turn left with no word
     stays in the run with no spans, keeping its ID: speaker edits naming it (an assignment, a
     new speaker) carry over, and its words come back to it. The projection shows no turn

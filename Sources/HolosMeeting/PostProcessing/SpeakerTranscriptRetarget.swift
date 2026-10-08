@@ -70,15 +70,32 @@ enum SpeakerTranscriptRetarget {
         let removal = move.flatMap { $0.replacement.isEmpty && !$0.replaced.isEmpty ? $0 : nil }
         let restoration = move.flatMap { $0.replaced.isEmpty && !$0.replacement.isEmpty ? $0 : nil }
         var restoredTo = Set<String>()
-        // The times each turn had before the deletion, for those holding the same words again (`before`).
-        var timesBefore: [String: SpeakerTurnTimes] = [:]
+        // The times each turn had before a deletion, for a turn holding the same words again (`before`): this
+        // segment's first, then those of the segments still deleted (several deleted from one turn come back in any
+        // order: the turn's words match the snapshot taken before the first of them only once all are back).
+        var timesBefore: [String: [SpeakerTurnTimes]] = [:]
         if let restoration {
-            let record = oldRun.removedSegments?.first { $0.segmentID == restoration.segmentID }
+            let records = oldRun.removedSegments ?? []
+            let record = records.first { $0.segmentID == restoration.segmentID }
             let held = Set(record?.turnIDs ?? [])
             restoredTo = Set(oldRun.turns.map(\.id).filter(held.contains))
             guard !restoredTo.isEmpty else { throw notRestorable }
-            for times in record?.before ?? [] where timesBefore[times.turnID] == nil { timesBefore[times.turnID] = times }
-            run.removedSegments = Self.records(oldRun.removedSegments?.filter { $0.segmentID != restoration.segmentID })
+            let ordered = (record.map { [$0] } ?? []) + records.filter { $0.segmentID != restoration.segmentID }
+            for times in ordered.flatMap({ $0.before ?? [] }) where restoredTo.contains(times.turnID) {
+                timesBefore[times.turnID, default: []].append(times)
+            }
+            // The segment's own snapshots stay with the segments still deleted from the same turns, so the times
+            // before the first deletion are found whichever order the words come back in.
+            var remaining = records.filter { $0.segmentID != restoration.segmentID }
+            for index in remaining.indices {
+                for times in record?.before ?? [] where remaining[index].turnIDs.contains(times.turnID)
+                    && !(remaining[index].before ?? []).contains(where: {
+                        $0.turnID == times.turnID && $0.spans == times.spans
+                    }) {
+                    remaining[index].before = (remaining[index].before ?? []) + [times]
+                }
+            }
+            run.removedSegments = Self.records(remaining)
         }
         if let removal {
             let holders = oldRun.turns.filter { turn in
@@ -115,7 +132,7 @@ enum SpeakerTranscriptRetarget {
             }
             // Its words back as they were before the deletion: the times the labelling gave it then (the same audio),
             // never worked out again from the words, so a deletion and its undo or Restore leave it as it was.
-            if let before = timesBefore[turn.id], before.spans == moved.spans {
+            if let before = timesBefore[turn.id]?.first(where: { $0.spans == moved.spans }) {
                 moved.start = before.start
                 moved.end = before.end
                 moved.timing = before.timing
