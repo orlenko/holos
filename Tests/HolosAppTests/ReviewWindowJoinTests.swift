@@ -153,10 +153,65 @@ struct ReviewWindowJoinTests {
         #expect(window.window.firstResponder === window.turnList.editField.currentEditor())
         #expect(window.handleKey(try commandZ(window)))
         #expect(await until { speaker(window, "T2") == "S2" && rows(window) == [["T1"], ["T2"]] })
-        // Typing in a word's field, or any other text field: ⌘Z is the typing's.
-        #expect(ReviewWindow.undoIsTyping(editingText: true, inUnchangedWordField: false))
-        #expect(!ReviewWindow.undoIsTyping(editingText: true, inUnchangedWordField: true))
-        #expect(!ReviewWindow.undoIsTyping(editingText: false, inUnchangedWordField: false))
+        // With typing to undo in a text field, ⌘Z is the typing's; with none, or outside one, the review's.
+        #expect(ReviewWindow.undoIsTyping(editingText: true, typingToUndo: true))
+        #expect(!ReviewWindow.undoIsTyping(editingText: true, typingToUndo: false))
+        #expect(!ReviewWindow.undoIsTyping(editingText: false, typingToUndo: true))
+        await window.closeAndWait()
+    }
+
+    /// "cedar" typed over with "dune", then everything selected and "cedar" typed again: the field reads as it opened,
+    /// but it has typing to undo, so ⌘Z is the typing's. The review is not undone, and the join stays (a text undo is
+    /// typing, not a review Undo).
+    @Test(.timeLimit(.minutes(1))) func commandZWithTypingToUndoUndoesTheTypingAndKeepsTheJoins() async throws {
+        let (window, session) = try await open([Spec(speaker: "S1", start: 0, words: ["amber", "birch"]),
+                                                Spec(speaker: "S2", start: 5, words: ["cedar", "dune"])])
+        window.turnList.joinChosen(try #require(window.turnList.joinOffer(row: 1, index: 0)).choice)
+        #expect(await until { journal(session).count == 1 && rows(window) == [["T1", "T2"]] })
+        window.setEditMode(true)
+        let list = window.turnList
+        list.table.handleWordClick(row: 0, word: 2, through: 2, extend: false)
+        let editor = try #require(list.editField.currentEditor() as? NSTextView)
+        #expect(editor.undoManager?.canUndo != true, "Opened with no typing to undo.")
+        editor.selectAll(nil)
+        editor.insertText("dune", replacementRange: editor.selectedRange())
+        editor.selectAll(nil)
+        editor.insertText("cedar", replacementRange: editor.selectedRange())
+        #expect(list.editField.stringValue == "cedar" && editor.undoManager?.canUndo == true)
+        _ = window.handleKey(try commandZ(window))
+        // Whatever ⌘Z queued runs before a change queued after it.
+        for _ in 0..<10 { await Task.yield() }
+        try await window.review.apply([.rename(speakerID: "S1", name: "Ash")])
+        #expect(journal(session) == [.reassignTurns(turnIDs: ["T2"], to: "S1"), .rename(speakerID: "S1", name: "Ash")])
+        #expect(window.paragraphJoins == ["T2"] && rows(window) == [["T1", "T2"]])
+        list.cancelWordEdit()
+        await window.closeAndWait()
+    }
+
+    /// Closing by hand saves the field's typing first; that save fails (the transcript cannot be written): every join
+    /// goes, as for any change that fails, and the window stays open with the field.
+    @Test(.timeLimit(.minutes(1))) func aFailedSaveAtCloseDropsEveryJoin() async throws {
+        let (window, session) = try await open([Spec(speaker: "S1", start: 0, words: ["amber", "birch"]),
+                                                Spec(speaker: "S1", start: 8, words: ["cedar", "dune"])])
+        window.turnList.joinChosen(try #require(window.turnList.joinOffer(row: 1, index: 0)).choice)
+        #expect(window.paragraphJoins == ["T2"])
+        window.setEditMode(true)
+        let list = window.turnList
+        list.table.handleWordClick(row: 0, word: 0, through: 0, extend: false)
+        list.editField.stringValue = "Amber"
+        let transcripts = SessionPaths.transcripts(session)
+        window.review.beforeEdit = {
+            try? FileManager.default.setAttributes([.posixPermissions: 0o500], ofItemAtPath: transcripts.path)
+        }
+        defer {
+            try? FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: transcripts.path)
+        }
+        #expect(!window.windowShouldClose(window.window), "It saves the field first.")
+        #expect(await until { window.paragraphJoins.isEmpty && rows(window) == [["T1"], ["T2"]] })
+        window.review.beforeEdit = nil
+        try? FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: transcripts.path)
+        #expect(journal(session).isEmpty)
+        list.cancelWordEdit()
         await window.closeAndWait()
     }
 

@@ -2090,10 +2090,11 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, NSM
     /// Seconds ← and → move the play head.
     private static let seekStep = 5.0
 
-    /// Whether ⌘Z undoes typing (the text being edited) rather than the review's newest change: in a text field, but
-    /// not in a word's field with nothing typed in it.
-    static func undoIsTyping(editingText: Bool, inUnchangedWordField: Bool) -> Bool {
-        editingText && !inUnchangedWordField
+    /// Whether ⌘Z undoes typing (the text being edited) rather than the review's newest change: in a text field whose
+    /// own undo has something to undo (`typingToUndo`, whatever the text reads now: "cat" typed over "dog" typed over
+    /// "cat" is still typing).
+    static func undoIsTyping(editingText: Bool, typingToUndo: Bool) -> Bool {
+        editingText && typingToUndo
     }
 
     /// Shortcuts of the window (Holos has no main menu to carry them). Internal for tests.
@@ -2129,11 +2130,10 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, NSM
             window.performClose(nil)
             return true
         case "z":
-            // A word's field with nothing typed in it (opened again after a join, say) has no typing to undo: ⌘Z is
-            // the review's, as the banner says.
-            let unchangedField = (turnList.wordEdit.map { $0.shown == turnList.editField.stringValue } ?? false)
-                && window.firstResponder === turnList.editField.currentEditor()
-            if Self.undoIsTyping(editingText: editingText, inUnchangedWordField: unchangedField) {
+            // In a text field with typing to undo, ⌘Z undoes the typing (it leaves the review, and its joins, alone);
+            // with none (a word's field opened again after a join, say), it is the review's, as the banner says.
+            let typingToUndo = (window.firstResponder as? NSTextView)?.undoManager?.canUndo ?? false
+            if Self.undoIsTyping(editingText: editingText, typingToUndo: typingToUndo) {
                 return NSApplication.shared.sendAction(Selector(("undo:")), to: nil, from: window)
             }
             undo()
@@ -2273,6 +2273,8 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, NSM
                                            committed: committed)
             return nil
         } catch {
+            // A change that failed: every join goes, as for any other (`saveEdit`).
+            clearJoins()
             return saved ? nil : Self.withTyped(error.localizedDescription, text)
         }
     }

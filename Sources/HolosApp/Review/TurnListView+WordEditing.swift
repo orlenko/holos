@@ -184,6 +184,8 @@ extension TurnListView: NSTextFieldDelegate {
         table.scrollToVisible(editField.frame.insetBy(dx: 0, dy: -12))
         window?.makeFirstResponder(editField)
         editField.currentEditor()?.selectAll(nil)
+        // A field just opened has no typing to undo (⌘Z is then the review's): nothing left from another field.
+        editField.currentEditor()?.undoManager?.removeAllActions()
     }
 
     /// Saves what the field holds (when it changed) and closes it; then edits the next or previous word.
