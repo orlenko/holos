@@ -441,7 +441,8 @@ public actor SessionArchive {
     public nonisolated static func legacyExports(for transcript: Transcript, name: String) -> [String: Data] {
         let text = transcript.text + "\n"
         var markdown = "# \(name)\n\n"
-        for segment in transcript.segments {
+        // A segment whose words were all deleted in Review has nothing to show.
+        for segment in transcript.segments where segment.removed == nil {
             let source = segment.track ?? "unknown source"
             markdown += "### [\(timestamp(segment.start))–\(timestamp(segment.end))] Source: \(source)\n\n"
             if let speakerID = segment.speakerID {

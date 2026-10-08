@@ -63,6 +63,9 @@ struct FailedWordEdit {
     var movesSeen: Int
     var wordsEpoch: Int
     var message: String
+    /// A Restore of deleted words (this segment's), not typed words: no field opens again for it, and it is never kept
+    /// as an edit to type again (`UnsavedWordEdits`); its message stays in the footer.
+    var restoring: String? = nil
 }
 
 /// After a close by hand stopped because edits were not saved (`ReviewWindow.keepAfterFailedClose`): fields could not
@@ -625,6 +628,8 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, NSM
         turnList.editText = { [review] words in review.shownText(of: words.map(\.ref)) }
         turnList.editRefusal = { [review] words in review.wordEditRefusal(words.map(\.ref)) }
         turnList.revertRefusal = { [review] word in review.revertRefusal(word) }
+        turnList.deletedWords = { [review] turnID in review.deletedWords(near: turnID) }
+        turnList.onRestoreDeleted = { [weak self] segmentID in self?.restoreDeleted(segmentID) }
         turnList.onUserScroll = { [weak self] in
             self?.follow.userScrolled(at: ProcessInfo.processInfo.systemUptime)
         }
@@ -1571,6 +1576,72 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, NSM
         }
     }
 
+    /// The Edit menu item's title (`restoreDeletedWords`).
+    static let restoreDeletedWordsTitle = "Restore Deleted Words…"
+
+    /// Edit ▸ Restore Deleted Words…: every segment whose words were all deleted that can be restored
+    /// (`ReviewSession.deletedWords()`), in a menu over the Edit Words button, one item each ("00:10  Restore Deleted
+    /// “Cheers.”"). It needs no turn shown near them, so none is out of reach when every turn around them went too.
+    /// The deleted words Restore Deleted Words… offers now: none while no field could open (`canEditWordsNow`, a close
+    /// waiting for earlier saves among the reasons), as for every word edit.
+    var restorableDeletedWords: [ReviewDeletedWords] { canEditWordsNow ? review.deletedWords() : [] }
+
+    @objc func restoreDeletedWords(_ sender: Any?) {
+        let deleted = restorableDeletedWords
+        guard !deleted.isEmpty else {
+            NSSound.beep()
+            return
+        }
+        openRestoreMenu(Self.restoreMenu(deleted, target: self, action: #selector(restoreChosen(_:))), editButton)
+    }
+
+    /// Opens Restore Deleted Words' menu over `button` (tests record it instead: a menu tracks the mouse until it
+    /// closes).
+    var openRestoreMenu: (NSMenu, NSView) -> Void = { menu, button in
+        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: button.bounds.height + 4), in: button)
+    }
+
+    /// Restore Deleted Words' menu: one item per deleted segment, its time and text, sending `action` to `target` with
+    /// the segment ID.
+    static func restoreMenu(_ deleted: [ReviewDeletedWords], target: AnyObject, action: Selector) -> NSMenu {
+        let menu = NSMenu(title: "Restore Deleted Words")
+        menu.autoenablesItems = false
+        for words in deleted {
+            let item = NSMenuItem(title: TimeFormat.compact(words.start) + "  " + TurnTextView.restoreTitle(words),
+                                  action: action, keyEquivalent: "")
+            item.target = target
+            item.representedObject = words.segmentID
+            item.toolTip = TurnTextView.restoreHelp
+            menu.addItem(item)
+        }
+        return menu
+    }
+
+    @objc private func restoreChosen(_ sender: NSMenuItem) {
+        guard let segmentID = sender.representedObject as? String else { return }
+        restoreDeleted(segmentID)
+    }
+
+    /// Restore Deleted “…”: segment `segmentID`'s words, all deleted earlier, come back to the turns that held them.
+    /// Its run keeps the turns, as a word edit's does, so the paragraph breaks stay. It is a word edit for the window
+    /// (`trackWordChange`): offered and made only while a field could open (`canEditWordsNow`: not while a close waits
+    /// for earlier saves), queued in the review before this returns, tracked until it ends so a close waits for it,
+    /// and saved once its `committed` says so, also when the labels could not be reread afterwards. Nothing was typed,
+    /// so a failure is said in the footer and never held as an edit to type again (`UnsavedWordEdits`).
+    func restoreDeleted(_ segmentID: String) {
+        guard canEditWordsNow else {
+            NSSound.beep()
+            return
+        }
+        clearTransientMessages()
+        paragraphBreaks.beginCarryOver()
+        trackWordChange([], text: "", movesSeen: review.shownWordMoves.count, wordsEpoch: review.wordsEpoch,
+                        restoring: segmentID, saved: { _ in }, ended: { [weak self] in self?.endBreakCarryOver() }) {
+            [review] committed in
+            try review.queueRestoreDeletedWords(segmentID: segmentID, committed: committed)
+        }
+    }
+
     // MARK: - Editing words
 
     /// Edit Words (the toolbar toggle, ⌘E): on only while the review is editable (not while a command holds it
@@ -1631,30 +1702,46 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, NSM
         problem = nil
         notice = nil
         refreshFooter()
+        trackWordChange(words, text: text, movesSeen: movesSeen, wordsEpoch: wordsEpoch,
+                        saved: { [weak self] edit in self?.offerTerm(after: edit, add: addTerm) }) {
+            [review] committed in
+            try review.queueWordEdit(words.map(\.ref), to: text, seenMoves: movesSeen, whileUnread: whileUnread,
+                                     expecting: words.map(\.shown), seenEpoch: wordsEpoch, committed: committed)
+        }
+    }
+
+    /// The one way a word change (an edit, or a Restore of deleted words: `restoring` its segment) is made and
+    /// followed: `queue` queues it in the review at once, before anything else runs, so a close or a quit right after
+    /// finds it there (saved before the review closes, listed by `unsavedWordEdits` meanwhile), never only in a task
+    /// of the window's; `saved` runs once it is committed (`ReviewSession`'s `committed`, also when the labels could
+    /// not be reread afterwards: the change stands); it is tracked until it ends (`pendingWordEdits`), so closing the
+    /// window by hand waits for it and stays open when it is not saved; `ended` runs then.
+    private func trackWordChange(
+        _ words: [ReviewWord], text: String, movesSeen: Int, wordsEpoch epoch: Int, restoring: String? = nil,
+        saved: @escaping (ReviewWordEdit) -> Void, ended: (() -> Void)? = nil,
+        queue: (@escaping (ReviewWordEdit) -> Void) throws -> (@MainActor () async throws -> ReviewWordEdit?)?
+    ) {
         let id = UUID()
-        let epoch = wordsEpoch
-        // Queued in the review now, before anything else runs: a close or a quit right after finds it there (saved
-        // before the review closes, listed by `unsavedWordEdits` meanwhile), never only in a task of the window's.
-        let saved = SavedFlag()
-        let committed: (ReviewWordEdit) -> Void = { [weak self] edit in
-            saved.value = true
-            self?.offerTerm(after: edit, add: addTerm)
+        let flag = SavedFlag()
+        let committed: (ReviewWordEdit) -> Void = { edit in
+            flag.value = true
+            saved(edit)
         }
         let queued: Result<(@MainActor () async throws -> ReviewWordEdit?)?, any Error>
         do {
-            queued = .success(try review.queueWordEdit(words.map(\.ref), to: text, seenMoves: movesSeen,
-                                                       whileUnread: whileUnread, expecting: words.map(\.shown),
-                                                       seenEpoch: epoch, committed: committed))
+            queued = .success(try queue(committed))
         } catch {
             queued = .failure(error)
         }
         let saving: Task<FailedWordEdit?, Never> = Task { [weak self] () async -> FailedWordEdit? in
             guard let self else { return nil }
-            let refusal: String? = await self.saveEdit(words, to: text, queued: queued, saved: saved,
-                                                       movesSeen: movesSeen, seenEpoch: epoch)
+            let refusal: String? = await self.saveEdit(words, to: text, queued: queued, saved: flag,
+                                                       movesSeen: movesSeen, seenEpoch: epoch, restoring: restoring)
             self.pendingWordEdits.removeAll { $0.id == id }
+            ended?()
             return refusal.map {
-                FailedWordEdit(words: words, text: text, movesSeen: movesSeen, wordsEpoch: epoch, message: $0)
+                FailedWordEdit(words: words, text: text, movesSeen: movesSeen, wordsEpoch: epoch, message: $0,
+                               restoring: restoring)
             }
         }
         pendingWordEdits.append((id, saving))
@@ -1671,7 +1758,7 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, NSM
     /// elsewhere since.
     private func saveEdit(_ words: [ReviewWord], to text: String,
                           queued: Result<(@MainActor () async throws -> ReviewWordEdit?)?, any Error>,
-                          saved: SavedFlag, movesSeen: Int, seenEpoch: Int) async -> String? {
+                          saved: SavedFlag, movesSeen: Int, seenEpoch: Int, restoring: String? = nil) async -> String? {
         do {
             if let wait = try queued.get() { _ = try await wait() }
             return nil
@@ -1683,33 +1770,48 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, NSM
                 refreshFooter()
                 return nil
             }
+            // A Restore: nothing was typed, no field to open again or edit to keep; the footer says why.
+            if restoring != nil {
+                let message = Self.restoreFailed(error)
+                problem = message
+                refreshFooter()
+                return message
+            }
             let message = Self.withTyped(error.localizedDescription, text)
             // Where its words are now: through the moves saved since, never across words changed elsewhere.
             let reopened = turnList.reopenWordEdit(words, typed: text, message: message, movesSeen: movesSeen,
                                                    wordsEpoch: seenEpoch)
-            // Not reopened: kept in the footer until reopened or dismissed (the next edit never clears it). A close
-            // waiting for it keeps it itself (`keepAfterFailedClose`).
-            if !reopened, !closeGate.saving {
-                unsavedEdits.add([FailedWordEdit(words: words, text: text, movesSeen: movesSeen,
-                                                 wordsEpoch: seenEpoch, message: message)])
+            // Reopened: said once, in the banner over the field that holds what was typed, as every other refusal of
+            // an edit is (`reopenWordEdit`). Not reopened: in the footer, kept until reopened or dismissed (the next
+            // edit never clears it); a close waiting for it keeps it itself (`keepAfterFailedClose`).
+            if !reopened {
+                if !closeGate.saving {
+                    unsavedEdits.add([FailedWordEdit(words: words, text: text, movesSeen: movesSeen,
+                                                     wordsEpoch: seenEpoch, message: message)])
+                }
+                problem = message
+                refreshFooter()
             }
-            problem = message
-            refreshFooter()
             return message
         }
     }
 
-    /// `message` with what was typed, unless it says it already.
+    /// What the footer says of a Restore of deleted words that was not saved.
+    static func restoreFailed(_ error: any Error) -> String {
+        "The deleted words were not restored: " + error.localizedDescription
+    }
+
+    /// `message` with what was typed, unless it says it already or nothing was typed (a deletion).
     private static func withTyped(_ message: String, _ text: String) -> String {
-        let typed = TranscriptWordEdit.cleaned(text)
-        return message.contains("“\(typed)”") ? message : message + " What you typed: “\(typed)”."
+        TranscriptWordEdit.withTyped(message, text)
     }
 
     /// After a saved edit: with `add` (⌥Return), its new text goes into the word list now, with what the recognizer
     /// wrote as "often heard as"; otherwise a new text that looks like a name or term is offered in the footer, unless
     /// the list has it with that phrase already.
     private func offerTerm(after edit: ReviewWordEdit, add: Bool) {
-        guard !edit.deletion, let adder = addWordListTerm else { return }
+        // A deletion, or nothing typed (a Restore of deleted words): no term.
+        guard !edit.deletion, !(edit.typed ?? edit.meant).isEmpty, let adder = addWordListTerm else { return }
         let dictionary: (String) -> Bool = { word in
             NSSpellChecker.shared.checkSpelling(of: word.lowercased(), startingAt: 0).location == NSNotFound
         }
@@ -1912,6 +2014,8 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, NSM
             menuItem.title = Self.speakersTitle(hidden: panes.speakersHidden)
         case #selector(toggleShortInterjections(_:))?:
             menuItem.state = review.showsShortInterjections ? .on : .off
+        case #selector(restoreDeletedWords(_:))?:
+            return !restorableDeletedWords.isEmpty
         default:
             break
         }
@@ -2177,15 +2281,18 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, NSM
         guard closeTask == nil else { return }
         // Fields may open again (the close by hand ended).
         refreshToolbar()
-        if !outcome.failures.isEmpty, !turnList.editingWords { turnList.editingWords = true }
-        let others = ReviewCloseRecovery.recover(outcome.failures) { failed in
+        // Restores not saved have nothing typed to keep: the footer says why (`problem`).
+        let typed = outcome.failures.filter { $0.restoring == nil }
+        let restores = outcome.failures.filter { $0.restoring != nil }.map(\.message)
+        if !typed.isEmpty, !turnList.editingWords { turnList.editingWords = true }
+        let others = ReviewCloseRecovery.recover(typed) { failed in
             // Where its words are now: through the moves saved since, never across words changed elsewhere.
             turnList.reopenWordEdit(failed.words, typed: failed.text, message: failed.message,
                                     movesSeen: failed.movesSeen, wordsEpoch: failed.wordsEpoch)
         }
         // The others stay in the footer, each with what was typed, until reopened or dismissed.
         unsavedEdits.add(others)
-        problem = outcome.failures.isEmpty ? message : nil
+        problem = outcome.failures.isEmpty ? message : restores.isEmpty ? nil : restores.joined(separator: " ")
         refreshFooter()
     }
 

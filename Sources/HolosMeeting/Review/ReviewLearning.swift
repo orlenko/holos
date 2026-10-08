@@ -266,14 +266,16 @@ enum ReviewLearning {
     }
 
     /// The corrections `edits` teach (`teach`: the app's rule, `TranscriptEditLearning`), in order, each heard phrase
-    /// (`CorrectionList.key`) once: the first edit teaching it, in the meeting's order, gives it.
+    /// (`CorrectionList.key`) once: the first edit teaching it, in the meeting's order, gives it. Never one that
+    /// replaces what was heard by nothing (words deleted: dictation would drop them everywhere).
     static func corrections(_ edits: [ReviewWordEdit], teach: (ReviewWordEdit) -> [Correction]) -> [Correction] {
         var seen = Set<String>()
         var result: [Correction] = []
-        for edit in edits {
+        for edit in edits where !edit.deletion && !TranscriptWordEdit.cleaned(edit.meant).isEmpty {
             for correction in teach(edit) {
                 let key = CorrectionList.key(correction.heard)
-                guard !key.isEmpty, seen.insert(key).inserted else { continue }
+                guard !key.isEmpty, !TranscriptWordEdit.cleaned(correction.meant).isEmpty,
+                      seen.insert(key).inserted else { continue }
                 result.append(correction)
             }
         }

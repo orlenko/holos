@@ -374,6 +374,34 @@ public struct DroppedWords: Codable, Sendable, Equatable {
     public init(spans: [WordSpan], reason: String) { self.spans = spans; self.reason = reason }
 }
 
+/// A segment whose every word a Review edit deleted (`TranscriptSegment.removed`), with the turns that held its words
+/// then (docs/meeting-design.md §5.10, "Editing words"): an undo or a Restore gives the words back to those turns.
+public struct RemovedSegmentTurns: Codable, Sendable, Equatable {
+    public var segmentID: String
+    public var turnIDs: [String]
+    /// Each of those turns as it was just before the deletion: its words and the times the labelling gave it. When
+    /// the words come back and the turn holds those same words again, it takes those times again (the same audio), so
+    /// a deletion and its undo or Restore leave the turn's times as they were.
+    public var before: [SpeakerTurnTimes]?
+
+    public init(segmentID: String, turnIDs: [String], before: [SpeakerTurnTimes]? = nil) {
+        self.segmentID = segmentID; self.turnIDs = turnIDs; self.before = before
+    }
+}
+
+/// A turn's words and times (`RemovedSegmentTurns.before`).
+public struct SpeakerTurnTimes: Codable, Sendable, Equatable {
+    public var turnID: String
+    public var spans: [WordSpan]
+    public var start: Double
+    public var end: Double
+    public var timing: WordTimingQuality
+
+    public init(turnID: String, spans: [WordSpan], start: Double, end: Double, timing: WordTimingQuality) {
+        self.turnID = turnID; self.spans = spans; self.start = start; self.end = end; self.timing = timing
+    }
+}
+
 /// Immutable result of diarizing and aligning one transcript revision. Holds no voice embeddings.
 public struct DiarizationRun: Codable, Sendable, Equatable, Identifiable {
     public var schemaVersion: Int
@@ -395,6 +423,10 @@ public struct DiarizationRun: Codable, Sendable, Equatable, Identifiable {
     /// labelling; nil for a run that is a labelling of its own (diarized, labelled again). Left out of the file when
     /// nil, so older runs read as before; an older Voice is Local ignores it.
     public var labelling: String? = nil
+    /// Segments whose words were all deleted in Review since the labelling was made, and the turns that held them. A
+    /// turn left with no words by such a deletion stays in `turns` with no spans (speaker edits name it; no view shows
+    /// it). Nil when there are none, so other runs encode as before; an older Voice is Local ignores it.
+    public var removedSegments: [RemovedSegmentTurns]? = nil
 
     public init(schemaVersion: Int = 1, id: String = UUID().uuidString, sessionID: String,
                 createdAt: Date = Date(), transcriptID: String, engine: DiarizationEngineInfo?,
