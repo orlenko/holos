@@ -561,7 +561,8 @@ func staleRefreshDoesNotOverwriteNewerSample() async throws {
         ["T1", "T2", "T3"].reduce(Float(0)) { $0 + vectors[$1]![index] }
     })
     #expect(profileClose(final.embedding.values, expected, tolerance: 1e-4))
-    #expect(final.speakerIDs == ["system:S1", "system:S2"])
+    // Linked to Jim as S1 is, S2 was merged into S1 (same person, one speaker).
+    #expect(final.speakerIDs == ["system:S1"])
 }
 
 @Test(.timeLimit(.minutes(1)))

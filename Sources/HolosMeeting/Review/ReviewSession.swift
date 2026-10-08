@@ -1064,36 +1064,30 @@ public struct ReviewDeletedWords: Sendable, Equatable {
                 throw HolosError.invalidInput("That person is not known to Voice is Local any more; reopen the window.")
             }
             // A listed speaker already called this person's name is them (same name, same person): the turns go to
-            // it, linked to the person in the same change. Not one linked to another person who exists (two people
-            // of one name), nor one that said "Not <person>": the person asked for is somebody else.
-            let key = SameNameSpeakers.key(person.displayName)
-            let namedAlike = projection.speakers.filter {
-                SameNameSpeakers.standsBy($0) && SameNameSpeakers.key($0.name) == key
-            }
-            if let speaker = namedAlike.first(where: { speaker in
-                !speaker.rejectedProfileIDs.contains(profileID)
-                    && (speaker.profileID.map { profileNames[$0] == nil } ?? true)
-            }) {
+            // it, and it is linked to the person in the same change when it is linked to nobody and never said
+            // "Not <person>" (a link it has stays; a rejection only keeps suggestions away).
+            if let speaker = projection.speaker(named: person.displayName) {
                 let move = SpeakerEditAction.reassignTurns(turnIDs: ids, to: speaker.id)
+                guard speaker.profileID == nil, !speaker.rejectedProfileIDs.contains(profileID) else {
+                    try await apply([move])
+                    return
+                }
                 try validate([move])
                 mergeArmed = true
                 try await enqueue(.assignPerson(create: move, speakerID: speaker.id, profileID: profileID,
                                                 learnVoice: learnVoices),
-                                  optimistic: [move, .linkProfile(speakerID: speaker.id, profileID: profileID)])
+                                  optimistic: [move, .linkProfile(speakerID: speaker.id, profileID: profileID),
+                                               .rename(speakerID: speaker.id, name: person.displayName)])
                 return
             }
-            // A new speaker linked to the person. While a speaker of that name stands for somebody else, it is created
-            // without a name, which the link then gives it: named first, it would be that somebody else's (same name,
-            // same person) before the link said otherwise.
             let speakerID = Self.newSpeakerID()
-            let create = SpeakerEditAction.newSpeaker(speakerID: speakerID,
-                                                      name: namedAlike.isEmpty ? person.displayName : nil,
-                                                      turnIDs: ids)
+            let create = SpeakerEditAction.newSpeaker(speakerID: speakerID, name: person.displayName, turnIDs: ids)
             try validate([create])
             mergeArmed = true
             try await enqueue(.assignPerson(create: create, speakerID: speakerID, profileID: profileID,
                                             learnVoice: learnVoices),
-                              optimistic: [create, .linkProfile(speakerID: speakerID, profileID: profileID)])
+                              optimistic: [create, .linkProfile(speakerID: speakerID, profileID: profileID),
+                                           .rename(speakerID: speakerID, name: person.displayName)])
         }
     }
 
@@ -2051,15 +2045,15 @@ public struct ReviewDeletedWords: Sendable, Equatable {
             }
         case .assignPerson(let create, let speakerID, let profileID, let learnVoice):
             try requireBasis(op)
+            // One batch: the move (or the new speaker) and the link, as shown at once, so one undo takes back both.
             let sent = resolve(create)
-            try await saveEdit([sent], op: op) { batch in SpeakerEditor.saved(batch.map(\.action), asAsked: [sent]) }
             let view = savedProjection
-            try await savePeopleChange(op, matching: Self.linkBatch(speakerID),
+            try await savePeopleChange(op, matching: Self.linkBatch(speakerID, after: sent),
                                        learn: learnVoice) { session, store, extractor, deferred in
                 try await VoiceProfileService.link(session: session, speakerID: speakerID,
                                                    to: .existing(profileID: profileID), view: view,
                                                    learnVoice: learnVoice, extractor: extractor, store: store,
-                                                   deferSamples: deferred)
+                                                   deferSamples: deferred, preceding: [sent])
             }
         case .confirmAll(let learnVoices, let chosen):
             try requireBasis(op)
@@ -3707,9 +3701,15 @@ public struct ReviewDeletedWords: Sendable, Equatable {
 
     /// linkProfile + rename of `speakerID` (a link, "This is me"), with the merges of same-named speakers the editor
     /// may add around them (`SpeakerEditor.saved(_:asAsked:)`).
-    private nonisolated static func linkBatch(_ speakerID: String) -> ([SpeakerEdit]) -> Bool {
+    /// With `first` ("Assign to <person>"), that action comes before them in the same batch.
+    private nonisolated static func linkBatch(_ speakerID: String,
+                                              after first: SpeakerEditAction? = nil) -> ([SpeakerEdit]) -> Bool {
         { saved in
-            let batch = withoutMerges(saved)
+            var batch = withoutMerges(saved)
+            if let first {
+                guard batch.first?.action == first else { return false }
+                batch.removeFirst()
+            }
             guard batch.count == 2,
                   case .linkProfile(let linked, _) = batch[0].action, linked == speakerID,
                   case .rename(let renamed, _) = batch[1].action, renamed == speakerID else { return false }

@@ -1135,7 +1135,7 @@ func failedUndoKeepsTheChangeUndoable() async throws {
 }
 
 @Test(.timeLimit(.minutes(1))) @MainActor
-func failedUndoOfATwoBatchChangeCanBeFinished() async throws {
+func failedUndoOfAnAssignmentToAPersonCanBeDoneAgain() async throws {
     let temp = try TemporaryDirectory("review")
     defer { temp.remove() }
     let store = reviewStore(temp)
@@ -1143,24 +1143,21 @@ func failedUndoOfATwoBatchChangeCanBeFinished() async throws {
     let fixture = try await SessionFixtures.labelledSession(in: temp.url)
     let journal = SessionPaths.edits(fixture.session)
     let review = try await reviewOpen(fixture.session, store: store)
-    // One change, two batches: a new speaker for T2, then its link to Maria.
+    // One change, one batch: a new speaker for T2 and its link to Maria.
     try await review.assign(["T2"], to: .person(profileID: "MARIA"))
-    #expect(Set(try reviewJournal(fixture.session).compactMap(\.batchID)).count == 2)
+    #expect(Set(try reviewJournal(fixture.session).compactMap(\.batchID)).count == 1)
 
-    // The first revert is saved; the journal then refuses the second.
-    let saves = SharedValue(0)
-    review.beforeEdit = {
-        if saves.update({ $0 += 1; return $0 }) == 2 { reviewSetWritable(journal, false) }
-    }
+    // The journal refuses the undo: nothing is taken back, and the change can still be undone.
+    review.beforeEdit = { reviewSetWritable(journal, false) }
     await #expect(throws: HolosError.self) { try await review.undo() }
     reviewSetWritable(journal, true)
     review.beforeEdit = nil
-    #expect(!review.projection.speakers.contains { $0.profileID == "MARIA" }, "The link was taken back.")
+    #expect(review.projection.speakers.contains { $0.profileID == "MARIA" }, "The link is still there.")
     #expect(review.turn("T2")?.speakerID?.hasPrefix("user:") == true, "The new speaker is still saved.")
     #expect(review.canUndo)
     #expect(review.snapshot.projection == review.projection)
 
-    // Undo finishes the job.
+    // Undo again takes back both.
     try await review.undo()
     #expect(review.turn("T2")?.speakerID == "system:S2")
     #expect(!review.projection.speakers.contains { $0.id.hasPrefix("user:") })

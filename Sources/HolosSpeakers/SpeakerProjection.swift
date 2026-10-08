@@ -208,9 +208,10 @@ public struct SpeakerProjection: Sendable, Equatable {
     ///    `shownTurns` shows them with a neighbour's speaker or leaves them out. `turns` and `speakers` are unchanged.
     ///
     /// Listed speakers: every speaker with at least one turn shown, plus speakers created by `newSpeaker`. Speakers
-    /// whose names match (`SameNameSpeakers`: names the user gave or confirmed, and the channel's; never "Speaker N" or
-    /// an automatic name) are listed as one, which `turns` gives their turns to (`ProjectedSpeaker.memberIDs`); edits
-    /// and fingerprints still see each stored speaker.
+    /// whose names match (`SameNameSpeakers`: names the user gave, the channel's, and links to one person, read from
+    /// the journal alone, never `profileNames`; never "Speaker N" or an automatic name) are listed as one, which
+    /// `turns` gives their turns to (`ProjectedSpeaker.memberIDs`); edits and fingerprints still see each stored
+    /// speaker.
     /// `recognition` matches whose profileID is not in `profileNames` (forgotten people) are ignored.
     public static func make(run: DiarizationRun, transcript: Transcript, edits: [SpeakerEdit],
                             recognition: RecognitionResult?, profileNames: [String: String],
@@ -474,12 +475,6 @@ extension SpeakerProjection {
         let transcript: Transcript
         /// Profile ID → current name, for names that are not blank.
         let profileNames: [String: String]
-        /// People an edit batch is linking who are not in `profileNames` yet (created by the same change), counted as
-        /// existing people when same-named speakers are joined (`SameNameSpeakers`); empty but there.
-        var linkedPeople: Set<String> = []
-
-        /// The people who exist for joining same-named speakers: `profileNames`' and `linkedPeople`.
-        var people: Set<String> { Set(profileNames.keys).union(linkedPeople) }
         /// Matches of known profiles by machine speaker, in file order, with current profile names. Empty when the
         /// recognition belongs to another run.
         let matches: [String: [SpeakerMatch]]
@@ -985,10 +980,11 @@ extension SpeakerProjection {
                     turnCount: turnCounts[speaker.id] ?? 0,
                     effectiveProfileID: effectiveProfiles[speaker.id]))
             }
-            // Same name, same person (`SameNameSpeakers`): speakers whose names match are listed as one, with
-            // their turns.
-            let joined = SameNameSpeakers.join(projectedSpeakers, turns: projectedTurns,
-                                               people: context.people)
+            // Same name, same person (`SameNameSpeakers`): speakers whose names (or people) match are listed as one,
+            // with their turns. From the journal's state alone, never the people store.
+            var keys: [String: [String]] = [:]
+            for speaker in listed { keys[speaker.id] = SameNameSpeakers.keys(of: speaker) }
+            let joined = SameNameSpeakers.join(projectedSpeakers, turns: projectedTurns, keys: keys)
             for member in joined.into.keys { effectiveProfiles[member] = nil }
             let merges = mergeSuggestions(listed: joined.speakers, effectiveProfiles: effectiveProfiles,
                                           context: context)

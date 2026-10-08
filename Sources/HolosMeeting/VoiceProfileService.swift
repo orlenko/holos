@@ -71,13 +71,17 @@ public enum VoiceProfileService {
     /// `deferSamples`: only the link is saved; the caller brings the samples in step afterwards with
     /// `syncSamples(session:extractor:store:enroll:)`, enrolling the person when `learnVoice` (the review window does
     /// this in the background, so a name is saved at once).
+    ///
+    /// `preceding`: actions saved first in the same batch, so one undo takes them back with the link (Review's
+    /// "Assign to <person>": the turns move to `speakerID`, or a new `speakerID` is created with them, then linked).
     public static func link(session: URL, speakerID: String, to target: ProfileTarget, view: SpeakerProjection,
                             learnVoice: Bool, extractor: (any VoiceSampleExtractor)?,
-                            store: SpeakerProfileStore, deferSamples: DeferredSamples? = nil) async throws -> SpeakerSessionSnapshot {
+                            store: SpeakerProfileStore, deferSamples: DeferredSamples? = nil,
+                            preceding: [SpeakerEditAction] = []) async throws -> SpeakerSessionSnapshot {
         let (profile, created) = try resolve(target, store: store)
         return try await linkPeople([(speakerID, profile)], created: created ? [profile.id] : [], session: session,
                                     view: view, enroll: learnVoice ? [profile.id] : [], extractor: extractor,
-                                    store: store, deferSamples: deferSamples)
+                                    store: store, deferSamples: deferSamples, preceding: preceding)
     }
 
     /// Links every current suggestion ("Maybe Jim") to its person in one batch, so one undo reverts it, and with
@@ -737,8 +741,9 @@ public enum VoiceProfileService {
                                    session: URL, view: SpeakerProjection, enroll: Set<String>,
                                    extractor: (any VoiceSampleExtractor)?, store: SpeakerProfileStore,
                                    requireCompleteJournal: Bool = false,
-                                   deferSamples: DeferredSamples? = nil) async throws -> SpeakerSessionSnapshot {
-        let actions = links.flatMap { link -> [SpeakerEditAction] in
+                                   deferSamples: DeferredSamples? = nil,
+                                   preceding: [SpeakerEditAction] = []) async throws -> SpeakerSessionSnapshot {
+        let actions = preceding + links.flatMap { link -> [SpeakerEditAction] in
             [.linkProfile(speakerID: link.speakerID, profileID: link.profile.id),
              .rename(speakerID: link.speakerID, name: link.profile.displayName)]
         }

@@ -308,8 +308,9 @@ public enum SpeakerEditor {
     }
 
     /// Whether `saved` (a batch's actions in journal order) is `asked` as `apply` saves it: the same actions, with at
-    /// most what `SpeakerProjection.joiningSameNames` adds for same-named speakers (merges before them; merges, then
-    /// links, after them). For a caller that recognizes its own batch among the lines it reads back.
+    /// most what `SpeakerProjection.joiningSameNames` adds for same-named speakers (merges and exclusions from voice
+    /// learning before them; those, then a link, after them). For a caller that recognizes its own batch among the
+    /// lines it reads back.
     public static func saved(_ saved: [SpeakerEditAction], asAsked asked: [SpeakerEditAction]) -> Bool {
         guard saved.count >= asked.count else { return false }
         for start in 0...(saved.count - asked.count) where Array(saved[start..<(start + asked.count)]) == asked {
@@ -318,9 +319,9 @@ public enum SpeakerEditor {
         return false
     }
 
-    /// `saved` without what `SpeakerProjection.joiningSameNames` added around the asked actions: its leading merges,
-    /// and its trailing merges and links. For a caller whose asked batch starts with a link or a non-merge and ends
-    /// with neither a merge nor a link (a link's `linkProfile` + `rename` pairs).
+    /// `saved` without what `SpeakerProjection.joiningSameNames` added around the asked actions: its leading merges and
+    /// exclusions, and its trailing merges, exclusions and links. For a caller whose asked batch starts with neither a
+    /// merge nor an exclusion and ends with a `rename` (a link's `linkProfile` + `rename` pairs).
     public static func withoutJoins<Line>(_ saved: [Line], action: (Line) -> SpeakerEditAction) -> [Line] {
         var lines = ArraySlice(saved)
         while let first = lines.first, isJoinPrefix([action(first)]) { lines = lines.dropFirst() }
@@ -329,13 +330,18 @@ public enum SpeakerEditor {
     }
 
     private static func isJoinPrefix(_ actions: some Collection<SpeakerEditAction>) -> Bool {
-        actions.allSatisfy { if case .merge = $0 { true } else { false } }
+        actions.allSatisfy {
+            switch $0 {
+            case .merge, .excludeFromEnrollment: true
+            default: false
+            }
+        }
     }
 
     private static func isJoinSuffix(_ actions: some Collection<SpeakerEditAction>) -> Bool {
         actions.allSatisfy {
             switch $0 {
-            case .merge, .linkProfile: true
+            case .merge, .excludeFromEnrollment, .linkProfile: true
             default: false
             }
         }

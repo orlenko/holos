@@ -200,32 +200,7 @@ func thisIsMeOnASpeakerShownJoinedShowsOneSpeakerWhileItSaves() async throws {
 }
 
 @Test(.timeLimit(.minutes(1))) @MainActor
-func assigningAnotherPersonOfTheSameNameMakesTheirOwnSpeaker() async throws {
-    let temp = try TemporaryDirectory("review")
-    defer { temp.remove() }
-    let store = sameNameStore(temp)
-    // Two remembered people called Alex.
-    let first = SpeakerProfile(displayName: "Alex")
-    let second = SpeakerProfile(displayName: "Alex")
-    try store.update { $0.profiles += [first, second] }
-    let session = try await sameNameSession(temp)
-    let review = try await sameNameOpen(session, store: store)
-    try await review.link(speakerID: "system:S1", to: .existing(profileID: first.id))
-
-    // T2 is the other Alex: it goes to a speaker of their own, linked to them, not to S1.
-    try await review.assign(["T2"], to: .person(profileID: second.id))
-    let moved = try #require(review.projection.turns.first { $0.id == "T2" }?.speakerID)
-    #expect(moved != "system:S1")
-    #expect(review.speaker(moved)?.profileID == second.id)
-    #expect(review.speaker(moved)?.name == "Alex")
-    #expect(review.speaker("system:S1")?.profileID == first.id)
-    #expect(review.speaker("system:S1")?.memberIDs == ["system:S1"])
-    #expect(!(try sameNameJournal(session).contains { if case .merge = $0.action { true } else { false } }))
-    #expect(review.snapshot.projection == review.projection)
-}
-
-@Test(.timeLimit(.minutes(1))) @MainActor
-func assigningAPersonASpeakerOfTheirNameSaidNotToMakesTheirOwnSpeaker() async throws {
+func assigningAPersonMakesTheirSpeakerAndLinksItInOneBatch() async throws {
     let temp = try TemporaryDirectory("review")
     defer { temp.remove() }
     let store = sameNameStore(temp)
@@ -233,18 +208,52 @@ func assigningAPersonASpeakerOfTheirNameSaidNotToMakesTheirOwnSpeaker() async th
     try store.update { $0.profiles.append(alex) }
     let session = try await sameNameSession(temp)
     let review = try await sameNameOpen(session, store: store)
-    // S2 is called Alex, but is not this Alex ("Not Alex").
-    try await review.apply([.rename(speakerID: "system:S2", name: "Alex"),
-                            .rejectProfile(speakerID: "system:S2", profileID: alex.id)])
+    let before = review.projection
+    let gate = sameNameGate()
+    review.beforeEdit = gate.hook
 
-    try await review.assign(["T3"], to: .person(profileID: alex.id))
-    let moved = try #require(review.projection.turns.first { $0.id == "T3" }?.speakerID)
-    #expect(moved != "system:S2")
-    #expect(review.speaker(moved)?.profileID == alex.id)
-    #expect(review.speaker("system:S2")?.profileID == nil)
-    #expect(review.projection.turns.first { $0.id == "T2" }?.speakerID == "system:S2")
+    let assigning = Task { @MainActor in try await review.assign(["T2"], to: .person(profileID: alex.id)) }
+    #expect(await eventually { gate.entered.value == 1 })
+    // Shown at once as it will be saved: a new speaker called Alex, linked to him, holding T2.
+    let shown = try #require(review.projection.turns.first { $0.id == "T2" }?.speakerID)
+    #expect(review.speaker(shown)?.profileID == alex.id)
+    #expect(review.speaker(shown)?.name == "Alex")
+    gate.release.finish()
+    try await assigning.value
+
+    #expect(review.projection.turns.first { $0.id == "T2" }?.speakerID == shown)
+    #expect(review.speaker(shown)?.profileID == alex.id)
+    let lines = try sameNameJournal(session)
+    #expect(lines.map(\.action) == [.newSpeaker(speakerID: shown, name: "Alex", turnIDs: ["T2"]),
+                                    .linkProfile(speakerID: shown, profileID: alex.id),
+                                    .rename(speakerID: shown, name: "Alex")])
+    #expect(Set(lines.map(\.batchID)).count == 1, "The new speaker and its link are one change.")
     #expect(review.snapshot.projection == review.projection)
+
+    try await review.undo()
+    #expect(review.projection.speakers == before.speakers)
+    #expect(review.projection.turns == before.turns)
 }
+
+@Test(.timeLimit(.minutes(1))) @MainActor
+func assigningAPersonASpeakerOfTheirNameIsLinkedToOtherwiseOnlyMovesTheTurns() async throws {
+    let temp = try TemporaryDirectory("review")
+    defer { temp.remove() }
+    let store = sameNameStore(temp)
+    let first = SpeakerProfile(displayName: "Alex")
+    let second = SpeakerProfile(displayName: "Alex")
+    try store.update { $0.profiles += [first, second] }
+    let session = try await sameNameSession(temp)
+    let review = try await sameNameOpen(session, store: store)
+    try await review.link(speakerID: "system:S1", to: .existing(profileID: first.id))
+
+    // Same name, same speaker: T2 goes to the Alex of this meeting, which keeps its link.
+    try await review.assign(["T2"], to: .person(profileID: second.id))
+    #expect(review.projection.turns.first { $0.id == "T2" }?.speakerID == "system:S1")
+    #expect(review.speaker("system:S1")?.profileID == first.id)
+    #expect(try sameNameJournal(session).last?.action == .reassignTurns(turnIDs: ["T2"], to: "system:S1"))
+}
+
 
 @Test(.timeLimit(.minutes(1))) @MainActor
 func namingASpeakerLikeAPersonIgnoresAccentsAndSpaces() async throws {
