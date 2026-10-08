@@ -467,6 +467,417 @@ struct TurnListWordEditTests {
         #expect(list.wordEdit?.words.map(\.text) == ["alpha"] && list.editField.stringValue == "Alfa")
     }
 
+    /// The window's resolver over the fixture (`ReviewWindow.splitResolution`), with where a word falls in its turn
+    /// worked out as the review does (`ReviewSession.splitPlace`) over the fixture's words; `refusal` stands for the
+    /// review's split check. Records the splits made.
+    private func splitting(_ list: TurnListView, refusal: @escaping (String, WordRef) -> String? = { _, _ in nil })
+        -> () -> [ReviewParagraphSplit] {
+        var splits: [ReviewParagraphSplit] = []
+        list.resolveSplit = { request in
+            let turnWords = TurnListViewTests.words[request.word.segmentID] ?? []
+            let place: ReviewSplitPlace? = turnWords.firstIndex { $0.ref == request.word }.map { index in
+                if request.after {
+                    return index + 1 < turnWords.count
+                        ? .inside(turnID: request.word.segmentID, word: turnWords[index + 1].ref)
+                        : .turnEnd(turnID: request.word.segmentID)
+                }
+                return index > 0 ? .inside(turnID: request.word.segmentID, word: request.word)
+                    : .turnStart(turnID: request.word.segmentID)
+            }
+            return ReviewWindow.splitResolution(place, paragraphs: list.paragraphs, refusal: refusal)
+        }
+        list.onSplit = { split, _ in splits.append(split) }
+        return { splits }
+    }
+
+    /// Return with the caret at the start of the field's word and nothing changed splits the turn before it (row 0 is
+    /// T1 "alpha beta" and T2 "gamma delta"): inside a turn, a split; at a turn's first word, a break of the row. At the
+    /// end of the word, the split comes after it. With the word selected (as the field opens) or the caret inside it,
+    /// Return does what it always did: nothing changed, nothing saved, no split.
+    @Test func returnAtTheStartOfAWordSplitsTheTurnThere() throws {
+        let (list, saved) = editingList()
+        let made = splitting(list)
+        var splits: [ReviewParagraphSplit] { made() }
+        var messages: [String?] = []
+        list.onEditMessage = { messages.append($0) }
+        list.editingWords = true
+        func returnAt(word: Int, caret: Int?) {
+            list.table.handleWordClick(row: 0, word: word, through: word, extend: false)
+            if let caret {
+                list.editField.currentEditor()?.selectedRange = NSRange(location: caret, length: 0)
+            }
+            press(list, #selector(NSResponder.insertNewline(_:)))
+        }
+        let beta = try #require(TurnListViewTests.words["T1"]?[1])
+        returnAt(word: 1, caret: 0)
+        #expect(splits == [.splitTurn(turnID: "T1", at: beta.ref)])
+        #expect(list.wordEdit == nil, "The field closed: nothing was typed.")
+        // Before "gamma", which starts T2: the row breaks there.
+        returnAt(word: 2, caret: 0)
+        #expect(splits.last == .breakBefore(turnID: "T2"))
+        // At the end of "alpha": after it, before "beta".
+        returnAt(word: 0, caret: ("alpha" as NSString).length)
+        #expect(splits.last == .splitTurn(turnID: "T1", at: beta.ref))
+        #expect(splits.count == 3)
+        // The word selected, or the caret inside it: no split, nothing saved.
+        returnAt(word: 1, caret: nil)
+        returnAt(word: 1, caret: 2)
+        #expect(splits.count == 3 && saved().isEmpty && list.wordEdit == nil)
+        // Something typed: Return saves it, never splits.
+        list.table.handleWordClick(row: 0, word: 1, through: 1, extend: false)
+        list.editField.stringValue = "Beta"
+        list.editField.currentEditor()?.selectedRange = NSRange(location: 0, length: 0)
+        press(list, #selector(NSResponder.insertNewline(_:)))
+        #expect(splits.count == 3 && saved().map(\.text) == ["Beta"])
+        // At the row's first word, or after its last: nothing to split; the banner says so, and the field stays.
+        returnAt(word: 0, caret: 0)
+        #expect(splits.count == 3 && messages.last == TurnListView.alreadyStartsHere && list.wordEdit != nil)
+        list.cancelWordEdit()
+        returnAt(word: 3, caret: ("delta" as NSString).length)
+        #expect(splits.count == 3 && messages.last == TurnListView.alreadyEndsHere)
+        list.cancelWordEdit()
+    }
+
+    /// A split that cannot be made (`splitRefusal`: words edited together, overlapping turns, a damaged segment, a
+    /// review held read-only) is never made: Return says why in the banner and keeps the field; the context menu's
+    /// Split Turn Here is offered disabled, saying why.
+    @Test func aRefusedSplitSaysWhyAndIsNotMade() throws {
+        let (list, _) = editingList()
+        let why = "That word is part of words you edited together; split before or after them."
+        let splits = splitting(list, refusal: { _, _ in why })
+        var messages: [String?] = []
+        list.onEditMessage = { messages.append($0) }
+        list.editingWords = true
+        list.table.handleWordClick(row: 0, word: 1, through: 1, extend: false)
+        list.editField.currentEditor()?.selectedRange = NSRange(location: 0, length: 0)
+        press(list, #selector(NSResponder.insertNewline(_:)))
+        #expect(splits().isEmpty && messages.last == why && list.wordEdit != nil)
+        list.cancelWordEdit()
+        list.editingWords = false
+        let cell = try TurnListViewTests.cell(list, row: 0)
+        let menu = list.table.wordMenu(row: 0, cell: cell, word: cell.bodyText.reviewWord(at: 1), index: 1)
+        let item = try #require(menu.items.first { $0.title == "Split Turn Here" })
+        #expect(!item.isEnabled && item.toolTip == why)
+        var refused: [String] = []
+        list.onSplitRefused = { refused.append($0) }
+        list.splitChosen(try #require(item.representedObject as? SplitChoice))
+        #expect(splits().isEmpty, "Chosen anyway (the words changed while the menu was open): still not made.")
+        #expect(refused == [why], "And the window says why.")
+        // A paragraph break is never refused.
+        let breakItem = try #require(list.table.wordMenu(row: 0, cell: cell, word: cell.bodyText.reviewWord(at: 2),
+                                                         index: 2).items.first { $0.title == "Split Turn Here" })
+        #expect(breakItem.isEnabled)
+    }
+
+    /// A space typed at the end of the field is a change: Return saves it, as before, never splits.
+    @Test func returnAfterTypingOnlyASpaceSavesAndDoesNotSplit() {
+        let (list, saved) = editingList()
+        let splits = splitting(list)
+        list.editingWords = true
+        list.table.handleWordClick(row: 0, word: 1, through: 1, extend: false)
+        list.editField.stringValue = "beta "
+        list.editField.currentEditor()?.selectedRange = NSRange(location: 5, length: 0)
+        press(list, #selector(NSResponder.insertNewline(_:)))
+        #expect(splits().isEmpty)
+        #expect(list.wordEdit == nil && saved().isEmpty, "Cleaned, it reads as before: nothing to save either.")
+    }
+
+    /// Overlapping turns of one row may show a word twice (T1 "alpha beta", T2 "beta gamma", "beta" in both): the
+    /// menu's split is the clicked copy's turn; after a break where two rows start at one word, the pop-up opened is
+    /// the one of the row the break started.
+    @Test func overlappingTurnsSplitAndFocusTheTurnChosen() throws {
+        let (list, _) = editingList()
+        var requests: [ReviewSplitRequest] = []
+        list.resolveSplit = { request in
+            requests.append(request)
+            return .refused("recorded")
+        }
+        var opened: [NSPopUpButton] = []
+        list.openSpeakerMenu = { opened.append($0) }
+        let beta = try #require(TurnListViewTests.words["T1"]?[1])
+        var words = TurnListViewTests.words
+        words["T2"] = [beta, try #require(TurnListViewTests.words["T2"]?[0])]
+        update(list, words: words, moves: [])
+        let cell = try TurnListViewTests.cell(list, row: 0)
+        _ = list.table.wordMenu(row: 0, cell: cell, word: cell.bodyText.reviewWord(at: 2), index: 2)
+        #expect(requests.last?.word == beta.ref && requests.last?.turnID == "T2", "T2's copy of “beta”.")
+        _ = list.table.wordMenu(row: 0, cell: cell, word: cell.bodyText.reviewWord(at: 1), index: 1)
+        #expect(requests.last?.turnID == "T1")
+        // Rows "T1" (alpha beta) and "T2" (beta gamma): both start at "beta" after a break before T2.
+        let turns = TurnListViewTests.turns
+        var both = words
+        both["T1"] = [beta]
+        update(list, words: both, moves: [], paragraphs: [ReviewParagraph(turns: [turns[0]]),
+                                                          ReviewParagraph(turns: [turns[1]]),
+                                                          ReviewParagraph(turns: [turns[2]])])
+        #expect(list.focusSpeaker(startingAt: beta.ref, turnID: "T2"))
+        #expect(opened.last === (try TurnListViewTests.cell(list, row: 1)).speakerPopUp)
+        // A turn no row starts with (hidden by a search, say): no other row's pop-up stands in for it.
+        let count = opened.count
+        #expect(!list.focusSpeaker(startingAt: beta.ref, turnID: "T9"))
+        #expect(!list.focusSpeaker(startingAt: beta.ref, splitOf: "T3"))
+        #expect(opened.count == count)
+    }
+
+    /// The field keeps the turn it was opened in: following its words through a refresh may land on another copy of
+    /// a word two overlapping turns show, but Return at its start still asks for that turn's split.
+    @Test func theFieldKeepsTheTurnItWasOpenedInThroughARefresh() throws {
+        let (list, _) = editingList()
+        var requests: [ReviewSplitRequest] = []
+        list.resolveSplit = { request in
+            requests.append(request)
+            return .refused("recorded")
+        }
+        let beta = try #require(TurnListViewTests.words["T1"]?[1])
+        var words = TurnListViewTests.words
+        words["T2"] = [beta, try #require(TurnListViewTests.words["T2"]?[0])]
+        update(list, words: words, moves: [])
+        list.editingWords = true
+        // T2's copy of "beta" (word 2 of the row).
+        list.table.handleWordClick(row: 0, word: 2, through: 2, extend: false)
+        #expect(list.wordEdit?.turnID == "T2")
+        update(list, words: words, moves: [])
+        // Still over T2's copy, where it was opened, never moved onto T1's.
+        #expect(list.wordEdit?.range == 2...2 && list.wordEdit?.turnID == "T2")
+        list.editField.currentEditor()?.selectedRange = NSRange(location: 0, length: 0)
+        press(list, #selector(NSResponder.insertNewline(_:)))
+        #expect(requests.last?.turnID == "T2" && requests.last?.word == beta.ref)
+        // A refused split's field opens again in the same turn's copy, either way it is reopened.
+        list.cancelWordEdit()
+        #expect(list.reopenWordEdit([beta], typed: "beta", message: "Not split.", caret: 0, inTurn: "T2"))
+        #expect(list.wordEdit?.turnID == "T2" && list.wordEdit?.range == 2...2)
+        list.cancelWordEdit()
+        #expect(list.reopenField(at: beta.ref, atEnd: false, message: "Not split.", inTurn: "T2"))
+        #expect(list.wordEdit?.turnID == "T2" && list.wordEdit?.range == 2...2)
+        list.cancelWordEdit()
+        // A turn no row shows (a search hides it): no other turn's copy stands in.
+        #expect(!list.reopenWordEdit([beta], typed: "beta", message: "Not split.", inTurn: "T9"))
+        #expect(!list.reopenField(at: beta.ref, atEnd: false, message: "Not split.", inTurn: "T9"))
+        #expect(list.wordEdit == nil)
+    }
+
+    /// The place is the word as the list showed it, never an index read again: a word edit saved since the field or
+    /// the menu took the word ("alpha" became "al pha", so every later word of T1 moved by one) is followed
+    /// (`ReviewSession.splitPlace`); a split is made before the same word, "beta", now word 2.
+    @Test func aSplitFollowsTheWordItWasAskedAtThroughEditsSavedSince() throws {
+        let (list, _) = editingList()
+        var requests: [ReviewSplitRequest] = []
+        list.resolveSplit = { request in
+            requests.append(request)
+            return .split(.splitTurn(turnID: "T1", at: request.word))
+        }
+        list.onSplit = { _, _ in }
+        list.editingWords = true
+        list.table.handleWordClick(row: 0, word: 1, through: 1, extend: false)
+        list.editField.currentEditor()?.selectedRange = NSRange(location: 0, length: 0)
+        press(list, #selector(NSResponder.insertNewline(_:)))
+        let beta = try #require(TurnListViewTests.words["T1"]?[1])
+        // The request names the field's own word, with the moves and epoch the field follows: the review follows them.
+        // With the field's words and text, for the window to open it again if the split is refused once queued.
+        #expect(requests == [ReviewSplitRequest(word: beta.ref, after: false, turnID: "T1", movesSeen: 0,
+                                                wordsEpoch: 0, field: .init(words: [beta], text: "beta"))])
+        // Refused once queued, the window opens the field again with the caret where Return found it: Return there
+        // asks for the same split again, never the one after the word.
+        #expect(list.reopenWordEdit([beta], typed: "beta", message: "Not split.", movesSeen: 0, wordsEpoch: 0,
+                                    caret: 0))
+        #expect(list.editField.currentEditor()?.selectedRange == NSRange(location: 0, length: 0))
+        press(list, #selector(NSResponder.insertNewline(_:)))
+        #expect(requests.count == 2 && requests.last?.after == false && requests.last?.word == beta.ref)
+        // Its word replaced by an edit saved meanwhile: the field opens over the words that replaced it, with their
+        // own text, the caret where Return found it, and why.
+        list.cancelWordEdit()
+        var messages: [String?] = []
+        list.onEditMessage = { messages.append($0) }
+        #expect(list.reopenField(at: beta.ref, atEnd: true, message: "Not split."))
+        #expect(list.wordEdit?.words.map(\.ref) == [beta.ref] && list.editField.stringValue == "beta")
+        #expect(list.editField.currentEditor()?.selectedRange == NSRange(location: 4, length: 0))
+        #expect(messages.last == "Not split.")
+    }
+
+    /// Outside edit mode, a word's context menu offers Split Turn Here (no sheet): before that word. Not on a row's
+    /// first word, where there is nothing to split from. A fixed word offers its Revert beside it.
+    @Test func theWordMenuSplitsTheTurnHere() throws {
+        let (list, _) = editingList()
+        let made = splitting(list)
+        var splits: [ReviewParagraphSplit] { made() }
+        let cell = try TurnListViewTests.cell(list, row: 0)
+        func menu(_ index: Int) -> NSMenu {
+            list.table.wordMenu(row: 0, cell: cell, word: cell.bodyText.reviewWord(at: index), index: index)
+        }
+        #expect(menu(0).items.isEmpty, "The row's first word: no split.")
+        let item = try #require(menu(1).items.first { $0.title == "Split Turn Here" })
+        #expect(item.isEnabled)
+        let action = try #require(item.action)
+        _ = (item.target as AnyObject?)?.perform(action, with: item)
+        let beta = try #require(TurnListViewTests.words["T1"]?[1])
+        #expect(splits == [.splitTurn(turnID: "T1", at: beta.ref)])
+        // In edit mode the menu offers no split: Return at a word's start does it, and a field open on another word
+        // is never left behind.
+        list.editingWords = true
+        #expect(!menu(1).items.contains { $0.title == "Split Turn Here" })
+    }
+
+    /// VoiceOver reaches Split Turn Here through the text's actions: "Split Turn Before “beta”", none on the row's
+    /// first word nor in edit mode. Chosen, it is checked then, and a refusal says why.
+    @Test func voiceOverSplitsTheTurnBeforeAWord() throws {
+        let (list, _) = editingList()
+        var refuse = false
+        let made = splitting(list) { _, _ in refuse ? "Not here." : nil }
+        var refused: [String] = []
+        list.onSplitRefused = { refused.append($0) }
+        let text = try TurnListViewTests.cell(list, row: 0).bodyText
+        func splitActions() -> [NSAccessibilityCustomAction] {
+            (text.accessibilityCustomActions() ?? []).filter { $0.name.hasPrefix("Split Turn Before") }
+        }
+        #expect(splitActions().map(\.name)
+            == ["Split Turn Before “beta”", "Split Turn Before “gamma”", "Split Turn Before “delta”"])
+        // The row's words are worked out once per listing, not once per word (a long paragraph lists many).
+        let choices = text.splitChoices
+        var asked = 0
+        text.splitChoices = {
+            asked += 1
+            return choices?() ?? []
+        }
+        #expect(splitActions().count == 3 && asked == 1)
+        text.splitChoices = choices
+        // Each the same request the context menu makes at that word.
+        #expect(list.splitRequests(row: 0) == (0..<4).map { list.splitRequest(row: 0, index: $0) })
+        #expect(list.splitRequests(row: 0).first == .some(nil) && list.splitRequests(row: 9).isEmpty)
+        let beta = try #require(splitActions().first)
+        #expect(beta.handler?() == true)
+        let betaRef = try #require(TurnListViewTests.words["T1"]?[1]).ref
+        #expect(made() == [.splitTurn(turnID: "T1", at: betaRef)])
+        // Refused once chosen: why, and no split.
+        refuse = true
+        #expect(try #require(splitActions().first).handler?() == true)
+        #expect(made().count == 1 && refused == ["Not here."])
+        list.editingWords = true
+        #expect(splitActions().isEmpty)
+    }
+
+    /// After a split, the second part's row is selected and its speaker pop-up opens, so its speaker can be chosen at
+    /// once (it keeps the first part's until then).
+    @Test func afterASplitTheSecondPartsSpeakerPopUpOpens() throws {
+        let (list, _) = editingList()
+        var opened: [NSPopUpButton] = []
+        list.openSpeakerMenu = { opened.append($0) }
+        // T1 split before "beta": its second part ("T1/e") starts a row of its own.
+        let beta = try #require(TurnListViewTests.words["T1"]?[1])
+        var turns = TurnListViewTests.turns
+        turns.insert(TurnListViewTests.turn("T1/e", "S1", 1, 2), at: 1)
+        var words = TurnListViewTests.words
+        words["T1"] = [try #require(TurnListViewTests.words["T1"]?[0])]
+        words["T1/e"] = [beta]
+        update(list, words: words, moves: [], paragraphs: ReviewParagraphs.group(turns))
+        let row = try #require(list.paragraphs.firstIndex { $0.turnIDs.first == "T1/e" })
+        #expect(list.focusSpeaker(startingAt: beta.ref))
+        #expect(list.table.selectedRowIndexes == [row])
+        let popUp = try TurnListViewTests.cell(list, row: row).speakerPopUp
+        #expect(opened.count == 1 && opened.first === popUp)
+        // A field opened since (the split took a while): it keeps the keyboard, and nothing half typed is saved.
+        list.editingWords = true
+        list.table.handleWordClick(row: 0, word: 0, through: 0, extend: false)
+        list.editField.stringValue = "Alp"
+        #expect(!list.focusSpeaker(startingAt: beta.ref))
+        #expect(opened.count == 1 && list.wordEdit != nil && list.editField.stringValue == "Alp")
+        list.cancelWordEdit()
+        // Any other text field with the keyboard (a speaker's name being typed in the sidebar, say): the same.
+        let name = NSTextField(frame: NSRect(x: 0, y: 0, width: 100, height: 22))
+        list.addSubview(name)
+        #expect(list.window?.makeFirstResponder(name) == true)
+        #expect(list.typingElsewhere)
+        #expect(!list.focusSpeaker(startingAt: beta.ref) && opened.count == 1)
+        name.removeFromSuperview()
+        #expect(!list.focusSpeaker(startingAt: WordRef(segmentID: "T9", word: 0)), "No row starts there.")
+        // As it is about to open: never while its window is not the key one (the person typing in another window),
+        // nor with no window.
+        #expect(list.window?.isKeyWindow != true)
+        #expect(!TurnListView.mayOpenSpeakerMenu(in: list.window))
+        #expect(!TurnListView.mayOpenSpeakerMenu(in: nil))
+    }
+
+    /// A field opened in a split's second part while the split still saves (its row has the part's temporary ID)
+    /// stays open when the saved split replaces that ID: nothing half typed is saved, and the window can tell a field
+    /// was opened since the split was asked (`fieldsOpened`), so no pop-up takes the keyboard.
+    @Test func aFieldInASplitsSecondPartFollowsItsSavedID() throws {
+        let (list, saved) = editingList()
+        let beta = try #require(TurnListViewTests.words["T1"]?[1])
+        var words = TurnListViewTests.words
+        words["T1"] = [try #require(TurnListViewTests.words["T1"]?[0])]
+        func shown(_ part: String) -> [ReviewParagraph] {
+            var turns = TurnListViewTests.turns
+            turns.insert(TurnListViewTests.turn(part, "S1", 1, 2), at: 1)
+            return ReviewParagraphs.group(turns, breaks: [part])
+        }
+        words["T1/e"] = [beta]
+        update(list, words: words, moves: [], paragraphs: shown("T1/e"))
+        let opened = list.fieldsOpened
+        list.editingWords = true
+        let row = try #require(list.paragraphs.firstIndex { $0.id == "T1/e" })
+        list.table.handleWordClick(row: row, word: 0, through: 0, extend: false)
+        #expect(list.wordEdit?.turnID == "T1/e" && list.fieldsOpened == opened + 1)
+        list.editField.stringValue = "Bet"
+        // Saved: the part's turn is "T1/s" now.
+        words["T1/s"] = [beta]
+        update(list, words: words, moves: [], paragraphs: shown("T1/s"), resolve: { $0 == "T1/e" ? "T1/s" : $0 })
+        #expect(list.wordEdit?.paragraphID == "T1/s" && list.wordEdit?.turnID == "T1/s")
+        #expect(list.editField.stringValue == "Bet" && saved().isEmpty)
+        #expect(list.fieldsOpened == opened + 1)
+    }
+
+    /// Where a refused split's field opens again after edits saved meanwhile (`ReviewWindow.splitBoundary`): the same
+    /// edge of its word, moved; of what replaced it (its last word for a split after it, never inside); a deleted
+    /// word's boundary is the start of the word after it.
+    @Test func aSplitBoundaryFollowsItsWordThroughEditsSavedSince() throws {
+        let word = TurnListViewTests.word("S", 2, "cloud", 2)
+        func boundary(_ atEnd: Bool, _ moves: [ReviewWordMove]) -> (word: WordRef, atEnd: Bool)? {
+            ReviewWindow.splitBoundary(word, atEnd: atEnd, through: moves[...])
+        }
+        // An edit before it ("ask" became "please ask"): the same word, one further.
+        let before = ReviewWordMove(segmentID: "S", replaced: 0..<1, replacement: 0..<2)
+        #expect(boundary(false, [before]).map { [$0.word.word] } == [3])
+        // "cloud" became "the cloud": a split after it is after "cloud" (word 3), one before it before "the" (2).
+        let grown = ReviewWordMove(segmentID: "S", replaced: 2..<3, replacement: 2..<4)
+        #expect(boundary(true, [grown])?.word.word == 3 && boundary(true, [grown])?.atEnd == true)
+        #expect(boundary(false, [grown])?.word.word == 2 && boundary(false, [grown])?.atEnd == false)
+        // Deleted: at the start of the word after it, whichever side was asked.
+        let deleted = ReviewWordMove(segmentID: "S", replaced: 2..<3, replacement: 2..<2)
+        #expect(boundary(true, [deleted])?.word.word == 2 && boundary(true, [deleted])?.atEnd == false)
+        #expect(ReviewWindow.splitBoundary(nil, atEnd: false, through: []) == nil)
+    }
+
+    /// A refused split's field opens again only in edit mode with no other text field typed in: leaving edit mode
+    /// (⌘E) or typing a speaker's name while an earlier save held the split is never undone by the refusal.
+    /// A split names the labels run its rows showed (`ReviewSession.splitRunRefusal` refuses one labelled again
+    /// since): the list's when the menu opened, the field's when it opened.
+    @Test func aSplitNamesTheLabelsRunItWasChosenOn() throws {
+        let (list, _) = editingList()
+        var requests: [ReviewSplitRequest] = []
+        list.resolveSplit = { requests.append($0); return .refused("recorded") }
+        list.runID = "R1"
+        let cell = try TurnListViewTests.cell(list, row: 0)
+        _ = list.table.wordMenu(row: 0, cell: cell, word: cell.bodyText.reviewWord(at: 1), index: 1)
+        #expect(requests.last?.runID == "R1")
+        list.editingWords = true
+        list.table.handleWordClick(row: 0, word: 1, through: 1, extend: false)
+        list.runID = "R2"
+        list.editField.currentEditor()?.selectedRange = NSRange(location: 0, length: 0)
+        press(list, #selector(NSResponder.insertNewline(_:)))
+        #expect(requests.count == 2 && requests.last?.runID == "R1", "The run the field's turn is of.")
+    }
+
+    @Test func aRefusedSplitsFieldOpensAgainOnlyWhereThePersonLeftIt() {
+        #expect(ReviewWindow.reopensRefusedSplitField(typingElsewhere: false, editingWords: true,
+                                                      fieldOpenedSince: false))
+        #expect(!ReviewWindow.reopensRefusedSplitField(typingElsewhere: false, editingWords: false,
+                                                       fieldOpenedSince: false))
+        #expect(!ReviewWindow.reopensRefusedSplitField(typingElsewhere: true, editingWords: true,
+                                                       fieldOpenedSince: false))
+        // A field opened in the refused split's second row, closed with it: where the person was typing.
+        #expect(!ReviewWindow.reopensRefusedSplitField(typingElsewhere: false, editingWords: true,
+                                                       fieldOpenedSince: true))
+    }
+
     /// Only Esc drops what was typed: turning edit mode off saves it.
     @Test func turningEditModeOffSavesTheFieldAndEscDropsIt() {
         let (list, saved) = editingList()
@@ -539,11 +950,11 @@ struct TurnListWordEditTests {
     }
 
     private func update(_ list: TurnListView, words: [String: [ReviewWord]], moves: [ReviewWordMove],
-                        paragraphs: [ReviewParagraph]? = nil) {
+                        paragraphs: [ReviewParagraph]? = nil, resolve: (String) -> String = { $0 }) {
         list.update(paragraphs: paragraphs ?? ReviewParagraphs.group(TurnListViewTests.turns),
                     speakers: [TurnListViewTests.speaker("S1", 1), TurnListViewTests.speaker("S2", 2)], people: [],
                     editable: true, text: { (words[$0.id] ?? []).map(\.text).joined(separator: " ") },
-                    words: { words[$0.id] ?? [] }, resolve: { $0 }, wordMoves: moves)
+                    words: { words[$0.id] ?? [] }, resolve: resolve, wordMoves: moves)
     }
 
     /// Words edited together that a relabel put in two turns: no Revert (it would be refused), and the tooltip says

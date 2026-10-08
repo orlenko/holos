@@ -17,6 +17,16 @@ public enum ReviewAssignTarget: Sendable, Equatable {
 }
 
 /// A word edit saved in Review (`ReviewSession.editWords`).
+/// Where a split at a word falls (`ReviewSession.splitPlace`).
+public enum ReviewSplitPlace: Sendable, Equatable {
+    /// Inside a turn: it splits before `word`.
+    case inside(turnID: String, word: WordRef)
+    /// At the turn's first word: no turn splits; a row may break before it.
+    case turnStart(turnID: String)
+    /// After the turn's last word: no turn splits; a row may break after it.
+    case turnEnd(turnID: String)
+}
+
 public struct ReviewWordEdit: Sendable, Equatable {
     /// What the recognizer wrote over the edited span.
     public let heard: String
@@ -1039,29 +1049,99 @@ public struct ReviewWord: Sendable, Equatable {
     /// since moves it there first, as an edit field's words; one that replaced it refuses the split.
     ///
     /// `seenEpoch`: `wordsEpoch` when the sheet opened: words changed elsewhere since cannot be followed, and refuse it.
-    public func split(turnID: String, at word: WordRef, seenMoves: Int? = nil, seenEpoch: Int? = nil) async throws {
+    ///
+    /// `seenRun`: the labels run the turn was chosen on (`splitRunRefusal`): labelled again since, it is refused.
+    ///
+    /// Returns the word it split before, as it is now (moved by a word edit saved since, `seenMoves`): the second
+    /// part's first word.
+    @discardableResult
+    public func split(turnID: String, at word: WordRef, seenMoves: Int? = nil,
+                      seenEpoch: Int? = nil, seenRun: String? = nil) async throws -> WordRef {
+        if let refusal = splitRunRefusal(seenRun: seenRun) { throw HolosError.invalidInput(refusal) }
+        let word = try splitWord(word, seenMoves: seenMoves, seenEpoch: seenEpoch)
+        try await apply([splitAction(turnID: turnID, at: word)])
+        return word
+    }
+
+    /// Why a split chosen on the turns of labels run `seenRun` cannot be made on the labels shown now: labelled again
+    /// since (Label Again, a refresh from elsewhere), a turn ID may name another turn. The same run, or one this
+    /// window's word edit, its undo or a revert published from it keeping its turns (`keepsTurns`), lets it be made;
+    /// so does nil (no run known). Nil when it can be made.
+    public func splitRunRefusal(seenRun: String?) -> String? {
+        guard let seenRun, seenRun != projection.runID, !keepsTurns(of: seenRun, in: projection.runID) else {
+            return nil
+        }
+        return "The speakers were labelled again since; choose where to split again."
+    }
+
+    /// `word`, chosen when `seenMoves` of `wordMoves` were seen and `wordsEpoch` was `seenEpoch`, where it is in the
+    /// words shown now: a word edit saved since moves it; one that replaced it, or words changed elsewhere (no move
+    /// says where they went), refuse the split.
+    private func splitWord(_ word: WordRef, seenMoves: Int?, seenEpoch: Int?) throws -> WordRef {
         if let seenEpoch, seenEpoch != wordsEpoch {
             throw HolosError.invalidInput("The words were changed elsewhere while the split was being chosen; choose "
                                           + "where to split again.")
         }
-        var word = word
         let seen = seenMoves ?? movesRead
-        if seen != movesRead {
-            let moves = seen < movesRead ? wordMoves[seen..<movesRead]
-                : ArraySlice(wordMoves[movesRead..<min(seen, wordMoves.count)].reversed().map(\.inverse))
-            let followed = Self.follow([word], through: moves)
-            guard !followed.replaced, let moved = followed.refs.first else {
-                throw HolosError.invalidInput("That word was edited while the split was being chosen; choose where to "
-                                              + "split again.")
-            }
-            word = moved
+        guard seen != movesRead else { return word }
+        let moves = seen < movesRead ? wordMoves[seen..<movesRead]
+            : ArraySlice(wordMoves[movesRead..<min(seen, wordMoves.count)].reversed().map(\.inverse))
+        let followed = Self.follow([word], through: moves)
+        guard !followed.replaced, let moved = followed.refs.first else {
+            throw HolosError.invalidInput("That word was edited while the split was being chosen; choose where to "
+                                          + "split again.")
         }
+        return moved
+    }
+
+    /// Where a split at `word` falls, in the words and labels shown now (`word` as `splitWord` follows it from when it
+    /// was chosen): `after` false, before it; true, after it. Inside a turn, that turn splits there; at a turn's first
+    /// word (or after its last), the place is that turn's start (end), where only the window's rows can break. Nil
+    /// when no shown turn holds the word. Throws when the word cannot be followed (`splitWord`). `turnID`: the turn the
+    /// word was chosen in (turns may overlap: a word two turns hold splits the one it was chosen in); nil, the first
+    /// turn holding it. A turn that no longer holds it gives nil.
+    public func splitPlace(at word: WordRef, after: Bool, in turnID: String? = nil, seenMoves: Int?,
+                           seenEpoch: Int?) throws -> ReviewSplitPlace? {
+        let word = try splitWord(word, seenMoves: seenMoves, seenEpoch: seenEpoch)
+        let wanted = turnID.map(resolvedTurnID)
+        guard let turn = projection.turns.first(where: { turn in
+            (wanted == nil || turn.id == wanted)
+                && turn.spans.contains { $0.segmentID == word.segmentID && $0.first <= word.word && word.word < $0.end }
+        }) else { return nil }
+        let shown = words(of: turn)
+        guard let index = shown.firstIndex(where: { $0.ref == word }) else { return nil }
+        if after {
+            return index + 1 < shown.count ? .inside(turnID: turn.id, word: shown[index + 1].ref)
+                : .turnEnd(turnID: turn.id)
+        }
+        return index > 0 ? .inside(turnID: turn.id, word: word) : .turnStart(turnID: turn.id)
+    }
+
+    /// Why `turnID` cannot be split before `word` now, known before a split is offered or made (the context menu's
+    /// Split Turn Here, Return at a word's start in edit mode): the split's own checks, made on the labels shown
+    /// (`splitAction`), with the same message. Nil when it can be made.
+    public func splitRefusal(turnID: String, at word: WordRef) -> String? {
+        do {
+            _ = try splitAction(turnID: turnID, at: word)
+            return nil
+        } catch {
+            return error.localizedDescription
+        }
+    }
+
+    /// The split `split` queues, checked as it is checked when queued: the review editable, never inside words edited
+    /// together (their edit, and its Revert, belong to one turn), and the split one the labels shown can make
+    /// (`validate`: the word inside the turn, not its first).
+    private func splitAction(turnID: String, at word: WordRef) throws -> SpeakerEditAction {
+        try requireEditable()
         if let segment = segments[word.segmentID], (segment.fixes ?? []).contains(where: {
             $0.kind == .reviewEdit && $0.first < word.word && word.word < $0.end
         }) {
             throw HolosError.invalidInput("That word is part of words you edited together; split before or after them.")
         }
-        try await apply([.splitTurn(turnID: resolvedTurnID(turnID), at: word)])
+        let action = SpeakerEditAction.splitTurn(turnID: resolvedTurnID(turnID), at: word)
+        try validate([Self.cleaned(resolve(action))])
+        return action
     }
 
     /// Changes the automatic fix covering `word` back to what the recognizer heard. The other word fixes and the

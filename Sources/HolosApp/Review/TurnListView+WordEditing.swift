@@ -21,6 +21,11 @@ struct WordEditTarget: Equatable {
     var wordTexts: [String] = []
     /// `ReviewSession.wordsEpoch` when the field opened: words changed elsewhere since cannot be followed.
     var wordsEpoch = 0
+    /// The turn the words were chosen in (overlapping turns of a row may show a word twice): a split asked from the
+    /// field is that turn's, whatever copy following the words lands on.
+    var turnID: String?
+    /// The speaker labels' run `turnID` is of (`TurnListView.runID` when the field opened).
+    var runID: String?
 }
 
 /// The field over the words being edited: the turn text's font, a bezel, and no wrapping.
@@ -42,7 +47,8 @@ final class WordEditField: NSTextField {
         layer?.zPosition = 10
         setAccessibilityLabel("Edit words")
         setAccessibilityHelp("Return saves, Option-Return saves and adds it to the word list, Tab saves and edits the "
-                             + "next word, Escape cancels.")
+                             + "next word, Escape cancels. With nothing changed, Return with the cursor at the start "
+                             + "splits the turn before the word, and at the end, after it.")
     }
 
     convenience init() { self.init(frame: .zero) }
@@ -164,9 +170,12 @@ extension TurnListView: NSTextFieldDelegate {
             ?? textView(row: row)?.shownText(from: range.lowerBound, through: range.upperBound)?
                 .trimmingCharacters(in: .whitespacesAndNewlines)
             ?? all[range].map(\.text).joined(separator: " ")
+        let owner = paragraphWords(paragraph).turns
         wordEdit = WordEditTarget(paragraphID: paragraph.id, range: range, anchor: anchor, words: Array(all[range]),
                                   shown: shown, movesSeen: wordMoves.count, wordTexts: all[range].map(shownText(of:)),
-                                  wordsEpoch: wordsEpoch)
+                                  wordsEpoch: wordsEpoch,
+                                  turnID: range.lowerBound < owner.count ? paragraph.turns[owner[range.lowerBound]].id
+                                      : nil, runID: runID)
         editField.stringValue = shown
         if editField.superview !== table { table.addSubview(editField) }
         positionEditField(row: row, range: range)
@@ -208,10 +217,12 @@ extension TurnListView: NSTextFieldDelegate {
 
     /// A save of `words` was refused or failed before it was made: the field opens over them again with what was
     /// typed, and the banner says why. False (nothing opens) when another field is open or the words no longer read
-    /// as they did; the window's message then carries what was typed.
+    /// as they did; the window's message then carries what was typed. `caret`: where the caret goes in the text (a
+    /// split asked from the field reopens with the caret where Return found it); nil, at the end. `inTurn`: the turn the
+    /// field was opened in, whose copy of the words it reopens over (overlapping turns may show them twice).
     @discardableResult
     func reopenWordEdit(_ words: [ReviewWord], typed: String, message: String, movesSeen: Int? = nil,
-                        wordsEpoch seenEpoch: Int? = nil) -> Bool {
+                        wordsEpoch seenEpoch: Int? = nil, caret: Int? = nil, inTurn: String? = nil) -> Bool {
         guard editingWords, editable, canEditWords, wordEdit == nil,
               let firstWord = words.first, let lastWord = words.last else { return false }
         // The words where they are now: followed through the word moves saved since the field took them
@@ -224,15 +235,21 @@ extension TurnListView: NSTextFieldDelegate {
             first = followed.refs[0]
             last = followed.refs[1]
         }
+        // Only that turn's copy, never another turn's standing in (a search hiding the turn: the caller clears it).
+        let turn = inTurn
         for (row, paragraph) in paragraphs.enumerated() {
-            let all = paragraphWords(paragraph).words
-            guard let from = all.firstIndex(where: { $0.ref == first }),
-                  let through = all.firstIndex(where: { $0.ref == last }), from <= through,
+            let shown = paragraphWords(paragraph)
+            let all = shown.words
+            let inIt = { (index: Int) in turn == nil || paragraph.turns[shown.turns[index]].id == turn }
+            guard let from = all.indices.first(where: { all[$0].ref == first && inIt($0) }),
+                  let through = all.indices.first(where: { $0 >= from && all[$0].ref == last && inIt($0) }),
                   all[from...through].map(\.shown) == words.map(\.shown) else { continue }
             beginEditing(row: row, from: from, through: through, extend: false)
             guard wordEdit != nil else { return false }
             editField.stringValue = typed
-            editField.currentEditor()?.selectedRange = NSRange(location: (typed as NSString).length, length: 0)
+            let length = (typed as NSString).length
+            editField.currentEditor()?.selectedRange = NSRange(location: min(max(caret ?? length, 0), length),
+                                                                length: 0)
             onEditMessage?(message)
             return true
         }
@@ -288,12 +305,21 @@ extension TurnListView: NSTextFieldDelegate {
             keepWordEdit()
             return
         }
-        let all = paragraphWords(paragraphs[row]).words
+        let shownWords = paragraphWords(paragraphs[row])
+        let all = shownWords.words
         let followed = ReviewSession.follow(target.words.map(\.ref), through: wordMoves.dropFirst(target.movesSeen))
         var refs: [WordRef] = []
         for ref in followed.refs where refs.last != ref { refs.append(ref) }
+        // The copy in the field's turn (overlapping turns of a row may show a word twice), else the first one shown,
+        // whose turn the field then has (Return at its start splits the turn under it).
+        let turnAt = { (index: Int) -> String? in
+            index < shownWords.turns.count ? self.paragraphs[row].turns[shownWords.turns[index]].id : nil
+        }
+        let first = refs.first
+        let start = all.indices.first { all[$0].ref == first && (target.turnID == nil || turnAt($0) == target.turnID) }
+            ?? all.firstIndex { $0.ref == first }
         // A word an edit replaced is never followed onto another word: the field closes, keeping what was typed.
-        guard !followed.replaced, let first = refs.first, let start = all.firstIndex(where: { $0.ref == first }),
+        guard !followed.replaced, first != nil, let start,
               start + refs.count <= all.count,
               zip(refs, all[start...]).allSatisfy({ $0 == $1.ref }),
               zip(target.wordTexts, all[start...]).allSatisfy({ $0 == shownText(of: $1) }) else {
@@ -307,6 +333,7 @@ extension TurnListView: NSTextFieldDelegate {
         wordEdit?.words = Array(all[range])
         wordEdit?.wordTexts = all[range].map(shownText(of:))
         wordEdit?.movesSeen = wordMoves.count
+        wordEdit?.turnID = turnAt(start) ?? target.turnID
         positionEditField(row: row, range: range)
     }
 
@@ -386,6 +413,8 @@ extension TurnListView: NSTextFieldDelegate {
         switch commandSelector {
         case #selector(NSResponder.insertNewline(_:)):
             let option = NSApplication.shared.currentEvent?.modifierFlags.contains(.option) == true
+            // Return at the start (or end) of the words with nothing changed splits the turn there.
+            if !option, splitFromField() { return true }
             commitWordEdit(addTerm: option, advance: .stay)
         case #selector(NSResponder.insertNewlineIgnoringFieldEditor(_:)):
             commitWordEdit(addTerm: true, advance: .stay)

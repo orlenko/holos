@@ -7827,7 +7827,35 @@ public enum SessionAudioComposition {
   to take back; the break belongs to the run it was made on and goes with its turn; a new
   run drops it (the speakers labelled again; turn IDs then name other turns), except the
   runs published while the window reverts word fixes, which keep the turns and their
-  breaks; the window closed drops it too). After any
+  breaks; the window closed drops it too). A turn is split where its words are, as Otter
+  does: in edit mode, Return with the caret at the very start of the field's words and
+  nothing changed splits before them (the field opens with its word selected: ← first), and
+  at the very end, after them; outside edit mode, a word's context menu offers Split Turn
+  Here (none on a row's first word, nor in edit mode, where a field may be open), and
+  VoiceOver's actions on the text offer the same as "Split Turn Before “word”". A split
+  asked on rows of a labels run that was replaced since (Label Again, a refresh from
+  elsewhere; not a run a word edit, its undo or a revert published keeping the turns) is
+  refused when chosen and again when it runs (it may wait behind other changes), since a
+  turn ID may name another turn by then. A split
+  from the field refused once queued (an edit saved meanwhile changed what it can do) opens
+  the field again over its words once the labels are read again, with the caret where
+  Return found it and the reason (unless edit mode was turned off, another text field took
+  the keyboard, or a word's field was opened meanwhile: the footer alone says why). A field opened while the split
+  saves stays open as the split's saved turn replaces its temporary one, and the second
+  part's speaker pop-up then does not open. A word two overlapping turns hold splits the turn it was
+  chosen in. A short interjection shown with its neighbour's speaker splits as the turn it is
+  stored as (inside it, that turn splits; at its first word, the row breaks before it). Both make the same split or break as the sheet, checked
+  first as the split itself is (`ReviewSession.splitRefusal`: words edited together, a
+  turn's first word, a review held read-only; refused, the banner or a disabled menu item
+  says why, and the field stays), across a segment boundary too (the first word of a later
+  segment of the turn). The place is the word as the list showed it, with the word moves
+  and words epoch it was chosen under: the review finds where that word is now
+  (`ReviewSession.splitPlace`; a word edit saved since moves it, one that replaced it or
+  words changed elsewhere refuse the split), never an index read again. Then the second
+  part's row is selected and its speaker pop-up opens, so it can be given its speaker at
+  once; it keeps the first part's until then (a search hiding that row is cleared first).
+  The edit-mode banner says so. The Split Turn sheet stays: it chooses a place by keyboard, and plays from
+  it first. After any
   change, a row stays selected only if every turn of it was selected: a turn that joins a
   selected row's paragraph clears that selection rather than widening it.
   While playing, the row of the turn being spoken is tinted, and a pause inside

@@ -1698,6 +1698,202 @@ func learningAgainAtTheNextCloseChangesNothingAndASecondOccurrenceIsAdded() asyn
         == [ReviewWordEdit(heard: "Yellow. cloud", meant: "Hello? Claude", after: "now")])
 }
 
+/// The split's own checks, made before a split is offered or made (Return at a word's start, Split Turn Here): the same
+/// refusal, with the same message, as the split itself; nil where it can be made. It splits, and Undo joins it again.
+@Test(.timeLimit(.minutes(1))) @MainActor
+func aSplitIsCheckedBeforeItIsOfferedAsItIsWhenMade() async throws {
+    let temp = try TemporaryDirectory("review")
+    defer { temp.remove() }
+    let session = try await wordEditSession(in: temp, [
+        WordEditTurn(speaker: "system:S1", start: 0, words: ["ask", "the", "cloud", "now", "please"]),
+    ])
+    let review = try await wordEditOpen(session)
+    // "the cloud" edited together: a split between them is refused, before and when made.
+    try await review.editWords(wordEditRefs(review, "T1", [1, 2]), to: "a Claude")
+    let words = review.words(of: "T1")
+    let inside = try #require(review.splitRefusal(turnID: "T1", at: words[2].ref))
+    let made = await #expect(throws: HolosError.self) { try await review.split(turnID: "T1", at: words[2].ref) }
+    #expect(made?.localizedDescription == inside)
+    // The turn's first word: nothing to split from.
+    let first = try #require(review.splitRefusal(turnID: "T1", at: words[0].ref))
+    let atFirst = await #expect(throws: HolosError.self) { try await review.split(turnID: "T1", at: words[0].ref) }
+    #expect(atFirst?.localizedDescription == first)
+    // Before the edit's first word, it can be made: it splits, the second part keeps the speaker, and Undo joins it.
+    #expect(review.splitRefusal(turnID: "T1", at: words[1].ref) == nil)
+    try await review.split(turnID: "T1", at: words[1].ref)
+    let parts = review.projection.turns
+    #expect(parts.count == 2 && Set(parts.map(\.speakerID)) == ["system:S1"])
+    #expect(review.words(of: parts[1]).first?.ref == words[1].ref)
+    try await review.undo()
+    #expect(review.projection.turns.count == 1)
+    await review.close()
+}
+
+/// A split names the labels run its turn was chosen on (`seenRun`): one labelled again since (a run that did not keep
+/// the turns) is refused, before and when made, as a turn ID may name another turn by then; the run a word edit
+/// published from it keeps its turns, so the split stands.
+@Test(.timeLimit(.minutes(1))) @MainActor
+func aSplitChosenOnAnotherLabelsRunIsRefused() async throws {
+    let temp = try TemporaryDirectory("review")
+    defer { temp.remove() }
+    let session = try await wordEditSession(in: temp, [
+        WordEditTurn(speaker: "system:S1", start: 0, words: ["ask", "the", "cloud", "now", "please"]),
+    ])
+    let review = try await wordEditOpen(session)
+    let chosenOn = review.projection.runID
+    #expect(review.splitRunRefusal(seenRun: chosenOn) == nil && review.splitRunRefusal(seenRun: nil) == nil)
+    let other = try #require(review.splitRunRefusal(seenRun: "another-run"))
+    let refused = await #expect(throws: HolosError.self) {
+        try await review.split(turnID: "T1", at: review.words(of: "T1")[2].ref, seenRun: "another-run")
+    }
+    #expect(refused?.localizedDescription == other && review.projection.turns.count == 1)
+    // A word edit publishes a run keeping the turns: a split chosen before it stands.
+    try await review.editWords(wordEditRefs(review, "T1", [0]), to: "Ask")
+    #expect(review.projection.runID != chosenOn && review.splitRunRefusal(seenRun: chosenOn) == nil)
+    try await review.split(turnID: "T1", at: review.words(of: "T1")[2].ref, seenRun: chosenOn)
+    #expect(review.projection.turns.count == 2)
+    await review.close()
+}
+
+/// Where a split asked at a word falls now (`splitPlace`): the word as it was shown when the split was asked
+/// (`seenMoves`), followed through the word edits saved since, never the index read again; before or after it; at a
+/// turn's start or end; refused when an edit replaced the word, or the words changed elsewhere.
+@Test(.timeLimit(.minutes(1))) @MainActor
+func aSplitPlaceFollowsTheWordThroughEditsSavedSince() async throws {
+    let temp = try TemporaryDirectory("review")
+    defer { temp.remove() }
+    let session = try await wordEditSession(in: temp, [
+        WordEditTurn(speaker: "system:S1", start: 0, words: ["ask", "the", "cloud", "now"]),
+    ])
+    let review = try await wordEditOpen(session)
+    let seen = review.shownWordMoves.count
+    let epoch = review.wordsEpoch
+    let asked = review.words(of: "T1")
+    // "ask" became "please ask": every later word moved by one.
+    try await review.editWords(wordEditRefs(review, "T1", [0]), to: "please ask")
+    let now = review.words(of: "T1")
+    #expect(now.map(\.text) == ["please", "ask", "the", "cloud", "now"])
+    #expect(try review.splitPlace(at: asked[2].ref, after: false, seenMoves: seen, seenEpoch: epoch)
+        == .inside(turnID: "T1", word: now[3].ref), "Before “cloud”, where it is now.")
+    #expect(try review.splitPlace(at: asked[1].ref, after: true, seenMoves: seen, seenEpoch: epoch)
+        == .inside(turnID: "T1", word: now[3].ref), "After “the”: before “cloud”.")
+    #expect(try review.splitPlace(at: now[0].ref, after: false, seenMoves: nil, seenEpoch: nil)
+        == .turnStart(turnID: "T1"))
+    #expect(try review.splitPlace(at: now[4].ref, after: true, seenMoves: nil, seenEpoch: nil)
+        == .turnEnd(turnID: "T1"))
+    // The split itself follows it the same way, and says where it split: the second part's first word, now.
+    let second = try await review.split(turnID: "T1", at: asked[2].ref, seenMoves: seen, seenEpoch: epoch)
+    #expect(second == now[3].ref)
+    #expect(review.words(of: review.projection.turns[1]).first?.text == "cloud")
+    try await review.undo()
+    // The word an edit replaced, or words changed elsewhere since: refused.
+    #expect(throws: HolosError.self) {
+        try review.splitPlace(at: asked[0].ref, after: false, seenMoves: seen, seenEpoch: epoch)
+    }
+    #expect(throws: HolosError.self) {
+        try review.splitPlace(at: asked[2].ref, after: false, seenMoves: seen, seenEpoch: epoch + 1)
+    }
+    await review.close()
+}
+
+/// Overlapping turns (T1 holds words 0–2, T2 words 1–3): a split at a word both hold is the turn's it was chosen in.
+@Test(.timeLimit(.minutes(1))) @MainActor
+func aSplitAtAWordTwoTurnsHoldIsTheTurnsItWasChosenIn() async throws {
+    let temp = try TemporaryDirectory("review")
+    defer { temp.remove() }
+    let session = try await wordEditSharedSession(in: temp, ["hello", "there", "yes", "indeed"],
+                                                  times: [(0, 0.8), (1, 1.8), (2, 2.8), (3, 3.8)], split: 2)
+    var run = try SessionSpeakerStore.readRun(
+        id: try #require(try SessionSpeakerStore.readHead(session: session)?.runID), session: session)
+    let segmentID = try wordEditCurrent(session).segments[0].id
+    run.id = UUID().uuidString
+    run.turns[0].spans = [WordSpan(segmentID: segmentID, first: 0, end: 3)]
+    run.turns[1].spans = [WordSpan(segmentID: segmentID, first: 1, end: 4)]
+    try SessionArchive.withSpeakerLock(at: session) {
+        try SessionSpeakerStore.writeRun(run, session: session)
+        try SessionSpeakerStore.writeHead(SpeakerHead(runID: run.id), session: session)
+    }
+    let review = try await wordEditOpen(session)
+    let yes = WordRef(segmentID: segmentID, word: 2)
+    #expect(try review.splitPlace(at: yes, after: false, in: "T2", seenMoves: nil, seenEpoch: nil)
+        == .inside(turnID: "T2", word: yes))
+    #expect(try review.splitPlace(at: yes, after: false, in: "T1", seenMoves: nil, seenEpoch: nil)
+        == .inside(turnID: "T1", word: yes))
+    // A turn that does not hold the word: no place.
+    #expect(try review.splitPlace(at: WordRef(segmentID: segmentID, word: 0), after: false, in: "T2",
+                                  seenMoves: nil, seenEpoch: nil) == nil)
+    await review.close()
+}
+
+/// A short turn of the unknown speaker shown with its neighbour's speaker (an attached interjection, §5.10): a split
+/// asked in its words is the stored turn's, and splits it as stored; at its first word, the place is its own start.
+@Test(.timeLimit(.minutes(1))) @MainActor
+func aSplitInAnAttachedInterjectionSplitsTheStoredTurn() async throws {
+    let temp = try TemporaryDirectory("review")
+    defer { temp.remove() }
+    let session = try await wordEditSession(in: temp, [
+        WordEditTurn(speaker: "system:S1", start: 0, words: ["we", "will", "meet"]),
+        WordEditTurn(speaker: "system:S2", start: 3.5, words: ["on", "the", "porch"]),
+    ])
+    // The second turn's speaker unknown: a short turn continuing the first speaker's sentence.
+    var run = try SessionSpeakerStore.readRun(
+        id: try #require(try SessionSpeakerStore.readHead(session: session)?.runID), session: session)
+    run.id = UUID().uuidString
+    run.turns[1].speakerID = nil
+    run.turns[1].clusterID = nil
+    try SessionArchive.withSpeakerLock(at: session) {
+        try SessionSpeakerStore.writeRun(run, session: session)
+        try SessionSpeakerStore.writeHead(SpeakerHead(runID: run.id), session: session)
+    }
+    let review = try await wordEditOpen(session)
+    let attached = try #require(review.shownTurns.first { $0.id == "T2" })
+    #expect(attached.interjection == .attached(speakerID: "system:S1") && attached.speakerID == "system:S1")
+    #expect(review.projection.turns.first { $0.id == "T2" }?.speakerID == nil, "Stored as it was.")
+    let words = review.words(of: "T2")
+    #expect(try review.splitPlace(at: words[0].ref, after: false, in: "T2", seenMoves: nil, seenEpoch: nil)
+        == .turnStart(turnID: "T2"))
+    #expect(try review.splitPlace(at: words[1].ref, after: false, in: "T2", seenMoves: nil, seenEpoch: nil)
+        == .inside(turnID: "T2", word: words[1].ref))
+    #expect(review.splitRefusal(turnID: "T2", at: words[1].ref) == nil)
+    try await review.split(turnID: "T2", at: words[1].ref)
+    let stored = review.projection.turns
+    #expect(stored.count == 3 && stored.map { review.words(of: $0).count } == [3, 1, 2])
+    #expect(stored[1].id == "T2" && stored[2].id.hasPrefix("T2/"))
+    await review.close()
+}
+
+/// A turn over two segments: a split at the first word of the later segment is a split like any other.
+@Test(.timeLimit(.minutes(1))) @MainActor
+func aTurnSplitsAtTheFirstWordOfItsLaterSegment() async throws {
+    let temp = try TemporaryDirectory("review")
+    defer { temp.remove() }
+    let session = try await wordEditSession(in: temp, [
+        WordEditTurn(speaker: "system:S1", start: 0, words: ["ask", "the", "cloud"]),
+        WordEditTurn(speaker: "system:S1", start: 4, words: ["now", "please", "thanks"]),
+    ])
+    // One turn holding both segments.
+    var run = try SessionSpeakerStore.readRun(
+        id: try #require(try SessionSpeakerStore.readHead(session: session)?.runID), session: session)
+    run.id = UUID().uuidString
+    run.turns[0].spans += run.turns[1].spans
+    run.turns[0].end = run.turns[1].end
+    run.turns.removeLast()
+    try SessionArchive.withSpeakerLock(at: session) {
+        try SessionSpeakerStore.writeRun(run, session: session)
+        try SessionSpeakerStore.writeHead(SpeakerHead(runID: run.id), session: session)
+    }
+    let review = try await wordEditOpen(session)
+    let words = review.words(of: "T1")
+    #expect(words.count == 6)
+    let later = words[3].ref
+    #expect(later.word == 0 && later.segmentID != words[0].ref.segmentID)
+    #expect(review.splitRefusal(turnID: "T1", at: later) == nil)
+    try await review.split(turnID: "T1", at: later)
+    #expect(review.projection.turns.map { review.words(of: $0).count } == [3, 3])
+    #expect(review.words(of: review.projection.turns[1]).first?.ref == later)
+    await review.close()
+}
+
 /// A one-word segment ("cloud" → "Claude") inside a longer turn: its context is the turn's words in the segments
 /// beside it, through the turn's spans in order; never another turn's word, nor across hidden echo.
 @Test func contextGoesOnAcrossSegmentsOfTheSameTurn() {

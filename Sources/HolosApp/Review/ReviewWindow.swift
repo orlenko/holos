@@ -578,6 +578,24 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, NSM
             self?.editWords(words, to: text, addTerm: addTerm, movesSeen: movesSeen, wordsEpoch: wordsEpoch)
         }
         turnList.onEditMessage = { [weak self] message in self?.editBanner.show(message: message) }
+        // Return at a word's start in edit mode, or Split Turn Here: the split, checked as the review checks it, then
+        // the second part's speaker pop-up.
+        turnList.onSplit = { [weak self] split, request in
+            guard let self else { return }
+            // The word is where `resolveSplit` found it just now, among the words shown: a word edit saved before the
+            // split runs moves it from there; words changed elsewhere since it was chosen still refuse it.
+            // Of the labels run shown now, which `resolveSplit` found the split on.
+            self.applySplit(split, movesSeen: self.review.shownWordMoves.count, epoch: request.wordsEpoch,
+                            runID: self.review.projection.runID, focus: true,
+                            field: request.field.map { ($0, request.movesSeen, request.after, request.turnID) })
+        }
+        turnList.resolveSplit = { [weak self] request in
+            self?.resolveSplit(request) ?? .refused("The review is closing.")
+        }
+        turnList.onSplitRefused = { [weak self] why in
+            self?.problem = why
+            self?.refreshFooter()
+        }
         // The review turned read-only with a field open (an earlier edit's labels could not be reread, say): its edit
         // is queued all the same, and waits for the reread as the changes before it do.
         turnList.onKeepWordEdit = { [weak self] words, text, movesSeen, wordsEpoch in
@@ -642,6 +660,7 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, NSM
         let people = review.knownPeople()
         // Words changed elsewhere since a field opened: it is not put back on them (`TurnListView.followWordEdit`).
         turnList.wordsEpoch = review.wordsEpoch
+        turnList.runID = runID
         turnList.update(paragraphs: paragraphs, speakers: projection.speakers, people: people,
                         editable: review.isEditable,
                         hints: review.profiles == nil ? [:] : review.voiceMatches.turnHints,
@@ -922,10 +941,7 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, NSM
 
     /// Runs one change; its error shows in the footer until the next action.
     private func perform(_ change: @escaping @MainActor (ReviewSession) async throws -> Void) {
-        problem = nil
-        notice = nil
-        offeredTerm = nil
-        refreshFooter()
+        clearTransientMessages()
         let review = self.review
         Task { [weak self] in
             do {
@@ -938,6 +954,14 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, NSM
                 self.refreshFooter()
             }
         }
+    }
+
+    /// A change begins: the footer stops saying what happened to the one before (a problem, a notice, a term offered).
+    private func clearTransientMessages() {
+        problem = nil
+        notice = nil
+        offeredTerm = nil
+        refreshFooter()
     }
 
     /// Play/Pause (the bar's button, Space, K): pauses, or plays on from the play head (from the start once the
@@ -1115,6 +1139,7 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, NSM
         guard selected.count == 1, let paragraph = selected.first else { return }
         let words = paragraph.turns.map { review.words(of: $0) }
         guard words.joined().count > 1 else { return }
+        // Kept beside Return at a word's start and Split Turn Here: choosing a place by keyboard, playing from it first.
         var turnStarts = Set<Int>()
         var offset = 0
         for turnWords in words {
@@ -1126,23 +1151,217 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, NSM
         // A word edit saved while the sheet is open moves its words: the split follows them (`split(seenMoves:)`).
         let movesSeen = review.shownWordMoves.count
         let epoch = review.wordsEpoch
+        let runID = review.projection.runID
         splitSheet = sheet
         window.beginSheet(sheet.panel) { [weak self] response in
             guard let self else { return }
             self.splitSheet = nil
             guard response == .OK, let index = sheet.splitIndex,
                   let split = ReviewParagraphs.split(paragraph, words: words, at: index) else { return }
-            switch split {
-            case .splitTurn(let turnID, let word):
-                self.perform { review in
-                    try await review.split(turnID: turnID, at: word, seenMoves: movesSeen, seenEpoch: epoch)
+            self.applySplit(split, movesSeen: movesSeen, epoch: epoch, runID: runID, focus: false)
+        }
+    }
+
+    /// Makes `split`: the review splits the turn (undoable; a word edit saved since moves the word, `movesSeen`, and
+    /// words changed elsewhere refuse it, `epoch`), or the row breaks before a turn it holds (this window only). With
+    /// `focus` (Return at a word's start, Split Turn Here), the second part's row is selected and its speaker pop-up
+    /// opens, so it can be given its speaker at once (`TurnListView.focusSpeaker`).
+    /// `field`: the edit field Return asked from (its words and text, the word moves they follow, and whether the
+    /// caret was at its end): refused once queued (an edit saved meanwhile changed what the split can do), the field
+    /// opens again over its words once the labels are read again (a row the refused split showed for a moment is gone
+    /// by then), with the caret where it was and the reason, as before Return.
+    /// `runID`: the labels run `split`'s turn is of; labelled again before the split runs (it waits behind other
+    /// changes), it is refused (`ReviewSession.splitRunRefusal`).
+    private func applySplit(_ split: ReviewParagraphSplit, movesSeen: Int?, epoch: Int, runID: String, focus: Bool,
+                            field: SplitField? = nil) {
+        // A word's field opened while the split saves (open still, or closed again since): the person went on
+        // editing, so no pop-up takes the keyboard, nor a refused split's field.
+        let fieldsOpened = turnList.fieldsOpened
+        switch split {
+        case .splitTurn(let turnID, let word):
+            perform { [weak self] review in
+                let second: WordRef
+                do {
+                    second = try await review.split(turnID: turnID, at: word, seenMoves: movesSeen, seenEpoch: epoch,
+                                                    seenRun: runID)
+                } catch let error where !(error is CancellationError) {
+                    guard let self else { throw error }
+                    // Saved, but its labels could not be reread (`incomplete`): the split stands, so its second part
+                    // gets its pop-up as any; the footer says what failed after it.
+                    if case HolosError.incomplete = error {
+                        if focus, self.turnList.fieldsOpened == fieldsOpened {
+                            self.refresh()
+                            let moved = ReviewSession.follow([word],
+                                                             through: review.shownWordMoves.dropFirst(movesSeen ?? 0))
+                            self.focusSpeaker(startingAt: moved.refs.first ?? word,
+                                              splitOf: review.resolvedTurnID(turnID))
+                        }
+                        throw error
+                    }
+                    if let field {
+                        await self.restoreSplitField(field, epoch: epoch, fieldsOpened: fieldsOpened,
+                                                     why: error.localizedDescription)
+                    }
+                    throw error
                 }
-            case .breakBefore(let turnID):
-                guard let turn = paragraph.turns.first(where: { $0.id == turnID }) else { return }
-                self.paragraphBreaks.insert(before: turn, runID: self.review.projection.runID)
+                guard focus, let self, self.turnList.fieldsOpened == fieldsOpened else { return }
                 self.refresh()
-                self.turnList.select([turnID], scroll: true)
+                // Where the word is now (an edit saved before the split ran may have moved it), in the part split
+                // from `turnID` (its saved ID: a part made by a split still saving had a temporary one).
+                self.focusSpeaker(startingAt: second, splitOf: review.resolvedTurnID(turnID))
             }
+        case .breakBefore(let turnID):
+            guard let turn = review.projection.turns.first(where: { $0.id == turnID }) else { return }
+            // Made here, not through `perform`: what the footer said of an earlier change (a split refused) goes, as
+            // it does for any change.
+            clearTransientMessages()
+            paragraphBreaks.insert(before: turn, runID: review.projection.runID)
+            refresh()
+            turnList.select([turnID], scroll: true)
+            if focus, let first = review.words(of: turn).first {
+                focusSpeaker(startingAt: first.ref, turnID: turnID)
+            }
+        }
+    }
+
+    /// A split asked from the field and refused once queued: once the labels are read again (a row the refused split
+    /// showed for a moment is gone by then), the field opens again over its words with the caret where Return found
+    /// it and why; when an edit saved meanwhile replaced its word, over the words that replaced it (nothing was typed
+    /// in it, so their own text is what it shows).
+    /// The field the split was asked from: its words and text, the word moves they follow, whether the caret was at
+    /// its end, and the turn it was opened in.
+    private typealias SplitField = (field: ReviewSplitRequest.Field, movesSeen: Int, atEnd: Bool, turnID: String?)
+
+    /// In the turn the field was opened in (overlapping turns may show a word twice), so Return there asks for that
+    /// turn's split again; a word replaced meanwhile is taken at the edge of what replaced it (the end, for a split
+    /// after it), never inside words edited together.
+    /// `fieldsOpened`: `TurnListView.fieldsOpened` when the split was asked.
+    private func restoreSplitField(_ field: SplitField, epoch: Int, fieldsOpened: Int, why: String) async {
+        await review.reload()
+        refresh()
+        guard Self.reopensRefusedSplitField(typingElsewhere: turnList.typingElsewhere,
+                                            editingWords: turnList.editingWords,
+                                            fieldOpenedSince: turnList.fieldsOpened != fieldsOpened) else { return }
+        let text = field.field.text
+        // Its saved ID: a part made by a split still saving when the field opened had a temporary one.
+        let turnID = field.turnID.map(review.resolvedTurnID)
+        let reopen = { [self] () -> Bool in
+            if turnList.reopenWordEdit(field.field.words, typed: text, message: why, movesSeen: field.movesSeen,
+                                       wordsEpoch: epoch, caret: field.atEnd ? (text as NSString).length : 0,
+                                       inTurn: turnID) {
+                return true
+            }
+            guard epoch == review.wordsEpoch,
+                  let place = Self.splitBoundary(field.atEnd ? field.field.words.last : field.field.words.first,
+                                                 atEnd: field.atEnd,
+                                                 through: review.shownWordMoves.dropFirst(field.movesSeen))
+            else { return false }
+            if turnList.reopenField(at: place.word, atEnd: place.atEnd, message: why, inTurn: turnID) { return true }
+            // The same boundary from the word before it (a deleted last word leaves no word after it).
+            guard !place.atEnd, place.word.word > 0 else { return false }
+            return turnList.reopenField(at: WordRef(segmentID: place.word.segmentID, word: place.word.word - 1),
+                                        atEnd: true, message: why, inTurn: turnID)
+        }
+        if reopen() { return }
+        // A search hiding the row (an edit saved meanwhile changed what it matched): cleared, as for a split made.
+        guard !query.isEmpty else { return }
+        query = ""
+        searchField.stringValue = ""
+        refresh()
+        _ = reopen()
+    }
+
+    /// Whether a refused split's field opens again once the labels are read again. Not while the person types
+    /// elsewhere (another word, a speaker's name, a search), which keeps the keyboard; nor once edit mode is off (the
+    /// field was asked from edit mode, which only the person turns off), so word clicks play, as they asked; nor once
+    /// a word's field opened since the split was asked (`fieldOpenedSince`: closed again, its row gone with the
+    /// refused split, it was still where the person was typing). The refusal is in the footer either way.
+    static func reopensRefusedSplitField(typingElsewhere: Bool, editingWords: Bool, fieldOpenedSince: Bool) -> Bool {
+        !typingElsewhere && editingWords && !fieldOpenedSince
+    }
+
+    /// Where a split asked at the start (or end, `atEnd`) of `word` is after the word moves since: the same edge of
+    /// the word, or of what replaced it (never inside words edited together); a deleted word's boundary is the start
+    /// of the next word, else the end of the one before. Nil when there is no word.
+    static func splitBoundary(_ word: ReviewWord?, atEnd: Bool,
+                              through moves: ArraySlice<ReviewWordMove>) -> (word: WordRef, atEnd: Bool)? {
+        guard let word else { return nil }
+        var ref = word.ref
+        var atEnd = atEnd
+        for move in moves {
+            guard ref.segmentID == move.segmentID, move.replaced.contains(ref.word) else {
+                ref = move.map(ref).ref
+                continue
+            }
+            if move.replacement.isEmpty {
+                // Deleted: the boundary is where the words after it now start (`restoreSplitField` takes the end of
+                // the word before when none is left after it).
+                ref.word = move.replacement.lowerBound
+                atEnd = false
+            } else {
+                ref.word = atEnd ? move.replacement.upperBound - 1 : move.replacement.lowerBound
+            }
+        }
+        return (ref, atEnd)
+    }
+
+    /// The second part's speaker pop-up after a split (`TurnListView.focusSpeaker`); a search hiding its row is cleared
+    /// first, as Next Uncertain clears one hiding where it goes.
+    private func focusSpeaker(startingAt word: WordRef, turnID: String? = nil, splitOf: String? = nil) {
+        // The person went on typing meanwhile (another word, a speaker's name, a search): it keeps the keyboard, and
+        // the search is not cleared under it.
+        guard !turnList.typingElsewhere else { return }
+        if turnList.focusSpeaker(startingAt: word, turnID: turnID, splitOf: splitOf) { return }
+        guard !query.isEmpty else { return }
+        query = ""
+        searchField.stringValue = ""
+        refresh()
+        turnList.focusSpeaker(startingAt: word, turnID: turnID, splitOf: splitOf)
+    }
+
+    /// What a split asked for at a word makes now (`TurnListView.resolveSplit`): the review finds where the word is
+    /// (`ReviewSession.splitPlace`, following word moves since it was chosen); inside a turn, that turn's split,
+    /// checked as it is when made (`ReviewSession.splitRefusal`); at a turn's start or end, a break of the row before
+    /// the turn there, when the row goes on past it.
+    private func resolveSplit(_ request: ReviewSplitRequest) -> ReviewSplitResolution {
+        // Held read-only (a maintenance command, labels that could not be reread): no split, nor a row break, as the
+        // toolbar's Split Turn is disabled then.
+        guard review.isEditable else {
+            return .refused(review.pauseReason ?? review.reloadProblem ?? "This meeting cannot be changed right now.")
+        }
+        // Labelled again since the rows the split was chosen on: a turn ID may name another turn now.
+        if let refusal = review.splitRunRefusal(seenRun: request.runID) { return .refused(refusal) }
+        let place: ReviewSplitPlace?
+        do {
+            place = try review.splitPlace(at: request.word, after: request.after, in: request.turnID,
+                                          seenMoves: request.movesSeen, seenEpoch: request.wordsEpoch)
+        } catch {
+            return .refused(error.localizedDescription)
+        }
+        return Self.splitResolution(place, paragraphs: turnList.paragraphs) { [review] turnID, word in
+            review.splitRefusal(turnID: turnID, at: word)
+        }
+    }
+
+    /// `resolveSplit`'s rule for a place the review found (`place`) in the rows shown (`paragraphs`); `refusal`: why a
+    /// turn cannot be split before a word (`ReviewSession.splitRefusal`).
+    static func splitResolution(_ place: ReviewSplitPlace?, paragraphs: [ReviewParagraph],
+                                refusal: (String, WordRef) -> String?) -> ReviewSplitResolution {
+        switch place {
+        case .inside(let turnID, let word)?:
+            if let refusal = refusal(turnID, word) { return .refused(refusal) }
+            return .split(.splitTurn(turnID: turnID, at: word))
+        case .turnStart(let turnID)?:
+            guard let paragraph = paragraphs.first(where: { $0.contains(turnID: turnID) }),
+                  paragraph.turns.first?.id != turnID else { return .refused(TurnListView.alreadyStartsHere) }
+            return .split(.breakBefore(turnID: turnID))
+        case .turnEnd(let turnID)?:
+            guard let paragraph = paragraphs.first(where: { $0.contains(turnID: turnID) }),
+                  let index = paragraph.turns.firstIndex(where: { $0.id == turnID }),
+                  index + 1 < paragraph.turns.count else { return .refused(TurnListView.alreadyEndsHere) }
+            return .split(.breakBefore(turnID: paragraph.turns[index + 1].id))
+        case nil:
+            return .refused("Those words are no longer shown; try the split again.")
         }
     }
 
@@ -1822,7 +2041,8 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, NSM
 final class EditModeBanner: NSView {
     static let usual = "Editing — click a word to change it. ⇧-click or drag for more words of the same turn. Return "
         + "saves, ⌥Return saves and adds it to the word list, Tab saves and edits the next word, Esc cancels. "
-        + "Space still plays and pauses."
+        + "Return at the start of a word (← first) splits the turn before it; at its end (→ first), after it. Space "
+        + "still plays and pauses."
     let label = NSTextField(wrappingLabelWithString: EditModeBanner.usual)
 
     override init(frame: NSRect) {
