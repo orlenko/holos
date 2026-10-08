@@ -103,6 +103,37 @@ public struct TranscriptWordFix: Codable, Sendable, Equatable {
     }
 }
 
+/// A segment's text, timed words, and word fixes (`TranscriptRemovedWords.fixed`).
+public struct TranscriptSegmentWords: Codable, Sendable, Equatable {
+    public var text: String
+    public var words: [TimedWord]
+    public var fixes: [TranscriptWordFix]?
+
+    public init(text: String, words: [TimedWord] = [], fixes: [TranscriptWordFix]? = nil) {
+        self.text = text; self.words = words; self.fixes = fixes
+    }
+}
+
+/// What a segment held before every one of its words was deleted in Review (docs/meeting-design.md §5.10, "Editing
+/// words"): its text, timed words, and word fixes as they were, so an undo or a Restore brings back the recognizer's
+/// words with their times and provenance. The segment keeps its ID, times, track, and language, with no text, words,
+/// or fixes, so the transcript, the exports, and the speaker labels have nothing of it.
+public struct TranscriptRemovedWords: Codable, Sendable, Equatable {
+    /// The unfixed revision's words (the transcript's own, when it is not a fixed revision).
+    public var text: String
+    public var words: [TimedWord]
+    public var fixes: [TranscriptWordFix]?
+    /// When the deletion was made on a fixed revision (`Transcript.fixedFrom`): what that revision held there, its
+    /// automatic fixes included. The same record is kept in both revisions, so a fixed revision made again from the
+    /// unfixed one (word fixes run again, which copy the segment) still restores the fixed words. Nil otherwise.
+    public var fixed: TranscriptSegmentWords?
+
+    public init(text: String, words: [TimedWord] = [], fixes: [TranscriptWordFix]? = nil,
+                fixed: TranscriptSegmentWords? = nil) {
+        self.text = text; self.words = words; self.fixes = fixes; self.fixed = fixed
+    }
+}
+
 public struct TranscriptSegment: Codable, Sendable, Equatable, Identifiable {
     public var id: String
     public var start: Double
@@ -117,13 +148,17 @@ public struct TranscriptSegment: Codable, Sendable, Equatable, Identifiable {
     /// Words changed by the automatic word-fix or live-correction stages; nil when none, so unchanged segments encode
     /// as before. The transcript's lineage says which stage made the revision.
     public var fixes: [TranscriptWordFix]?
+    /// Every word of the segment was deleted in Review: what it held (`text`, `words`, and `fixes` are then empty).
+    /// Nil otherwise, so other segments encode as before. An older Voice is Local ignores it and reads the segment as
+    /// one with no words.
+    public var removed: TranscriptRemovedWords?
 
     public init(id: String = UUID().uuidString, start: Double, end: Double, text: String,
                 words: [TimedWord] = [], track: String? = nil, speakerID: String? = nil, language: String? = nil,
-                fixes: [TranscriptWordFix]? = nil) {
+                fixes: [TranscriptWordFix]? = nil, removed: TranscriptRemovedWords? = nil) {
         self.id = id; self.start = start; self.end = end; self.text = text
         self.words = words; self.track = track; self.speakerID = speakerID; self.language = language
-        self.fixes = fixes
+        self.fixes = fixes; self.removed = removed
     }
 }
 
@@ -168,7 +203,8 @@ public struct Transcript: Codable, Sendable, Equatable {
         self.fixedFrom = fixedFrom; self.liveCorrectedFrom = liveCorrectedFrom; self.engine = engine
     }
 
-    public var text: String { segments.map(\.text).joined(separator: " ") }
+    /// The segments' texts joined with " ", without the segments whose words were all deleted (`removed`).
+    public var text: String { segments.filter { $0.removed == nil }.map(\.text).joined(separator: " ") }
 }
 
 public struct SpeechCapabilities: Codable, Sendable {

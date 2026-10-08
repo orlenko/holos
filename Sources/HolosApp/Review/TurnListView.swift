@@ -103,6 +103,10 @@ final class TurnTableView: NSTableView {
     var onWordEditClick: ((_ row: Int, _ from: Int, _ to: Int, _ extend: Bool) -> Void)?
     /// Revert the automatic fix under a contextual-menu word.
     var onRevertFix: ((WordRef) -> Void)?
+    /// The deleted words a row's menu offers to restore (`TurnListView.deletedWordsOffer`).
+    var deletedWordsOffer: ((_ row: Int) -> [ReviewDeletedWords])?
+    /// Restore Deleted “…” chosen: the segment whose words come back.
+    var onRestoreDeleted: ((String) -> Void)?
     /// Return or Enter: play the selected turn (the keyboard's way to what a click on its timestamp does).
     var onReturn: (() -> Void)?
 
@@ -198,7 +202,8 @@ final class TurnTableView: NSTableView {
         return menu.items.isEmpty ? super.menu(for: event) : menu
     }
 
-    /// A word's context menu: Revert its automatic fix (when it can be), and Split Turn Here (the turn splits before
+    /// A word's context menu: Revert its automatic fix (when it can be), Restore Deleted “…” for each segment whose
+    /// words were all deleted near the row's turns (`deletedWordsOffer`), and Split Turn Here (the turn splits before
     /// the word, word `index` of the row; disabled, saying why, when it cannot).
     func wordMenu(row: Int, cell: TurnCellView, word: ReviewWord?, index: Int?) -> NSMenu {
         let menu = NSMenu()
@@ -209,6 +214,14 @@ final class TurnTableView: NSTableView {
                                   action: #selector(revertFix(_:)), keyEquivalent: "")
             item.target = self
             item.representedObject = WordFixChoice(word.ref)
+            menu.addItem(item)
+        }
+        for deleted in deletedWordsOffer?(row) ?? [] {
+            let item = NSMenuItem(title: TurnTextView.restoreTitle(deleted), action: #selector(restoreDeleted(_:)),
+                                  keyEquivalent: "")
+            item.target = self
+            item.representedObject = deleted.segmentID
+            item.toolTip = TurnTextView.restoreHelp
             menu.addItem(item)
         }
         // Not in edit mode, where Return at a word's start splits: a field open on another word is never left behind.
@@ -227,6 +240,11 @@ final class TurnTableView: NSTableView {
     @objc private func revertFix(_ sender: NSMenuItem) {
         guard let choice = sender.representedObject as? WordFixChoice else { return }
         onRevertFix?(choice.word)
+    }
+
+    @objc private func restoreDeleted(_ sender: NSMenuItem) {
+        guard let segmentID = sender.representedObject as? String else { return }
+        onRestoreDeleted?(segmentID)
     }
 
     @objc private func splitHere(_ sender: NSMenuItem) {
@@ -263,6 +281,10 @@ final class TurnTextView: NSTextView {
     /// of the actions. Chosen, it is checked then (`onSplitChosen`), and a refusal says why.
     var splitChoices: (() -> [SplitChoice?])?
     var onSplitChosen: ((SplitChoice) -> Void)?
+    /// VoiceOver's "Restore Deleted “…”", as the context menu's: the deleted words offered near the text's turns,
+    /// asked once per listing of the actions.
+    var deletedWordsChoices: (() -> [ReviewDeletedWords])?
+    var onRestoreDeleted: ((String) -> Void)?
     /// Edit mode: the pointer over the text is an I-beam.
     var editingWords = false {
         didSet { if editingWords != oldValue { window?.invalidateCursorRects(for: self) } }
@@ -373,6 +395,16 @@ final class TurnTextView: NSTextView {
     static let notRevertible = "edited together and now in two speaker turns, so it can be neither reverted nor "
         + "edited here; the other words of each turn can"
 
+    /// "Restore Deleted “Thanks,”": the menu item and VoiceOver action for words deleted with their whole segment,
+    /// their text shortened to 40 characters.
+    static func restoreTitle(_ deleted: ReviewDeletedWords) -> String {
+        let text = deleted.text.count > 40 ? String(deleted.text.prefix(39)) + "…" : deleted.text
+        return "Restore Deleted “\(text)”"
+    }
+
+    static let restoreHelp = "Brings back these words, which were deleted with every other word of their segment, "
+        + "as they were, with their times and speaker."
+
     /// The keyboard and VoiceOver way to a word (VO-⌘-Space lists them): "Play from “budget” (00:12:03)". Made
     /// when asked for, never announced.
     override func accessibilityCustomActions() -> [NSAccessibilityCustomAction]? {
@@ -415,6 +447,13 @@ final class TurnTextView: NSTextView {
                     })
                 }
             }
+        }
+        for deleted in deletedWordsChoices?() ?? [] {
+            actions.append(NSAccessibilityCustomAction(name: Self.restoreTitle(deleted)) { [weak self] in
+                guard let onRestoreDeleted = self?.onRestoreDeleted else { return false }
+                onRestoreDeleted(deleted.segmentID)
+                return true
+            })
         }
         return actions.isEmpty ? nil : actions
     }
@@ -561,6 +600,10 @@ final class TurnListView: NSView, NSTableViewDataSource, NSTableViewDelegate {
     /// Why the fix on a word cannot be reverted (`ReviewSession.revertRefusal`); nil when it can. The context menu
     /// and VoiceOver offer Revert only then.
     var revertRefusal: ((WordRef) -> String?)?
+    /// The deleted words offered for a Restore from a turn (`ReviewSession.deletedWords(near:)`), by turn ID.
+    var deletedWords: ((String) -> [ReviewDeletedWords])?
+    /// Restore Deleted “…” chosen (context menu, VoiceOver): the segment whose words come back.
+    var onRestoreDeleted: ((String) -> Void)?
     /// The open field's edit when it closes for any reason but Esc or a save (`keepWordEdit`: words, what was typed,
     /// the word moves it follows, the `wordsEpoch` it opened under): the window queues it, so it waits for the review
     /// rather than being lost.
@@ -676,6 +719,8 @@ final class TurnListView: NSView, NSTableViewDataSource, NSTableViewDelegate {
         table.onKeyboardScroll = { [weak self] in self?.onUserScroll?() }
         table.onWordClick = { [weak self] seconds in self?.onPlay?(seconds) }
         table.onRevertFix = { [weak self] word in self?.onRevertFix?(word) }
+        table.deletedWordsOffer = { [weak self] row in self?.deletedWordsOffer(row: row) ?? [] }
+        table.onRestoreDeleted = { [weak self] segmentID in self?.onRestoreDeleted?(segmentID) }
         table.onWordEditClick = { [weak self] row, from, to, extend in
             self?.beginEditing(row: row, from: from, through: to, extend: extend)
         }
@@ -687,6 +732,13 @@ final class TurnListView: NSView, NSTableViewDataSource, NSTableViewDelegate {
     }
 
     required init?(coder: NSCoder) { nil }
+
+    /// The deleted words `row`'s menu offers to restore: those offered from any of its turns (`deletedWords`), only
+    /// while words can be edited.
+    func deletedWordsOffer(row: Int) -> [ReviewDeletedWords] {
+        guard editable, canEditWords, row >= 0, row < paragraphs.count, let deletedWords else { return [] }
+        return paragraphs[row].turns.flatMap { deletedWords($0.id) }
+    }
 
     // MARK: - Data
 
@@ -856,6 +908,11 @@ final class TurnListView: NSView, NSTableViewDataSource, NSTableViewDelegate {
                 return self.splitRequests(row: self.table.row(for: cell)).map { $0.map(SplitChoice.init) }
             }
             cell.bodyText.onSplitChosen = { [weak self] choice in self?.splitChosen(choice) }
+            cell.bodyText.deletedWordsChoices = { [weak self, weak cell] in
+                guard let self, let cell else { return [] }
+                return self.deletedWordsOffer(row: self.table.row(for: cell))
+            }
+            cell.bodyText.onRestoreDeleted = { [weak self] segmentID in self?.onRestoreDeleted?(segmentID) }
             return cell
         }()
         cell.bodyText.editingWords = editingWords

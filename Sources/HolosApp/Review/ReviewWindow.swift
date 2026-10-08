@@ -609,6 +609,8 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, NSM
         turnList.editText = { [review] words in review.shownText(of: words.map(\.ref)) }
         turnList.editRefusal = { [review] words in review.wordEditRefusal(words.map(\.ref)) }
         turnList.revertRefusal = { [review] word in review.revertRefusal(word) }
+        turnList.deletedWords = { [review] turnID in review.deletedWords(near: turnID) }
+        turnList.onRestoreDeleted = { [weak self] segmentID in self?.restoreDeleted(segmentID) }
         turnList.onUserScroll = { [weak self] in
             self?.follow.userScrolled(at: ProcessInfo.processInfo.systemUptime)
         }
@@ -1375,6 +1377,58 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, NSM
         }
     }
 
+    /// The Edit menu item's title (`restoreDeletedWords`).
+    static let restoreDeletedWordsTitle = "Restore Deleted Words…"
+
+    /// Edit ▸ Restore Deleted Words…: every segment whose words were all deleted that can be restored
+    /// (`ReviewSession.deletedWords()`), in a menu over the Edit Words button, one item each ("00:10  Restore Deleted
+    /// “Cheers.”"). It needs no turn shown near them, so none is out of reach when every turn around them went too.
+    @objc func restoreDeletedWords(_ sender: Any?) {
+        let deleted = review.deletedWords()
+        guard !deleted.isEmpty else {
+            NSSound.beep()
+            return
+        }
+        openRestoreMenu(Self.restoreMenu(deleted, target: self, action: #selector(restoreChosen(_:))), editButton)
+    }
+
+    /// Opens Restore Deleted Words' menu over `button` (tests record it instead: a menu tracks the mouse until it
+    /// closes).
+    var openRestoreMenu: (NSMenu, NSView) -> Void = { menu, button in
+        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: button.bounds.height + 4), in: button)
+    }
+
+    /// Restore Deleted Words' menu: one item per deleted segment, its time and text, sending `action` to `target` with
+    /// the segment ID.
+    static func restoreMenu(_ deleted: [ReviewDeletedWords], target: AnyObject, action: Selector) -> NSMenu {
+        let menu = NSMenu(title: "Restore Deleted Words")
+        menu.autoenablesItems = false
+        for words in deleted {
+            let item = NSMenuItem(title: TimeFormat.compact(words.start) + "  " + TurnTextView.restoreTitle(words),
+                                  action: action, keyEquivalent: "")
+            item.target = target
+            item.representedObject = words.segmentID
+            item.toolTip = TurnTextView.restoreHelp
+            menu.addItem(item)
+        }
+        return menu
+    }
+
+    @objc private func restoreChosen(_ sender: NSMenuItem) {
+        guard let segmentID = sender.representedObject as? String else { return }
+        restoreDeleted(segmentID)
+    }
+
+    /// Restore Deleted “…”: segment `segmentID`'s words, all deleted earlier, come back to the turns that held them.
+    /// Its run keeps the turns, as a word edit's does, so the paragraph breaks stay.
+    private func restoreDeleted(_ segmentID: String) {
+        paragraphBreaks.beginCarryOver()
+        perform { [weak self] review in
+            defer { self?.endBreakCarryOver() }
+            try await review.restoreDeletedWords(segmentID: segmentID)
+        }
+    }
+
     // MARK: - Editing words
 
     /// Edit Words (the toolbar toggle, ⌘E): on only while the review is editable (not while a command holds it
@@ -1491,29 +1545,32 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, NSM
             // Where its words are now: through the moves saved since, never across words changed elsewhere.
             let reopened = turnList.reopenWordEdit(words, typed: text, message: message, movesSeen: movesSeen,
                                                    wordsEpoch: seenEpoch)
-            // Not reopened: kept in the footer until reopened or dismissed (the next edit never clears it). A close
-            // waiting for it keeps it itself (`keepAfterFailedClose`).
-            if !reopened, !closeGate.saving {
-                unsavedEdits.add([FailedWordEdit(words: words, text: text, movesSeen: movesSeen,
-                                                 wordsEpoch: seenEpoch, message: message)])
+            // Reopened: said once, in the banner over the field that holds what was typed, as every other refusal of
+            // an edit is (`reopenWordEdit`). Not reopened: in the footer, kept until reopened or dismissed (the next
+            // edit never clears it); a close waiting for it keeps it itself (`keepAfterFailedClose`).
+            if !reopened {
+                if !closeGate.saving {
+                    unsavedEdits.add([FailedWordEdit(words: words, text: text, movesSeen: movesSeen,
+                                                     wordsEpoch: seenEpoch, message: message)])
+                }
+                problem = message
+                refreshFooter()
             }
-            problem = message
-            refreshFooter()
             return message
         }
     }
 
-    /// `message` with what was typed, unless it says it already.
+    /// `message` with what was typed, unless it says it already or nothing was typed (a deletion).
     private static func withTyped(_ message: String, _ text: String) -> String {
-        let typed = TranscriptWordEdit.cleaned(text)
-        return message.contains("“\(typed)”") ? message : message + " What you typed: “\(typed)”."
+        TranscriptWordEdit.withTyped(message, text)
     }
 
     /// After a saved edit: with `add` (⌥Return), its new text goes into the word list now, with what the recognizer
     /// wrote as "often heard as"; otherwise a new text that looks like a name or term is offered in the footer, unless
     /// the list has it with that phrase already.
     private func offerTerm(after edit: ReviewWordEdit, add: Bool) {
-        guard !edit.deletion, let adder = addWordListTerm else { return }
+        // A deletion, or nothing typed (a Restore of deleted words): no term.
+        guard !edit.deletion, !(edit.typed ?? edit.meant).isEmpty, let adder = addWordListTerm else { return }
         let dictionary: (String) -> Bool = { word in
             NSSpellChecker.shared.checkSpelling(of: word.lowercased(), startingAt: 0).location == NSNotFound
         }
@@ -1716,6 +1773,8 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, NSM
             menuItem.title = Self.speakersTitle(hidden: panes.speakersHidden)
         case #selector(toggleShortInterjections(_:))?:
             menuItem.state = review.showsShortInterjections ? .on : .off
+        case #selector(restoreDeletedWords(_:))?:
+            return !review.deletedWords().isEmpty
         default:
             break
         }

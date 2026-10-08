@@ -3214,7 +3214,9 @@ Application order in `make`:
 5. Derive names and provenance at the end: explicit name → `userRenamed`; linked profile
    → `userConfirmed`; automatic likely match not rejected → `recognized`; channel →
    `channelAssumption`; else `diarizer`.
-6. With a call's acoustic echo mask, hide the words and clusters it flags (§5.11).
+6. With a call's acoustic echo mask, hide the words and clusters it flags (§5.11). A turn
+   with no words at all (every one deleted in Review with its segment, §5.10 "Editing
+   words") is not shown either, mask or not; edits still name it.
 7. Decide the short interjections of the unknown speaker on the turns of step 6
    (`interjections`, `shownTurns`, §5.10 "Short interjections"). Presentation only: `turns`
    and `speakers` stay as steps 1–6 left them; the Review list and the exports read
@@ -8100,7 +8102,10 @@ shown, Otter-style.
   checked on everything an edit takes in), a segment with an automatic fix that cannot be
   counted. A save refused or failed after Return never loses what was typed: the field opens
   again over the words with it (when they still read the same and no other field is open),
-  and the message says what was typed in any case, also for a queued edit refused later.
+  and the message says what was typed in any case, also for a queued edit refused later. It
+  is said once: in the banner over the field that opened again, as every refusal before a
+  field opens is, else in the footer (kept until edited again or dismissed). Nothing typed
+  (a deletion) adds no "What you typed: “”".
   ⌥Return's word-list term is added once the edit is saved, also when the labels could not be
   refreshed after it. ⌘E turns the mode on only while words can be edited
   (`ReviewSession.canEditWords`): the review is editable (no command holds it read-only), its
@@ -8142,9 +8147,69 @@ shown, Otter-style.
   in, so one whose fix runs out of the turn, or holds a live correction, gives way to the
   other), so the deleted words keep provenance
   and time: "I um think" with "um" deleted is "I think" whose "think" was heard as "um
-  think". Deleting every word of a segment, and touching a live correction (`liveCorrection`,
-  whose live hint would no longer match), are refused in v1. Whitespace in the new text
-  collapses to single spaces; an edit that changes nothing saves nothing.
+  think". Deleting every word of a segment removes them with it (*Deleting a whole segment*,
+  below). Touching a live correction (`liveCorrection`, whose live hint would no longer
+  match) is refused in v1, a whole segment's deletion included; so is deleting words whose
+  segment's other words are another turn's or hidden echo, which neither a neighbour nor the
+  whole segment can take ("These words can be deleted only with a word beside them in the
+  same turn, or with every word of their segment"). Whitespace in the new text collapses to
+  single spaces; an edit that changes nothing saves nothing.
+- *Deleting a whole segment* (2026-10-08): a word the recognizer heard from line noise is
+  often a segment of its own ("That sounds fine? Thanks," with "Thanks," a segment):
+  selected whole and deleted, there is no word of its segment to carry it, so the segment
+  loses every word.
+  - *Transcript.* The segment stays (its ID, times, track, and language: turns, the event
+    log, and every map by segment ID still find it) with no text, words, or fixes, and what
+    it held is kept beside it, `TranscriptSegment.removed` (`TranscriptRemovedWords`: the
+    text, the timed words, and the fix marks as they were). A segment with `removed` and any
+    text, word, or fix of its own is damaged (`isDamaged`). The deletion is made in both
+    layers, as any edit is, and both keep one record: the unfixed words, and beside them
+    (`TranscriptRemovedWords.fixed`) the fixed ones with their automatic fixes. Word fixes
+    made again from `B′` copy the segment, record and all, so they keep it empty (nothing to
+    fix there) and a Restore in the fixed revision they make still brings back the fixed
+    words. Like any edit, the deletion of a fixed segment is refused when its fixes do not
+    lie over the unfixed words as recorded (`baseBounds`: a wrong `heardWords`), since the
+    two could never be restored together. `hasReviewEdits` counts it, so deep transcription and language
+    detection do not replace the transcript unless forced. `Transcript.text` and the
+    speaker-less exports leave such segments out (no double space).
+  - *Labels.* The word move is the segment's every word replaced by none (`0-n` → `0-0`,
+    the same journal fields, so a head owed after a crash is repaired from it). Mapped by
+    it, the turns lose the segment's words; the run records which turns held them
+    (`DiarizationRun.removedSegments`, `RemovedSegmentTurns`), with each one's words and
+    times just before (`before`): a turn holding those same words again when they come back
+    takes those times again, never times worked out from the words, so a deletion and its
+    undo or Restore leave every turn's times, and what is learned from them, as they were.
+    A turn left with no word
+    stays in the run with no spans, keeping its ID: speaker edits naming it (an assignment, a
+    new speaker) carry over, and its words come back to it. The projection shows no turn
+    without words, as it shows no turn of echo alone: it counts for no speaker
+    (a speaker with no other turn is not listed, unless made in Review), and no list or
+    export has it (§4.9 step 6). Every other plan keeps such a turn as it is (mapped by time, a turn with
+    no words stays with none). A split made in Review whose word was in the deleted segment,
+    or whose first part would be left with no word, cannot be carried over, and the deletion
+    is refused saying so.
+  - *Undo and Restore.* The undo restores the transcript as it was (a copy of `C`), and the
+    inverse move gives the words back to the turns recorded. Later, in another window too,
+    the turn shown nearest the deleted words in time (of their own track first) offers
+    **Restore Deleted “Thanks,”** in its words' context menu and as a VoiceOver action, while
+    words can be edited (`ReviewSession.deletedWords(near:)`, `restoreDeletedWords`). Since
+    that needs a turn shown (every turn around the words may have gone too), **Edit ▸ Restore
+    Deleted Words…** lists every deleted segment that can be restored ("00:10  Restore
+    Deleted “Cheers.”", in a menu over the Edit Words button; `deletedWords()`), enabled
+    while there is one. A Restore is an edit like any other (`Request.restoresRemoved`) that
+    puts back exactly what `removed` kept in both layers (a fixed revision the fixed words,
+    unless they no longer lie over the unfixed ones, which then come back in both; refused
+    when what was kept is damaged), and one undo takes it back. It is offered only while the run records the turns that held the
+    words: after Label Again (a new labelling, which gives the empty segment no turn) the
+    words stay deleted.
+  - *Learning.* Nothing: the segment keeps no mark, the edit is a deletion, and no correction
+    whose value is empty is ever taught (`ReviewLearning.corrections`,
+    `CorrectionList.learnFromReview`). No word-list term is offered either.
+  - *Older builds.* An older Voice is Local ignores `removed` and `removedSegments`: it reads
+    a segment with no words (shown and exported as nothing) and a turn with no words (a
+    blank row in its Review). It does not know the segment as a Review edit, so a forced
+    or automatic pass it runs may replace the transcript, and its writes drop the record: the
+    words then stay deleted with no Restore.
 - *Revisions* (`TranscriptWordEdit`, pure; `SessionWordEdit`, published). The edit is a fix
   of a new kind, `reviewEdit`, whose `heard` is what the recognizer wrote over the whole span,
   exactly as the text had it, so a Revert writes it back unchanged ("你好世界" stays without a
@@ -8303,7 +8368,9 @@ shown, Otter-style.
     from disk is made one way (`utf16Range(offset:length:within:)`: by subtraction, never past
     the text, never backwards), so no damaged offset or length can overflow or trap. A word
     move in the event log is read only as written ("3-5", two unsigned decimal numbers; never
-    empty; at most a million replaced × replacement word pairs, far more than any edit of one
+    empty, but for a whole segment's words deleted or restored, every one of its words to or
+    from "0-0", the segment holding `removed` on the empty side and not on the other; at
+    most a million replaced × replacement word pairs, far more than any edit of one
     turn; its replaced words all of the same turns, checked wherever a move is mapped; a
     segment both revisions have, every word outside it reading the same in both; the edit's
     `reviewEdit` mark exactly over its new words, or, for an undo (the event says `"undo":
@@ -8348,8 +8415,9 @@ shown, Otter-style.
     corrections.json is read, changed (rules and record), and saved once under its own lock
     (taken inside the speaker lock; nothing takes them the other way round). The app takes the
     list again afterwards;
-  - nothing is learned from a deletion, a punctuation-only change, or a case-only change
-    (decided on the edited words alone: a context word's own fix never makes "Hello" →
+  - nothing is learned from a deletion (a whole segment's leaves no mark at all; no
+    correction whose value is empty is ever taught), a punctuation-only change, or a
+    case-only change (decided on the edited words alone: a context word's own fix never makes "Hello" →
     "Hello," teach "Hello cloud" → "Hello, Claude"), unless the case change makes a proper noun (a word whose lowercase is not a dictionary
     word: "github" → "GitHub"), which teaches only the casing, never punctuation changed with
     it ("github," → "GitHub." teaches "github" → "GitHub"); words split or joined ("everyday" → "every day") are a real
@@ -8375,8 +8443,8 @@ shown, Otter-style.
   - a word-list term added from the offer stays (an explicit action). A correction learned
     stays until removed in Corrections.
 - *Not in v1.* Editing while the meeting records (Review opens after it), spanning segments
-  or turns, deleting a whole segment, editing over a live correction, redo, and showing the
-  edit before it is saved (the field closes and the row updates once saved).
+  or turns, editing over a live correction, redo, and showing the edit before it is saved
+  (the field closes and the row updates once saved).
 
 **Saving, undo, and rereading** (`ReviewSession`): what the window shows always matches
 the disk.
@@ -8485,9 +8553,10 @@ whose review is open or still opening):
 | `reviewAssigningAParagraphMovesEveryTurnOfItAndUndoRestoresIt` | assign a two-turn row; undo | one `reassignTurns` of both turns; rows join; undo restores turns and rows |
 | `reviewSplittingInsideAParagraphStartsOneThatUndoJoinsAgain` | split inside a row's first turn; undo | the second part starts a row with the next turn; undo joins them |
 | `TurnListViewTests` (HolosAppTests) | the list laid out offscreen | rows joined, word click, fixes and VoiceOver, selection, pop-up and hint, tint through a pause; no warning column: the hint first in the pop-up ("Jim (suggested)") gives its turn alone, uncertain and overlap rows only in VoiceOver and Next Uncertain, the text right after the pop-up |
-| `TranscriptWordEditTests` | hand-built transcripts | one word, more and fewer words, deletion into a neighbour, a fixed transcript's base edited too (word fixes made again give the same words), a fix taken whole, untimed words, refusals, exact restore, shown words to stored indices with hidden echo, an edited word never hidden as echo |
+| `TranscriptWordEditTests` | hand-built transcripts | one word, more and fewer words, deletion into a neighbour, a fixed transcript's base edited too (word fixes made again give the same words), a fix taken whole, untimed words, refusals, exact restore, shown words to stored indices with hidden echo, an edited word never hidden as echo; a segment's every word deleted and restored (both layers, word fixes made again, a damaged record, an older build's read) |
 | `TranscriptEditLearningTests` (HolosCoreTests) | heard/meant pairs | corrections learned with a neighbour; deletions, punctuation, and case changes skipped unless a proper noun; terms offered; often-heard-as |
 | `ReviewWordEditTests` | fixture sessions | edit, learn, speaker edits before and after, undo in order and exactly; edit and deletion inside a paragraph; refusals across turns, segments, hidden words; word fixes made again keep an edit |
+| `ReviewSegmentDeletionTests` | fixture sessions | a turn's first, middle, last, and only segment deleted whole: turn text, speakers, text/Markdown/JSON exports, the run's record and emptied turn; undo; Restore from the nearest turn and its undo; a reread plan keeps the emptied turn; an owed head repaired from the recorded move; nothing learned; a live correction refused; no "What you typed: “”"; every turn's times as they were after a deletion and its undo or Restore; every turn deleted, then restored from the full list |
 | `TurnListWordEditTests` (HolosAppTests) | the list laid out offscreen | word clicks play or edit by mode; Return, ⌥Return, Esc, Tab, ⇧Tab; selection kept in one turn; only Esc drops what was typed (mode off, a search filtering the row away, words gone, read-only: queued as an edit); VoiceOver "Edit"; Revert offered per segment (`revertRefusal`); the field follows its words |
 | `ReviewEchoMuteTests` | local-speech intervals (edges, joins, from 0, past the end, none) | the volume schedule; a mix on the microphone track only, read back as scheduled |
 | `playbackKeepsTheMicrophoneOnlyWhereItHasLocalSpeechWhenThereIsEcho` | a call with an echo mask, then `noEcho`, then other audio | a mix on the microphone track only with an echo mask; none otherwise |

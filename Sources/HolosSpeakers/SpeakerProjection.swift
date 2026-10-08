@@ -197,6 +197,8 @@ public struct SpeakerProjection: Sendable, Equatable {
     ///    still given to its speaker show unknown speaker, and no turn names it among its overlaps, unless the user
     ///    named or linked that speaker (their decision stands). Edits never see any of this: they apply to the run's
     ///    turns in steps 1–4, so the stored journal keeps naming stored turns whatever mask is shown.
+    ///    A turn with no words at all (every one deleted in Review with its segment: `DiarizationRun.removedSegments`)
+    ///    is not shown either, whether or not there is a mask; edits still name it.
     /// 7. Short interjections (`ShortInterjections`, docs/meeting-design.md §5.10) are decided on the turns of step 6:
     ///    `shownTurns` shows them with a neighbour's speaker or leaves them out. `turns` and `speakers` are unchanged.
     ///
@@ -991,6 +993,9 @@ extension SpeakerProjection {
         /// echo. A turn of a cluster in `hidden` still given to the speaker the run gave it shows unknown speaker; no
         /// shown turn names a hidden cluster among its overlaps.
         private func shown(_ turn: TurnState, context: Context, hidden: Set<String>) -> TurnState? {
+            // A turn with no words (every one deleted in Review with its segment, `DiarizationRun.removedSegments`)
+            // is not shown, as a turn of echo alone is not: it counts for no speaker, and no export or list has it.
+            guard !turn.spans.isEmpty else { return nil }
             var shown = turn
             if !hidden.isEmpty {
                 if let cluster = turn.clusterID, hidden.contains(cluster), turn.speakerID == turn.machineSpeakerID {

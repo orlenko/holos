@@ -73,6 +73,10 @@ enum AppKeyboard {
             item("Select All", #selector(NSText.selectAll(_:)), "a"),
             .separator(),
             item("Find…", Selector(("focusSearch:")), "f"),
+            .separator(),
+            // The key review window answers it (`ReviewWindow.restoreDeletedWords`), enabled while it has deleted
+            // words to restore; with no review window in front it is disabled.
+            item(ReviewWindow.restoreDeletedWordsTitle, Selector(("restoreDeletedWords:")), ""),
         ])
         // The main window's split view controller answers Hide Sidebar / Show Sidebar and names it as the sidebar is
         // (NSSplitViewController). The key review window answers the others (ReviewWindow, its delegate) and names

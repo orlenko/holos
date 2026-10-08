@@ -97,6 +97,13 @@ enum SessionWordEdit {
     /// do not all belong to the same turns. Nil when the text would not change.
     static func edited(_ request: TranscriptWordEdit.Request, in current: Transcript, base: Transcript?,
                        projection: SpeakerProjection?, now: Date = Date()) throws -> TranscriptWordEdit.Result? {
+        // A Restore names no word shown: its words come back to the turns that held them (the labels' plan).
+        if request.restoresRemoved {
+            guard projection != nil else {
+                throw HolosError.invalidInput("The speaker labels cannot be kept on the restored words.")
+            }
+            return try TranscriptWordEdit.editing(request, in: current, base: base, now: now)
+        }
         // The one turn holding every requested word (turns may overlap; the first holding the first word may not
         // hold the rest).
         guard let projection, let turn = projection.turns.first(where: { turn in
