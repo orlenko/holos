@@ -172,7 +172,7 @@ Meeting can also forget the voice samples learned from that meeting. See the
 | Meetings | ⌘3 | The saved meetings (was the Meetings window). Return opens Review, ⌫ is Delete Meeting…. |
 | People | ⌘4 | People you have named and their voice samples (was the People window). |
 | Reading | ⌘5 | Articles and documents made into one audio file each (see below). |
-| Settings | ⌘, | General (open the window when the app starts; Appearance: System, Light, or Dark), Permissions, Dictation (on/off, shortcut, language, speech model, fillers, spoken paths and commands as code, Apple Intelligence fix, preview), Meetings (system audio, speaker labels), Reading (default voice, speed, output folder), History and privacy (how long, Clear History…, keep the audio and its disk use), and **Run Setup Assistant…** (was the Setup window). |
+| Settings | ⌘, | General (open the window when the app starts; Appearance: System, Light, or Dark), Permissions, Dictation (on/off, shortcut, language, speech model, fillers, spoken paths and commands as code, Apple Intelligence fix, preview), Meetings (system audio, speaker labels), Reading (default voice, speed, output folder), Dictation history (how long, Clear History…, keep the audio and its disk use), and **Run Setup Assistant…** (was the Setup window). |
 
 A card at the bottom of the sidebar shows the dictation status ("Dictation ready", or
 "Dictation ready"). The window remembers its size and place;
@@ -224,14 +224,14 @@ render cache stays in Application Support/Holos/Readings, as for `voiceislocal r
 offered for Copy), the text as heard, the app it was for, the language, what happened to
 it, what was fixed, and its length. It lives only in
 `~/Library/Application Support/Holos/History/dictations.jsonl` (readable only by you), for
-30 days unless Settings › History and privacy says 7 days, Forever, or Off (Off stops
+30 days unless Settings › Dictation history says 7 days, Forever, or Off (Off stops
 recording and offers to clear what is kept). Nothing is sent anywhere or logged, a
 dictation refused in a password field is never recorded, and nothing reaches the clipboard
 unless you choose Copy. `voiceislocal history list [--json] [--limit N]` and
 `voiceislocal history clear --yes` do the same from Terminal.
 
 History also keeps each dictation's **audio** (AAC, about 4 KB a second, in
-`History/audio/<id>.m4a`, readable only by you) unless Settings › History and privacy ›
+`History/audio/<id>.m4a`, readable only by you) unless Settings › Dictation history ›
 **Keep the audio of dictations (for Run Again)** is off; Settings shows the space it takes,
 and it is deleted with its dictation (Delete, Clear History, and the 7- or 30-day sweep).
 In History, ▶ (or Space in the list) plays it, and **Run Again** (⌘R) recognizes it again
