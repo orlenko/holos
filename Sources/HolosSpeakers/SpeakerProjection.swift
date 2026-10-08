@@ -474,6 +474,12 @@ extension SpeakerProjection {
         let transcript: Transcript
         /// Profile ID → current name, for names that are not blank.
         let profileNames: [String: String]
+        /// People an edit batch is linking who are not in `profileNames` yet (created by the same change), counted as
+        /// existing people when same-named speakers are joined (`SameNameSpeakers`); empty but there.
+        var linkedPeople: Set<String> = []
+
+        /// The people who exist for joining same-named speakers: `profileNames`' and `linkedPeople`.
+        var people: Set<String> { Set(profileNames.keys).union(linkedPeople) }
         /// Matches of known profiles by machine speaker, in file order, with current profile names. Empty when the
         /// recognition belongs to another run.
         let matches: [String: [SpeakerMatch]]
@@ -982,7 +988,7 @@ extension SpeakerProjection {
             // Same name, same person (`SameNameSpeakers`): speakers whose names match are listed as one, with
             // their turns.
             let joined = SameNameSpeakers.join(projectedSpeakers, turns: projectedTurns,
-                                               people: Set(context.profileNames.keys))
+                                               people: context.people)
             for member in joined.into.keys { effectiveProfiles[member] = nil }
             let merges = mergeSuggestions(listed: joined.speakers, effectiveProfiles: effectiveProfiles,
                                           context: context)

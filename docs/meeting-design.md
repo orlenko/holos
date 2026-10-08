@@ -3297,7 +3297,14 @@ diacritics and character width are ignored ("Zoë  Smith" = "zoe smith"). Only n
 person stands by take part: an explicit name (`userRenamed`), a linked person's name
 (`userConfirmed`), and the channel speaker's ("Me"). A "Speaker N" fallback names nobody,
 and an automatic match ("Jim (auto)") or a suggestion is a guess nobody confirmed, so
-neither joins anyone. Two halves keep the rule:
+neither joins anyone. One exception: two people of one name. An explicit link is stronger
+evidence than a name, so speakers linked to two different people who exist in People (two
+remembered "Alex"es) stay apart and are never merged automatically (`SameNameSpeakers.byPerson`).
+Speakers of that name linked to nobody who exists then join neither person (which Alex they
+are is unknown) but do join each other; with only one such person, they join that person
+unless they said "Not <person>" (that one stays apart too). A person an edit batch links
+counts as existing for this, since the same change may create them. Two halves keep the
+rule:
 
 - *Read side (every meeting, nothing written).* After step 5, the projection lists each
   group of same-named speakers as one: `speakers` has one entry, `ProjectedSpeaker.memberIDs`
@@ -3316,7 +3323,11 @@ neither joins anyone. Two halves keep the rule:
   in Review's sidebar and in every count, and what keeps names carried over by Label Again
   (`SpeakerCarryOver` maps the joined speaker, so one name is carried) from listing a
   person twice.
-- *Write side (`SpeakerEditor`).* Every batch is saved as `view.joiningSameNames(actions)`:
+- *Write side (`SpeakerEditor`).* Every batch is saved as `joiningSameNames(actions)`,
+  worked out under the speaker lock on the current labels rather than on the caller's view
+  (two windows naming two speakers alike at once each see only their own speaker; the
+  second's save still merges into the first). The lines it adds carry the current
+  fingerprints; the caller's own lines must match its view as always:
   (1) a rename, link, rejection, or merge of a speaker the view shows joined first merges
   the joined stored speakers into the one listed, at the start of the batch, and names that
   one (otherwise renaming "Alice" would rename one of her stored speakers and leave the
@@ -3344,7 +3355,10 @@ neither joins anyone. Two halves keep the rule:
 - *Choosing a name that exists.* Review's "New Speaker…" (and `voiceislocal speakers assign
   --to new:NAME`) with a name a listed speaker has gives the turns to that speaker
   (`SpeakerProjection.speaker(named:)`); "Assign to <person>" with a person whose name a
-  listed, unlinked speaker has gives the turns to it and links it in the same change.
+  listed speaker has gives the turns to it and links it in the same change, unless that
+  speaker is linked to another person who exists or said "Not <person>": then the turns
+  go to a new speaker linked to the person (created unnamed, the link naming it, so it is
+  never briefly the other speaker's).
   Review's name field links the known person whose name matches by `key` (accents and
   spaces too, not only case) rather than creating a second person of that name.
 

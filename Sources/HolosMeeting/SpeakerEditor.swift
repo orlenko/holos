@@ -53,10 +53,12 @@ public enum SpeakerEditor {
     ///   the newer changes first).
     /// - Names in `rename` and `newSpeaker` are saved as `cleanName` returns them (one line, no control
     ///   characters), so every name can be typed back as the exports show it.
-    /// - Same name, same person (docs/meeting-design.md §4.9): the batch saved is
-    ///   `view.joiningSameNames(actions)`, which adds the merges that keep one stored speaker per name (a rename to a
-    ///   name another speaker has, a new speaker with such a name, a link to a person another speaker is named as,
-    ///   and an edit of a speaker the view shows joined by name). They share the batch ID, so one undo takes them
+    /// - Same name, same person (docs/meeting-design.md §4.9): the batch saved is `joiningSameNames(actions)` worked
+    ///   out under the lock on the current labels (not on `view`, which may not show another window's speaker of
+    ///   the same name), which adds the merges that keep one stored speaker per name (a rename to a name another
+    ///   speaker has, a new speaker with such a name, a link to a person another speaker is named as, and an edit of
+    ///   a speaker shown joined by name) and the link of the person they are. The lines it adds carry the current
+    ///   fingerprints; the caller's own must match `view` as always. They share the batch ID, so one undo takes them
     ///   back with the change. `saved(_:asAsked:)` tells a caller's batch apart in what was saved.
     /// - An action the projection would refuse on the current state (a speaker or turn that does not exist, a split
     ///   at a turn's first word, a merge of a speaker into itself, a `newSpeaker` ID that exists or does not start
@@ -142,10 +144,13 @@ public enum SpeakerEditor {
             var edits: [SpeakerEdit] = []
             edits.reserveCapacity(actions.count)
             // Same name, same person: a batch that names a speaker as another is named also merges them, and one on
-            // a speaker the view shows joined by name merges the joined ones first (`joiningSameNames`).
-            for action in view.joiningSameNames(actions.map(cleaned)) {
-                let expected = viewState.fingerprint(for: action)
-                guard expected == current.fingerprint(for: action) else { throw refusedStaleView(base.run) }
+            // a speaker shown joined by name merges the joined ones first (`joiningSameNames`). Worked out on the
+            // current labels, read under this lock, not on the caller's view: two windows naming two speakers alike
+            // at once each see only their own speaker, and the second must still merge into the first. The lines it
+            // adds carry the current fingerprints; the caller's own lines must still match its view.
+            for (action, added) in base.projection.joiningSameNamesMarked(actions.map(cleaned)) {
+                let expected = current.fingerprint(for: action)
+                guard added || viewState.fingerprint(for: action) == expected else { throw refusedStaleView(base.run) }
                 if case .revert(let target) = action,
                    EditStatus(target, in: viewState) != EditStatus(target, in: current) {
                     throw refusedStaleView(base.run)

@@ -788,3 +788,27 @@ func appendWithoutJoining(_ actions: [SpeakerEditAction], session: URL) throws {
     let after = try #require(result.snapshot.projection)
     #expect(after.speakers.map(\.name) == ["Robert", "Speaker 2"])
 }
+
+@Test func twoWindowsNamingTwoSpeakersAlikeAtOnceLeaveOneStoredSpeaker() async throws {
+    let temp = try TemporaryDirectory("editor")
+    defer { temp.remove() }
+    let (session, _, _) = try await SessionFixtures.labelledSession(in: temp.url)
+    // Both windows load the labels; the first names S1 Carol and saves.
+    let first = try SessionFixtures.view(session)
+    let second = try SessionFixtures.view(session)
+    try SpeakerEditor.apply([.rename(speakerID: "system:S1", name: "Carol")], view: first, session: session,
+                            source: "app", regenerateExports: false)
+    // The second, not having seen that, names S2 carol: its rename is still valid (S2 did not change), and the
+    // merge is worked out on the labels saved, so S2 joins S1.
+    let result = try SpeakerEditor.apply([.rename(speakerID: "system:S2", name: "carol")], view: second,
+                                         session: session, source: "app", regenerateExports: false)
+    let lines = try editorJournal(session)
+    #expect(lines.map(\.action) == [.rename(speakerID: "system:S1", name: "Carol"),
+                                    .rename(speakerID: "system:S2", name: "carol"),
+                                    .merge(from: "system:S2", into: "system:S1")])
+    try #require(lines.count == 3)
+    #expect(lines[1].batchID == lines[2].batchID)
+    let after = try #require(result.snapshot.projection)
+    #expect(after.speakers.map(\.id) == ["system:S1"])
+    #expect(after.speakers.first?.memberIDs == ["system:S1"])
+}

@@ -1064,14 +1064,17 @@ public struct ReviewDeletedWords: Sendable, Equatable {
                 throw HolosError.invalidInput("That person is not known to Voice is Local any more; reopen the window.")
             }
             // A listed speaker already called this person's name is them (same name, same person): the turns go to
-            // it, and it is linked to the person in the same change unless it is linked to someone else or said
-            // "Not <person>".
-            if let speaker = projection.speaker(named: person.displayName) {
+            // it, linked to the person in the same change. Not one linked to another person who exists (two people
+            // of one name), nor one that said "Not <person>": the person asked for is somebody else.
+            let key = SameNameSpeakers.key(person.displayName)
+            let namedAlike = projection.speakers.filter {
+                SameNameSpeakers.standsBy($0) && SameNameSpeakers.key($0.name) == key
+            }
+            if let speaker = namedAlike.first(where: { speaker in
+                !speaker.rejectedProfileIDs.contains(profileID)
+                    && (speaker.profileID.map { profileNames[$0] == nil } ?? true)
+            }) {
                 let move = SpeakerEditAction.reassignTurns(turnIDs: ids, to: speaker.id)
-                guard speaker.profileID == nil, !speaker.rejectedProfileIDs.contains(profileID) else {
-                    try await apply([move])
-                    return
-                }
                 try validate([move])
                 mergeArmed = true
                 try await enqueue(.assignPerson(create: move, speakerID: speaker.id, profileID: profileID,
@@ -1079,8 +1082,13 @@ public struct ReviewDeletedWords: Sendable, Equatable {
                                   optimistic: [move, .linkProfile(speakerID: speaker.id, profileID: profileID)])
                 return
             }
+            // A new speaker linked to the person. While a speaker of that name stands for somebody else, it is created
+            // without a name, which the link then gives it: named first, it would be that somebody else's (same name,
+            // same person) before the link said otherwise.
             let speakerID = Self.newSpeakerID()
-            let create = SpeakerEditAction.newSpeaker(speakerID: speakerID, name: person.displayName, turnIDs: ids)
+            let create = SpeakerEditAction.newSpeaker(speakerID: speakerID,
+                                                      name: namedAlike.isEmpty ? person.displayName : nil,
+                                                      turnIDs: ids)
             try validate([create])
             mergeArmed = true
             try await enqueue(.assignPerson(create: create, speakerID: speakerID, profileID: profileID,

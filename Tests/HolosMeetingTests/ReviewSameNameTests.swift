@@ -200,6 +200,53 @@ func thisIsMeOnASpeakerShownJoinedShowsOneSpeakerWhileItSaves() async throws {
 }
 
 @Test(.timeLimit(.minutes(1))) @MainActor
+func assigningAnotherPersonOfTheSameNameMakesTheirOwnSpeaker() async throws {
+    let temp = try TemporaryDirectory("review")
+    defer { temp.remove() }
+    let store = sameNameStore(temp)
+    // Two remembered people called Alex.
+    let first = SpeakerProfile(displayName: "Alex")
+    let second = SpeakerProfile(displayName: "Alex")
+    try store.update { $0.profiles += [first, second] }
+    let session = try await sameNameSession(temp)
+    let review = try await sameNameOpen(session, store: store)
+    try await review.link(speakerID: "system:S1", to: .existing(profileID: first.id))
+
+    // T2 is the other Alex: it goes to a speaker of their own, linked to them, not to S1.
+    try await review.assign(["T2"], to: .person(profileID: second.id))
+    let moved = try #require(review.projection.turns.first { $0.id == "T2" }?.speakerID)
+    #expect(moved != "system:S1")
+    #expect(review.speaker(moved)?.profileID == second.id)
+    #expect(review.speaker(moved)?.name == "Alex")
+    #expect(review.speaker("system:S1")?.profileID == first.id)
+    #expect(review.speaker("system:S1")?.memberIDs == ["system:S1"])
+    #expect(!(try sameNameJournal(session).contains { if case .merge = $0.action { true } else { false } }))
+    #expect(review.snapshot.projection == review.projection)
+}
+
+@Test(.timeLimit(.minutes(1))) @MainActor
+func assigningAPersonASpeakerOfTheirNameSaidNotToMakesTheirOwnSpeaker() async throws {
+    let temp = try TemporaryDirectory("review")
+    defer { temp.remove() }
+    let store = sameNameStore(temp)
+    let alex = SpeakerProfile(displayName: "Alex")
+    try store.update { $0.profiles.append(alex) }
+    let session = try await sameNameSession(temp)
+    let review = try await sameNameOpen(session, store: store)
+    // S2 is called Alex, but is not this Alex ("Not Alex").
+    try await review.apply([.rename(speakerID: "system:S2", name: "Alex"),
+                            .rejectProfile(speakerID: "system:S2", profileID: alex.id)])
+
+    try await review.assign(["T3"], to: .person(profileID: alex.id))
+    let moved = try #require(review.projection.turns.first { $0.id == "T3" }?.speakerID)
+    #expect(moved != "system:S2")
+    #expect(review.speaker(moved)?.profileID == alex.id)
+    #expect(review.speaker("system:S2")?.profileID == nil)
+    #expect(review.projection.turns.first { $0.id == "T2" }?.speakerID == "system:S2")
+    #expect(review.snapshot.projection == review.projection)
+}
+
+@Test(.timeLimit(.minutes(1))) @MainActor
 func namingASpeakerLikeAPersonIgnoresAccentsAndSpaces() async throws {
     let temp = try TemporaryDirectory("review")
     defer { temp.remove() }

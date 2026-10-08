@@ -329,6 +329,48 @@ private func turnSpeaker(_ projection: SpeakerProjection, _ id: String) -> Strin
     #expect(journal.view.speaker(named: "Zoey") == nil)
 }
 
+// MARK: - Two people of one name
+
+@Test func speakersLinkedToTwoPeopleOfOneNameStayApart() throws {
+    // Two remembered people are both called Alex: an explicit link to each is stronger evidence than the name.
+    var journal = Journal(names: ["P-ALEX1": "Alex", "P-ALEX2": "Alex"])
+    journal.save([.linkProfile(speakerID: "system:S1", profileID: "P-ALEX1"),
+                  .rename(speakerID: "system:S1", name: "Alex")])
+    let saved = journal.save([.linkProfile(speakerID: "system:S3", profileID: "P-ALEX2"),
+                              .rename(speakerID: "system:S3", name: "Alex")])
+    #expect(saved == [.linkProfile(speakerID: "system:S3", profileID: "P-ALEX2"),
+                      .rename(speakerID: "system:S3", name: "Alex")])
+    let view = journal.view
+    #expect(view.speakers.filter { $0.name == "Alex" }.map(\.id) == ["system:S1", "system:S3"])
+    #expect(view.speakers.allSatisfy { $0.memberIDs == [$0.id] })
+    // A third Alex linked to nobody: which of the two he is is unknown, so he joins neither.
+    journal.save([.rename(speakerID: "system:S2", name: "alex")])
+    #expect(journal.view.speakers.filter { $0.name.lowercased() == "alex" }.count == 3)
+    #expect(journal.view.staleEdits.isEmpty)
+}
+
+@Test func aSpeakerThatSaidNotThisPersonDoesNotJoinThem() {
+    var journal = Journal(names: ["P-ALEX": "Alex"])
+    journal.save([.linkProfile(speakerID: "system:S1", profileID: "P-ALEX"),
+                  .rename(speakerID: "system:S1", name: "Alex")])
+    journal.save([.rejectProfile(speakerID: "system:S2", profileID: "P-ALEX")])
+    let saved = journal.save([.rename(speakerID: "system:S2", name: "Alex")])
+    #expect(saved == [.rename(speakerID: "system:S2", name: "Alex")])
+    #expect(journal.view.speakers.filter { $0.name == "Alex" }.map(\.id) == ["system:S1", "system:S2"])
+}
+
+@Test func aPersonTheBatchLinksCountsAsExisting() {
+    // A person created by the same change is not in the names yet; linked to S3 while S1 is linked to another Alex,
+    // the two stay apart.
+    var journal = Journal(names: ["P-ALEX1": "Alex"])
+    journal.save([.linkProfile(speakerID: "system:S1", profileID: "P-ALEX1"),
+                  .rename(speakerID: "system:S1", name: "Alex")])
+    let saved = journal.view.joiningSameNames([.linkProfile(speakerID: "system:S3", profileID: "P-NEW"),
+                                               .rename(speakerID: "system:S3", name: "Alex")])
+    #expect(saved == [.linkProfile(speakerID: "system:S3", profileID: "P-NEW"),
+                      .rename(speakerID: "system:S3", name: "Alex")])
+}
+
 // MARK: - Label Again
 
 @Test func namesCarriedOverFromSpeakersShownAsOneNameOneSpeaker() {
