@@ -129,6 +129,13 @@ public struct ReviewParagraphBreaks: Sendable, Equatable {
         marks[turn.id] = before.map { Held(track: turn.track, mark: $0) }
     }
 
+    /// The joins `owner` set stay, owned by no one: nothing will take them back.
+    public mutating func disown(_ owner: String) {
+        for (id, held) in marks where held.mark == .join(owner: owner) {
+            marks[id] = Held(track: held.track, mark: .join(owner: nil))
+        }
+    }
+
     /// A break or join made on another run than the ones held starts afresh.
     private mutating func start(_ runID: String?) {
         guard runID != self.runID else { return }

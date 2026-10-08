@@ -508,4 +508,64 @@ struct ReviewWindowJoinTests {
         #expect(window.paragraphJoins.isEmpty && rows(window) == [["T1"], ["T2"]])
         await window.closeAndWait()
     }
+
+    /// Backspace joins while another change saves, and ⌘Z drops the join's speaker change before it runs: the join
+    /// is gone, the field does not open again saying "Joined" (whose ⌘Z hint would then undo the other change), and the
+    /// other change stays.
+    @Test(.timeLimit(.minutes(1))) func aJoinDroppedByUndoBeforeItRunsReopensNoField() async throws {
+        let (window, session) = try await open([Spec(speaker: "S1", start: 0, words: ["amber", "birch"]),
+                                                Spec(speaker: "S2", start: 5, words: ["cedar", "dune"])])
+        let (stream, release) = AsyncStream<Void>.makeStream()
+        window.review.beforeEdit = { for await _ in stream {} }
+        let rename = Task { try await window.review.apply([.rename(speakerID: "S1", name: "Ash")]) }
+        #expect(await until { window.review.canUndo })
+        window.setEditMode(true)
+        press(window, row: 1, word: 0, caret: 0, #selector(NSResponder.deleteBackward(_:)))
+        #expect(await until { speaker(window, "T2") == "S1" && rows(window) == [["T1", "T2"]] })
+        #expect(window.turnList.wordEdit == nil)
+        window.window.makeFirstResponder(window.turnList.table)
+        #expect(window.handleKey(try commandZ(window)))
+        #expect(await until { speaker(window, "T2") == "S2" && window.paragraphJoins.isEmpty })
+        release.finish()
+        try await rename.value
+        #expect(await until { window.review.snapshot.journal.edits.count == 1 })
+        // Let the join's own task finish (it was waiting on the change Undo dropped), then look.
+        for _ in 0..<10 { await Task.yield() }
+        try await window.review.apply([.rename(speakerID: "S2", name: "Birch")])
+        window.review.beforeEdit = nil
+        #expect(window.turnList.wordEdit == nil, "No field opened for a join that was cancelled.")
+        #expect(rows(window) == [["T1"], ["T2"]] && window.paragraphJoins.isEmpty)
+        #expect(journal(session) == [.rename(speakerID: "S1", name: "Ash"), .rename(speakerID: "S2", name: "Birch")])
+        await window.closeAndWait()
+    }
+
+    /// C joined to B, then B and C joined to A; both speaker changes undone elsewhere (a command) before the window
+    /// reads the labels again: every join goes, none is left behind on C, so C given B's speaker later stays apart
+    /// (past the gap).
+    @Test(.timeLimit(.minutes(1))) func joinsUndoneElsewhereLeaveNoMarkBehind() async throws {
+        let (window, session) = try await open([Spec(speaker: "S1", start: 0, words: ["amber", "birch"]),
+                                                Spec(speaker: "S2", start: 5, words: ["cedar", "dune"]),
+                                                Spec(speaker: "S3", start: 12, words: ["elm", "fern"])])
+        window.turnList.joinChosen(try #require(window.turnList.joinOffer(row: 2, index: 0)).choice)
+        #expect(await until {
+            window.review.snapshot.journal.edits.count == 1 && rows(window) == [["T1"], ["T2", "T3"]]
+        })
+        window.turnList.joinChosen(try #require(window.turnList.joinOffer(row: 1, index: 0)).choice)
+        #expect(await until {
+            window.review.snapshot.journal.edits.count == 2 && rows(window) == [["T1", "T2", "T3"]]
+        })
+        for _ in 0..<2 {
+            let view = try #require(try SpeakerSessionSnapshot.load(session: session).projection)
+            _ = try SpeakerEditor.undoLast(view: view, session: session, source: "cli", regenerateExports: false)
+        }
+        await window.review.reload()
+        #expect(await until {
+            speaker(window, "T3") == "S3" && window.paragraphJoins.isEmpty && rows(window) == [["T1"], ["T2"], ["T3"]]
+        })
+        try await window.review.assign(["T3"], to: .speaker("S2"))
+        #expect(await until { speaker(window, "T3") == "S2" })
+        window.refresh()
+        #expect(rows(window) == [["T1"], ["T2"], ["T3"]] && window.paragraphJoins.isEmpty)
+        await window.closeAndWait()
+    }
 }

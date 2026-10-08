@@ -1480,11 +1480,25 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, NSM
                 throw error
             }
             guard let self else { return }
-            // It changed nothing (the turns had the speaker already): nothing to follow; the joins stay.
-            if review.state(of: made.change) == .notQueued { self.forgetJoin(made, takingBack: false) }
-            self.refresh()
-            // Taken back meanwhile (Undo dropped it before it ran): no field, no announcement.
-            if case .undone = review.state(of: made.change) { return }
+            // Settled away meanwhile (Undo dropped it before it ran, and a refresh took it back): no field, no
+            // announcement, no hint that ⌘Z undoes it.
+            guard self.joinsMade.contains(where: { $0.owner == made.owner }) else {
+                self.refresh()
+                return
+            }
+            switch review.state(of: made.change) {
+            case .notQueued:
+                // It changed nothing (the turns had the speaker already): nothing to follow; the joins stay, as a
+                // join without a speaker change does.
+                self.paragraphBreaks.disown(made.owner)
+                self.forgetJoin(made, takingBack: false)
+            case .undone, .failed:
+                self.forgetJoin(made, takingBack: true)
+                self.refresh()
+                return
+            case .pending, .inEffect:
+                break
+            }
             finish()
         }
     }
@@ -1508,7 +1522,8 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, NSM
     /// counts. A join of labels replaced since by a run that does not keep the turns is forgotten.
     private func settleJoins(runID: String) {
         guard !joinsMade.isEmpty else { return }
-        for made in joinsMade {
+        // Newest first: a later join taken back puts back an earlier one's mark before that one is settled.
+        for made in joinsMade.reversed() {
             guard made.runID == runID || review.keepsTurns(of: made.runID, in: runID) else {
                 forgetJoin(made, takingBack: false)
                 continue
@@ -1525,19 +1540,28 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, NSM
         guard let index = joinsMade.firstIndex(where: { $0.owner == made.owner }) else { return }
         joinsMade.remove(at: index)
         review.forget(made.change)
-        if takingBack { takeBack(made) }
+        if takingBack {
+            takenBackJoins.insert(made.owner)
+            takeBack(made)
+        }
     }
+
+    /// The joins taken back (their owners): a mark of one is never put back.
+    private var takenBackJoins: Set<String> = []
 
     /// Takes back the joins `made` set, putting back what each turn had before it, only where its join is still the
     /// turn's mark (a later join or break is never undone by it), by the IDs the turns have now (a split part's
     /// temporary ID gives way to its saved one); nothing once the labels were replaced by a run that does not keep the
-    /// turns (a turn ID such as "T2" may name another turn there).
+    /// turns (a turn ID such as "T2" may name another turn there). What a turn had before is never a join already
+    /// taken back (whatever order they were settled in): the turn then gets no mark.
     private func takeBack(_ made: JoinMade) {
         let runID = review.projection.runID
         guard made.runID == runID || review.keepsTurns(of: made.runID, in: runID) else { return }
         for (turn, mark) in zip(made.turns, made.before) {
             let id = review.resolvedTurnID(turn.id)
-            paragraphBreaks.takeBack(made.owner, before: mark,
+            var before = mark
+            if case .join(let owner?)? = mark, takenBackJoins.contains(owner) { before = nil }
+            paragraphBreaks.takeBack(made.owner, before: before,
                                      of: review.projection.turns.first { $0.id == id } ?? turn)
         }
     }

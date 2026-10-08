@@ -7879,7 +7879,9 @@ public enum SessionAudioComposition {
   and system-audio turns given to the unknown speaker stay one row). The joins are made at
   once. Two rules keep them right. A join owns the marks it sets (`ReviewParagraphBreaks`
   join `owner`), and taking it back touches only marks that are still its own, putting back
-  what each turn had before; a later join or break is never undone by it. And a join follows
+  what each turn had before (never the mark of a join already taken back; joins are settled
+  newest first); a later join or break is never undone by it. A join whose speaker change
+  ⌘Z dropped before it ran opens no field and announces nothing. And a join follows
   its own speaker change alone (`ReviewSession.reassign(_:to:seenRun:following:)` and
   `state(of:)`: that change's own saved batches in the labels read from disk; never a change
   or an undo still queued or saving, nor what other changes did to the same turns): queued,
