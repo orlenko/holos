@@ -1077,3 +1077,67 @@ func automaticRelabelThatLabelsOffersNamingOnce(code: Int32) async throws {
     #expect(controller.sessionsInUse.isEmpty)
     #expect(controller.beginUsing(manifest.id, for: "Cleaning up…"))
 }
+
+/// A deletion of several meetings reserves every target in `sessionsInUse` at once, so a background job (which skips
+/// meetings in use) cannot start on one still waiting its turn; each turn takes the reservation over, and nothing stays
+/// reserved once the run ended, whether a meeting was deleted, failed before its turn took over, or was never reached.
+@Test @MainActor func aDeletionOfSeveralReservesItsWaitingMeetings() async throws {
+    let temp = try TemporaryDirectory("controller")
+    defer { temp.remove() }
+    let controller = makeController(root: temp.url, launcher: FakeRecorderLauncher(), probe: ControllerProbe())
+    var changes = 0
+    controller.onSessionsInUseChanged = { changes += 1 }
+    func meeting(_ id: String) -> SessionSummary {
+        SessionSummary(id: id, directory: temp.url.appendingPathComponent("\(id).holos"), name: "Planning \(id)",
+                       createdAt: Date(), source: .microphone, state: .complete, manifestStatus: "complete",
+                       liveness: .exited)
+    }
+    // A summary took C between the confirmation and the reservation.
+    #expect(controller.beginUsing("C", for: "Writing summary…"))
+    let waiting = "Waiting to move to the Trash…"
+    let reservation = MeetingBulkRun.reserve([meeting("A"), meeting("B"), meeting("C"), meeting("D")],
+                                             waiting: waiting, in: controller)
+    #expect(reservation.reserved.map(\.id) == ["A", "B", "D"])
+    #expect(reservation.refused.map(\.message) == ["Voice is Local is working on it (Writing summary…)."])
+    #expect(changes == 2, "One change for the whole reservation.")
+    for id in ["A", "B", "D"] { #expect(controller.sessionsInUse[id] == waiting) }
+
+    var seen: [[String: String]] = []
+    let result = await MeetingBulkRun.run(reservation, waiting: waiting, uses: controller, progress: { _ in }) { summary in
+        // What a scheduler checking `sessionsInUse` sees while this one is deleted: the others still held.
+        seen.append(controller.sessionsInUse)
+        switch summary.id {
+        case "A":
+            // The single deletion's path takes the reservation over, then ends it.
+            #expect(controller.continueUsing("A", for: "Moving to the Trash…"))
+            #expect(!controller.beginUsing("A", for: "Labelling speakers…"))
+            controller.endUsing("A")
+            return nil
+        case "B":
+            return "Voice is Local cannot run meeting commands now."  // failed before taking it over
+        default:
+            #expect(controller.continueUsing(summary.id, for: "Moving to the Trash…"))
+            controller.endUsing(summary.id)
+            return nil
+        }
+    }
+    #expect(seen.first?["B"] == waiting && seen.first?["D"] == waiting)
+    #expect(seen.last?["B"] == nil, "B's reservation was released after it failed.")
+    #expect(result.succeeded == ["A", "D"])
+    #expect(result.failures.map(\.id) == ["C", "B"])
+    #expect(controller.sessionsInUse == ["C": "Writing summary…"])
+    #expect(!controller.continueUsing("A", for: "Moving to the Trash…"), "Nothing to take over once released.")
+
+    // Cancelled (Quit Now) before its first meeting: every reservation is released, nothing is run.
+    let second = MeetingBulkRun.reserve([meeting("E"), meeting("F")], waiting: waiting, in: controller)
+    let task = Task { @MainActor in
+        await MeetingBulkRun.run(second, waiting: waiting, uses: controller, progress: { _ in }) { _ in
+            Issue.record("A cancelled run deletes nothing more.")
+            return nil
+        }
+    }
+    task.cancel()
+    let cancelled = await task.value
+    #expect(cancelled.cancelled)
+    #expect(controller.sessionsInUse == ["C": "Writing summary…"])
+}

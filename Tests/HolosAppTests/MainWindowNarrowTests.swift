@@ -224,6 +224,44 @@ struct MainWindowNarrowTests {
         SettingsEmbeddingTests.render(controller.window, name: "narrow-meetings-rows-\(sidebarHidden ? "hidden" : "sidebar")")
     }
 
+    /// Meetings with several selected: the line that sums them up shows whole, and the buttons that act on all of
+    /// them fit.
+    @Test(arguments: [true, false])
+    func severalSelectedMeetingsFitTheNarrowestWindow(sidebarHidden: Bool) throws {
+        let pane = try #require(try Self.section(.meetings) as? MeetingsPane)
+        let controller = try Self.window(on: .meetings, sidebarHidden: sidebarHidden, pane: pane)
+        let meetings = (0..<12).map { index in
+            SessionSummary(id: "M\(index)", directory: URL(fileURLWithPath: "/nonexistent/M\(index).holos"),
+                           name: index == 0 ? Self.longMeeting : "Standup \(index)",
+                           createdAt: Date().addingTimeInterval(-Double(index) * 20 * 3600),
+                           source: .microphoneAndSystem, state: .complete, manifestStatus: "complete",
+                           savedSeconds: 3_599, chunkCount: 120, transcriptID: "T", speakerState: .labelled,
+                           liveness: .exited, bytes: 1_234_000_000)
+        }
+        pane.show(meetings, people: [:], freeBytes: 500_000_000_000)
+        let table = try #require(Self.allViews(pane.view).compactMap { $0 as? NSTableView }.first)
+        table.selectAll(nil)
+        #expect(pane.selectedSessionIDs.count == 12)
+        let content = try #require(controller.window.contentView)
+        content.layoutSubtreeIfNeeded()
+        #expect(content.frame.width == Self.minimumWidth(controller, sidebarHidden: sidebarHidden))
+        #expect(Self.brokenConstraints(in: content).isEmpty)
+        let problems = Self.layoutProblems(in: pane.view) + Self.rowProblems(in: pane.view)
+        #expect(problems.isEmpty, "\(problems)")
+        #expect(pane.statusText == "12 meetings selected · 11 h 59 min · 14.8 GB")
+        let status = try #require(Self.allViews(pane.view).compactMap { $0 as? NSTextField }
+            .first { $0.stringValue == pane.statusText })
+        #expect(!status.isHiddenOrHasHiddenAncestor)
+        #expect(status.frame.width >= status.intrinsicContentSize.width - 1, "The summary is not cut off.")
+        for title in ["Show in Finder", "Delete Audio…", "Delete Meeting…"] {
+            let button = try #require(Self.allViews(pane.view).compactMap { $0 as? NSButton }
+                .first { $0.title == title })
+            #expect(button.isEnabled && !button.isHiddenOrHasHiddenAncestor, "\(title)")
+        }
+        SettingsEmbeddingTests.render(controller.window,
+                                      name: "narrow-meetings-several-\(sidebarHidden ? "hidden" : "sidebar")")
+    }
+
     /// History with a dictation from an app with a long (made-up) name selected.
     @Test(arguments: [true, false])
     func historyWithALongAppNameFitsTheNarrowestWindow(sidebarHidden: Bool) throws {

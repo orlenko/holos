@@ -15,10 +15,13 @@ import UniformTypeIdentifiers
 /// which also opens Review (PR9, §5.10); the rest (Show in Finder, the Quick Look preview, Save Transcript As…, Clean
 /// Up, Rename) happen here. The meeting being recorded or saved comes first, marked "● Recording". Double-click (or
 /// Return) opens what `MeetingOpenPolicy` says: the live transcript (`LiveMeetingViewController`, shown in place of the
-/// list until ‹ Meetings or Escape) for that meeting, Review for a labelled one, the preview otherwise; ⌫ is Delete
-/// Meeting…. Rename… (the menu, ⌘R, or a double-click on the title's text) edits the name in the row: Return saves it
-/// as the user's (an empty name gives back the generated title), Escape cancels (`SessionRenameCommand`, §4.17). The
-/// main window's Meetings section; it refreshes every 2 s while on screen, reading the listing off the main actor.
+/// list until ‹ Meetings or Escape) for that meeting, Review for a labelled one, the preview otherwise; ⌫ (or ⌘⌫) is
+/// Delete Meeting…. Rename… (the menu, ⌘R, or a double-click on the title's text) edits the name in the row: Return
+/// saves it as the user's (an empty name gives back the generated title), Escape cancels (`SessionRenameCommand`,
+/// §4.17). Several meetings can be selected (⇧-click, ⌘-click, ⌘A, ⇧↑/↓; never a day header): the line under the
+/// buttons sums them up, Delete Meeting…, Delete Audio… and Show in Finder act on all of them (`MeetingBulkPlan`;
+/// `performBulk`), and the other actions are off. The selection is kept by meeting ID across refreshes. The main
+/// window's Meetings section; it refreshes every 2 s while on screen, reading the listing off the main actor.
 @MainActor
 final class MeetingsPane: NSViewController, NSTableViewDataSource, NSTableViewDelegate,
     @preconcurrency QLPreviewPanelDataSource, QLPreviewPanelDelegate, MainSectionContent {
@@ -77,6 +80,25 @@ final class MeetingsPane: NSViewController, NSTableViewDataSource, NSTableViewDe
     /// runs that did not finish in this launch ended (a badge and the status line say so).
     private var echoStates: [String: String] = [:]
     private var echoProblems: [String: EchoCatchUpSchedule.RunEnd] = [:]
+    /// Delete Meeting… or Delete Audio… on several selected meetings (the app delegate confirms once, then deletes each
+    /// through the single deletion's path).
+    var performBulk: ((Action, MeetingBulkPlan) -> Void)?
+    /// A deletion of several meetings running (`update(bulkStatus:)`): its progress on the status line. The meetings
+    /// still waiting are in `running` ("Waiting to move to the Trash…"), reserved in the app's meetings in use.
+    private var bulkStatus: String?
+    /// A deletion of several meetings as the list was when it began (`bulkDeletionStarted`): its targets and the
+    /// shown order then; `endedAfterRead`, once it ended, the last read begun before (a later one picks the selection).
+    private struct BulkSelection {
+        var targets: Set<String>
+        var order: [String]
+        var endedAfterRead: Int?
+    }
+    private var bulkSelection: BulkSelection?
+    /// Reads of the catalog begun (`refresh`), and one more asked for while a read ran.
+    private var readsStarted = 0
+    private var refreshAgain = false
+    /// The selection count VoiceOver was last told about.
+    private var announcedCount = 0
     /// The meeting's menu: Make Final Transcript Now (true) and Cancel Final Transcript (false) (§4.16).
     var onDeepTranscription: ((_ runNow: Bool, SessionSummary) -> Void)?
     /// The meeting's menu: Summarize Again, and Cancel Summarize while that request waits or runs.
@@ -137,13 +159,14 @@ final class MeetingsPane: NSViewController, NSTableViewDataSource, NSTableViewDe
         table.dataSource = self
         table.delegate = self
         table.allowsEmptySelection = true
-        table.allowsMultipleSelection = false
+        table.allowsMultipleSelection = true
         table.target = self
         table.doubleAction = #selector(openSelected)
         table.onReturn = { [weak self] in self?.openSelection() }
         table.onDelete = { [weak self] in self?.deleteMeeting() }
         table.onRename = { [weak self] in self?.renameSelected() }
         table.setAccessibilityLabel("Meetings")
+        table.setAccessibilityHelp("Shift-click selects a range of meetings, Command-click adds or removes one.")
         let menu = NSMenu()
         menu.delegate = self
         menu.autoenablesItems = false
@@ -411,10 +434,41 @@ final class MeetingsPane: NSViewController, NSTableViewDataSource, NSTableViewDe
         reloadKeepingSelection()
     }
 
-    /// Reads the catalog off the main actor, then shows it.
+    /// A deletion of several meetings: its progress for the status line; nil once it ended.
+    func update(bulkStatus: String?) {
+        guard bulkStatus != self.bulkStatus else { return }
+        self.bulkStatus = bulkStatus
+        updateButtons()
+    }
+
+    /// A deletion of several meetings began on `targets`: the list keeps its order now. While the deletion runs, a
+    /// selection its deletions empty stays empty, whatever order the refreshes see them go in; once it ended
+    /// (`bulkDeletionEnded`), the next read selects the meeting after the first deleted one in that order.
+    func bulkDeletionStarted(_ targets: [String]) {
+        bulkSelection = BulkSelection(targets: Set(targets), order: rowIDs.compactMap { $0 })
+    }
+
+    /// The deletion of several meetings ended: the list is read again, and that read picks the selection.
+    func bulkDeletionEnded() {
+        guard var selection = bulkSelection else {
+            refresh()
+            return
+        }
+        selection.endedAfterRead = readsStarted
+        bulkSelection = selection
+        refresh()
+    }
+
+    /// Reads the catalog off the main actor, then shows it. Asked while a read runs: once more after it, so what
+    /// changed meanwhile (a deletion just ended) is seen.
     func refresh() {
-        guard !loading else { return }
+        guard !loading else {
+            refreshAgain = true
+            return
+        }
         loading = true
+        readsStarted += 1
+        let read = readsStarted
         let root = self.root
         let cache = peopleCache
         Task { [weak self] in
@@ -460,14 +514,20 @@ final class MeetingsPane: NSViewController, NSTableViewDataSource, NSTableViewDe
             for id in listed.4 where self.running[id] == nil {
                 PendingExports().clear(id, ifGeneration: reviewGenerations[id] ?? 0)
             }
-            self.show(listed.0, people: listed.1, freeBytes: listed.2)
+            self.show(listed.0, people: listed.1, freeBytes: listed.2, read: read)
+            if self.refreshAgain {
+                self.refreshAgain = false
+                self.refresh()
+            }
         }
     }
 
-    /// Shows the catalog as read: the meetings, the people each one's labels name, and the free space.
-    func show(_ listed: [SessionSummary], people: [String: [String]], freeBytes: Int64?) {
+    /// Shows the catalog as read: the meetings, the people each one's labels name, and the free space. `read`: the
+    /// number of the read it comes from (`readsStarted`); nil for a listing given directly, taken as the latest.
+    func show(_ listed: [SessionSummary], people: [String: [String]], freeBytes: Int64?, read: Int? = nil) {
         let requested = pendingSelection
-        let selected = requested ?? selectedSession?.id
+        var selected = requested.map { Set([$0]) } ?? selectedIDs
+        let previouslyShown = rowIDs.compactMap { $0 }
         pendingSelection = nil
         let shownTitles = Dictionary(sessions.map { ($0.id, $0.displayTitle) }, uniquingKeysWith: { first, _ in first })
         sessions = MeetingOpenPolicy.ordered(listed, liveSessionID: liveSessionID)
@@ -479,6 +539,29 @@ final class MeetingsPane: NSViewController, NSTableViewDataSource, NSTableViewDe
            !MeetingListFormat.matches(summary, people: people[requested] ?? [], query: search.stringValue) {
             search.stringValue = ""
         }
+        // Every selected meeting is gone (deleted, here or elsewhere): the meeting after them is selected, as in the
+        // Finder, so the keyboard can go on from there.
+        let listedIDs = Set(sessions.map(\.id))
+        if requested == nil, let bulk = bulkSelection {
+            if let ended = bulk.endedAfterRead, read.map({ $0 > ended }) ?? true {
+                // A read begun after the deletion of several ended: unless a meeting chosen meanwhile is still
+                // listed, the meeting after the first deleted one in the order the list had when it began.
+                bulkSelection = nil
+                if selected.isDisjoint(with: listedIDs) {
+                    let remaining = Set(shownSessions().map(\.id))
+                    selected = MeetingSelection.successor(of: bulk.targets.subtracting(listedIDs),
+                                                          previous: bulk.order, remaining: remaining)
+                        .map { [$0] } ?? []
+                }
+            } else if !selected.isEmpty, selected.isDisjoint(with: listedIDs) {
+                // Emptied by its deletions while it runs: chosen once it ended.
+                selected = []
+            }
+        } else if requested == nil, !selected.isEmpty, selected.isDisjoint(with: listedIDs) {
+            let remaining = Set(shownSessions().map(\.id))
+            selected = MeetingSelection.successor(of: selected, previous: previouslyShown, remaining: remaining)
+                .map { [$0] } ?? []
+        }
         reloadRows(selecting: selected, scroll: requested != nil)
         let used = sessions.reduce(Int64(0)) { $0 + $1.bytes }
         footer.stringValue = "Meetings use \(MeetingFormat.gigabytes(used))"
@@ -487,28 +570,31 @@ final class MeetingsPane: NSViewController, NSTableViewDataSource, NSTableViewDe
         refreshLiveHeader()
     }
 
-    /// Rebuilds the rows from `sessions` and the search, keeping the meeting `id` selected. Not while a name is edited
-    /// (the editor is in a row): then once the editing ends.
-    private func reloadRows(selecting id: String?, scroll: Bool = false) {
+    /// The meetings that match the search, in list order.
+    private func shownSessions() -> [SessionSummary] {
+        let query = search.stringValue
+        return sessions.filter { MeetingListFormat.matches($0, people: people[$0.id] ?? [], query: query) }
+    }
+
+    /// Rebuilds the rows from `sessions` and the search, keeping the meetings `ids` selected (those the search
+    /// shows). Not while a name is edited (the editor is in a row): then once the editing ends.
+    private func reloadRows(selecting ids: Set<String>, scroll: Bool = false) {
         if renaming != nil {
             reloadDeferred = true
             return
         }
         let query = search.stringValue
-        let shown = sessions.filter { MeetingListFormat.matches($0, people: people[$0.id] ?? [], query: query) }
+        let shown = shownSessions()
         rows = MeetingListFormat.groups(shown, now: Date()).flatMap { group in
             [Row.group(group.title)] + group.meetings.map(Row.meeting)
         }
         table.reloadData()
-        // Rows move when meetings are added or removed: keep the same meeting selected, not the same row.
-        if let id, let index = rowIndex(of: id) {
-            if table.selectedRow != index {
-                table.selectRowIndexes(IndexSet(integer: index), byExtendingSelection: false)
-            }
-            if scroll { table.scrollRowToVisible(index) }
-        } else {
-            table.deselectAll(nil)
+        // Rows move when meetings are added or removed: keep the same meetings selected, not the same rows.
+        let indexes = MeetingSelection.indexes(of: ids, rows: rowIDs)
+        if table.selectedRowIndexes != indexes {
+            table.selectRowIndexes(indexes, byExtendingSelection: false)
         }
+        if scroll, let first = indexes.first { table.scrollRowToVisible(first) }
         if sessions.isEmpty {
             emptyLabel.stringValue = "No meetings yet.\nStart one from the menu bar; it appears here."
         } else if shown.isEmpty {
@@ -519,10 +605,11 @@ final class MeetingsPane: NSViewController, NSTableViewDataSource, NSTableViewDe
 
     /// Reloads the rows' contents (badges, the live phase) with the selection kept.
     private func reloadKeepingSelection() {
-        reloadRows(selecting: selectedSession?.id)
+        reloadRows(selecting: selectedIDs)
     }
 
-    private func rowIndex(of id: String) -> Int? {
+    /// The table row of meeting `id`, if the list shows it.
+    func rowIndex(of id: String) -> Int? {
         rows.firstIndex { if case .meeting(let summary) = $0 { summary.id == id } else { false } }
     }
 
@@ -531,7 +618,28 @@ final class MeetingsPane: NSViewController, NSTableViewDataSource, NSTableViewDe
         return summary
     }
 
-    private var selectedSession: SessionSummary? { session(at: table.selectedRow) }
+    /// The table as shown: each row's session ID, nil for a day header (`MeetingSelection`).
+    private var rowIDs: [String?] {
+        rows.map { if case .meeting(let summary) = $0 { summary.id } else { nil } }
+    }
+
+    /// The selected meetings, in list order.
+    private var selectedSessions: [SessionSummary] { table.selectedRowIndexes.compactMap(session(at:)) }
+
+    /// The session IDs of the selected meetings, in list order (tests read the selection through this).
+    var selectedSessionIDs: [String] { selectedSessions.map(\.id) }
+
+    private var selectedIDs: Set<String> { Set(selectedSessionIDs) }
+
+    /// The selected meeting when exactly one is: what the single-meeting actions use.
+    private var selectedSession: SessionSummary? {
+        table.selectedRowIndexes.count == 1 ? session(at: table.selectedRow) : nil
+    }
+
+    /// Voice is Local works on the meeting (`running`): a command, or it waits in a deletion of several.
+    private func isBusy(_ summary: SessionSummary) -> Bool {
+        running[summary.id] != nil
+    }
 
     @objc private func searchChanged() {
         reloadKeepingSelection()
@@ -549,6 +657,13 @@ final class MeetingsPane: NSViewController, NSTableViewDataSource, NSTableViewDe
 
     func tableView(_ tableView: NSTableView, shouldSelectRow row: Int) -> Bool {
         session(at: row) != nil
+    }
+
+    /// Clicks, ⇧-click ranges, ⌘-clicks, ⌘A and ⇧↑/↓ select meetings only: a range over a day header selects the
+    /// meetings on both sides of it.
+    func tableView(_ tableView: NSTableView,
+                   selectionIndexesForProposedSelection proposed: IndexSet) -> IndexSet {
+        MeetingSelection.selectable(proposed, rows: rowIDs)
     }
 
     func tableView(_ tableView: NSTableView, heightOfRow row: Int) -> CGFloat {
@@ -590,7 +705,8 @@ final class MeetingsPane: NSViewController, NSTableViewDataSource, NSTableViewDe
         return text
     }
 
-    /// What a command, a final transcript, the summary, or the echo catch-up is doing to the meeting now.
+    /// What a command (or a deletion of several meetings), a final transcript, the summary, or the echo catch-up is
+    /// doing to the meeting now.
     private func working(_ summary: SessionSummary) -> String? {
         running[summary.id] ?? deepStates[summary.id] ?? (summarizing == summary.id ? "Writing summary…" : nil)
             ?? echoStates[summary.id]
@@ -623,6 +739,24 @@ final class MeetingsPane: NSViewController, NSTableViewDataSource, NSTableViewDe
 
     func tableViewSelectionDidChange(_ notification: Notification) {
         updateButtons()
+        announceSelection()
+    }
+
+    /// What VoiceOver says about a selection of several meetings ("5 meetings selected"); nil for one or none.
+    var selectionAnnouncement: String? {
+        let count = selectedSessions.count
+        return count > 1 ? "\(count) meetings selected" : nil
+    }
+
+    /// VoiceOver says how many meetings are selected when there are several and the count changes.
+    private func announceSelection() {
+        let count = selectedSessions.count
+        defer { announcedCount = count }
+        guard count != announcedCount, let text = selectionAnnouncement else { return }
+        NSAccessibility.post(element: NSApplication.shared, notification: .announcementRequested, userInfo: [
+            .announcement: text,
+            .priority: NSAccessibilityPriorityLevel.medium.rawValue,
+        ])
     }
 
     /// The live meeting's badge text; nil once it is saved (the catalog's state then).
@@ -657,7 +791,7 @@ final class MeetingsPane: NSViewController, NSTableViewDataSource, NSTableViewDe
     /// What `MeetingActionPolicy` enables for `summary` now, the rules of the commands behind the actions. The
     /// buttons show it, and every way to an action (button, menu, ⌫, Return, double-click) checks it again when used.
     private func enabledActions(_ summary: SessionSummary?) -> Set<MeetingActionPolicy.Action> {
-        MeetingActionPolicy.enabled(summary, inUse: summary.map { running[$0.id] != nil } ?? false,
+        MeetingActionPolicy.enabled(summary, inUse: summary.map(isBusy) ?? false,
                                     hasExport: summary.map(hasExport) ?? false,
                                     transcriptFiles: summary.map { SessionExports.hasTranscriptFiles(session: $0.directory) })
     }
@@ -675,7 +809,11 @@ final class MeetingsPane: NSViewController, NSTableViewDataSource, NSTableViewDe
 
     /// The selected meeting, when `action` is enabled for it; else nil, and a keyboard use beeps.
     private func selection(for action: MeetingActionPolicy.Action) -> SessionSummary? {
-        guard let summary = selectedSession else { return nil }
+        guard let summary = selectedSession else {
+            // Several selected: this action is for one meeting.
+            if table.selectedRowIndexes.count > 1 { NSSound.beep() }
+            return nil
+        }
         guard enabledActions(summary).contains(action) else {
             NSSound.beep()
             updateButtons()
@@ -686,19 +824,29 @@ final class MeetingsPane: NSViewController, NSTableViewDataSource, NSTableViewDe
 
     /// The buttons follow `MeetingActionPolicy`, the rules of the commands behind them.
     private func updateButtons() {
+        let selected = selectedSessions
         let summary = selectedSession
         buttons["Review…"]?.isEnabled = summary.map(canReview) ?? false
         buttons["Live Transcript"]?.isEnabled = summary.map { MeetingOpenPolicy.isLive($0, liveSessionID: liveSessionID) }
             ?? false
-        let enabled = enabledActions(summary)
-        for (title, action) in Self.buttonActions { buttons[title]?.isEnabled = enabled.contains(action) }
+        if selected.count > 1 {
+            // Several: Show in Finder and the deletions act on all of them; the rest is for one meeting.
+            let offered = bulkActions(selected)
+            for (title, action) in Self.buttonActions { buttons[title]?.isEnabled = offered.contains(action) }
+        } else {
+            let enabled = enabledActions(summary)
+            for (title, action) in Self.buttonActions { buttons[title]?.isEnabled = enabled.contains(action) }
+        }
         let cleanUpHidden = (summary?.derivedBytes ?? 0) == 0
         if buttons["Clean Up"]?.isHidden != cleanUpHidden {
             buttons["Clean Up"]?.isHidden = cleanUpHidden
             actionRows.forEach { $0.viewsChanged() }
         }
-        if let summary {
-            var parts: [String] = []
+        let progress = bulkStatus.map { [$0] } ?? []
+        if selected.count > 1 {
+            statusLabel.stringValue = (progress + [MeetingSelection.summary(selected)]).joined(separator: " ")
+        } else if let summary {
+            var parts: [String] = progress
             if let doing = running[summary.id] { parts.append(doing) }
             // While a language is missing, why and what to do stay shown, also for labelled speakers: the window's
             // own message once Label Speakers can detect it (or edited labels keep it from doing so), else the
@@ -726,8 +874,26 @@ final class MeetingsPane: NSViewController, NSTableViewDataSource, NSTableViewDe
             }
             statusLabel.stringValue = parts.joined(separator: " ")
         } else {
-            statusLabel.stringValue = ""
+            statusLabel.stringValue = progress.joined(separator: " ")
         }
+    }
+
+    /// What several selected meetings offer: Show in Finder (all of them), and Delete Audio… and Delete Meeting… when
+    /// `MeetingActionPolicy` allows them for at least one.
+    private func bulkActions(_ selected: [SessionSummary]) -> Set<MeetingActionPolicy.Action> {
+        var actions: Set<MeetingActionPolicy.Action> = [.showInFinder]
+        for action in [MeetingActionPolicy.Action.deleteAudio, .deleteMeeting]
+        where selected.contains(where: { enabledActions($0).contains(action) }) {
+            actions.insert(action)
+        }
+        return actions
+    }
+
+    /// Delete Meeting… or Delete Audio… on several selected meetings: the plan of what runs and what is skipped.
+    func bulkPlan(_ action: MeetingBulkPlan.Action) -> MeetingBulkPlan {
+        let policy: MeetingActionPolicy.Action = action == .deleteMeeting ? .deleteMeeting : .deleteAudio
+        return MeetingBulkPlan(action: action, selected: selectedSessions,
+                               allowed: { enabledActions($0).contains(policy) }, inUse: isBusy)
     }
 
     /// The buttons (and menu items) run by `MeetingActionPolicy`.
@@ -768,7 +934,10 @@ final class MeetingsPane: NSViewController, NSTableViewDataSource, NSTableViewDe
     /// Review for a labelled meeting, else the transcript preview (when Open Transcript is enabled; otherwise a beep,
     /// as for any action that is off).
     @objc private func openSelection() {
-        guard let summary = selectedSession else { return }
+        guard let summary = selectedSession else {
+            if table.selectedRowIndexes.count > 1 { NSSound.beep() }
+            return
+        }
         switch openTarget(summary) {
         case .live: showLive(sessionID: summary.id, directory: summary.directory)
         case .review: openReview(summary)
@@ -782,19 +951,51 @@ final class MeetingsPane: NSViewController, NSTableViewDataSource, NSTableViewDe
 
     @objc private func deleteAudio() { act(.deleteAudio, .deleteAudio) }
 
-    /// The button, and ⌫ in the list: refused (with a beep) whenever the button is off, for example while another
-    /// process holds the meeting.
+    /// The button, and ⌫ (or ⌘⌫) in the list: refused (with a beep) whenever the button is off, for example while
+    /// another process holds the meeting.
     @objc private func deleteMeeting() { act(.deleteMeeting, .deleteMeeting) }
 
+    /// One meeting selected: the action on it. Several: Delete Meeting… and Delete Audio… on those that allow it
+    /// (`performBulk`, one confirmation), an alert when none does; the other actions are for one meeting.
     private func act(_ action: Action, _ policy: MeetingActionPolicy.Action) {
+        if table.selectedRowIndexes.count > 1 {
+            let bulkAction: MeetingBulkPlan.Action
+            switch action {
+            case .deleteMeeting: bulkAction = .deleteMeeting
+            case .deleteAudio: bulkAction = .deleteAudio
+            case .recover, .labelSpeakers:
+                NSSound.beep()
+                return
+            }
+            let plan = bulkPlan(bulkAction)
+            guard !plan.targets.isEmpty else {
+                NSSound.beep()
+                showSheet(plan.nothingTitle, plan.skipText ?? "")
+                updateButtons()
+                return
+            }
+            guard let performBulk else {
+                NSSound.beep()
+                return
+            }
+            performBulk(action, plan)
+            updateButtons()
+            return
+        }
         guard let summary = selection(for: policy) else { return }
         perform(action, summary)
         updateButtons()
     }
 
+    /// The selected meetings' folders, all of them when several are selected.
     @objc private func showInFinder() {
-        guard let summary = selection(for: .showInFinder) else { return }
-        NSWorkspace.shared.activateFileViewerSelecting([summary.directory])
+        let selected = selectedSessions
+        guard selected.count > 1 else {
+            guard let summary = selection(for: .showInFinder) else { return }
+            NSWorkspace.shared.activateFileViewerSelecting([summary.directory])
+            return
+        }
+        NSWorkspace.shared.activateFileViewerSelecting(selected.map(\.directory))
     }
 
     /// A Quick Look preview of exports/transcript.md (read-only; Save Transcript As… gives an editable copy).
@@ -915,7 +1116,7 @@ final class MeetingsPane: NSViewController, NSTableViewDataSource, NSTableViewDe
     /// title), Escape cancels.
     private func beginRename(_ summary: SessionSummary) {
         guard renaming == nil, let index = rowIndex(of: summary.id) else { return }
-        if table.selectedRow != index {
+        if table.selectedRowIndexes != IndexSet(integer: index) {
             table.selectRowIndexes(IndexSet(integer: index), byExtendingSelection: false)
         }
         table.scrollRowToVisible(index)
@@ -1091,11 +1292,26 @@ extension MeetingsPane: NSMenuDelegate {
     /// Summarize Again; Make Final Transcript Now (also for a meeting queued automatically, which
     /// it upgrades), and Cancel Final Transcript while it is queued or running; Recover…, Label Speakers, Delete
     /// Audio…, Delete Meeting…. Each is enabled as its button is.
+    ///
+    /// A right-click on a row of a selection of several acts on all of them (the Finder's rule,
+    /// `MeetingSelection.menuTargets`): Show in Finder, Delete Audio…, Delete Meetings…. On a row outside the selection
+    /// it acts on that row, which becomes the selection.
     func menuNeedsUpdate(_ menu: NSMenu) {
+        fill(menu, clickedRow: table.clickedRow)
+    }
+
+    /// The menu for a right-click on `clickedRow` (tests call it with the row they click).
+    func fill(_ menu: NSMenu, clickedRow: Int) {
         menu.removeAllItems()
-        guard let summary = session(at: table.clickedRow) else { return }
-        if table.selectedRow != table.clickedRow {
-            table.selectRowIndexes(IndexSet(integer: table.clickedRow), byExtendingSelection: false)
+        let targets = MeetingSelection.menuTargets(clicked: clickedRow, selected: table.selectedRowIndexes,
+                                                   rows: rowIDs)
+        guard !targets.isEmpty else { return }
+        if table.selectedRowIndexes != targets {
+            table.selectRowIndexes(targets, byExtendingSelection: false)
+        }
+        guard targets.count == 1, let summary = session(at: clickedRow) else {
+            fillBulk(menu)
+            return
         }
         let enabled = enabledActions(summary)
         @discardableResult
@@ -1207,6 +1423,24 @@ extension MeetingsPane: NSMenuDelegate {
         add("Label Speakers", #selector(labelSpeakers), enabled.contains(.labelSpeakers))
         add("Delete Audio…", #selector(deleteAudio), enabled.contains(.deleteAudio))
         add("Delete Meeting…", #selector(deleteMeeting), enabled.contains(.deleteMeeting))
+    }
+
+    /// The menu of a selection of several meetings: what acts on all of them, enabled as the buttons are.
+    private func fillBulk(_ menu: NSMenu) {
+        let selected = selectedSessions
+        let enabled = bulkActions(selected)
+        let count = selected.count
+        for (title, action, policy) in [
+            ("Show \(count) in Finder", #selector(showInFinder), MeetingActionPolicy.Action.showInFinder),
+            ("Delete Audio of \(count) Meetings…", #selector(deleteAudio), .deleteAudio),
+            ("Delete \(count) Meetings…", #selector(deleteMeeting), .deleteMeeting),
+        ] {
+            if policy == .deleteAudio { menu.addItem(.separator()) }
+            let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
+            item.target = self
+            item.isEnabled = enabled.contains(policy)
+            menu.addItem(item)
+        }
     }
 
     /// The meeting the app records: Pause or Resume Recording and Stop and Save… (Stop Recording while it starts),
