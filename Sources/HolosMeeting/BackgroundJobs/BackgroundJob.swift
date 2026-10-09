@@ -73,8 +73,8 @@ public enum BackgroundJobEnd: Sendable, Equatable {
     case finished
     /// Stays queued as it was: stopped for a meeting, or not started.
     case stopped
-    /// Turned down for this meeting (another process held it): it waits `retryDelay(attempts:)`, longer each time in a
-    /// row; the kind's other meetings go on.
+    /// Turned down for this meeting (another process held it): it waits the kind's `retryDelay(attempts:)` for that
+    /// many refusals in a row; the kind's other meetings go on.
     case retryMeeting
     /// Turned down for every meeting of the kind (another process held the background job lock): the kind waits
     /// `BackgroundJobCoordinator.retryDelay`.

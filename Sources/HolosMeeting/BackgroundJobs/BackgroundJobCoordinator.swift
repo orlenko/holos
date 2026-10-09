@@ -23,9 +23,11 @@ import os
 ///    end (`settled`).
 /// 4. Only this coordinator's own child is signalled, at most once per run for a meeting (`preempted`); a job another
 ///    process runs is never signalled or adopted.
-/// 5. Retries live for the launch: a kind waits after a failed start or a `.retryAll` exit (`retryAfter`), a meeting
-///    after a `.retryMeeting` exit (`delays`, longer each time in a row), and a meeting's count is forgotten when its
-///    job finishes or is cancelled.
+/// 5. Retries live for the launch: a kind waits `retryDelay` after a failed start or a `.retryAll` exit
+///    (`retryAfter`), and a meeting after a `.retryMeeting` exit waits the delay its kind gives for that many refusals
+///    in a row (`BackgroundJobKind.retryDelay(attempts:)`; a flat minute for final transcripts). A look clears every
+///    deadline it finds past, so a clock set back does not bring one back; a meeting's count is forgotten when its job
+///    finishes or is cancelled.
 @MainActor public final class BackgroundJobCoordinator {
     /// What the coordinator reads of the app and tells it.
     public struct Environment {
@@ -84,7 +86,8 @@ import os
     /// A kind's retries (invariant 5).
     private struct Retries {
         var retryAfter: Date?
-        var delays: [String: (attempts: Int, until: Date)] = [:]
+        /// Refusals in a row, and until when the meeting waits (nil once a look found it past).
+        var delays: [String: (attempts: Int, until: Date?)] = [:]
     }
 
     private static let log = Logger(subsystem: "ca.orlenko.holos.app", category: "meeting")
@@ -139,6 +142,7 @@ import os
         }
         lock = environment.lockState()
         let now = environment.now()
+        expireRetries(now: now)
         let busy = environment.meetingBusy()
         let inUse = environment.sessionsInUse()
         let found = picks(busy: busy, inUse: inUse, now: now)
@@ -210,7 +214,7 @@ import os
     private func holds(for kind: any BackgroundJobKind, busy: Bool, inUse: Set<String>, now: Date)
         -> BackgroundJobHolds {
         let kindRetries = retries[ObjectIdentifier(kind)] ?? Retries()
-        return BackgroundJobHolds(meetingBusy: busy, inUse: inUse, delayedUntil: kindRetries.delays.mapValues(\.until),
+        return BackgroundJobHolds(meetingBusy: busy, inUse: inUse, delayedUntil: kindRetries.delays.compactMapValues(\.until),
                                   retryAfter: kindRetries.retryAfter, running: runningSession(of: kind), now: now)
     }
 
@@ -271,6 +275,18 @@ import os
         environment.scheduleOthers()
         schedule()
         kind.settled(sessionID)
+    }
+
+    /// Clears the deadlines that are past (invariant 5); the refusal counts stay.
+    private func expireRetries(now: Date) {
+        for (key, kindRetries) in retries {
+            var expired = kindRetries
+            if let retryAfter = expired.retryAfter, retryAfter <= now { expired.retryAfter = nil }
+            for (sessionID, delay) in expired.delays {
+                if let until = delay.until, until <= now { expired.delays[sessionID]?.until = nil }
+            }
+            retries[key] = expired
+        }
     }
 
     /// `sessionID` was turned down once more in a row: it waits the kind's delay for that many attempts.

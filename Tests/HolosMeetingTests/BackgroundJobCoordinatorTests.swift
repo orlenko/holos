@@ -366,6 +366,31 @@ private let leaseMessage = "Error: Another Voice is Local process is processing 
     #expect(world.runner.started == ["deep A"])
 }
 
+@Test @MainActor func aWaitThatEndedDoesNotComeBackWhenTheClockIsSetBack() {
+    // A failed start holds every pass a minute; once a look finds the minute past, a clock set back does not.
+    let world = World(deep: ["A", "B"])
+    world.runner.failNextStart = true
+    world.jobs.schedule()
+    world.now = base.addingTimeInterval(60)
+    world.jobs.schedule()
+    #expect(world.runner.started == ["deep A"])
+    world.now = base.addingTimeInterval(10)
+    world.runner.finishLast(0)
+    #expect(world.runner.started == ["deep A", "deep B"])
+    // Nor does a meeting's: B is turned down, runs once its minute is past, and is stopped for a meeting.
+    world.runner.finishLast(1, errors: leaseMessage)
+    world.now = base.addingTimeInterval(70)
+    world.jobs.schedule()
+    #expect(world.runner.started == ["deep A", "deep B", "deep B"])
+    world.now = base.addingTimeInterval(10)
+    world.busy = true
+    world.jobs.meetingStateChanged()
+    world.runner.finishLast(DeepTranscriptionSchedule.terminatedExitCode)
+    world.busy = false
+    world.jobs.schedule()
+    #expect(world.runner.started == ["deep A", "deep B", "deep B", "deep B"])
+}
+
 @Test @MainActor func aMakeFinalTranscriptNowAcceptedAfterAFailedStartRunsAtOnce() {
     let world = World(deep: ["A"])
     world.runner.failNextStart = true
