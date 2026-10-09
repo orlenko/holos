@@ -8,7 +8,7 @@ import HolosStorage
 import Synchronization
 
 extension Session {
-    /// `voiceislocal session import` (docs/meeting-design.md §5.5 PR7c).
+    /// `voiceislocal session import` (docs/meeting/speaker-labels.md §5.5 PR7c).
     struct Import: AsyncParsableCommand {
         static let configuration = CommandConfiguration(
             abstract: "Create a session from an audio file, transcribe it, and label its speakers.",

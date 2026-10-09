@@ -2,7 +2,7 @@ import AVFoundation
 import Foundation
 import HolosCore
 
-/// Brings meeting audio to the recording format, 48 kHz mono (docs/meeting-design.md §4.5), before it is saved or
+/// Brings meeting audio to the recording format, 48 kHz mono (docs/meeting/recorder.md §4.5), before it is saved or
 /// transcribed.
 ///
 /// ScreenCaptureKit already delivers 48 kHz mono, but AVAudioEngine's microphone input keeps the device's own format

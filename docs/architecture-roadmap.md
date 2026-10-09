@@ -101,7 +101,7 @@ add a row when a step is split. The working rules that came out of this audit ar
 | L8 | Duplicated helpers | `InstallLock` (`WhisperModels.swift:255`, `FluidModels.swift:447`); `ProgressMeter` (Audio and Meeting); 3 one-shot gates (`OutcomeGate`, `RaceGate`, `OneShot`); flock hand-written in 11 files across 8 targets | M |
 | L9 | Dependency cycle inside Meeting | VoiceProfileService calls SpeakerEditor and SessionExports, which call back into it | M |
 | L10 | HolosAppTests depends on the executable target | 16 files `@testable import HolosApp`, so every focused test run builds the whole app | M |
-| L11 | Ownership docs are stale | `contracts.md:21-42` lists HolosCorrections and SQLite. `docs/meeting-design.md §1.1` says "HolosApp keeps AppKit views only", but the app holds scheduler logic | M |
+| L11 | Ownership docs are stale | `contracts.md:21-42` lists HolosCorrections and SQLite. `docs/conventions.md §1.1` says "HolosApp keeps AppKit views only", but the app holds scheduler logic | M |
 
 ### 1.3 CLI and app duplication [M]
 
@@ -276,7 +276,8 @@ Keep the `§N.M` numbers as headings so all 686 existing citations still resolve
 |---|---|
 | `docs/conventions.md` | §1 |
 | `docs/meeting/session-format.md` | §2 and §3.4. Delete §3.1–3.3 (1,550 lines of stale code copies) |
-| `docs/meeting/recorder.md` | §4.1–4.6, §4.12 (concurrent dictation, microphone selection, vocabulary), behaviour from §5.4 |
+| `docs/meeting/recorder.md` | §4.1–4.6, §4.12 (concurrent dictation, microphone selection, vocabulary), §5.4, §5.6 (recovery, session catalog, deletion) |
+| `docs/meeting/app-controls.md` | §5.8 (menu bar meeting controls; the code cites it for behaviour) |
 | `docs/meeting/retention-deletion.md` | §4.13 |
 | `docs/meeting/post-processing.md` | §4.7–4.8 |
 | `docs/meeting/speaker-labels.md` | §4.9, §5.3, §5.5 |
@@ -360,7 +361,7 @@ All steps preserve behaviour unless marked. Sizes are non-test lines, with moved
 | # | Lane | Step | Files | Approach | Verify | Size | Status |
 |---|---|---|---|---|---|---|---|
 | 1 | D | AGENTS.md + module READMEs + size ratchet | `AGENTS.md`, `Sources/*/README.md`, `scripts/check-size.sh`, `contracts.md` | Rules from the audit; ratchet baseline | Script clean on main | about 600 docs, 0 Swift | merged (#125) |
-| 2 | D | Delete §3.1–3.3; split meeting-design | `docs/` | First PR deletes, then 2 split PRs keeping §N.M; every citation of a moved section is rewritten to its new file in the same PR | Every `docs/meeting-design.md §` citation anywhere in the repository (Sources, Tests, `AGENTS.md`, module READMEs, `docs/`) resolves to a heading in the file it names | 3 docs PRs | in progress, 4 stacked PRs (the deletion is over the size cap in one): 2a deletes §3.1–3.2 and adds `scripts/check-doc-citations.py`; 2b (stacked) deletes §3.3; 2c and 2d split the rest |
+| 2 | D | Delete §3.1–3.3; split meeting-design | `docs/` | First PR deletes, then 2 split PRs keeping §N.M; every citation of a moved section is rewritten to its new file in the same PR | Every `docs/meeting-design.md §` citation anywhere in the repository (Sources, Tests, `AGENTS.md`, module READMEs, `docs/`) resolves to a heading in the file it names | 3 docs PRs | in progress, 4 stacked PRs (the deletion is over the size cap in one): 2a deletes §3.1–3.2 and adds `scripts/check-doc-citations.py`; 2b (stacked) deletes §3.3; 2c (stacked) moves §1–§3, §4.1–4.13 and §5.3–5.9 into `docs/conventions.md` and `docs/meeting/`; 2d splits the rest |
 | 3 | T | HolosTestSupport + test-target.sh | Package test targets, `Tests/HolosTestSupport` | Migrate Storage and Speakers tests first; others when touched | Same test count | about 60 non-test, about 800 test | merged (#119); HolosStorageTests moved, other targets move when touched |
 | 4 | M | Extract HolosEvaluation target | `Evaluation/*` → `Sources/HolosEvaluation`; move `EvalStore.audioFingerprint` | `git mv` whole files; widen access; CLI-only dependency | Both products build; `nm` on HolosApp shows no Cloud symbols | about 150 | merged (#127) |
 | 5 | P | `SessionPaths.folder`/`parse` + `VersionedFile<T>` | SessionPaths, TranscriptPointer, SpeakerSessionSnapshot; the 7 build and 5 parse sites | One builder and parser; unify the two schema decoders. **Changes behaviour:** the five parsers accepted different names, so one rule changes what some callers accept; pick the strictest rule that accepts all existing folders and test each caller | New parse tests | about 350 | merged (#128); the two CLI sites that still built `<id>.holos` directly (`RecordControl`, `People`) use `SessionPaths.folder` since step 7a (#130) |

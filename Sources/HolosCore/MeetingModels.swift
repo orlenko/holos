@@ -1,6 +1,6 @@
 import Foundation
 
-// Contract file (docs/meeting-design.md §3.0). Value types shared by the recorder
+// Contract file (docs/meeting/session-format.md §3.0). Value types shared by the recorder
 // process, the CLI, and the menu bar app. No logic beyond trivial derived properties.
 
 // MARK: - Open string codes
@@ -243,7 +243,7 @@ public struct MeetingVocabulary: Codable, Sendable, Equatable {
         self.schemaVersion = schemaVersion; self.strings = strings
     }
 
-    /// The vocabulary rule of the app's hand-off file, the recorder and import (docs/meeting-design.md §4.12): each
+    /// The vocabulary rule of the app's hand-off file, the recorder and import (docs/meeting/recorder.md §4.12): each
     /// string trimmed of whitespace and newlines; empty ones and ones over `maximumLength` characters dropped; the
     /// first `maximumEntries` kept, in order, duplicates included.
     public static func cleaned(_ strings: [String]) -> [String] {

@@ -6,7 +6,7 @@ import Synchronization
 import Testing
 
 // Helpers for the PR2b tests (sleep, power, input devices). Shared test helpers (Fakes.swift) belong to another PR in
-// this wave (docs/meeting-design.md §1.8), so every name here starts with `recorder`.
+// this wave (docs/conventions.md §1.8), so every name here starts with `recorder`.
 
 /// The PR2b tests that run a whole recorder loop (SleepPolicyTests, WatchdogTests, MicrophoneSelectionTests), one at a
 /// time: each loop runs on the main actor, and running them all at once with the rest of the suite would slow the

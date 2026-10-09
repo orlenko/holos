@@ -5,7 +5,7 @@ import HolosStorage
 import HolosTestSupport
 import Testing
 
-// Free-space rules (docs/meeting-design.md §4.5). Sizes are decimal.
+// Free-space rules (docs/meeting/recorder.md §4.5). Sizes are decimal.
 
 private let gigabyte: Int64 = 1_000_000_000
 

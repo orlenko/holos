@@ -2,7 +2,7 @@ import Darwin
 import Foundation
 import Synchronization
 
-/// Seconds on a meeting's session timeline (docs/meeting-design.md §2.3): 0 is the first captured audio of epoch 0.
+/// Seconds on a meeting's session timeline (docs/meeting/session-format.md §2.3): 0 is the first captured audio of epoch 0.
 public protocol SessionClock: Sendable {
     func now() -> Double
 }

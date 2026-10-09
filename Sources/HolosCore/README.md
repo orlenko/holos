@@ -26,10 +26,10 @@ go in `HolosAppModel`.
 - The top-level persisted types here carry `schemaVersion` (`Transcript`, `MeetingInfo`, `RecorderStatus`,
   `PostProcessingRecord`, `DiarizationRun`, `SpeakerHead`, `SpeakerEdit`, `SpeakerProfileDatabase`,
   `DictationRecord`, `WordList`, …); within a version fields are only added, never renamed or removed
-  (`docs/meeting-design.md §1.6`). `CorrectionList` (`corrections.json`) is the exception: plain `JSONEncoder`, no
+  (`docs/conventions.md §1.6`). `CorrectionList` (`corrections.json`) is the exception: plain `JSONEncoder`, no
   version. How each reader treats a newer version: docs/contracts.md "Persistence".
 - Do not add `HolosError` cases; machine-readable reasons travel in data (`StopReason`, `ControlResult`, …),
-  `docs/meeting-design.md §1.4`.
+  `docs/conventions.md §1.4`.
 - `HolosPaths.sessions` honours `HOLOS_DATA_DIR` and `HolosPaths.supportRoot` honours `HOLOS_SUPPORT_DIR`; build
   every Application Support path from `supportRoot`.
 

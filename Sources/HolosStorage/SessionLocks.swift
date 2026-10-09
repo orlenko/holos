@@ -7,7 +7,7 @@ import HolosCore
 /// Exclusive, long-lived claim on post-stop work for one session. Released by `release()` or deinit.
 ///
 /// Held on `.processing.lock` with `flock`, one open file description per lease, so a second lease in the
-/// same process conflicts with the first (locks are not re-entrant; docs/meeting-design.md §1.7).
+/// same process conflicts with the first (locks are not re-entrant; docs/conventions.md §1.7).
 public final class ProcessingLease: Sendable {
     public let session: URL
     /// The session folder the lease was taken in, from `fstat` of the descriptor its lock file was opened in.
@@ -78,7 +78,7 @@ public final class ProcessingLease: Sendable {
     }
 
     /// Hands the lease to a child process without a moment in which the lock is free (the in-process recorder's
-    /// hand-off to `voiceislocal session diarize --lease-fd 3`, docs/meeting-design.md §4.1). Calls `spawn` with a locked
+    /// hand-off to `voiceislocal session diarize --lease-fd 3`, docs/meeting/recorder.md §4.1). Calls `spawn` with a locked
     /// descriptor that shares the lease's open file description; `spawn` must make the child inherit it (for example
     /// with `posix_spawn_file_actions_adddup2(&actions, descriptor, 3)`). The descriptor is a close-on-exec duplicate
     /// numbered 10 or higher, so it never already has the child's number: `dup2` onto the same number would keep
@@ -216,7 +216,7 @@ extension SessionArchive {
     }
 
     /// Adopts `descriptor`, inherited from a parent that handed its lease over (`ProcessingLease.handOff`,
-    /// `voiceislocal session diarize --lease-fd`, docs/meeting-design.md §4.1), as this process's lease, without acquiring
+    /// `voiceislocal session diarize --lease-fd`, docs/meeting/recorder.md §4.1), as this process's lease, without acquiring
     /// one (the lease is not re-entrant).
     ///
     /// Refuses with `HolosError.invalidInput("The inherited lock is not this session's processing lease.")` unless
@@ -282,7 +282,7 @@ extension SessionArchive {
     }
 }
 
-/// `flock` files in the session folder (docs/meeting-design.md §1.7).
+/// `flock` files in the session folder (docs/conventions.md §1.7).
 enum SessionLockFile {
     static let writer = ".writer.lock"
     static let processing = ".processing.lock"

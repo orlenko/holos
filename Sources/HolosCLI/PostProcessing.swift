@@ -52,7 +52,7 @@ func makeDiarizer(engineOverrides: [String: String]) -> (any SpeakerDiarizer)? {
     }
 }
 
-/// The CLI's voice sample extractor (docs/meeting-design.md §4.10): a fresh FluidAudio pass with chunk embeddings,
+/// The CLI's voice sample extractor (docs/meeting/people-voice.md §4.10): a fresh FluidAudio pass with chunk embeddings,
 /// configured like the session's head run (its recorded `exclusiveSegments` and `clusteringThreshold`), through
 /// `DiarizerVoiceSampleExtractor`. Nil when the speaker models are not verified.
 func makeVoiceSampleExtractor(session: URL, temporaryDirectory: URL = FileManager.default.temporaryDirectory)

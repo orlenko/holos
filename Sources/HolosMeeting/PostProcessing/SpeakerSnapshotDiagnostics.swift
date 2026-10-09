@@ -1,7 +1,7 @@
 import Foundation
 
 /// What a speaker snapshot skipped or could not use: speaker labels left out because the head run is unusable, edits
-/// that no longer apply, a transcript newer than the labels, journal lines that could not be read (docs/meeting-design.md
+/// that no longer apply, a transcript newer than the labels, journal lines that could not be read (docs/conventions.md
 /// §1.6 rule 3), voice matches that could not be read, a damaged meeting.json, and event log entries the gaps and
 /// markers skipped. Every command that shows or writes speaker labels reports these after its result, so a user never
 /// trusts output that silently left changes out.

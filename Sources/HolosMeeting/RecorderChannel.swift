@@ -4,7 +4,7 @@ import HolosCore
 import HolosStorage
 import os
 
-/// Whether a recorder is behind a session folder, judged from its locks and `status.json` (docs/meeting-design.md
+/// Whether a recorder is behind a session folder, judged from its locks and `status.json` (docs/meeting/recorder.md
 /// §4.1).
 public enum RecorderLiveness: String, Sendable, Equatable {
     /// Writer lock held, and status.json absent or fresh with phase starting…transcribing.
@@ -20,7 +20,7 @@ public enum RecorderLiveness: String, Sendable, Equatable {
 }
 
 /// The app's and the CLI's side of the recorder protocol: `status.json` to read, `control/` to write
-/// (docs/meeting-design.md §4.1). Stateless file IO.
+/// (docs/meeting/recorder.md §4.1). Stateless file IO.
 public enum RecorderChannel {
     private static let log = Logger(subsystem: "ca.orlenko.holos.app", category: "recorder")
     /// A status older than this is stale.
@@ -52,7 +52,7 @@ public enum RecorderChannel {
     /// with SIGTERM instead), when status.json says exited, or when only a maintenance command holds the session's
     /// locks (`maintenanceOnly`): no recorder would ever read or remove the request.
     ///
-    /// Publication is closed on the recorder's way out (docs/meeting-design.md §4.6): before its last inbox poll it
+    /// Publication is closed on the recorder's way out (docs/meeting/recorder.md §4.6): before its last inbox poll it
     /// creates `control/.closed`; it then polls, writes exited, deletes leftover requests, and removes the marker.
     /// Once the request is published, `send` checks the marker and then status.json. Either one means the recorder may
     /// have polled for the last time, so the request is withdrawn: if the withdrawal removed it, the send is refused;

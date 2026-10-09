@@ -4,7 +4,7 @@ import HolosSpeakers
 import HolosStorage
 import os
 
-/// One meeting's turn embeddings while its review window is open (docs/meeting-design.md §4.10, "Voices within one
+/// One meeting's turn embeddings while its review window is open (docs/meeting/people-voice.md §4.10, "Voices within one
 /// meeting"): one pass of the voice sample extractor per diarized track, asked about every turn of 2 s or more, so
 /// the window can compare its speakers' voices and learn a named person's voice without another pass.
 ///

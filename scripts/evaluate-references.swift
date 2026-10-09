@@ -13,7 +13,7 @@ private struct Options {
     var referenceFormat: String
     var pair: String?
     var timeoutSeconds: Double
-    /// Speaker labels against Otter (docs/meeting-design.md §5.5 PR7c) instead of word error rate.
+    /// Speaker labels against Otter (docs/meeting/speaker-labels.md §5.5 PR7c) instead of word error rate.
     var speakers = false
     /// Cross-recording centroid distances of 001 and 003 (§4.10 calibration).
     var calibrate = false
@@ -599,7 +599,7 @@ private func evaluate() throws {
     }
 }
 
-// MARK: - Speaker labels against Otter (docs/meeting-design.md §5.5 PR7c)
+// MARK: - Speaker labels against Otter (docs/meeting/speaker-labels.md §5.5 PR7c)
 
 /// The recordings `--calibrate` compares: they share six named participants.
 private let calibrationPairs = ["001", "003"]

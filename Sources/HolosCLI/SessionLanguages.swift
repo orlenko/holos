@@ -71,7 +71,7 @@ extension Session {
                                                 force: force), voiceSamples: cliVoiceSamples,
                 diarizer: makeDiarizer(engineOverrides: [:]), profiles: SpeakerProfileStore(),
                 wordFixes: makeWordFixDependencies(), progress: Self.progressPrinter())
-            // Stdout carries the result; a warning or failure is explained on stderr (docs/meeting-design.md §1.4).
+            // Stdout carries the result; a warning or failure is explained on stderr (docs/conventions.md §1.4).
             if json {
                 try Console.json(outcome.record)
                 if outcome.exitCode != 0 { Console.error(outcome.summary) }

@@ -4,14 +4,14 @@ import HolosCore
 import os
 
 extension HolosPaths {
-    /// `<supportRoot>/Speakers`: the people store (docs/meeting-design.md §2.2). Tests point `supportRoot` at a
+    /// `<supportRoot>/Speakers`: the people store (docs/meeting/session-format.md §2.2). Tests point `supportRoot` at a
     /// temporary folder (`HOLOS_SUPPORT_DIR`).
     public static var speakerProfiles: URL {
         supportRoot.appendingPathComponent("Speakers", isDirectory: true)
     }
 }
 
-/// One line of `forget-journal.jsonl` (docs/meeting-design.md §4.10). A forget first appends a `pending` tombstone
+/// One line of `forget-journal.jsonl` (docs/meeting/people-voice.md §4.10). A forget first appends a `pending` tombstone
 /// that lists what it removes, then updates the profile store, then appends a `stored` line for the same ID, then
 /// cleans each affected session, then appends a `done` line; a crash anywhere leaves the tombstone for the next run
 /// to finish.
@@ -86,7 +86,7 @@ public struct ForgetRecord: Codable, Sendable, Equatable {
     public static func done(_ id: String) -> ForgetRecord { ForgetRecord(id: id, kind: nil, state: done) }
 }
 
-/// The global people store (docs/meeting-design.md §2.2, §4.10): `profiles.json` (0600) in a private folder
+/// The global people store (docs/meeting/session-format.md §2.2, docs/meeting/people-voice.md §4.10): `profiles.json` (0600) in a private folder
 /// (0700) that is excluded from Time Machine, `profiles.lock`, and `forget-journal.jsonl` (0600).
 ///
 /// Reads take no lock (`profiles.json` is replaced atomically). Every write is a read-modify-write under

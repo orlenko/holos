@@ -6,7 +6,7 @@ import IOKit.pwr_mgt
 import os
 import Synchronization
 
-/// A system power change the recorder loop reacts to (docs/meeting-design.md §4.4).
+/// A system power change the recorder loop reacts to (docs/meeting/recorder.md §4.4).
 public enum PowerEvent: Sendable, Equatable {
     /// The system will sleep. The loop calls `allowPowerChange(token:)` after closing chunks.
     case willSleep(token: Int)
@@ -49,7 +49,7 @@ extension SystemPowerEvents {
     public func pendingTimedEvents() -> [TimedPowerEvent] { pendingEvents().map { TimedPowerEvent($0) } }
 }
 
-/// `IORegisterForSystemPower` on a private dispatch queue (docs/meeting-design.md §4.4). Events are buffered in a
+/// `IORegisterForSystemPower` on a private dispatch queue (docs/meeting/recorder.md §4.4). Events are buffered in a
 /// `Mutex` for the loop. "Can sleep" queries are allowed at once. "Will sleep" is handed to the loop only while one is
 /// attached, and the loop acknowledges it after closing its chunks. While the recorder starts (`observe()`), sleep and
 /// wake are queued for the loop that will attach, but the monitor acknowledges "will sleep" itself; while detached

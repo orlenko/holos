@@ -3,7 +3,7 @@ import HolosCore
 
 /// Carries speaker-level labels (names, profile links, rejections) and the time kept out of voice learning from the
 /// projection of a replaced head to a new run, so human edits survive relabelling (docs/contracts.md;
-/// docs/meeting-design.md §4.9). Other turn-level edits stay in the journal under the old run and are only counted. Pure; the caller appends the actions with
+/// docs/meeting/speaker-labels.md §4.9). Other turn-level edits stay in the journal under the old run and are only counted. Pure; the caller appends the actions with
 /// `source: "carry"`, the new run as `baseRunID`, and one batch ID.
 public enum SpeakerCarryOver {
     public struct Result: Sendable, Equatable {

@@ -1,6 +1,6 @@
 import Foundation
 
-/// Notices a capture track that stops delivering audio (docs/meeting-design.md §4.2). Held by `RecorderMachine`.
+/// Notices a capture track that stops delivering audio (docs/meeting/recorder.md §4.2). Held by `RecorderMachine`.
 ///
 /// Times are session-clock times at which the frame consumer received a frame (§2.3), never frame media times. A
 /// track's stall timer starts when its epoch's capture has started and is reset by every newer arrival, so a slow

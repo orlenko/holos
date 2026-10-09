@@ -3,7 +3,7 @@ import Foundation
 import HolosCore
 import os
 
-/// Engine settings Holos exposes for FluidAudio's offline diarizer (docs/meeting-design.md §4.8). Everything else
+/// Engine settings Holos exposes for FluidAudio's offline diarizer (docs/meeting/post-processing.md §4.8). Everything else
 /// stays at `OfflineDiarizerConfig.default`, the best of every setting spike S1 tried.
 public struct FluidDiarizerConfiguration: Sendable, Equatable {
     /// false keeps overlapping speech so alignment can mark overlap (FluidAudio default is true).
@@ -102,7 +102,7 @@ public struct FluidDiarizerConfiguration: Sendable, Equatable {
 }
 
 /// `SpeakerDiarizer` over FluidAudio 0.17.1's `OfflineDiarizerManager` (pyannote Community-1 segmentation, WeSpeaker
-/// embeddings, VBx clustering), fully offline (docs/meeting-design.md §4.8).
+/// embeddings, VBx clustering), fully offline (docs/meeting/post-processing.md §4.8).
 ///
 /// Every call first verifies the pinned model files (`FluidModels.status`) and refuses unverified ones. The actor
 /// loads the models once (FluidAudio offline mode: a failed load never deletes or downloads anything, and

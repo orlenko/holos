@@ -29,7 +29,7 @@ public struct RenderedExport: Sendable, Equatable {
     }
 }
 
-/// Writes a session's exports (`exports/transcript.{md,json,txt}`) from its speaker snapshot (docs/meeting-design.md
+/// Writes a session's exports (`exports/transcript.{md,json,txt}`) from its speaker snapshot (docs/meeting/exports.md
 /// §4.11). `exports/` is a generated cache: each file is written 0400 and its SHA-256 recorded in
 /// `exports/.generated.json`; a file that no longer matches (someone edited it) is moved aside, never overwritten.
 public enum SessionExports {

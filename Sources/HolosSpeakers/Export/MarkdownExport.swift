@@ -1,7 +1,7 @@
 import Foundation
 import HolosCore
 
-/// `exports/transcript.md` (docs/meeting-design.md §4.11): a header, then speaker blocks, gap lines, and marker lines
+/// `exports/transcript.md` (docs/meeting/exports.md §4.11): a header, then speaker blocks, gap lines, and marker lines
 /// in time order.
 ///
 /// ```

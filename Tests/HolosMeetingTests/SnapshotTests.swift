@@ -6,7 +6,7 @@ import HolosStorage
 import HolosTestSupport
 import Testing
 
-// SpeakerSessionSnapshot (docs/meeting-design.md §2.4, §5.5 PR7b).
+// SpeakerSessionSnapshot (docs/meeting/session-format.md §2.4, docs/meeting/speaker-labels.md §5.5 PR7b).
 
 private func snapshotSession(in root: URL, mode: MeetingMode? = .inPerson) async throws -> (URL, Transcript) {
     let transcript = SessionFixtures.transcript(SessionFixtures.alternatingSegments(track: "mic"))

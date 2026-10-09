@@ -176,7 +176,7 @@ several unrelated external APIs. The coordinator owns shared contract changes.
   a new diarization revision does not silently discard human edits; reference
   meetings meet the agreed speaker-attribution bar. Cross-session identity only as
   suggestions from voices the user confirmed ("Remember voices", on for new installs; voice profiles,
-  [meeting-design.md](meeting-design.md) §4.10): no automatic names until thresholds
+  [meeting/people-voice.md](meeting/people-voice.md) §4.10): no automatic names until thresholds
   are calibrated on the user's own meetings, and names carry across meetings without
   any voiceprint.
 

@@ -1,6 +1,6 @@
 import Foundation
 
-/// Every path inside a `<SESSION-UUID>.holos` folder (docs/meeting-design.md §2.1), so no code spells one by hand.
+/// Every path inside a `<SESSION-UUID>.holos` folder (docs/meeting/session-format.md §2.1), so no code spells one by hand.
 /// Functions that take an ID do not validate it; callers validate IDs with `SessionArchive.validToken` first.
 public enum SessionPaths {
     public static func manifest(_ session: URL) -> URL { file("manifest.json", in: session) }

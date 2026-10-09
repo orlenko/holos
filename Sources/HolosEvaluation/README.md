@@ -32,7 +32,7 @@ transcription with a cloud reference and with a reviewer's corrections. Develope
   runs recorded the same fingerprint and audio digest (reading the current audio only for older cloud runs
   without a digest); comparing the current transcript with a cloud run does no audio check.
 - Its output (reports, the review page, gold transcripts) contains transcript text and stays in the session
-  folder on the Mac; never copy it into the repository (`docs/meeting-design.md §1.9`).
+  folder on the Mac; never copy it into the repository (`docs/conventions.md §1.9`).
 
 **Known size debt:** `EvalNormalization` and `EvalAlignment` are over 1,000 lines.
 

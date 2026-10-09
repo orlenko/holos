@@ -58,7 +58,7 @@ public struct DiarizationAgreement: Sendable, Equatable {
 }
 
 /// Speaker labels can be private reference names: printing, `dump`, and test-failure output of an interval, a
-/// score, or an agreement show times, counts, and metrics only (docs/meeting-design.md §1.9).
+/// score, or an agreement show times, counts, and metrics only (docs/conventions.md §1.9).
 extension LabelledInterval: CustomStringConvertible, CustomDebugStringConvertible, CustomReflectable {
     public var description: String { "LabelledInterval(start: \(start), end: \(end))" }
 
@@ -106,7 +106,7 @@ extension DiarizationAgreement: CustomStringConvertible, CustomDebugStringConver
     }
 }
 
-/// Speaker-diarization metrics (docs/meeting-design.md §5.3, R25). Labels are compared only for equality; the
+/// Speaker-diarization metrics (docs/meeting/speaker-labels.md §5.3, R25). Labels are compared only for equality; the
 /// types that hold them print no labels.
 ///
 /// Both functions work on 10 ms frames: frame `i` covers `[i, i + 1) × 10 ms` and a speaker is active in it when its

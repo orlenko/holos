@@ -83,7 +83,7 @@ public struct VoiceSampleSource: Sendable {
     }
 }
 
-/// Speaker labelling and exports for a finished session (docs/meeting-design.md §4.7).
+/// Speaker labelling and exports for a finished session (docs/meeting/post-processing.md §4.7).
 ///
 /// Stages, in order: 0 checks and `postprocess.json` `running`; 1 `transcript` (the current revision); 1b
 /// `languages` for a meeting in several languages: the audio transcribed again in each language and the transcript

@@ -1,7 +1,7 @@
 import Foundation
 import HolosCore
 
-/// `exports/transcript.json` (docs/meeting-design.md §4.11): format `holos-transcript`, `schemaVersion` 1, one entry
+/// `exports/transcript.json` (docs/meeting/exports.md §4.11): format `holos-transcript`, `schemaVersion` 1, one entry
 /// per turn, with no vectors of any kind.
 ///
 /// ```json

@@ -1,7 +1,7 @@
 import Foundation
 import HolosCore
 
-/// Recognition thresholds from the user's own confirmed meetings (docs/meeting-design.md §4.10, "Calibration";
+/// Recognition thresholds from the user's own confirmed meetings (docs/meeting/people-voice.md §4.10, "Calibration";
 /// hidden `voiceislocal people calibrate [--apply]`). Pure. Same-person distances compare one person's samples from
 /// different meetings; different-person distances compare samples of two people. Only samples of one embedding model
 /// are compared. The thresholds come from the different-person distances alone: `likelyMaxDistance` admits at most

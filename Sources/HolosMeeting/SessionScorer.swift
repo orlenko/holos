@@ -4,7 +4,7 @@ import HolosCore
 import HolosSpeakers
 import HolosStorage
 
-/// `voiceislocal session score` (hidden; docs/meeting-design.md §5.5 PR7c, R24, R25): how a session's speaker labels agree
+/// `voiceislocal session score` (hidden; docs/meeting/speaker-labels.md §5.5 PR7c, R24, R25): how a session's speaker labels agree
 /// with Otter's for the same audio. Otter labels are people's names and Otter transcripts hold what was said, so
 /// nothing here keeps or reports either: a label becomes the first 12 hex digits of its SHA-256 as soon as it is read,
 /// and the report holds counts, seconds, ratios, and those keys only (§1.9).

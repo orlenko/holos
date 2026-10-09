@@ -1,4 +1,4 @@
-// When a quit that waits for a meeting may go ahead (docs/meeting-design.md §5.8).
+// When a quit that waits for a meeting may go ahead (docs/meeting/app-controls.md §5.8).
 
 public enum QuitReadiness {
     /// Whether the app may quit now. `inProcess`: the meeting was recording in this process when the quit began

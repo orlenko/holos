@@ -4,7 +4,7 @@ import os
 import Synchronization
 import HolosCore
 
-/// Crash-safe file writes shared by every Holos file (docs/meeting-design.md §1.7).
+/// Crash-safe file writes shared by every Holos file (docs/conventions.md §1.7).
 ///
 /// Whole files are published by renaming a fsync'd same-directory temporary file, so a reader sees either the
 /// old or the new contents. Journal appends never leave a partial line: a failed append truncates back.
@@ -355,7 +355,7 @@ public enum AtomicFile {
         "\(removalFolderPrefix)\(UInt32(bitPattern: device)).\(inode).\(UUID().uuidString)"
     }
 
-    /// Finishes removals that a crash or a failed unlink left in `folder` (docs/meeting-design.md §4.12): for each
+    /// Finishes removals that a crash or a failed unlink left in `folder` (docs/meeting/recorder.md §4.12): for each
     /// `.holos-remove-*` folder there (`removeIfSame`) that is a real folder (not a link), owned by this user, 0700,
     /// and last changed before `cutoff`, it removes the entry `file` inside only if it is the regular file the
     /// folder's name records (same device and inode, never followed), then the folder itself only if it is empty.

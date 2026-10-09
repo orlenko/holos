@@ -4,7 +4,7 @@ import HolosCore
 import HolosStorage
 import os
 
-/// The recorder's side of `control/` (docs/meeting-design.md §4.1): reads and removes request files published by
+/// The recorder's side of `control/` (docs/meeting/recorder.md §4.1): reads and removes request files published by
 /// `RecorderChannel.send`.
 ///
 /// Only regular files named `<UUID>.json` of at most 4 KiB are considered (no dot prefix, so a sender's
@@ -78,7 +78,7 @@ public struct ControlInbox: Sendable {
         return removed
     }
 
-    /// Closes `control/` to new requests before the recorder's last poll (docs/meeting-design.md §4.6): creates
+    /// Closes `control/` to new requests before the recorder's last poll (docs/meeting/recorder.md §4.6): creates
     /// `control/.closed` (and `control/` itself, 0700, if missing). A sender that finds it after publishing withdraws
     /// its request, so every request is either taken by that last poll or withdrawn by its sender. False (logged) when
     /// the marker could not be made.

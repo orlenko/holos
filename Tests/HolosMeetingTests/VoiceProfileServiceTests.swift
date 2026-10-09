@@ -7,7 +7,7 @@ import HolosStorage
 import HolosTestSupport
 import Testing
 
-// People and voice profiles (docs/meeting-design.md §4.10, §5.9 PR10): VoiceProfileService, the extractors, and
+// People and voice profiles (docs/meeting/people-voice.md §4.10, §5.9 PR10): VoiceProfileService, the extractors, and
 // post-processing stage 7, with fake extractors and FakeDiarizer on generated audio. Helpers are prefixed `profile`.
 
 // MARK: - Helpers

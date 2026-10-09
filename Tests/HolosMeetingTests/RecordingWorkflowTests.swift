@@ -172,7 +172,7 @@ func microphoneInOtherFormatsIsSavedAs48kMono() async throws {
 }
 
 /// PR2a: a capture that fails no longer ends the recording; capture restarts at once in a new epoch, and the gap is
-/// marked (docs/meeting-design.md §4.2).
+/// marked (docs/meeting/recorder.md §4.2).
 @Test(.timeLimit(.minutes(1))) @MainActor
 func captureFailureRestartsInANewEpoch() async throws {
     let temp = try TemporaryDirectory("meeting", permissions: 0o700)

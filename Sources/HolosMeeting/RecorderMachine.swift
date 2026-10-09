@@ -15,7 +15,7 @@ public enum CaptureEnd: Sendable, Equatable {
     case userStoppedSharing
 }
 
-/// Everything the recorder loop tells the state machine (docs/meeting-design.md §4.2).
+/// Everything the recorder loop tells the state machine (docs/meeting/recorder.md §4.2).
 public enum RecorderInput: Sendable, Equatable {
     /// The capture of `epoch` started (its `start` returned) at session time `at`, recording `tracks`. The stall
     /// timers start here (PR2b). A call epoch whose `tracks` lack "mic" records without the microphone (no input
@@ -56,7 +56,7 @@ public enum RecorderEffect: Sendable, Equatable {
     case finish(StopReason)
 }
 
-/// The recorder's pure state machine (docs/meeting-design.md §4.2): the `@MainActor` loop feeds it inputs and executes
+/// The recorder's pure state machine (docs/meeting/recorder.md §4.2): the `@MainActor` loop feeds it inputs and executes
 /// the effects it returns, in order. Capture restarts, the `waiting` phase with backoff, pause, control requests, the
 /// runtime disk check, the pause limit, sleep and wake (§4.4), the stall watchdog, and the microphone rules of a call
 /// (§4.12) live here.

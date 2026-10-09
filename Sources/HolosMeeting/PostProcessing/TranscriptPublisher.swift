@@ -8,7 +8,7 @@ import HolosStorage
 ///
 /// Invariants:
 /// 1. Everything runs under the writer lock (`SessionArchive.withMaintenanceArchive`) and then the speaker lock (the
-///    order `docs/meeting-design.md §1.7` gives), both taken for one publication and released however it ends. The
+///    order `docs/conventions.md §1.7` gives), both taken for one publication and released however it ends. The
 ///    caller's checks (`decide`) run with both held, so what they read cannot change before the writes.
 /// 2. A publication writes in this order, and nothing after a step that throws: a cancellation check (seen with both
 ///    locks held, it publishes nothing); the retargeted speaker run (`SpeakerTranscriptRetarget.stage`, safe to leave

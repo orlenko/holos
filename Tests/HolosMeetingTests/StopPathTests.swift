@@ -8,7 +8,7 @@ import HolosStorage
 import HolosTestSupport
 import Testing
 
-// The stop path: timeouts, coverage-based replay, and the hand-off to post-processing (docs/meeting-design.md §4.6).
+// The stop path: timeouts, coverage-based replay, and the hand-off to post-processing (docs/meeting/recorder.md §4.6).
 
 private func stopRecord(_ session: URL, state: PostProcessingState, message: String? = nil) -> PostProcessingRecord {
     PostProcessingRecord(sessionID: session.deletingPathExtension().lastPathComponent, state: state, pid: getpid(),

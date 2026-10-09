@@ -6,7 +6,7 @@ import HolosMeeting
 import HolosSpeakers
 import HolosStorage
 
-/// `voiceislocal people …` (docs/meeting-design.md §5.9): the people Holos knows by name, and their voice samples.
+/// `voiceislocal people …` (docs/meeting/people-voice.md §5.9): the people Holos knows by name, and their voice samples.
 /// Names and counts go to stdout; notes and warnings to stderr (§1.4). Voice vectors are printed only by
 /// `export --include-voiceprints`, and never to a terminal.
 struct People: AsyncParsableCommand {

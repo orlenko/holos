@@ -1,7 +1,7 @@
 # HolosSpeakers
 
 Pure speaker algorithms over values: who said which words, how edits apply, and how a meeting is exported.
-`docs/meeting-design.md §4.8` to `docs/meeting-design.md §4.11` describe the rules.
+`docs/meeting/post-processing.md §4.8` to `docs/meeting/exports.md §4.11` describe the rules.
 
 **Owns**
 - Labelling: `DiarizationNormalizer`, `SpeakerAlignment` (words to diarization segments), `WordTiming`,
@@ -30,7 +30,7 @@ engines, clocks, names inferred from transcript text.
 - `SameNameSpeakers` never merges: it joins same-name speakers for display only, from the journal alone. (Review's
   opt-in "Merge matching voices automatically", in HolosMeeting, writes real merge edits.)
 - Do not import FluidAudio here: its `WordTiming` and `AudioSource` clash with Holos types
-  (`docs/meeting-design.md §1.1`).
+  (`docs/conventions.md §1.1`).
 
 **Tests:** `Tests/HolosSpeakersTests` (`ProjectionTests`, `AlignmentTests`, `CarryOverTests`, `SameNameSpeakerTests`,
 `ExportTests`, …), all over in-memory values.

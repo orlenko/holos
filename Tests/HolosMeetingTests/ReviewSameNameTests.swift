@@ -6,7 +6,7 @@ import HolosStorage
 import HolosTestSupport
 import Testing
 
-// Same name, same person in the review window (docs/meeting-design.md §4.9, "Speakers with the same name"). Names are
+// Same name, same person in the review window (docs/meeting/speaker-labels.md §4.9, "Speakers with the same name"). Names are
 // made up. Helpers are prefixed `sameName`.
 
 @MainActor

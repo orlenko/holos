@@ -3,7 +3,7 @@ import Testing
 import HolosCore
 @testable import HolosSpeakers
 
-// VoiceEnrollment (docs/meeting-design.md §4.10 "Enrollment" and the extractor's selection), on synthetic runs.
+// VoiceEnrollment (docs/meeting/people-voice.md §4.10 "Enrollment" and the extractor's selection), on synthetic runs.
 
 // MARK: - Fixture
 

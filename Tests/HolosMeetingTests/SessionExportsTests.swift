@@ -6,7 +6,7 @@ import HolosStorage
 import HolosTestSupport
 import Testing
 
-// SessionExports (docs/meeting-design.md §4.11): generated, read-only exports; hand edits moved aside.
+// SessionExports (docs/meeting/exports.md §4.11): generated, read-only exports; hand edits moved aside.
 
 private func exportsSession(in root: URL, legacyExports: Bool = false, headRun: Bool = true) async throws -> URL {
     let transcript = SessionFixtures.transcript(SessionFixtures.alternatingSegments(track: "mic"))

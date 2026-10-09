@@ -7,7 +7,7 @@ import HolosTestSupport
 import Testing
 
 // A timed wait that gives up on an operation still has to release what that operation makes once it returns
-// (docs/meeting-design.md §4.6): a speech session created after its time limit is cancelled, never left running.
+// (docs/meeting/recorder.md §4.6): a speech session created after its time limit is cancelled, never left running.
 
 /// Waits, ignoring cancellation, until `released` is true: an operation that returns only after the test has seen
 /// how the wait ended, however loaded the machine is.

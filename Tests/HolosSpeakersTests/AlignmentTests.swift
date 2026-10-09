@@ -3,7 +3,7 @@ import Testing
 import HolosCore
 @testable import HolosSpeakers
 
-// Alignment tests (docs/meeting-design.md §5.3). Segments are "system" track segments with measured words;
+// Alignment tests (docs/meeting/speaker-labels.md §5.3). Segments are "system" track segments with measured words;
 // diarization labels "A", "B" become clusters "system:A", "system:B".
 
 private let a = "system:A"

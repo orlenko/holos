@@ -1,6 +1,6 @@
 import Foundation
 
-/// How a captured frame continues its track (docs/meeting-design.md §2.3). Used by `AudioChunkWriter` and the live
+/// How a captured frame continues its track (docs/meeting/session-format.md §2.3). Used by `AudioChunkWriter` and the live
 /// transcription feed, so audio is never written or recognized twice and no chunk starts before the previous one
 /// ends.
 ///

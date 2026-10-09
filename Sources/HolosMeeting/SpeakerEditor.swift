@@ -24,7 +24,7 @@ public struct SpeakerEditResult: Sendable {
     }
 }
 
-/// The only writer of a session's speaker edit journal for people's edits (docs/meeting-design.md §4.9, §5.7): the
+/// The only writer of a session's speaker edit journal for people's edits (docs/meeting/speaker-labels.md §4.9, docs/meeting/exports.md §5.7): the
 /// CLI now, the review window later. A real compare-and-append: the caller passes the projection it showed the user
 /// (`view`), and a batch made on a view that no longer matches the session is refused, writing nothing, instead of
 /// editing a different turn or overwriting a newer name.
@@ -53,7 +53,7 @@ public enum SpeakerEditor {
     ///   the newer changes first).
     /// - Names in `rename` and `newSpeaker` are saved as `cleanName` returns them (one line, no control
     ///   characters), so every name can be typed back as the exports show it.
-    /// - Same name, same person (docs/meeting-design.md §4.9): same-named speakers are only shown as one; nothing is
+    /// - Same name, same person (docs/meeting/speaker-labels.md §4.9): same-named speakers are only shown as one; nothing is
     ///   merged automatically. The batch saved is `fanningOut(actions)` worked out under the lock on the current
     ///   labels (not on `view`, which may not show another window's speaker of the same name): an edit of a speaker
     ///   shown joined also made to each stored speaker it shows. The lines it adds carry the current fingerprints; the

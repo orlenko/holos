@@ -86,7 +86,7 @@ public struct MeetingSummaryRecord: Codable, Sendable, Equatable {
 }
 
 /// The record holds what the meeting was about. Printing, `dump`, and test-failure output show only IDs and counts
-/// (docs/meeting-design.md §1.5, §1.9).
+/// (docs/conventions.md §1.5, §1.9).
 extension MeetingSummaryRecord: CustomStringConvertible, CustomDebugStringConvertible, CustomReflectable {
     public var description: String {
         "MeetingSummaryRecord(sessionID: \(sessionID), transcriptID: \(transcriptID), points: \(points.count), "

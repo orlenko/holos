@@ -5,7 +5,7 @@ import HolosStorage
 import Testing
 @testable import HolosAudio
 
-/// Chunks roll over without losing samples, and a gap of 50 ms or more (docs/meeting-design.md §2.3) starts a new
+/// Chunks roll over without losing samples, and a gap of 50 ms or more (docs/meeting/session-format.md §2.3) starts a new
 /// chunk at its own time with an `audioDiscontinuity`. The Int16 chunks read back these values exactly.
 @Test func chunkRolloverPreservesSamplesAndGaps() async throws {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent("holos-audio-\(UUID().uuidString)")

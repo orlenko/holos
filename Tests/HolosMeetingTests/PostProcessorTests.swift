@@ -7,7 +7,7 @@ import HolosStorage
 import HolosTestSupport
 import Testing
 
-// MeetingPostProcessor stages (docs/meeting-design.md §4.7) and `voiceislocal session diarize` (§5.5 PR7b), all with
+// MeetingPostProcessor stages (docs/meeting/post-processing.md §4.7) and `voiceislocal session diarize` (§5.5 PR7b), all with
 // FakeDiarizer on generated audio.
 
 // MARK: - Helpers

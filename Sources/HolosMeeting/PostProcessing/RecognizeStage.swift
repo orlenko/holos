@@ -4,7 +4,7 @@ import HolosSpeakers
 import HolosStorage
 import os
 
-/// Stage 7 of the post-processor (docs/meeting-design.md §4.7, §4.10): with "Remember voices" on and some person's
+/// Stage 7 of the post-processor (docs/meeting/post-processing.md §4.7, docs/meeting/people-voice.md §4.10): with "Remember voices" on and some person's
 /// voice samples to compare, `SpeakerRecognizer` matches the new run's speakers using the run's in-memory voice data,
 /// and only the distances are saved (`speakers/recognition/<runID>.json`). The voice data itself is never written
 /// here; it is dropped when post-processing ends.

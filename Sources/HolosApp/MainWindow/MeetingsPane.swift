@@ -6,7 +6,7 @@ import HolosStorage
 import Quartz
 import UniformTypeIdentifiers
 
-/// The saved meetings (docs/meeting-design.md §5.8, §4.13; docs/design.md "Meetings list"): a list of rich rows grouped
+/// The saved meetings (docs/meeting/app-controls.md §5.8, docs/meeting/retention-deletion.md §4.13; docs/design.md "Meetings list"): a list of rich rows grouped
 /// by day (Today, Yesterday, This Week, then by month), each with the meeting's title (the user's name, else the title
 /// Apple Intelligence wrote, else the default name), when it was and how long, the people its speaker labels name, a
 /// one- or two-line summary, and badges for what needs saying (Recording, Final transcript queued, Interrupted, …).

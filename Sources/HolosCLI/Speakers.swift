@@ -5,7 +5,7 @@ import HolosMeeting
 import HolosSpeakers
 import HolosStorage
 
-/// `voiceislocal speakers …` (docs/meeting-design.md §5.7, §5.9): list a session's speakers, and correct them and link
+/// `voiceislocal speakers …` (docs/meeting/exports.md §5.7, docs/meeting/people-voice.md §5.9): list a session's speakers, and correct them and link
 /// them to people through `SpeakerEditCommand`, which prints here what it says. Content goes to stdout; notes and
 /// warnings to stderr (§1.4).
 struct Speakers: AsyncParsableCommand {
@@ -283,7 +283,7 @@ struct Speakers: AsyncParsableCommand {
 
     // MARK: - embed (hidden)
 
-    /// The app's voice sample extractor (docs/meeting-design.md §4.10): prints the embeddings of the requested turns
+    /// The app's voice sample extractor (docs/meeting/people-voice.md §4.10): prints the embeddings of the requested turns
     /// as JSON on stdout, which must be a pipe, and writes nothing.
     struct Embed: AsyncParsableCommand {
         static let configuration = CommandConfiguration(

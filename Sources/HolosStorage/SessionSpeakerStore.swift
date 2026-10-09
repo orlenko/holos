@@ -20,7 +20,7 @@ public struct EditJournal: Sendable, Equatable {
     public var isComplete: Bool { unreadableLines == 0 && !tornTail }
 }
 
-/// Speaker files inside a session folder (docs/meeting-design.md §2.1): immutable runs, the head pointer,
+/// Speaker files inside a session folder (docs/meeting/session-format.md §2.1): immutable runs, the head pointer,
 /// the edit journal, per-run voice data, and recognition results.
 ///
 /// Reads are lock-free (files are replaced atomically; the journal only grows).
@@ -170,7 +170,7 @@ public enum SessionSpeakerStore {
 
     // MARK: - Generation
 
-    /// The session's speaker generation (docs/meeting-design.md §4.10, PR10): the head run ID and the edit journal's
+    /// The session's speaker generation (docs/meeting/people-voice.md §4.10, PR10): the head run ID and the edit journal's
     /// byte length, as "<runID>:<bytes>"; nil without a head. The journal only grows under one head, so any edit or
     /// relabel changes it. Read it under the speaker lock to compare it with a later reading.
     public static func generation(session: URL) throws -> String? {

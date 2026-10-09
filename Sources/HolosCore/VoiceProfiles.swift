@@ -1,6 +1,6 @@
 import Foundation
 
-// People and their voiceprints (docs/meeting-design.md §4.10, PR10). Names are not biometric; voiceprints are.
+// People and their voiceprints (docs/meeting/people-voice.md §4.10, PR10). Names are not biometric; voiceprints are.
 // A person (`SpeakerProfile`) exists whether or not "Remember voices" is on, so names carry across meetings; a
 // voiceprint reaches disk only as a `VoiceprintSample` of a person the user confirmed with voice learning on.
 // Stored in `<support>/Speakers/profiles.json` by `SpeakerProfileStore` (HolosStorage).
@@ -193,7 +193,7 @@ public struct SpeakerProfileDatabase: Codable, Sendable, Equatable {
 }
 
 // Voiceprints are biometric: printing a sample, a profile, or the database (`print`, `dump`, string interpolation,
-// test-failure output) shows only IDs, counts, and flags, never an embedding or a name (docs/meeting-design.md §1.5).
+// test-failure output) shows only IDs, counts, and flags, never an embedding or a name (docs/conventions.md §1.5).
 
 extension VoiceprintSample: CustomStringConvertible, CustomDebugStringConvertible, CustomReflectable {
     public var description: String {

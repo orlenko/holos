@@ -4,7 +4,7 @@ import HolosCore
 // MARK: - Projected values
 
 /// A speaker as the UI and every export show it: the run's speaker with the edit journal and recognition applied
-/// (docs/meeting-design.md §4.9).
+/// (docs/meeting/speaker-labels.md §4.9).
 public struct ProjectedSpeaker: Sendable, Equatable, Identifiable {
     public let id: String
     /// N in "Speaker N": the run's ordinal, or max + 1 for a speaker created by `newSpeaker`. Edits never renumber.
@@ -36,7 +36,7 @@ public struct ProjectedSpeaker: Sendable, Equatable, Identifiable {
     public let talkSeconds: Double
     public let turnCount: Int
     /// The stored speakers shown as this one: `id` first, then speakers with the same name joined into it (same
-    /// name, same person: `SameNameSpeakers`, docs/meeting-design.md §4.9), whose turns `turns` gives to `id` and
+    /// name, same person: `SameNameSpeakers`, docs/meeting/speaker-labels.md §4.9), whose turns `turns` gives to `id` and
     /// whose talk time, turns and clusters this speaker counts. Just `[id]` for a speaker nobody shares a name with.
     public let memberIDs: [String]
 
@@ -129,7 +129,7 @@ public struct StaleEdit: Sendable, Equatable {
 // MARK: - Projection
 
 /// The run with its edit journal applied: the one view of speakers and turns that exports (PR7b), the CLI (PR8),
-/// the review window (PR9), and enrollment (PR10) use (docs/meeting-design.md §4.9). A pure value; build it with
+/// the review window (PR9), and enrollment (PR10) use (docs/meeting/speaker-labels.md §4.9). A pure value; build it with
 /// `make` and extend it with `applying`.
 ///
 /// Every journal line of this run ends up in exactly one of: `appliedEditIDs` (in effect), `revertedEditIDs`
@@ -438,7 +438,7 @@ public struct SpeakerProjection: Sendable, Equatable {
 // MARK: - Printing
 
 /// The projection keeps the whole transcript for `applying`. Printing, `dump`, and test-failure output show only the
-/// public fields (IDs, times, names), never transcript text (docs/meeting-design.md §1.5, §1.9).
+/// public fields (IDs, times, names), never transcript text (docs/conventions.md §1.5, §1.9).
 extension SpeakerProjection: CustomStringConvertible, CustomDebugStringConvertible, CustomReflectable {
     public var description: String {
         "SpeakerProjection(runID: \(runID), transcriptID: \(transcriptID), speakers: \(speakers.count), "
@@ -1196,7 +1196,7 @@ extension SpeakerProjection {
 // MARK: - SHA-256
 
 /// SHA-256 (FIPS 180-4) for long fingerprints. HolosSpeakers imports only Foundation and HolosCore
-/// (docs/meeting-design.md §5.3), so it cannot use CryptoKit.
+/// (docs/meeting/speaker-labels.md §5.3), so it cannot use CryptoKit.
 enum FingerprintSHA256 {
     static func hexDigest(_ message: [UInt8]) -> String {
         let hexDigits = Array("0123456789abcdef".utf8)

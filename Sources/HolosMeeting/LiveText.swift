@@ -3,7 +3,7 @@ import HolosCore
 import HolosStorage
 import Synchronization
 
-/// Contents of a recording's `live.json` (docs/meeting-design.md §5.8 "Live transcript"): the words live speech has
+/// Contents of a recording's `live.json` (docs/meeting/app-controls.md §5.8 "Live transcript"): the words live speech has
 /// heard but not finalized yet, by track. Finalized words are in `events.jsonl` (`transcriptFinalized`); these are
 /// the volatile hypotheses that follow them and change as more audio arrives. Written by the recorder while it runs
 /// (at most every `LiveTextPublisher.interval`), removed when live speech ends; nothing else depends on it.

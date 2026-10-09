@@ -3,7 +3,7 @@ import Testing
 import HolosCore
 @testable import HolosSpeakers
 
-// SpeakerRecognizer (docs/meeting-design.md §4.10 "Recognition", §5.9 tests), on synthetic unit vectors.
+// SpeakerRecognizer (docs/meeting/people-voice.md §4.10 "Recognition", §5.9 tests), on synthetic unit vectors.
 
 // MARK: - Fixture
 

@@ -127,7 +127,7 @@ process); **Cancel** changes nothing. A meeting started with `voiceislocal recor
 not recorded by Voice is Local in either mode, so quitting during it offers all three buttons, as in child
 mode.
 
-Pass: each choice behaves as docs/meeting-design.md §5.8 says.
+Pass: each choice behaves as docs/meeting/app-controls.md §5.8 says.
 
 Result: Pending.
 

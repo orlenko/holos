@@ -5,7 +5,7 @@ import HolosStorage
 import Testing
 @testable import HolosAudio
 
-// MARK: - Helpers (prefixed: docs/meeting-design.md §1.8)
+// MARK: - Helpers (prefixed: docs/conventions.md §1.8)
 
 /// One chunk to write: interleaved samples starting at session time `start`.
 private struct RendererChunk {

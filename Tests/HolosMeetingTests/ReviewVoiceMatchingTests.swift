@@ -7,7 +7,7 @@ import HolosTestSupport
 import os
 import Testing
 
-// Voices within one meeting (docs/meeting-design.md §4.10): the review window's in-memory voice cache, its matches
+// Voices within one meeting (docs/meeting/people-voice.md §4.10): the review window's in-memory voice cache, its matches
 // after a name is given, and voice learning off the edit queue. Helpers are prefixed `voice`.
 
 // MARK: - Helpers

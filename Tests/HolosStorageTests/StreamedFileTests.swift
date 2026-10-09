@@ -7,7 +7,7 @@ import HolosTestSupport
 import HolosSessionTestSupport
 
 // `AtomicFile.writeStream`, `openForReading`, and the public `readIfPresent`/`removeTree` the post-processor uses
-// inside a session (docs/meeting-design.md §1.7, §4.13).
+// inside a session (docs/conventions.md §1.7, docs/meeting/retention-deletion.md §4.13).
 
 private func streamedMakeSession() async throws -> (root: URL, session: URL) {
     let root = try TemporaryDirectory("streamed").url

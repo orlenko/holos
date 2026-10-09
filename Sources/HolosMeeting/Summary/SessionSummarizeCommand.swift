@@ -27,7 +27,7 @@ public enum SessionSummarizeCommand {
         /// read again at the save, so a summary made while they changed is not saved. Nil keeps the request's.
         public var voiceInputsNow: (@Sendable () -> VoiceInputs)?
         /// The people store the save reads again, holding its lock (after the speaker lock: speakers → profiles,
-        /// docs/meeting-design.md §1.7) until the summary and the transcript files are written, so no rename of a
+        /// docs/conventions.md §1.7) until the summary and the transcript files are written, so no rename of a
         /// person lands between the check and the files. Nil: `voiceInputsNow`, else the request's own inputs.
         public var profileStore: SpeakerProfileStore?
         /// The Summarize Again request this run is for (the app's ID for it): written into summary.json

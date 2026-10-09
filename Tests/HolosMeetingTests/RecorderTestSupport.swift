@@ -8,7 +8,7 @@ import Synchronization
 import Testing
 
 // Helpers for the PR2a recorder tests. Shared test helpers (Fakes.swift) belong to another PR in this wave
-// (docs/meeting-design.md §1.8), so every name here starts with `recorder`.
+// (docs/conventions.md §1.8), so every name here starts with `recorder`.
 
 /// A fast loop: control requests every 10 ms, ticks and heartbeats every 50 ms.
 func recorderFastTuning(liveQueueSeconds: Double = LiveTrack.queueSeconds,

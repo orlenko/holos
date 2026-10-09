@@ -1,7 +1,7 @@
 import Foundation
 import HolosCore
 
-/// Which actions the Meetings window offers for the selected meeting (docs/meeting-design.md §5.8). Each rule is the
+/// Which actions the Meetings window offers for the selected meeting (docs/meeting/app-controls.md §5.8). Each rule is the
 /// one the command behind the button applies, so a button is never enabled for a meeting its command refuses, nor
 /// disabled for one its command would repair. Pure.
 public enum MeetingActionPolicy {

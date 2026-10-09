@@ -6,7 +6,7 @@ import os
 import Synchronization
 
 /// The end of a recording: the one place that writes status.json `exited`, and where the recorder lets go of the
-/// locks it still holds at the end (docs/meeting-design.md §4.6 steps 8–9). The recorder ends every run through `finish` (or `finishUnlessWritten`
+/// locks it still holds at the end (docs/meeting/recorder.md §4.6 steps 8–9). The recorder ends every run through `finish` (or `finishUnlessWritten`
 /// after an error), and gives its processing lease back through `finish` or `release`.
 ///
 /// When `StatusWriter` cannot write `exited` even after its retries, the writer lock and the leases handed here go to

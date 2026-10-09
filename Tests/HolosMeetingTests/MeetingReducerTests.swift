@@ -3,7 +3,7 @@ import HolosCore
 @testable import HolosMeeting
 import Testing
 
-// The menu bar's meeting state machine (docs/meeting-design.md §5.8 "Reducer rules").
+// The menu bar's meeting state machine (docs/meeting/app-controls.md §5.8 "Reducer rules").
 
 private let reducerStart = Date(timeIntervalSince1970: 1_790_000_000)
 private let reducerID = "3F2A9C1E-0000-4000-8000-000000000001"

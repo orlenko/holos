@@ -3,7 +3,7 @@ import HolosCore
 @testable import HolosMeeting
 import Testing
 
-// The recorder's pure state machine (docs/meeting-design.md §4.2).
+// The recorder's pure state machine (docs/meeting/recorder.md §4.2).
 
 private func warning(_ code: RecorderWarningCode, _ message: String) -> RecorderEffect {
     .warn(RecorderWarning(code: code, message: message, since: RecorderMachine.placeholderDate))

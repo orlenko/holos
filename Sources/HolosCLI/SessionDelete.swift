@@ -5,7 +5,7 @@ import HolosMeeting
 import HolosStorage
 
 extension Session {
-    /// `voiceislocal session delete` (docs/meeting-design.md §4.13, §5.6).
+    /// `voiceislocal session delete` (docs/meeting/retention-deletion.md §4.13, docs/meeting/recorder.md §5.6).
     struct Delete: ParsableCommand {
         static let configuration = CommandConfiguration(
             abstract: "Move a session to the Trash, or with --audio-only delete its audio and keep the rest.",

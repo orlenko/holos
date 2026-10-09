@@ -15,7 +15,7 @@ public struct InputDevice: Sendable, Equatable {
     }
 }
 
-/// The input devices a meeting can record (docs/meeting-design.md §4.12).
+/// The input devices a meeting can record (docs/meeting/recorder.md §4.12).
 public struct InputDevices: Sendable, Equatable {
     /// nil when absent (e.g. lid closed in clamshell mode).
     public var builtIn: InputDevice?

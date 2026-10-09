@@ -7,12 +7,14 @@ by agents and humans. Where this file and older docs disagree, this file wins; f
 
 Read first: the `README.md` of each module you touch, then the doc sections its code cites.
 
-- In `docs/meeting-design.md`, sections 1 (conventions), 2 (session folder) and 4 (integration seams) mostly
-  describe current behaviour (`docs/meeting-design.md §1.2` is a build plan, and some subsections still name the
-  PR that built them); section 3 points at the contract source files and shows their JSON. Sections 0 and 5–10
-  are the build plan and review log, but `docs/meeting-design.md §5.10`
-  (Review window) and `docs/meeting-design.md §5.11` (online calls) still hold behaviour the code cites, so read
-  the cited subsection, not the whole plan.
+- The meeting design is split by topic into `docs/conventions.md` (section 1) and `docs/meeting/*.md` (session
+  format, recorder, app controls, post-processing, speaker labels, people and voices, exports, retention). They
+  mostly describe current behaviour (`docs/conventions.md §1.2` is a build plan, and some subsections still name
+  the PR that built them; their §5 subsections come from the build plan, which the code cites for behaviour).
+  Sections keep their numbers, and `docs/meeting-design.md` lists the file each is in. It still holds sections
+  4.14–4.17 (current behaviour) and the rest of the build plan and review log (sections 0, 5 and 6–10), where
+  `docs/meeting-design.md §5.10` (Review window) and `docs/meeting-design.md §5.11` (online calls) still hold
+  behaviour the code cites, so read the cited subsection, not the whole plan.
 - `docs/design.md` describes the user-facing tools, one heading per feature. `docs/contracts.md` lists the
   cross-module contracts. `docs/status.md` says what is verified and what is pending.
 - `docs/architecture-roadmap.md` lists the planned structural changes and their status. Check it before
@@ -107,7 +109,7 @@ the same PR. The type and function caps are review rules; nothing checks them ye
 
 ## Threading and locks
 
-The concurrency rules in `docs/meeting-design.md §1.3` and the lock rules in `docs/meeting-design.md §1.7`
+The concurrency rules in `docs/conventions.md §1.3` and the lock rules in `docs/conventions.md §1.7`
 apply. In short:
 
 - Swift 6 strict concurrency. Values crossing a boundary are `Sendable` structs or enums. Small shared state uses
@@ -121,7 +123,7 @@ apply. In short:
   thread) and return snapshots. Today, for example, `MeetingController` reads `status.json` and probes locks on
   the main actor while it follows a meeting; do not add more. (`CommandRunner` already reads command output off
   the main actor.) Work that can exceed about 10 ms already must run off the main actor
-  (`docs/meeting-design.md §1.3`).
+  (`docs/conventions.md §1.3`).
 - Locks are `flock` files and are **not re-entrant**. Order for waits: speakers → profiles. Use the scoped APIs
   (`SessionArchive.withSpeakerLock`, `withSpeakerLockAsync`, `withMaintenanceArchive`,
   `SpeakerProfileStore.update`/`withLockedDatabase`, `ProcessingLease`). A new function that must run under a lock is named `…Locked` and says "Caller holds the
@@ -131,7 +133,7 @@ apply. In short:
   `SessionExports.regenerate(session:people:)`, not names read earlier).
 - No new `try?` on writes or removals. Throw, or log and report the leftover.
 - Give every await on a platform API that can hang a timeout, call `Task.checkCancellation()` in long loops, and
-  publish nothing partial from cancelled work (`docs/meeting-design.md §1.3`).
+  publish nothing partial from cancelled work (`docs/conventions.md §1.3`).
 
 ## Shared primitives (use these; do not write another)
 
@@ -177,7 +179,7 @@ Exist today:
   `ReviewRevision`, from `ReviewSession.revision`. Edit fields, splits and joins carry it as one value; do not add
   another loose counter beside it.
 - Logging: `Logger(subsystem: "ca.orlenko.holos.app", category: …)`; categories and privacy rules in
-  `docs/meeting-design.md §1.5`.
+  `docs/conventions.md §1.5`.
 
 Planned, see the [architecture roadmap](docs/architecture-roadmap.md) (`docs/architecture-roadmap.md §3` and
 `docs/architecture-roadmap.md §6`; none of these exist yet, so do not reference them as if they did):
@@ -248,7 +250,7 @@ The repository is public. Never copy meeting text, transcript lines, speaker or 
 user data into code, tests, fixtures, docs, commit messages, or PRs. Tests generate their own text and audio;
 opt-in tests that read private recordings get them from paths in `HOLOS_*` environment variables, never from
 files committed to the repository.
-Do not log transcript text, names, vocabulary or embeddings (`docs/meeting-design.md §1.5`).
+Do not log transcript text, names, vocabulary or embeddings (`docs/conventions.md §1.5`).
 
 ## Hard don'ts
 

@@ -1,7 +1,7 @@
 import Foundation
 import HolosCore
 
-/// A `SpeakerDiarizer` that returns prepared outputs, for tests of code that diarizes (docs/meeting-design.md §4.8).
+/// A `SpeakerDiarizer` that returns prepared outputs, for tests of code that diarizes (docs/meeting/post-processing.md §4.8).
 /// It never loads a model or reads audio.
 public struct FakeDiarizer: SpeakerDiarizer {
     /// Output by track ("mic", "system").

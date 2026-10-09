@@ -3,7 +3,7 @@ import HolosCore
 import HolosStorage
 import os
 
-/// What `voiceislocal session recover` does (docs/meeting-design.md §5.6), as a library call: the CLI parses its arguments
+/// What `voiceislocal session recover` does (docs/meeting/recorder.md §5.6), as a library call: the CLI parses its arguments
 /// and prints the outcome, so the one-lease chain is tested here.
 ///
 /// The processing lease is taken once and kept for `SessionArchive.recover(at:lease:)`,

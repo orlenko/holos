@@ -5,7 +5,7 @@ import HolosStorage
 import HolosTestSupport
 import Testing
 
-// Which actions the Meetings window offers (docs/meeting-design.md §5.8): the rules of the commands behind them.
+// Which actions the Meetings window offers (docs/meeting/app-controls.md §5.8): the rules of the commands behind them.
 
 private func actionSummary(state: SessionState = .complete, manifestStatus: String? = nil,
                            transcriptID: String? = UUID().uuidString, transcriptRefused: Bool = false,

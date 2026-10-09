@@ -3,7 +3,7 @@ import HolosCore
 import Testing
 @testable import HolosAudio
 
-// docs/meeting-design.md §4.5: meeting audio is saved as 48 kHz mono, whatever the microphone delivers.
+// docs/meeting/recorder.md §4.5: meeting audio is saved as 48 kHz mono, whatever the microphone delivers.
 
 /// `count` contiguous frames of `seconds` each, every channel at a constant value (`values[channel]`).
 private func converterFrames(rate: Double, values: [Float], count: Int, seconds: Double = 0.1,

@@ -27,7 +27,7 @@ public struct RebuildReport: Sendable, Equatable {
 }
 
 /// Rebuilds the transcript of an interrupted session from the phrases live transcription journaled
-/// (`transcriptFinalized` events), and transcribes only the audio they do not cover (docs/meeting-design.md §5.6).
+/// (`transcriptFinalized` events), and transcribes only the audio they do not cover (docs/meeting/recorder.md §5.6).
 public enum TranscriptRebuilder {
     private static let log = Logger(subsystem: "ca.orlenko.holos.app", category: "recorder")
     /// Audio that ends no more than this after a track's coverage is not transcribed again.
@@ -441,7 +441,7 @@ public enum TranscriptRebuilder {
     }
 }
 
-/// The phrases live transcription journaled, per track (docs/meeting-design.md §4.6 `LiveTrack`).
+/// The phrases live transcription journaled, per track (docs/meeting/recorder.md §4.6 `LiveTrack`).
 struct JournalTranscript {
     /// `transcriptFinalized` events in journal order, exact duplicates `(track, start, end, text)` dropped. Events with
     /// `words` keep their timed words and `segmentID`; older events give untimed segments.

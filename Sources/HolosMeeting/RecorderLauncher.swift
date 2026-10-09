@@ -6,7 +6,7 @@ import HolosStorage
 import os
 import Synchronization
 
-// How the app starts a recorder, and the `voiceislocal` maintenance commands it runs (docs/meeting-design.md §4.1, §5.8).
+// How the app starts a recorder, and the `voiceislocal` maintenance commands it runs (docs/meeting/recorder.md §4.1, docs/meeting/app-controls.md §5.8).
 
 /// Starts and stops the recorder of one meeting. `MeetingController` does not know which implementation it has: both
 /// write the same `status.json` and read the same `control/`.
@@ -23,7 +23,7 @@ import Synchronization
 
 // MARK: - Child process
 
-/// Runs the bundled `voiceislocal record start` as a child in its own session (docs/meeting-design.md §4.1): stdin is
+/// Runs the bundled `voiceislocal record start` as a child in its own session (docs/meeting/recorder.md §4.1): stdin is
 /// `/dev/null`, stdout and stderr append to `recorder-<SESSION-UUID>.log`, nothing else is inherited, and the child is
 /// reaped with a process source plus `waitpid`. The recorder outlives the app; after a relaunch the app finds it again
 /// through its `status.json` (`MeetingController.attachOnLaunch`).
@@ -125,7 +125,7 @@ import Synchronization
 
 // MARK: - In-process
 
-/// Runs `RecordingWorkflow.run` inside the app (decision 4's fallback, docs/meeting-design.md §4.1), with the same
+/// Runs `RecordingWorkflow.run` inside the app (decision 4's fallback, docs/meeting/recorder.md §4.1), with the same
 /// options as the child (`RecordingOptions(settings:…)`). Frames are consumed off the main actor; an activity keeps App Nap and timer coalescing away
 /// while recording. Post-processing still runs in a `voiceislocal session diarize` child, which inherits the processing lease
 /// (`--lease-fd 3`), so FluidAudio stays out of the app and the session is never without a lock.
@@ -233,7 +233,7 @@ import Synchronization
         return true
     }
 
-    /// The CLI's exit code for an outcome (docs/meeting-design.md §1.4).
+    /// The CLI's exit code for an outcome (docs/conventions.md §1.4).
     static func exitCode(_ outcome: RecordingOutcome) -> Int32 {
         if !outcome.transcriptErrors.isEmpty || outcome.stopReason == .captureFailed { return 1 }
         if [.diskLow, .sleepTimeout, .pauseTimeout].contains(outcome.stopReason) { return 3 }
@@ -456,7 +456,7 @@ private struct LoggingReporter: RecordingReporter {
 
 // MARK: - posix_spawn
 
-/// The one `posix_spawn` helper for every child the app starts (docs/meeting-design.md §1.7 rule 4, §4.1):
+/// The one `posix_spawn` helper for every child the app starts (docs/conventions.md §1.7 rule 4, §4.1):
 /// `POSIX_SPAWN_CLOEXEC_DEFAULT` so a child inherits no descriptor but fds 0–2 and the ones named, default signal
 /// handlers and an empty signal mask, and (by default) `POSIX_SPAWN_SETSID`, so the child gets no terminal SIGHUP and
 /// no signal sent to the app's process group. The file helpers are public for the app's command outputs.
@@ -596,7 +596,7 @@ public enum ProcessSpawner {
     }
 
     /// A category of `error` that is safe to log publicly ("unavailable", "io", "NSCocoaErrorDomain 4"): error texts
-    /// can hold user paths, which are logged only as private (docs/meeting-design.md §1.5).
+    /// can hold user paths, which are logged only as private (docs/conventions.md §1.5).
     public static func logCategory(_ error: any Error) -> String {
         if let error = error as? HolosError {
             return switch error {

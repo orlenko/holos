@@ -5,7 +5,7 @@ import HolosStorage
 import os
 
 /// Everything the exports, the CLI, and the review window show about a session's speakers, loaded at once
-/// (docs/meeting-design.md §2.4, §5.5 PR7b). Reads take no lock: every file is replaced atomically and the edit
+/// (docs/meeting/session-format.md §2.4, docs/meeting/speaker-labels.md §5.5 PR7b). Reads take no lock: every file is replaced atomically and the edit
 /// journal only grows. Callers that must see a consistent state across a write (the editor, `SessionExports`) load
 /// it under the speaker lock.
 public struct SpeakerSessionSnapshot: Sendable {
@@ -191,7 +191,7 @@ public struct SpeakerSessionSnapshot: Sendable {
 }
 
 /// The snapshot holds transcript text and names. Printing, `dump`, and test-failure output show only IDs, counts, and
-/// flags (docs/meeting-design.md §1.5, §1.9).
+/// flags (docs/conventions.md §1.5, §1.9).
 extension SpeakerSessionSnapshot: CustomStringConvertible, CustomDebugStringConvertible, CustomReflectable {
     public var description: String {
         "SpeakerSessionSnapshot(sessionID: \(manifest.id), transcriptID: \(transcript.id), "
@@ -217,7 +217,7 @@ extension SpeakerSessionSnapshot: CustomStringConvertible, CustomDebugStringConv
     }
 }
 
-/// Session files the post-processing code reads besides the speaker store (docs/meeting-design.md §2.1).
+/// Session files the post-processing code reads besides the speaker store (docs/meeting/session-format.md §2.1).
 public enum SessionFiles {
     private static let log = Logger(subsystem: "ca.orlenko.holos.app", category: "meeting")
     static let maxTranscriptBytes = 256 << 20

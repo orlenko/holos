@@ -1,7 +1,7 @@
 import Foundation
 import HolosCore
 
-/// Matches a run's speakers against the people with voice samples (docs/meeting-design.md §4.10, post-processing
+/// Matches a run's speakers against the people with voice samples (docs/meeting/people-voice.md §4.10, post-processing
 /// stage 7). Pure: it reads the run's in-memory voice data and the profile database and returns distances only.
 ///
 /// Without calibrated thresholds (`voiceislocal people calibrate --apply`) it only suggests names (`possible`, shown as

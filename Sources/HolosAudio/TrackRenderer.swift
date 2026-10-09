@@ -9,7 +9,7 @@ import os
 // MARK: - Render time map
 
 /// One stretch of a render that is session audio: `duration` seconds from `renderStart` in the rendered file are
-/// the session timeline from `sessionStart` (docs/meeting-design.md §4.7). Short gaps inside a span are rendered as
+/// the session timeline from `sessionStart` (docs/meeting/post-processing.md §4.7). Short gaps inside a span are rendered as
 /// silence of their real length, so the mapping is linear across the whole span.
 public struct RenderSpan: Sendable, Equatable {
     public var renderStart: Double
@@ -37,7 +37,7 @@ public struct RenderedTrack: Sendable, Equatable {
     }
 }
 
-/// Maps times in a render back to the session timeline (docs/meeting-design.md §4.7).
+/// Maps times in a render back to the session timeline (docs/meeting/post-processing.md §4.7).
 public enum RenderTimeMap {
     /// A time inside a span maps linearly; a time inside inserted silence (before the first span, between spans,
     /// or after the last) snaps to the session time of the nearest span edge (the earlier edge on a tie). An empty
@@ -97,7 +97,7 @@ public enum RenderTimeMap {
 
 // MARK: - Renderer
 
-/// Renders one track of a session for diarization (docs/meeting-design.md §4.7): its finalized chunks joined into
+/// Renders one track of a session for diarization (docs/meeting/post-processing.md §4.7): its finalized chunks joined into
 /// one mono 16 kHz 16-bit integer CAF on the session timeline, with long gaps shortened.
 public enum TrackRenderer {
     /// The render's sample rate.
@@ -221,7 +221,7 @@ public enum TrackRenderer {
 
 // MARK: - Plan
 
-/// Where each chunk of a track goes in the render, and the time map (docs/meeting-design.md §4.7).
+/// Where each chunk of a track goes in the render, and the time map (docs/meeting/post-processing.md §4.7).
 struct RenderPlan {
     /// A chunk's samples to use: `frames` input frames after skipping `skipFrames`.
     struct Piece {

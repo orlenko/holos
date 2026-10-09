@@ -5,7 +5,7 @@ import HolosStorage
 import Testing
 @testable import HolosAudio
 
-// docs/meeting-design.md §2.3: within an epoch, jitter under 50 ms is contiguous, a later frame is a gap, and an
+// docs/meeting/session-format.md §2.3: within an epoch, jitter under 50 ms is contiguous, a later frame is a gap, and an
 // earlier one loses its overlapping samples.
 
 private struct ContinuityFixture {
