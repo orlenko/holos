@@ -8175,7 +8175,7 @@ shown, Otter-style.
   the review are logged with what was typed (private), timeout or not
   (`failedWordEditsAtClose`). The field's edit such a close took is held on the window until it is queued, so a
   quit meanwhile closes the review with it, and no field opens while such a close waits. A Split Turn sheet's word follows a word edit
-  saved while the sheet was open (`split(seenMoves:)`), and is refused when the edit replaced
+  saved while the sheet was open (`split(seen:)`), and is refused when the edit replaced
   it; a Revert's word likewise follows every word change saved since the words it was asked
   on were read. The window's list follows only the word moves the words shown are after
   (`shownWordMoves`): a move saved but not reread yet is not shown, and an open field never

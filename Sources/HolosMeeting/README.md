@@ -61,7 +61,7 @@ NaturalLanguage, CryptoKit.
 - At most one background job of the app runs on this Mac (`BackgroundJobCoordinator` invariant 1): every one holds
   `DeepTranscriptionLock` while it runs, and the app starts none while the lock is held.
 
-**Known size debt:** `ReviewSession` (3,444 lines), `RecordingWorkflow`, `VoiceProfileService`. Do not grow them;
+**Known size debt:** `ReviewSession` (3,433 lines), `RecordingWorkflow`, `VoiceProfileService`. Do not grow them;
 move code out first, in a moves-only PR.
 
 **Tests:** `Tests/HolosMeetingTests` (`./scripts/test-target.sh HolosMeetingTests`). Target-local helpers:

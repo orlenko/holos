@@ -950,7 +950,7 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, NSM
         }
         let sheet = SplitSheet(words: Array(words.joined()), turnStarts: turnStarts,
                                onPlay: { [weak self] seconds in self?.play(from: seconds) })
-        // A word edit saved while the sheet is open moves its words: the split follows them (`split(seenMoves:)`).
+        // A word edit saved while the sheet is open moves its words: the split follows them (`split(seen:)`).
         let seen = review.revision
         splitSheet = sheet
         window.beginSheet(sheet.panel) { [weak self] response in
@@ -982,8 +982,7 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, NSM
             perform { [weak self] review in
                 let second: WordRef
                 do {
-                    second = try await review.split(turnID: turnID, at: word, seenMoves: seen.moves,
-                                                    seenEpoch: seen.wordsEpoch, seenRun: seen.runID)
+                    second = try await review.split(turnID: turnID, at: word, seen: seen)
                 } catch let error where !(error is CancellationError) {
                     guard let self else { throw error }
                     // Saved, but its labels could not be reread (`incomplete`): the split stands, so its second part
@@ -1132,7 +1131,7 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, NSM
         let place: ReviewSplitPlace?
         do {
             place = try review.splitPlace(at: request.word, after: request.after, in: request.turnID,
-                                          seenMoves: request.seen.moves, seenEpoch: request.seen.wordsEpoch)
+                                          seen: request.seen)
         } catch {
             return .refused(error.localizedDescription)
         }
@@ -1302,8 +1301,8 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, NSM
         wordEdits.track(words, text: text, seen: seen,
                         saved: { [weak self] edit in self?.offerTerm(after: edit, add: addTerm) }) {
             [review] committed in
-            try review.queueWordEdit(words.map(\.ref), to: text, seenMoves: seen.moves, whileUnread: whileUnread,
-                                     expecting: words.map(\.shown), seenEpoch: seen.wordsEpoch, committed: committed)
+            try review.queueWordEdit(words.map(\.ref), to: text, seen: seen, whileUnread: whileUnread,
+                                     expecting: words.map(\.shown), committed: committed)
         }
     }
 

@@ -979,20 +979,15 @@ import os
     /// Splits a turn before `word` (a word of the turn other than its first). Never inside words edited together here
     /// (a `reviewEdit` mark): their edit, and its Revert, belong to one turn.
     ///
-    /// `seenMoves`: how many of `wordMoves` `word` follows (the Split Turn sheet's, as it opened): a word edit saved
-    /// since moves it there first, as an edit field's words; one that replaced it refuses the split.
+    /// `seen`: the revision `word` was chosen under (the Split Turn sheet's, as it opened; nil: as shown now). A word
+    /// edit saved since moves it there first, as an edit field's words; one that replaced it, words changed elsewhere
+    /// since (its `wordsEpoch`), or labels made again since (its `runID`, `splitRunRefusal`) refuse the split.
     ///
-    /// `seenEpoch`: `wordsEpoch` when the sheet opened: words changed elsewhere since cannot be followed, and refuse it.
-    ///
-    /// `seenRun`: the labels run the turn was chosen on (`splitRunRefusal`): labelled again since, it is refused.
-    ///
-    /// Returns the word it split before, as it is now (moved by a word edit saved since, `seenMoves`): the second
-    /// part's first word.
+    /// Returns the word it split before, as it is now (moved by a word edit saved since): the second part's first word.
     @discardableResult
-    public func split(turnID: String, at word: WordRef, seenMoves: Int? = nil,
-                      seenEpoch: Int? = nil, seenRun: String? = nil) async throws -> WordRef {
-        if let refusal = splitRunRefusal(seenRun: seenRun) { throw HolosError.invalidInput(refusal) }
-        let word = try splitWord(word, seenMoves: seenMoves, seenEpoch: seenEpoch)
+    public func split(turnID: String, at word: WordRef, seen: ReviewRevision? = nil) async throws -> WordRef {
+        if let refusal = splitRunRefusal(seenRun: seen?.runID) { throw HolosError.invalidInput(refusal) }
+        let word = try splitWord(word, seen: seen)
         try await apply([splitAction(turnID: turnID, at: word)])
         return word
     }
@@ -1008,15 +1003,14 @@ import os
         return "The speakers were labelled again since; choose where to split again."
     }
 
-    /// `word`, chosen when `seenMoves` of `wordMoves` were seen and `wordsEpoch` was `seenEpoch`, where it is in the
-    /// words shown now: a word edit saved since moves it; one that replaced it, or words changed elsewhere (no move
-    /// says where they went), refuse the split.
-    private func splitWord(_ word: WordRef, seenMoves: Int?, seenEpoch: Int?) throws -> WordRef {
-        if let seenEpoch, seenEpoch != wordsEpoch {
+    /// `word`, chosen under revision `seen` (nil: as shown now), where it is in the words shown now: a word edit saved
+    /// since moves it; one that replaced it, or words changed elsewhere (no move says where they went), refuse the split.
+    private func splitWord(_ word: WordRef, seen chosen: ReviewRevision?) throws -> WordRef {
+        if let chosen, chosen.wordsEpoch != wordsEpoch {
             throw HolosError.invalidInput("The words were changed elsewhere while the split was being chosen; choose "
                                           + "where to split again.")
         }
-        let seen = seenMoves ?? movesRead
+        let seen = chosen?.moves ?? movesRead
         guard seen != movesRead else { return word }
         let moves = seen < movesRead ? wordMoves[seen..<movesRead]
             : ArraySlice(wordMoves[movesRead..<min(seen, wordMoves.count)].reversed().map(\.inverse))
@@ -1033,10 +1027,11 @@ import os
     /// word (or after its last), the place is that turn's start (end), where only the window's rows can break. Nil
     /// when no shown turn holds the word. Throws when the word cannot be followed (`splitWord`). `turnID`: the turn the
     /// word was chosen in (turns may overlap: a word two turns hold splits the one it was chosen in); nil, the first
-    /// turn holding it. A turn that no longer holds it gives nil.
-    public func splitPlace(at word: WordRef, after: Bool, in turnID: String? = nil, seenMoves: Int?,
-                           seenEpoch: Int?) throws -> ReviewSplitPlace? {
-        let word = try splitWord(word, seenMoves: seenMoves, seenEpoch: seenEpoch)
+    /// turn holding it. A turn that no longer holds it gives nil. `seen`: the revision the word was chosen under (nil:
+    /// as shown now); its labels run is the caller's to check (`splitRunRefusal`).
+    public func splitPlace(at word: WordRef, after: Bool, in turnID: String? = nil,
+                           seen: ReviewRevision?) throws -> ReviewSplitPlace? {
+        let word = try splitWord(word, seen: seen)
         let wanted = turnID.map(resolvedTurnID)
         guard let turn = projection.turns.first(where: { turn in
             (wanted == nil || turn.id == wanted)
@@ -1092,7 +1087,7 @@ import os
         }) {
             // Written back exactly as the recognizer wrote it (`verbatim`: two spaces, a line break).
             guard let op = try queuedWordEdit((edit.first..<edit.end).map { WordRef(segmentID: word.segmentID, word: $0) },
-                                              to: edit.heard, seenMoves: nil, verbatim: true) else { return }
+                                              to: edit.heard, seen: nil, verbatim: true) else { return }
             try await wait(for: op)
             return
         }
@@ -1204,8 +1199,9 @@ import os
     /// what was edited, nil when the text would not change. Throws `invalidInput` with a message for the person when
     /// the words cannot be edited together.
     ///
-    /// `seenMoves`: how many of `wordMoves` the caller's `words` already follow (an edit field opened before an earlier
-    /// edit of the segment was saved); they are moved through the rest first.
+    /// `seen`: the revision the caller's `words` were chosen under (nil: as shown now). They are moved through the word
+    /// moves saved since (an edit field opened before an earlier edit of the segment was saved); words changed
+    /// elsewhere since (its `wordsEpoch`: no word move says where they went) refuse the edit, saying what was typed.
     @discardableResult
     ///
     /// `committed`: called with what was edited once the edit is saved, also when it then throws because the labels
@@ -1219,14 +1215,11 @@ import os
     /// `expecting`: each of `words`' text as the caller showed it (the edit field's words): a change made elsewhere
     /// and read since may have kept a word's place but changed it, and an edit is never made over words other than
     /// those the person saw. Refused then, saying what was typed.
-    ///
-    /// `seenEpoch`: `wordsEpoch` when the words were chosen: words changed elsewhere since cannot be followed (no word
-    /// move says where they went), and refuse the edit, saying what was typed.
-    public func editWords(_ words: [WordRef], to text: String, seenMoves: Int? = nil, whileUnread: Bool = false,
-                          expecting: [String]? = nil, seenEpoch: Int? = nil,
+    public func editWords(_ words: [WordRef], to text: String, seen: ReviewRevision? = nil, whileUnread: Bool = false,
+                          expecting: [String]? = nil,
                           committed: ((ReviewWordEdit) -> Void)? = nil) async throws -> ReviewWordEdit? {
-        guard let saved = try queueWordEdit(words, to: text, seenMoves: seenMoves, whileUnread: whileUnread,
-                                            expecting: expecting, seenEpoch: seenEpoch, committed: committed) else {
+        guard let saved = try queueWordEdit(words, to: text, seen: seen, whileUnread: whileUnread,
+                                            expecting: expecting, committed: committed) else {
             return nil
         }
         return try await saved()
@@ -1236,35 +1229,35 @@ import os
     /// way, so a close or a quit right after finds it in the queue (it is saved before the review closes, and
     /// `unsavedWordEdits` lists it meanwhile). Returns the wait for it (what was edited, or why it was not), nil when
     /// there is nothing to edit; throws when it is refused before it is queued.
-    public func queueWordEdit(_ words: [WordRef], to text: String, seenMoves: Int? = nil, whileUnread: Bool = false,
-                              expecting: [String]? = nil, seenEpoch: Int? = nil,
+    public func queueWordEdit(_ words: [WordRef], to text: String, seen: ReviewRevision? = nil,
+                              whileUnread: Bool = false, expecting: [String]? = nil,
                               committed: ((ReviewWordEdit) -> Void)? = nil) throws
         -> (@MainActor () async throws -> ReviewWordEdit?)? {
-        guard let op = try queuedWordEdit(words, to: text, seenMoves: seenMoves, whileUnread: whileUnread,
-                                          expecting: expecting, seenEpoch: seenEpoch) else {
+        guard let op = try queuedWordEdit(words, to: text, seen: seen, whileUnread: whileUnread,
+                                          expecting: expecting) else {
             return nil
         }
         return waitForWordEdit(op, committed: committed)
     }
 
     /// `editWords` up to its change being queued (no wait); nil when there is nothing to edit.
-    private func queuedWordEdit(_ words: [WordRef], to text: String, seenMoves: Int?,
+    private func queuedWordEdit(_ words: [WordRef], to text: String, seen chosen: ReviewRevision?,
                                 whileUnread: Bool = false, expecting: [String]? = nil,
-                                seenEpoch: Int? = nil, verbatim: Bool = false) throws -> Operation? {
+                                verbatim: Bool = false) throws -> Operation? {
         try requireEditable(whileUnread: whileUnread)
-        if let seenEpoch, seenEpoch != wordsEpoch {
+        if let chosen, chosen.wordsEpoch != wordsEpoch {
             throw HolosError.invalidInput("The words were changed elsewhere while you edited them; edit them again"
                                           + TranscriptWordEdit.typedAside(text) + ".")
         }
         guard !snapshot.transcriptChanged else { throw Self.labelAgainFirst }
         guard snapshot.journal.isComplete else { throw Self.speakerChangesUnreadable }
         guard baseReadable else { throw Self.baseUnreadable }
-        // The words as the transcript shown has them (`segments`, after `movesRead` moves; without `seenMoves`, the
-        // words were taken from it): a word change saved but not reread moved words it does not show yet, so words
-        // that followed that move are taken back through it. Checked against these words when it is saved, from
-        // there (`saveWordEdit`).
+        // The words as the transcript shown has them (`segments`, after `movesRead` moves; without `seen`, the words
+        // were taken from it): a word change saved but not reread moved words it does not show yet, so words that
+        // followed that move are taken back through it. Checked against these words when it is saved, from there
+        // (`saveWordEdit`).
         var words = words
-        let seen = seenMoves ?? movesRead
+        let seen = chosen?.moves ?? movesRead
         if seen != movesRead {
             let moves = seen < movesRead ? wordMoves[seen..<movesRead]
                 : ArraySlice(wordMoves[movesRead..<min(seen, wordMoves.count)].reversed().map(\.inverse))
@@ -1464,20 +1457,16 @@ import os
     }
 
     /// What the window's open edit field holds, handed over when it closes for a pause or the window's close: its
-    /// words, what was typed, the word moves they follow (`editWords(seenMoves:)`), and their text as the field showed
-    /// it (`editWords(expecting:)`), so every path checks it the same way.
+    /// words, what was typed, the revision they were chosen under (`editWords(seen:)`), and their text as the field
+    /// showed it (`editWords(expecting:)`), so every path checks it the same way.
     public struct TypedEdit: Sendable, Equatable {
         public var words: [WordRef]
         public var text: String
-        public var seenMoves: Int
+        public var seen: ReviewRevision
         public var expected: [String]?
-        /// `wordsEpoch` when the words were chosen (`editWords(seenEpoch:)`).
-        public var seenEpoch: Int?
 
-        public init(words: [WordRef], text: String, seenMoves: Int, expected: [String]? = nil,
-                    seenEpoch: Int? = nil) {
-            self.words = words; self.text = text; self.seenMoves = seenMoves; self.expected = expected
-            self.seenEpoch = seenEpoch
+        public init(words: [WordRef], text: String, seen: ReviewRevision, expected: [String]? = nil) {
+            self.words = words; self.text = text; self.seen = seen; self.expected = expected
         }
     }
 
@@ -1497,8 +1486,8 @@ import os
         var refusal: (any Error)?
         if let typed, !pauses.contains(where: { $0.hold == hold }) {
             do {
-                typedEdit = try queuedWordEdit(typed.words, to: typed.text, seenMoves: typed.seenMoves,
-                                               expecting: typed.expected, seenEpoch: typed.seenEpoch)
+                typedEdit = try queuedWordEdit(typed.words, to: typed.text, seen: typed.seen,
+                                               expecting: typed.expected)
             } catch {
                 refusal = error
             }
@@ -1568,8 +1557,8 @@ import os
         var typedEdit: Operation?
         if let typed {
             do {
-                typedEdit = try queuedWordEdit(typed.words, to: typed.text, seenMoves: typed.seenMoves,
-                                               expecting: typed.expected, seenEpoch: typed.seenEpoch)
+                typedEdit = try queuedWordEdit(typed.words, to: typed.text, seen: typed.seen,
+                                               expecting: typed.expected)
             } catch {
                 Self.log.error("Session \(self.sessionID, privacy: .public): the edit open at close was not saved (\(ProcessSpawner.logCategory(error), privacy: .public))")
                 refusedAtClose = (TranscriptWordEdit.cleaned(typed.text), error.localizedDescription)

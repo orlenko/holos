@@ -1470,7 +1470,7 @@ func reviewASplitJoinedBackReadsAsBeforeTheSplit() async throws {
     #expect(joined.map { $0.turns.map { review.text(of: $0) }.joined(separator: " ") } == text)
     #expect(try reviewJournal(session) == journal, "Nothing saved.")
     // Return at the start of the same word: it starts the part's turn, so the row breaks there again.
-    let place = try review.splitPlace(at: word, after: false, seenMoves: nil, seenEpoch: nil)
+    let place = try review.splitPlace(at: word, after: false, seen: nil)
     #expect(place == .turnStart(turnID: join.turnID))
     breaks.insert(before: try #require(review.turn(join.turnID)), runID: review.projection.runID)
     #expect(shown().count == 2)

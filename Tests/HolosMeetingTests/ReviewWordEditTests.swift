@@ -767,13 +767,16 @@ func anEditIsNeverSavedOverAWordChangedElsewhereInItsPlace() async throws {
     #expect(review.words(of: "T1")[1].text == "crowd" && review.canEditWords)
     // The field's edit, queued with the words as it showed them: refused, saying what was typed; nothing written.
     let refused = await #expect(throws: HolosError.self) {
-        try await review.editWords([seen.ref], to: "Claude", seenMoves: review.wordMoves.count,
+        try await review.editWords([seen.ref], to: "Claude",
+                                   seen: ReviewRevision(moves: review.wordMoves.count, wordsEpoch: review.wordsEpoch),
                                    expecting: [seen.shown])
     }
     #expect(refused?.localizedDescription.contains("what you typed: “Claude”") == true)
     #expect(try wordEditCurrent(session).segments[0].text == "ask crowd now")
     // The same when a maintenance pause takes the field's edit, and when the window's close does.
-    let stale = ReviewSession.TypedEdit(words: [seen.ref], text: "Claude", seenMoves: review.wordMoves.count,
+    let stale = ReviewSession.TypedEdit(words: [seen.ref], text: "Claude",
+                                        seen: ReviewRevision(moves: review.wordMoves.count,
+                                                             wordsEpoch: review.wordsEpoch),
                                         expected: [seen.shown])
     let hold = ReviewMaintenance.Hold(.recover)
     let paused = await review.pause(hold, reason: "Voice is Local is recovering this meeting.", typed: stale)
@@ -784,7 +787,9 @@ func anEditIsNeverSavedOverAWordChangedElsewhereInItsPlace() async throws {
     try await review.editWords([seen.ref], to: "Claude", expecting: ["crowd"])
     #expect(try wordEditCurrent(session).segments[0].text == "ask Claude now")
     let closingStale = ReviewSession.TypedEdit(words: [review.words(of: "T1")[2].ref], text: "later",
-                                               seenMoves: review.wordMoves.count, expected: ["then"])
+                                               seen: ReviewRevision(moves: review.wordMoves.count,
+                                                                    wordsEpoch: review.wordsEpoch),
+                                               expected: ["then"])
     await review.close(typed: closingStale)
     #expect(try wordEditCurrent(session).segments[0].text == "ask Claude now", "Not saved over “now”.")
 }
@@ -1074,9 +1079,9 @@ func anEditMadeOnTheWordsShownBeforeARereadEditsTheWordShown() async throws {
     review.beforeWordChangeReread = {
         review.beforeWordChangeReread = nil
         seen.set((review.shownWordMoves.count, review.wordMoves.count))
-        let moves = review.shownWordMoves.count
+        let moves = ReviewRevision(moves: review.shownWordMoves.count, wordsEpoch: review.wordsEpoch)
         edit.set(Task { @MainActor in
-            _ = try await review.editWords([secondGo], to: "stop", seenMoves: moves, expecting: ["go"])
+            _ = try await review.editWords([secondGo], to: "stop", seen: moves, expecting: ["go"])
         })
     }
     try await review.editWords(wordEditRefs(review, "T1", [0]), to: "one more")
@@ -1117,20 +1122,20 @@ func aSplitChosenBeforeAWordEditSavedFollowsItsWord() async throws {
     ])
     let review = try await wordEditOpen(session)
     // The Split Turn sheet opens; meanwhile "one" becomes "one and more", moving every later word by two.
-    let seen = review.wordMoves.count
+    let seen = ReviewRevision(moves: review.wordMoves.count, wordsEpoch: review.wordsEpoch)
     let shown = review.words(of: "T1")
     try await review.editWords([shown[0].ref], to: "one and more")
     // Split before "four" as the sheet showed it: before "four", never before what is now its old index ("more").
-    try await review.split(turnID: "T1", at: shown[3].ref, seenMoves: seen)
+    try await review.split(turnID: "T1", at: shown[3].ref, seen: seen)
     let turns = review.projection.turns.sorted { $0.start < $1.start }
     #expect(turns.count == 2)
     #expect(review.words(of: turns[1]).map(\.text) == ["four"])
     // A word an edit replaced since: refused.
-    let again = review.wordMoves.count
+    let again = ReviewRevision(moves: review.wordMoves.count, wordsEpoch: review.wordsEpoch)
     let words = review.words(of: turns[0])
     try await review.editWords([words[3].ref], to: "TWO")
     await #expect(throws: HolosError.self) {
-        try await review.split(turnID: turns[0].id, at: words[3].ref, seenMoves: again)
+        try await review.split(turnID: turns[0].id, at: words[3].ref, seen: again)
     }
     await review.close()
 }
@@ -1333,14 +1338,15 @@ func wordsChangedElsewhereAreCountedAndNeverFollowed() async throws {
     #expect(review.wordsEpoch == epoch + 1)
     // An edit of the second "go" as it was chosen (word 2 then): refused, saying what was typed; nothing written.
     let refused = await #expect(throws: HolosError.self) {
-        try await review.editWords([shown[2].ref], to: "stop", seenEpoch: epoch)
+        try await review.editWords([shown[2].ref], to: "stop",
+                                   seen: ReviewRevision(moves: review.shownWordMoves.count, wordsEpoch: epoch))
     }
     #expect(refused?.localizedDescription.contains("what you typed: “stop”") == true)
     #expect(try wordEditCurrent(session).segments[0].text == "One more go go")
     // A split chosen before (at the second "go", word 2 then) is refused, never made at what is word 2 now.
     await #expect(throws: HolosError.self) {
-        try await review.split(turnID: "T1", at: shown[2].ref, seenMoves: review.shownWordMoves.count,
-                               seenEpoch: epoch)
+        try await review.split(turnID: "T1", at: shown[2].ref,
+                               seen: ReviewRevision(moves: review.shownWordMoves.count, wordsEpoch: epoch))
     }
     #expect(review.projection.turns.count == 1)
     await review.close()
@@ -1530,7 +1536,8 @@ func aFieldKeptWhenTheRereadFailedIsQueuedAndSavedAtTheReread() async throws {
     #expect(review.reloadProblem != nil && !review.canEditWords)
     // A new edit is refused; the open field's, kept (`whileUnread`), waits, still queued, for the reread.
     await #expect(throws: HolosError.self) { try await review.editWords([words[2].ref], to: "later") }
-    let kept = Task { try await review.editWords([words[2].ref], to: "today", seenMoves: 0, whileUnread: true) }
+    let seen = ReviewRevision(moves: 0, wordsEpoch: review.wordsEpoch)
+    let kept = Task { try await review.editWords([words[2].ref], to: "today", seen: seen, whileUnread: true) }
     #expect(await eventually { review.queuedOperations == 1 })
     #expect(try wordEditCurrent(session).segments[0].text == "ask Claude now")
     await review.reload()
@@ -1745,19 +1752,23 @@ func aSplitChosenOnAnotherLabelsRunIsRefused() async throws {
     #expect(review.splitRunRefusal(seenRun: chosenOn) == nil && review.splitRunRefusal(seenRun: nil) == nil)
     let other = try #require(review.splitRunRefusal(seenRun: "another-run"))
     let refused = await #expect(throws: HolosError.self) {
-        try await review.split(turnID: "T1", at: review.words(of: "T1")[2].ref, seenRun: "another-run")
+        try await review.split(turnID: "T1", at: review.words(of: "T1")[2].ref,
+                               seen: ReviewRevision(moves: review.shownWordMoves.count, wordsEpoch: review.wordsEpoch,
+                                                    runID: "another-run"))
     }
     #expect(refused?.localizedDescription == other && review.projection.turns.count == 1)
     // A word edit publishes a run keeping the turns: a split chosen before it stands.
     try await review.editWords(wordEditRefs(review, "T1", [0]), to: "Ask")
     #expect(review.projection.runID != chosenOn && review.splitRunRefusal(seenRun: chosenOn) == nil)
-    try await review.split(turnID: "T1", at: review.words(of: "T1")[2].ref, seenRun: chosenOn)
+    try await review.split(turnID: "T1", at: review.words(of: "T1")[2].ref,
+                           seen: ReviewRevision(moves: review.shownWordMoves.count, wordsEpoch: review.wordsEpoch,
+                                                runID: chosenOn))
     #expect(review.projection.turns.count == 2)
     await review.close()
 }
 
 /// Where a split asked at a word falls now (`splitPlace`): the word as it was shown when the split was asked
-/// (`seenMoves`), followed through the word edits saved since, never the index read again; before or after it; at a
+/// (`seen`), followed through the word edits saved since, never the index read again; before or after it; at a
 /// turn's start or end; refused when an edit replaced the word, or the words changed elsewhere.
 @Test(.timeLimit(.minutes(1))) @MainActor
 func aSplitPlaceFollowsTheWordThroughEditsSavedSince() async throws {
@@ -1774,25 +1785,26 @@ func aSplitPlaceFollowsTheWordThroughEditsSavedSince() async throws {
     try await review.editWords(wordEditRefs(review, "T1", [0]), to: "please ask")
     let now = review.words(of: "T1")
     #expect(now.map(\.text) == ["please", "ask", "the", "cloud", "now"])
-    #expect(try review.splitPlace(at: asked[2].ref, after: false, seenMoves: seen, seenEpoch: epoch)
+    #expect(try review.splitPlace(at: asked[2].ref, after: false, seen: ReviewRevision(moves: seen, wordsEpoch: epoch))
         == .inside(turnID: "T1", word: now[3].ref), "Before “cloud”, where it is now.")
-    #expect(try review.splitPlace(at: asked[1].ref, after: true, seenMoves: seen, seenEpoch: epoch)
+    #expect(try review.splitPlace(at: asked[1].ref, after: true, seen: ReviewRevision(moves: seen, wordsEpoch: epoch))
         == .inside(turnID: "T1", word: now[3].ref), "After “the”: before “cloud”.")
-    #expect(try review.splitPlace(at: now[0].ref, after: false, seenMoves: nil, seenEpoch: nil)
+    #expect(try review.splitPlace(at: now[0].ref, after: false, seen: nil)
         == .turnStart(turnID: "T1"))
-    #expect(try review.splitPlace(at: now[4].ref, after: true, seenMoves: nil, seenEpoch: nil)
+    #expect(try review.splitPlace(at: now[4].ref, after: true, seen: nil)
         == .turnEnd(turnID: "T1"))
     // The split itself follows it the same way, and says where it split: the second part's first word, now.
-    let second = try await review.split(turnID: "T1", at: asked[2].ref, seenMoves: seen, seenEpoch: epoch)
+    let second = try await review.split(turnID: "T1", at: asked[2].ref,
+                                        seen: ReviewRevision(moves: seen, wordsEpoch: epoch))
     #expect(second == now[3].ref)
     #expect(review.words(of: review.projection.turns[1]).first?.text == "cloud")
     try await review.undo()
     // The word an edit replaced, or words changed elsewhere since: refused.
     #expect(throws: HolosError.self) {
-        try review.splitPlace(at: asked[0].ref, after: false, seenMoves: seen, seenEpoch: epoch)
+        try review.splitPlace(at: asked[0].ref, after: false, seen: ReviewRevision(moves: seen, wordsEpoch: epoch))
     }
     #expect(throws: HolosError.self) {
-        try review.splitPlace(at: asked[2].ref, after: false, seenMoves: seen, seenEpoch: epoch + 1)
+        try review.splitPlace(at: asked[2].ref, after: false, seen: ReviewRevision(moves: seen, wordsEpoch: epoch + 1))
     }
     await review.close()
 }
@@ -1816,13 +1828,13 @@ func aSplitAtAWordTwoTurnsHoldIsTheTurnsItWasChosenIn() async throws {
     }
     let review = try await wordEditOpen(session)
     let yes = WordRef(segmentID: segmentID, word: 2)
-    #expect(try review.splitPlace(at: yes, after: false, in: "T2", seenMoves: nil, seenEpoch: nil)
+    #expect(try review.splitPlace(at: yes, after: false, in: "T2", seen: nil)
         == .inside(turnID: "T2", word: yes))
-    #expect(try review.splitPlace(at: yes, after: false, in: "T1", seenMoves: nil, seenEpoch: nil)
+    #expect(try review.splitPlace(at: yes, after: false, in: "T1", seen: nil)
         == .inside(turnID: "T1", word: yes))
     // A turn that does not hold the word: no place.
     #expect(try review.splitPlace(at: WordRef(segmentID: segmentID, word: 0), after: false, in: "T2",
-                                  seenMoves: nil, seenEpoch: nil) == nil)
+                                  seen: nil) == nil)
     await review.close()
 }
 
@@ -1851,9 +1863,9 @@ func aSplitInAnAttachedInterjectionSplitsTheStoredTurn() async throws {
     #expect(attached.interjection == .attached(speakerID: "system:S1") && attached.speakerID == "system:S1")
     #expect(review.projection.turns.first { $0.id == "T2" }?.speakerID == nil, "Stored as it was.")
     let words = review.words(of: "T2")
-    #expect(try review.splitPlace(at: words[0].ref, after: false, in: "T2", seenMoves: nil, seenEpoch: nil)
+    #expect(try review.splitPlace(at: words[0].ref, after: false, in: "T2", seen: nil)
         == .turnStart(turnID: "T2"))
-    #expect(try review.splitPlace(at: words[1].ref, after: false, in: "T2", seenMoves: nil, seenEpoch: nil)
+    #expect(try review.splitPlace(at: words[1].ref, after: false, in: "T2", seen: nil)
         == .inside(turnID: "T2", word: words[1].ref))
     #expect(review.splitRefusal(turnID: "T2", at: words[1].ref) == nil)
     try await review.split(turnID: "T2", at: words[1].ref)
@@ -2382,10 +2394,10 @@ func whatTheOpenFieldHoldsAtCloseIsSavedAndLearned() async throws {
     learner.attach(to: review)
     // The field opened on "cloud"; an edit before it in the segment saved since, moving it.
     let field = wordEditRefs(review, "T1", [2])
-    let seen = review.wordMoves.count
+    let seen = ReviewRevision(moves: review.wordMoves.count, wordsEpoch: review.wordsEpoch)
     try await review.editWords(wordEditRefs(review, "T1", [1]), to: "a lot more")
     // The window closes with "Claude" typed in the field.
-    await review.close(typed: .init(words: field, text: "Claude", seenMoves: seen))
+    await review.close(typed: .init(words: field, text: "Claude", seen: seen))
     #expect(try wordEditCurrent(session).segments[0].text == "ask a lot more Claude now")
     #expect(learner.value("more cloud") == "a lot more Claude",
             "Learned at this close, with the edit beside it (one phrase).")
@@ -2407,8 +2419,9 @@ func whatWasTypedIsKnownUntilTheEditOpenAtCloseIsSaved() async throws {
         for await _ in stream {}
     }
     #expect(review.unsavedWordEdits.isEmpty)
+    let seen = ReviewRevision(moves: review.wordMoves.count, wordsEpoch: review.wordsEpoch)
     let closing = Task { await review.close(typed: .init(words: wordEditRefs(review, "T1", [1]), text: "Claude",
-                                                    seenMoves: review.wordMoves.count)) }
+                                                    seen: seen)) }
     // While the edit saves, quitting can still say what was typed (it logs it when it cannot wait).
     #expect(await eventually { entered.value == 1 })
     #expect(review.unsavedWordEdits == ["Claude"])
@@ -2430,8 +2443,8 @@ func anEditHandedOverIsQueuedBeforeTheCallReturnsSoACloseRightAfterSavesIt() asy
     ])
     let review = try await wordEditOpen(session)
     var committed: [ReviewWordEdit] = []
-    let wait = try #require(try review.queueWordEdit(wordEditRefs(review, "T1", [1]), to: "Claude",
-                                                     seenMoves: review.wordMoves.count,
+    let seen = ReviewRevision(moves: review.wordMoves.count, wordsEpoch: review.wordsEpoch)
+    let wait = try #require(try review.queueWordEdit(wordEditRefs(review, "T1", [1]), to: "Claude", seen: seen,
                                                      committed: { committed.append($0) }))
     #expect(review.unsavedWordEdits == ["Claude"], "Queued before the call returned.")
     // Closed at once (a quit), without waiting for the edit first: the close saves it.
@@ -2459,11 +2472,11 @@ func wordEditsThatFailWhileClosingAreKnownWithWhatWasTyped() async throws {
         entered.update { $0 += 1 }
         for await _ in stream {}
     }
-    let seen = review.wordMoves.count
-    let wait = try #require(try review.queueWordEdit(wordEditRefs(review, "T1", [1]), to: "Claude", seenMoves: seen))
+    let seen = ReviewRevision(moves: review.wordMoves.count, wordsEpoch: review.wordsEpoch)
+    let wait = try #require(try review.queueWordEdit(wordEditRefs(review, "T1", [1]), to: "Claude", seen: seen))
     #expect(await eventually { entered.value == 1 })
     let closing = Task { await review.close(typed: .init(words: wordEditRefs(review, "T1", [3]), text: "thanks",
-                                                    seenMoves: seen)) }
+                                                    seen: seen)) }
     #expect(await eventually { review.unsavedWordEdits == ["Claude", "thanks"] })
     // Changed outside meanwhile: both saves are refused.
     var outside = try wordEditCurrent(session)
@@ -2493,13 +2506,13 @@ func everyWordEditNotSavedYetIsKnownWithWhatWasTyped() async throws {
         entered.update { $0 += 1 }
         for await _ in stream {}
     }
-    let seen = review.wordMoves.count
-    let first = Task { try await review.editWords(wordEditRefs(review, "T1", [1]), to: "Claude", seenMoves: seen) }
+    let seen = ReviewRevision(moves: review.wordMoves.count, wordsEpoch: review.wordsEpoch)
+    let first = Task { try await review.editWords(wordEditRefs(review, "T1", [1]), to: "Claude", seen: seen) }
     #expect(await eventually { entered.value == 1 })
-    let second = Task { try await review.editWords(wordEditRefs(review, "T1", [2]), to: "today", seenMoves: seen) }
+    let second = Task { try await review.editWords(wordEditRefs(review, "T1", [2]), to: "today", seen: seen) }
     #expect(await eventually { review.unsavedWordEdits.count == 2 })
     let closing = Task { await review.close(typed: .init(words: wordEditRefs(review, "T1", [3]), text: "thanks",
-                                                    seenMoves: seen)) }
+                                                    seen: seen)) }
     #expect(await eventually { review.unsavedWordEdits == ["Claude", "today", "thanks"] })
     release.finish()
     _ = try await first.value
@@ -3189,19 +3202,21 @@ func pausingForACommandSavesWhatTheOpenFieldHolds() async throws {
     let review = try await wordEditOpen(session)
     // A command makes the review read-only while "Claude" is typed in the field: saved before the command starts.
     let hold = ReviewMaintenance.Hold(.recover)
+    var seen = ReviewRevision(moves: review.wordMoves.count, wordsEpoch: review.wordsEpoch)
     let unsaved = await review.pause(hold, reason: "Voice is Local is recovering this meeting.",
                                      typed: .init(words: wordEditRefs(review, "T1", [1]), text: "Claude",
-                                             seenMoves: review.wordMoves.count))
+                                             seen: seen))
     #expect(unsaved == nil)
     #expect(try wordEditCurrent(session).segments[0].text == "ask Claude now")
     #expect(review.pauseReason != nil && !review.isEditable)
     await review.resume(hold)
     // One that is refused says what was typed.
     let other = ReviewMaintenance.Hold(.recover)
+    seen = ReviewRevision(moves: review.wordMoves.count, wordsEpoch: review.wordsEpoch)
     let refused = await review.pause(other, reason: "again",
                                      typed: .init(words: [wordEditRefs(review, "T1", [2])[0],
                                                      wordEditRefs(review, "T2", [0])[0]],
-                                             text: "today we", seenMoves: review.wordMoves.count))
+                                             text: "today we", seen: seen))
     #expect(refused?.contains("What you typed: “today we”") == true)
     #expect(try wordEditCurrent(session).segments.map(\.text) == ["ask Claude now", "we will see"])
     await review.resume(other)
