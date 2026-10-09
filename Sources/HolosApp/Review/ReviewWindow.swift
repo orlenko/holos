@@ -142,10 +142,11 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, NSM
         didSet { window.title = "\(meetingTitle) — Review" }
     }
 
+    /// Internal (as `turnList`) for tests that drive the window.
     let window: ReviewKeyWindow
     private let player = ReviewPlayer()
     private let sidebar = SpeakerSidebarView()
-    private let turnList = TurnListView()
+    let turnList = TurnListView()
     /// The speakers pane and the turn list; the speakers pane can be hidden (⌥⌘S).
     private lazy var panes = ReviewPanes(speakers: sidebar, list: turnList)
     /// Hides or shows the speakers pane (also View ▸ Hide Speakers, ⌥⌘S).
@@ -190,14 +191,25 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, NSM
                                     action: nil)
     private let statusLabel = NSTextField(labelWithString: "")
     private let notices = NSStackView()
-    /// The last action's error, until the next action.
-    private var problem: String?
+    /// The last action's error, until the next action. Internal (as the join state below) for `ReviewWindow+Joining`.
+    var problem: String?
     /// What the last action did, when it says so (a term added to the word list), until the next action.
     private var notice: String?
     private var query = ""
-    /// Where "Split Turn" broke a paragraph without splitting a turn: the window's view only, never saved; kept with
-    /// its turn on its run and through this window's word-fix reverts, dropped by any other new run (a relabel).
-    private var paragraphBreaks = ReviewParagraphBreaks()
+    /// Where "Split Turn" broke a paragraph without splitting a turn, and where a row was joined to the row before
+    /// it: the window's view only, never saved; kept with its turn on its run and through this window's word-fix
+    /// reverts, dropped by any other new run (a relabel).
+    var paragraphBreaks = ReviewParagraphBreaks()
+    /// Every row as grouped, before a search filters them: a join finds the row before or after the one it is asked
+    /// at here, never a row the search left next to it.
+    private(set) var allParagraphs: [ReviewParagraph] = []
+    /// How many times every join was dropped (`clearJoins`).
+    var joinsCleared = 0
+    /// How many reverts the labels shown had at the last refresh: one more (an undo saved, here or elsewhere) drops
+    /// every join.
+    private var revertsSeen = 0
+    /// The turns joined to the row before them in this window (for tests).
+    var paragraphJoins: Set<String> { paragraphBreaks.joins }
     private var positioned = false
     /// The player state the sidebar and the footer last showed.
     private var shownPlayerState = StateChangeTracker<ReviewPlayer.State>()
@@ -296,6 +308,8 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, NSM
         player.invalidate()
         refresh()
         if let unsaved = await review.pause(hold, reason: banner, typed: typed) {
+            // A failed save drops every join, as everywhere else.
+            clearJoins()
             problem = unsaved
             refreshFooter()
         }
@@ -599,6 +613,15 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, NSM
             self?.problem = why
             self?.refreshFooter()
         }
+        // Backspace at a row's start in edit mode (forward Delete at its end), or Join With Previous Turn.
+        turnList.resolveJoin = { [weak self] request in
+            self?.resolveJoin(request) ?? .refused("The review is closing.")
+        }
+        turnList.onJoin = { [weak self] join, request in self?.applyJoin(join, request: request) }
+        turnList.onJoinRefused = { [weak self] why in
+            self?.problem = why
+            self?.refreshFooter()
+        }
         // The review turned read-only with a field open (an earlier edit's labels could not be reread, say): its edit
         // is queued all the same, and waits for the reread as the changes before it do.
         turnList.onKeepWordEdit = { [weak self] words, text, movesSeen, wordsEpoch in
@@ -642,7 +665,8 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, NSM
         }
     }
 
-    private func refresh() {
+    /// Internal for tests (a refresh at a chosen moment).
+    func refresh() {
         // Labels that came with another echo mask (a relabel here, a reload, `session echo-analyze`): the playing
         // item's microphone volume follows it.
         if echoMaskFollow.update(review.snapshot.echoMaskIdentity, playerReady: player.isReady) {
@@ -652,11 +676,20 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, NSM
         // A run a word edit or its undo published keeps the turns, and with them the window's paragraph breaks (kept
         // for every turn, a hidden interjection's too).
         let runID = projection.runID
+        // An undo saved here or elsewhere (a command) since the last refresh: every join goes.
+        let reverts = projection.revertedEditIDs.count
+        if reverts > revertsSeen {
+            joinsCleared += 1
+            paragraphBreaks.clearJoins()
+        }
+        revertsSeen = reverts
+        // A break or join made on a split's second part while the split saved names its temporary ID: resolved.
         let breaks = paragraphBreaks.active(in: projection.turns, runID: runID, keepsTurnsOf: { [review] old in
             review.keepsTurns(of: old, in: runID)
-        })
+        }, resolve: { [review] id in review.resolvedTurnID(id) })
         // The turns as shown: short interjections attached to a neighbour or left out (§5.10).
-        var paragraphs = ReviewParagraphs.group(review.shownTurns, breaks: breaks)
+        var paragraphs = ReviewParagraphs.group(review.shownTurns, breaks: breaks, joins: paragraphBreaks.joins)
+        allParagraphs = paragraphs
         // A search shows the paragraphs with a matching turn, whole.
         if !query.isEmpty {
             let matching = Set(review.turns(matching: query).map(\.id))
@@ -833,7 +866,7 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, NSM
         return item
     }
 
-    private func refreshFooter() {
+    func refreshFooter() {
         let projection = review.projection
         let changes = review.changeCount
         let shown = review.shownTurns.count
@@ -945,7 +978,7 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, NSM
     // MARK: - Actions
 
     /// Runs one change; its error shows in the footer until the next action.
-    private func perform(_ change: @escaping @MainActor (ReviewSession) async throws -> Void) {
+    func perform(_ change: @escaping @MainActor (ReviewSession) async throws -> Void) {
         clearTransientMessages()
         let review = self.review
         Task { [weak self] in
@@ -957,12 +990,14 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, NSM
                 guard let self else { return }
                 self.problem = error.localizedDescription
                 self.refreshFooter()
+                // A change that failed: every join goes (they are only how rows read).
+                self.clearJoins()
             }
         }
     }
 
     /// A change begins: the footer stops saying what happened to the one before (a problem, a notice, a term offered).
-    private func clearTransientMessages() {
+    func clearTransientMessages() {
         problem = nil
         notice = nil
         offeredTerm = nil
@@ -1569,6 +1604,8 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, NSM
         } catch is CancellationError {
             return nil
         } catch {
+            // A change that failed: every join goes (they are only how rows read).
+            clearJoins()
             if saved.value {
                 problem = error.localizedDescription
                 refreshFooter()
@@ -1691,7 +1728,9 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, NSM
         refresh()
     }
 
+    /// Undo (⌘Z, the menu): the review's newest change goes back, and every join with it.
     @objc private func undo() {
+        clearJoins()
         perform { review in try await review.undo() }
     }
 
@@ -1929,8 +1968,17 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, NSM
     /// Seconds ← and → move the play head.
     private static let seekStep = 5.0
 
-    /// Shortcuts of the window (Holos has no main menu to carry them).
-    private func handleKey(_ event: NSEvent) -> Bool {
+    /// Whether ⌘Z undoes typing (the text being edited) rather than the review's newest change: in a text field whose
+    /// own undo has something to undo (`typingToUndo`, whatever the text reads now: "cat" typed over "dog" typed over
+    /// "cat" is still typing), or a word's field holding text it did not open with (`unsavedText`: typing put back
+    /// without its undo, after a ⇧-click widened the field or a save failed). Only an untouched field hands ⌘Z to the
+    /// review.
+    static func undoIsTyping(editingText: Bool, typingToUndo: Bool, unsavedText: Bool = false) -> Bool {
+        editingText && (typingToUndo || unsavedText)
+    }
+
+    /// Shortcuts of the window (Holos has no main menu to carry them). Internal for tests.
+    func handleKey(_ event: NSEvent) -> Bool {
         let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
             .subtracting([.numericPad, .function, .capsLock])
         guard let key = event.charactersIgnoringModifiers?.lowercased() else { return false }
@@ -1962,7 +2010,19 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, NSM
             window.performClose(nil)
             return true
         case "z":
-            if editingText { return NSApplication.shared.sendAction(Selector(("undo:")), to: nil, from: window) }
+            // In a text field with typing to undo, ⌘Z undoes the typing (it leaves the review, and its joins, alone);
+            // with none (a word's field opened again after a join, say), it is the review's, as the banner says.
+            let editor = window.firstResponder as? NSTextView
+            let typingToUndo = editor?.undoManager?.canUndo ?? false
+            let unsavedText = editor != nil && editor === turnList.editField.currentEditor()
+                && turnList.wordEdit.map {
+                    TranscriptWordEdit.cleaned(turnList.editField.stringValue) != TranscriptWordEdit.cleaned($0.shown)
+                } == true
+            if Self.undoIsTyping(editingText: editingText, typingToUndo: typingToUndo, unsavedText: unsavedText) {
+                // Taken even when the field has no undo for its text: the review's change behind it stays.
+                _ = NSApplication.shared.sendAction(Selector(("undo:")), to: nil, from: window)
+                return true
+            }
             undo()
             return true
         case "x":
@@ -2100,6 +2160,8 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, NSM
                                            committed: committed)
             return nil
         } catch {
+            // A change that failed: every join goes, as for any other (`saveEdit`).
+            clearJoins()
             return saved ? nil : Self.withTyped(error.localizedDescription, text)
         }
     }
@@ -2249,121 +2311,5 @@ private final class ExportFormatChooser: NSObject {
         panel.allowedContentTypes = [type]
         let base = (panel.nameFieldStringValue as NSString).deletingPathExtension
         panel.nameFieldStringValue = base + "." + format.rawValue
-    }
-}
-
-/// Where to split a row: its words in a read-only text; a click puts the caret where the second part starts. "Play
-/// from Here" plays from that word. At a word that starts a turn of the row, nothing is split: the row only breaks
-/// there.
-@MainActor
-private final class SplitSheet: NSObject, NSTextViewDelegate {
-    let panel: NSPanel
-    private let words: [ReviewWord]
-    /// Indices of words that start a turn (other than the first).
-    private let turnStarts: Set<Int>
-    /// Each word's range in the shown text.
-    private var ranges: [NSRange] = []
-    private let scroll = NSTextView.scrollableTextView()
-    private var textView: NSTextView {
-        // `scrollableTextView()` always holds a text view.
-        scroll.documentView as? NSTextView ?? NSTextView()
-    }
-    private let hint = NSTextField(wrappingLabelWithString: "")
-    private let splitButton = NSButton(title: "Split", target: nil, action: nil)
-    private let playButton = NSButton(title: "Play from Here", target: nil, action: nil)
-    private let onPlay: (Double) -> Void
-
-    /// The first word of the second part (an index into `words`), when the caret is after the first word.
-    private(set) var splitIndex: Int?
-
-    init(words: [ReviewWord], turnStarts: Set<Int> = [], onPlay: @escaping (Double) -> Void) {
-        self.words = words
-        self.turnStarts = turnStarts
-        self.onPlay = onPlay
-        panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 520, height: 300), styleMask: [.titled],
-                        backing: .buffered, defer: true)
-        super.init()
-        var text = ""
-        for word in words {
-            if !text.isEmpty { text += " " }
-            let location = (text as NSString).length
-            text += word.text
-            ranges.append(NSRange(location: location, length: (word.text as NSString).length))
-        }
-        let title = NSTextField(labelWithString: "Click in the text where the second part starts.")
-        title.font = .systemFont(ofSize: 13, weight: .medium)
-        let textView = self.textView
-        textView.isRichText = false
-        textView.isEditable = false
-        textView.isSelectable = true
-        textView.string = text
-        textView.font = .systemFont(ofSize: 13)
-        textView.delegate = self
-        textView.textContainerInset = NSSize(width: 4, height: 4)
-        scroll.borderType = .bezelBorder
-        scroll.translatesAutoresizingMaskIntoConstraints = false
-        hint.textColor = .secondaryLabelColor
-        splitButton.keyEquivalent = "\r"
-        splitButton.target = self
-        splitButton.action = #selector(split)
-        playButton.target = self
-        playButton.action = #selector(play)
-        let cancel = NSButton(title: "Cancel", target: self, action: #selector(cancel))
-        cancel.keyEquivalent = "\u{1b}"
-        let buttons = NSStackView(views: [playButton, NSView(), cancel, splitButton])
-        let stack = NSStackView(views: [title, scroll, hint, buttons])
-        stack.orientation = .vertical
-        stack.alignment = .leading
-        stack.spacing = 8
-        stack.edgeInsets = NSEdgeInsets(top: 16, left: 16, bottom: 16, right: 16)
-        stack.translatesAutoresizingMaskIntoConstraints = false
-        let content = NSView()
-        content.addSubview(stack)
-        NSLayoutConstraint.activate([
-            stack.leadingAnchor.constraint(equalTo: content.leadingAnchor),
-            stack.trailingAnchor.constraint(equalTo: content.trailingAnchor),
-            stack.topAnchor.constraint(equalTo: content.topAnchor),
-            stack.bottomAnchor.constraint(equalTo: content.bottomAnchor),
-            scroll.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -32),
-            scroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 150),
-            hint.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -32),
-            buttons.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -32),
-        ])
-        panel.contentView = content
-        panel.initialFirstResponder = textView
-        update()
-    }
-
-    func textViewDidChangeSelection(_ notification: Notification) { update() }
-
-    /// The word containing the caret (or the next one after it) starts the second part; never the first word.
-    private func update() {
-        let caret = textView.selectedRange().location
-        let index = ranges.firstIndex { $0.location + $0.length > caret }
-        if let index, index > 0 {
-            splitIndex = index
-            hint.stringValue = "The second part starts at “\(words[index].text)” (\(TimeFormat.clock(words[index].start)))."
-                + (turnStarts.contains(index) ? " A turn already starts there, so the text only breaks there." : "")
-        } else {
-            splitIndex = nil
-            hint.stringValue = "Click after the first word, where the second part starts."
-        }
-        splitButton.isEnabled = splitIndex != nil
-        playButton.isEnabled = true
-    }
-
-    @objc private func split() {
-        guard splitIndex != nil else { return }
-        panel.sheetParent?.endSheet(panel, returnCode: .OK)
-    }
-
-    @objc private func cancel() {
-        panel.sheetParent?.endSheet(panel, returnCode: .cancel)
-    }
-
-    @objc private func play() {
-        let caret = textView.selectedRange().location
-        let index = ranges.firstIndex { $0.location + $0.length > caret } ?? 0
-        onPlay(words[index].start)
     }
 }
