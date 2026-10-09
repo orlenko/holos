@@ -15,6 +15,8 @@ natural voices' catalog and pack install (their backend is in `HolosPocket`).
 - `NaturalVoiceModels` and `NaturalVoicePackFiles`: a pack's folder (`<supportRoot>/Models/pocket-tts/<pack>`,
   `HOLOS_POCKET_MODELS_DIR`), its install (staging, checks, warm-up, the `installed.json` marker with the commit and
   file inventory), status and readiness. The download and check steps come from `HolosPocket`.
+- `SpokenNumbers`: the numbers a text says, by value, from digits or English and French number words, for comparing
+  a paragraph of numbers with what a recognizer heard.
 - `ExclusivePublisher`: moves a finished file into place without ever replacing an existing one; every file the
   renderer and the reading pipeline publish goes through `publish`.
 
@@ -36,4 +38,4 @@ natural voices' catalog and pack install (their backend is in `HolosPocket`).
 
 **Tests:** `Tests/HolosSynthesisTests`. `NativeSpeechRendererTests` renders real speech to files and
 `AudioBookWriterTests` joins generated tones (both `.serialized`); `NaturalVoiceInstallTests` installs fake packs in
-temporary folders. Nothing is played aloud.
+temporary folders; `SpokenNumbersTests` is pure. Nothing is played aloud.
