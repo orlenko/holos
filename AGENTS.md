@@ -46,9 +46,8 @@ Known exceptions today (not precedents; do not add to them):
 
 - `HolosCore` holds `Lexicon` (AppKit), `Corrections` (file I/O, flock) and app-only flows (`SetupAssistantFlow`,
   `SettingsSearch`, `PermissionButtons`, …).
-- Session paths are also built outside HolosStorage: `<id>.holos` folder names in `SessionLocator`,
-  `SessionCatalog`, `SessionImporter`, `VoiceProfileService`, `MeetingController` and two CLI commands;
-  HolosEvaluation's `EvalPaths` (`eval/`, `derived/eval-cloud/`); and names inside a session in HolosMeeting:
+- Session paths are also built outside HolosStorage: `<id>.holos` folder names in two CLI commands
+  (`RecordControl`, `People`); HolosEvaluation's `EvalPaths` (`eval/`, `derived/eval-cloud/`); and names inside a session in HolosMeeting:
   `stop.request` (`RecordingWorkflow`), `control/<id>.json` (`RecorderChannel`), `derived/deep-<track>-16k.caf`
   (`DeepTranscriptionStage`), `echo/frames-<hash>.bin` (`EchoAnalysisStage`), `exports/edited-<stamp>.<ext>`
   (`SessionExports`).
@@ -138,6 +137,14 @@ Exist today:
 - Session files: `SessionPaths`, `AtomicFile` (`write`, `create`, `append`, `readJSON`, `readIfPresent`,
   `removeTree`), `AtomicFile.openFolder` (no symlink following; internal to HolosStorage), `SessionArchive`
   (`openForMaintenance(at:lease:)`, `recover(at:lease:)`), `TranscriptPointer`.
+- Session folder names: `SessionPaths.folder(for:in:)` / `folderName(for:)` build `<id>.holos`;
+  `SessionPaths.parse(folderName:)` gives the ID of an `<uppercase UUID>.holos` name; `isSessionFolderName` (any
+  `<something>.holos`, renamed folders included) and `isListedSessionFolderName` (the same, not hidden) decide what
+  counts as a session folder.
+- Versioned JSON files: `VersionedFile<T: ValidatedDecodable>` (bounded read, newer `schemaVersion` refused before
+  decoding, `HolosJSON`, then `validate`). The transcript pointer and `SessionFiles`' transcript, `meeting.json` and
+  `postprocess.json` readers use it; the other versioned readers are not yet migrated (they share
+  `SchemaVersion.decode` or check the version by hand; `Sources/HolosStorage/README.md`).
 - Locks: `SessionArchive.acquireProcessingLease` / `ProcessingLease`, `withSpeakerLock`, `isProcessing`,
   `SpeakerProfileStore.update`/`withLockedDatabase`.
 - JSON and errors: `HolosJSON` (session files and the HolosStorage stores; new persisted files use it too; the
@@ -158,8 +165,7 @@ Exist today:
   `docs/meeting-design.md §1.5`.
 
 Planned, see the architecture roadmap (none of these exist yet; do not reference them as if they did):
-`TranscriptPublisher` and `withMaintenanceArchive` (one publish path for transcripts), `VersionedFile<T>` (one
-schema-checked decoder), `SessionPaths.folder`/`parse` (one `<id>.holos` naming rule), `SessionGeneration`
+`TranscriptPublisher` and `withMaintenanceArchive` (one publish path for transcripts), `SessionGeneration`
 (derived-data stamps), `Drainable` (pending work at close and quit), `ReviewRevision` (revision-stamped Review
 commands), a lock-token type.
 

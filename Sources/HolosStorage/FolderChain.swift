@@ -203,7 +203,7 @@ extension AtomicFile {
     }
 
     /// Whether `name` is a session folder name (`<id>.holos`).
-    static func isSessionFolderName(_ name: String) -> Bool { name.count > 6 && name.hasSuffix(".holos") }
+    static func isSessionFolderName(_ name: String) -> Bool { SessionPaths.isSessionFolderName(name) }
 
     /// Binds the session folder path `directory` (named `<id>.holos`) to the open folder `folder` until the returned
     /// pin is released: from then on `openFolder` reaches `directory`, and every folder and file below it, through a

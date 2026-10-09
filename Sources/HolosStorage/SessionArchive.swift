@@ -95,6 +95,20 @@ public struct RecoveryReport: Sendable, Equatable {
 }
 
 /// The only mutable owner of a session archive. A POSIX advisory lock is held until finish or deinit.
+///
+/// Invariants:
+/// 1. `directory` is `SessionPaths.folderName(for: id)`, named in the manifest; `id` is an uppercase UUID when
+///    created, and any `readManifest` accepts (`validToken`) when reopened.
+/// 2. While the writer is open it holds the session's writer lock; once closed (`finish`, `releaseLock`) every
+///    write throws, and the lock is released unless `finish(keepingLock:)` keeps it.
+/// 3. `manifest` is the last snapshot read or committed, changed only after `manifest.json` is written (a write
+///    that throws after its rename leaves disk newer until the archive is reopened).
+/// 4. Events are numbered from `nextSequence` upward, one each; a failed append uses no number and truncates its
+///    partial line as best it can; a torn last line found on opening (a crash, a failed truncation) is repaired first.
+/// 5. Group commit: after every transition (append, immediate sync, `setJournalSync`, a flush firing or failing,
+///    `finish`) a dirty, open, interval-mode journal has exactly one pending flush, due one interval after
+///    `lastJournalSync` (or after `journalFlushFailedAt`, once a flush has failed since); any other journal has
+///    none. Every successful sync goes through `journalSynced(at:)`, which drops the pending flush.
 public actor SessionArchive {
     public nonisolated let directory: URL
     public nonisolated let id: String
@@ -117,11 +131,7 @@ public actor SessionArchive {
     private var lockFD: Int32
     private var closed = false
 
-    // Group commit keeps one invariant after every transition (append, immediate sync, `setJournalSync`, a
-    // flush firing or failing, `finish`): a dirty, open, interval-mode journal has exactly one pending flush, due
-    // one interval after `lastJournalSync` (or after `journalFlushFailedAt`, once a flush has failed since);
-    // any other journal has none. Every successful sync goes through `journalSynced(at:)`, which drops the
-    // pending flush.
+    // Group commit: invariant 5.
     private var journalSync: JournalSync = .everyEvent
     private var lastJournalSync: ContinuousClock.Instant?
     private var journalDirty = false
@@ -154,7 +164,7 @@ public actor SessionArchive {
             throw HolosError.invalidInput("A session ID must be an uppercase UUID, like \(UUID().uuidString).")
         }
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-        let directory = root.appendingPathComponent("\(id).holos", isDirectory: true)
+        let directory = SessionPaths.folder(for: id, in: root)
         guard mkdir(directory.path, 0o700) == 0 else {
             let code = errno
             if code == EEXIST { throw HolosError.invalidInput("A session with ID \(id) already exists.") }
@@ -178,9 +188,7 @@ public actor SessionArchive {
     /// first (`AtomicFile.pinSessionFolder`), as an import does. The caller fsyncs the folder holding `folder`.
     public static func create(inEmptyFolder folder: Int32, directory: URL, name: String, source: AudioSource,
                               locale: String, backend: SpeechBackend) throws -> SessionArchive {
-        let id = directory.deletingPathExtension().lastPathComponent
-        guard directory.isFileURL, directory.pathExtension == "holos",
-              UUID(uuidString: id)?.uuidString == id,
+        guard directory.isFileURL, let id = SessionPaths.parse(folderName: directory.lastPathComponent),
               !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, !locale.isEmpty else {
             throw HolosError.invalidInput("Invalid archive folder, name, or locale.")
         }
@@ -618,7 +626,7 @@ public actor SessionArchive {
         }
         let manifest = try HolosJSON.decoder().decode(SessionManifest.self, from: data)
         guard manifest.schemaVersion == 1, validToken(manifest.id),
-              directory.lastPathComponent == "\(manifest.id).holos",
+              directory.lastPathComponent == SessionPaths.folderName(for: manifest.id),
               !manifest.name.isEmpty, !manifest.locale.isEmpty, !manifest.status.isEmpty,
               Set(manifest.chunks.map(\.id)).count == manifest.chunks.count,
               Set(manifest.chunks.map(\.relativePath)).count == manifest.chunks.count,

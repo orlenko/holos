@@ -215,7 +215,7 @@ public enum SessionCatalog {
         } catch {
             let folder = session.standardizedFileURL.lastPathComponent
             return SessionSummary(
-                id: folder.hasSuffix(".holos") ? String(folder.dropLast(6)) : folder, directory: session,
+                id: SessionPaths.stem(ofFolderName: folder), directory: session,
                 name: folder, createdAt: folderCreationDate(session), source: .microphone, state: .damaged,
                 manifestStatus: "", phase: phase, pid: pid, liveness: liveness, bytes: sizes.bytes,
                 derivedBytes: sizes.derived, audioDeleted: audioDeleted(session, sessionID: nil))
@@ -363,7 +363,7 @@ public enum SessionCatalog {
         struct ManifestID: Decodable { var id: String }
         var unsure = false
         for folder in sessionFolders(in: root) {
-            if folder.deletingPathExtension().lastPathComponent.caseInsensitiveCompare(id) == .orderedSame {
+            if SessionPaths.stem(ofFolderName: folder.lastPathComponent).caseInsensitiveCompare(id) == .orderedSame {
                 return true
             }
             // Only a regular file is read (never followed, never a FIFO that would block), and at most 1 MiB: a missing
@@ -390,7 +390,7 @@ public enum SessionCatalog {
     /// The `.holos` folders directly inside `root`.
     static func sessionFolders(in root: URL) -> [URL] {
         guard let names = try? FileManager.default.contentsOfDirectory(atPath: root.path) else { return [] }
-        return names.filter { $0.hasSuffix(".holos") && !$0.hasPrefix(".") && $0.count > 6 }.sorted().compactMap { name in
+        return names.filter(SessionPaths.isListedSessionFolderName).sorted().compactMap { name in
             let url = root.appendingPathComponent(name, isDirectory: true)
             var info = stat()
             guard lstat(url.path, &info) == 0, (info.st_mode & S_IFMT) == S_IFDIR else { return nil }
