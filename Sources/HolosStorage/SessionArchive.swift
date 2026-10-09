@@ -97,13 +97,14 @@ public struct RecoveryReport: Sendable, Equatable {
 /// The only mutable owner of a session archive. A POSIX advisory lock is held until finish or deinit.
 ///
 /// Invariants:
-/// 1. `directory` is named `SessionPaths.folderName(for: id)`, `id` is an uppercase UUID
-///    (`SessionPaths.parse(folderName:)` gives it back), and the manifest names `id`.
+/// 1. `directory` is `SessionPaths.folderName(for: id)`, named in the manifest; `id` is an uppercase UUID when
+///    created, and any `readManifest` accepts (`validToken`) when reopened.
 /// 2. While the writer is open it holds the session's writer lock; once closed (`finish`, `releaseLock`) every
 ///    write throws, and the lock is released unless `finish(keepingLock:)` keeps it.
-/// 3. `manifest` is what `manifest.json` holds: it changes only after the file is written.
-/// 4. Events are numbered from `nextSequence` upward, one each; a failed append leaves no partial line and uses no
-///    number. A journal opened with a torn last line is repaired before the first append.
+/// 3. `manifest` is the last snapshot read or committed, changed only after `manifest.json` is written (a write
+///    that throws after its rename leaves disk newer until the archive is reopened).
+/// 4. Events are numbered from `nextSequence` upward, one each; a failed append uses no number and truncates its
+///    partial line as best it can; a torn last line found on opening (a crash, a failed truncation) is repaired first.
 /// 5. Group commit: after every transition (append, immediate sync, `setJournalSync`, a flush firing or failing,
 ///    `finish`) a dirty, open, interval-mode journal has exactly one pending flush, due one interval after
 ///    `lastJournalSync` (or after `journalFlushFailedAt`, once a flush has failed since); any other journal has

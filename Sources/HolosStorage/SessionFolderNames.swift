@@ -4,8 +4,8 @@ import Foundation
 ///
 /// Two rules answer two questions:
 /// - Which session is a folder named after (`parse(folderName:)`): only `<ID>.holos` where ID is an uppercase UUID
-///   written as `UUID().uuidString` writes it (8-4-4-4-12 hex digits, A–F uppercase). Every session folder Holos has
-///   made is named so: `SessionArchive.create` has always named it `<UUID().uuidString>.holos` or refused an ID
+///   written as `UUID().uuidString` writes it (8-4-4-4-12 hex digits, A–F uppercase). Session folders are created
+///   only so: `SessionArchive.create` names its folder `folderName(for:)` of `UUID().uuidString` and refuses an ID
 ///   that is not an uppercase UUID, an import names its folder the same way, and `SessionArchive.readManifest`
 ///   refuses a folder not named `<manifest.id>.holos`. A lowercase or braced UUID, a name with more around the UUID
 ///   (extra dots, spaces, a leading dot), and any other name parse to nil.
