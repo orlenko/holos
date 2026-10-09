@@ -88,11 +88,16 @@ import Synchronization
                 do {
                     try Task.checkCancellation()
                     let pid = try launch(arguments, errors) { code in
-                        if let pid = child.pid { NaturalVoiceHelpers.ended(pid) }
+                        // Ended (and reaped) before anything else hears of it: a Stop after this signals no one, so
+                        // never a process that reuses its pid.
+                        if let pid = child.ended() { NaturalVoiceHelpers.ended(pid) }
                         continuation.resume(returning: code)
                     }
-                    NaturalVoiceHelpers.started(pid)
-                    if child.started(pid) { signal(pid) }
+                    let started = child.started(pid)
+                    if started.running {
+                        NaturalVoiceHelpers.started(pid)
+                        if started.cancelled { signal(pid) }
+                    }
                 } catch {
                     continuation.resume(throwing: error)
                 }
@@ -120,23 +125,32 @@ import Synchronization
 
     /// The child's pid once started, and whether the render was cancelled before or after.
     private final class ChildState: Sendable {
-        private let state = Mutex<(pid: Int32?, cancelled: Bool)>((nil, false))
+        private let state = Mutex<(pid: Int32?, cancelled: Bool, ended: Bool)>((nil, false, false))
 
-        /// Records the pid; true when the render was cancelled before it started (the child is stopped at once).
-        func started(_ pid: Int32) -> Bool {
+        /// Records the pid of the child just launched: whether it still runs (it may have ended already), and whether
+        /// the render was cancelled before (the child is then stopped at once).
+        func started(_ pid: Int32) -> (running: Bool, cancelled: Bool) {
             state.withLock { value in
+                guard !value.ended else { return (false, value.cancelled) }
                 value.pid = pid
-                return value.cancelled
+                return (true, value.cancelled)
             }
         }
 
-        var pid: Int32? { state.withLock { $0.pid } }
+        /// The child has exited and been reaped: its pid, forgotten here so no later cancel signals it.
+        func ended() -> Int32? {
+            state.withLock { value in
+                value.ended = true
+                defer { value.pid = nil }
+                return value.pid
+            }
+        }
 
-        /// Marks the render cancelled; the pid to stop when the child is running.
+        /// Marks the render cancelled; the pid to stop while the child runs, nil once it has ended.
         func cancel() -> Int32? {
             state.withLock { value in
                 value.cancelled = true
-                return value.pid
+                return value.ended ? nil : value.pid
             }
         }
     }

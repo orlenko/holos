@@ -394,6 +394,26 @@ import Testing
         }
     }
 
+    @Test func aStopAfterTheToolExitedSignalsNoOne() async throws {
+        let signals = Mutex<[Int32]>([])
+        let exit = Mutex<(@MainActor (Int32) -> Void)?>(nil)
+        let renderer = HelperNaturalRenderer(launch: { _, _, onExit in
+            exit.withLock { $0 = onExit }
+            return 4_321
+        }, installedPacks: { [.english] }, signal: { pid in signals.withLock { $0.append(pid) } },
+           gate: NaturalVoiceHelperGate())
+        let output = try folder().appendingPathComponent("p.caf")
+        let task = Task { try await renderer.render(text: "Hello.", voiceIdentifier: "pocket:en:alba", rate: nil, to: output) }
+        while exit.withLock({ $0 == nil }) { await Task.yield() }
+        // The tool exits (and is reaped); a Stop comes in the same turn, before the render has finished.
+        exit.withLock { $0 }?(1)
+        task.cancel()
+        _ = try? await task.value
+        // Its pid may belong to another process by now: nothing is signalled.
+        #expect(signals.withLock { $0 }.isEmpty)
+        #expect(NaturalVoiceHelpers.stopAll { _ in }.isEmpty)
+    }
+
     @Test func aStopSignalsTheTool() async throws {
         let launches = Launches()
         let exit = Mutex<(@MainActor (Int32) -> Void)?>(nil)
