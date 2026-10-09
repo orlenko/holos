@@ -472,7 +472,10 @@ private let leaseMessage = "Error: Another Voice is Local process is processing 
     // A scan finds it again.
     world.echo.queue = [EchoCatchUpSchedule.Candidate(sessionID: "C", path: "/m/C.holos", createdAt: base)]
     world.jobs.schedule()
+    // Let any launch the rescan made reach the runner before checking that none was made.
+    #expect(await world.settle())
     #expect(world.runner.started == ["echo C"])
+    #expect(!world.jobs.isRunning, "Nothing was started for it.")
     #expect(!world.jobs.catchUpReady(), "Automatic work does not wait for it.")
     // The next launch.
     let next = World(echo: ["C"])
