@@ -3,6 +3,7 @@ import HolosAudio
 import HolosCore
 @testable import HolosMeeting
 import HolosStorage
+import HolosTestSupport
 import Testing
 
 // A capture stop after the frame stream already ended is cleanup (docs/meeting-design.md §4.2, §4.6 step 1): its
@@ -50,7 +51,7 @@ private func recorderAudio(track: String = "mic", from start: Double = 0, count:
 /// the recording still finishes as a requested stop with its audio saved.
 @Test(.timeLimit(.minutes(1))) @MainActor
 func stopAfterUserStoppedSharingIsCleanup() async throws {
-    let temp = try TemporaryDirectory()
+    let temp = try TemporaryDirectory("meeting", permissions: 0o700)
     defer { temp.remove() }
     let capture = RecorderEndingCapture(try recorderAudio(track: "system"), end: CaptureInterruption.userStoppedSharing,
                                         stopError: recorderAlreadyStopped)
@@ -71,7 +72,7 @@ func stopAfterUserStoppedSharingIsCleanup() async throws {
 /// own message, not an incomplete recording blamed on the redundant stop.
 @Test(.timeLimit(.minutes(1))) @MainActor
 func stopAfterAFailedStartIsCleanup() async throws {
-    let temp = try TemporaryDirectory()
+    let temp = try TemporaryDirectory("meeting", permissions: 0o700)
     defer { temp.remove() }
     let capture = RecorderEndingCapture([], end: HolosError.unavailable("The display went away."),
                                         stopError: recorderAlreadyStopped)
@@ -92,7 +93,7 @@ func stopAfterAFailedStartIsCleanup() async throws {
 /// and the recording ends normally.
 @Test(.timeLimit(.minutes(1))) @MainActor
 func stopAfterACaptureFailureIsCleanup() async throws {
-    let temp = try TemporaryDirectory()
+    let temp = try TemporaryDirectory("meeting", permissions: 0o700)
     defer { temp.remove() }
     let first = RecorderEndingCapture(try recorderAudio(), end: HolosError.io("Gone."), stopError: recorderAlreadyStopped)
     let second = RecorderEndingCapture(try recorderAudio(from: 1), end: nil, stopError: nil)
@@ -120,7 +121,7 @@ func stopAfterACaptureFailureIsCleanup() async throws {
 /// recording is marked incomplete.
 @Test(.timeLimit(.minutes(1))) @MainActor
 func failedStopOfARunningCaptureIsAnError() async throws {
-    let temp = try TemporaryDirectory()
+    let temp = try TemporaryDirectory("meeting", permissions: 0o700)
     defer { temp.remove() }
     let capture = RecorderEndingCapture(try recorderAudio(), end: nil, stopError: HolosError.io("Stop failed."))
     let stop = ManualStopSource()

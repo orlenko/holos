@@ -3,6 +3,7 @@ import HolosCore
 @testable import HolosMeeting
 import HolosSpeakers
 import HolosStorage
+import HolosTestSupport
 import Testing
 
 // SpeakerEditor (docs/meeting-design.md §4.9, §5.7): compare-and-append edits, undo, and export regeneration.
@@ -30,7 +31,7 @@ private func editorRefusal(_ expected: String, _ body: () throws -> Void,
 }
 
 @Test func editJournalExportEndToEnd() async throws {
-    let temp = try TemporaryDirectory("editor")
+    let temp = try TemporaryDirectory("editor", permissions: 0o700)
     defer { temp.remove() }
     let (session, _, run) = try await SessionFixtures.labelledSession(in: temp.url)
     let view = try SessionFixtures.view(session)
@@ -62,7 +63,7 @@ private func editorRefusal(_ expected: String, _ body: () throws -> Void,
 }
 
 @Test func missingTargetWritesNothing() async throws {
-    let temp = try TemporaryDirectory("editor")
+    let temp = try TemporaryDirectory("editor", permissions: 0o700)
     defer { temp.remove() }
     let (session, _, _) = try await SessionFixtures.labelledSession(in: temp.url)
     let view = try SessionFixtures.view(session)
@@ -85,7 +86,7 @@ private func editorRefusal(_ expected: String, _ body: () throws -> Void,
 }
 
 @Test func editAgainstReplacedHeadIsRefused() async throws {
-    let temp = try TemporaryDirectory("editor")
+    let temp = try TemporaryDirectory("editor", permissions: 0o700)
     defer { temp.remove() }
     let (session, transcript, runA) = try await SessionFixtures.labelledSession(in: temp.url)
     let viewA = try SessionFixtures.view(session)
@@ -113,7 +114,7 @@ private func editorRefusal(_ expected: String, _ body: () throws -> Void,
 }
 
 @Test func concurrentReassignIsRefused() async throws {
-    let temp = try TemporaryDirectory("editor")
+    let temp = try TemporaryDirectory("editor", permissions: 0o700)
     defer { temp.remove() }
     let (session, _, _) = try await SessionFixtures.labelledSession(in: temp.url, speakers: ["S1", "S2", "S3"],
                                                                      duration: 30)
@@ -136,7 +137,7 @@ private func editorRefusal(_ expected: String, _ body: () throws -> Void,
 }
 
 @Test func unrelatedConcurrentEditStillApplies() async throws {
-    let temp = try TemporaryDirectory("editor")
+    let temp = try TemporaryDirectory("editor", permissions: 0o700)
     defer { temp.remove() }
     let (session, _, _) = try await SessionFixtures.labelledSession(in: temp.url, speakers: ["S1", "S2", "S3"],
                                                                      duration: 30)
@@ -155,7 +156,7 @@ private func editorRefusal(_ expected: String, _ body: () throws -> Void,
 }
 
 @Test func batchFingerprintsAreSequential() async throws {
-    let temp = try TemporaryDirectory("editor")
+    let temp = try TemporaryDirectory("editor", permissions: 0o700)
     defer { temp.remove() }
     let (session, _, _) = try await SessionFixtures.labelledSession(in: temp.url)
     let view = try SessionFixtures.view(session)
@@ -177,7 +178,7 @@ private func editorRefusal(_ expected: String, _ body: () throws -> Void,
 }
 
 @Test func exportsRegenerateAfterLockRelease() async throws {
-    let temp = try TemporaryDirectory("editor")
+    let temp = try TemporaryDirectory("editor", permissions: 0o700)
     defer { temp.remove() }
     let (session, _, _) = try await SessionFixtures.labelledSession(in: temp.url)
     try SessionExports.regenerate(session: session)
@@ -196,7 +197,7 @@ private func editorRefusal(_ expected: String, _ body: () throws -> Void,
 }
 
 @Test func undoRevertsNewestBatch() async throws {
-    let temp = try TemporaryDirectory("editor")
+    let temp = try TemporaryDirectory("editor", permissions: 0o700)
     defer { temp.remove() }
     let (session, _, _) = try await SessionFixtures.labelledSession(in: temp.url)
     try SpeakerEditor.apply([.linkProfile(speakerID: "system:S1", profileID: "PROFILE-JIM"),
@@ -247,7 +248,7 @@ private func editorRefusal(_ expected: String, _ body: () throws -> Void,
 }
 
 @Test func undoFromAnOutdatedViewIsRefused() async throws {
-    let temp = try TemporaryDirectory("editor")
+    let temp = try TemporaryDirectory("editor", permissions: 0o700)
     defer { temp.remove() }
     let (session, _, _) = try await SessionFixtures.labelledSession(in: temp.url)
     try SpeakerEditor.apply([.rename(speakerID: "system:S1", name: "Jim")], view: try SessionFixtures.view(session),
@@ -277,7 +278,7 @@ private func editorRefusal(_ expected: String, _ body: () throws -> Void,
 }
 
 @Test func undoNeverRevivesARefusedEdit() async throws {
-    let temp = try TemporaryDirectory("editor")
+    let temp = try TemporaryDirectory("editor", permissions: 0o700)
     defer { temp.remove() }
     let (session, _, run) = try await SessionFixtures.labelledSession(in: temp.url)
     let unnamed = try SessionFixtures.view(session)
@@ -320,7 +321,7 @@ private func editorRefusal(_ expected: String, _ body: () throws -> Void,
 }
 
 @Test func revertThatChangesALaterEditIsRefused() async throws {
-    let temp = try TemporaryDirectory("editor")
+    let temp = try TemporaryDirectory("editor", permissions: 0o700)
     defer { temp.remove() }
     let (session, _, _) = try await SessionFixtures.labelledSession(in: temp.url)
     try SpeakerEditor.apply([.rename(speakerID: "system:S1", name: "A")], view: try SessionFixtures.view(session),
@@ -361,7 +362,7 @@ private func editorRefusal(_ expected: String, _ body: () throws -> Void,
     #expect(SpeakerEditor.cleanName(" \n\u{7}") == nil)
     #expect(SpeakerEditor.cleanName(nil) == nil)
 
-    let temp = try TemporaryDirectory("editor")
+    let temp = try TemporaryDirectory("editor", permissions: 0o700)
     defer { temp.remove() }
     let (session, _, _) = try await SessionFixtures.labelledSession(in: temp.url, speakers: ["S1", "S2", "S3"],
                                                                      duration: 30)
@@ -380,7 +381,7 @@ private func editorRefusal(_ expected: String, _ body: () throws -> Void,
 }
 
 @Test func changesThatLeaveTheLabelsAsTheyAreAreDetected() async throws {
-    let temp = try TemporaryDirectory("editor")
+    let temp = try TemporaryDirectory("editor", permissions: 0o700)
     defer { temp.remove() }
     let (session, _, _) = try await SessionFixtures.labelledSession(in: temp.url)
     try SpeakerEditor.apply([.rename(speakerID: "system:S2", name: "Maria"),
@@ -406,7 +407,7 @@ private func editorRefusal(_ expected: String, _ body: () throws -> Void,
 }
 
 @Test func noOpIsDecidedOnTheCurrentStateUnderTheLock() async throws {
-    let temp = try TemporaryDirectory("editor")
+    let temp = try TemporaryDirectory("editor", permissions: 0o700)
     defer { temp.remove() }
     let (session, _, _) = try await SessionFixtures.labelledSession(in: temp.url, speakers: ["S1", "S2", "S3"],
                                                                      duration: 30)
@@ -455,7 +456,7 @@ private func editorRefusal(_ expected: String, _ body: () throws -> Void,
 }
 
 @Test func nothingToUndoIsDecidedOnTheCurrentStateUnderTheLock() async throws {
-    let temp = try TemporaryDirectory("editor")
+    let temp = try TemporaryDirectory("editor", permissions: 0o700)
     defer { temp.remove() }
     let (session, _, _) = try await SessionFixtures.labelledSession(in: temp.url)
     let empty = try SessionFixtures.view(session)
@@ -476,7 +477,7 @@ private func editorRefusal(_ expected: String, _ body: () throws -> Void,
 // MARK: - session export --output
 
 @Test func exportOutputFileIsNewAndPrivate() throws {
-    let temp = try TemporaryDirectory("editor")
+    let temp = try TemporaryDirectory("editor", permissions: 0o700)
     defer { temp.remove() }
     let folder = temp.url.appendingPathComponent("out")
     try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: false)
@@ -509,7 +510,7 @@ private func editorRefusal(_ expected: String, _ body: () throws -> Void,
 }
 
 @Test func concurrentEditorsSerialize() async throws {
-    let temp = try TemporaryDirectory("editor")
+    let temp = try TemporaryDirectory("editor", permissions: 0o700)
     defer { temp.remove() }
     let (session, _, _) = try await SessionFixtures.labelledSession(in: temp.url)
 
@@ -545,7 +546,7 @@ private func editorRefusal(_ expected: String, _ body: () throws -> Void,
 }
 
 @Test func exportFormatsRenderWithoutWriting() async throws {
-    let temp = try TemporaryDirectory("editor")
+    let temp = try TemporaryDirectory("editor", permissions: 0o700)
     defer { temp.remove() }
     let (session, _, _) = try await SessionFixtures.labelledSession(in: temp.url)
     try SessionExports.regenerate(session: session)
@@ -565,7 +566,7 @@ private func editorRefusal(_ expected: String, _ body: () throws -> Void,
 }
 
 @Test func invalidActionsAreRefusedBeforeWriting() async throws {
-    let temp = try TemporaryDirectory("editor")
+    let temp = try TemporaryDirectory("editor", permissions: 0o700)
     defer { temp.remove() }
     let (session, _, _) = try await SessionFixtures.labelledSession(in: temp.url)
     let view = try SessionFixtures.view(session)
@@ -598,7 +599,7 @@ private func editorRefusal(_ expected: String, _ body: () throws -> Void,
 }
 
 @Test func splitNewSpeakerAndMergeApplyInOneBatch() async throws {
-    let temp = try TemporaryDirectory("editor")
+    let temp = try TemporaryDirectory("editor", permissions: 0o700)
     defer { temp.remove() }
     let (session, _, _) = try await SessionFixtures.labelledSession(in: temp.url, speakers: ["S1", "S2", "S3"],
                                                                      duration: 30)
@@ -632,7 +633,7 @@ private func editorRefusal(_ expected: String, _ body: () throws -> Void,
 // MARK: - SessionLocator
 
 @Test func sessionLocatorResolvesPathsAndIDs() async throws {
-    let temp = try TemporaryDirectory("editor")
+    let temp = try TemporaryDirectory("editor", permissions: 0o700)
     defer { temp.remove() }
     let (session, _, _) = try await SessionFixtures.labelledSession(in: temp.url)
     let manifest = try SessionArchive.readManifest(at: session)
@@ -668,7 +669,7 @@ private func tearJournal(_ session: URL) throws {
 }
 
 @Test func editsAndUndoReportATornLineTheirAppendRepaired() async throws {
-    let temp = try TemporaryDirectory("editor")
+    let temp = try TemporaryDirectory("editor", permissions: 0o700)
     defer { temp.remove() }
     let (session, _, _) = try await SessionFixtures.labelledSession(in: temp.url)
     let cutOff = "The last speaker change in this meeting was cut off while it was being saved and was skipped."
@@ -731,7 +732,7 @@ func appendWithoutJoining(_ actions: [SpeakerEditAction], session: URL) throws {
 }
 
 @Test func renamingToANameAnotherSpeakerHasShowsThemAsOneAndMergesNothing() async throws {
-    let temp = try TemporaryDirectory("editor")
+    let temp = try TemporaryDirectory("editor", permissions: 0o700)
     defer { temp.remove() }
     let (session, _, _) = try await SessionFixtures.labelledSession(in: temp.url)
     try SpeakerEditor.apply([.rename(speakerID: "system:S1", name: "Alice")], view: try SessionFixtures.view(session),
@@ -762,7 +763,7 @@ func appendWithoutJoining(_ actions: [SpeakerEditAction], session: URL) throws {
 }
 
 @Test func anEditOfASpeakerShownJoinedReachesEachStoredOneAsPreviewed() async throws {
-    let temp = try TemporaryDirectory("editor")
+    let temp = try TemporaryDirectory("editor", permissions: 0o700)
     defer { temp.remove() }
     let (session, _, _) = try await SessionFixtures.labelledSession(in: temp.url, speakers: ["S1", "S2", "S3"],
                                                                     duration: 30)
@@ -787,7 +788,7 @@ func appendWithoutJoining(_ actions: [SpeakerEditAction], session: URL) throws {
 }
 
 @Test func twoWindowsNamingTwoSpeakersAlikeAtOnceAreShownAsOne() async throws {
-    let temp = try TemporaryDirectory("editor")
+    let temp = try TemporaryDirectory("editor", permissions: 0o700)
     defer { temp.remove() }
     let (session, _, _) = try await SessionFixtures.labelledSession(in: temp.url)
     let first = try SessionFixtures.view(session)
@@ -802,7 +803,7 @@ func appendWithoutJoining(_ actions: [SpeakerEditAction], session: URL) throws {
 }
 
 @Test func linkingAJoinedSpeakerToThePersonItShowsStillLinksEachStoredOne() async throws {
-    let temp = try TemporaryDirectory("editor")
+    let temp = try TemporaryDirectory("editor", permissions: 0o700)
     defer { temp.remove() }
     let (session, _, _) = try await SessionFixtures.labelledSession(in: temp.url, speakers: ["S1", "S2", "S3"],
                                                                     duration: 30)
@@ -825,7 +826,7 @@ func appendWithoutJoining(_ actions: [SpeakerEditAction], session: URL) throws {
 }
 
 @Test func anEditMadeBeforeAnotherSpeakerJoinedTheGroupIsRefused() async throws {
-    let temp = try TemporaryDirectory("editor")
+    let temp = try TemporaryDirectory("editor", permissions: 0o700)
     defer { temp.remove() }
     let (session, _, _) = try await SessionFixtures.labelledSession(in: temp.url, speakers: ["S1", "S2", "S3"],
                                                                     duration: 30)
@@ -856,7 +857,7 @@ func appendWithoutJoining(_ actions: [SpeakerEditAction], session: URL) throws {
 @Test func aRenameThatJoinedAGroupSinceIsNotOverwrittenThroughIt() async throws {
     // The live-name race: a plan made when the microphone's speaker stood alone renames it; meanwhile S2 was named
     // "Me" by hand, joining it. The rename would now reach S2: refused, so S2 keeps its name.
-    let temp = try TemporaryDirectory("editor")
+    let temp = try TemporaryDirectory("editor", permissions: 0o700)
     defer { temp.remove() }
     let mic = SessionFixtures.segment(["hello", "there", "all"], track: "mic", start: 0.1, id: "M1")
     let transcript = SessionFixtures.transcript([mic] + SessionFixtures.alternatingSegments(track: "system"))
@@ -879,7 +880,7 @@ func appendWithoutJoining(_ actions: [SpeakerEditAction], session: URL) throws {
 }
 
 @Test func aNewSpeakerNamedAsSomebodyNamedMeanwhileIsRefused() async throws {
-    let temp = try TemporaryDirectory("editor")
+    let temp = try TemporaryDirectory("editor", permissions: 0o700)
     defer { temp.remove() }
     let (session, _, _) = try await SessionFixtures.labelledSession(in: temp.url)
     // A window has no Alex, so "New Speaker… Alex" makes a new speaker; another window names S1 Alex first.

@@ -1,4 +1,5 @@
 import Foundation
+import HolosTestSupport
 import Testing
 
 // The suite's waiters poll on a `PollBudget` rather than on a wall clock, because the suite starves the

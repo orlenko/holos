@@ -2378,7 +2378,12 @@ whoever started it (app or terminal). Only sessions under `HolosPaths.sessions` 
 visible to the app.
 
 **In-process fallback (decision 4).** `InProcessLauncher` (PR4) runs
-`RecordingWorkflow.run` in a task inside the app with the same options. Frames are
+`RecordingWorkflow.run` in a task inside the app with the same options: both launchers map
+`MeetingStartSettings` with `RecordingOptions(settings:…)`, and `ChildProcessLauncher.arguments`
+hands its values to the child. Settings without a language take the recorder's default, the
+supported language closest to the user's (`AppleSpeechEngine.defaultLocale`, the default
+dictation language Settings shows), in both; a recording without the microphone (`system`)
+ignores a microphone choice in both, and the child gets no `--microphone`. Frames are
 consumed off the main actor (§1.3), and the launcher holds
 `ProcessInfo.processInfo.beginActivity(options: [.userInitiated, .idleSystemSleepDisabled])`
 while recording so App Nap and timer coalescing do not apply. The recorder code writes
@@ -4284,8 +4289,9 @@ carries them; `TrackReplayer.replay`, `TranscriptRebuilder.rebuild`, and
 `SessionImporter.importAudio` take them too. The app builds the list with
 `RecognizerVocabulary.meeting`: the user's word list (design.md "Word list"), then known
 people's names (PR10), then `CorrectionList.vocabulary` (PR4), each once ignoring case,
-at most 100 strings (the recorder and the hand-off file allow up to 1,000 entries of at
-most 100 characters), writes it 0600 to
+at most 100 strings (the hand-off file, the recorder and import keep what
+`MeetingVocabulary.cleaned` keeps: each string trimmed, empty ones and ones over 100
+characters dropped, the first 1,000 in order, duplicates included), writes it 0600 to
 `$TMPDIR/holos-vocabulary-<id>.json`, and passes `--vocabulary-file`. The recorder copies
 it to `vocabulary.json` before its first `status.json` write and deletes the temporary file;
 replay, rebuild, and import read `vocabulary.json` (only `session recover
@@ -4359,7 +4365,9 @@ instantaneous meeting feedback. The dictation stays monolingual."
 **Phase 1 (LANG1, PR #43).** The start panel's Language pop-up (the dictation languages,
 `DictationLanguage.groups`) sets the meeting language; UserDefaults `meetingLocales` keeps
 a list, the first used; `MeetingStartSettings.locales`; the recorder gets
-`--locale=<first>`; the manifest records one `locale`.
+`--locale=<first>`; the manifest records one `locale`. Settings without a language (never
+from the start panel, which keeps Start off until it has one) record in the recorder's
+default, `AppleSpeechEngine.defaultLocale`, in process and as a child alike (§4.1).
 
 **Phase 2 (LANG2).** A meeting may name up to three languages (`DictationLanguage.
 maximumMeetingLanguages`), each a different language (`sameLanguage`: language and script;

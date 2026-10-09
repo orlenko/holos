@@ -4,6 +4,7 @@ import HolosCore
 @testable import HolosMeeting
 import HolosSpeakers
 import HolosStorage
+import HolosTestSupport
 import Testing
 
 // SessionAudioComposition (docs/meeting-design.md §5.10, PR9): the review window's playback of a session's chunks on
@@ -51,7 +52,7 @@ private func compositionClose(_ a: Double, _ b: Double) -> Bool { abs(a - b) < 0
 
 @Test(.timeLimit(.minutes(1)))
 func compositionPlacesChunksAtSessionTimes() async throws {
-    let temp = try TemporaryDirectory("composition")
+    let temp = try TemporaryDirectory("composition", permissions: 0o700)
     defer { temp.remove() }
     let session = temp.url.appendingPathComponent("\(UUID().uuidString).holos", isDirectory: true)
     let chunks = [
@@ -77,7 +78,7 @@ func compositionPlacesChunksAtSessionTimes() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func compositionTrimsOverlappingChunks() async throws {
-    let temp = try TemporaryDirectory("composition")
+    let temp = try TemporaryDirectory("composition", permissions: 0o700)
     defer { temp.remove() }
     let session = temp.url.appendingPathComponent("\(UUID().uuidString).holos", isDirectory: true)
     // Legacy archives (before frame continuity) could write a chunk that starts before the previous one ended.
@@ -100,7 +101,7 @@ func compositionTrimsOverlappingChunks() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func compositionKeepsTracksApartAndSkipsMissingChunks() async throws {
-    let temp = try TemporaryDirectory("composition")
+    let temp = try TemporaryDirectory("composition", permissions: 0o700)
     defer { temp.remove() }
     let session = temp.url.appendingPathComponent("\(UUID().uuidString).holos", isDirectory: true)
     var missing = try compositionChunk(session, track: "system", name: "000002", start: 10, seconds: 10)
@@ -127,7 +128,7 @@ func compositionKeepsTracksApartAndSkipsMissingChunks() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func compositionWithoutAudioIsRefused() async throws {
-    let temp = try TemporaryDirectory("composition")
+    let temp = try TemporaryDirectory("composition", permissions: 0o700)
     defer { temp.remove() }
     let session = temp.url.appendingPathComponent("\(UUID().uuidString).holos", isDirectory: true)
     let record = AudioChunkRecord(track: "mic", relativePath: "audio/mic/000001.caf", start: 0, end: 30,
@@ -203,7 +204,7 @@ private func compositionFrames(_ seconds: Double) -> Int { Int((seconds * compos
 
 @Test(.timeLimit(.minutes(1)))
 func compositionDoesNotTrimAfterAMissingOrShortChunk() async throws {
-    let temp = try TemporaryDirectory("composition")
+    let temp = try TemporaryDirectory("composition", permissions: 0o700)
     defer { temp.remove() }
     let session = temp.url.appendingPathComponent("\(UUID().uuidString).holos", isDirectory: true)
     // mic: a missing 0–30 s chunk, then a readable 10–40 s one.
@@ -233,7 +234,7 @@ func compositionDoesNotTrimAfterAMissingOrShortChunk() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func compositionLeavesUnreadableChunksSilent() async throws {
-    let temp = try TemporaryDirectory("composition")
+    let temp = try TemporaryDirectory("composition", permissions: 0o700)
     defer { temp.remove() }
     let session = temp.url.appendingPathComponent("\(UUID().uuidString).holos", isDirectory: true)
     let good = try compositionChunk(session, track: "mic", name: "000001", start: 0, seconds: 10)
@@ -281,7 +282,7 @@ private func compositionSaveMask(_ session: URL, manifest: SessionManifest, seco
 
 @Test(.timeLimit(.minutes(1)))
 func playbackKeepsTheMicrophoneOnlyWhereItHasLocalSpeechWhenThereIsEcho() async throws {
-    let temp = try TemporaryDirectory("composition")
+    let temp = try TemporaryDirectory("composition", permissions: 0o700)
     defer { temp.remove() }
     // A real session (the echo files are written under its speaker lock): 10 s on each track.
     let session = try await SessionFixtures.makeSession(in: temp.url, source: .microphoneAndSystem,
@@ -317,7 +318,7 @@ func playbackKeepsTheMicrophoneOnlyWhereItHasLocalSpeechWhenThereIsEcho() async 
 
 @Test(.timeLimit(.minutes(1)))
 func playbackMutesTheEchoOnlyWhereTheSystemTrackPlays() async throws {
-    let temp = try TemporaryDirectory("composition")
+    let temp = try TemporaryDirectory("composition", permissions: 0o700)
     defer { temp.remove() }
     // System audio for the first 5 s of a 10 s call: past it, nothing else carries the call, so the microphone is
     // kept at full volume there.
@@ -348,7 +349,7 @@ func playbackMutesTheEchoOnlyWhereTheSystemTrackPlays() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func playbackWithoutMicrophoneAudioHasNoMix() async throws {
-    let temp = try TemporaryDirectory("composition")
+    let temp = try TemporaryDirectory("composition", permissions: 0o700)
     defer { temp.remove() }
     let session = temp.url.appendingPathComponent("\(UUID().uuidString).holos", isDirectory: true)
     let manifest = compositionManifest([

@@ -2,6 +2,7 @@ import Foundation
 import HolosCore
 @testable import HolosMeeting
 import HolosStorage
+import HolosTestSupport
 import Testing
 
 // A meeting's languages from the start panel to meeting.json (docs/meeting-design.md §4.14): the settings, the
@@ -22,7 +23,7 @@ private func meetingLanguageRecord(_ options: RecordingOptions) async throws -> 
 
 @Test(.timeLimit(.minutes(1))) @MainActor
 func recordingSavesTheMeetingLanguages() async throws {
-    let temp = try TemporaryDirectory("languages")
+    let temp = try TemporaryDirectory("languages", permissions: 0o700)
     defer { temp.remove() }
     var options = RecordingOptions.testing(root: temp.url, recordOnly: true)
     options.languages = ["en_CA", "fr-CA"]
@@ -34,7 +35,7 @@ func recordingSavesTheMeetingLanguages() async throws {
 
 @Test(.timeLimit(.minutes(1))) @MainActor
 func recordingInOneLanguageWritesNoLanguages() async throws {
-    let temp = try TemporaryDirectory("languages")
+    let temp = try TemporaryDirectory("languages", permissions: 0o700)
     defer { temp.remove() }
     var options = RecordingOptions.testing(root: temp.url, recordOnly: true)
     options.languages = ["en-CA"]
@@ -45,7 +46,7 @@ func recordingInOneLanguageWritesNoLanguages() async throws {
 
 @Test(.timeLimit(.minutes(1))) @MainActor
 func recordingRefusesLanguagesThatDoNotStartWithItsLocale() async throws {
-    let temp = try TemporaryDirectory("languages")
+    let temp = try TemporaryDirectory("languages", permissions: 0o700)
     defer { temp.remove() }
     for languages in [["fr-CA", "en-CA"], ["en-CA", "en-US"], ["en-CA", "fr-CA", "es-ES", "de-DE"]] {
         var options = RecordingOptions.testing(root: temp.url, recordOnly: true)

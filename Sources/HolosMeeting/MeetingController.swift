@@ -43,8 +43,6 @@ struct MeetingControllerTuning: Sendable {
     /// Files older than this in the temporary folder are left over from a crash (§4.12).
     static let staleVocabularyAge: TimeInterval = 3_600
     static let vocabularyPrefix = "holos-vocabulary-"
-    static let maxVocabularyEntries = 1_000
-    static let maxVocabularyLength = 100
     /// UserDefaults key: attempts of the automatic relabel per session ID.
     static let relabelAttemptsKey = "meeting.relabelAttempts"
     /// UserDefaults key: recorder children launched by this app, or by an earlier run of it, whose exit was not seen,
@@ -659,12 +657,10 @@ struct MeetingControllerTuning: Sendable {
 
     // MARK: - Vocabulary hand-off (§4.12)
 
-    /// Writes `$TMPDIR/holos-vocabulary-<id>.json` (0600, created exclusively) with at most 1,000 entries of at most
-    /// 100 characters; nil when there is nothing to write.
+    /// Writes `$TMPDIR/holos-vocabulary-<id>.json` (0600, created exclusively) with the strings
+    /// `MeetingVocabulary.cleaned` keeps; nil when there is nothing to write.
     func writeVocabularyFile(sessionID: String, strings: [String]) throws -> URL? {
-        let entries = Array(strings.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty && $0.count <= Self.maxVocabularyLength }
-            .prefix(Self.maxVocabularyEntries))
+        let entries = MeetingVocabulary.cleaned(strings)
         guard !entries.isEmpty else { return nil }
         let url = vocabularyDirectory.appendingPathComponent("\(Self.vocabularyPrefix)\(sessionID).json",
                                                              isDirectory: false)

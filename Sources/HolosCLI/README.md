@@ -12,9 +12,10 @@ that needs FluidAudio or WhisperKit, and for recording (unless the app's in-proc
 
 **Must not own:** workflow logic. Most `session` subcommands build a `Request`, call the library's `*Command.run`
 (`SessionSummarizeCommand`, `SessionDiarizeCommand`, … in `HolosMeeting`) and print the `Outcome`; `words` calls
-`WordListCommand` in `HolosStorage`. The other commands call library types directly, and
-`Speakers.swift` and `Eval.swift` still hold more than parsing and printing. New logic goes in the library so the
-app and tests can use it.
+`WordListCommand` in `HolosStorage`. The `speakers` edits (`rename`, `merge`, `assign`, `split`, `exclude`, `undo`,
+`link`, `me`, `reject`) resolve their selectors, then run `SpeakerEditCommand` and print what it reports as it goes.
+The other commands call library types directly, and `Eval.swift` still holds more than parsing and printing. New
+logic goes in the library so the app and tests can use it.
 
 **Depends on:** every library except HolosDesktop, including HolosDiarization, HolosWhisper and HolosEvaluation
 (of the products, only this target links them). ArgumentParser, FoundationModels (`doctor`, `session summarize`).
@@ -31,7 +32,7 @@ app and tests can use it.
 - Without `--locale`, recognition commands use the supported locale closest to the user's preferred languages
   (`RecognitionOptions`); `session retranscribe` uses the locale the session was recorded with.
 
-**Known size debt:** `Speakers.swift` (1,004 lines).
+**Known size debt:** none over 1,000 lines.
 
 **Tests:** no test target. Command logic is tested through the library types in `Tests/HolosMeetingTests` and
 `Tests/HolosStorageTests`.

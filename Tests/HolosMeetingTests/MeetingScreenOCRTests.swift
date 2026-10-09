@@ -6,6 +6,7 @@ import HolosAudio
 import HolosCore
 @testable import HolosMeeting
 import HolosStorage
+import HolosTestSupport
 import ImageIO
 import Testing
 import UniformTypeIdentifiers
@@ -23,7 +24,7 @@ private func screenOCRImage() throws -> CGImage {
 }
 
 private func screenOCRBatchFixture(_ count: Int) async throws -> (TemporaryDirectory, SessionArchive) {
-    let temp = try TemporaryDirectory("screen-ocr-batch")
+    let temp = try TemporaryDirectory("screen-ocr-batch", permissions: 0o700)
     let archive = try SessionArchive.create(root: temp.url, name: "Invented meeting", source: .microphone,
         locale: "en-CA", backend: .speech)
     let transcript = Transcript(source: "synthetic", locale: "en-CA", backend: .speech,
@@ -125,7 +126,7 @@ private func screenOCRRecoveryRuns() async throws {
 }
 
 @Test func screenOCRResumesCompletedFramesWithoutReprocessingOrChangingAudio() async throws {
-    let temp = try TemporaryDirectory("screen-ocr")
+    let temp = try TemporaryDirectory("screen-ocr", permissions: 0o700)
     defer { temp.remove() }
     let archive = try SessionArchive.create(root: temp.url, name: "Invented meeting", source: .microphone,
         locale: "en-CA", backend: .speech)
@@ -178,7 +179,7 @@ private func screenOCRRecoveryRuns() async throws {
 
 @Test(arguments: [false, true])
 func screenOCRRejectsMissingOrOversizedImages(oversized: Bool) async throws {
-    let temp = try TemporaryDirectory("screen-ocr-invalid-image")
+    let temp = try TemporaryDirectory("screen-ocr-invalid-image", permissions: 0o700)
     defer { temp.remove() }
     let archive = try SessionArchive.create(root: temp.url, name: "Invented meeting", source: .microphone,
         locale: "en-CA", backend: .speech)

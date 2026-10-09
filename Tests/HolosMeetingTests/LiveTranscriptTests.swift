@@ -3,6 +3,7 @@ import HolosAudio
 import HolosCore
 @testable import HolosMeeting
 import HolosStorage
+import HolosTestSupport
 import Synchronization
 import Testing
 
@@ -481,7 +482,7 @@ private func trackWithQueuedFinal(_ journal: HeldJournal, _ log: VolatileLog,
 
 @Test(.timeLimit(.minutes(1))) @MainActor
 func recordingPublishesVolatileWordsUntilItExits() async throws {
-    let temp = try TemporaryDirectory()
+    let temp = try TemporaryDirectory("meeting", permissions: 0o700)
     defer { temp.remove() }
     let captures = FakeCaptureFactory([FakeCaptureScript(frames: FakeFrame.run(count: 3))])
     // The final result covers more audio than is fed, so it arrives only when speech finishes at the stop.

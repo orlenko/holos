@@ -3,6 +3,7 @@ import Foundation
 import HolosCore
 @testable import HolosMeeting
 import HolosStorage
+import HolosTestSupport
 import Testing
 
 // status.json (docs/meeting-design.md §4.1, §4.6).
@@ -13,7 +14,7 @@ private func initialStatus(_ sessionID: String) -> RecorderStatus {
 }
 
 private func statusSession() throws -> (TemporaryDirectory, URL, String) {
-    let temp = try TemporaryDirectory("status")
+    let temp = try TemporaryDirectory("status", permissions: 0o700)
     let id = UUID().uuidString
     let session = temp.url.appendingPathComponent("\(id).holos", isDirectory: true)
     try FileManager.default.createDirectory(at: session, withIntermediateDirectories: true,
@@ -144,7 +145,7 @@ private func exitedWriteFailing(_ failing: SharedValue<Int>, failures: SharedVal
 /// down.
 @Test(.timeLimit(.minutes(1)), arguments: [false, true]) @MainActor
 func recorderKeepsItsLastLockWhenExitCannotBeWritten(postProcess: Bool) async throws {
-    let temp = try TemporaryDirectory()
+    let temp = try TemporaryDirectory("meeting", permissions: 0o700)
     defer { temp.remove() }
     let failures = SharedValue(0)
     let hook: PostProcessHook = { session, _, _ in
@@ -177,7 +178,7 @@ func recorderKeepsItsLastLockWhenExitCannotBeWritten(postProcess: Bool) async th
 /// meeting does not stay busy until Holos quits.
 @Test(.timeLimit(.minutes(1)), arguments: [false, true]) @MainActor
 func recorderReleasesItsLocksOnceALaterExitWriteLands(postProcess: Bool) async throws {
-    let temp = try TemporaryDirectory()
+    let temp = try TemporaryDirectory("meeting", permissions: 0o700)
     defer { temp.remove() }
     let failing = SharedValue(Int.max)
     let failures = SharedValue(0)
@@ -217,7 +218,7 @@ func recorderReleasesItsLocksOnceALaterExitWriteLands(postProcess: Bool) async t
 /// reported as a failure.
 @Test(.timeLimit(.minutes(1)), arguments: [false, true]) @MainActor
 func inProcessRecordingEndsOnlyOnceItsExitedStatusIsWritten(folderRemoved: Bool) async throws {
-    let temp = try TemporaryDirectory()
+    let temp = try TemporaryDirectory("meeting", permissions: 0o700)
     defer { temp.remove() }
     let failing = SharedValue(Int.max)
     let failures = SharedValue(0)
@@ -266,7 +267,7 @@ func inProcessRecordingEndsOnlyOnceItsExitedStatusIsWritten(folderRemoved: Bool)
 /// Progress from post-processing reaches status.json in order, and nothing follows `exited` (§4.6 step 7).
 @Test(.timeLimit(.minutes(1))) @MainActor
 func progressIsMirroredInOrder() async throws {
-    let temp = try TemporaryDirectory()
+    let temp = try TemporaryDirectory("meeting", permissions: 0o700)
     defer { temp.remove() }
     let written = SharedValue<[RecorderStatus]>([])
     let hook: PostProcessHook = { session, _, progress in

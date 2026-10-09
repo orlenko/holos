@@ -47,7 +47,7 @@ extension Session {
                 let result = try SessionExports.regenerate(session: directory, profileNames: names,
                                                            applyRecognition: recognition)
                 Console.output(SessionPaths.exports(directory).path)
-                for url in result.movedAside { Console.error(SpeakerCommand.movedAsideNote(url)) }
+                for url in result.movedAside { Console.error(SpeakerEditCommand.movedAsideNote(url)) }
                 if let diagnostics = result.diagnostics { SpeakerCommand.printNotes(diagnostics) }
                 return
             }

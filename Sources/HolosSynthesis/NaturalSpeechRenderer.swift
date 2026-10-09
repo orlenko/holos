@@ -183,6 +183,8 @@ public struct NaturalSpeechStats: Sendable, Equatable {
 /// 2. `lastStats` is set once, when a render has published its file; a failed or cancelled render leaves the
 ///    previous one.
 /// 3. `uncheckable` only grows: a language found without a recognizer is not probed again by this renderer.
+/// 4. `confirmedPacks` only grows: a render looks at a pack's files once per renderer, off the main actor, so a book's
+///    hundreds of parts do not rescan them (a pack removed meanwhile fails when its models load).
 @MainActor public final class NaturalSpeechRenderer {
     nonisolated public static let sampleRate = NaturalSpeechFormat.sampleRate
     /// Every paragraph's first take uses this seed; the re-render uses the next one.
@@ -206,6 +208,8 @@ public struct NaturalSpeechStats: Sendable, Equatable {
     private var uncheckable: Set<String> = []
     /// Whether a render runs now (invariant 1).
     private var rendering = false
+    /// Packs found installed by a render (invariant 4).
+    private var confirmedPacks: Set<NaturalVoicePack> = []
 
     public init(backend: any NaturalSpeechBackend, checker: (any SpeechChunkChecker)?, checksByDefault: Bool = true,
                 fallback: any ParagraphFallback, installedPacks: @escaping @Sendable () -> Set<NaturalVoicePack> = {
@@ -222,14 +226,24 @@ public struct NaturalSpeechStats: Sendable, Equatable {
 
     /// Fails unless `identifier` is an offered natural voice whose pack is installed.
     public func checkVoice(_ identifier: String) throws {
-        _ = try voice(identifier)
+        _ = try voice(identifier, installed: installedPacks())
     }
 
-    private func voice(_ identifier: String) throws -> NaturalVoice {
+    /// The voice for a render: its pack is looked at off the main actor, once per renderer (invariant 4).
+    private func confirmedVoice(_ identifier: String) async throws -> NaturalVoice {
+        if let voice = NaturalVoiceCatalog.voice(id: identifier), confirmedPacks.contains(voice.pack) { return voice }
+        let installedPacks = installedPacks
+        let installed = await Task.detached(priority: .userInitiated) { installedPacks() }.value
+        let voice = try voice(identifier, installed: installed)
+        confirmedPacks.insert(voice.pack)
+        return voice
+    }
+
+    private func voice(_ identifier: String, installed: Set<NaturalVoicePack>) throws -> NaturalVoice {
         guard let voice = NaturalVoiceCatalog.voice(id: identifier) else {
             throw HolosError.unavailable("Speech voice is unavailable: \(identifier)")
         }
-        guard installedPacks().contains(voice.pack) else {
+        guard installed.contains(voice.pack) else {
             throw HolosError.unavailable("The \(voice.pack.languageName) natural voices are not installed. Download "
                 + "them in Settings › Reading, or run voiceislocal setup --natural-voices"
                 + (voice.pack == .english ? "" : " --language \(voice.pack.languageCode)") + ".")
@@ -257,7 +271,7 @@ public struct NaturalSpeechStats: Sendable, Equatable {
         guard !rendering else { throw HolosError.unavailable("This natural voice renderer is already rendering.") }
         rendering = true
         defer { rendering = false }
-        let voice = try voice(voiceIdentifier)
+        let voice = try await confirmedVoice(voiceIdentifier)
         let settings = settings ?? self.settings(for: voiceIdentifier)
         let blocks = NaturalSpeechPlan.blocks(text)
         guard !blocks.isEmpty else { throw HolosError.invalidInput("Speech text is empty.") }
@@ -381,80 +395,6 @@ private final class PublicationStop: Sendable {
     private let flag = Mutex(false)
     var requested: Bool { flag.withLock { $0 } }
     func request() { flag.withLock { $0 = true } }
-}
-
-/// Mono float samples written as an audio file, a piece at a time: 16-bit PCM in .wav and .caf, AAC (64 kbit/s) in
-/// .m4a.
-public final class NaturalSpeechFileWriter {
-    private let file: AVAudioFile
-    private let format: AVAudioFormat
-    private let sampleRate: Double
-    /// The frames written so far.
-    public private(set) var frames: Int64 = 0
-
-    public init(url: URL, sampleRate: Double) throws {
-        let fileExtension = url.pathExtension.lowercased()
-        var settings: [String: Any] = [AVSampleRateKey: sampleRate, AVNumberOfChannelsKey: 1]
-        switch fileExtension {
-        case "m4a":
-            settings[AVFormatIDKey] = kAudioFormatMPEG4AAC
-            settings[AVEncoderBitRateKey] = 64_000
-            settings[AVAudioFileTypeKey] = kAudioFileM4AType
-        case "wav", "caf":
-            settings[AVFormatIDKey] = kAudioFormatLinearPCM
-            settings[AVLinearPCMBitDepthKey] = 16
-            settings[AVLinearPCMIsFloatKey] = false
-            settings[AVLinearPCMIsBigEndianKey] = false
-            settings[AVAudioFileTypeKey] = fileExtension == "wav" ? kAudioFileWAVEType : kAudioFileCAFType
-        default:
-            throw HolosError.invalidInput("Unsupported speech output format .\(fileExtension); use wav, caf, or m4a.")
-        }
-        guard let format = AVAudioFormat(standardFormatWithSampleRate: sampleRate, channels: 1) else {
-            throw HolosError.io("Could not prepare the speech file.")
-        }
-        self.format = format
-        self.sampleRate = sampleRate
-        file = try AVAudioFile(forWriting: url, settings: settings, commonFormat: .pcmFormatFloat32, interleaved: false)
-    }
-
-    public func append(_ samples: [Float]) throws {
-        let chunk = 65_536
-        var offset = 0
-        while offset < samples.count {
-            let count = min(chunk, samples.count - offset)
-            guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(count)) else {
-                throw HolosError.io("Could not prepare the speech file.")
-            }
-            buffer.frameLength = AVAudioFrameCount(count)
-            samples.withUnsafeBufferPointer { source in
-                buffer.floatChannelData![0].update(from: source.baseAddress! + offset, count: count)
-            }
-            try file.write(from: buffer)
-            offset += count
-        }
-        frames += Int64(samples.count)
-    }
-
-    public func appendSilence(seconds: Double) throws {
-        var remaining = Int((seconds * sampleRate).rounded())
-        while remaining > 0 {
-            let count = min(remaining, 65_536)
-            try append([Float](repeating: 0, count: count))
-            remaining -= count
-        }
-    }
-
-    /// Finishes the file (an AAC file's last packets are written here).
-    public func close() { file.close() }
-}
-
-/// A whole file of mono float samples (see `NaturalSpeechFileWriter`).
-public enum NaturalSpeechFile {
-    public static func write(_ samples: [Float], sampleRate: Double, to url: URL) throws {
-        let writer = try NaturalSpeechFileWriter(url: url, sampleRate: sampleRate)
-        try writer.append(samples)
-        writer.close()
-    }
 }
 
 extension Duration {

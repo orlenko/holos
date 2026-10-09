@@ -3,6 +3,7 @@ import HolosAudio
 import HolosCore
 @testable import HolosMeeting
 import HolosStorage
+import HolosTestSupport
 import Synchronization
 import Testing
 
@@ -340,7 +341,7 @@ private func eventuallyAsync(_ condition: @Sendable () -> Bool) async -> Bool {
 
 @Test(.timeLimit(.minutes(1))) @MainActor
 func nextSpeechSessionIsReadyBeforeCaptureRestarts() async throws {
-    let temp = try TemporaryDirectory()
+    let temp = try TemporaryDirectory("meeting", permissions: 0o700)
     defer { temp.remove() }
     let timeline = SharedValue<[String]>([])
     let fake = FakeSpeechFactory()
@@ -415,7 +416,7 @@ private final class PacedCapture: MeetingCapture {
 /// The capture is paced until speech is blocked, so live always covers whole seconds 0..<40 before it falls behind.
 @Test(.timeLimit(.minutes(6))) @MainActor
 func liveOverflowKeepsLiveWordsAndReplaysOnlyTheRest() async throws {
-    let temp = try TemporaryDirectory()
+    let temp = try TemporaryDirectory("meeting", permissions: 0o700)
     defer { temp.remove() }
     let delivered = SharedValue(0)
     let speech = RecorderSpeechFactory { call, onUpdate in

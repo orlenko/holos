@@ -5,6 +5,7 @@ import HolosCore
 import HolosMeeting
 import HolosSpeakers
 import HolosStorage
+import HolosTestSupport
 import Testing
 
 // MARK: - Helpers
@@ -70,7 +71,7 @@ private func finishedArchive(in root: URL) async throws -> SessionArchive {
 
 @Test(.timeLimit(.minutes(1))) @MainActor
 func recordOnlySavesAudioAndFinishesAudioOnly() async throws {
-    let temp = try TemporaryDirectory()
+    let temp = try TemporaryDirectory("meeting", permissions: 0o700)
     defer { temp.remove() }
     let captures = threeMicFrames()
     let speech = FakeSpeechFactory()
@@ -101,7 +102,7 @@ func recordOnlySavesAudioAndFinishesAudioOnly() async throws {
 
 @Test(.timeLimit(.minutes(1))) @MainActor
 func screenCaptureRequestIsOptionalAndDoesNotChangeAudioOutcome() async throws {
-    let temp = try TemporaryDirectory("screen-options")
+    let temp = try TemporaryDirectory("screen-options", permissions: 0o700)
     defer { temp.remove() }
     let captures = threeMicFrames()
     var options = RecordingOptions.testing(root: temp.url, recordOnly: true)
@@ -128,7 +129,7 @@ private struct ScreenOCRSequenceReporter: RecordingReporter {
 
 @Test(.timeLimit(.minutes(1))) @MainActor
 func screenOCRStartsOnlyAfterLiveSpeechHasDrainedAndTranscriptIsDurable() async throws {
-    let temp = try TemporaryDirectory("screen-ocr-sequence")
+    let temp = try TemporaryDirectory("screen-ocr-sequence", permissions: 0o700)
     defer { temp.remove() }
     let captures = threeMicFrames()
     let speech = FakeSpeechFactory([FakeSpeechScript(segments: [
@@ -152,7 +153,7 @@ func screenOCRStartsOnlyAfterLiveSpeechHasDrainedAndTranscriptIsDurable() async 
 func microphoneInOtherFormatsIsSavedAs48kMono() async throws {
     // A stereo 96 kHz interface: AVAudioEngine delivers the device's format. The saved audio must be what
     // DiskPolicy budgets (48 kHz mono Int16), not 4× that.
-    let temp = try TemporaryDirectory()
+    let temp = try TemporaryDirectory("meeting", permissions: 0o700)
     defer { temp.remove() }
     let frames = (0..<20).map { index in
         FakeFrame(start: Double(index) * 0.1, sampleRate: 96_000, channels: 2, value: 0.2)
@@ -174,7 +175,7 @@ func microphoneInOtherFormatsIsSavedAs48kMono() async throws {
 /// marked (docs/meeting-design.md §4.2).
 @Test(.timeLimit(.minutes(1))) @MainActor
 func captureFailureRestartsInANewEpoch() async throws {
-    let temp = try TemporaryDirectory()
+    let temp = try TemporaryDirectory("meeting", permissions: 0o700)
     defer { temp.remove() }
     let captures = FakeCaptureFactory([
         FakeCaptureScript(frames: FakeFrame.run(count: 1), failAfterFrames: 1, failure: .io("The microphone disappeared.")),
@@ -205,7 +206,7 @@ func captureFailureRestartsInANewEpoch() async throws {
 /// Audio that cannot be written still ends the recording: the archive is marked incomplete and the run throws.
 @Test(.timeLimit(.minutes(1))) @MainActor
 func writerFailureMarksArchiveIncompleteAndThrows() async throws {
-    let temp = try TemporaryDirectory()
+    let temp = try TemporaryDirectory("meeting", permissions: 0o700)
     defer { temp.remove() }
     let captures = FakeCaptureFactory([FakeCaptureScript(frames: [FakeFrame(start: 0),
                                                                   FakeFrame(track: "bogus", start: 0.1)])])
@@ -229,7 +230,7 @@ func writerFailureMarksArchiveIncompleteAndThrows() async throws {
 
 @Test(.timeLimit(.minutes(1))) @MainActor
 func noFramesIsIncomplete() async throws {
-    let temp = try TemporaryDirectory()
+    let temp = try TemporaryDirectory("meeting", permissions: 0o700)
     defer { temp.remove() }
     let stop = ManualStopSource()
     stop.requestStop()
@@ -247,7 +248,7 @@ func noFramesIsIncomplete() async throws {
 
 @Test(.timeLimit(.minutes(1))) @MainActor
 func liveSegmentsBecomeTranscriptWithTrack() async throws {
-    let temp = try TemporaryDirectory()
+    let temp = try TemporaryDirectory("meeting", permissions: 0o700)
     defer { temp.remove() }
     let segments = [TranscriptSegment(start: 0, end: 0.1, text: "Good evening"),
                     TranscriptSegment(start: 0.12, end: 0.28, text: "everyone")]
@@ -277,7 +278,7 @@ func liveSegmentsBecomeTranscriptWithTrack() async throws {
 
 @Test(.timeLimit(.minutes(1))) @MainActor
 func liveSpeechFailureFallsBackToReplay() async throws {
-    let temp = try TemporaryDirectory()
+    let temp = try TemporaryDirectory("meeting", permissions: 0o700)
     defer { temp.remove() }
     let replayed = TranscriptSegment(start: 0.05, end: 0.25, text: "Read back from disk")
     let speech = FakeSpeechFactory([FakeSpeechScript(makeError: .unavailable("Speech assets are missing.")),
@@ -300,7 +301,7 @@ func liveSpeechFailureFallsBackToReplay() async throws {
 
 @Test(.timeLimit(.minutes(1))) @MainActor
 func durationStopsRecording() async throws {
-    let temp = try TemporaryDirectory()
+    let temp = try TemporaryDirectory("meeting", permissions: 0o700)
     defer { temp.remove() }
     let captures = FakeCaptureFactory([FakeCaptureScript(continuous: FakeFrame(start: 0))])
     // Session time is the test's: the recording must not stop before 0.3 s, and must stop once it passes.
@@ -330,7 +331,7 @@ func durationStopsRecording() async throws {
 
 @Test(.timeLimit(.minutes(1))) @MainActor
 func stopRequestFileStopsRecording() async throws {
-    let temp = try TemporaryDirectory()
+    let temp = try TemporaryDirectory("meeting", permissions: 0o700)
     defer { temp.remove() }
     let captures = FakeCaptureFactory([FakeCaptureScript(frames: FakeFrame.run(count: 2))])
     let run = Task {
@@ -364,7 +365,7 @@ func stopRequestFileStopsRecording() async throws {
 
 @Test(.timeLimit(.minutes(1))) @MainActor
 func startFailureMarksArchiveFailed() async throws {
-    let temp = try TemporaryDirectory()
+    let temp = try TemporaryDirectory("meeting", permissions: 0o700)
     defer { temp.remove() }
     let captures = FakeCaptureFactory([FakeCaptureScript(startError: .permissionDenied("Microphone access is required."))])
     do {
@@ -383,7 +384,7 @@ func startFailureMarksArchiveFailed() async throws {
 
 @Test(.timeLimit(.minutes(1))) @MainActor
 func invalidDurationIsRefusedBeforeCreatingASession() async throws {
-    let temp = try TemporaryDirectory()
+    let temp = try TemporaryDirectory("meeting", permissions: 0o700)
     defer { temp.remove() }
     for duration in [0, -1, Double.nan, .infinity] {
         await #expect(throws: HolosError.self) {
@@ -396,7 +397,7 @@ func invalidDurationIsRefusedBeforeCreatingASession() async throws {
 
 @Test(.timeLimit(.minutes(1))) @MainActor
 func callCaptureRequestCarriesSourceAndApplication() async throws {
-    let temp = try TemporaryDirectory()
+    let temp = try TemporaryDirectory("meeting", permissions: 0o700)
     defer { temp.remove() }
     let captures = threeMicFrames()
     let speech = FakeSpeechFactory()
@@ -422,7 +423,7 @@ func postProcessHookRunsUnderLeaseAfterFinish() async throws {
         var leaseSession: URL
         var archiveStatus: String?
     }
-    let temp = try TemporaryDirectory()
+    let temp = try TemporaryDirectory("meeting", permissions: 0o700)
     defer { temp.remove() }
     let seen = SharedValue<Observation?>(nil)
     let hook: PostProcessHook = { session, lease, _ in
@@ -447,7 +448,7 @@ func postProcessHookRunsUnderLeaseAfterFinish() async throws {
 /// always holds the writer lock or the processing lease.
 @Test(.timeLimit(.minutes(1))) @MainActor
 func leaseHandOffLeavesNoUnlockedGap() async throws {
-    let temp = try TemporaryDirectory()
+    let temp = try TemporaryDirectory("meeting", permissions: 0o700)
     defer { temp.remove() }
     let hookStarted = SharedValue(false)
     let runEnded = SharedValue(false)
@@ -502,7 +503,7 @@ func leaseHandOffLeavesNoUnlockedGap() async throws {
 @Test(.timeLimit(.minutes(1))) @MainActor
 func cancellingTheRunKeepsAudioAndRethrowsCancellation() async throws {
     for recordOnly in [false, true] {
-        let temp = try TemporaryDirectory()
+        let temp = try TemporaryDirectory("meeting", permissions: 0o700)
         defer { temp.remove() }
         let hookCalls = SharedValue(0)
         let hook: PostProcessHook = { session, _, _ in
@@ -542,7 +543,7 @@ func cancellingTheRunKeepsAudioAndRethrowsCancellation() async throws {
 
 @Test(.timeLimit(.minutes(1))) @MainActor
 func noHookMeansNoLease() async throws {
-    let temp = try TemporaryDirectory()
+    let temp = try TemporaryDirectory("meeting", permissions: 0o700)
     defer { temp.remove() }
     let outcome = try await record(.testing(root: temp.url), captures: threeMicFrames(), postProcess: nil,
                                    stopAfterConsuming: 3)
@@ -553,7 +554,7 @@ func noHookMeansNoLease() async throws {
 
 @Test(.timeLimit(.minutes(1))) @MainActor
 func leaseHeldElsewhereSkipsPostProcessing() async throws {
-    let temp = try TemporaryDirectory()
+    let temp = try TemporaryDirectory("meeting", permissions: 0o700)
     defer { temp.remove() }
     let calls = SharedValue(0)
     let hook: PostProcessHook = { session, _, _ in
@@ -593,7 +594,7 @@ func leaseHeldElsewhereSkipsPostProcessing() async throws {
 
 @Test(.timeLimit(.minutes(1))) @MainActor
 func leaseErrorFailsPostProcessing() async throws {
-    let temp = try TemporaryDirectory()
+    let temp = try TemporaryDirectory("meeting", permissions: 0o700)
     defer { temp.remove() }
     let calls = SharedValue(0)
     let hook: PostProcessHook = { session, _, _ in
@@ -627,7 +628,7 @@ func leaseErrorFailsPostProcessing() async throws {
 
 @Test(.timeLimit(.minutes(1))) @MainActor
 func hookProgressMessagesReachTheReporterOnce() async throws {
-    let temp = try TemporaryDirectory()
+    let temp = try TemporaryDirectory("meeting", permissions: 0o700)
     defer { temp.remove() }
     let hook: PostProcessHook = { session, _, progress in
         progress(PostProcessingProgress(stage: .render, track: "mic", fraction: 0, message: "Preparing audio…"))
@@ -646,7 +647,7 @@ func hookProgressMessagesReachTheReporterOnce() async throws {
 
 @Test(.timeLimit(.minutes(1))) @MainActor
 func vocabularyReachesSpeechFactory() async throws {
-    let temp = try TemporaryDirectory()
+    let temp = try TemporaryDirectory("meeting", permissions: 0o700)
     defer { temp.remove() }
     let replayed = TranscriptSegment(start: 0, end: 0.2, text: "Maria Chen moved the motion")
     let speech = FakeSpeechFactory([FakeSpeechScript(appendError: .unavailable("The recognizer stopped.")),
@@ -660,7 +661,7 @@ func vocabularyReachesSpeechFactory() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func replayFromSkipsEarlierAudio() async throws {
-    let temp = try TemporaryDirectory()
+    let temp = try TemporaryDirectory("meeting", permissions: 0o700)
     defer { temp.remove() }
     let sampleRate = 8_000.0
     let archive = try SessionArchive.create(root: temp.url, name: "Replay", source: .microphone,
@@ -696,7 +697,7 @@ func replayFromSkipsEarlierAudio() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func replayFromEndOfAudioFeedsNothing() async throws {
-    let temp = try TemporaryDirectory()
+    let temp = try TemporaryDirectory("meeting", permissions: 0o700)
     defer { temp.remove() }
     let archive = try SessionArchive.create(root: temp.url, name: "Replay", source: .microphone,
                                             locale: "en-CA", backend: .speech)
@@ -722,7 +723,7 @@ func replayFromEndOfAudioFeedsNothing() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func postProcessorWithoutTranscriptIsSkipped() async throws {
-    let temp = try TemporaryDirectory()
+    let temp = try TemporaryDirectory("meeting", permissions: 0o700)
     defer { temp.remove() }
     let archive = try await finishedArchive(in: temp.url)
     let before = contents(of: archive.directory)
@@ -750,7 +751,7 @@ func postProcessorWithoutTranscriptIsSkipped() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func postProcessorKeepsTheCallersLease() async throws {
-    let temp = try TemporaryDirectory()
+    let temp = try TemporaryDirectory("meeting", permissions: 0o700)
     defer { temp.remove() }
     let archive = try await finishedArchive(in: temp.url)
     let lease = try SessionArchive.acquireProcessingLease(at: archive.directory)
@@ -764,7 +765,7 @@ func postProcessorKeepsTheCallersLease() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func postProcessorRefusesWhenItCannotStart() async throws {
-    let temp = try TemporaryDirectory()
+    let temp = try TemporaryDirectory("meeting", permissions: 0o700)
     defer { temp.remove() }
     // Still recording: the writer lock is held.
     let recording = try SessionArchive.create(root: temp.url, name: "Live", source: .microphone,

@@ -2,6 +2,7 @@ import Foundation
 import HolosCore
 @testable import HolosMeeting
 import HolosStorage
+import HolosTestSupport
 import Testing
 
 // Free-space rules (docs/meeting-design.md §4.5). Sizes are decimal.
@@ -73,7 +74,7 @@ private func isStop(_ verdict: DiskVerdict) -> Bool { if case .stop = verdict { 
 /// A disk that refuses the start leaves no session behind.
 @Test(.timeLimit(.minutes(1))) @MainActor
 func refusedStartCreatesNoSession() async throws {
-    let temp = try TemporaryDirectory()
+    let temp = try TemporaryDirectory("meeting", permissions: 0o700)
     defer { temp.remove() }
     let captures = FakeCaptureFactory()
     var dependencies = RecordingDependencies.testing(captures: captures)

@@ -69,7 +69,7 @@ add a row when a step is split. The working rules that came out of this audit ar
 | HolosDiarization | 1,103 / 5 | Core, FluidAudio | Diarizer (CLI only) |
 | HolosWhisper | 791 / 4 | Core, WhisperKit | Deep transcription (CLI only) |
 | HolosApp (executable) | 21,915 / 44 | 10 targets | AppKit shell: `HolosAppDelegate` plus 11 extensions, MainWindow panes, Review window, Reading UI |
-| HolosCLI (executable) | 4,748 / 28 | 11 targets + ArgumentParser | Mostly thin commands over HolosMeeting `*Command.run`; `Eval.swift` (leases, preparation, uploads) and `Speakers.swift` (sample refresh, export rewrites) hold workflow logic (step 15) |
+| HolosCLI (executable) | 4,748 / 28 | 11 targets + ArgumentParser | Mostly thin commands over HolosMeeting `*Command.run`; `Eval.swift` (leases, preparation, uploads) holds workflow logic (step 15); `Speakers.swift`'s sample refresh and export rewrites moved to `SpeakerEditCommand` (step 15a, #136) |
 
 **Processes** [M]:
 - **Recorder child.** The app `posix_spawn`s `voiceislocal record start` as a detached child. It talks to it through:
@@ -85,7 +85,7 @@ add a row when a step is split. The working rules that came out of this audit ar
 - FluidAudio and WhisperKit are out of the app.
 - HolosSpeakers does no file I/O.
 - HolosMeeting has no AppKit, so `ReviewSession` and `MeetingController` are testable `@MainActor` classes.
-- Most CLI commands are thin; `Eval.swift` and `Speakers.swift` are the exceptions (step 15).
+- Most CLI commands are thin; `Eval.swift` is the exception (step 15). `Speakers.swift` keeps parsing, selectors, `list`, the hidden `embed` (pipes, stdin and SIGTERM) and printing.
 
 ### 1.2 Layering violations and unclear boundaries
 
@@ -167,7 +167,7 @@ One `@MainActor final class` with 171 functions (53 public) and about 112 var/le
 
 **Seams:**
 - Split the `Recorder` class into `+Capture` (846–1040), `+Power` (1041–1094), `+Status` (1095–1266) and `+Stop` (1270–1533).
-- Move 1534–1768 into a `RecorderExit` type.
+- Move 1534–1768 into one exit owner, `RecorderExitSequence` (`RecorderExit` is HolosCore's exit record).
 
 **Invariant:** `status.json` must say "exited" before the last lock is released (255–258, 1575). It is kept by hand across 9 `exitStatus` call sites and 46 cancellation checks.
 
@@ -362,15 +362,15 @@ All steps preserve behaviour unless marked. Sizes are non-test lines, with moved
 | 4 | M | Extract HolosEvaluation target | `Evaluation/*` → `Sources/HolosEvaluation`; move `EvalStore.audioFingerprint` | `git mv` whole files; widen access; CLI-only dependency | Both products build; `nm` on HolosApp shows no Cloud symbols | about 150 | merged (#127) |
 | 5 | P | `SessionPaths.folder`/`parse` + `VersionedFile<T>` | SessionPaths, TranscriptPointer, SpeakerSessionSnapshot; the 7 build and 5 parse sites | One builder and parser; unify the two schema decoders. **Changes behaviour:** the five parsers accepted different names, so one rule changes what some callers accept; pick the strictest rule that accepts all existing folders and test each caller | New parse tests | about 350 | merged (#128); the two CLI sites that still built `<id>.holos` directly (`RecordControl`, `People`) use `SessionPaths.folder` since step 7a (#130) |
 | 6 | A | CommandRunner + shared outcome types | New `HolosMeeting/CommandRunner.swift`; the 4 `HolosApp+*` scheduler files; Codable outcomes; `DoctorReport` into the library | Async run, decode off main, `TemporaryArtifact` | CommandRunner tests with a fake executable; the user checks a summary and an echo job in the app after merge | about 500 | merged (#124) |
-| 7 | P | TranscriptPublisher + `withMaintenanceArchive` | The 6 publishing stages, SessionRenameCommand | One publish function; scoped lock release | Existing fault-hook tests unchanged; add a table test | 2 × about 450 | in progress: 7a `withMaintenanceArchive` (#130), then 7b `TranscriptPublisher` |
+| 7 | P | TranscriptPublisher + `withMaintenanceArchive` | The 6 publishing stages, SessionRenameCommand | One publish function; scoped lock release | Existing fault-hook tests unchanged; add a table test | 2 × about 450 | in review: 7a `withMaintenanceArchive` (#130), 7b `TranscriptPublisher` (stacked on 7a) |
 | 8 | R | Review file splits (moves only) | ReviewSession → Types/+Loading; TurnListView → one class per file; ReviewWindow → +Layout, SplitSheet, helper types | Moves plus access modifiers | `--color-moved` shows moves only | 3 × about 450 moved + about 60 | not started |
 | 9 | R | `ReviewRevision` token + pure `ReviewJournalClaim` + `ReviewExportScheduler` | ReviewSession 299–313, 3184–3220, 3410–3469; `WordEditTarget`; `TurnListView.swift:588` | Bundle the 3 counters into one value; pure claim function | New claim tests | about 500 | not started |
 | 10 | R | `ReviewWordEditCoordinator` (no AppKit) | ReviewWindow 1449–1690, 1982–2147, 10–131 | Pending edits, refusals and close gate behind a protocol; statics forward | Existing tests plus coordinator tests without a window | about 550 | not started |
 | 11 | R | Operation lifecycle + `mutateQueue {}`, then `submit(command, seen:)` | ReviewSession 1789–2212, `adopt` | The six flags are not one exclusive phase: `adopt` can mark a running operation both `superseded` and `overtaken` before `finish`, and `undone` / `savedUnreloaded` are independent. Use a lifecycle enum (queued, running, finished) plus separate fields for the combinable states; one mutation helper always recomputes and notifies | The 104 word-edit and 42 session tests, plus a table test of every flag combination `adopt` and undo produce today | 2 × about 400 | not started |
-| 12 | W | RecordingWorkflow split + `RecorderExit` + one options mapping | RecordingWorkflow; MeetingController 32–33, 648–656; RecorderLauncher 59–78, 147–160; SessionImporter 311 | 12a moves, 12b exit owner (replaces 9 sites), 12c `MeetingVocabulary` and a single `RecordingOptions(settings:)`. **12c changes behaviour:** it removes the locale and mic divergence | Recorder tests with injected capture (`MeetingCapture`, `LiveSpeechSession` fakes); the user does a real record/stop after merge | 3 PRs: 450 moved / 450 / 200 | not started |
+| 12 | W | RecordingWorkflow split + `RecorderExit` + one options mapping | RecordingWorkflow; MeetingController 32–33, 648–656; RecorderLauncher 59–78, 147–160; SessionImporter 311 | 12a moves, 12b exit owner (replaces 9 sites), 12c `MeetingVocabulary` and a single `RecordingOptions(settings:)`. **12c changes behaviour:** it removes the locale and mic divergence | Recorder tests with injected capture (`MeetingCapture`, `LiveSpeechSession` fakes); the user does a real record/stop after merge | 3 PRs: 450 moved / 450 / 200 | 12a moves (#133) and 12b `RecorderExitSequence` (#134) merged; 12c in review (#135) |
 | 13 | M | Core cleanup | 9 app-only files → HolosAppModel; Core `DictationRerun.swift` → `DictationTextPipeline.swift`; Corrections I/O → Storage. `Lexicon` stays in Core: `TranscriptFixer` (Core) builds it and takes it in its signatures, and Dictation depends on Core, so moving it would make a cycle; to drop AppKit from Core, put its `NSSpellChecker` lookup behind a protocol injected from an upper target | `git mv`, imports | Build and suite | 2 × about 300 | not started |
 | 14 | A | BackgroundJobCoordinator | +DeepTranscription 176–487, +EchoCatchUp 63–287; then +MeetingSummary 146–372 and MeetingController 673–735 | One coordinator: lock probe, holds, preemption, retry, order; **add tests in the same PR** (none today) | Coordinator tests with a fake runner, including post-meeting job order; the user checks the order in the app after merge | 2 × about 800 | not started |
-| 15 | A | CLI workflows into the library | `HolosCLI/Eval.swift` (lease, preparation, consent-then-upload orchestration) → `HolosEvaluation` command types; `HolosCLI/Speakers.swift` (sample refresh, export rewrites after an edit) → a `HolosMeeting` speaker-edit command | `*Command` types with `Request`/`Outcome`; the CLI keeps parsing, the consent prompt and printing | Library tests for the moved logic; CLI output unchanged | 2 × about 400 | not started (added after the audit) |
+| 15 | A | CLI workflows into the library | `HolosCLI/Eval.swift` (lease, preparation, consent-then-upload orchestration) → `HolosEvaluation` command types; `HolosCLI/Speakers.swift` (sample refresh, export rewrites after an edit) → a `HolosMeeting` speaker-edit command | `*Command` types with `Request`/`Outcome`; the CLI keeps parsing, the consent prompt and printing | Library tests for the moved logic; CLI output unchanged | 2 × about 400 | 15a Speakers → `SpeakerEditCommand`: in review (#136); 15b Eval: not started (step added after the audit) |
 
 **Later, as files are touched:**
 - Content splits (§2.5): lane C, 3 PRs, fully parallel.
