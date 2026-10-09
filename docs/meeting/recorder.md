@@ -122,7 +122,7 @@ consumed off the main actor (../conventions.md §1.3), and the launcher holds
 while recording so App Nap and timer coalescing do not apply. The recorder code writes
 the same `status.json` and reads the same `control/`, so `MeetingController` does not
 know which launcher is used. Post-processing still runs in a child, keeping FluidAudio
-out of the app: the in-process `PostProcessHook` (§4.6) hands the processing lease to a
+out of the app: the in-process `PostProcessHook` (recorder.md §4.6) hands the processing lease to a
 child without ever releasing it. It spawns
 `holos session diarize <path> --after-recording --json --lease-fd 3` with a
 `posix_spawn_file_actions_adddup2` that places the lease's lock descriptor at fd 3 in the
@@ -185,7 +185,7 @@ public enum RecorderEffect: Sendable, Equatable {
     case allowSleep
     /// Take or release the idle-sleep assertion (released while paused).
     case holdPowerAssertion(Bool)
-    /// Leave the loop; the stop path (§4.6) runs next.
+    /// Leave the loop; the stop path (recorder.md §4.6) runs next.
     case finish(StopReason)
 }
 
@@ -617,7 +617,7 @@ contextual strings dictation uses, so council members' names and strata terms ar
 recognized. `LiveSpeechFactory` takes `contextualStrings`; `RecordingOptions.vocabulary`
 carries them; `TrackReplayer.replay`, `TranscriptRebuilder.rebuild`, and
 `SessionImporter.importAudio` take them too. The app builds the list with
-`RecognizerVocabulary.meeting`: the user's word list (design.md "Word list"), then known
+`RecognizerVocabulary.meeting`: the user's word list (../design.md "Word list"), then known
 people's names (PR10), then `CorrectionList.vocabulary` (PR4), each once ignoring case,
 at most 100 strings (the hand-off file, the recorder and import keep what
 `MeetingVocabulary.cleaned` keeps: each string trimmed, empty ones and ones over 100

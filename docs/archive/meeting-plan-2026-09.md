@@ -16,12 +16,12 @@ Status: implementation-ready design for PR1–PR11 of
 [meeting-recording-plan.md](../meeting-recording-plan.md) (PR12, minutes, is out of scope).
 Written 2026-09-23 from the code on branch `meeting-plan`, FluidAudio 0.17.1 sources
 (`5c51c5c9`), and the user's decisions in ../meeting-recording-plan.md §8. Revised 2026-09-24 after a three-lens
-design review (80 findings, §10) and spike S1 ([speaker-evaluation.md](../speaker-evaluation.md)).
+design review (80 findings, meeting-plan-2026-09.md §10) and spike S1 ([speaker-evaluation.md](../speaker-evaluation.md)).
 No product code exists for it yet.
 
 Several engineers build this in parallel, one PR each, without talking to each other.
 Everything they must agree on is fixed here: target graph, file formats, the contract
-files (../meeting/session-format.md §3, copy verbatim), the seams between PRs (§4), and each PR's file list and
+files (../meeting/session-format.md §3, copy verbatim), the seams between PRs (meeting-plan-2026-09.md §4), and each PR's file list and
 "does not touch" list (§5). If a PR needs a contract change beyond what ../meeting/session-format.md §3.0 allows, it
 stops and reports it; it does not edit a file owned by another PR.
 
@@ -35,11 +35,11 @@ stops and reports it; it does not edit a file owned by another PR.
 | 2 | Remember voices: only from confirmed labels, with forget and export; on for new installs since 2026-10-06 ("if I label words with names, that's the whole point"); an existing setting is kept | ../meeting/people-voice.md §4.10, PR10. Voice embeddings are stored only as profile samples of people the user confirmed with voice learning on, extracted on demand (../meeting/people-voice.md §4.10); post-processing never persists them; names are not voiceprints and are always kept |
 | 3 | Int16 audio now; AAC compaction later | PR2a (`AudioChunkWriter`); system audio is also recorded mono (../meeting/recorder.md §4.5) |
 | 4 | Recorder = bundled `holos` CLI child of the app; in-process fallback allowed | ../meeting/recorder.md §4.1, §4.6, PR4 (`RecorderLauncher` with both implementations) |
-| 5 | Sleep < 15 min resumes, else finalize at the sleep point | ../meeting/recorder.md §4.4, PR2b. Refinement to confirm: sleep that starts while *paused* keeps the meeting paused (§9 Q1) |
+| 5 | Sleep < 15 min resumes, else finalize at the sleep point | ../meeting/recorder.md §4.4, PR2b. Refinement to confirm: sleep that starts while *paused* keeps the meeting paused (meeting-plan-2026-09.md §9 Q1) |
 | 6 | Dictation remains available during meeting recording; no dictation markers | ../meeting/recorder.md §4.12, PR4 |
 | 7 | No live speaker labels in v1 | Diarization runs only after stop (../meeting/post-processing.md §4.7) |
 | 8 | Consent is the user's responsibility; dismissible reminder in the start panel | PR4 start panel |
-| 9 | Built-in laptop microphone; no device picker; no boundary-mic test | ../meeting/recorder.md §4.12. In-person meetings record the built-in microphone. Refinement to confirm: online calls record the system default input (the headset the call app uses), shown as a static label (§9 Q2) |
+| 9 | Built-in laptop microphone; no device picker; no boundary-mic test | ../meeting/recorder.md §4.12. In-person meetings record the built-in microphone. Refinement to confirm: online calls record the system default input (the headset the call app uses), shown as a static label (meeting-plan-2026-09.md §9 Q2) |
 
 ### 0.2 PR map
 
@@ -62,7 +62,7 @@ Meeting languages came after wave 5, outside this map: one language per meeting 
 then several detected after the recording (LANG2); ../meeting/languages.md §4.14 describes both.
 Spike S1 finished with verdict "go" (../meeting/post-processing.md §4.8 uses its API facts and measurements). Spike S2
 (recorder process and platform) is pending; it picks the default launcher and runs the
-hardware checks in §7.2. S2 does not change any interface: the `waiting` phase (../meeting/recorder.md §4.2)
+hardware checks in meeting-plan-2026-09.md §7.2. S2 does not change any interface: the `waiting` phase (../meeting/recorder.md §4.2)
 already covers ScreenCaptureKit stopping under screen lock, and ../meeting/recorder.md §4.2 names the fallback
 if it does.
 
@@ -104,7 +104,7 @@ existing file. Signatures are the contract; bodies are the implementer's. When t
 compiler demands a small annotation change (for example `Sendable` on a protocol),
 make it without changing names or shapes and say so in the PR description. Every PR
 description ends with a "Docs note" paragraph for the PR that writes the wave's
-`README.md` and `docs/status.md` updates (§6).
+`README.md` and `docs/status.md` updates (meeting-plan-2026-09.md §6).
 
 ### 5.1 PR6: Contracts and storage foundations (wave 0)
 

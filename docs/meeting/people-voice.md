@@ -422,7 +422,7 @@ public struct SpeakerProfileDatabase: Codable, Sendable, Equatable {
 - **Calibration.** PR7c measures, on the Otter recordings 001 and 003 (six shared
   participants), cosine distances between centroids of clusters mapped to the same
   named Otter label across the two files and to different labels, and records
-  percentiles and counts only in `speaker-evaluation.md`. PR10 sets
+  percentiles and counts only in `../speaker-evaluation.md`. PR10 sets
   `defaultThresholds.possibleMaxDistance` to the distance with at most 5 %
   different-person pairs below it. Hidden `holos people calibrate [--apply]` computes the
   same from the user's confirmed meetings (samples of one profile across sessions vs.

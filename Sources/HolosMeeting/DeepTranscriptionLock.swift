@@ -8,8 +8,8 @@ import HolosCore
 /// ends, so while the lock is held a pass is running: the app starts none of its own until the lock is free, and
 /// never signals or adopts a pass it did not start (what the holder wrote is for display and Review only).
 ///
-/// It is the lock of every expensive background job on a meeting: `voiceislocal session summarize` (§4.17) holds it
-/// too (`Holder.kind` `summary`), and so does `voiceislocal session echo-analyze` (§5.11, `echo`), so no two of them
+/// It is the lock of every expensive background job on a meeting: `voiceislocal session summarize` (docs/meeting/titles-summaries.md §4.17) holds it
+/// too (`Holder.kind` `summary`), and so does `voiceislocal session echo-analyze` (docs/meeting/online-calls-echo.md §5.11, `echo`), so no two of them
 /// run at the same time, and a job that outlived the app that started it is seen as busy after a relaunch. The file
 /// keeps its name, so a build from before summaries and this one exclude each other.
 public enum DeepTranscriptionLock {

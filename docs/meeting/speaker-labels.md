@@ -857,7 +857,7 @@ holos session score <path> --otter <transcript.txt> [--collar 0.25] [--json]    
 | `scoreJSONHasNoNames` | fixture session + Otter-format text with names | output contains numbers and hashed keys only; no label text |
 
 **Acceptance (run by the implementer with models installed).** The Otter evaluation
-above and the calibration run; numbers recorded in `speaker-evaluation.md` and the PR
+above and the calibration run; numbers recorded in `../speaker-evaluation.md` and the PR
 description (counts and metrics only): runtime, peak RSS (`/usr/bin/time -l`),
 agreement confusion per configuration, speaker counts, track offsets, and calibration
 percentiles. The `exclusiveSegments` default follows post-processing.md §4.8. Temporary sessions and audio

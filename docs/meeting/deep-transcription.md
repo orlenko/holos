@@ -137,7 +137,7 @@ skips it.
    (`session deep-transcribe --any-language`, to try it). `force` never lifts it, so the
    app's Make Final Transcript Now (which passes `--force`) is checked again when it runs, and
    the app never passes `--any-language`. On a real 3.7 h meeting in French and
-   English, Whisper's French was worse than Apple's (status.md), so other languages wait for
+   English, Whisper's French was worse than Apple's (../status.md), so other languages wait for
    validation on real recordings; `DeepTranscriptionStage.languageProblem` holds both rules,
    and the command, the app's queue and Make Final Transcript Now ask it
    (`SessionDeepTranscribeCommand.languageProblem`). Edited speaker labels of the current transcript:

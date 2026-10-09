@@ -29,7 +29,7 @@ public struct SpeakerEditResult: Sendable {
 /// (`view`), and a batch made on a view that no longer matches the session is refused, writing nothing, instead of
 /// editing a different turn or overwriting a newer name.
 ///
-/// Locking (§1.7): the journal is appended under the session's speaker lock, which is held only to read the head and
+/// Locking (docs/conventions.md §1.7): the journal is appended under the session's speaker lock, which is held only to read the head and
 /// the journal, compare, and append (milliseconds). The run and its transcript are immutable files, so they are read
 /// before the lock is taken. Exports are regenerated after the lock is released (they take it themselves).
 public enum SpeakerEditor {
@@ -71,7 +71,7 @@ public enum SpeakerEditor {
     ///   turns); the caller then awaits `VoiceProfileService.refreshSamples(session:extractor:store:)`. Without it,
     ///   `needsSampleRefresh` is false.
     /// - `requirePeople` (with `profiles`) maps each person this batch links to the name it is saving for them.
-    ///   In one locked step right before the append (§1.7 order: this speaker lock, then `profiles.lock`), each
+    ///   In one locked step right before the append (docs/conventions.md §1.7 order: this speaker lock, then `profiles.lock`), each
     ///   must still be in the store under that name; then they are marked used and no longer provisional. A person
     ///   another window forgot or merged away is refused with `unavailable` instead of being linked to by nobody,
     ///   and so is one another window renamed, because the batch's lines and the caller's view were both made from
