@@ -563,7 +563,7 @@ struct ReviewWindowJoinTests {
         }
         try relabel(session)
         await window.review.reload()
-        #expect(await until { window.review.snapshot.run?.id != request.runID })
+        #expect(await until { window.review.snapshot.run?.id != request.seen.runID })
         window.turnList.onJoin?(join, request)
         // Whatever the join queued runs before a change queued after it: let the window's task start, then wait for
         // one queued behind it.

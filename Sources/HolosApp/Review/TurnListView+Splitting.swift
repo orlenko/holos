@@ -2,21 +2,20 @@ import AppKit
 import HolosCore
 import HolosMeeting
 
-/// A split asked for at a word as the list showed it: before `word`, or after it (`after`), with the word moves and
-/// words epoch it was chosen under, so the review finds where the word is now (`ReviewSession.splitPlace`).
+/// A split asked for at a word as the list showed it: before `word`, or after it (`after`), with the revision it was
+/// chosen under, so the review finds where the word is now (`ReviewSession.splitPlace`).
 struct ReviewSplitRequest: Equatable {
     var word: WordRef
     var after: Bool
     /// The turn the word was chosen in (turns may overlap: the split is that turn's).
     var turnID: String?
-    var movesSeen: Int
-    var wordsEpoch: Int
+    /// The word moves and words epoch `word` follows, and the speaker labels' run the turns were shown from: labelled
+    /// again since (a new run that did not keep them), a turn ID may name another turn, so the split is refused
+    /// (`ReviewWindow.resolveSplit`).
+    var seen: ReviewRevision
     /// The edit field's words and text when Return asked for the split: the field opens again over them, saying
     /// why, when the split is then refused (an edit saved meanwhile changed what it can do).
     var field: Field?
-    /// The speaker labels' run the turns were shown from: labelled again since (a new run that did not keep them), a
-    /// turn ID may name another turn, so the split is refused (`ReviewWindow.resolveSplit`).
-    var runID: String? = nil
 
     struct Field: Equatable {
         var words: [ReviewWord]
@@ -68,8 +67,7 @@ extension TurnListView {
         let request = ReviewSplitRequest(word: atStart ? first.ref : last.ref, after: !atStart,
                                          turnID: target.turnID ?? turnID(ofWordAt: target.range.lowerBound,
                                                                          in: target.paragraphID),
-                                         movesSeen: target.movesSeen, wordsEpoch: target.wordsEpoch,
-                                         field: .init(words: target.words, text: typed), runID: target.runID)
+                                         seen: target.seen, field: .init(words: target.words, text: typed))
         switch resolveSplit?(request) {
         case .split(let split)?:
             cancelWordEdit()
@@ -111,7 +109,7 @@ extension TurnListView {
         guard index > 0, index < shown.words.count, index < shown.turns.count else { return nil }
         return ReviewSplitRequest(word: shown.words[index].ref, after: false,
                                   turnID: paragraph.turns[shown.turns[index]].id,
-                                  movesSeen: wordMoves.count, wordsEpoch: wordsEpoch, runID: runID)
+                                  seen: revision)
     }
 
     /// Split Turn Here chosen: the request the menu made, resolved again now (the word followed since). Refused now

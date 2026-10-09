@@ -22,10 +22,8 @@ final class TurnListView: NSView, NSTableViewDataSource, NSTableViewDelegate {
     /// The reader scrolled the turns themselves.
     var onUserScroll: (() -> Void)?
     /// Edit mode: `words` (shown words of one segment of one turn, in order) are to become `text`; `addTerm`: ⌥Return
-    /// asked for the new text in the word list too; `movesSeen`: how many of the review's word moves `words` follow;
-    /// `wordsEpoch`: the review's `wordsEpoch` when the field opened over them.
-    var onEditWords: ((_ words: [ReviewWord], _ text: String, _ addTerm: Bool, _ movesSeen: Int,
-                       _ wordsEpoch: Int) -> Void)?
+    /// asked for the new text in the word list too; `seen`: the revision `words` follow (the field opened under it).
+    var onEditWords: ((_ words: [ReviewWord], _ text: String, _ addTerm: Bool, _ seen: ReviewRevision) -> Void)?
     /// The review's word moves (`ReviewSession.wordMoves`) as of the last update: the open field follows them.
     private(set) var wordMoves: [ReviewWordMove] = []
     /// What the edit mode banner says for a moment (a selection stopped at a turn's end), nil for its usual text.
@@ -44,9 +42,8 @@ final class TurnListView: NSView, NSTableViewDataSource, NSTableViewDelegate {
     /// Restore Deleted “…” chosen (context menu, VoiceOver): the segment whose words come back.
     var onRestoreDeleted: ((String) -> Void)?
     /// The open field's edit when it closes for any reason but Esc or a save (`keepWordEdit`: words, what was typed,
-    /// the word moves it follows, the `wordsEpoch` it opened under): the window queues it, so it waits for the review
-    /// rather than being lost.
-    var onKeepWordEdit: (([ReviewWord], String, Int, Int) -> Void)?
+    /// the revision its words follow): the window queues it, so it waits for the review rather than being lost.
+    var onKeepWordEdit: ((_ words: [ReviewWord], _ text: String, _ seen: ReviewRevision) -> Void)?
     /// Split a turn (or break its paragraph) at a word: Return at a word's start in edit mode, or Split Turn Here in a
     /// word's context menu (`TurnListView+Splitting`): `split`, as `resolveSplit` gave it for `request`.
     var onSplit: ((_ split: ReviewParagraphSplit, _ request: ReviewSplitRequest) -> Void)?
@@ -118,6 +115,8 @@ final class TurnListView: NSView, NSTableViewDataSource, NSTableViewDelegate {
     var wordsEpoch = 0
     /// The speaker labels' run the rows show (`ReviewProjection.runID`), which a split request names.
     var runID: String?
+    /// What the rows show as of the last update, as a command hands it back: `wordMoves`, `wordsEpoch`, `runID`.
+    var revision: ReviewRevision { ReviewRevision(moves: wordMoves.count, wordsEpoch: wordsEpoch, runID: runID) }
     /// The field's text selection when a ⇧-click came, restored when the selection cannot grow.
     var selectionBeforeExtension: NSRange?
     /// The field over the words being edited.

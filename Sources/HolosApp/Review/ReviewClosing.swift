@@ -51,13 +51,21 @@ final class ReviewCloseGate {
     }
 }
 
-/// A word edit the field handed over that was not saved: its words as the field showed them, what was typed, the word
-/// moves and `wordsEpoch` they follow, and why (`message`, with what was typed).
+extension ReviewSession.TypedEdit {
+    /// The open field's edit (`TurnListView.takeOpenWordEdit`) as the review takes it at a pause or a close: checked
+    /// against the revision its field opened under.
+    init(_ open: (words: [ReviewWord], text: String, seen: ReviewRevision)) {
+        self.init(words: open.words.map(\.ref), text: open.text, seenMoves: open.seen.moves,
+                  expected: open.words.map(\.shown), seenEpoch: open.seen.wordsEpoch)
+    }
+}
+
+/// A word edit the field handed over that was not saved: its words as the field showed them, what was typed, the
+/// revision they follow, and why (`message`, with what was typed).
 struct FailedWordEdit {
     var words: [ReviewWord]
     var text: String
-    var movesSeen: Int
-    var wordsEpoch: Int
+    var seen: ReviewRevision
     var message: String
     /// A Restore of deleted words (this segment's), not typed words: no field opens again for it, and it is never kept
     /// as an edit to type again (`UnsavedWordEdits`); its message stays in the footer.

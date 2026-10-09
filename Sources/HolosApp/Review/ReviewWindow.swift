@@ -132,7 +132,7 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, NSM
     /// with the edit when it was not saved (`FailedWordEdit`), nil when it was. A close by hand waits for them too.
     private var pendingWordEdits: [(id: UUID, saving: Task<FailedWordEdit?, Never>)] = []
     /// The field's edit a close by hand took and has not queued yet (it waits for the edits before it).
-    private var heldOpenEdit: HeldEdit?
+    private var heldOpenEdit: OpenWordEdit?
     /// Word edits not saved whose field could not open again: in the footer until reopened or dismissed.
     private var unsavedEdits = UnsavedWordEdits()
 
@@ -212,10 +212,7 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, NSM
     /// `banner`, playback stops and lets go of the audio, and this returns once the window's changes are saved.
     func pauseForMaintenance(_ hold: ReviewMaintenance.Hold, banner: String) async {
         // The review turns read-only, so the open edit field closes: what it holds is saved first, never lost.
-        let typed = turnList.takeOpenWordEdit().map { open in
-            ReviewSession.TypedEdit(words: open.words.map(\.ref), text: open.text, seenMoves: open.movesSeen,
-                                    expected: open.words.map(\.shown), seenEpoch: open.wordsEpoch)
-        }
+        let typed = turnList.takeOpenWordEdit().map(ReviewSession.TypedEdit.init)
         player.invalidate()
         refresh()
         if let unsaved = await review.pause(hold, reason: banner, typed: typed) {
@@ -369,8 +366,8 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, NSM
         }
         turnList.onPlay = { [weak self] seconds in self?.play(from: seconds) }
         turnList.onRevertFix = { [weak self] word in self?.revertFix(word) }
-        turnList.onEditWords = { [weak self] words, text, addTerm, movesSeen, wordsEpoch in
-            self?.editWords(words, to: text, addTerm: addTerm, movesSeen: movesSeen, wordsEpoch: wordsEpoch)
+        turnList.onEditWords = { [weak self] words, text, addTerm, seen in
+            self?.editWords(words, to: text, addTerm: addTerm, seen: seen)
         }
         turnList.onEditMessage = { [weak self] message in self?.editBanner.show(message: message) }
         // Return at a word's start in edit mode, or Split Turn Here: the split, checked as the review checks it, then
@@ -380,9 +377,10 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, NSM
             // The word is where `resolveSplit` found it just now, among the words shown: a word edit saved before the
             // split runs moves it from there; words changed elsewhere since it was chosen still refuse it.
             // Of the labels run shown now, which `resolveSplit` found the split on.
-            self.applySplit(split, movesSeen: self.review.shownWordMoves.count, epoch: request.wordsEpoch,
-                            runID: self.review.projection.runID, focus: true,
-                            field: request.field.map { ($0, request.movesSeen, request.after, request.turnID) })
+            let shown = self.review.revision
+            self.applySplit(split, seen: ReviewRevision(moves: shown.moves, wordsEpoch: request.seen.wordsEpoch,
+                                                        runID: shown.runID), focus: true,
+                            field: request.field.map { ($0, request.seen, request.after, request.turnID) })
         }
         turnList.resolveSplit = { [weak self] request in
             self?.resolveSplit(request) ?? .refused("The review is closing.")
@@ -402,9 +400,8 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, NSM
         }
         // The review turned read-only with a field open (an earlier edit's labels could not be reread, say): its edit
         // is queued all the same, and waits for the reread as the changes before it do.
-        turnList.onKeepWordEdit = { [weak self] words, text, movesSeen, wordsEpoch in
-            self?.editWords(words, to: text, addTerm: false, movesSeen: movesSeen, wordsEpoch: wordsEpoch,
-                            whileUnread: true)
+        turnList.onKeepWordEdit = { [weak self] words, text, seen in
+            self?.editWords(words, to: text, addTerm: false, seen: seen, whileUnread: true)
         }
         turnList.onRequestEditing = { [weak self] in
             guard let self, self.review.canEditWords else { return }
@@ -967,30 +964,28 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, NSM
         let sheet = SplitSheet(words: Array(words.joined()), turnStarts: turnStarts,
                                onPlay: { [weak self] seconds in self?.play(from: seconds) })
         // A word edit saved while the sheet is open moves its words: the split follows them (`split(seenMoves:)`).
-        let movesSeen = review.shownWordMoves.count
-        let epoch = review.wordsEpoch
-        let runID = review.projection.runID
+        let seen = review.revision
         splitSheet = sheet
         window.beginSheet(sheet.panel) { [weak self] response in
             guard let self else { return }
             self.splitSheet = nil
             guard response == .OK, let index = sheet.splitIndex,
                   let split = ReviewParagraphs.split(paragraph, words: words, at: index) else { return }
-            self.applySplit(split, movesSeen: movesSeen, epoch: epoch, runID: runID, focus: false)
+            self.applySplit(split, seen: seen, focus: false)
         }
     }
 
-    /// Makes `split`: the review splits the turn (undoable; a word edit saved since moves the word, `movesSeen`, and
-    /// words changed elsewhere refuse it, `epoch`), or the row breaks before a turn it holds (this window only). With
+    /// Makes `split`: the review splits the turn (undoable; a word edit saved since the revision `seen` moves the word,
+    /// and words changed elsewhere refuse it), or the row breaks before a turn it holds (this window only). With
     /// `focus` (Return at a word's start, Split Turn Here), the second part's row is selected and its speaker pop-up
     /// opens, so it can be given its speaker at once (`TurnListView.focusSpeaker`).
     /// `field`: the edit field Return asked from (its words and text, the word moves they follow, and whether the
     /// caret was at its end): refused once queued (an edit saved meanwhile changed what the split can do), the field
     /// opens again over its words once the labels are read again (a row the refused split showed for a moment is gone
     /// by then), with the caret where it was and the reason, as before Return.
-    /// `runID`: the labels run `split`'s turn is of; labelled again before the split runs (it waits behind other
+    /// `seen.runID`: the labels run `split`'s turn is of; labelled again before the split runs (it waits behind other
     /// changes), it is refused (`ReviewSession.splitRunRefusal`).
-    private func applySplit(_ split: ReviewParagraphSplit, movesSeen: Int?, epoch: Int, runID: String, focus: Bool,
+    private func applySplit(_ split: ReviewParagraphSplit, seen: ReviewRevision, focus: Bool,
                             field: SplitField? = nil) {
         // A word's field opened while the split saves (open still, or closed again since): the person went on
         // editing, so no pop-up takes the keyboard, nor a refused split's field.
@@ -1000,8 +995,8 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, NSM
             perform { [weak self] review in
                 let second: WordRef
                 do {
-                    second = try await review.split(turnID: turnID, at: word, seenMoves: movesSeen, seenEpoch: epoch,
-                                                    seenRun: runID)
+                    second = try await review.split(turnID: turnID, at: word, seenMoves: seen.moves,
+                                                    seenEpoch: seen.wordsEpoch, seenRun: seen.runID)
                 } catch let error where !(error is CancellationError) {
                     guard let self else { throw error }
                     // Saved, but its labels could not be reread (`incomplete`): the split stands, so its second part
@@ -1010,15 +1005,14 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, NSM
                         if focus, self.turnList.fieldsOpened == fieldsOpened {
                             self.refresh()
                             let moved = ReviewSession.follow([word],
-                                                             through: review.shownWordMoves.dropFirst(movesSeen ?? 0))
+                                                             through: review.shownWordMoves.dropFirst(seen.moves))
                             self.focusSpeaker(startingAt: moved.refs.first ?? word,
                                               splitOf: review.resolvedTurnID(turnID))
                         }
                         throw error
                     }
                     if let field {
-                        await self.restoreSplitField(field, epoch: epoch, fieldsOpened: fieldsOpened,
-                                                     why: error.localizedDescription)
+                        await self.restoreSplitField(field, fieldsOpened: fieldsOpened, why: error.localizedDescription)
                     }
                     throw error
                 }
@@ -1046,15 +1040,15 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, NSM
     /// showed for a moment is gone by then), the field opens again over its words with the caret where Return found
     /// it and why; when an edit saved meanwhile replaced its word, over the words that replaced it (nothing was typed
     /// in it, so their own text is what it shows).
-    /// The field the split was asked from: its words and text, the word moves they follow, whether the caret was at
-    /// its end, and the turn it was opened in.
-    private typealias SplitField = (field: ReviewSplitRequest.Field, movesSeen: Int, atEnd: Bool, turnID: String?)
+    /// The field the split was asked from: its words and text, the revision they follow, whether the caret was at its
+    /// end, and the turn it was opened in.
+    private typealias SplitField = (field: ReviewSplitRequest.Field, seen: ReviewRevision, atEnd: Bool, turnID: String?)
 
     /// In the turn the field was opened in (overlapping turns may show a word twice), so Return there asks for that
     /// turn's split again; a word replaced meanwhile is taken at the edge of what replaced it (the end, for a split
     /// after it), never inside words edited together.
     /// `fieldsOpened`: `TurnListView.fieldsOpened` when the split was asked.
-    private func restoreSplitField(_ field: SplitField, epoch: Int, fieldsOpened: Int, why: String) async {
+    private func restoreSplitField(_ field: SplitField, fieldsOpened: Int, why: String) async {
         await review.reload()
         refresh()
         guard Self.reopensRefusedSplitField(typingElsewhere: turnList.typingElsewhere,
@@ -1064,15 +1058,14 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, NSM
         // Its saved ID: a part made by a split still saving when the field opened had a temporary one.
         let turnID = field.turnID.map(review.resolvedTurnID)
         let reopen = { [self] () -> Bool in
-            if turnList.reopenWordEdit(field.field.words, typed: text, message: why, movesSeen: field.movesSeen,
-                                       wordsEpoch: epoch, caret: field.atEnd ? (text as NSString).length : 0,
-                                       inTurn: turnID) {
+            if turnList.reopenWordEdit(field.field.words, typed: text, message: why, seen: field.seen,
+                                       caret: field.atEnd ? (text as NSString).length : 0, inTurn: turnID) {
                 return true
             }
-            guard epoch == review.wordsEpoch,
+            guard field.seen.wordsEpoch == review.wordsEpoch,
                   let place = Self.splitBoundary(field.atEnd ? field.field.words.last : field.field.words.first,
                                                  atEnd: field.atEnd,
-                                                 through: review.shownWordMoves.dropFirst(field.movesSeen))
+                                                 through: review.shownWordMoves.dropFirst(field.seen.moves))
             else { return false }
             if turnList.reopenField(at: place.word, atEnd: place.atEnd, message: why, inTurn: turnID) { return true }
             // The same boundary from the word before it (a deleted last word leaves no word after it).
@@ -1148,11 +1141,11 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, NSM
             return .refused(review.pauseReason ?? review.reloadProblem ?? "This meeting cannot be changed right now.")
         }
         // Labelled again since the rows the split was chosen on: a turn ID may name another turn now.
-        if let refusal = review.splitRunRefusal(seenRun: request.runID) { return .refused(refusal) }
+        if let refusal = review.splitRunRefusal(seenRun: request.seen.runID) { return .refused(refusal) }
         let place: ReviewSplitPlace?
         do {
             place = try review.splitPlace(at: request.word, after: request.after, in: request.turnID,
-                                          seenMoves: request.movesSeen, seenEpoch: request.wordsEpoch)
+                                          seenMoves: request.seen.moves, seenEpoch: request.seen.wordsEpoch)
         } catch {
             return .refused(error.localizedDescription)
         }
@@ -1252,8 +1245,8 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, NSM
         }
         clearTransientMessages()
         paragraphBreaks.beginCarryOver()
-        trackWordChange([], text: "", movesSeen: review.shownWordMoves.count, wordsEpoch: review.wordsEpoch,
-                        restoring: segmentID, saved: { _ in }, ended: { [weak self] in self?.endBreakCarryOver() }) {
+        trackWordChange([], text: "", seen: review.revision, restoring: segmentID, saved: { _ in },
+                        ended: { [weak self] in self?.endBreakCarryOver() }) {
             [review] committed in
             try review.queueRestoreDeletedWords(segmentID: segmentID, committed: committed)
         }
@@ -1311,19 +1304,19 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, NSM
     /// so the window's paragraph breaks stay (`refresh`). Once saved, a new text that looks like a name or term is
     /// offered for the word list (with ⌥Return it is added at once). Tracked until it ends (`pendingWordEdits`), so
     /// closing the window by hand waits for it, and stays open when it is not saved.
-    /// `wordsEpoch`: the review's when the field opened over `words`; the save is refused when words were changed
+    /// `seen`: the revision the field opened under over `words`; the save is refused when words were changed
     /// elsewhere since, even when the list has not shown that yet.
-    private func editWords(_ words: [ReviewWord], to text: String, addTerm: Bool, movesSeen: Int, wordsEpoch: Int,
+    private func editWords(_ words: [ReviewWord], to text: String, addTerm: Bool, seen: ReviewRevision,
                            whileUnread: Bool = false) {
         offeredTerm = nil
         problem = nil
         notice = nil
         refreshFooter()
-        trackWordChange(words, text: text, movesSeen: movesSeen, wordsEpoch: wordsEpoch,
+        trackWordChange(words, text: text, seen: seen,
                         saved: { [weak self] edit in self?.offerTerm(after: edit, add: addTerm) }) {
             [review] committed in
-            try review.queueWordEdit(words.map(\.ref), to: text, seenMoves: movesSeen, whileUnread: whileUnread,
-                                     expecting: words.map(\.shown), seenEpoch: wordsEpoch, committed: committed)
+            try review.queueWordEdit(words.map(\.ref), to: text, seenMoves: seen.moves, whileUnread: whileUnread,
+                                     expecting: words.map(\.shown), seenEpoch: seen.wordsEpoch, committed: committed)
         }
     }
 
@@ -1334,7 +1327,7 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, NSM
     /// not be reread afterwards: the change stands); it is tracked until it ends (`pendingWordEdits`), so closing the
     /// window by hand waits for it and stays open when it is not saved; `ended` runs then.
     private func trackWordChange(
-        _ words: [ReviewWord], text: String, movesSeen: Int, wordsEpoch epoch: Int, restoring: String? = nil,
+        _ words: [ReviewWord], text: String, seen: ReviewRevision, restoring: String? = nil,
         saved: @escaping (ReviewWordEdit) -> Void, ended: (() -> Void)? = nil,
         queue: (@escaping (ReviewWordEdit) -> Void) throws -> (@MainActor () async throws -> ReviewWordEdit?)?
     ) {
@@ -1353,12 +1346,11 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, NSM
         let saving: Task<FailedWordEdit?, Never> = Task { [weak self] () async -> FailedWordEdit? in
             guard let self else { return nil }
             let refusal: String? = await self.saveEdit(words, to: text, queued: queued, saved: flag,
-                                                       movesSeen: movesSeen, seenEpoch: epoch, restoring: restoring)
+                                                       seen: seen, restoring: restoring)
             self.pendingWordEdits.removeAll { $0.id == id }
             ended?()
             return refusal.map {
-                FailedWordEdit(words: words, text: text, movesSeen: movesSeen, wordsEpoch: epoch, message: $0,
-                               restoring: restoring)
+                FailedWordEdit(words: words, text: text, seen: seen, message: $0, restoring: restoring)
             }
         }
         pendingWordEdits.append((id, saving))
@@ -1375,7 +1367,7 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, NSM
     /// elsewhere since.
     private func saveEdit(_ words: [ReviewWord], to text: String,
                           queued: Result<(@MainActor () async throws -> ReviewWordEdit?)?, any Error>,
-                          saved: SavedFlag, movesSeen: Int, seenEpoch: Int, restoring: String? = nil) async -> String? {
+                          saved: SavedFlag, seen: ReviewRevision, restoring: String? = nil) async -> String? {
         do {
             if let wait = try queued.get() { _ = try await wait() }
             return nil
@@ -1398,15 +1390,13 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, NSM
             }
             let message = Self.withTyped(error.localizedDescription, text)
             // Where its words are now: through the moves saved since, never across words changed elsewhere.
-            let reopened = turnList.reopenWordEdit(words, typed: text, message: message, movesSeen: movesSeen,
-                                                   wordsEpoch: seenEpoch)
+            let reopened = turnList.reopenWordEdit(words, typed: text, message: message, seen: seen)
             // Reopened: said once, in the banner over the field that holds what was typed, as every other refusal of
             // an edit is (`reopenWordEdit`). Not reopened: in the footer, kept until reopened or dismissed (the next
             // edit never clears it); a close waiting for it keeps it itself (`keepAfterFailedClose`).
             if !reopened {
                 if !closeGate.saving {
-                    unsavedEdits.add([FailedWordEdit(words: words, text: text, movesSeen: movesSeen,
-                                                     wordsEpoch: seenEpoch, message: message)])
+                    unsavedEdits.add([FailedWordEdit(words: words, text: text, seen: seen, message: message)])
                 }
                 problem = message
                 refreshFooter()
@@ -1482,8 +1472,7 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, NSM
         guard canEditWordsNow else { return }
         if !turnList.editingWords { setEditMode(true) }
         let opened = unsavedEdits.reopenNext { failed in
-            turnList.reopenWordEdit(failed.words, typed: failed.text, message: failed.message,
-                                    movesSeen: failed.movesSeen, wordsEpoch: failed.wordsEpoch)
+            turnList.reopenWordEdit(failed.words, typed: failed.text, message: failed.message, seen: failed.seen)
         }
         notice = opened ? nil : "Those words are no longer shown as they were; edit them again, or dismiss this."
         refreshFooter()
@@ -1846,10 +1835,10 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, NSM
             return false
         }
         let open: OpenWordEdit? = closeGate.saving ? nil : turnList.takeOpenWordEdit()
-        // Held until it is queued, with the `wordsEpoch` its field opened under: a quit meanwhile closes the review
-        // with it (`beginClosing`); words changed elsewhere since the field opened refuse it.
-        if let open { heldOpenEdit = HeldEdit(edit: open, epoch: open.wordsEpoch) }
-        let epoch = open?.wordsEpoch ?? review.wordsEpoch
+        // Held until it is queued, with the revision its field opened under: a quit meanwhile closes the review with it
+        // (`beginClosing`); words changed elsewhere since the field opened refuse it.
+        if let open { heldOpenEdit = open }
+        let epoch = open?.seen.wordsEpoch ?? review.wordsEpoch
         let pending: [Task<FailedWordEdit?, Never>] = closeGate.saving ? [] : pendingWordEdits.map(\.saving)
         let outcome = CloseSaveOutcome()
         let save: () async -> String? = { [weak self] in
@@ -1866,14 +1855,9 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, NSM
         return closesNow
     }
 
-    /// The open field's edit as `TurnListView.takeOpenWordEdit` hands it over.
-    private typealias OpenWordEdit = (words: [ReviewWord], text: String, movesSeen: Int, wordsEpoch: Int)
-
-    /// The field's edit a close by hand took, and the `wordsEpoch` its field opened under.
-    private struct HeldEdit {
-        let edit: OpenWordEdit
-        let epoch: Int
-    }
+    /// The open field's edit as `TurnListView.takeOpenWordEdit` hands it over, with the revision its field opened
+    /// under.
+    private typealias OpenWordEdit = (words: [ReviewWord], text: String, seen: ReviewRevision)
 
     /// What a close by hand found when it saved (`saveBeforeClose`): every edit not saved, in the order they were made
     /// (those handed over before, then the open field's).
@@ -1890,13 +1874,11 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, NSM
             if let failed = await edit.value { outcome.failures.append(failed) }
         }
         // Unless the window's close took it meanwhile (quitting), which queues it itself.
-        if open != nil, closeTask == nil, let held = heldOpenEdit {
+        if open != nil, closeTask == nil, let open = heldOpenEdit {
             heldOpenEdit = nil
-            let open = held.edit
-            if let refusal = await saveTypedEdit(open.words, text: open.text, movesSeen: open.movesSeen,
-                                                 seenEpoch: held.epoch) {
-                outcome.failures.append(FailedWordEdit(words: open.words, text: open.text, movesSeen: open.movesSeen,
-                                                       wordsEpoch: held.epoch, message: refusal))
+            if let refusal = await saveTypedEdit(open.words, text: open.text, seen: open.seen) {
+                outcome.failures.append(FailedWordEdit(words: open.words, text: open.text, seen: open.seen,
+                                                       message: refusal))
             }
         }
         return outcome.failures.isEmpty ? nil : outcome.failures.map(\.message).joined(separator: " ")
@@ -1917,8 +1899,7 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, NSM
         if !typed.isEmpty, !turnList.editingWords { turnList.editingWords = true }
         let others = ReviewCloseRecovery.recover(typed) { failed in
             // Where its words are now: through the moves saved since, never across words changed elsewhere.
-            turnList.reopenWordEdit(failed.words, typed: failed.text, message: failed.message,
-                                    movesSeen: failed.movesSeen, wordsEpoch: failed.wordsEpoch)
+            turnList.reopenWordEdit(failed.words, typed: failed.text, message: failed.message, seen: failed.seen)
         }
         // The others stay in the footer, each with what was typed, until reopened or dismissed.
         unsavedEdits.add(others)
@@ -1928,13 +1909,12 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, NSM
 
     /// Saves an edit typed in the field and waits for it: nil when saved (also when its labels could not be reread
     /// after it: the edit stands), else why, with what was typed.
-    private func saveTypedEdit(_ words: [ReviewWord], text: String, movesSeen: Int,
-                               seenEpoch: Int) async -> String? {
+    private func saveTypedEdit(_ words: [ReviewWord], text: String, seen: ReviewRevision) async -> String? {
         var saved = false
         let committed: (ReviewWordEdit) -> Void = { _ in saved = true }
         do {
-            _ = try await review.editWords(words.map(\.ref), to: text, seenMoves: movesSeen, whileUnread: true,
-                                           expecting: words.map(\.shown), seenEpoch: seenEpoch,
+            _ = try await review.editWords(words.map(\.ref), to: text, seenMoves: seen.moves, whileUnread: true,
+                                           expecting: words.map(\.shown), seenEpoch: seen.wordsEpoch,
                                            committed: committed)
             return nil
         } catch {
@@ -1960,12 +1940,8 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, NSM
         let fromField = turnList.takeOpenWordEdit()
         let held = heldOpenEdit
         heldOpenEdit = nil
-        let open = fromField ?? held?.edit
-        let epoch = fromField?.wordsEpoch ?? held?.epoch ?? review.wordsEpoch
-        let typed = open.map { open in
-            ReviewSession.TypedEdit(words: open.words.map(\.ref), text: open.text, seenMoves: open.movesSeen,
-                                    expected: open.words.map(\.shown), seenEpoch: epoch)
-        }
+        // Checked against the revision its field opened under.
+        let typed = (fromField ?? held).map(ReviewSession.TypedEdit.init)
         closeTask = Task { [weak self] in
             await review.close(typed: typed)
             guard let self else { return }

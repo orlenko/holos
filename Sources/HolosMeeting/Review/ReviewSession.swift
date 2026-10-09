@@ -22,6 +22,15 @@ import os
 /// With `analyseVoices`, the window also works out every turn's voice once, in the background, into an in-memory
 /// `MeetingVoiceCache` (docs/meeting-design.md §4.10, "Voices within one meeting"): it serves voice learning, and
 /// `voiceMatches` compares the meeting's unnamed speakers and turns with the people named in it.
+///
+/// Invariants:
+/// 1. Labels read from disk after the review opened replace `snapshot` only through `adopt`, which claims this
+///    window's own new journal lines (`ReviewJournalClaim`); any other new line, or a head run made elsewhere, is a
+///    change made elsewhere (`externalVersion`), and queued changes made on older labels are refused.
+/// 2. `queue.first` with `started` set is the change running now; changes run one at a time, in queue order.
+/// 3. `movesRead` never passes `wordMoves.count`, and `wordsEpoch` only grows: by one for each transcript read that
+///    this window's own word changes did not make. `revision` hands out both, with the labels run shown, as one value.
+/// 4. `exportsPending` is true from a change saved until `exports/` is rewritten (`ReviewExportScheduler`).
 @MainActor public final class ReviewSession {
     nonisolated static let log = Logger(subsystem: "ca.orlenko.holos.app", category: "review")
     /// `SpeakerEdit.source` of the window's edits.
@@ -37,7 +46,8 @@ import os
     private let extractor: (any VoiceSampleExtractor)?
     /// The extractor as given (or the bundled tool): one pass per call.
     private let baseExtractor: (any VoiceSampleExtractor)?
-    private let exportDelay: Duration
+    /// When `exports/` is rewritten (`exportDelay` after the last change saved).
+    private let exports: ReviewExportScheduler
     private let sampleDelay: Duration
     private let analyseVoices: Bool
     /// This meeting's turn embeddings while the window is open (`analyseVoices`); memory only.
@@ -72,9 +82,9 @@ import os
     /// Hand-edited export files moved aside since the window opened (names in `exports/`).
     public private(set) var movedAsideExports: [String] = []
     /// A change was saved and `exports/` has not been rewritten since.
-    public private(set) var exportsPending = false
+    public var exportsPending: Bool { exports.pending }
     /// Why the last export regeneration failed, until one succeeds.
-    public private(set) var exportProblem: String?
+    public var exportProblem: String? { exports.problem }
     /// The labels on disk may differ from the ones shown (a change was saved, or they changed elsewhere, and they
     /// could not be reread), so the review is read-only until `reload` rereads them. Nil otherwise.
     public private(set) var reloadProblem: String?
@@ -214,12 +224,17 @@ import os
     /// run, a recovery). Their changes have no word moves, so words chosen before one cannot be followed onto the
     /// words as they are now: an edit field opened before it is not put back on its words (`TurnListView`).
     public private(set) var wordsEpoch = 0
+
+    /// What the window shows now, as one value a command hands back (`ReviewRevision`): the word moves the words shown
+    /// follow (`shownWordMoves`), `wordsEpoch`, and the labels' run.
+    public var revision: ReviewRevision {
+        ReviewRevision(moves: movesRead, wordsEpoch: wordsEpoch, runID: projection.runID)
+    }
     /// The transcripts this window's own word changes made current (edits, their undos, reverts).
     private var ownTranscripts: Set<String> = []
 
     /// Applied optimistic edit IDs → the queued change that made them, for counting changes.
     private var optimisticOwner: [String: ObjectIdentifier] = [:]
-    private var exportTimer: Task<Void, Never>?
     private var closed = false
     /// Maintenance commands holding the review read-only, by `pause` key, oldest first.
     private var pauses: [(hold: ReviewMaintenance.Hold, reason: String)] = []
@@ -286,7 +301,7 @@ import os
         let cache = MeetingVoiceCache()
         voiceCache = cache
         self.extractor = base.map { CachedVoiceSampleExtractor(cache: cache, fallback: $0) }
-        self.exportDelay = exportDelay
+        exports = ReviewExportScheduler(delay: exportDelay)
         self.sampleDelay = sampleDelay
         self.analyseVoices = analyseVoices
         self.pendingVoices = pendingVoices
@@ -301,6 +316,9 @@ import os
         segments = Self.segmentIndex(loaded.snapshot.transcript)
         knownEditedExports = loaded.editedExports
         Self.log.info("Session \(loaded.snapshot.manifest.id, privacy: .public): review opened on run \(projection.runID, privacy: .public) (\(projection.speakers.count, privacy: .public) speakers, \(projection.turns.count, privacy: .public) turns)")
+        // Paused: `resume` schedules the rewrite once the command ended.
+        exports.canRun = { [weak self] in self.map { !$0.closed && $0.pauses.isEmpty } ?? false }
+        exports.fire = { [weak self] in _ = try? await self?.enqueue(.exports, optimistic: []) }
         resumePendingSamples()
         startVoiceAnalysis()
     }
@@ -1487,8 +1505,7 @@ import os
         }
         if !pauses.contains(where: { $0.hold == hold }) {
             pauses.append((hold, reason))
-            exportTimer?.cancel()
-            exportTimer = nil
+            exports.cancel()
             // The command may delete the audio or forget voices: no pass reads the audio meanwhile, and a sample sync
             // running is stopped and waited for (it runs again once the review resumes).
             if case .running = voiceAnalysis {
@@ -1523,7 +1540,7 @@ import os
         guard pauses.contains(where: { $0.hold == hold }) else { return }
         if !closed { _ = try? await enqueue(.reload, optimistic: []) }
         pauses.removeAll { $0.hold == hold }
-        if exportsPending, pauses.isEmpty { scheduleExports() }
+        if exports.pending, pauses.isEmpty { exports.schedule() }
         if pauses.isEmpty {
             updateVoiceAnalysis()
             scheduleSampleSync()
@@ -1536,8 +1553,7 @@ import os
     /// review closed, `PendingExports`): they are rewritten `exportDelay` from now, or at `close`.
     public func markExportsPending() {
         guard !closed else { return }
-        exportsPending = true
-        scheduleExports()
+        exports.schedule()
     }
 
     /// Regenerates exports now if an edit is pending. Call when the window closes. When that fails, `exportsPending`
@@ -1565,8 +1581,7 @@ import os
             return true
         }
         closed = true
-        exportTimer?.cancel()
-        exportTimer = nil
+        exports.cancel()
         // A read of the word checks in flight is of no use now: it stops at its next segment or turn.
         wordChecksRead?.cancel()
         do {
@@ -2911,51 +2926,29 @@ import os
             }
             owedHead = nil
         }
-        let known = Set(snapshot.journal.edits.map(\.id))
-        let added = fresh.journal.edits.filter { !known.contains($0.id) }
-        var groups: [[SpeakerEdit]] = []
-        var keys: [String] = []
-        for edit in added {
-            let key = edit.batchID ?? edit.id
-            if let index = keys.firstIndex(of: key) {
-                groups[index].append(edit)
-            } else {
-                keys.append(key)
-                groups.append([edit])
-            }
-        }
-        // The window writes with source "app"; `VoiceProfileService` names its own ("app" inside VoiceIsLocal.app).
-        let sources: Set<String> = [Self.source, VoiceProfileService.editSource]
-        var claimed = Set<Int>()
-        /// The newest unclaimed group `matching` accepts, claimed.
-        func claim(_ matching: ([SpeakerEdit]) -> Bool) -> [SpeakerEdit]? {
-            guard let index = groups.indices.last(where: { index in
-                !claimed.contains(index) && groups[index].allSatisfy { sources.contains($0.source) }
-                    && matching(groups[index])
-            }) else { return nil }
-            claimed.insert(index)
-            return groups[index]
-        }
         let rereadOps = unreloaded
         unreloaded.removeAll()
+        // The changes saved but not reread claim first, in order, then this change (`ReviewJournalClaim`). The window
+        // writes with source "app"; `VoiceProfileService` names its own ("app" inside VoiceIsLocal.app).
+        let claim = ReviewJournalClaim.claim(rereadOps.flatMap(\.claims) + (matching.map { [$0] } ?? []),
+                                             known: Set(snapshot.journal.edits.map(\.id)), fresh: fresh.journal.edits,
+                                             sources: [Self.source, VoiceProfileService.editSource])
+        var batches = claim.batches[...]
         for pending in rereadOps {
             pending.savedUnreloaded = false
-            for matching in pending.claims {
-                guard let batch = claim(matching), let first = batch.first else { continue }
+            for _ in pending.claims {
+                guard let batch = batches.popFirst() ?? nil, let first = batch.first else { continue }
                 pending.batches.append(first.batchID ?? first.id)
                 recordSplits(of: pending, lines: batch)
             }
             pending.claims.removeAll()
         }
-        var ours: [SpeakerEdit] = []
-        if let matching, let batch = claim(matching) {
-            ours = batch
-            if let op, let first = batch.first {
-                op.batches.append(first.batchID ?? first.id)
-                recordSplits(of: op, lines: batch)
-            }
+        // This change's claim, the last one (none without `matching`).
+        let ours = (batches.popFirst() ?? nil) ?? []
+        if let op, let first = ours.first {
+            op.batches.append(first.batchID ?? first.id)
+            recordSplits(of: op, lines: ours)
         }
-        let windowLines = claimed.reduce(0) { $0 + groups[$1].count }
         if let running = queue.first, running.started { running.superseded = true }
         let previousRunID = snapshot.run?.id
         // Also a reread after one of this window's word edits whose labels could not be reread at once.
@@ -2965,7 +2958,7 @@ import os
         // A head made elsewhere: the change running (whose own head it replaced) gets no undo entry once it ends,
         // as the entries before it go below.
         if headChanged, let running = queue.first, running.started { running.overtaken = true }
-        let external = forced || headChanged || added.count > windowLines
+        let external = forced || headChanged || claim.unclaimed > 0
         let transcriptChanged = fresh.transcript.id != snapshot.transcript.id
         var voicesMoved = false
         if retargeted, let previousRunID, let newRunID = fresh.run?.id, voiceRunID == previousRunID {
@@ -3024,7 +3017,7 @@ import os
         if external {
             externalVersion = savedVersion
             refuseStaleQueuedChanges()
-            Self.log.info("Session \(self.sessionID, privacy: .public): labels changed elsewhere (\(added.count - windowLines, privacy: .public) other lines, head changed: \(headChanged, privacy: .public))")
+            Self.log.info("Session \(self.sessionID, privacy: .public): labels changed elsewhere (\(claim.unclaimed, privacy: .public) other lines, head changed: \(headChanged, privacy: .public))")
         }
         updateVoiceAnalysis()
         // Turns whose times a word edit moved: the voices are worked out again on the new run (a pass running is
@@ -3112,12 +3105,9 @@ import os
         // 0 and 3 rewrote the exports from the labels now saved; any other code wrote none, so a change of this
         // window still waiting for its exports keeps waiting (they follow `exportDelay` later, or at `close`).
         if code == 0 || code == 3 {
-            exportsPending = false
-            exportProblem = nil
-            exportTimer?.cancel()
-            exportTimer = nil
-        } else if exportsPending {
-            scheduleExports()
+            exports.written()
+        } else if exports.pending {
+            exports.schedule()
         }
         switch code {
         case 0: return
@@ -3143,33 +3133,11 @@ import os
     /// `VoiceProfileService` change); otherwise (`regenerateExports: false`) they follow `exportDelay` later.
     private func changesSaved(exportsWritten: Bool) {
         lastSavedAt = Date()
-        if exportsWritten {
-            exportsPending = false
-            exportProblem = nil
-            exportTimer?.cancel()
-            exportTimer = nil
-        } else {
-            scheduleExports()
-        }
-    }
-
-    private func scheduleExports() {
-        exportsPending = true
-        exportTimer?.cancel()
-        exportTimer = nil
-        // Paused: `resume` schedules them once the command ended.
-        guard !closed, pauses.isEmpty else { return }
-        let delay = exportDelay
-        exportTimer = Task { [weak self] in
-            try? await Task.sleep(for: delay)
-            guard !Task.isCancelled, let self else { return }
-            self.exportTimer = nil
-            _ = try? await self.enqueue(.exports, optimistic: [])
-        }
+        exports.changesSaved(exportsWritten: exportsWritten)
     }
 
     private func regenerateExports() async throws {
-        guard exportsPending else { return }
+        guard exports.pending else { return }
         activity = "Updating the transcript files…"
         notify()
         let session = self.session
@@ -3180,11 +3148,10 @@ import os
                 try SessionExports.regenerate(session: session, profileNames: names,
                                               applyRecognition: Self.recognitionAllowed(store))
             }
-            exportsPending = false
-            exportProblem = nil
+            exports.regenerated()
             noteMovedAside(Set(result.movedAside.map(\.lastPathComponent)))
         } catch {
-            exportProblem = "The transcript files could not be updated: \(error.localizedDescription)"
+            exports.failed("The transcript files could not be updated: \(error.localizedDescription)")
             Self.log.error("Session \(self.sessionID, privacy: .public): exports not rewritten (\(ProcessSpawner.logCategory(error), privacy: .public))")
             throw error
         }
