@@ -112,23 +112,24 @@ extension Recorder {
 /// lets them go. `StatusWriter` keeps the status fresh meanwhile (its heartbeat runs again after a failed finish), so
 /// the session reads as busy, not dead. The exited status is tried again `first` after the failure, then twice as
 /// long after each failure up to `limit`; once it is written, leftover requests are deleted and the writer lock,
-/// then the lease, are released, as `exitStatus` does when the first write succeeds. A session folder that no longer
-/// exists has nothing left to protect: the retry stops and the locks go. The process exiting first releases them too.
+/// then the lease, are released, as `exitStatus` does when the first write succeeds. When `lstat` of the session
+/// folder fails, for any reason (the folder is gone, or it cannot be probed), the retry stops and the locks go without
+/// `exited`. The process exiting first releases them too.
 ///
 /// Invariants:
-/// 1. `done` is set once, by `releaseHeld`, after the retry wrote `exited` (`written`) or found the session folder
-///    gone, and never cleared.
-/// 2. Before `done`, `hold` keeps every lock it is given; from `done` on, it releases the lock at once. The held
-///    locks are released once, in `releaseHeld`: the writer lock, then the leases.
-/// 3. The retry writes the exit last given to `init` or `use`, and removes leftover requests and the closed marker
-///    only after that write succeeded.
-/// 4. `finished()` returns `written`: at once when `done`, otherwise when `releaseHeld` resumes it, after the locks
-///    are released.
+/// 1. The retry task ends after a write of `exited` succeeds or after the `lstat` probe of the session folder fails;
+///    only then does it call `releaseHeld`, which sets `done`. `done` is never cleared.
+/// 2. Before `done`, `hold` keeps the lock it is given; from `done` on, it releases it at once. `releaseHeld` releases
+///    what was kept: the writer lock, then the leases.
+/// 3. Each attempt writes the exit stored when the attempt began; `use` changes the exit for later attempts only.
+///    Leftover requests and the closed marker are removed only after a write succeeded.
+/// 4. `finished()` returns `written` once `done` is set: at once if it already is, otherwise when `releaseHeld`
+///    resumes it, after the held locks are released.
 final class ExitRetry: Sendable {
     private static let log = Logger(subsystem: "ca.orlenko.holos.app", category: "recorder")
 
     private struct State {
-        /// status.json says exited (or the session folder is gone): locks handed over from now on go at once.
+        /// The retry has ended (see invariant 1): locks handed over from now on go at once.
         var done = false
         /// The exit to write: the one the recorder tried last.
         var exit: RecorderExit
@@ -237,9 +238,10 @@ final class ExitRetry: Sendable {
 /// recording has not ended, its locks are still held, and the app keeps following it and waits for it before quitting.
 ///
 /// Invariants:
-/// 1. It refers to at most one `ExitRetry`, the last one `track` was given (the recorder tracks the retry it starts).
-/// 2. `retrying` is true from `track` on, and stays true after the retry has ended; `finished()` says when it has.
-/// 3. `finished()` returns true at once when nothing was tracked, otherwise the tracked retry's `finished()`.
+/// 1. It refers to at most one `ExitRetry`, the last one `track` was given.
+/// 2. `retrying` is true from the first `track` on and is never cleared.
+/// 3. `finished()` returns true at once when nothing was tracked, otherwise what the tracked retry's `finished()`
+///    returns.
 public final class ExitStatusWait: Sendable {
     private let retry = Mutex<ExitRetry?>(nil)
 

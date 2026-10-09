@@ -275,9 +275,9 @@ extension Recorder {
 /// burst is coalesced to its latest value.
 ///
 /// Invariants:
-/// 1. One task reads the queue, so status.json gets progress in the order it was sent; each write sets the phase to
-///    `postprocessing` with the latest value queued, and a failed write is skipped.
-/// 2. `finish()` closes the queue and returns once the task has handled everything queued before it.
+/// 1. One task reads the queue: progress reaches `status.update` in the order it was sent, a burst coalesced to its
+///    latest value, and a failed update is skipped.
+/// 2. `finish()` closes the queue and returns once the task has handled everything queued before the close.
 private final class ProgressMirror: Sendable {
     private let queue = WorkQueue<PostProcessingProgress>(capacity: .infinity) { _ in 0 }
     private let task: Task<Void, Never>

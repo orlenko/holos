@@ -358,28 +358,20 @@ public enum RecordingWorkflow {
 /// and `+Exit` (the exited status and the locks).
 ///
 /// Invariants:
-/// 1. The session holds a lock from creation until status.json says `exited`: every exit path finishes the archive
-///    keeping the writer lock, except the stop path with a processing lease, which takes the lease while it still
-///    holds the writer lock. Two exceptions end it without `exited`: `exitRetry` lets the locks go when the session
-///    folder is gone, and the process exiting releases them.
-/// 2. The session's last held lock is released only after `exitStatus` has written `exited`: the writer lock, or the
-///    processing lease once the archive is finished under it (the writer lock goes first then). An earlier lock can
-///    go before: when finishing the archive throws, the stop path's `defer` releases the lease while the writer lock,
-///    still held, goes last. While `exited` cannot be written, the locks handed over go to `exitRetry` (invariant 1).
-/// 3. Audio is durable before anything depends on it: the stop path stops capture, drains the consumer, finishes the
-///    pump and the chunk writer before it reads the manifest, saves a transcript or takes the processing lease.
-/// 4. A capture is stopped at most once (`captureStopped`), and `stopCurrentCapture` waits for its frame consumer,
-///    or abandons it after the capture-stop limit, before it returns. The display assertion is released first.
-/// 5. Each stop source is applied once: the stop source, `stop.request` and the duration each set their `…Handled`
-///    flag when they first fire.
-/// 6. Once `cancelled` is set, the loop applies no more inputs and the run ends with `CancellationError`. The stop
-///    path checks for cancellation right before it saves the transcript, and saves none when it finds the run
-///    cancelled.
-/// 7. A willSleep the loop applies is always allowed right after (`allowSleep`), whatever the machine did with it.
-/// 8. Requests the recorder takes are answered: by the machine while recording, `ignored` once capture has stopped
-///    (`answerRequestsWhileStopping`), and by one last poll after publication closes; leftovers are deleted only
-///    once status.json says exited. Exception: `ControlInbox.poll` deletes the files it returns, so when the run is
-///    cancelled while the loop applies a batch, `apply` drops the rest of that batch unanswered.
+/// 1. Once `init` has succeeded, `run` calls `exitStatus` before it returns or throws.
+/// 2. `exitStatus` releases the writer lock only after `exited` has been written or a write of it has failed. After a
+///    failed write, until the recorder writes `exited`, `releaseWriterLock` and `releaseLease` give their lock to
+///    `exitRetry` instead of releasing it.
+/// 3. The stop path takes the processing lease while it still holds the writer lock.
+/// 4. The stop path finishes the pump, awaits the writer task and finishes the chunk writer before it reads the
+///    manifest, saves a transcript or takes the processing lease.
+/// 5. The recorder calls `stop()` at most once per capture: `captureStopped` is set before each call and cleared
+///    only for a new capture.
+/// 6. The stop source, `stop.request` and the duration are each applied at most once (their `…Handled` flags).
+/// 7. Once `cancelled` is set, `apply` applies no more inputs and `run` throws `CancellationError`.
+/// 8. Every willSleep the loop drains is allowed (`allowSleep`) right after it is applied.
+/// 9. The recorder deletes leftover request files and the closed marker only after `exited` was written (by
+///    `exitStatus` or `exitRetry`).
 @MainActor
 final class Recorder {
     static let log = Logger(subsystem: "ca.orlenko.holos.app", category: "recorder")
