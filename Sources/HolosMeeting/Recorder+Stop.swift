@@ -12,7 +12,7 @@ extension Recorder {
         // A meeting stopped while paused keeps the Mac awake again for transcription and labelling (§4.4).
         holdPower(true)
         await setPhase(.stopping)
-        answerRequestsWhileStopping()
+        exitSequence.answerRequestsWhileStopping()
         // 1. Stop capture, drain the consumer, let the pump drain into the writer, close every chunk. A failed stop is a
         // capture error (a timeout only records captureFailed); a CancellationError from it is a cancellation.
         if let failure = await stopCurrentCapture() { recordingError = recordingError ?? failure }
@@ -46,8 +46,8 @@ extension Recorder {
             await recordEvent(MeetingEventKind.captureFailed, ["error": recordingError.localizedDescription])
             try? await archive.finish(status: ArchiveStatus.incomplete, keepingLock: true)
             archiveOpen = false
-            await exitStatus(RecorderExit(archiveStatus: ArchiveStatus.incomplete, reason: stopReason,
-                                    message: recordingError.localizedDescription))
+            await exitSequence.finish(RecorderExit(archiveStatus: ArchiveStatus.incomplete, reason: stopReason,
+                                                   message: recordingError.localizedDescription))
             Self.log.error("Session \(self.archive.id, privacy: .public) stopped with a capture error; saved audio is kept")
             if cancelled { throw CancellationError() }
             throw HolosError.incomplete("Recording stopped with an error: \(recordingError.localizedDescription). Saved audio: \(archive.directory.path)")
@@ -132,7 +132,8 @@ extension Recorder {
         if Task.isCancelled {
             try await archive.finish(status: finalStatus, keepingLock: true)
             archiveOpen = false
-            await exitStatus(RecorderExit(archiveStatus: finalStatus, reason: stopReason, message: "Cancelled."))
+            await exitSequence.finish(RecorderExit(archiveStatus: finalStatus, reason: stopReason,
+                                                   message: "Cancelled."))
             throw CancellationError()
         }
 
@@ -154,7 +155,7 @@ extension Recorder {
                 }
             } catch { leaseCancelled = true }
         }
-        defer { releaseLease(lease) }
+        defer { exitSequence.release(lease) }
         // With the lease, the writer lock goes now (the hook opens the archive for maintenance under the lease).
         // Without it (no hook, or the lease could not be taken), the writer lock is the session's only lock: it is
         // kept until status.json says exited, so liveness never reads a dead recorder in between.
@@ -163,8 +164,8 @@ extension Recorder {
         // Cancelled while the lease was being taken: the archive is finished; skip the hook, release the lease.
         if leaseCancelled || Task.isCancelled {
             Self.log.notice("Session \(self.archive.id, privacy: .public) cancelled before post-processing; archive finished as \(finalStatus, privacy: .public)")
-            await exitStatus(RecorderExit(archiveStatus: finalStatus, reason: stopReason, message: "Cancelled."))
-            releaseLease(lease)
+            await exitSequence.finish(RecorderExit(archiveStatus: finalStatus, reason: stopReason, message: "Cancelled."),
+                                      releasing: lease)
             throw CancellationError()
         }
         // 7. Post-processing under the lease; its progress is mirrored into status.json in order.
@@ -176,17 +177,19 @@ extension Recorder {
             Self.log.notice("Session \(self.archive.id, privacy: .public) post-processing ended: \(postRecord?.state.rawValue ?? "", privacy: .public)")
             // The hook never throws; a cancellation during it still ends the run with CancellationError.
             if Task.isCancelled {
-                await exitStatus(RecorderExit(archiveStatus: finalStatus, reason: stopReason, message: "Cancelled.",
-                                        postprocessing: postRecord?.state, postprocessingMessage: postRecord?.message))
-                releaseLease(lease)
+                await exitSequence.finish(RecorderExit(archiveStatus: finalStatus, reason: stopReason,
+                                                       message: "Cancelled.", postprocessing: postRecord?.state,
+                                                       postprocessingMessage: postRecord?.message),
+                                          releasing: lease)
                 throw CancellationError()
             }
         }
         // 8–9. status.json says exited, then the lease is released, so no one reads a `postprocessing` status without
         // a lock as a dead recorder; leftover requests are deleted.
-        await exitStatus(RecorderExit(archiveStatus: finalStatus, reason: stopReason,
-                                postprocessing: postRecord?.state, postprocessingMessage: postRecord?.message))
-        releaseLease(lease)
+        await exitSequence.finish(RecorderExit(archiveStatus: finalStatus, reason: stopReason,
+                                               postprocessing: postRecord?.state,
+                                               postprocessingMessage: postRecord?.message),
+                                  releasing: lease)
         return RecordingOutcome(sessionID: archive.id, directory: archive.directory, archiveStatus: finalStatus,
                                 stopReason: stopReason, transcriptID: transcriptID,
                                 transcriptErrors: transcriptErrors, postProcessing: postRecord)
@@ -200,7 +203,8 @@ extension Recorder {
             ?? "Audio capture stopped before any audio arrived."
         try? await archive.finish(status: ArchiveStatus.failed, keepingLock: true)
         archiveOpen = false
-        await exitStatus(RecorderExit(archiveStatus: ArchiveStatus.failed, reason: .startFailed, message: message))
+        await exitSequence.finish(RecorderExit(archiveStatus: ArchiveStatus.failed, reason: .startFailed,
+                                               message: message))
         Self.log.error("Session \(self.archive.id, privacy: .public): capture ended before any audio")
         throw HolosError.incomplete("Audio capture did not start: \(message)")
     }
@@ -211,8 +215,8 @@ extension Recorder {
         try? await archive.recordEvent(kind: MeetingEventKind.captureStopped, details: ["cancelled": "true"])
         try? await archive.finish(status: archiveStatus, keepingLock: true)
         archiveOpen = false
-        await exitStatus(RecorderExit(archiveStatus: archiveStatus, reason: machine.stopReason ?? .requested,
-                                message: "Cancelled."))
+        await exitSequence.finish(RecorderExit(archiveStatus: archiveStatus, reason: machine.stopReason ?? .requested,
+                                               message: "Cancelled."))
         Self.log.notice("Session \(self.archive.id, privacy: .public) cancelled; archive finished as \(archiveStatus, privacy: .public)")
         throw CancellationError()
     }

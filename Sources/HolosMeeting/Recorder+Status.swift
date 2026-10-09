@@ -35,6 +35,20 @@ extension Recorder {
         if archiveOpen { await recordEvent(MeetingEventKind.controlRejected, ["file": file, "reason": reason]) }
     }
 
+    /// Polls `control/` once and acknowledges every request `ignored`: capture has stopped (§4.6).
+    func answerStoppedRequests() async {
+        var inbox = ControlInbox(session: archive.directory, sessionID: archive.id)
+        for item in inbox.poll() {
+            switch item {
+            case .request(let request):
+                await acknowledge(ControlAck(id: request.id, command: request.command, result: .ignored,
+                                             message: RecorderMachine.alreadyStopping))
+            case .rejected(let file, let reason):
+                await rejected(file: file, reason: reason)
+            }
+        }
+    }
+
     func clearWarning(_ code: RecorderWarningCode) async {
         shownWarnings.remove(code)
         await updateStatus { $0.warnings.removeAll { $0.code == code } }

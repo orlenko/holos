@@ -5,50 +5,108 @@ import HolosStorage
 import os
 import Synchronization
 
-extension Recorder {
+/// The end of a recording: the one place that writes status.json `exited`, and where the recorder lets go of the
+/// locks it still holds at the end (docs/meeting-design.md §4.6 steps 8–9). The recorder ends every run through `finish` (or `finishUnlessWritten`
+/// after an error), and gives its processing lease back through `finish` or `release`.
+///
+/// When `StatusWriter` cannot write `exited` even after its retries, the writer lock and the leases handed here go to
+/// an `ExitRetry`, which keeps trying the exited status in the background and releases them once it is written (or
+/// once its probe of the session folder fails), so the session reads as busy rather than dead meanwhile. An
+/// in-process recorder runs inside the app, which does not exit after a meeting, so the locks must not wait for the
+/// process to end. If the process exits first (a child recorder), the system releases them, and recovery finds the
+/// status unfinished as for any recorder that ended without saying so.
+///
+/// Invariants:
+/// 1. The first exit (`finish` or `finishUnlessWritten`) closes live text, stops the stopped-request poll, attempts
+///    `ControlInbox.closePublication` (its result is not checked), polls requests once more, then tries to write
+///    `exited`. A later exit only tries the write again if it has not succeeded.
+/// 2. An exit releases the writer lock as its last step, after `exited` was written or a write of it failed; `finish`
+///    lets its lease go after that.
+/// 3. After a failed write, until an exit here writes `exited`, the writer lock and every lease given to `finish` or
+///    `release` go to `exitRetry` instead of being released.
+/// 4. Leftover request files and the closed marker are deleted only after `exited` was written (here or by
+///    `exitRetry`).
+@MainActor
+final class RecorderExitSequence {
+    private static let log = Logger(subsystem: "ca.orlenko.holos.app", category: "recorder")
+
+    private let archive: SessionArchive
+    private let status: StatusWriter
+    private let liveText: LiveTextPublisher
+    private let tuning: RecorderTuning
+    private let exitStatusWait: ExitStatusWait?
+    /// Polls `control/` once and answers what it finds (the recorder's `answerStoppedRequests`).
+    private let answerRequests: @MainActor () async -> Void
+    /// The exit was published (or tried): requests are no longer answered.
+    private var exited = false
+    /// status.json says exited.
+    private var exitWritten = false
+    /// The exited status could not be written: the session's last lock stays held until it is (`exitRetry`) or this
+    /// process exits, so liveness never reads a recorder that is still shutting down as dead.
+    private var holdsLocksUntilExit: Bool { exited && !exitWritten }
+    /// Keeps trying the exited status in the background once `StatusWriter` gave up, and holds the locks until then.
+    private var exitRetry: ExitRetry?
+    private var stoppedInbox: Task<Void, Never>?
+
+    init(archive: SessionArchive, status: StatusWriter, liveText: LiveTextPublisher, tuning: RecorderTuning,
+         exitStatusWait: ExitStatusWait?, answerRequests: @escaping @MainActor () async -> Void) {
+        self.archive = archive
+        self.status = status
+        self.liveText = liveText
+        self.tuning = tuning
+        self.exitStatusWait = exitStatusWait
+        self.answerRequests = answerRequests
+    }
+
     /// After capture stops, every request is acknowledged `ignored` once a second until exit (§4.6).
     func answerRequestsWhileStopping() {
         guard stoppedInbox == nil else { return }
-        let interval = dependencies.tuning.stoppedPoll
-        stoppedInbox = Task { [weak self] in
+        let interval = tuning.stoppedPoll
+        let answerRequests = self.answerRequests
+        stoppedInbox = Task {
             while !Task.isCancelled {
-                await self?.answerStoppedRequests()
+                await answerRequests()
                 try? await Task.sleep(for: interval)
             }
         }
     }
 
-    private func answerStoppedRequests() async {
-        var inbox = ControlInbox(session: archive.directory, sessionID: archive.id)
-        for item in inbox.poll() {
-            switch item {
-            case .request(let request):
-                await acknowledge(ControlAck(id: request.id, command: request.command, result: .ignored,
-                                             message: RecorderMachine.alreadyStopping))
-            case .rejected(let file, let reason):
-                await rejected(file: file, reason: reason)
-            }
+    /// Ends the recording: `exitStatus(exit)`, then the processing lease, if there is one, goes (invariant 2).
+    func finish(_ exit: RecorderExit, releasing lease: ProcessingLease? = nil) async {
+        await exitStatus(exit)
+        release(lease)
+    }
+
+    /// Ends a run that failed after its audio was saved: `finish` with the exit `makeExit` builds when status.json
+    /// does not say exited yet; otherwise only makes sure the writer lock is released.
+    func finishUnlessWritten(_ makeExit: () -> RecorderExit) async {
+        if !exitWritten {
+            await exitStatus(makeExit())
+        } else {
+            await releaseWriterLock()
+        }
+    }
+
+    /// Releases the processing lease, unless the exited status could not be written: then `exitRetry` holds it.
+    func release(_ lease: ProcessingLease?) {
+        guard let lease else { return }
+        if holdsLocksUntilExit, let exitRetry {
+            exitRetry.hold(lease)
+        } else {
+            lease.release()
         }
     }
 
     /// Stops answering requests (after a last answer), writes phase `exited`, deletes leftover requests, and only then
-    /// releases the writer lock (every exit path finishes the archive keeping it), so `RecorderChannel.liveness` never
-    /// sees the session unlocked before it says exited. A processing lease is released by the caller, after this
-    /// (`releaseLease`). Called again, it tries the exited status again if it was not written, then makes sure the
-    /// writer lock is released.
+    /// releases the writer lock, so for a caller that finished the archive keeping it, `RecorderChannel.liveness`
+    /// never sees the session unlocked before it says exited. Called again, it tries the exited status again if it was
+    /// not written, then makes sure the writer lock is released.
     ///
-    /// When `StatusWriter` cannot write `exited` even after its retries, no lock is let go (`holdsLocksUntilExit`):
-    /// the writer lock and the lease go to an `ExitRetry`, which keeps trying the exited status in the background
-    /// and releases them once it is written, so the session reads as busy rather than dead meanwhile. An in-process
-    /// recorder runs inside the app, which does not exit after a meeting, so the locks must not wait for the process
-    /// to end. If the process exits first (a child recorder), the system releases them, and recovery finds the
-    /// status unfinished as for any recorder that ended without saying so.
-    ///
-    /// Requests are closed before the last answer (`ControlInbox.closePublication`): a sender that publishes after
-    /// that withdraws its request (`RecorderChannel.send`), so the last poll sees every request that will not be
-    /// withdrawn. Leftovers are deleted, and the marker removed, only once status.json says exited, which refuses
-    /// requests by itself from then on.
-    func exitStatus(_ exit: RecorderExit) async {
+    /// Requests are closed before the last answer (`ControlInbox.closePublication`; a failure to close is not
+    /// checked): a sender that publishes after a successful close withdraws its request (`RecorderChannel.send`), so
+    /// the last poll sees every request that will not be withdrawn. Leftovers are deleted, and the marker removed,
+    /// only once status.json says exited, which refuses requests by itself from then on.
+    private func exitStatus(_ exit: RecorderExit) async {
         if !exited {
             exited = true
             await liveText.close()
@@ -58,7 +116,7 @@ extension Recorder {
                 self.stoppedInbox = nil
             }
             ControlInbox.closePublication(session: archive.directory)
-            await answerStoppedRequests()
+            await answerRequests()
             await writeExit(exit)
         } else if !exitWritten {
             await writeExit(exit)
@@ -80,30 +138,19 @@ extension Recorder {
                 exitRetry.use(exit)
             } else {
                 let retry = ExitRetry(session: archive.directory, sessionID: archive.id, exit: exit)
-                retry.start(status: status, first: dependencies.tuning.exitRetry,
-                            limit: dependencies.tuning.exitRetryLimit)
+                retry.start(status: status, first: tuning.exitRetry, limit: tuning.exitRetryLimit)
                 exitRetry = retry
-                dependencies.exitStatusWait?.track(retry)
+                exitStatusWait?.track(retry)
             }
         }
     }
 
     /// Releases the writer lock, unless the exited status could not be written: then `exitRetry` holds it.
-    func releaseWriterLock() async {
+    private func releaseWriterLock() async {
         if holdsLocksUntilExit, let exitRetry {
             await exitRetry.hold(archive)
         } else {
             await archive.releaseLock()
-        }
-    }
-
-    /// Releases the processing lease, unless the exited status could not be written: then `exitRetry` holds it.
-    func releaseLease(_ lease: ProcessingLease?) {
-        guard let lease else { return }
-        if holdsLocksUntilExit, let exitRetry {
-            exitRetry.hold(lease)
-        } else {
-            lease.release()
         }
     }
 }
@@ -112,7 +159,8 @@ extension Recorder {
 /// lets them go. `StatusWriter` keeps the status fresh meanwhile (its heartbeat runs again after a failed finish), so
 /// the session reads as busy, not dead. The exited status is tried again `first` after the failure, then twice as
 /// long after each failure up to `limit`; once it is written, leftover requests are deleted and the writer lock,
-/// then the lease, are released, as `exitStatus` does when the first write succeeds. When `lstat` of the session
+/// then the lease, are released, as `RecorderExitSequence` does when the first write
+/// succeeds. When `lstat` of the session
 /// folder fails, for any reason (the folder is gone, or it cannot be probed), the retry stops and the locks go without
 /// `exited`. The process exiting first releases them too.
 ///
