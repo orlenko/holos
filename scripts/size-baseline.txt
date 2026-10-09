@@ -25,10 +25,10 @@
 634 Sources/HolosCore/SpeakerModels.swift
 925 Sources/HolosCore/SpokenCode.swift
 1035 Sources/HolosCore/TranscriptFixer.swift
-1033 Sources/HolosMeeting/Evaluation/EvalAlignment.swift
-702 Sources/HolosMeeting/Evaluation/EvalCompare.swift
-742 Sources/HolosMeeting/Evaluation/EvalLocal.swift
-1079 Sources/HolosMeeting/Evaluation/EvalNormalization.swift
+1033 Sources/HolosEvaluation/EvalAlignment.swift
+703 Sources/HolosEvaluation/EvalCompare.swift
+742 Sources/HolosEvaluation/EvalLocal.swift
+1079 Sources/HolosEvaluation/EvalNormalization.swift
 847 Sources/HolosMeeting/LiveHints.swift
 637 Sources/HolosMeeting/LiveTrack.swift
 745 Sources/HolosMeeting/MeetingController.swift
@@ -41,7 +41,7 @@
 652 Sources/HolosMeeting/RecorderMachine.swift
 1935 Sources/HolosMeeting/RecordingWorkflow.swift
 3872 Sources/HolosMeeting/Review/ReviewSession.swift
-848 Sources/HolosMeeting/SessionImporter.swift
+852 Sources/HolosMeeting/SessionImporter.swift
 838 Sources/HolosMeeting/Summary/MeetingSummarizer.swift
 709 Sources/HolosMeeting/Summary/SessionRenameCommand.swift
 1817 Sources/HolosMeeting/VoiceProfileService.swift
