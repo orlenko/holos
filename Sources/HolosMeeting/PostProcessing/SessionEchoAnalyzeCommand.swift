@@ -23,7 +23,8 @@ public enum SessionEchoAnalyzeCommand {
         }
     }
 
-    public struct Outcome: Sendable, Equatable, Encodable {
+    /// What `voiceislocal session echo-analyze --json` prints, and what the app reads from it.
+    public struct Outcome: Sendable, Equatable, Codable {
         public var sessionID: String
         /// Nil for a meeting the analysis does not apply to (not a call, or no microphone audio).
         public var verdict: EchoAnalysis.Verdict?
