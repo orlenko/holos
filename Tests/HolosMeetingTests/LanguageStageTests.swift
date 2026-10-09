@@ -4,6 +4,7 @@ import HolosCore
 @testable import HolosMeeting
 import HolosSpeakers
 import HolosStorage
+import HolosTestSupport
 import Testing
 
 // The post-processor's `languages` stage and `voiceislocal session languages` (docs/meeting-design.md §4.14), on
@@ -145,7 +146,7 @@ private func languageStageOutcome(_ record: PostProcessingRecord) -> StageOutcom
 
 @Test(.timeLimit(.minutes(1)))
 func twoLanguagesAreTranscribedMergedAndLabelled() async throws {
-    let temp = try TemporaryDirectory("languages")
+    let temp = try TemporaryDirectory("languages", permissions: 0o700)
     defer { temp.remove() }
     let (session, recorded) = try await languageStageSession(in: temp.url)
     let speech = LanguageStageSpeech.standard()
@@ -208,7 +209,7 @@ func twoLanguagesAreTranscribedMergedAndLabelled() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func oneLanguageRecordsNoLanguageStage() async throws {
-    let temp = try TemporaryDirectory("languages")
+    let temp = try TemporaryDirectory("languages", permissions: 0o700)
     defer { temp.remove() }
     let (session, recorded) = try await languageStageSession(in: temp.url, languages: nil)
     let speech = LanguageStageSpeech.standard()
@@ -221,7 +222,7 @@ func oneLanguageRecordsNoLanguageStage() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func mergedTranscriptIsKeptOnTheNextRun() async throws {
-    let temp = try TemporaryDirectory("languages")
+    let temp = try TemporaryDirectory("languages", permissions: 0o700)
     defer { temp.remove() }
     let (session, _) = try await languageStageSession(in: temp.url)
     let speech = LanguageStageSpeech.standard()
@@ -240,7 +241,7 @@ func mergedTranscriptIsKeptOnTheNextRun() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func aMergeWhoseWordsWereFixedIsKeptOnTheNextRun() async throws {
-    let temp = try TemporaryDirectory("languages")
+    let temp = try TemporaryDirectory("languages", permissions: 0o700)
     defer { temp.remove() }
     let (session, recorded) = try await languageStageSession(in: temp.url)
     let speech = LanguageStageSpeech.standard()
@@ -275,7 +276,7 @@ func aMergeWhoseWordsWereFixedIsKeptOnTheNextRun() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func languagesAskedForAFixedTranscriptOutliveANewFix() async throws {
-    let temp = try TemporaryDirectory("languages")
+    let temp = try TemporaryDirectory("languages", permissions: 0o700)
     defer { temp.remove() }
     let (session, _) = try await languageStageSession(in: temp.url)
     let speech = LanguageStageSpeech.standard()
@@ -309,7 +310,7 @@ func languagesAskedForAFixedTranscriptOutliveANewFix() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func aSavedPassIsReusedWhenDetectionResumes() async throws {
-    let temp = try TemporaryDirectory("languages")
+    let temp = try TemporaryDirectory("languages", permissions: 0o700)
     defer { temp.remove() }
     let (session, _) = try await languageStageSession(in: temp.url)
     // An earlier run saved the French pass, then stopped before merging.
@@ -332,7 +333,7 @@ func aSavedPassIsReusedWhenDetectionResumes() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func missingSpeechModelKeepsTheTranscriptAndSaysWhy() async throws {
-    let temp = try TemporaryDirectory("languages")
+    let temp = try TemporaryDirectory("languages", permissions: 0o700)
     defer { temp.remove() }
     let (session, recorded) = try await languageStageSession(in: temp.url)
     let speech = LanguageStageSpeech.standard()
@@ -356,7 +357,7 @@ func missingSpeechModelKeepsTheTranscriptAndSaysWhy() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func failedPassKeepsTheTranscript() async throws {
-    let temp = try TemporaryDirectory("languages")
+    let temp = try TemporaryDirectory("languages", permissions: 0o700)
     defer { temp.remove() }
     let (session, recorded) = try await languageStageSession(in: temp.url)
     let speech = LanguageStageSpeech([
@@ -375,7 +376,7 @@ func failedPassKeepsTheTranscript() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func recordedTranscriptStandsInWhenItsLanguageCannotBeTranscribedAgain() async throws {
-    let temp = try TemporaryDirectory("languages")
+    let temp = try TemporaryDirectory("languages", permissions: 0o700)
     defer { temp.remove() }
     let (session, _) = try await languageStageSession(in: temp.url)
     let speech = LanguageStageSpeech([
@@ -411,7 +412,7 @@ func recordedTranscriptStandsInWhenItsLanguageCannotBeTranscribedAgain() async t
 
 @Test(.timeLimit(.minutes(1)))
 func incompleteRecordedTranscriptNeverStandsIn() async throws {
-    let temp = try TemporaryDirectory("languages")
+    let temp = try TemporaryDirectory("languages", permissions: 0o700)
     defer { temp.remove() }
     let (session, recorded) = try await languageStageSession(in: temp.url,
                                                              status: ArchiveStatus.transcriptionIncomplete)
@@ -437,7 +438,7 @@ func incompleteRecordedTranscriptNeverStandsIn() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func aRebuildThatLeftAudioUntranscribedNeverStandsIn() async throws {
-    let temp = try TemporaryDirectory("languages")
+    let temp = try TemporaryDirectory("languages", permissions: 0o700)
     defer { temp.remove() }
     // The journaled phrases end at 18 s of 20 s of audio, and Recover runs without transcribing: the rebuilt
     // transcript leaves the last 2 s out, though the manifest then says `recovered`.
@@ -465,7 +466,7 @@ func aRebuildThatLeftAudioUntranscribedNeverStandsIn() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func automaticDetectionAddsALanguageOnceItsModelIsInstalled() async throws {
-    let temp = try TemporaryDirectory("languages")
+    let temp = try TemporaryDirectory("languages", permissions: 0o700)
     defer { temp.remove() }
     let languages = [languageStageEnglish, languageStageFrench, languageStageSpanish]
     let (session, _) = try await languageStageSession(in: temp.url, languages: languages)
@@ -490,7 +491,7 @@ func automaticDetectionAddsALanguageOnceItsModelIsInstalled() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func cancelledDetectionPublishesNothing() async throws {
-    let temp = try TemporaryDirectory("languages")
+    let temp = try TemporaryDirectory("languages", permissions: 0o700)
     defer { temp.remove() }
     let (session, recorded) = try await languageStageSession(in: temp.url)
     let speech = LanguageStageSpeech([languageStageFrench: FakeSpeechScript(finishHangs: true)])
@@ -509,7 +510,7 @@ func cancelledDetectionPublishesNothing() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func passesBeforeARecoveryAreTranscribedAgain() async throws {
-    let temp = try TemporaryDirectory("languages")
+    let temp = try TemporaryDirectory("languages", permissions: 0o700)
     defer { temp.remove() }
     let (session, _) = try await languageStageSession(in: temp.url)
     // A French pass saved before a recovery, which may have added audio, is not reused.
@@ -533,7 +534,7 @@ func passesBeforeARecoveryAreTranscribedAgain() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func labelsEditedWhileTranscribingAreKept() async throws {
-    let temp = try TemporaryDirectory("languages")
+    let temp = try TemporaryDirectory("languages", permissions: 0o700)
     defer { temp.remove() }
     let (session, recorded) = try await languageStageSession(in: temp.url)
     try SessionFixtures.writeHeadRun(session: session, transcript: recorded,
@@ -570,7 +571,7 @@ func labelsEditedWhileTranscribingAreKept() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func nothingNewIsAddedWhileALanguageIsStillMissing() async throws {
-    let temp = try TemporaryDirectory("languages")
+    let temp = try TemporaryDirectory("languages", permissions: 0o700)
     defer { temp.remove() }
     let languages = [languageStageEnglish, languageStageFrench, languageStageSpanish]
     let (session, _) = try await languageStageSession(in: temp.url, languages: languages)
@@ -593,7 +594,7 @@ func nothingNewIsAddedWhileALanguageIsStillMissing() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func passesWithoutWordsNeverReplaceTheTranscript() async throws {
-    let temp = try TemporaryDirectory("languages")
+    let temp = try TemporaryDirectory("languages", permissions: 0o700)
     defer { temp.remove() }
     let (session, recorded) = try await languageStageSession(in: temp.url)
     // Both recognizers finish without a single final result, though the recording's transcript has words.
@@ -614,7 +615,7 @@ func passesWithoutWordsNeverReplaceTheTranscript() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func aPassWithoutWordsLetsTheRecordedTranscriptStandIn() async throws {
-    let temp = try TemporaryDirectory("languages")
+    let temp = try TemporaryDirectory("languages", permissions: 0o700)
     defer { temp.remove() }
     let (session, _) = try await languageStageSession(in: temp.url)
     let speech = LanguageStageSpeech([
@@ -634,7 +635,7 @@ func aPassWithoutWordsLetsTheRecordedTranscriptStandIn() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func aSpeakerEditSavedJustBeforePublicationKeepsTheLabels() async throws {
-    let temp = try TemporaryDirectory("languages")
+    let temp = try TemporaryDirectory("languages", permissions: 0o700)
     defer { temp.remove() }
     let (session, recorded) = try await languageStageSession(in: temp.url)
     try SessionFixtures.writeHeadRun(session: session, transcript: recorded,
@@ -665,7 +666,7 @@ func aSpeakerEditSavedJustBeforePublicationKeepsTheLabels() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func theMergeIsPublishedUnderTheSpeakerLock() async throws {
-    let temp = try TemporaryDirectory("languages")
+    let temp = try TemporaryDirectory("languages", permissions: 0o700)
     defer { temp.remove() }
     let (session, _) = try await languageStageSession(in: temp.url)
     // What a speaker edit would find while the merged transcript is published: the speaker lock taken (the editor
@@ -690,7 +691,7 @@ func theMergeIsPublishedUnderTheSpeakerLock() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func aCancellationWhileWaitingForThePublicationLocksPublishesNothing() async throws {
-    let temp = try TemporaryDirectory("languages")
+    let temp = try TemporaryDirectory("languages", permissions: 0o700)
     defer { temp.remove() }
     let (session, recorded) = try await languageStageSession(in: temp.url)
     // The run is cancelled once the locks are held (as when it waited for a contended speaker lock, which does not
@@ -714,7 +715,7 @@ func aCancellationWhileWaitingForThePublicationLocksPublishesNothing() async thr
 
 @Test(.timeLimit(.minutes(1)))
 func filesFromANewerVersionAreRefusedNotIgnored() async throws {
-    let temp = try TemporaryDirectory("languages")
+    let temp = try TemporaryDirectory("languages", permissions: 0o700)
     defer { temp.remove() }
     let refusal = "was written by a newer version of Voice is Local; update Voice is Local to read it."
 
@@ -761,7 +762,7 @@ private func languageStageOneSegment(heardBy code: String, id: String) -> Transc
 
 @Test(.timeLimit(.minutes(1)))
 func cutPassagesAreLabelledAndExported() async throws {
-    let temp = try TemporaryDirectory("languages")
+    let temp = try TemporaryDirectory("languages", permissions: 0o700)
     defer { temp.remove() }
     let (session, _) = try await languageStageSession(in: temp.url)
     let speech = LanguageStageSpeech([
@@ -824,7 +825,7 @@ private final class LanguageStageTrackSpeech: Sendable {
 func echoInACallStaysEchoAcrossLanguages() async throws {
     // A call in French: the user speaks French on the microphone (0–6 s, 9–18 s); the far end says one English
     // phrase (6–9 s), which the laptop speakers play back into the microphone 0.1 s later.
-    let temp = try TemporaryDirectory("languages")
+    let temp = try TemporaryDirectory("languages", permissions: 0o700)
     defer { temp.remove() }
     func mic(heardBy code: String) -> [TranscriptSegment] {
         [languageStagePassage("fr", heardBy: code, from: 0, seconds: 6, id: "\(code)-m1"),
@@ -887,7 +888,7 @@ private func languageStageCommand(_ session: URL, _ languages: [String], force: 
 
 @Test(.timeLimit(.minutes(1)))
 func languagesCommandDetectsLanguagesOfASingleLanguageSession() async throws {
-    let temp = try TemporaryDirectory("languages")
+    let temp = try TemporaryDirectory("languages", permissions: 0o700)
     defer { temp.remove() }
     let (session, _) = try await languageStageSession(in: temp.url, languages: nil)
     let speech = LanguageStageSpeech.standard()
@@ -917,7 +918,7 @@ func languagesCommandDetectsLanguagesOfASingleLanguageSession() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func languagesAskedForByNameSurviveLaterRelabels() async throws {
-    let temp = try TemporaryDirectory("languages")
+    let temp = try TemporaryDirectory("languages", permissions: 0o700)
     defer { temp.remove() }
     let (session, _) = try await languageStageSession(in: temp.url)
     let speech = LanguageStageSpeech.standard()
@@ -936,7 +937,7 @@ func languagesAskedForByNameSurviveLaterRelabels() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func editedLabelsNeedForceToDetectLanguages() async throws {
-    let temp = try TemporaryDirectory("languages")
+    let temp = try TemporaryDirectory("languages", permissions: 0o700)
     defer { temp.remove() }
     let (session, recorded) = try await languageStageSession(in: temp.url, languages: nil)
     try SessionFixtures.writeHeadRun(session: session, transcript: recorded,
@@ -985,7 +986,7 @@ func editedLabelsNeedForceToDetectLanguages() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func languagesCommandRefusesAListThatIsNotAMeetingsLanguages() async throws {
-    let temp = try TemporaryDirectory("languages")
+    let temp = try TemporaryDirectory("languages", permissions: 0o700)
     defer { temp.remove() }
     let (session, _) = try await languageStageSession(in: temp.url, languages: nil)
     let before = SessionFixtures.files(in: session)
@@ -998,7 +999,7 @@ func languagesCommandRefusesAListThatIsNotAMeetingsLanguages() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func importRecordsLanguagesAndMergesThem() async throws {
-    let temp = try TemporaryDirectory("languages")
+    let temp = try TemporaryDirectory("languages", permissions: 0o700)
     defer { temp.remove() }
     // A 20 s file: the import transcribes it in English, post-processing adds French.
     let (source, _) = try await languageStageSession(in: temp.url.appendingPathComponent("source"), languages: nil)
@@ -1025,7 +1026,7 @@ func importRecordsLanguagesAndMergesThem() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func anUnderscoreLocaleRecordingCountsAsItsLanguage() async throws {
-    let temp = try TemporaryDirectory("languages")
+    let temp = try TemporaryDirectory("languages", permissions: 0o700)
     defer { temp.remove() }
     // An older session, recorded when "en_CA" was accepted as it was given.
     let (session, recorded) = try await languageStageSession(in: temp.url, languages: nil, locale: "en_CA")
@@ -1058,7 +1059,7 @@ func anUnderscoreLocaleRecordingCountsAsItsLanguage() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func localesInAnyCaseCountAsTheirLanguage() async throws {
-    let temp = try TemporaryDirectory("languages")
+    let temp = try TemporaryDirectory("languages", permissions: 0o700)
     defer { temp.remove() }
     // Recorded as en-CA; the languages are given in lowercase, which names the same locales.
     let (session, recorded) = try await languageStageSession(in: temp.url, languages: nil)
@@ -1089,7 +1090,7 @@ func localesInAnyCaseCountAsTheirLanguage() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func languagesCommandMakesTheFirstTranscriptOfAnAudioOnlySession() async throws {
-    let temp = try TemporaryDirectory("languages")
+    let temp = try TemporaryDirectory("languages", permissions: 0o700)
     defer { temp.remove() }
     // Recorded with --record-only: saved audio, no transcript.
     let (session, _) = try await languageStageSession(in: temp.url, languages: nil, status: ArchiveStatus.audioOnly,
@@ -1169,7 +1170,7 @@ private func languageStageDeadMeeting(in root: URL, coveredToEnd: Bool = true,
 
 @Test(.timeLimit(.minutes(1)))
 func recoverRetriesALanguageTheRecordedTranscriptStoodIn() async throws {
-    let temp = try TemporaryDirectory("languages")
+    let temp = try TemporaryDirectory("languages", permissions: 0o700)
     defer { temp.remove() }
     let session = try await languageStageDeadMeeting(in: temp.url)
     let speech = LanguageStageSpeech.standard()
@@ -1222,7 +1223,7 @@ func recoverRetriesALanguageTheRecordedTranscriptStoodIn() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func recoverSettlesWhileAMissedLanguageCannotBeDetected() async throws {
-    let temp = try TemporaryDirectory("languages")
+    let temp = try TemporaryDirectory("languages", permissions: 0o700)
     defer { temp.remove() }
     let session = try await languageStageDeadMeeting(
         in: temp.url, languages: [languageStageEnglish, languageStageFrench, languageStageSpanish])
@@ -1276,7 +1277,7 @@ func recoverSettlesWhileAMissedLanguageCannotBeDetected() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func recoverKeepsALanguagesMergeOfARebuildThatDidNotTranscribe() async throws {
-    let temp = try TemporaryDirectory("languages")
+    let temp = try TemporaryDirectory("languages", permissions: 0o700)
     defer { temp.remove() }
     // No languages in meeting.json: the merge below comes from `session languages` alone.
     let session = try await languageStageDeadMeeting(in: temp.url, coveredToEnd: false, languages: nil)
@@ -1316,7 +1317,7 @@ func recoverKeepsALanguagesMergeOfARebuildThatDidNotTranscribe() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func aNarrowerRequestIsRecordedSoTheMergeIsNeverReplacedAutomatically() async throws {
-    let temp = try TemporaryDirectory("languages")
+    let temp = try TemporaryDirectory("languages", permissions: 0o700)
     defer { temp.remove() }
     let languages = [languageStageEnglish, languageStageFrench, languageStageSpanish]
     let (session, _) = try await languageStageSession(in: temp.url, languages: languages)
@@ -1360,7 +1361,7 @@ func aNarrowerRequestIsRecordedSoTheMergeIsNeverReplacedAutomatically() async th
 
 @Test(.timeLimit(.minutes(1)))
 func oneLanguageNamedForTheRecordedTranscriptIsRecordedToo() async throws {
-    let temp = try TemporaryDirectory("languages")
+    let temp = try TemporaryDirectory("languages", permissions: 0o700)
     defer { temp.remove() }
     let (session, recorded) = try await languageStageSession(in: temp.url)
     let speech = LanguageStageSpeech.standard()
@@ -1386,7 +1387,7 @@ func oneLanguageNamedForTheRecordedTranscriptIsRecordedToo() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func aForcedRelabelNeverDetectsLanguagesOverEditedLabels() async throws {
-    let temp = try TemporaryDirectory("languages")
+    let temp = try TemporaryDirectory("languages", permissions: 0o700)
     defer { temp.remove() }
     let (session, recorded) = try await languageStageSession(in: temp.url)
     try SessionFixtures.writeHeadRun(session: session, transcript: recorded,
@@ -1420,7 +1421,7 @@ func aForcedRelabelNeverDetectsLanguagesOverEditedLabels() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func meetingsOffersLabelSpeakersOnceAMissedLanguageCanBeDetected() async throws {
-    let temp = try TemporaryDirectory("languages")
+    let temp = try TemporaryDirectory("languages", permissions: 0o700)
     defer { temp.remove() }
     let languages = [languageStageEnglish, languageStageFrench, languageStageSpanish]
     let (session, _) = try await languageStageSession(in: temp.url, languages: languages)
@@ -1462,7 +1463,7 @@ func meetingsOffersLabelSpeakersOnceAMissedLanguageCanBeDetected() async throws 
 
 @Test(.timeLimit(.minutes(1)))
 func labelSpeakersDetectsAMissedLanguageWithoutSpeakerModels() async throws {
-    let temp = try TemporaryDirectory("languages")
+    let temp = try TemporaryDirectory("languages", permissions: 0o700)
     defer { temp.remove() }
     let languages = [languageStageEnglish, languageStageFrench, languageStageSpanish]
     let (session, _) = try await languageStageSession(in: temp.url, languages: languages)
@@ -1497,7 +1498,7 @@ func labelSpeakersDetectsAMissedLanguageWithoutSpeakerModels() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func recoverWithTodaysVocabularyKeepsItsRebuildOverTheLanguagesStage() async throws {
-    let temp = try TemporaryDirectory("languages")
+    let temp = try TemporaryDirectory("languages", permissions: 0o700)
     defer { temp.remove() }
     // A bilingual meeting whose last 2 s were not transcribed live; both speech models are installed.
     let session = try await languageStageDeadMeeting(in: temp.url, coveredToEnd: false)
@@ -1543,7 +1544,7 @@ func recoverWithTodaysVocabularyKeepsItsRebuildOverTheLanguagesStage() async thr
     #expect(try languageStageEvents(session, MeetingEventKind.liveHintsApplied).count == 1)
 
     // Without today's vocabulary, the same recovery goes on to merge the two languages.
-    let other = try TemporaryDirectory("languages")
+    let other = try TemporaryDirectory("languages", permissions: 0o700)
     defer { other.remove() }
     let plain = try await languageStageDeadMeeting(in: other.url, coveredToEnd: false)
     let plainSpeech = LanguageStageSpeech.standard()

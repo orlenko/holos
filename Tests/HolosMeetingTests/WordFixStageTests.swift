@@ -3,6 +3,7 @@ import HolosCore
 @testable import HolosMeeting
 import HolosSpeakers
 import HolosStorage
+import HolosTestSupport
 import Testing
 
 // The post-processor's `wordFixes` stage and `voiceislocal session fix-words` (docs/design.md "Meeting word fixes"),
@@ -93,7 +94,7 @@ private func wordFixOutcome(_ record: PostProcessingRecord) -> StageOutcome? {
 
 @Test(.timeLimit(.minutes(1)))
 func misheardWordsAreFixedInANewRevisionBeforeSpeakersAreLabelled() async throws {
-    let temp = try TemporaryDirectory("word-fixes")
+    let temp = try TemporaryDirectory("word-fixes", permissions: 0o700)
     defer { temp.remove() }
     let (session, recorded) = try await wordFixSession(in: temp.url)
     let model = WordFixModel()
@@ -144,7 +145,7 @@ func misheardWordsAreFixedInANewRevisionBeforeSpeakersAreLabelled() async throws
 
 @Test(.timeLimit(.minutes(1)))
 func aSecondRunKeepsTheFixedTranscript() async throws {
-    let temp = try TemporaryDirectory("word-fixes")
+    let temp = try TemporaryDirectory("word-fixes", permissions: 0o700)
     defer { temp.remove() }
     let (session, _) = try await wordFixSession(in: temp.url)
     let model = WordFixModel()
@@ -164,7 +165,7 @@ func aSecondRunKeepsTheFixedTranscript() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func newCorrectionsFixAgainFromTheTranscriptBeforeAnyFix() async throws {
-    let temp = try TemporaryDirectory("word-fixes")
+    let temp = try TemporaryDirectory("word-fixes", permissions: 0o700)
     defer { temp.remove() }
     let (session, recorded) = try await wordFixSession(in: temp.url)
     let model = WordFixModel()
@@ -194,7 +195,7 @@ func newCorrectionsFixAgainFromTheTranscriptBeforeAnyFix() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func withoutTheModelOnlyCorrectionsAreMade() async throws {
-    let temp = try TemporaryDirectory("word-fixes")
+    let temp = try TemporaryDirectory("word-fixes", permissions: 0o700)
     defer { temp.remove() }
     let (session, _) = try await wordFixSession(in: temp.url)
     let off = wordFixDependencies(model: .unavailable("Fix misheard words with Apple Intelligence is off in Settings"))
@@ -209,7 +210,7 @@ func withoutTheModelOnlyCorrectionsAreMade() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func termsTheModelChoseAreKeptWhileItIsUnavailable() async throws {
-    let temp = try TemporaryDirectory("word-fixes")
+    let temp = try TemporaryDirectory("word-fixes", permissions: 0o700)
     defer { temp.remove() }
     let (session, _) = try await wordFixSession(in: temp.url)
     let model = WordFixModel()
@@ -229,7 +230,7 @@ func termsTheModelChoseAreKeptWhileItIsUnavailable() async throws {
 
 @Test(.timeLimit(.minutes(1)), arguments: [false, true])
 func termsTheModelChoseAreKeptWhenARerunFailsOrTimesOut(timesOut: Bool) async throws {
-    let temp = try TemporaryDirectory("word-fixes")
+    let temp = try TemporaryDirectory("word-fixes", permissions: 0o700)
     defer { temp.remove() }
     let (session, _) = try await wordFixSession(in: temp.url)
     let model = WordFixModel()
@@ -253,7 +254,7 @@ func termsTheModelChoseAreKeptWhenARerunFailsOrTimesOut(timesOut: Bool) async th
 
 @Test(.timeLimit(.minutes(1)))
 func nothingIsRecordedWithoutCorrectionsOrTerms() async throws {
-    let temp = try TemporaryDirectory("word-fixes")
+    let temp = try TemporaryDirectory("word-fixes", permissions: 0o700)
     defer { temp.remove() }
     let (session, recorded) = try await wordFixSession(in: temp.url)
     let empty = WordFixDependencies(corrections: { CorrectionList() }, wordList: { WordList() },
@@ -276,7 +277,7 @@ func nothingIsRecordedWithoutCorrectionsOrTerms() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func aDamagedListKeepsTheTranscriptAndSaysWhy() async throws {
-    let temp = try TemporaryDirectory("word-fixes")
+    let temp = try TemporaryDirectory("word-fixes", permissions: 0o700)
     defer { temp.remove() }
     let (session, recorded) = try await wordFixSession(in: temp.url)
     let damaged = WordFixDependencies(
@@ -294,7 +295,7 @@ func aDamagedListKeepsTheTranscriptAndSaysWhy() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func fixWordsKeepsEditedSpeakerLabelsWithoutLabellingAgain() async throws {
-    let temp = try TemporaryDirectory("word-fixes")
+    let temp = try TemporaryDirectory("word-fixes", permissions: 0o700)
     defer { temp.remove() }
     let (session, recorded) = try await wordFixSession(in: temp.url)
     _ = try await wordFixProcessor(.none).run(session: session, lease: nil)
@@ -350,7 +351,7 @@ func fixWordsKeepsEditedSpeakerLabelsWithoutLabellingAgain() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func aFailedPreservedHeadStopsBeforeRelabelling() async throws {
-    let temp = try TemporaryDirectory("word-fixes")
+    let temp = try TemporaryDirectory("word-fixes", permissions: 0o700)
     defer { temp.remove() }
     let (session, recorded) = try await wordFixSession(in: temp.url)
     _ = try await wordFixProcessor(.none).run(session: session, lease: nil)
@@ -385,7 +386,7 @@ func aFailedPreservedHeadStopsBeforeRelabelling() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func automaticProcessingRepairsAReviewRevertWhoseHeadWasNotPublished() async throws {
-    let temp = try TemporaryDirectory("word-fixes")
+    let temp = try TemporaryDirectory("word-fixes", permissions: 0o700)
     defer { temp.remove() }
     let (session, _) = try await wordFixSession(in: temp.url)
     let dependencies = wordFixDependencies(model: .available(WordFixModel().model))
@@ -426,7 +427,7 @@ func automaticProcessingRepairsAReviewRevertWhoseHeadWasNotPublished() async thr
 
 @Test(.timeLimit(.minutes(1)))
 func cancellationAfterPreservingTheHeadStillRefreshesExports() async throws {
-    let temp = try TemporaryDirectory("word-fixes")
+    let temp = try TemporaryDirectory("word-fixes", permissions: 0o700)
     defer { temp.remove() }
     let (session, recorded) = try await wordFixSession(in: temp.url)
     _ = try await wordFixProcessor(.none).run(session: session, lease: nil)
@@ -453,7 +454,7 @@ func cancellationAfterPreservingTheHeadStillRefreshesExports() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func fixWordsWithoutSpeakerModelsAndAgain() async throws {
-    let temp = try TemporaryDirectory("word-fixes")
+    let temp = try TemporaryDirectory("word-fixes", permissions: 0o700)
     defer { temp.remove() }
     let (session, _) = try await wordFixSession(in: temp.url)
     let model = WordFixModel()
@@ -478,7 +479,7 @@ func fixWordsWithoutSpeakerModelsAndAgain() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func aCancelledRunPublishesNoFixes() async throws {
-    let temp = try TemporaryDirectory("word-fixes")
+    let temp = try TemporaryDirectory("word-fixes", permissions: 0o700)
     defer { temp.remove() }
     let (session, recorded) = try await wordFixSession(in: temp.url)
     let asked = SharedValue(false)
@@ -503,7 +504,7 @@ func aCancelledRunPublishesNoFixes() async throws {
 @MainActor
 @Test(.timeLimit(.minutes(1)))
 func theReviewShowsWhatEachFixedWordWasHeardAs() async throws {
-    let temp = try TemporaryDirectory("word-fixes")
+    let temp = try TemporaryDirectory("word-fixes", permissions: 0o700)
     defer { temp.remove() }
     let (session, _) = try await wordFixSession(in: temp.url)
     let model = WordFixModel()

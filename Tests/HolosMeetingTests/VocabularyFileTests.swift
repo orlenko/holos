@@ -1,4 +1,5 @@
 import Foundation
+import HolosTestSupport
 import Testing
 import HolosCore
 @testable import HolosMeeting
@@ -16,7 +17,7 @@ private func vocabularyEntries(_ folder: URL) -> [String] {
 }
 
 @Test func vocabularyFileIsReadThenDeleted() throws {
-    let temp = try TemporaryDirectory("vocabulary")
+    let temp = try TemporaryDirectory("vocabulary", permissions: 0o700)
     defer { temp.remove() }
     let url = temp.url.appendingPathComponent("holos-vocabulary.json")
     try HolosJSON.encoder().encode(MeetingVocabulary(strings: ["Maria Chen"])).write(to: url)
@@ -26,7 +27,7 @@ private func vocabularyEntries(_ folder: URL) -> [String] {
 }
 
 @Test func vocabularyFileThatIsNotAVocabularyIsStillDeleted() throws {
-    let temp = try TemporaryDirectory("vocabulary")
+    let temp = try TemporaryDirectory("vocabulary", permissions: 0o700)
     defer { temp.remove() }
     let url = temp.url.appendingPathComponent("holos-vocabulary.json")
     try Data("{\"schemaVersion\": 2, \"strings\": []}".utf8).write(to: url)
@@ -35,7 +36,7 @@ private func vocabularyEntries(_ folder: URL) -> [String] {
 }
 
 @Test func vocabularyFileOptionNamingAFolderLeavesItAndItsFilesAlone() throws {
-    let temp = try TemporaryDirectory("vocabulary")
+    let temp = try TemporaryDirectory("vocabulary", permissions: 0o700)
     defer { temp.remove() }
     let documents = temp.url.appendingPathComponent("Documents", isDirectory: true)
     try FileManager.default.createDirectory(at: documents, withIntermediateDirectories: false)
@@ -47,7 +48,7 @@ private func vocabularyEntries(_ folder: URL) -> [String] {
 }
 
 @Test func vocabularyFileOptionNamingALinkLeavesTheLinkAndTargetAlone() throws {
-    let temp = try TemporaryDirectory("vocabulary")
+    let temp = try TemporaryDirectory("vocabulary", permissions: 0o700)
     defer { temp.remove() }
     let target = temp.url.appendingPathComponent("target.json")
     try HolosJSON.encoder().encode(MeetingVocabulary(strings: ["Maria Chen"])).write(to: target)

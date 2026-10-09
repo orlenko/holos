@@ -3,6 +3,7 @@ import Foundation
 import HolosCore
 @testable import HolosMeeting
 import HolosStorage
+import HolosTestSupport
 import Testing
 
 // Which microphone a meeting records (decision 9, docs/meeting-design.md §4.12).
@@ -171,7 +172,7 @@ private func firstThen(_ first: MicrophoneTestCapture, _ captures: FakeCaptureFa
 extension RecorderEnvironmentLoopTests {
     @Test(.timeLimit(.minutes(1)))
     func inPersonPinsBuiltInMicrophone() async throws {
-        let temp = try TemporaryDirectory()
+        let temp = try TemporaryDirectory("meeting", permissions: 0o700)
         defer { temp.remove() }
         let captures = FakeCaptureFactory([FakeCaptureScript(frames: FakeFrame.run(count: 3))])
         let stop = ManualStopSource()
@@ -192,7 +193,7 @@ extension RecorderEnvironmentLoopTests {
 
     @Test(.timeLimit(.minutes(1)))
     func callUsesSystemDefault() async throws {
-        let temp = try TemporaryDirectory()
+        let temp = try TemporaryDirectory("meeting", permissions: 0o700)
         defer { temp.remove() }
         let captures = FakeCaptureFactory([FakeCaptureScript(frames: recorderCallFrames(count: 3))])
         let stop = ManualStopSource()
@@ -210,7 +211,7 @@ extension RecorderEnvironmentLoopTests {
 
     @Test(.timeLimit(.minutes(1)))
     func inPersonRefusesWithoutBuiltIn() async throws {
-        let temp = try TemporaryDirectory()
+        let temp = try TemporaryDirectory("meeting", permissions: 0o700)
         defer { temp.remove() }
         let captures = FakeCaptureFactory()
         var dependencies = recorderDependencies(captures: captures, clock: ManualSessionClock(0))
@@ -229,7 +230,7 @@ extension RecorderEnvironmentLoopTests {
     /// In person with the lid closed: refused even when the built-in microphone is still listed.
     @Test(.timeLimit(.minutes(1)))
     func inPersonRefusesWithTheLidClosed() async throws {
-        let temp = try TemporaryDirectory()
+        let temp = try TemporaryDirectory("meeting", permissions: 0o700)
         defer { temp.remove() }
         let captures = FakeCaptureFactory()
         var dependencies = recorderDependencies(captures: captures, clock: ManualSessionClock(0))
@@ -250,7 +251,7 @@ extension RecorderEnvironmentLoopTests {
     /// recorder still says how to continue.
     @Test(.timeLimit(.minutes(1)))
     func captureLookupFailureSaysToOpenTheLid() async throws {
-        let temp = try TemporaryDirectory()
+        let temp = try TemporaryDirectory("meeting", permissions: 0o700)
         defer { temp.remove() }
         let captures = FakeCaptureFactory([
             FakeCaptureScript(frames: FakeFrame.run(count: 2), failAfterFrames: 2, failure: .io("Gone.")),
@@ -271,7 +272,7 @@ extension RecorderEnvironmentLoopTests {
     /// A call does not need the built-in microphone (review finding P4).
     @Test(.timeLimit(.minutes(1)))
     func callStartAllowedWithoutBuiltInMic() async throws {
-        let temp = try TemporaryDirectory()
+        let temp = try TemporaryDirectory("meeting", permissions: 0o700)
         defer { temp.remove() }
         let captures = FakeCaptureFactory([FakeCaptureScript(frames: recorderCallFrames(count: 2))])
         let stop = ManualStopSource()
@@ -288,7 +289,7 @@ extension RecorderEnvironmentLoopTests {
     /// a device is back, the device-list change restarts capture with the microphone.
     @Test(.timeLimit(.minutes(1)))
     func callWithoutAnyInputRecordsSystemOnly() async throws {
-        let temp = try TemporaryDirectory()
+        let temp = try TemporaryDirectory("meeting", permissions: 0o700)
         defer { temp.remove() }
         let devices = RecorderDevices(builtIn: nil, systemDefault: recorderAirPods)
         let environment = AudioEnvironmentEvents.silent()
@@ -342,7 +343,7 @@ extension RecorderEnvironmentLoopTests {
     /// waits, says how to continue, and resumes when the lid opens.
     @Test(.timeLimit(.minutes(1)))
     func inPersonWaitsForTheBuiltInMicrophone() async throws {
-        let temp = try TemporaryDirectory()
+        let temp = try TemporaryDirectory("meeting", permissions: 0o700)
         defer { temp.remove() }
         let devices = RecorderDevices(builtIn: recorderBuiltIn, systemDefault: recorderBuiltIn)
         let power = RecorderFakePower()

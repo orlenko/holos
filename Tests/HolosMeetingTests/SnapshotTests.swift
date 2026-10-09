@@ -3,6 +3,7 @@ import HolosCore
 @testable import HolosMeeting
 import HolosSpeakers
 import HolosStorage
+import HolosTestSupport
 import Testing
 
 // SpeakerSessionSnapshot (docs/meeting-design.md §2.4, §5.5 PR7b).
@@ -14,7 +15,7 @@ private func snapshotSession(in root: URL, mode: MeetingMode? = .inPerson) async
 }
 
 @Test func snapshotLoadsRunTranscriptAndFlagsChange() async throws {
-    let temp = try TemporaryDirectory("snapshot")
+    let temp = try TemporaryDirectory("snapshot", permissions: 0o700)
     defer { temp.remove() }
     let (session, first) = try await snapshotSession(in: temp.url)
     let run = try SessionFixtures.writeHeadRun(session: session, transcript: first,
@@ -41,7 +42,7 @@ private func snapshotSession(in root: URL, mode: MeetingMode? = .inPerson) async
 }
 
 @Test func invalidSpanMakesRunUnusable() async throws {
-    let temp = try TemporaryDirectory("snapshot")
+    let temp = try TemporaryDirectory("snapshot", permissions: 0o700)
     defer { temp.remove() }
     let (session, transcript) = try await snapshotSession(in: temp.url)
     let manifest = try SessionArchive.readManifest(at: session)
@@ -73,7 +74,7 @@ private func snapshotSession(in root: URL, mode: MeetingMode? = .inPerson) async
 }
 
 @Test func snapshotWithoutARunUsesTheCurrentTranscript() async throws {
-    let temp = try TemporaryDirectory("snapshot")
+    let temp = try TemporaryDirectory("snapshot", permissions: 0o700)
     defer { temp.remove() }
     let (session, transcript) = try await snapshotSession(in: temp.url, mode: nil)
     let snapshot = try SpeakerSessionSnapshot.load(session: session)
@@ -91,7 +92,7 @@ private func snapshotSession(in root: URL, mode: MeetingMode? = .inPerson) async
 }
 
 @Test func snapshotReportsAMissingRunAndReadsDeletedAudio() async throws {
-    let temp = try TemporaryDirectory("snapshot")
+    let temp = try TemporaryDirectory("snapshot", permissions: 0o700)
     defer { temp.remove() }
     let (session, transcript) = try await snapshotSession(in: temp.url)
     let run = try SessionFixtures.writeHeadRun(session: session, transcript: transcript,
@@ -105,7 +106,7 @@ private func snapshotSession(in root: URL, mode: MeetingMode? = .inPerson) async
 }
 
 @Test func snapshotRefusesAHeadFromANewerHolos() async throws {
-    let temp = try TemporaryDirectory("snapshot")
+    let temp = try TemporaryDirectory("snapshot", permissions: 0o700)
     defer { temp.remove() }
     let (session, transcript) = try await snapshotSession(in: temp.url)
     try SessionFixtures.writeHeadRun(session: session, transcript: transcript,
@@ -229,7 +230,7 @@ private let fallbackCases: [FallbackCase] = [
 @Test(arguments: fallbackCases.indices)
 func snapshotReportsEveryFallback(_ index: Int) async throws {
     let condition = fallbackCases[index]
-    let temp = try TemporaryDirectory("snapshot")
+    let temp = try TemporaryDirectory("snapshot", permissions: 0o700)
     defer { temp.remove() }
     let (session, transcript, run) = try await SessionFixtures.labelledSession(in: temp.url)
     #expect(try SpeakerSessionSnapshot.load(session: session).diagnostics.notes == [],

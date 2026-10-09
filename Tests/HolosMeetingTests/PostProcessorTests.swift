@@ -4,6 +4,7 @@ import HolosCore
 @testable import HolosMeeting
 import HolosSpeakers
 import HolosStorage
+import HolosTestSupport
 import Testing
 
 // MeetingPostProcessor stages (docs/meeting-design.md §4.7) and `voiceislocal session diarize` (§5.5 PR7b), all with
@@ -90,7 +91,7 @@ private final class GatedDiarizer: SpeakerDiarizer {
 
 @Test(.timeLimit(.minutes(1)))
 func postProcessorWritesRunHeadAndExports() async throws {
-    let temp = try TemporaryDirectory("postprocess")
+    let temp = try TemporaryDirectory("postprocess", permissions: 0o700)
     defer { temp.remove() }
     let (session, transcript) = try await postProcessorSession(in: temp.url)
     let reports = SharedValue<[PostProcessingProgress]>([])
@@ -143,7 +144,7 @@ func postProcessorWritesRunHeadAndExports() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func voiceDataOnlyWhenForced() async throws {
-    let temp = try TemporaryDirectory("postprocess")
+    let temp = try TemporaryDirectory("postprocess", permissions: 0o700)
     defer { temp.remove() }
     let (session, _) = try await postProcessorSession(in: temp.url)
     let record = try await postProcessor(options: PostProcessingOptions(forceVoiceData: true))
@@ -163,7 +164,7 @@ func voiceDataOnlyWhenForced() async throws {
 func rememberOnStoresNoVoiceData() async throws {
     // PR10 adds the profile store ("Remember voices"); until then no setting exists, and post-processing must
     // persist no embedding anywhere: no speakers/voice/, and no vector in any file it writes.
-    let temp = try TemporaryDirectory("postprocess")
+    let temp = try TemporaryDirectory("postprocess", permissions: 0o700)
     defer { temp.remove() }
     let (session, _) = try await postProcessorSession(in: temp.url)
     let record = try await postProcessor().run(session: session, lease: nil)
@@ -185,7 +186,7 @@ func rememberOnStoresNoVoiceData() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func missingDiarizerSkipsSpeakersButExports() async throws {
-    let temp = try TemporaryDirectory("postprocess")
+    let temp = try TemporaryDirectory("postprocess", permissions: 0o700)
     defer { temp.remove() }
     let (session, _) = try await postProcessorSession(in: temp.url)
     let record = try await postProcessor(nil).run(session: session, lease: nil)
@@ -204,7 +205,7 @@ func missingDiarizerSkipsSpeakersButExports() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func diarizerFailureIsRecorded() async throws {
-    let temp = try TemporaryDirectory("postprocess")
+    let temp = try TemporaryDirectory("postprocess", permissions: 0o700)
     defer { temp.remove() }
     let (session, _) = try await postProcessorSession(in: temp.url)
     let record = try await postProcessor(postProcessorFake(error: .unavailable("The engine broke.")))
@@ -223,7 +224,7 @@ func diarizerFailureIsRecorded() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func diskLowStopSkipsRender() async throws {
-    let temp = try TemporaryDirectory("postprocess")
+    let temp = try TemporaryDirectory("postprocess", permissions: 0o700)
     defer { temp.remove() }
     let (session, _) = try await postProcessorSession(in: temp.url)
     let record = try await postProcessor(options: PostProcessingOptions(stopReason: .diskLow))
@@ -238,7 +239,7 @@ func diskLowStopSkipsRender() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func lowFreeSpaceSkipsRender() async throws {
-    let temp = try TemporaryDirectory("postprocess")
+    let temp = try TemporaryDirectory("postprocess", permissions: 0o700)
     defer { temp.remove() }
     let (session, _) = try await postProcessorSession(in: temp.url)
     let record = try await postProcessor(freeSpace: FixedFreeSpace(500_000_000)).run(session: session, lease: nil)
@@ -254,7 +255,7 @@ func lowFreeSpaceSkipsRender() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func theProgressNamesEachTracksAudioOnce() async throws {
-    let temp = try TemporaryDirectory("postprocess")
+    let temp = try TemporaryDirectory("postprocess", permissions: 0o700)
     defer { temp.remove() }
     // Others in the room: both tracks are labelled, so both are prepared.
     let (session, _) = try await postProcessorCall(in: temp.url, othersInRoom: true)
@@ -278,7 +279,7 @@ func theProgressNamesEachTracksAudioOnce() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func callWithoutOthersInRoomMakesMicMe() async throws {
-    let temp = try TemporaryDirectory("postprocess")
+    let temp = try TemporaryDirectory("postprocess", permissions: 0o700)
     defer { temp.remove() }
     let (session, _) = try await postProcessorCall(in: temp.url, othersInRoom: false)
     let record = try await postProcessor(postProcessorFake(["system"])).run(session: session, lease: nil)
@@ -294,7 +295,7 @@ func callWithoutOthersInRoomMakesMicMe() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func othersInRoomOverride() async throws {
-    let temp = try TemporaryDirectory("postprocess")
+    let temp = try TemporaryDirectory("postprocess", permissions: 0o700)
     defer { temp.remove() }
     let (session, _) = try await postProcessorCall(in: temp.url, othersInRoom: false)
     let record = try await postProcessor(postProcessorFake(["mic", "system"]),
@@ -311,7 +312,7 @@ func othersInRoomOverride() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func editedHeadNeedsForce() async throws {
-    let temp = try TemporaryDirectory("postprocess")
+    let temp = try TemporaryDirectory("postprocess", permissions: 0o700)
     defer { temp.remove() }
     let (session, _) = try await postProcessorSession(in: temp.url)
     let first = try await postProcessor().run(session: session, lease: nil)
@@ -350,7 +351,7 @@ func editedHeadNeedsForce() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func relabellingKeepsTurnsOutOfVoiceLearning() async throws {
-    let temp = try TemporaryDirectory("postprocess")
+    let temp = try TemporaryDirectory("postprocess", permissions: 0o700)
     defer { temp.remove() }
     let (session, _) = try await postProcessorSession(in: temp.url)
     _ = try await postProcessor().run(session: session, lease: nil)
@@ -377,7 +378,7 @@ func relabellingKeepsTurnsOutOfVoiceLearning() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func damagedHeadIsReplaced() async throws {
-    let temp = try TemporaryDirectory("postprocess")
+    let temp = try TemporaryDirectory("postprocess", permissions: 0o700)
     defer { temp.remove() }
     let (session, _) = try await postProcessorSession(in: temp.url)
     let first = try await postProcessor().run(session: session, lease: nil)
@@ -402,7 +403,7 @@ func damagedHeadIsReplaced() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func changedTranscriptRelabels() async throws {
-    let temp = try TemporaryDirectory("postprocess")
+    let temp = try TemporaryDirectory("postprocess", permissions: 0o700)
     defer { temp.remove() }
     let (session, _) = try await postProcessorSession(in: temp.url)
     let first = try await postProcessor().run(session: session, lease: nil)
@@ -427,7 +428,7 @@ func changedTranscriptRelabels() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func changedTranscriptWithoutNewLabelsExportsTheCurrentTranscript() async throws {
-    let temp = try TemporaryDirectory("postprocess")
+    let temp = try TemporaryDirectory("postprocess", permissions: 0o700)
     defer { temp.remove() }
     let (session, first) = try await postProcessorSession(in: temp.url)
     let labelled = try await postProcessor().run(session: session, lease: nil)
@@ -466,7 +467,7 @@ func changedTranscriptWithoutNewLabelsExportsTheCurrentTranscript() async throws
 
 @Test(.timeLimit(.minutes(1)))
 func damagedMeetingInfoStillExports() async throws {
-    let temp = try TemporaryDirectory("postprocess")
+    let temp = try TemporaryDirectory("postprocess", permissions: 0o700)
     defer { temp.remove() }
     let (session, _) = try await postProcessorSession(in: temp.url, legacyExports: true)
     try AtomicFile.write(Data("{not json".utf8), to: SessionPaths.meetingInfo(session))
@@ -501,7 +502,7 @@ func twoDiarizedTracksGetMaximumOnlyHints() {
 
 @Test(.timeLimit(.minutes(1)))
 func derivedClearedAtStartAndEnd() async throws {
-    let temp = try TemporaryDirectory("postprocess")
+    let temp = try TemporaryDirectory("postprocess", permissions: 0o700)
     defer { temp.remove() }
     let (session, _) = try await postProcessorSession(in: temp.url)
     let derived = SessionPaths.derived(session)
@@ -523,7 +524,7 @@ func derivedClearedAtStartAndEnd() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func noSpeechFoundLabelsNoSpeakers() async throws {
-    let temp = try TemporaryDirectory("postprocess")
+    let temp = try TemporaryDirectory("postprocess", permissions: 0o700)
     defer { temp.remove() }
     let (session, _) = try await postProcessorSession(in: temp.url)
     // The engine found no speech: every word is an unknown speaker's.
@@ -540,7 +541,7 @@ func noSpeechFoundLabelsNoSpeakers() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func noTranscriptSkipsEverything() async throws {
-    let temp = try TemporaryDirectory("postprocess")
+    let temp = try TemporaryDirectory("postprocess", permissions: 0o700)
     defer { temp.remove() }
     let session = try await SessionFixtures.makeSession(in: temp.url, mode: .inPerson, transcript: nil)
     let record = try await postProcessor().run(session: session, lease: nil)
@@ -553,7 +554,7 @@ func noTranscriptSkipsEverything() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func cancelledRunRecordsFailureAndPublishesNothing() async throws {
-    let temp = try TemporaryDirectory("postprocess")
+    let temp = try TemporaryDirectory("postprocess", permissions: 0o700)
     defer { temp.remove() }
     let (session, _) = try await postProcessorSession(in: temp.url)
     let gated = GatedDiarizer(postProcessorFake())
@@ -574,7 +575,7 @@ func cancelledRunRecordsFailureAndPublishesNothing() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func secondProcessorRefusedWhileLeaseHeld() async throws {
-    let temp = try TemporaryDirectory("postprocess")
+    let temp = try TemporaryDirectory("postprocess", permissions: 0o700)
     defer { temp.remove() }
     let (session, _) = try await postProcessorSession(in: temp.url)
     let lease = try SessionArchive.acquireProcessingLease(at: session)
@@ -591,7 +592,7 @@ func secondProcessorRefusedWhileLeaseHeld() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func usesGivenLease() async throws {
-    let temp = try TemporaryDirectory("postprocess")
+    let temp = try TemporaryDirectory("postprocess", permissions: 0o700)
     defer { temp.remove() }
     let (session, _) = try await postProcessorSession(in: temp.url)
     let lease = try SessionArchive.acquireProcessingLease(at: session)
@@ -608,7 +609,7 @@ func usesGivenLease() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func refusesActiveRecording() async throws {
-    let temp = try TemporaryDirectory("postprocess")
+    let temp = try TemporaryDirectory("postprocess", permissions: 0o700)
     defer { temp.remove() }
     let recording = try SessionArchive.create(root: temp.url, name: "Live", source: .microphone, locale: "en-CA",
                                               backend: .speech)
@@ -624,7 +625,7 @@ func refusesActiveRecording() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func diarizeAdoptsInheritedLease() async throws {
-    let temp = try TemporaryDirectory("postprocess")
+    let temp = try TemporaryDirectory("postprocess", permissions: 0o700)
     defer { temp.remove() }
     let (session, _) = try await postProcessorSession(in: temp.url)
     // The parent holds the lease and hands its descriptor over (a dup shares the open file description, as the
@@ -649,7 +650,7 @@ func diarizeAdoptsInheritedLease() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func diarizeRefusesForeignLeaseFd() async throws {
-    let temp = try TemporaryDirectory("postprocess")
+    let temp = try TemporaryDirectory("postprocess", permissions: 0o700)
     defer { temp.remove() }
     let (session, _) = try await postProcessorSession(in: temp.url)
     let (other, _) = try await postProcessorSession(in: temp.url)
@@ -669,7 +670,7 @@ func diarizeRefusesForeignLeaseFd() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func diarizeWithoutModelsChangesNothing() async throws {
-    let temp = try TemporaryDirectory("postprocess")
+    let temp = try TemporaryDirectory("postprocess", permissions: 0o700)
     defer { temp.remove() }
     let (session, _) = try await postProcessorSession(in: temp.url)
     let before = SessionFixtures.files(in: session)
@@ -697,7 +698,7 @@ func diarizeExitCodesFollowTheState() async throws {
     #expect(SessionDiarizeCommand.exitCode(.skipped) == 1)
     #expect(SessionDiarizeCommand.exitCode(PostProcessingState("somethingNew")) == 1)
 
-    let temp = try TemporaryDirectory("postprocess")
+    let temp = try TemporaryDirectory("postprocess", permissions: 0o700)
     defer { temp.remove() }
     let (session, _) = try await postProcessorSession(in: temp.url)
     _ = try await SessionDiarizeCommand.run(SessionDiarizeCommand.Request(session: session), voiceSamples: .none,
@@ -711,7 +712,7 @@ func diarizeExitCodesFollowTheState() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func diarizeAfterRecordingWaitsForTheWriter() async throws {
-    let temp = try TemporaryDirectory("postprocess")
+    let temp = try TemporaryDirectory("postprocess", permissions: 0o700)
     defer { temp.remove() }
     let recording = try SessionArchive.create(root: temp.url, name: "Live", source: .microphone, locale: "en-CA",
                                               backend: .speech)

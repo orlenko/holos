@@ -3,13 +3,14 @@ import HolosAudio
 import HolosCore
 @testable import HolosMeeting
 import HolosStorage
+import HolosTestSupport
 import Testing
 
 // Capture epochs and the session timeline (docs/meeting-design.md §2.3, §4.2, §4.3).
 
 @Test(.timeLimit(.minutes(1))) @MainActor
 func epochsRecordDiscontinuityWithReason() async throws {
-    let temp = try TemporaryDirectory()
+    let temp = try TemporaryDirectory("meeting", permissions: 0o700)
     defer { temp.remove() }
     let clock = ManualSessionClock(0)
     let captures = FakeCaptureFactory([FakeCaptureScript(frames: FakeFrame.run(count: 10)),
@@ -55,7 +56,7 @@ func discontinuityReasonsUseGapReasonStrings() async throws {
     var failed = recorderRunningMachine()
     #expect(failed.handle(.captureEnded(epoch: 0, .failed(message: "Gone."), at: 1)).contains(.stopCapture(reason: .captureRestarted)))
     // …and the writer records exactly those strings, plus `overflow` for audio the pump dropped.
-    let temp = try TemporaryDirectory()
+    let temp = try TemporaryDirectory("meeting", permissions: 0o700)
     defer { temp.remove() }
     let archive = try SessionArchive.create(root: temp.url, name: "Reasons", source: .microphone, locale: "en-CA",
                                             backend: .speech)
@@ -91,7 +92,7 @@ func discontinuityReasonsUseGapReasonStrings() async throws {
 
 @Test(.timeLimit(.minutes(3))) @MainActor
 func epochOffsetNeverOverlaps() async throws {
-    let temp = try TemporaryDirectory()
+    let temp = try TemporaryDirectory("meeting", permissions: 0o700)
     defer { temp.remove() }
     // Epoch 0's audio clock runs 0.3 s ahead of the session clock: 1.3 s of audio when the clock says 1.0.
     let clock = ManualSessionClock(1)
@@ -125,7 +126,7 @@ func epochOffsetNeverOverlaps() async throws {
 
 @Test(.timeLimit(.minutes(1))) @MainActor
 func sessionTimeStartsAtFirstCapture() async throws {
-    let temp = try TemporaryDirectory()
+    let temp = try TemporaryDirectory("meeting", permissions: 0o700)
     defer { temp.remove() }
     let order = SharedValue<[String]>([])
     let origins = SharedValue<[Double]>([])
@@ -204,7 +205,7 @@ private final class RecorderSlowSetupCapture: MeetingCapture {
 /// includes the setup (§2.3).
 @Test(.timeLimit(.minutes(1))) @MainActor
 func restartSetupTimeStaysOnTheSessionTimeline() async throws {
-    let temp = try TemporaryDirectory()
+    let temp = try TemporaryDirectory("meeting", permissions: 0o700)
     defer { temp.remove() }
     let clock = ManualSessionClock(3)
     let captures = FakeCaptureFactory([
@@ -247,7 +248,7 @@ func restartSetupTimeStaysOnTheSessionTimeline() async throws {
 /// Epoch 0 fails; epochs 1–5 cannot start; epoch 6 delivers. The recording carries on with one marked gap.
 @Test(.timeLimit(.minutes(1))) @MainActor
 func failFiveTimesThenRecover() async throws {
-    let temp = try TemporaryDirectory()
+    let temp = try TemporaryDirectory("meeting", permissions: 0o700)
     defer { temp.remove() }
     let clock = ManualSessionClock(0)
     var scripts = [FakeCaptureScript(frames: FakeFrame.run(count: 2), failAfterFrames: 2, failure: .io("Gone."))]
@@ -306,7 +307,7 @@ private final class RecorderDroppingCapture: MeetingCapture {
 /// before the first frame after the drop, with reason `overflow`, and the recorder warns `audioDropped` (§4.3).
 @Test(.timeLimit(.minutes(1))) @MainActor
 func captureDropIsMarkedWhereItHappened() async throws {
-    let temp = try TemporaryDirectory()
+    let temp = try TemporaryDirectory("meeting", permissions: 0o700)
     defer { temp.remove() }
     var audio = try FakeFrame.run(count: 3).map { try $0.captured(offset: 0) }
     let late = try FakeFrame(start: 0.33).captured(offset: 0)
@@ -339,7 +340,7 @@ func captureDropIsMarkedWhereItHappened() async throws {
 /// failed start, the recorder waits and retries, and the abandoned capture is stopped once its start returns.
 @Test(.timeLimit(.minutes(2))) @MainActor
 func hungRestartIsAbandoned() async throws {
-    let temp = try TemporaryDirectory()
+    let temp = try TemporaryDirectory("meeting", permissions: 0o700)
     defer { temp.remove() }
     let captures = FakeCaptureFactory([
         FakeCaptureScript(frames: FakeFrame.run(count: 2), failAfterFrames: 2, failure: .io("Gone.")),

@@ -3,6 +3,7 @@ import Foundation
 import HolosCore
 @testable import HolosMeeting
 import HolosStorage
+import HolosTestSupport
 import Testing
 
 // The app's and the CLI's side of the recorder protocol (docs/meeting-design.md §4.1).
@@ -22,7 +23,7 @@ private func deadRecordingSession(in root: URL) throws -> URL {
 }
 
 @Test func channelSendRefusesWithoutManifest() throws {
-    let temp = try TemporaryDirectory("channel")
+    let temp = try TemporaryDirectory("channel", permissions: 0o700)
     defer { temp.remove() }
     let id = UUID().uuidString
     let session = temp.url.appendingPathComponent("\(id).holos", isDirectory: true)
@@ -37,7 +38,7 @@ private func deadRecordingSession(in root: URL) throws -> URL {
 }
 
 @Test func sendPublishesARequestTheRecorderReads() async throws {
-    let temp = try TemporaryDirectory("channel")
+    let temp = try TemporaryDirectory("channel", permissions: 0o700)
     defer { temp.remove() }
     let archive = try SessionArchive.create(root: temp.url, name: "Council", source: .microphone, locale: "en-CA",
                                             backend: .speech)
@@ -65,7 +66,7 @@ private func deadRecordingSession(in root: URL) throws -> URL {
 }
 
 @Test func sendRefusesAnExitedRecorder() async throws {
-    let temp = try TemporaryDirectory("channel")
+    let temp = try TemporaryDirectory("channel", permissions: 0o700)
     defer { temp.remove() }
     let archive = try SessionArchive.create(root: temp.url, name: "Council", source: .microphone, locale: "en-CA",
                                             backend: .speech)
@@ -82,7 +83,7 @@ private func controlFiles(_ session: URL) -> [String] {
 }
 
 @Test func sendRefusesWhenOnlyMaintenanceHoldsTheSession() async throws {
-    let temp = try TemporaryDirectory("channel")
+    let temp = try TemporaryDirectory("channel", permissions: 0o700)
     defer { temp.remove() }
     let stale = Date().addingTimeInterval(-60)
     // (a) Recovery holds the writer lock of a recorder that died: its status names a process that is gone.
@@ -116,7 +117,7 @@ private func controlFiles(_ session: URL) -> [String] {
 }
 
 @Test func sendQueuesForALiveRecorderWithAStaleStatus() async throws {
-    let temp = try TemporaryDirectory("channel")
+    let temp = try TemporaryDirectory("channel", permissions: 0o700)
     defer { temp.remove() }
     // The recorder (this process) holds the writer lock but has not rewritten status.json for a minute: it is
     // still running and still polls control/, so the request is queued.
@@ -136,7 +137,7 @@ private func controlFiles(_ session: URL) -> [String] {
 /// requests are over, so nothing would ever read the request. `send` reads status.json again, withdraws the request,
 /// and refuses, so `--no-wait` never reports it as sent.
 @Test func sendWithdrawsARequestWhenTheRecorderExitsWhileItPublishes() async throws {
-    let temp = try TemporaryDirectory("channel")
+    let temp = try TemporaryDirectory("channel", permissions: 0o700)
     defer { temp.remove() }
     let archive = try SessionArchive.create(root: temp.url, name: "Council", source: .microphone, locale: "en-CA",
                                             backend: .speech)
@@ -162,7 +163,7 @@ private func controlFiles(_ session: URL) -> [String] {
 
 /// A recorder that read the request and acknowledged it on its way out has answered it: `send` succeeds.
 @Test func sendKeepsARequestTheExitingRecorderAcknowledged() async throws {
-    let temp = try TemporaryDirectory("channel")
+    let temp = try TemporaryDirectory("channel", permissions: 0o700)
     defer { temp.remove() }
     let archive = try SessionArchive.create(root: temp.url, name: "Council", source: .microphone, locale: "en-CA",
                                             backend: .speech)
@@ -187,7 +188,7 @@ private func controlFiles(_ session: URL) -> [String] {
 
 /// The recorder exits after `send` returned but without reading the request: the waiting sender withdraws it.
 @Test func waitForAckWithdrawsARequestTheRecorderExitedWithout() async throws {
-    let temp = try TemporaryDirectory("channel")
+    let temp = try TemporaryDirectory("channel", permissions: 0o700)
     defer { temp.remove() }
     let archive = try SessionArchive.create(root: temp.url, name: "Council", source: .microphone, locale: "en-CA",
                                             backend: .speech)
@@ -269,7 +270,7 @@ private final class ExitingRecorder {
 /// removal) around `send`'s steps: a send that succeeds is answered by the recorder, a refused one is never handled,
 /// and nothing is left in `control/` (docs/meeting-design.md §4.6).
 @Test func sendAndRecorderExitAgreeInEveryInterleaving() async throws {
-    let temp = try TemporaryDirectory("channel")
+    let temp = try TemporaryDirectory("channel", permissions: 0o700)
     defer { temp.remove() }
     let archive = try SessionArchive.create(root: temp.url, name: "Council", source: .microphone, locale: "en-CA",
                                             backend: .speech)
@@ -315,7 +316,7 @@ private final class ExitingRecorder {
 }
 
 @Test func livenessDistinguishesMaintenance() async throws {
-    let temp = try TemporaryDirectory("channel")
+    let temp = try TemporaryDirectory("channel", permissions: 0o700)
     defer { temp.remove() }
     // (a) The writer lock is held and the status is fresh: capturing.
     let archive = try SessionArchive.create(root: temp.url, name: "Council", source: .microphone, locale: "en-CA",
@@ -353,7 +354,7 @@ private final class ExitingRecorder {
 }
 
 @Test func deadRecorderStatusIsMarkedExited() throws {
-    let temp = try TemporaryDirectory("channel")
+    let temp = try TemporaryDirectory("channel", permissions: 0o700)
     defer { temp.remove() }
     let session = try deadRecordingSession(in: temp.url)
     let id = session.deletingPathExtension().lastPathComponent
@@ -371,7 +372,7 @@ private final class ExitingRecorder {
 }
 
 @Test func liveRecorderStatusIsNotMarkedExited() throws {
-    let temp = try TemporaryDirectory("channel")
+    let temp = try TemporaryDirectory("channel", permissions: 0o700)
     defer { temp.remove() }
     let session = try deadRecordingSession(in: temp.url)
     let id = session.deletingPathExtension().lastPathComponent
@@ -384,7 +385,7 @@ private final class ExitingRecorder {
 }
 
 @Test func statusFromANewerHolosIsRefused() throws {
-    let temp = try TemporaryDirectory("channel")
+    let temp = try TemporaryDirectory("channel", permissions: 0o700)
     defer { temp.remove() }
     let session = temp.url.appendingPathComponent("\(UUID().uuidString).holos", isDirectory: true)
     try FileManager.default.createDirectory(at: session, withIntermediateDirectories: true)
@@ -394,7 +395,7 @@ private final class ExitingRecorder {
 }
 
 @Test func waitForAckReturnsTheAnswer() async throws {
-    let temp = try TemporaryDirectory("channel")
+    let temp = try TemporaryDirectory("channel", permissions: 0o700)
     defer { temp.remove() }
     let session = temp.url.appendingPathComponent("\(UUID().uuidString).holos", isDirectory: true)
     try FileManager.default.createDirectory(at: session, withIntermediateDirectories: true)

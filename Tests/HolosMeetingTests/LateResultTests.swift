@@ -3,6 +3,7 @@ import HolosAudio
 import HolosCore
 @testable import HolosMeeting
 import HolosStorage
+import HolosTestSupport
 import Testing
 
 // A timed wait that gives up on an operation still has to release what that operation makes once it returns
@@ -74,7 +75,7 @@ func awaitWithTimeoutKeepsAValueThatArrivesInTime() async throws {
 /// the timeout, and the session is cancelled when it finally arrives.
 @Test(.timeLimit(.minutes(1))) @MainActor
 func replayCancelsASessionCreatedAfterItsStartTimeout() async throws {
-    let temp = try TemporaryDirectory()
+    let temp = try TemporaryDirectory("meeting", permissions: 0o700)
     defer { temp.remove() }
     let archive = try SessionArchive.create(root: temp.url, name: "Replay", source: .microphone, locale: "en-CA",
                                             backend: .speech)

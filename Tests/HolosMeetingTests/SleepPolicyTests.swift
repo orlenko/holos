@@ -3,6 +3,7 @@ import Foundation
 import HolosCore
 @testable import HolosMeeting
 import HolosStorage
+import HolosTestSupport
 import Testing
 
 // Sleep, wake, lid, power, and the environment events that retry a waiting recorder
@@ -290,7 +291,7 @@ extension RecorderEnvironmentLoopTests {
     /// are long (5 s, 60 s): a loaded machine never cuts the chunk close short. The hung stop costs the 5 s.
     @Test(.timeLimit(.minutes(1)))
     func loopAcknowledgesAfterClosingChunks() async throws {
-        let temp = try TemporaryDirectory()
+        let temp = try TemporaryDirectory("meeting", permissions: 0o700)
         defer { temp.remove() }
         let session = SharedValue<URL?>(nil)
         let chunksAtAllow = SharedValue<Int?>(nil)
@@ -350,7 +351,7 @@ extension RecorderEnvironmentLoopTests {
     /// boundary and resumes in epoch 1.
     @Test(.timeLimit(.minutes(1)))
     func sleepWhileCaptureStartWaitsResumesInANewEpoch() async throws {
-        let temp = try TemporaryDirectory()
+        let temp = try TemporaryDirectory("meeting", permissions: 0o700)
         defer { temp.remove() }
         let acknowledged = SharedValue<[Int]>([])
         let monitor = SystemPowerMonitor(acknowledge: { token in acknowledged.update { $0.append(token) } })
@@ -394,7 +395,7 @@ extension RecorderEnvironmentLoopTests {
     /// finding on PR #14): once the loop runs, the recording ends at the sleep point.
     @Test(.timeLimit(.minutes(1)))
     func longSleepDuringSpeechSetupEndsTheRecording() async throws {
-        let temp = try TemporaryDirectory()
+        let temp = try TemporaryDirectory("meeting", permissions: 0o700)
         defer { temp.remove() }
         let acknowledged = SharedValue<[Int]>([])
         let monitor = SystemPowerMonitor(acknowledge: { token in acknowledged.update { $0.append(token) } })
@@ -440,7 +441,7 @@ extension RecorderEnvironmentLoopTests {
     /// A start that fails detaches the monitor: later sleeps are neither queued nor held.
     @Test(.timeLimit(.minutes(1)))
     func failedStartDetachesThePowerMonitor() async throws {
-        let temp = try TemporaryDirectory()
+        let temp = try TemporaryDirectory("meeting", permissions: 0o700)
         defer { temp.remove() }
         let power = RecorderFakePower()
         let captures = FakeCaptureFactory([FakeCaptureScript(startError: .unavailable("No permission."))])
@@ -455,7 +456,7 @@ extension RecorderEnvironmentLoopTests {
     /// resume warning is shown.
     @Test(.timeLimit(.minutes(1)))
     func sleepAndWakeResumeInTheSameSession() async throws {
-        let temp = try TemporaryDirectory()
+        let temp = try TemporaryDirectory("meeting", permissions: 0o700)
         defer { temp.remove() }
         let power = RecorderFakePower()
         let clock = ManualSessionClock(0)
@@ -494,7 +495,7 @@ extension RecorderEnvironmentLoopTests {
     /// Asleep for 15 minutes or more: the recording ends at the sleep point with its audio saved.
     @Test(.timeLimit(.minutes(1)))
     func longSleepEndsTheRecordingAtTheSleepPoint() async throws {
-        let temp = try TemporaryDirectory()
+        let temp = try TemporaryDirectory("meeting", permissions: 0o700)
         defer { temp.remove() }
         let power = RecorderFakePower()
         let clock = ManualSessionClock(0)
@@ -522,7 +523,7 @@ extension RecorderEnvironmentLoopTests {
     /// arrival, and 20 minutes asleep still ends the recording at the sleep point.
     @Test(.timeLimit(.minutes(1)))
     func lateDrainedSleepIsTimedByArrival() async throws {
-        let temp = try TemporaryDirectory()
+        let temp = try TemporaryDirectory("meeting", permissions: 0o700)
         defer { temp.remove() }
         let power = RecorderFakePower()
         let clock = ManualSessionClock(0)
@@ -546,7 +547,7 @@ extension RecorderEnvironmentLoopTests {
     /// The idle-sleep assertion is taken at start, let go while paused, and taken again on resume.
     @Test(.timeLimit(.minutes(1)))
     func powerAssertionFollowsPause() async throws {
-        let temp = try TemporaryDirectory()
+        let temp = try TemporaryDirectory("meeting", permissions: 0o700)
         defer { temp.remove() }
         let names = SharedValue<[String]>([])
         let captures = FakeCaptureFactory([FakeCaptureScript(frames: FakeFrame.run(count: 3)),
@@ -573,7 +574,7 @@ extension RecorderEnvironmentLoopTests {
     /// A waiting recorder retries at once when the screen unlocks or the audio device list changes.
     @Test(.timeLimit(.minutes(1)))
     func retryOnScreenUnlockAndDeviceChange() async throws {
-        let temp = try TemporaryDirectory()
+        let temp = try TemporaryDirectory("meeting", permissions: 0o700)
         defer { temp.remove() }
         let environment = AudioEnvironmentEvents.silent()
         let captures = FakeCaptureFactory([
@@ -608,7 +609,7 @@ extension RecorderEnvironmentLoopTests {
     /// the start.)
     @Test(.timeLimit(.minutes(1)))
     func lidOpeningRetriesAWaitingRecorder() async throws {
-        let temp = try TemporaryDirectory()
+        let temp = try TemporaryDirectory("meeting", permissions: 0o700)
         defer { temp.remove() }
         let power = RecorderFakePower(lidOpen: false)
         let captures = FakeCaptureFactory([
