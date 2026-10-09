@@ -365,3 +365,69 @@ private actor CountingBackend: NaturalSpeechBackend {
     }
 }
 
+@Suite struct NaturalVoiceUnmarkedPackTests {
+    private let root = FileManager.default.temporaryDirectory.appendingPathComponent("holos-unmarked-\(UUID().uuidString)")
+    private let weights = "Models/pocket-tts/v2.1/english/flowlm_step.mlmodelc/weights/weight.bin"
+
+    /// A pack left in place, without a marker, by an interrupted (maybe older) setup.
+    private func leaveUnmarkedPack(_ content: String) throws {
+        let file = NaturalVoiceModels.directory(root: root, pack: .english).appendingPathComponent(weights)
+        try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data(content.utf8).write(to: file)
+    }
+
+    /// Checks the pack as the real one does: its files against the pinned listing's sizes and SHA-256s.
+    private func verify(expecting content: String) throws -> NaturalVoiceModels.Verify {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("holos-hash-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let reference = folder.appendingPathComponent("weight.bin")
+        try Data(content.utf8).write(to: reference)
+        let expected = [NaturalVoicePackFiles.Expected(
+            path: "v2.1/english/flowlm_step.mlmodelc/weights/weight.bin", size: Int64(content.utf8.count),
+            sha256: try NaturalVoicePackFiles.sha256(of: reference))]
+        return { _, base in
+            NaturalVoicePackFiles.problems(expected, in: base.appendingPathComponent("Models/pocket-tts")).isEmpty
+        }
+    }
+
+    private final class Calls: Sendable {
+        let events = Mutex<[String]>([])
+    }
+
+    private func setUp(_ calls: Calls, verify: @escaping NaturalVoiceModels.Verify) async throws {
+        try await NaturalVoiceModels.setUp(
+            root: root, pack: .english, force: false,
+            download: { _, _, _ in calls.events.withLock { $0.append("download") } },
+            warmUp: { _, base in
+                let staged = base.lastPathComponent.hasSuffix(".download") ? "staging" : "place"
+                calls.events.withLock { $0.append("warm up in \(staged)") }
+            },
+            verify: verify, notice: { _ in }, progress: { _ in })
+    }
+
+    @Test func aStaleUnmarkedPackIsDownloadedAgain() async throws {
+        try leaveUnmarkedPack("older weights")
+        let calls = Calls()
+        try await setUp(calls, verify: try verify(expecting: "pinned weights"))
+        // Not warmed up as it was: back to staging, through the pinned download, then warmed up in place.
+        #expect(calls.events.withLock { $0 } == ["download", "warm up in place"])
+        #expect(NaturalVoiceModels.status(root: root, pack: .english) == .installed)
+    }
+
+    @Test func anUnmarkedPackThatCannotBeCheckedIsDownloadedAgain() async throws {
+        try leaveUnmarkedPack("pinned weights")
+        let calls = Calls()
+        try await setUp(calls, verify: { _, _ in throw URLError(.notConnectedToInternet) })
+        #expect(calls.events.withLock { $0 } == ["download", "warm up in place"])
+    }
+
+    @Test func aMatchingUnmarkedPackIsWarmedUpWhereItIs() async throws {
+        try leaveUnmarkedPack("pinned weights")
+        let calls = Calls()
+        try await setUp(calls, verify: try verify(expecting: "pinned weights"))
+        #expect(calls.events.withLock { $0 } == ["warm up in place"])
+        let marker = try #require(NaturalVoiceModels.marker(root: root, pack: .english))
+        #expect(marker.revision == NaturalVoiceModels.revision)
+    }
+}
+

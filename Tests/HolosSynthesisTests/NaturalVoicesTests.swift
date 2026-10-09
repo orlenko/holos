@@ -432,9 +432,10 @@ private final class FakeChecker: SpeechChunkChecker, Sendable {
         }
         #expect(NaturalVoiceModels.status(root: root, pack: .english) == .notInstalled)
         #expect(FileManager.default.fileExists(atPath: NaturalVoiceModels.directory(root: root, pack: .english).path))
-        // The next setup warms it up where it is, without a download.
+        // The next setup finds its files are the pinned commit's and warms it up where it is, without a download.
         try await NaturalVoiceModels.setUp(root: root, pack: .english, force: false, download: download(calls),
-                                           warmUp: warmUp(calls), notice: { _ in }, progress: { _ in })
+                                           warmUp: warmUp(calls), verify: { _, _ in true }, notice: { _ in },
+                                           progress: { _ in })
         #expect(calls.downloads.withLock { $0 } == 1)
         #expect(NaturalVoiceModels.status(root: root, pack: .english) == .installed)
         // Forced: downloaded again.

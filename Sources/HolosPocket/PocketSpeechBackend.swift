@@ -77,11 +77,8 @@ public actor PocketSpeechBackend: NaturalSpeechBackend {
         // Every request names the reviewed commit, never `main`: the listing, FluidAudio's downloads (through its
         // revision override for the repository), and the root files.
         ModelRegistry.revisionOverrides[Repo.pocketTts.remotePath] = NaturalVoiceModels.revision
-        var expected = try await listing(subdirectory)
+        let expected = try await expectedFiles(pack)
         let roots = NaturalVoicePackFiles.rootFiles(for: pack)
-        if !roots.isEmpty {
-            expected += try await listing("", recursive: false).filter { roots.contains($0.path) }
-        }
         let folder = repositoryFolder(base: base)
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         try await ModelHub.download(.pocketTts, subdirectory: subdirectory, to: folder,
@@ -99,6 +96,21 @@ public actor PocketSpeechBackend: NaturalSpeechBackend {
             throw HolosError.incomplete("\(problems.count) of the natural voices' files did not download completely "
                 + "(\(problems.prefix(3).joined(separator: ", ")))")
         }
+    }
+
+    /// Whether the pack in `base` holds every file of the pinned commit's listing, complete (sizes and SHA-256s).
+    public static let verify: NaturalVoiceModels.Verify = { pack, base in
+        NaturalVoicePackFiles.problems(try await expectedFiles(pack), in: repositoryFolder(base: base)).isEmpty
+    }
+
+    /// The pack's files at the pinned commit: its language folder and the root files it needs.
+    static func expectedFiles(_ pack: NaturalVoicePack) async throws -> [NaturalVoicePackFiles.Expected] {
+        var expected = try await listing(try language(pack).repoSubdirectory)
+        let roots = NaturalVoicePackFiles.rootFiles(for: pack)
+        if !roots.isEmpty {
+            expected += try await listing("", recursive: false).filter { roots.contains($0.path) }
+        }
+        return expected
     }
 
     /// The files of `subdirectory` the voices need, with their sizes and checksums, from Hugging Face, at the pinned

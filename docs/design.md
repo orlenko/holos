@@ -652,8 +652,9 @@ top-level folders exist, so a download cancelled inside the last model's weights
 renamed into place, loaded, and made to speak a test sentence there (the first load compiles the models for this
 Mac; Core ML keys compiled models by path, so this happens where they are used); `installed.json` is written next,
 and only then are the voices not offered removed (a setup that finds the pack installed removes them again, in case
-one was cut off). A pack in place without the marker is warmed up again without a download; one that does not load
-there goes back to `<pack>.download/`, where the next download checks it and fetches only what is missing or
+one was cut off). A pack in place without the marker (an interrupted setup, maybe an older one) is first checked against the
+pinned commit's listing (sizes and SHA-256s); only then is it warmed up again without a download. One that does not
+match, cannot be checked (offline), or does not load there goes back to `<pack>.download/`, where the next download checks it and fetches only what is missing or
 damaged. A lock file keeps two installs apart. Settings › Reading has a row per pack: Download
 (with the size), the tool's progress line and Cancel while it runs (SIGTERM; what was downloaded is kept), and the
 failure's reason (offline, for instance) with Try Again; Apple's voices stay available throughout. The voice menus

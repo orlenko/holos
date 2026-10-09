@@ -111,6 +111,7 @@ enum NaturalVoiceSetup {
         let progress = NaturalProgressPrinter(label: "Natural voices (\(pack.languageName))")
         try await NaturalVoiceModels.setUp(pack: pack, force: force, download: PocketSpeechBackend.download,
                                            warmUp: PocketSpeechBackend.warmUp, finish: PocketSpeechBackend.finish,
+                                           verify: PocketSpeechBackend.verify,
                                            notice: { Console.error($0) },
                                            progress: progress.report)
         Console.output(NaturalVoiceModels.readyMessage(pack))

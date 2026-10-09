@@ -113,6 +113,10 @@ public enum NaturalVoiceModels {
     /// installed, so a setup cut off before then finds every file the listing has, and checking them needs no
     /// download; run again by a setup that finds the pack installed, so one cut off after the marker is finished.
     public typealias Finish = @Sendable (_ pack: NaturalVoicePack, _ base: URL) -> Void
+    /// Whether the pack in `base` holds exactly the files of the pinned commit's listing (sizes and SHA-256s, as the
+    /// download checks them). Throws when that cannot be told (offline). A pack in place without a marker (left by an
+    /// interrupted setup, maybe an older one) is warmed up where it is only when this says yes.
+    public typealias Verify = @Sendable (_ pack: NaturalVoicePack, _ base: URL) async throws -> Bool
 
     /// What `setUp` says it is doing, for stderr (and the app's Settings row, which shows the last line).
     public static func downloadingLine(_ pack: NaturalVoicePack, resuming: Bool) -> String {
@@ -135,7 +139,8 @@ public enum NaturalVoiceModels {
     /// without a download; one that does not load there goes back to the staging folder, where the download checks
     /// every file and fetches only what is missing or damaged. Throws `unavailable` while another process installs it.
     public static func setUp(root: URL = root, pack: NaturalVoicePack, force: Bool, download: Download,
-                             warmUp: WarmUp, finish: Finish = { _, _ in }, notice: @Sendable (String) -> Void,
+                             warmUp: WarmUp, finish: Finish = { _, _ in }, verify: Verify = { _, _ in false },
+                             notice: @Sendable (String) -> Void,
                              progress: @escaping @Sendable (Double) -> Void) async throws {
         let directory = directory(root: root, pack: pack)
         if !force, isInstalled(root: root, pack: pack) {
@@ -166,7 +171,22 @@ public enum NaturalVoiceModels {
             log.notice("Natural voices are from another commit; checking their files against \(revision, privacy: .public)")
             try moveBack(directory, to: staging)
         }
-        // A pack moved into place by an earlier setup whose warm-up was cut off: warmed up again where it is.
+        // A pack moved into place by an earlier setup whose warm-up was cut off: warmed up again where it is, once its
+        // files are found to be the pinned commit's. One that is not, or cannot be checked, goes back to staging and
+        // through the download, which checks and completes it.
+        if FileManager.default.fileExists(atPath: directory.path) {
+            let verified: Bool
+            do {
+                verified = try await verify(pack, directory)
+            } catch {
+                if error is CancellationError || Task.isCancelled { throw CancellationError() }
+                verified = false
+            }
+            if !verified {
+                log.notice("Natural voices in place are not the pinned commit's; downloading them again")
+                try moveBack(directory, to: staging)
+            }
+        }
         if FileManager.default.fileExists(atPath: directory.path) {
             notice(preparingLine)
             do {
