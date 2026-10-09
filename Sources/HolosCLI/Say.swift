@@ -79,7 +79,9 @@ struct Say: AsyncParsableCommand {
     @MainActor mutating func run() async throws {
         let input: String
         if let textFile {
-            input = try DocumentText.readTextFile(fileURL(textFile), maximumBytes: 16 << 20)
+            // Off the main actor: a slow volume or a large file never holds it.
+            let url = fileURL(textFile)
+            input = try await offMain { try DocumentText.readTextFile(url, maximumBytes: 16 << 20) }
         } else {
             input = try readText(arguments: text)
         }
