@@ -29,8 +29,8 @@ public struct EchoLabelStats: Sendable, Equatable, Encodable {
     public var microphoneRowsAfter: Int?
     public var unknownRowsBefore: Int?
     public var unknownRowsAfter: Int?
-    /// Microphone rows (as `microphoneRowsBefore`, by their first turn) whose turns, words or speaker differ between
-    /// the two rules (one shown only under one counts too); nil without speaker labels.
+    /// Microphone rows (as `microphoneRowsBefore`) whose turns, words or speaker differ between the two rules
+    /// (`changedRows`); nil without speaker labels.
     public var rowsChanged: Int?
 
     public init() {}
@@ -104,23 +104,43 @@ public struct EchoLabelStats: Sendable, Equatable, Encodable {
             }
             // The rows as Review shows them: a short interjection hidden under both rules is no change, whatever its
             // words; one attached to a neighbour shows with that speaker; consecutive turns of one speaker are one row.
-            let shown = views.map { view -> [String: ShownRow] in
-                let microphone = rows(view.shownTurns(includingHidden: false)).filter { row in
-                    row.contains { $0.track == EchoFilter.microphoneTrack }
+            let shown = views.map { view -> [ShownRow] in
+                rows(view.shownTurns(includingHidden: false)).compactMap { row in
+                    guard let first = row.first, row.contains(where: { $0.track == EchoFilter.microphoneTrack }) else {
+                        return nil
+                    }
+                    return ShownRow(speakerID: first.speakerID, turnIDs: row.map(\.id), spans: row.flatMap(\.spans))
                 }
-                return Dictionary(microphone.compactMap { row -> (String, ShownRow)? in
-                    guard let first = row.first else { return nil }
-                    return (first.id, ShownRow(speakerID: first.speakerID, turnIDs: row.map(\.id),
-                                               spans: row.flatMap(\.spans)))
-                }, uniquingKeysWith: { first, _ in first })
             }
             stats.microphoneRowsBefore = shown[0].count
             stats.microphoneRowsAfter = shown[1].count
-            stats.unknownRowsBefore = shown[0].values.filter { $0.speakerID == nil }.count
-            stats.unknownRowsAfter = shown[1].values.filter { $0.speakerID == nil }.count
-            stats.rowsChanged = Set(shown[0].keys).union(shown[1].keys).filter { shown[0][$0] != shown[1][$0] }.count
+            stats.unknownRowsBefore = shown[0].filter { $0.speakerID == nil }.count
+            stats.unknownRowsAfter = shown[1].filter { $0.speakerID == nil }.count
+            stats.rowsChanged = changedRows(before: shown[0], after: shown[1])
         }
         return stats
+    }
+
+    /// The rows that differ between `before` and `after`. A row after is the same row as the first row before not yet
+    /// matched that shares a turn with it (a row keeps its identity when its first turn is hidden); a matched pair
+    /// counts once when its turns, words or speaker differ, and a row on one side only counts once.
+    private static func changedRows(before: [ShownRow], after: [ShownRow]) -> Int {
+        var rowOfTurn: [String: Int] = [:]
+        for (index, row) in before.enumerated() {
+            for id in row.turnIDs where rowOfTurn[id] == nil { rowOfTurn[id] = index }
+        }
+        var matched = Set<Int>()
+        var changed = 0
+        for row in after {
+            let candidates = row.turnIDs.compactMap { rowOfTurn[$0] }.filter { !matched.contains($0) }
+            guard let match = candidates.min() else {
+                changed += 1
+                continue
+            }
+            matched.insert(match)
+            if before[match] != row { changed += 1 }
+        }
+        return changed + before.count - matched.count
     }
 
     /// Whether the echo dominates around a word: within `surroundingSeconds` of its middle, echo frames are at least

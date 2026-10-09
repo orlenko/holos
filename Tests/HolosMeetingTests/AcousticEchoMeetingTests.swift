@@ -1285,21 +1285,25 @@ func echoLabelStatsReadEachArgumentOnItsOwnAndNameNoPath() async throws {
         tracks: [SpeakerRunBuilder.TrackInput(track: "mic", policy: .channel(speakerID: "mic:me", displayName: "Me"))],
         engine: nil, parameters: .v1, id: "RUN").run
     #expect(run.turns.count == 2)
-    let count = Int(30 / AcousticEchoMask.hopSeconds)
-    var classes = [UInt8](repeating: AcousticEchoMask.FrameClass.echo.rawValue, count: count)
-    var levels = [Int8](repeating: 0, count: count)
-    var local: [(Double, Double, Int8)] = [(10, 11.4, -40)]
-    for word in second.words {
-        local += [(word.start, word.start + 0.08, 4), (word.start + 0.2, word.start + 0.28, 4)]
-    }
-    for frame in 0..<count {
-        let centre = AcousticEchoMask.centre(ofFrame: frame)
-        for (start, end, level) in local where centre >= start && centre < end {
-            classes[frame] = AcousticEchoMask.FrameClass.local.rawValue
-            levels[frame] = level
+    /// The user's words in `user` (20 dB over the prediction), false local frames (+2 dB) over `echo`'s words.
+    func makeMask(user: TranscriptSegment, echo: TranscriptSegment) throws -> AcousticEchoMask {
+        let count = Int(30 / AcousticEchoMask.hopSeconds)
+        var classes = [UInt8](repeating: AcousticEchoMask.FrameClass.echo.rawValue, count: count)
+        var levels = [Int8](repeating: 0, count: count)
+        var local: [(Double, Double, Int8)] = [(user.start, user.end, -40)]
+        for word in echo.words {
+            local += [(word.start, word.start + 0.08, 4), (word.start + 0.2, word.start + 0.28, 4)]
         }
+        for frame in 0..<count {
+            let centre = AcousticEchoMask.centre(ofFrame: frame)
+            for (start, end, level) in local where centre >= start && centre < end {
+                classes[frame] = AcousticEchoMask.FrameClass.local.rawValue
+                levels[frame] = level
+            }
+        }
+        return try #require(AcousticEchoMask(classes: classes, echoLevels: levels))
     }
-    let mask = try #require(AcousticEchoMask(classes: classes, echoLevels: levels))
+    let mask = try makeMask(user: first, echo: second)
 
     let stats = SessionEchoLabelStats.compare(transcript: transcript, mask: mask, run: run, edits: [])
     #expect(stats.localToEcho == 3)
@@ -1308,6 +1312,12 @@ func echoLabelStatsReadEachArgumentOnItsOwnAndNameNoPath() async throws {
     // Turn by turn, it would have been two rows before.
     let ungrouped = EchoLabelStats.compare(transcript: transcript, mask: mask, run: run)
     #expect((ungrouped.microphoneRowsBefore, ungrouped.microphoneRowsAfter) == (2, 1))
+    // The first turn the echo instead: the row now starts with the second, and is still one row changed.
+    let swapped = try makeMask(user: second, echo: first)
+    let firstHidden = SessionEchoLabelStats.compare(transcript: transcript, mask: swapped, run: run, edits: [])
+    #expect(firstHidden.localToEcho == 3)
+    #expect((firstHidden.microphoneRowsBefore, firstHidden.microphoneRowsAfter) == (1, 1))
+    #expect(firstHidden.rowsChanged == 1)
 }
 
 @Test(.timeLimit(.minutes(2)))

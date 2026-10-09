@@ -8803,29 +8803,20 @@ genuinely local (the user, or people in the room) stays even while the call play
      is poorly cancelled (90th percentile of the residual ratio of echo-dominated frames + 1
      dB); 5-frame (80 ms) majority smoothing. Echo: every other active frame.
   5. *Words* (`AcousticEchoMask.isEcho`). A microphone word is echo when under 30 % of its
-     active frames are local frames of a local stretch with evidence (*Playback* below,
-     `AcousticEchoMask.localStretches()`: runs of local frames joined across gaps under 300 ms,
-     with at least 3 local frames whose predicted echo is more than 6 dB below the microphone;
-     no predicted echo at all counts, so speech while the call is quiet has it), or a
-     sustained one: a run of at least 13 consecutive local frames (208 ms, a held syllable;
-     `sustainedRunFrames`) whose median predicted echo is below −1 dB (`sustainedLevelDB`).
-     Speech in the room adds to the echo, so the microphone is louder than the echo alone (−3
-     dB at equal loudness: double-talk with no frame 6 dB clear of the echo), while the echo
-     cancelled poorly predicts 0 to +3.5 dB in runs of 3–5 frames scattered through the
-     call's speech (a run is at least 3 frames after the 5-frame smoothing; 13 is over twice
-     the scattered runs). Outside such stretches, a run of local frames none of which has any
-     predicted echo still counts on its own (the smoothing can leave a single local frame of
-     a quiet sound while the call is silent, and with nothing predicted there is no echo for
-     it to be); a run with predicted echo joined to it does not share that. Any other local
-     frame is the call cancelled poorly and counts as echo. The
-     stretch is judged whole, beyond the word: a word spoken quietly over the call is the
-     user's when its stretch has louder frames elsewhere, and a word only partly in a stretch
-     with evidence counts its local frames there and no others. Review playback reads the same
-     stretches (`AcousticEchoMask.LocalStretch`: `wordFrames` for words, `playbackFrames` for
-     playback) but not the sustained criterion: there the echo is about as loud as the user,
-     which #108 chose not to play (2026-10-08; before, every
-     local frame counted, and the scattered false-local frames of poorly cancelled echo,
-     predicted 0 to +3.5 dB against the microphone, made echo words microphone turns and
+     active frames are local frames the word rule trusts (`trustedWordFrames`, worked out once
+     per mask): (a) every local frame of a stretch with evidence (*Playback* below: local runs
+     joined across gaps under 300 ms with at least 3 frames whose predicted echo is more than
+     6 dB below the microphone), judged whole, so a quiet word over the call counts when its
+     stretch has louder frames; (b) every frame covered by a window of 13 consecutive local
+     frames (208 ms, a held syllable; `sustainedRunFrames`) whose median predicted echo is
+     below −1 dB (`sustainedLevelDB`): double-talk at the echo's loudness (−3 dB) has no frame
+     6 dB clear, while poorly cancelled echo predicts 0 to +3.5 dB in runs of 3–5 frames, and
+     only the qualifying windows count, not the rest of their run; (c) any local frame whose
+     predicted echo is 20 dB or more below the microphone, or absent (`negligibleEchoDB`), on
+     its own (smoothing can leave one local frame of a quiet sound). Any other local frame is
+     the call cancelled poorly and counts as echo. Playback uses (a) only (2026-10-08; before,
+     every local frame counted, and the scattered false-local frames of poorly cancelled echo
+     made echo words microphone turns and
      "Unknown" rows). A word with no active frame is echo only when the predicted
      echo explains its energy (median echo − microphone ≥ −5 dB; a frame with no microphone
      sound or no predicted echo, such as a gap in the recording, explains nothing). A word past
@@ -8974,12 +8965,9 @@ genuinely local (the user, or people in the room) stays even while the call play
   finished opening after the run ended rereads the meeting too (`maintenanceEnded`).
 - *Playback.* `AcousticEchoMask.localSpeechIntervals()` gives the microphone's own
   speech: runs of local frames, joined into stretches across gaps under 300 ms
-  (`localStretches()`, `stretchGapSeconds`, shared with the word rule); a stretch is
+  (`localStretches()`, `stretchGapSeconds`, also read by the word rule); a stretch is
   kept only when at least 3 of its local frames (`evidenceFrames`) have the predicted
-  echo more than 6 dB below the microphone (`evidenceDB`); otherwise only its runs without any
-  predicted echo play, each on its own (`playbackFrames`; added with the word rule: only runs of
-  1–2 such frames are new, sounds while the call is silent, where there is no echo to play);
-  kept stretches are padded
+  echo more than 6 dB below the microphone (`evidenceDB`); kept stretches are padded
   64 ms before and 200 ms after. The review window plays the microphone only there (§5.10,
   echo-free playback). The evidence rule (2026-10-08) answers echo heard in review on a call
   through laptop speakers: where the call's speech is cancelled poorly, the frame rule calls
@@ -9011,7 +8999,8 @@ genuinely local (the user, or people in the room) stays even while the call play
   ±0.5 s surroundings hold at least three times as many echo frames as local ones; rows are
   the microphone rows Review shows (short interjections applied, then consecutive turns of one
   speaker grouped into rows by `ReviewParagraphs.group`), "unknown" those without a speaker;
-  "rows changed" the microphone rows whose turns, words or speaker differ (a short
+  "rows changed" the microphone rows (matched before and after through a shared turn) whose
+  turns, words or speaker differ (a short
   interjection hidden under both rules is none). Each argument is resolved on its own: one that
   names no session (missing, a symbolic link, an unknown ID) is listed by its place ("#3: not
   measured (unreadable)") without its path or the reason. A session that is recording, has no
