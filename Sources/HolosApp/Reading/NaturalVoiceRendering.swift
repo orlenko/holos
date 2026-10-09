@@ -25,15 +25,20 @@ import Synchronization
     private let launch: Launch
     private let installedPacks: () -> Set<NaturalVoicePack>
     private let signal: @Sendable (Int32) -> Void
+    private let forceKill: @Sendable (Int32) -> Void
+    private let killAfter: Duration
     private let gate: NaturalVoiceHelperGate
     private let currentSettings: (NaturalVoice) -> NaturalRenderSettings
 
     /// `currentSettings`: what the tool would use now for a voice (a reading saves them when it starts): the best
     /// Apple voice of its language for a paragraph it fails, and the check unless `HOLOS_NATURAL_CHECK=0` (the tool
-    /// gets this app's environment).
+    /// gets this app's environment). A Stop sends the tool `signal` (SIGTERM); one still running `killAfter` later
+    /// gets `forceKill` (SIGKILL), so a wedged tool never holds the helper gate.
     init(launch: @escaping Launch, installedPacks: @escaping () -> Set<NaturalVoicePack> = {
              NaturalVoiceModels.installedPacks()
          }, signal: @escaping @Sendable (Int32) -> Void = { _ = kill($0, SIGTERM) },
+         forceKill: @escaping @Sendable (Int32) -> Void = { _ = kill($0, SIGKILL) },
+         killAfter: Duration = .seconds(5),
          gate: NaturalVoiceHelperGate = .shared,
          currentSettings: @escaping (NaturalVoice) -> NaturalRenderSettings = { voice in
              NaturalRenderSettings(fallbackVoice: NativeSpeechRenderer.bestVoice(language: voice.pack.languageCode)?.id,
@@ -42,6 +47,8 @@ import Synchronization
         self.launch = launch
         self.installedPacks = installedPacks
         self.signal = signal
+        self.forceKill = forceKill
+        self.killAfter = killAfter
         self.gate = gate
         self.currentSettings = currentSettings
     }
@@ -95,16 +102,22 @@ import Synchronization
         // reading's part, and a Preview started again waits for the one it replaced to have exited.
         try await gate.acquire()
         defer { gate.release() }
-        // Marked as this app's (its pid): the tool removes it if this app ends, and no other folder.
-        let folder = try NaturalHelperScratch.create()
-        NaturalVoiceHelpers.using(folder)
-        defer {
-            try? FileManager.default.removeItem(at: folder)
-            NaturalVoiceHelpers.done(folder)
+        // Made, marked as this app's (its pid: the tool removes it if this app ends, and no other folder), and given
+        // the text off the main actor; removed off it too.
+        let (folder, textFile) = try await offMain { () -> (URL, URL) in
+            let folder = try NaturalHelperScratch.create()
+            let textFile = folder.appendingPathComponent("part.txt")
+            do {
+                try Data(text.utf8).write(to: textFile, options: .atomic)
+            } catch {
+                Self.remove(folder)
+                throw error
+            }
+            return (folder, textFile)
         }
-        let textFile = folder.appendingPathComponent("part.txt")
+        NaturalVoiceHelpers.using(folder)
+        defer { Task.detached(priority: .utility) { Self.remove(folder) } }
         let errors = folder.appendingPathComponent("stderr.txt")
-        try Data(text.utf8).write(to: textFile, options: .atomic)
         let arguments = Self.arguments(voice: voiceIdentifier, rate: rate,
                                        settings: savedSettings.map(NaturalRenderSettings.init(values:)),
                                        textFile: textFile, scratch: folder, output: output)
@@ -122,16 +135,16 @@ import Synchronization
                     let started = child.started(pid)
                     if started.running {
                         NaturalVoiceHelpers.started(pid)
-                        if started.cancelled { signal(pid) }
+                        if started.cancelled { stop(pid, child) }
                     }
                 } catch {
                     continuation.resume(throwing: error)
                 }
             }
-        } onCancel: { [signal] in
-            if let pid = child.cancel() { signal(pid) }
+        } onCancel: { [stop] in
+            if let pid = child.cancel() { stop(pid, child) }
         }
-        let said = (try? String(contentsOf: errors, encoding: .utf8)) ?? ""
+        let said = try await offMain { (try? String(contentsOf: errors, encoding: .utf8)) ?? "" }
         for line in said.split(separator: "\n") where line.hasPrefix("Paragraph") || line.hasPrefix("Note:") {
             // A note (no recognizer for the language) is the same for every part: logged once per launch.
             if line.hasPrefix("Note:"), !Self.notesLogged.insert(String(line)).inserted { continue }
@@ -143,10 +156,34 @@ import Synchronization
                 .replacingOccurrences(of: "Error: ", with: "")
             throw HolosError.incomplete(last ?? "The natural voice stopped (code \(code)).")
         }
-        let file = try AVAudioFile(forReading: output)
-        let rate = file.processingFormat.sampleRate
-        return RenderedAudio(url: output, duration: Double(file.length) / rate, frameCount: file.length,
-                             sampleRate: rate)
+        let (frames, rate) = try await offMain { () -> (AVAudioFramePosition, Double) in
+            let file = try AVAudioFile(forReading: output)
+            return (file.length, file.processingFormat.sampleRate)
+        }
+        return RenderedAudio(url: output, duration: Double(frames) / rate, frameCount: frames, sampleRate: rate)
+    }
+
+    /// Stops the tool: SIGTERM now, SIGKILL if it still runs `killAfter` later (its exit then releases the gate).
+    private var stop: @Sendable (Int32, ChildState) -> Void {
+        { [signal, forceKill, killAfter] pid, child in
+            signal(pid)
+            Task.detached {
+                try? await Task.sleep(for: killAfter)
+                if let running = child.running() { forceKill(running) }
+            }
+        }
+    }
+
+    /// Removes a helper's folder and forgets it; a folder that cannot be removed is logged (the launch sweep removes
+    /// it once a day old).
+    nonisolated private static func remove(_ folder: URL) {
+        do {
+            try FileManager.default.removeItem(at: folder)
+        } catch {
+            Logger(subsystem: "ca.orlenko.holos.app", category: "reading")
+                .error("Could not remove a natural voice folder: \(error.localizedDescription, privacy: .public)")
+        }
+        NaturalVoiceHelpers.done(folder)
     }
 
     /// The child's pid once started, and whether the render was cancelled before or after.
@@ -170,6 +207,11 @@ import Synchronization
                 defer { value.pid = nil }
                 return value.pid
             }
+        }
+
+        /// The child's pid while it runs; nil once it has ended (its pid may belong to another process by then).
+        func running() -> Int32? {
+            state.withLock { value in value.ended ? nil : value.pid }
         }
 
         /// Marks the render cancelled; the pid to stop while the child runs, nil once it has ended.

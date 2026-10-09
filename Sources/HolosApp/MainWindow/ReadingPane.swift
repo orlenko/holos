@@ -31,6 +31,11 @@ final class ReadingPane: NSViewController, MainSectionContent, NSTableViewDataSo
     private var windowObserver: NSObjectProtocol?
     private var preferencesObserver: NSObjectProtocol?
     private var voicesObserver: NSObjectProtocol?
+    /// The voice chosen on the card (nil: Automatic), kept while its pack is briefly missing (a reinstall), so the
+    /// menu selects it again once it is back.
+    private var chosenVoice: String?
+    /// The natural voice packs the menu offers (tests set it).
+    var installedPacks: () -> Set<NaturalVoicePack> = { NaturalVoiceModels.installedPacks() }
 
     init(controller: ReadingController) {
         self.controller = controller
@@ -105,6 +110,8 @@ final class ReadingPane: NSViewController, MainSectionContent, NSTableViewDataSo
         chooseButton.toolTip = "Choose one or more documents to read"
 
         voicePopup.setAccessibilityLabel("Voice")
+        voicePopup.target = self
+        voicePopup.action = #selector(voiceChosen)
         // Wide enough for "Ava (Premium) — English (United States)", narrower when the section is.
         let voiceWidth = voicePopup.widthAnchor.constraint(equalToConstant: 340)
         voiceWidth.priority = .defaultLow
@@ -267,10 +274,14 @@ final class ReadingPane: NSViewController, MainSectionContent, NSTableViewDataSo
             + "the only thing fetched is the page you paste."
     }
 
-    /// Rebuilds the voice menu (voices can be installed while Voice is Local runs), keeping the choice.
+    /// Rebuilds the voice menu (voices can be installed while Voice is Local runs), keeping the choice: `id` when
+    /// given, else the voice chosen on the card, even one missing from this menu for now.
     private func refreshVoices(selecting id: String?? = nil) {
-        ReadingVoicePopup.fill(voicePopup, selecting: id ?? selectedVoice)
+        if let id { chosenVoice = id }
+        ReadingVoicePopup.fill(voicePopup, selecting: chosenVoice, installed: installedPacks())
     }
+
+    @objc private func voiceChosen() { chosenVoice = selectedVoice }
 
     func controlTextDidChange(_ notification: Notification) {
         inputGeneration += 1

@@ -180,6 +180,7 @@ import Testing
             item.isEnabled && (item.representedObject as? String).map { $0 != ReadingPreferences.voice } == true
         })
         popup.select(chosen)
+        _ = popup.sendAction(popup.action, to: popup.target)
         let speed = ReadingPreferences.speed == 1.3 ? 0.9 : 1.3
         pane.speedSlider.doubleValue = speed
         let before = popup.itemArray.first
@@ -189,6 +190,29 @@ import Testing
         #expect(popup.itemArray.first !== before)
         #expect(popup.selectedItem?.representedObject as? String == chosen.representedObject as? String)
         #expect(abs(pane.speedSlider.doubleValue - speed) < 0.001, "\(pane.speedSlider.doubleValue) vs \(speed)")
+    }
+
+    @Test func aNaturalVoiceBrieflyMissingIsChosenAgainWhenItsPackIsBack() async throws {
+        let pane = ReadingPane(controller: ReadingController())
+        let popup = pane.voicePopup
+        var installed: Set<NaturalVoicePack> = [.english]
+        pane.installedPacks = { installed }
+        func announced() async {
+            let before = popup.itemArray.first
+            ReadingVoices.announceInstalled()
+            for _ in 0..<10_000 where popup.itemArray.first === before { await Task.yield() }
+        }
+        await announced()
+        let alba = try #require(popup.itemArray.first { $0.representedObject as? String == "pocket:en:alba" })
+        popup.select(alba)
+        _ = popup.sendAction(popup.action, to: popup.target)
+        // A reinstall: the pack is missing for a moment, and the menu shows Automatic meanwhile.
+        installed = []
+        await announced()
+        #expect(popup.selectedItem?.representedObject == nil)
+        installed = [.english]
+        await announced()
+        #expect(popup.selectedItem?.representedObject as? String == "pocket:en:alba")
     }
 
     @Test func quittingStopsTheToolAndRemovesItsFolder() async throws {
@@ -404,7 +428,10 @@ import Testing
         #expect(Array(arguments.suffix(6)) == ["--output", output.path, "--parent-pid", "\(getpid())", "--rate",
                                                "\(rate!)"])
         #expect(launches.signals.withLock { $0 }.isEmpty)
-        // The text file is gone with its folder.
+        // The text file is gone with its folder (removed off the main actor).
+        for _ in 0..<2_000 where FileManager.default.fileExists(atPath: arguments[6]) {
+            try await Task.sleep(for: .milliseconds(5))
+        }
         #expect(!FileManager.default.fileExists(atPath: arguments[4]))
         #expect(!FileManager.default.fileExists(atPath: arguments[6]))
     }
@@ -465,6 +492,29 @@ import Testing
         // Its pid may belong to another process by now: nothing is signalled.
         #expect(signals.withLock { $0 }.isEmpty)
         #expect(NaturalVoiceHelpers.stopAll { _ in }.isEmpty)
+    }
+
+    @Test func aToolThatIgnoresTheStopIsKilled() async throws {
+        let launches = Launches()
+        let exit = Mutex<(@MainActor (Int32) -> Void)?>(nil)
+        let killed = Mutex<[Int32]>([])
+        let renderer = HelperNaturalRenderer(launch: { _, _, onExit in
+            exit.withLock { $0 = onExit }
+            return 77
+        }, installedPacks: { [.english] }, signal: { pid in
+            // SIGTERM: the tool is wedged and does not exit.
+            launches.signals.withLock { $0.append(pid) }
+        }, forceKill: { pid in
+            killed.withLock { $0.append(pid) }
+            DispatchQueue.main.async { MainActor.assumeIsolated { exit.withLock { $0 }?(137) } }
+        }, killAfter: .milliseconds(20), gate: NaturalVoiceHelperGate())
+        let output = try folder().appendingPathComponent("p.caf")
+        let task = Task { try await renderer.render(text: "Hello.", voiceIdentifier: "pocket:en:alba", rate: nil, to: output) }
+        while exit.withLock({ $0 == nil }) { await Task.yield() }
+        task.cancel()
+        await #expect(throws: CancellationError.self) { _ = try await task.value }
+        #expect(launches.signals.withLock { $0 } == [77])
+        #expect(killed.withLock { $0 } == [77])
     }
 
     @Test func aStopSignalsTheTool() async throws {
