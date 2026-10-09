@@ -303,7 +303,8 @@ timeline and a larger local-model benchmark are follow-ups.
   play-from-here time button, a speaker pop-up (speakers, known people, Unknown, New
   Speaker…; a voice match first, "Jim (suggested)"), uncertain rows marked only for
   VoiceOver; Next Uncertain (⌘'), 1–9 to assign the selection, Split Turn (inside a turn
-  it splits that turn; where a turn already starts it only breaks the paragraph, in the window), search, Find More Speakers (a relabel with a minimum of one
+  it splits that turn; where a turn already starts it only breaks the paragraph, in the window; Backspace at a
+  row's start in edit mode, or Join With Previous Turn, joins it to the row before, taking its speaker), search, Find More Speakers (a relabel with a minimum of one
   more speaker than found; names carry over, turn-level changes do not), Label Speakers on
   My Microphone for calls, Label Again after the transcript changed, Undo (⌘Z, the
   window's own changes, newest first), and Export (Save As… Markdown, text, JSON; Copy as
