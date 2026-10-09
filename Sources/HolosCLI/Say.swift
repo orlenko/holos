@@ -19,7 +19,8 @@ struct Voices: AsyncParsableCommand {
         @MainActor mutating func run() async throws {
             let installed = NativeSpeechRenderer.voices()
             let names = VoiceSelection.displayNames(installed)
-            let natural = NaturalVoiceCatalog.voices(installed: NaturalVoiceModels.installedPacks()).map(\.descriptor)
+            let natural = NaturalVoiceCatalog.voices(installed: await NaturalVoicesCLI.installedPacks())
+                .map(\.descriptor)
             let apple = installed.sorted { lhs, rhs in
                     if lhs.language != rhs.language { return lhs.language < rhs.language }
                     let lhsRank = VoiceSelection.qualityRank(lhs.quality), rhsRank = VoiceSelection.qualityRank(rhs.quality)
@@ -82,7 +83,8 @@ struct Say: AsyncParsableCommand {
         } else {
             input = try readText(arguments: text)
         }
-        let voice = try self.voice.map { try resolveVoice($0, language: nil, explainDefault: false).id }
+        var voice: String?
+        if let query = self.voice { voice = try await resolveVoice(query, language: nil, explainDefault: false).id }
         let render: (URL) async throws -> RenderedAudio
         if let voice, NaturalVoiceCatalog.isNatural(voice) {
             let scratch = try scratchDirectory.map { path -> URL in
@@ -93,7 +95,7 @@ struct Say: AsyncParsableCommand {
                 }
                 return url
             }
-            let renderer = NaturalVoicesCLI.renderer(scratch: scratch)
+            let renderer = NaturalVoicesCLI.renderer(scratch: scratch, installed: await NaturalVoicesCLI.installedPacks())
             let rate = self.rate
             // A reading's part renders with the settings the reading saved when it started.
             var settings = renderer.settings(for: voice)

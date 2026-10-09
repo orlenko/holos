@@ -146,7 +146,8 @@ struct Read: AsyncParsableCommand {
         // A declared language that is not a usable tag ("english") is ignored, not trusted.
         let language = AudioBookMetadata.languageTag(document.language) ?? ReadingLanguage.detect(script.text)
         // `read` takes Apple's voices; natural voices are for `say`.
-        let selected = try resolveVoice(request.voice, language: language, explainDefault: true, allowNatural: false)
+        let selected = try await resolveVoice(request.voice, language: language, explainDefault: true,
+                                              allowNatural: false)
         // The first title with readable text: `--title` (checked in `validate`), the document's,
         // then the file's name.
         let metadata = AudioBookMetadata(
@@ -245,7 +246,7 @@ let speechRateHelp = ArgumentHelp(
 /// `--voice` by name or identifier (an Apple voice, or a natural voice such as "pocket:en:alba"); without it, the
 /// natural voice for `language` once its pack is installed (`allowNatural`), else the best installed Apple voice.
 @MainActor func resolveVoice(_ query: String?, language: String?, explainDefault: Bool,
-                             allowNatural: Bool = true) throws -> VoiceDescriptor {
+                             allowNatural: Bool = true) async throws -> VoiceDescriptor {
     let voices = NativeSpeechRenderer.voices()
     if let query {
         if NaturalVoiceCatalog.isNatural(query), !allowNatural {
@@ -253,7 +254,7 @@ let speechRateHelp = ArgumentHelp(
         }
         // An Apple voice of that name goes first ("Alba" could be both); then a natural one.
         if NaturalVoiceCatalog.isNatural(query) || VoiceSelection.match(query, in: voices, language: language) == nil,
-           allowNatural, let natural = try NaturalVoicesCLI.resolve(query) {
+           allowNatural, let natural = try await NaturalVoicesCLI.resolve(query) {
             return natural.descriptor
         }
         guard let match = VoiceSelection.match(query, in: voices, language: language) else {
@@ -263,7 +264,7 @@ let speechRateHelp = ArgumentHelp(
     }
     let wanted = language ?? Locale.preferredLanguages.first ?? "en-US"
     if allowNatural, let natural = NaturalVoiceCatalog.defaultVoice(language: wanted,
-                                                                   installed: NaturalVoiceModels.installedPacks()) {
+                                                                   installed: await NaturalVoicesCLI.installedPacks()) {
         return natural.descriptor
     }
     let chosen: VoiceDescriptor

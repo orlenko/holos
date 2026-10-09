@@ -21,8 +21,9 @@ enum NaturalVoicesCLI {
     /// saved its policy when it started (its resume follows that policy either way: the checker is always made). What it
     /// finds (a re-render, a paragraph read by a system voice) is said on stderr.
     /// `scratch`: the folder its temporary files go in (the app gives each part one, and deletes it when it stops the
-    /// tool); nil for the system's temporary folder.
-    @MainActor static func renderer(log: Bool = true, scratch: URL? = nil) -> NaturalSpeechRenderer {
+    /// tool); nil for the system's temporary folder. `installed`: the packs found installed (`installedPacks()`).
+    @MainActor static func renderer(log: Bool = true, scratch: URL? = nil, installed: Set<NaturalVoicePack>)
+        -> NaturalSpeechRenderer {
         // FluidAudio's own log of the text it speaks stays off stderr from now on (`FluidAudioLogFilter`).
         _ = logFilter
         let root = scratch ?? FileManager.default.temporaryDirectory
@@ -31,7 +32,7 @@ enum NaturalVoicesCLI {
         let renderer = NaturalSpeechRenderer(
             backend: PocketSpeechBackend(), checker: AppleSpeechChunkChecker(temporaryRoot: root),
             checksByDefault: ProcessInfo.processInfo.environment["HOLOS_NATURAL_CHECK"] != "0",
-            fallback: NativeParagraphFallback(temporaryRoot: root))
+            fallback: NativeParagraphFallback(temporaryRoot: root), installedPacks: { installed })
         renderer.onEvent = { event in
             guard log else { return }
             switch event {
@@ -55,14 +56,25 @@ enum NaturalVoicesCLI {
 
     /// `--voice` for `read` and `say`: a natural voice ("pocket:en:alba", "Alba (Natural)"), installed. Nil when the
     /// query names no natural voice (an Apple voice is looked for then).
-    @MainActor static func resolve(_ query: String) throws -> NaturalVoice? {
+    /// The natural voice packs installed, looked at once per run of the tool and off the main actor: the scan takes
+    /// each pack's lock, reads its marker, and checks every file it lists, which a slow volume makes long.
+    @MainActor static func installedPacks() async -> Set<NaturalVoicePack> {
+        if let installedSnapshot { return installedSnapshot }
+        let installed = await Task.detached(priority: .userInitiated) { NaturalVoiceModels.installedPacks() }.value
+        installedSnapshot = installed
+        return installed
+    }
+
+    @MainActor private static var installedSnapshot: Set<NaturalVoicePack>?
+
+    @MainActor static func resolve(_ query: String) async throws -> NaturalVoice? {
         guard let voice = NaturalVoiceCatalog.match(query) else {
             if NaturalVoiceCatalog.isNatural(query) {
                 throw HolosError.unavailable("No natural voice is named \"\(query)\". See: voiceislocal voices list")
             }
             return nil
         }
-        guard NaturalVoiceModels.installedPacks().contains(voice.pack) else {
+        guard await installedPacks().contains(voice.pack) else {
             throw HolosError.unavailable("The \(voice.pack.languageName) natural voices are not installed. Run "
                 + "voiceislocal setup --natural-voices\(voice.pack == .english ? "" : " --language fr") (about "
                 + "\(voice.pack.downloadSize)).")
