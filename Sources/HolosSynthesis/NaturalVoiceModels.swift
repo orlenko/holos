@@ -229,10 +229,7 @@ public enum NaturalVoiceModels {
                 + "Check the network connection, then try again; the download resumes where it stopped.")
         }
         try Task.checkCancellation()
-        guard renamex_np(staging.path, directory.path, UInt32(RENAME_EXCL)) == 0 else {
-            throw HolosError.io("Cannot move the natural voices into \(directory.path): "
-                + String(cString: strerror(errno)) + ".")
-        }
+        try move(staging, to: directory, what: "into")
         notice(preparingLine)
         progress(0.92)
         do {
@@ -273,11 +270,27 @@ public enum NaturalVoiceModels {
         if FileManager.default.fileExists(atPath: staging.path) {
             try FileManager.default.removeItem(at: directory)
         } else {
-            guard renamex_np(directory.path, staging.path, UInt32(RENAME_EXCL)) == 0 else {
-                throw HolosError.io("Cannot move the natural voices back to \(staging.path): "
-                    + String(cString: strerror(errno)) + ".")
-            }
+            try move(directory, to: staging, what: "back to")
         }
+    }
+
+    /// Moves a pack's folder to `destination`, which must not exist: an exclusive rename, or, on a volume without
+    /// one (`ENOTSUP`, `EINVAL`), a plain rename after checking that `destination` is absent. Callers hold the pack's
+    /// install lock, so no other install creates `destination` in between.
+    static func move(_ source: URL, to destination: URL, what: String,
+                     exclusiveRename: (String, String) -> Int32 = { renamex_np($0, $1, UInt32(RENAME_EXCL)) }) throws {
+        if exclusiveRename(source.path, destination.path) == 0 { return }
+        var reason = errno
+        if reason == ENOTSUP || reason == EINVAL {
+            var info = stat()
+            guard lstat(destination.path, &info) != 0, errno == ENOENT else {
+                throw HolosError.io("Cannot move the natural voices \(what) \(destination.path): it already exists.")
+            }
+            if rename(source.path, destination.path) == 0 { return }
+            reason = errno
+        }
+        throw HolosError.io("Cannot move the natural voices \(what) \(destination.path): "
+            + String(cString: strerror(reason)) + ".")
     }
 
     private static func clamp(_ value: Double) -> Double { value.isFinite ? min(1, max(0, value)) : 0 }

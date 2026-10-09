@@ -119,7 +119,8 @@ public enum ExclusivePublisher {
     /// is removed once published. A file already at `destination` fails with `existing` and the
     /// path.
     ///
-    /// `isCancelled` is asked between chunks of the copy; when it says yes, the copy stops with
+    /// `isCancelled` is asked before anything is published (a cancelled publish moves nothing, with
+    /// `CancellationError`) and between chunks of the copy; when it says yes, the copy stops with
     /// `CancellationError` and the partial file is removed (as on any failure). It must report the
     /// cancellation of whoever asked for the file: the default, the current task's, is right only
     /// when the caller is that task (a render finished from a delegate callback passes its own).
@@ -143,6 +144,7 @@ public enum ExclusivePublisher {
                         isCancelled: () -> Bool, pacing: CopyPacing,
                         remove: (URL, FileIdentity, String?) -> Removal = { removeIfIdentical($0, to: $1, token: $2) },
                         claimed: (FileIdentity) throws -> Void = { _ in }) throws {
+        if isCancelled() { throw CancellationError() }
         if exclusiveRename(source.path, destination.path) == 0 { return }
         let error = errno
         guard error == ENOTSUP || error == EINVAL || error == ENOSYS else {

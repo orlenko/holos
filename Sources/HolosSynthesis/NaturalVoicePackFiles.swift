@@ -1,11 +1,30 @@
 import CryptoKit
 import Foundation
+import HolosCore
 
 /// The files of a natural voice pack as the Hugging Face repository lists them, and the check that a downloaded pack
 /// holds every one of them, complete (Sources/HolosSynthesis/README.md). FluidAudio's own check of a pack only looks
 /// for its top-level folders, so a download cancelled inside the last model's weights would pass it; this one is what
 /// lets a pack move into place.
 public enum NaturalVoicePackFiles {
+    /// Removes the files at `paths` (relative to `folder`); fails naming every one that could not be removed, so a
+    /// damaged file is never kept and checked again forever.
+    public static func remove(_ paths: [String], in folder: URL) throws {
+        var leftovers: [String] = []
+        for path in paths {
+            do {
+                try FileManager.default.removeItem(at: folder.appendingPathComponent(path))
+            } catch {
+                leftovers.append(path)
+            }
+        }
+        guard leftovers.isEmpty else {
+            let names = leftovers.prefix(3).joined(separator: ", ")
+            throw HolosError.io("Damaged natural voice files could not be removed (\(names)). Delete \(folder.path), "
+                + "then try again.")
+        }
+    }
+
     /// One file of the listing: its path from the repository's root, its size, and its content's digest: the SHA-256
     /// of a file stored with Git LFS, else the Git blob SHA-1 the listing gives (`sha1("blob <size>\0" + content)`).
     /// The listing is read at the pinned commit, so both digests are the commit's.

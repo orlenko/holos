@@ -16,6 +16,8 @@ enum NaturalVoicesCLI {
     /// tool); nil for the system's temporary folder.
     @MainActor static func renderer(log: Bool = true, scratch: URL? = nil) -> NaturalSpeechRenderer {
         let root = scratch ?? FileManager.default.temporaryDirectory
+        // Folders a killed run of the tool left behind, a day old (never one in use), go off the main actor.
+        Task.detached(priority: .utility) { _ = NaturalVoiceTemporaries.sweep() }
         let renderer = NaturalSpeechRenderer(
             backend: PocketSpeechBackend(), checker: AppleSpeechChunkChecker(temporaryRoot: root),
             checksByDefault: ProcessInfo.processInfo.environment["HOLOS_NATURAL_CHECK"] != "0",

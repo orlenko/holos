@@ -176,6 +176,12 @@ public struct NaturalSpeechStats: Sendable, Equatable {
 /// paragraph (see `NaturalSpeechPlan`), each with the same fixed seed so a resumed reading sounds as it would have.
 /// Each paragraph is heard back (`SpeechChunkCheck`) when a checker is given: one that fails is rendered again with
 /// another seed, and one that fails again is read by a system voice (`ParagraphFallback`), and logged.
+///
+/// Invariants:
+/// 1. One render at a time: `render` fails at once while another render of this renderer runs (`rendering`), so
+///    `lastStats`, `onEvent`'s events, and `uncheckable` always belong to a single render in progress or just ended.
+/// 2. `lastStats` is set once, when a render has written all its paragraphs; a failed render leaves the previous one.
+/// 3. `uncheckable` only grows: a language found without a recognizer is not probed again by this renderer.
 @MainActor public final class NaturalSpeechRenderer {
     nonisolated public static let sampleRate = NaturalSpeechFormat.sampleRate
     /// Every paragraph's first take uses this seed; the re-render uses the next one.
@@ -197,6 +203,8 @@ public struct NaturalSpeechStats: Sendable, Equatable {
     /// Languages found to have no recognizer: not checked again for this renderer's life (a book's hundreds of parts
     /// probe and say so once).
     private var uncheckable: Set<String> = []
+    /// Whether a render runs now (invariant 1).
+    private var rendering = false
 
     public init(backend: any NaturalSpeechBackend, checker: (any SpeechChunkChecker)?, checksByDefault: Bool = true,
                 fallback: any ParagraphFallback, installedPacks: @escaping @Sendable () -> Set<NaturalVoicePack> = {
@@ -244,6 +252,10 @@ public struct NaturalSpeechStats: Sendable, Equatable {
     public func render(text: String, voiceIdentifier: String?, rate: Float?, settings: NaturalRenderSettings?,
                        to output: URL) async throws -> RenderedAudio {
         guard let voiceIdentifier else { throw HolosError.invalidInput("A natural voice must be named.") }
+        // Invariant 1: a second render while one runs is refused, never interleaved.
+        guard !rendering else { throw HolosError.unavailable("This natural voice renderer is already rendering.") }
+        rendering = true
+        defer { rendering = false }
         let voice = try voice(voiceIdentifier)
         let settings = settings ?? self.settings(for: voiceIdentifier)
         let blocks = NaturalSpeechPlan.blocks(text)
@@ -346,7 +358,8 @@ public struct NaturalSpeechStats: Sendable, Equatable {
                 onEvent?(.checkUnavailable(language: voice.pack.languageCode))
                 return speech
             }
-            let verdict = SpeechChunkCheck.evaluate(expected: text, heard: heard)
+            let verdict = SpeechChunkCheck.evaluate(expected: text, heard: heard,
+                                                   language: voice.pack.languageCode)
             onEvent?(.checked(paragraph: index + 1, take: take, verdict: verdict, seconds: seconds))
             if verdict.passed { return speech }
             reason = String(format: "it was heard with %.0f%% of its words wrong", verdict.wordErrorRate * 100)
@@ -461,10 +474,16 @@ extension Duration {
         NativeSpeechRenderer.bestVoice(language: language)?.id
     }
 
-    /// The voice asked for while it is installed, else the best one for `language` now.
+    /// The voice asked for (a reading's saved one), else the best one for `language` now. A voice asked for that is no
+    /// longer installed fails, naming it: a reading never switches its fallback voice silently.
     public func samples(for text: String, voice chosen: String?, language: String, sampleRate: Double) async throws
         -> (samples: [Float], voice: String) {
         let installed = NativeSpeechRenderer.voices()
+        if let chosen, !installed.contains(where: { $0.id == chosen }) {
+            throw HolosError.unavailable("A paragraph the natural voice could not read needs the system voice this "
+                + "reading was started with (\(chosen)), which is not installed any more. Install it again in System "
+                + "Settings › Accessibility › Spoken Content, or make the reading again.")
+        }
         guard let voice = chosen.flatMap({ id in installed.first { $0.id == id } })
                 ?? NativeSpeechRenderer.bestVoice(language: language) else {
             throw HolosError.unavailable("No system voice speaks \(language) to read a paragraph the natural voice "
@@ -533,7 +552,8 @@ public enum AudioSamples {
 }
 
 /// Temporary folders a natural voice's work leaves behind when its process is killed before its cleanup runs (a crash,
-/// a SIGKILL): swept at the app's launch once they are a day old, so a folder in use is never removed.
+/// a SIGKILL): removed once they are a day old, so a folder in use is never removed. `voiceislocal` sweeps whenever it
+/// makes a natural voice renderer (`NaturalVoicesCLI.renderer`).
 public enum NaturalVoiceTemporaries {
     /// The prefixes of the folders the app and the `voiceislocal` tool make for natural voices.
     public static let prefixes = ["holos-natural-", "holos-preview-", "holos-check-", "holos-fallback-"]

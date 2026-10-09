@@ -15,6 +15,21 @@ import Testing
         try FileManager.default.contentsOfDirectory(atPath: folder.path).sorted()
     }
 
+    /// A publish asked for after its caller was stopped moves nothing, even on a volume with an exclusive rename.
+    @Test func aCancelledPublishMovesNothing() throws {
+        let root = try folder()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let source = root.appendingPathComponent(".part.caf")
+        let destination = root.appendingPathComponent("part.caf")
+        try Data("whole".utf8).write(to: source)
+        #expect(throws: CancellationError.self) {
+            try ExclusivePublisher.publish(source, to: destination, isCancelled: { true })
+        }
+        #expect(try names(root) == [".part.caf"])
+        try ExclusivePublisher.publish(source, to: destination, isCancelled: { false })
+        #expect(try names(root) == ["part.caf"])
+    }
+
     @Test func theCheckedFileIsRemovedAndNothingIsLeft() throws {
         let root = try folder()
         defer { try? FileManager.default.removeItem(at: root) }
