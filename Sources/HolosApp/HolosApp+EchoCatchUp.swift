@@ -120,9 +120,9 @@ extension HolosAppDelegate {
         let summaryAsked = meeting.summaries.scanning && !meeting.summaries.requests.isEmpty
         return EchoCatchUpSchedule.Situation(
             meetingBusy: meetingIsBusy(controller.state),
-            otherJobRunning: meeting.jobs?.isRunning == true || meeting.summaries.running != nil
+            otherJobRunning: meeting.deep.coordinator?.isRunning == true || meeting.summaries.running != nil
                 || DeepTranscriptionLock.state() != .free,
-            askedForWorkWaiting: summaryAsked || meeting.jobs?.askedForWorkWaiting() == true,
+            askedForWorkWaiting: summaryAsked || meeting.deep.coordinator?.askedForWorkWaiting() == true,
             running: meeting.echo.running, inUse: inUse, failed: meeting.echo.failed,
             delayedUntil: meeting.echo.turnedDown.mapValues(\.until), now: now)
     }

@@ -136,13 +136,14 @@ import os
     /// Starts the next job when one may start (invariant 1), in `BackgroundJobOrder`'s order.
     public func schedule() {
         for kind in kinds { kind.willLook(running: runningSession(of: kind)) }
+        let now = environment.now()
+        // Also while a job runs, so a clock set back before it ends brings no wait back (invariant 5).
+        expireRetries(now: now)
         guard running == nil else {
             environment.changed()
             return
         }
         lock = environment.lockState()
-        let now = environment.now()
-        expireRetries(now: now)
         let busy = environment.meetingBusy()
         let inUse = environment.sessionsInUse()
         let found = picks(busy: busy, inUse: inUse, now: now)

@@ -377,18 +377,31 @@ private let leaseMessage = "Error: Another Voice is Local process is processing 
     world.now = base.addingTimeInterval(10)
     world.runner.finishLast(0)
     #expect(world.runner.started == ["deep A", "deep B"])
-    // Nor does a meeting's: B is turned down, runs once its minute is past, and is stopped for a meeting.
+    // Nor does a meeting's, also when its minute passes while another pass runs: B is turned down, C runs, the minute
+    // passes and the clock is set back before C ends.
+    var queue = world.deep.queue
+    queue.enqueue(sessionID: "C", path: "/m/C.holos", at: base)
+    world.deep.queue = queue
+    world.runner.finishLast(1, errors: leaseMessage)
+    #expect(world.runner.started.last == "deep C")
+    world.now = base.addingTimeInterval(70)
+    world.jobs.schedule()
+    world.now = base.addingTimeInterval(10)
+    world.runner.finishLast(0)
+    #expect(world.runner.started.suffix(2) == ["deep C", "deep B"])
+    // And once it ran: turned down again, B runs once that minute is past, is stopped for a meeting with the clock set
+    // back, and runs again at once.
     world.runner.finishLast(1, errors: leaseMessage)
     world.now = base.addingTimeInterval(70)
     world.jobs.schedule()
-    #expect(world.runner.started == ["deep A", "deep B", "deep B"])
+    #expect(world.runner.started == ["deep A", "deep B", "deep C", "deep B", "deep B"])
     world.now = base.addingTimeInterval(10)
     world.busy = true
     world.jobs.meetingStateChanged()
     world.runner.finishLast(DeepTranscriptionSchedule.terminatedExitCode)
     world.busy = false
     world.jobs.schedule()
-    #expect(world.runner.started == ["deep A", "deep B", "deep B", "deep B"])
+    #expect(world.runner.started.count == 6)
 }
 
 @Test @MainActor func aMakeFinalTranscriptNowAcceptedAfterAFailedStartRunsAtOnce() {

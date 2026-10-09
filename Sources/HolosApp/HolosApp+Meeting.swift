@@ -99,8 +99,6 @@ final class MeetingAppState {
     let summaries = MeetingSummaryAppState()
     /// The acoustic echo analysis of calls that miss it (docs/meeting-design.md §5.11, "Catching up in the app").
     let echo = EchoCatchUpAppState()
-    /// Runs final transcripts, one job at a time (`setUpBackgroundJobs`).
-    var jobs: BackgroundJobCoordinator?
 }
 
 extension HolosAppDelegate: NSMenuDelegate {
@@ -130,8 +128,9 @@ extension HolosAppDelegate: NSMenuDelegate {
         controller.onSessionsInUseChanged = { [weak self, weak controller] in
             guard let controller else { return }
             self?.meeting.meetingsPane?.update(running: controller.sessionsInUse)
-            // A meeting another command let go of may be the next background job's. Summaries are looked for first, so
-            // a Summarize Again waiting goes before the next automatic job, which also waits for echo work.
+            // A meeting another command let go of may be the next deep transcription's, the next summary's, or the
+            // next echo analysis's. Summaries are looked for first, so a Summarize Again waiting goes before the next
+            // automatic job (which waits for that scan); the echo analysis goes before an automatic final transcript.
             self?.scheduleMeetingSummaries()
             self?.scheduleEchoCatchUp()
             self?.scheduleBackgroundJobs()
@@ -176,8 +175,9 @@ extension HolosAppDelegate: NSMenuDelegate {
             rebuildMenu()
         }
         meeting.meetingsPane?.update(meetingState: state)
-        // A meeting needs the Mac: a final transcript, summary or echo analysis in progress stops and runs again later.
-        meeting.jobs?.meetingStateChanged()
+        // A meeting needs the Mac: a final transcript, a summary or an echo analysis in progress is stopped and runs
+        // again afterwards.
+        meeting.deep.coordinator?.meetingStateChanged()
         meetingSummaryMeetingStateChanged()
         echoCatchUpMeetingStateChanged()
     }

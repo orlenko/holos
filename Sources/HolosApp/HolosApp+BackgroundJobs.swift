@@ -7,7 +7,8 @@ import HolosMeeting
 extension HolosAppDelegate {
     /// Creates the coordinator once the meeting controller and the maintenance launcher exist.
     func setUpBackgroundJobs() {
-        guard meeting.jobs == nil, let controller = meeting.controller, let commands = meeting.commands else { return }
+        guard meeting.deep.coordinator == nil, let controller = meeting.controller,
+              let commands = meeting.commands else { return }
         let environment = BackgroundJobCoordinator.Environment(
             meetingBusy: { [weak self, weak controller] in
                 guard let self, let controller else { return false }
@@ -37,19 +38,19 @@ extension HolosAppDelegate {
             },
             released: { [weak self] _, sessionID in self?.backgroundJobReleased(sessionID) },
             changed: { [weak self] in self?.updateDeepStates() })
-        meeting.jobs = BackgroundJobCoordinator(runner: commands, kinds: [meeting.deep.jobs],
+        meeting.deep.coordinator = BackgroundJobCoordinator(runner: commands, kinds: [meeting.deep.jobs],
                                                 environment: environment)
         meeting.deep.jobs.onEnded = { [weak self] report in self?.deepTranscriptionEnded(report) }
     }
 
     /// Starts the next final transcript when one may start.
     func scheduleBackgroundJobs() {
-        meeting.jobs?.schedule()
+        meeting.deep.coordinator?.schedule()
     }
 
     /// The meeting of the app's final transcript, if one runs.
     var deepRunning: String? {
-        meeting.jobs?.runningSession(of: meeting.deep.jobs)
+        meeting.deep.coordinator?.runningSession(of: meeting.deep.jobs)
     }
 
     /// A final transcript let go of its meeting: Meetings stops showing it, and a review opened meanwhile rereads the
