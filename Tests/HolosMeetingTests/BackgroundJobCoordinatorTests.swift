@@ -74,7 +74,7 @@ private let base = Date(timeIntervalSince1970: 1_800_000_000)
     var summaryRequestScan = false
     var now = base
     var conditions = DeepTranscriptionJobs.Conditions(enabled: true, modelInstalled: true, power: .ac)
-    /// What happened, in order: "summaries", "started echo C", "released deep A", "reported deep A".
+    /// What happened, in order: "summaries", "command echo C", "released deep A", "reported deep A".
     var events: [String] = []
     var saved: DeepTranscriptionQueue?
     /// Folders deleted from Meetings while queued.
@@ -83,14 +83,25 @@ private let base = Date(timeIntervalSince1970: 1_800_000_000)
     private(set) var deep: DeepTranscriptionJobs!
     let echo: EchoCatchUpJobs
     let analysed = LockedValue<Set<String>>([])
+    /// While set, the echo analysis's check waits for it; `checking` says it began, `checkedOffMain` where it ran.
+    let gate = LockedValue<DispatchSemaphore?>(nil)
+    let checking = LockedValue(false)
+    let checkedOffMain = LockedValue<Bool?>(nil)
+    /// The review hold each release carried, by meeting.
+    var releasedHolds: [String: ReviewMaintenance.Hold] = [:]
     var reports: [DeepTranscriptionJobs.PassReport] = []
     private(set) var jobs: BackgroundJobCoordinator!
 
     init(deep items: [String] = [], runNow: Set<String> = [], echo calls: [String] = []) {
         var queue = DeepTranscriptionQueue()
         for id in items { queue.enqueue(sessionID: id, path: "/m/\(id).holos", at: base, runNow: runNow.contains(id)) }
-        let analysed = analysed
-        echo = EchoCatchUpJobs { url in !analysed.withLock { $0.contains(url.lastPathComponent) } }
+        let analysed = analysed, gate = gate, checking = checking, checkedOffMain = checkedOffMain
+        echo = EchoCatchUpJobs { url in
+            checkedOffMain.withLock { $0 = !Thread.isMainThread }
+            checking.withLock { $0 = true }
+            gate.value?.wait()
+            return !analysed.withLock { $0.contains(url.lastPathComponent) }
+        }
         echo.scanned = true
         echo.queue = calls.enumerated().map { index, id in
             EchoCatchUpSchedule.Candidate(sessionID: id, path: "/m/\(id).holos",
@@ -118,9 +129,9 @@ private let base = Date(timeIntervalSince1970: 1_800_000_000)
             otherJobRunning: { [unowned self] in self.summaryRunning },
             summaryRequestScan: { [unowned self] in self.summaryRequestScan },
             scheduleOthers: { [unowned self] in self.events.append("summaries") },
-            started: { [unowned self] kind, id in self.events.append("started \(self.name(kind)) \(id)") },
-            released: { [unowned self] kind, id in
+            released: { [unowned self] kind, id, hold in
                 self.taken[id] = nil
+                self.releasedHolds[id] = hold
                 self.events.append("released \(self.name(kind)) \(id)")
             },
             now: { [unowned self] in self.now }))
@@ -227,7 +238,7 @@ private let leaseMessage = "Error: Another Voice is Local process is processing 
     world.jobs.schedule()
     world.events = []
     world.runner.finishLast(0)
-    #expect(world.events == ["released deep A", "summaries", "started deep B", "command deep B", "reported deep A"])
+    #expect(world.events == ["released deep A", "summaries", "command deep B", "reported deep A"])
     #expect(world.reports.first?.end == .done)
 }
 
@@ -262,9 +273,10 @@ private let leaseMessage = "Error: Another Voice is Local process is processing 
     world.jobs.schedule()
     #expect(await world.settle())
     #expect(world.runner.started == ["echo D"])
-    #expect(world.events.contains("started echo D"), "Review of it opens read-only while it runs.")
+    #expect(world.jobs.reviewHold(on: "D")?.command == .echoAnalysis, "Review of it opens read-only while it runs.")
     world.runner.finishLast(0)
     #expect(world.runner.started == ["echo D", "deep B"])
+    #expect(world.jobs.reviewHold(on: "B") == nil, "Review waits for a final transcript instead.")
     world.runner.finishLast(0)
     #expect(world.runner.started.count == 2, "A and C wait for the command or the review.")
     world.held = []
@@ -485,7 +497,7 @@ private let leaseMessage = "Error: Another Voice is Local process is processing 
     world.jobs.schedule()
     #expect(world.runner.started.isEmpty)
     #expect(world.deep.queue.contains("A") && world.taken.isEmpty, "Kept queued, the meeting let go of.")
-    #expect(world.events == ["started deep A", "released deep A", "summaries"],
+    #expect(world.events == ["released deep A", "summaries"],
             "The other schedulers look for their next jobs.")
     world.now = base.addingTimeInterval(59)
     world.jobs.schedule()
@@ -570,9 +582,40 @@ private let leaseMessage = "Error: Another Voice is Local process is processing 
 @Test(.timeLimit(.minutes(1)))
 @MainActor func aMeetingStartingWhileTheEchoCheckRunsLeavesTheCallQueued() async {
     let world = World(echo: ["C"])
+    let gate = DispatchSemaphore(value: 0)
+    world.gate.withLock { $0 = gate }
     world.jobs.schedule()
+    // The check has begun (off the main actor) when the meeting starts.
+    #expect(await eventually { world.checking.value })
     world.busy = true
+    gate.signal()
     #expect(await eventually { world.events.contains("released echo C") })
+    #expect(world.checkedOffMain.value == true)
     #expect(world.runner.started.isEmpty)
     #expect(world.echo.queue.map(\.sessionID) == ["C"] && world.echo.failed.isEmpty)
+}
+
+@Test(.timeLimit(.minutes(1)))
+@MainActor func anEchoAnalysisHoldsItsReviewFromItsCheckUntilItLetsGo() async {
+    let world = World(echo: ["C", "D", "E"])
+    _ = world.analysed.withLock { $0.insert("D.holos") }
+    let gate = DispatchSemaphore(value: 0)
+    world.gate.withLock { $0 = gate }
+    world.jobs.schedule()
+    #expect(await eventually { world.checking.value })
+    let hold = world.jobs.reviewHold(on: "C")
+    #expect(hold?.command == .echoAnalysis, "Held while its check runs.")
+    world.gate.withLock { $0 = nil }
+    gate.signal()
+    #expect(await world.settle())
+    #expect(world.jobs.reviewHold(on: "C") == hold, "And while its command runs.")
+    // Completion lets go of it with that hold; D has nothing to do, and lets go of its own.
+    world.runner.failNextStart = true
+    world.runner.finishLast(0)
+    #expect(world.releasedHolds["C"] == hold && hold != nil)
+    #expect(await eventually { world.releasedHolds["D"] != nil && world.releasedHolds["E"] != nil })
+    #expect(world.releasedHolds["D"]?.command == .echoAnalysis, "Nothing to do.")
+    #expect(world.releasedHolds["E"]?.command == .echoAnalysis, "A failed start.")
+    #expect(world.runner.started == ["echo C"])
+    #expect(["C", "D", "E"].allSatisfy { world.jobs.reviewHold(on: $0) == nil })
 }

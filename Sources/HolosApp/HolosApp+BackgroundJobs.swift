@@ -26,8 +26,7 @@ extension HolosAppDelegate {
                 return self.meeting.summaries.scanning && !self.meeting.summaries.requests.isEmpty
             },
             scheduleOthers: { [weak self] in self?.scheduleMeetingSummaries() },
-            started: { [weak self] kind, sessionID in self?.backgroundJobStarted(kind, sessionID) },
-            released: { [weak self] kind, sessionID in self?.backgroundJobReleased(kind, sessionID) },
+            released: { [weak self] _, sessionID, hold in self?.backgroundJobReleased(sessionID, hold: hold) },
             changed: { [weak self] in
                 self?.updateDeepStates()
                 self?.updateEchoStates()
@@ -47,20 +46,18 @@ extension HolosAppDelegate {
         meeting.deep.coordinator?.runningSession(of: meeting.deep.jobs)
     }
 
-    /// An echo analysis holds its meeting as a maintenance command does: a review that opens while it runs opens
-    /// read-only and rereads the meeting when it ends (`ReviewMaintenance`). None holds the meeting now (the
-    /// coordinator skips meetings under review). A final transcript holds Review off instead
-    /// (`reviewWaitsForDeepTranscription`).
-    private func backgroundJobStarted(_ kind: any BackgroundJobKind, _ sessionID: String) {
-        guard kind === meeting.echo else { return }
-        meeting.maintenanceOn[sessionID] = ReviewMaintenance.Hold(.echoAnalysis)
+    /// The review hold of the background job working on the meeting now (an echo analysis), if any.
+    func backgroundJobHold(on sessionID: String) -> ReviewMaintenance.Hold? {
+        meeting.deep.coordinator?.reviewHold(on: sessionID)
     }
 
-    /// A job let go of its meeting: Meetings stops showing it, a review opened meanwhile rereads the meeting (an echo
-    /// analysis's review also becomes editable again, so its labels and playback follow the new mask).
-    private func backgroundJobReleased(_ kind: any BackgroundJobKind, _ sessionID: String) {
-        if kind === meeting.echo {
-            maintenanceFinished(sessionID)
+    /// A job let go of its meeting: Meetings stops showing it, a review opened meanwhile rereads the meeting, and one
+    /// an echo analysis held read-only (its `hold`, `BackgroundJobCoordinator.reviewHold(on:)`) becomes editable
+    /// again, so its labels and playback follow the new mask. A final transcript holds no review: Review waits for it
+    /// (`reviewWaitsForDeepTranscription`).
+    private func backgroundJobReleased(_ sessionID: String, hold: ReviewMaintenance.Hold?) {
+        if let hold {
+            maintenanceFinished(sessionID, hold: hold)
         } else {
             meeting.controller?.endUsing(sessionID)
             meeting.maintenanceEnded[sessionID, default: 0] += 1

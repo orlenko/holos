@@ -28,6 +28,8 @@ import os
 ///    echo analyses). A look clears every
 ///    deadline it finds past, so a clock set back does not bring one back; a meeting's count is forgotten when its job
 ///    finishes or is cancelled.
+/// 6. A job of a kind with a `reviewHold` holds its meeting's review from the moment it is marked running until it is
+///    let go of (`reviewHold(on:)`), and that hold goes with its release, however the job ends or fails to start.
 @MainActor public final class BackgroundJobCoordinator {
     /// What the coordinator reads of the app and tells it.
     public struct Environment {
@@ -44,10 +46,10 @@ import os
         public var summaryRequestScan: @MainActor () -> Bool
         /// Looks for the other schedulers' next jobs (summaries), before this coordinator looks for its own.
         public var scheduleOthers: @MainActor () -> Void
-        /// A job took its meeting, before its command starts.
-        public var started: @MainActor (_ kind: any BackgroundJobKind, _ sessionID: String) -> Void
         /// A job let go of its meeting (invariant 3): the app ends its use (`MeetingController.endUsing`).
-        public var released: @MainActor (_ kind: any BackgroundJobKind, _ sessionID: String) -> Void
+        /// With the job's review hold (invariant 6), if it had one: the app's review of the meeting takes it back.
+        public var released: @MainActor (_ kind: any BackgroundJobKind, _ sessionID: String,
+                                         _ hold: ReviewMaintenance.Hold?) -> Void
         /// What the Meetings list shows of the jobs may have changed.
         public var changed: @MainActor () -> Void
         public var now: @MainActor () -> Date
@@ -59,20 +61,21 @@ import os
                     otherJobRunning: @escaping @MainActor () -> Bool = { false },
                     summaryRequestScan: @escaping @MainActor () -> Bool = { false },
                     scheduleOthers: @escaping @MainActor () -> Void = {},
-                    started: @escaping @MainActor (any BackgroundJobKind, String) -> Void = { _, _ in },
-                    released: @escaping @MainActor (any BackgroundJobKind, String) -> Void,
+                    released: @escaping @MainActor (any BackgroundJobKind, String, ReviewMaintenance.Hold?) -> Void,
                     changed: @escaping @MainActor () -> Void = {},
                     now: @escaping @MainActor () -> Date = { Date() }) {
             self.meetingBusy = meetingBusy; self.sessionsInUse = sessionsInUse; self.beginUsing = beginUsing
             self.lockState = lockState; self.otherJobRunning = otherJobRunning
             self.summaryRequestScan = summaryRequestScan; self.scheduleOthers = scheduleOthers
-            self.started = started; self.released = released; self.changed = changed; self.now = now
+            self.released = released; self.changed = changed; self.now = now
         }
     }
 
     private struct Running {
         let kind: any BackgroundJobKind
         let sessionID: String
+        /// The review hold of the run (invariant 6), for a kind that has one.
+        let hold: ReviewMaintenance.Hold?
         /// Nil until the command started (a kind's `preparation` runs first).
         var handle: (any BackgroundJobHandle)?
         /// Signalled because a meeting started (invariant 4).
@@ -117,6 +120,13 @@ import os
     public func runningSession(of kind: any BackgroundJobKind) -> String? {
         guard let running, running.kind === kind else { return nil }
         return running.sessionID
+    }
+
+    /// The review hold of the job running on `sessionID` (invariant 6): a review that opens on it meanwhile is
+    /// read-only until the job lets the meeting go.
+    public func reviewHold(on sessionID: String) -> ReviewMaintenance.Hold? {
+        guard let running, running.sessionID == sessionID else { return nil }
+        return running.hold
     }
 
     /// Whether automatic work of another scheduler (a summary) waits for catch-up work: a catch-up queue is not known
@@ -221,14 +231,14 @@ import os
 
     private func start(_ kind: any BackgroundJobKind, _ pick: BackgroundJobPick) {
         let sessionID = pick.sessionID
-        running = Running(kind: kind, sessionID: sessionID)  // Invariant 2.
+        // Invariants 2 and 6.
+        running = Running(kind: kind, sessionID: sessionID, hold: kind.reviewHold.map(ReviewMaintenance.Hold.init))
         guard environment.beginUsing(sessionID, kind.runningText) else {
             running = nil
             delay(kind, sessionID)
             environment.changed()
             return
         }
-        environment.started(kind, sessionID)
         environment.changed()
         guard let check = kind.preparation(for: pick) else {
             launch(kind, pick)
@@ -286,8 +296,9 @@ import os
             retries[ObjectIdentifier(kind), default: Retries()].retryAfter =
                 environment.now().addingTimeInterval(Self.retryDelay)
         }
+        let hold = running?.hold
         running = nil
-        environment.released(kind, sessionID)
+        environment.released(kind, sessionID, hold)
         environment.changed()
         environment.scheduleOthers()
         schedule()

@@ -19,6 +19,9 @@ import os
 
     public let name = "Echo analysis"
     public var runningText: String { EchoCatchUpSchedule.runningText }
+    /// A review that opens while a run goes on is read-only, and rereads the meeting when it ends, so its labels and
+    /// playback follow the new mask.
+    public var reviewHold: ReviewMaintenance.Command? { .echoAnalysis }
 
     /// The meetings found needing the analysis, newest first; each leaves it when its run ends.
     public var queue: [EchoCatchUpSchedule.Candidate] = []

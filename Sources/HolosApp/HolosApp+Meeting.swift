@@ -1273,9 +1273,9 @@ extension HolosAppDelegate: NSMenuDelegate {
     // MARK: - Reviews and maintenance (ReviewMaintenance, §5.10)
 
     /// The run of the maintenance command working on the meeting now: one from Meetings or the interrupted prompt, or
-    /// the automatic relabel.
+    /// the automatic relabel, or an echo analysis (`backgroundJobHold`).
     private func runningMaintenance(on sessionID: String) -> ReviewMaintenance.Hold? {
-        if let hold = meeting.maintenanceOn[sessionID] { return hold }
+        if let hold = meeting.maintenanceOn[sessionID] ?? backgroundJobHold(on: sessionID) { return hold }
         return meeting.controller?.relabellingSessionID == sessionID ? meeting.automaticHolds[sessionID] : nil
     }
 
@@ -1303,8 +1303,8 @@ extension HolosAppDelegate: NSMenuDelegate {
     /// A command from Meetings, the interrupted prompt, or the echo catch-up ended (or never started): its use of the
     /// meeting ends (`MeetingController.endUsing`, so Meetings stops showing it and the naming offer is derived
     /// again), and a review of the meeting reads the meeting again and is editable.
-    func maintenanceFinished(_ sessionID: String) {
-        let hold = meeting.maintenanceOn.removeValue(forKey: sessionID)
+    func maintenanceFinished(_ sessionID: String, hold jobHold: ReviewMaintenance.Hold? = nil) {
+        let hold = meeting.maintenanceOn.removeValue(forKey: sessionID) ?? jobHold
         meeting.controller?.endUsing(sessionID)
         if let hold { reviewsTakeBack(sessionID, after: hold) }
     }

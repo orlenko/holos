@@ -92,6 +92,9 @@ public enum BackgroundJobEnd: Sendable, Equatable {
     var name: String { get }
     /// What the Meetings list shows while the job runs (`MeetingController.beginUsing`).
     var runningText: String { get }
+    /// The maintenance command a review open on the meeting shows while the job runs (read-only, reread when it
+    /// ends; `ReviewMaintenance`); nil for a kind Review waits for instead.
+    var reviewHold: ReviewMaintenance.Command? { get }
     /// The queue is still being found (a scan goes on): automatic work waits for it as for a ready catch-up job.
     var finding: Bool { get }
     /// Called before every look, whatever comes of it, with the kind's meeting running now.
@@ -116,6 +119,7 @@ public enum BackgroundJobEnd: Sendable, Equatable {
 
 extension BackgroundJobKind {
     public var finding: Bool { false }
+    public var reviewHold: ReviewMaintenance.Command? { nil }
     public func willLook(running: String?) {}
     public func askedForWaiting(_ holds: BackgroundJobHolds) -> Bool { false }
     public func preparation(for pick: BackgroundJobPick) -> (@Sendable () -> Bool)? { nil }
