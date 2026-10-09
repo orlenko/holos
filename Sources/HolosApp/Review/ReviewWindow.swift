@@ -453,10 +453,7 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, NSM
         let runID = projection.runID
         // An undo saved here or elsewhere (a command) since the last refresh: every join goes.
         let reverts = projection.revertedEditIDs.count
-        if reverts > revertsSeen {
-            joinsCleared += 1
-            paragraphBreaks.clearJoins()
-        }
+        if reverts > revertsSeen { dropJoins() }
         revertsSeen = reverts
         // A break or join made on a split's second part while the split saved names its temporary ID: resolved.
         let breaks = paragraphBreaks.active(in: projection.turns, runID: runID, keepsTurnsOf: { [review] old in
