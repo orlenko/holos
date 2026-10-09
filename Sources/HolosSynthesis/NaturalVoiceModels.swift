@@ -324,6 +324,21 @@ public enum NaturalVoiceModels {
 
 /// `flock` on an install lock (a pack's, or the one for any install); refuses with `refusal` when another process
 /// holds it.
+///
+/// Invariants:
+/// 1. An instance exists only once `init` holds the exclusive lock, and it alone owns `fd` from then on. An `init`
+///    that fails closes `fd` itself (when the open succeeded) and throws, so no instance owns a descriptor it does
+///    not hold locked.
+/// 2. `init` never blocks on another install: it tries `LOCK_EX | LOCK_NB` up to 20 times, 50 ms apart (a status
+///    check's shared hold lasts an instant), then refuses. Any `flock` error other than `EWOULDBLOCK` refuses at once,
+///    with the same `refusal`.
+/// 3. `release` unlocks and closes `fd`, and must run exactly once: every caller calls it from a `defer` placed right
+///    after the `init` that succeeded, so it runs on every exit, thrown or returned. A second call would close a
+///    descriptor number the process may have reused.
+/// 4. There is no `deinit`: an instance dropped without `release` keeps the descriptor and the lock until the process
+///    exits, when the kernel closes it and drops the lock.
+/// 5. `setUp` takes the pack's lock before the lock for any install, and both are released when `setUp` exits (the
+///    `defer`s run in reverse order); `remove` takes only the pack's.
 private final class InstallLock {
     private let fd: Int32
 
