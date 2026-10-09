@@ -246,7 +246,7 @@ private let claudePairs = ["cloud", "clot"].map { Correction(heard: $0, meant: "
     #expect(result.text == "iPhone sales are up")
 }
 
-@Test func aFailedQuestionKeepsThePlaceAndTheFix() async {
+@Test(.systemSpelling) func aFailedQuestionKeepsThePlaceAndTheFix() async {
     struct Refused: Error {}
     var fixer = TranscriptFixer(corrections: CorrectionList(), wordList: ["Claude"], heardAs: claudePairs,
                                 referenceBudget: 500, timeout: .seconds(30), language: "en-US") { _, prompt in
@@ -258,7 +258,7 @@ private let claudePairs = ["cloud", "clot"].map { Correction(heard: $0, meant: "
     #expect(result.outcome == .fixed && result.text == "Then cloud fixed the parser.")
 }
 
-@Test func aTimedOutQuestionKeepsThePlaceAndTheFix() async {
+@Test(.systemSpelling) func aTimedOutQuestionKeepsThePlaceAndTheFix() async {
     var fixer = TranscriptFixer(corrections: CorrectionList(), wordList: ["Claude"], heardAs: claudePairs,
                                 referenceBudget: 500, timeout: .seconds(30), language: "en-US") { _, prompt in
         guard prompt.hasPrefix("Text: ") else {
@@ -273,7 +273,7 @@ private let claudePairs = ["cloud", "clot"].map { Correction(heard: $0, meant: "
     #expect(result.outcome == .fixed && result.text == "Then cloud fixed the parser.")
 }
 
-@Test func aLaterTimedOutQuestionKeepsAnEarlierTermChoice() async {
+@Test(.systemSpelling) func aLaterTimedOutQuestionKeepsAnEarlierTermChoice() async {
     var fixer = TranscriptFixer(corrections: CorrectionList(), wordList: ["Claude"], heardAs: claudePairs,
                                 referenceBudget: 500, timeout: .seconds(30), language: "en-US") { _, prompt in
         if prompt.hasPrefix("Text: ") { return "Then cloud and clot fixed the parser." }
@@ -289,7 +289,7 @@ private let claudePairs = ["cloud", "clot"].map { Correction(heard: $0, meant: "
     #expect(result.outcome == .fixed && result.text == "Then Claude and clot fixed the parser.")
 }
 
-@Test func aTermJoinsTheFixAndOnlyItsPlaceChanges() async {
+@Test(.systemSpelling) func aTermJoinsTheFixAndOnlyItsPlaceChanges() async {
     // The fix corrects a non-word; the question then puts the term at the heard word, and only there.
     let fixer = heardAsFixer(heardAs: claudePairs, reply: "Then cloud fixed the parser.",
                              choose: { $0.contains("[[cloud]] fixed") ? "Claude" : "cloud" })

@@ -1,4 +1,3 @@
-import AppKit
 import Foundation
 import Synchronization
 
@@ -127,43 +126,48 @@ private final class PreparedRun: Sendable {
     }
 }
 
-/// `NSSpellChecker`, one call at a time on `queue`: it is shared by the whole process, not documented as
-/// thread-safe, and each call asks another process, which may stall.
-enum SystemSpelling {
-    static let queue = DispatchQueue(label: "ca.orlenko.holos.spelling")
-
-    /// Read on `queue` only.
-    nonisolated(unsafe) private static var tag: Int?
-    nonisolated(unsafe) private static var available: [String]?
-
+/// A spell checker for `Lexicon` and `DictationSeams`. The app and `voiceislocal` install HolosSpelling's
+/// `SystemSpellChecker` (`NSSpellChecker`, AppKit) at launch (`SystemSpelling.install`).
+public protocol SpellChecking: Sendable {
     /// Whether the spell checker knows `word` in `language` (see `dictionaries`); true when it has no dictionary
-    /// for it. Call on `queue`.
-    static func knows(_ word: String, language: String?) -> Bool {
-        dispatchPrecondition(condition: .onQueue(queue))
-        guard let dictionaries = dictionaries(for: language) else { return true }
-        let checker = NSSpellChecker.shared
-        let tag = tag ?? NSSpellChecker.uniqueSpellDocumentTag()
-        Self.tag = tag
-        return dictionaries.contains { dictionary in
-            checker.checkSpelling(of: word, startingAt: 0, language: dictionary, wrap: false,
-                                  inSpellDocumentWithTag: tag, wordCount: nil).location == NSNotFound
-        }
+    /// for it. Called on `SystemSpelling.queue` only.
+    func knows(_ word: String, language: String?) -> Bool
+
+    /// The spell checker's languages for dictation in `language` (a locale identifier; English and French when nil);
+    /// nil when it has none of them. Called on `SystemSpelling.queue` only.
+    func dictionaries(for language: String?) -> [String]?
+}
+
+/// The process's spell checker (`SpellChecking`), one call at a time on `queue`: the system's is shared by the whole
+/// process, not documented as thread-safe, and each call asks another process, which may stall.
+///
+/// Invariants:
+/// 1. `knows` runs on `queue` only, so the installed checker answers one call at a time.
+/// 2. Until a checker is installed there is no dictionary: every word is known, and `dictionaries` is nil.
+/// 3. An install replaces the checker for every later call; a call already running finishes with the one it read.
+public enum SystemSpelling {
+    public static let queue = DispatchQueue(label: "ca.orlenko.holos.spelling")
+
+    private static let installed = Mutex<(any SpellChecking)?>(nil)
+
+    /// Makes `checker` the spell checker every lexicon and seam asks from then on. An executable installs it at
+    /// launch, before any dictation, fix or lookup.
+    public static func install(_ checker: any SpellChecking) {
+        installed.withLock { $0 = checker }
     }
 
-    /// The spell checker's languages for dictation in `language`: its identifier ("en_US") or language ("en") when
-    /// the spell checker has it, English and French when nil; nil when it has none of them. Call on `queue`.
+    /// Whether the installed spell checker knows `word` in `language`; true when none is installed (invariant 2).
+    /// Call on `queue` (invariant 1).
+    static func knows(_ word: String, language: String?) -> Bool {
+        dispatchPrecondition(condition: .onQueue(queue))
+        guard let checker = installed.withLock({ $0 }) else { return true }
+        return checker.knows(word, language: language)
+    }
+
+    /// The installed spell checker's languages for dictation in `language`; nil when none is installed. Call on
+    /// `queue`.
     static func dictionaries(for language: String?) -> [String]? {
-        let available = available ?? NSSpellChecker.shared.availableLanguages
-        Self.available = available
-        func dictionary(_ identifier: String) -> String? {
-            let underscored = identifier.replacingOccurrences(of: "-", with: "_")
-            if available.contains(underscored) { return underscored }
-            let code = DictationLanguage.languageCode(of: identifier)
-            if available.contains(code) { return code }
-            return available.first { DictationLanguage.languageCode(of: $0) == code }
-        }
-        let found = (language.map { [$0] } ?? ["en", "fr"]).compactMap(dictionary)
-        return found.isEmpty ? nil : found
+        installed.withLock { $0 }?.dictionaries(for: language)
     }
 }
 

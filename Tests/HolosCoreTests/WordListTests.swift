@@ -124,7 +124,7 @@ private func lexicon(_ terms: [String] = []) -> Lexicon {
                              lexicon: lexicon(["Keycloak"])) != .accept)
 }
 
-@Test func theFixerCountsItsWordListAsRealWords() async {
+@Test(.systemSpelling) func theFixerCountsItsWordListAsRealWords() async {
     func fix(_ wordList: [String]) async -> TranscriptFixer.Outcome {
         var fixer = TranscriptFixer(corrections: CorrectionList(), wordList: wordList, referenceBudget: 500,
                                     timeout: .seconds(30), language: "en-US") { _, _ in "we sign in with keycloak" }

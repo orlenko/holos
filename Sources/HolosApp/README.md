@@ -28,7 +28,7 @@ through `HolosMeeting`'s `CommandRunner` and decode into the library's types (`D
 
 **Depends on:** HolosCore, HolosAppModel (the app's decisions without AppKit, tested without the executable),
 HolosAudio, HolosSpeech, HolosDesktop, HolosDictation, HolosStorage, HolosSpeakers,
-HolosMeeting, HolosSynthesis, HolosContent. Never HolosDiarization, HolosWhisper or HolosPocket (they run in a
+HolosMeeting, HolosSynthesis, HolosContent, HolosSpelling (installed in `HolosAppMain.main`). Never HolosDiarization, HolosWhisper or HolosPocket (they run in a
 `voiceislocal` child), nor HolosEvaluation. AppKit, AVFoundation, ApplicationServices.
 
 **Invariants**

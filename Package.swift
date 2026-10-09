@@ -35,6 +35,8 @@ let package = Package(
         .target(name: "HolosDictation", dependencies: ["HolosCore", "HolosAudio", "HolosSpeech"],
                 exclude: ["README.md"]),
         .target(name: "HolosSpeakers", dependencies: ["HolosCore"], exclude: ["README.md"]),
+        // The system spell checker (AppKit) behind HolosCore's `SpellChecking`; each executable installs it at launch.
+        .target(name: "HolosSpelling", dependencies: ["HolosCore"], exclude: ["README.md"]),
         .target(name: "HolosMeeting", dependencies: [
             "HolosCore", "HolosStorage", "HolosAudio", "HolosSpeech", "HolosSpeakers",
         ], exclude: ["README.md"]),
@@ -60,12 +62,12 @@ let package = Package(
         .target(name: "HolosAppModel", dependencies: ["HolosCore"], exclude: ["README.md"]),
         .executableTarget(name: "HolosApp", dependencies: [
             "HolosCore", "HolosAppModel", "HolosAudio", "HolosSpeech", "HolosDesktop", "HolosDictation",
-            "HolosStorage", "HolosSpeakers", "HolosMeeting", "HolosSynthesis", "HolosContent",
+            "HolosStorage", "HolosSpeakers", "HolosMeeting", "HolosSynthesis", "HolosContent", "HolosSpelling",
         ], exclude: ["README.md"]),
         .executableTarget(name: "HolosCLI", dependencies: [
             "HolosCore", "HolosSpeech", "HolosSynthesis", "HolosStorage", "HolosAudio", "HolosContent",
             "HolosMeeting", "HolosSpeakers", "HolosDiarization", "HolosDictation", "HolosWhisper", "HolosEvaluation",
-            "HolosPocket",
+            "HolosPocket", "HolosSpelling",
             .product(name: "ArgumentParser", package: "swift-argument-parser"),
         ], exclude: ["README.md"], linkerSettings: [.unsafeFlags([
             "-Xlinker", "-sectcreate", "-Xlinker", "__TEXT", "-Xlinker", "__info_plist", "-Xlinker", cliInfoPlist,
@@ -75,7 +77,7 @@ let package = Package(
                 exclude: ["README.md"]),
         .target(name: "HolosSessionTestSupport", dependencies: ["HolosCore", "HolosStorage"],
                 path: "Tests/HolosSessionTestSupport"),
-        .testTarget(name: "HolosCoreTests", dependencies: ["HolosCore"]),
+        .testTarget(name: "HolosCoreTests", dependencies: ["HolosCore", "HolosSpelling", "HolosStorage"]),
         .testTarget(name: "HolosAppModelTests", dependencies: ["HolosAppModel", "HolosCore"]),
         .testTarget(name: "HolosAppTests", dependencies: ["HolosApp", "HolosContent", "HolosCore", "HolosMeeting", "HolosSynthesis",
                                                          "HolosStorage", "HolosTestSupport"]),

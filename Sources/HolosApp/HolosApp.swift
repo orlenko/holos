@@ -8,6 +8,7 @@ import HolosDesktop
 import HolosDictation
 import HolosMeeting
 import HolosSpeech
+import HolosSpelling
 import HolosStorage
 import os
 import Security
@@ -15,6 +16,7 @@ import Security
 @main
 enum HolosAppMain {
     @MainActor static func main() {
+        SystemSpelling.install(SystemSpellChecker())  // before dictation or a fix asks the spell checker
         if CommandLine.arguments.contains("--check") {
             // Packaging/capability check only: no NSApplication, prompt, tap, or recording.
             let report: [String: String] = [
@@ -1250,8 +1252,7 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
         let dictionaryWord: (String) -> Bool = { word in
             NSSpellChecker.shared.checkSpelling(of: word.lowercased(), startingAt: 0).location == NSNotFound
         }
-        let learned = CorrectionList.learn(original: heard, corrected: meant,
-                                           isDictionaryWord: dictionaryWord)
+        let learned = CorrectionList.learn(original: heard, corrected: meant, isDictionaryWord: dictionaryWord)
         let desired = state.other + learned
         guard !state.managed.isEmpty || !desired.isEmpty else {
             return LiveTextLearning(learned: learned, owned: [], displaced: [])
@@ -1263,8 +1264,7 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
             // Nil metadata leaves the prior successful learning state in place for this phrase.
             return LiveTextLearning(problem: "the corrections list is unavailable")
         }
-        return LiveTextLearning(learned: learned, owned: reconciliation.owned,
-                                displaced: reconciliation.displaced,
+        return LiveTextLearning(learned: learned, owned: reconciliation.owned, displaced: reconciliation.displaced,
                                 rollback: { [weak self] in
             self?.changeCorrections { list in
                 list.reconcileLearned(state.managed + reconciliation.owned,

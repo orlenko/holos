@@ -1,4 +1,5 @@
 import Foundation
+import HolosStorage
 import Testing
 @testable import HolosCore
 
