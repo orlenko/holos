@@ -24,6 +24,9 @@ Durable files: the session folder (`<id>.holos`), its locks, and the global stor
 - Stores: `SessionSpeakerStore` (runs, head, edit journal, voice data, recognition), `SpeakerProfileStore`
   (people database and forget journal), `DictationHistoryStore` / `DictationHistoryService`, `WordListStore`,
   `ScreenContextStore`, `SessionDeletion` (Delete Audio, Delete Meeting), `FreeSpaceProvider`.
+- `corrections.json` (`CorrectionsFile.swift`): `CorrectionList.defaultURL`, `load(from:)`, `save(to:)`, and
+  `update(at:_:)` / `withFileLock(for:_:)` under its `flock` on `corrections.json.lock`; `FolderWatcher`, which tells
+  the app when the folder's files change. The list itself (`CorrectionList`) is a HolosCore value.
 
 **Must not own:** transcript interpretation, capture, speaker algorithms, UI.
 
@@ -36,8 +39,8 @@ Durable files: the session folder (`<id>.holos`), its locks, and the global stor
   last line: `events.jsonl` and `speakers/edits.jsonl` skip it and report `tornTail` (and appenders cut it off,
   keeping a backup, before the next append), the forget journal skips it and starts the next line after it, and
   dictation history counts it as unreadable. Not covered by `AtomicFile`: audio chunks, which HolosAudio streams
-  into files as it records (finalized and checked when closed), and `corrections.json`, which HolosCore writes with
-  `Data.write(options: .atomic)`.
+  into files as it records (finalized and checked when closed), and `corrections.json`, which `CorrectionList.save(to:)` writes
+  with `Data.write(options: .atomic)`.
 - Locks are `flock`, one open file description per holder, **not re-entrant**. Waited-on locks are taken in the
   order speakers → profiles. `…Locked` functions document "caller holds the … lock".
 - HolosStorage opens folders inside a session through `AtomicFile.openFolder`, which follows no symbolic link

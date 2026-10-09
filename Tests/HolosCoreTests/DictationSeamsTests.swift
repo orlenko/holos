@@ -18,8 +18,9 @@ private func system(_ language: String = "en-US", terms: [String] = []) -> Dicta
 }
 
 /// Whether this Mac has the system lookups seams use in `language`: the language tagger's names and a spell checker
-/// dictionary (without one, the spell checker knows every word).
+/// dictionary (without one, the spell checker knows every word). Installs the system spell checker first.
 private func systemLookups(_ language: String) -> Bool {
+    installSystemSpelling()
     let code = DictationLanguage.languageCode(of: language)
     return NLTagger.availableTagSchemes(for: .word, language: NLLanguage(rawValue: code)).contains(.nameType)
         && SystemSpelling.queue.sync { SystemSpelling.dictionaries(for: language) } != nil

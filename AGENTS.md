@@ -26,7 +26,7 @@ lists Holos targets, then notable system or package frameworks.
 | Target | Owns | Must not own | May import |
 |---|---|---|---|
 | [HolosCore](Sources/HolosCore/README.md) | Shared value types, `HolosJSON`, `HolosError`, `HolosPaths`, text processing (fixer, spoken code, seams, fillers, word list) | File I/O, locks, UI, engines | (none); Foundation, NaturalLanguage |
-| [HolosStorage](Sources/HolosStorage/README.md) | Every path and lock inside a `<id>.holos` folder, `AtomicFile`, `SessionArchive`, the speaker, profile, history, word-list and screen-context stores, deletion | Transcript interpretation, capture, UI | Core |
+| [HolosStorage](Sources/HolosStorage/README.md) | Every path and lock inside a `<id>.holos` folder, `AtomicFile`, `SessionArchive`, the speaker, profile, history, word-list and screen-context stores, `corrections.json`'s file and lock, deletion | Transcript interpretation, capture, UI | Core |
 | [HolosSpeech](Sources/HolosSpeech/README.md) | Apple `SpeechTranscriber`/`DictationTranscriber` adapter | Recording lifetime, session files, focus | Core; Speech, AVFoundation |
 | [HolosSynthesis](Sources/HolosSynthesis/README.md) | Voice inventory and selection, rendering, playback, audiobook writing, `ExclusivePublisher`, the natural voice catalog and pack install (`NaturalVoiceModels`) | Document loading, meetings, FluidAudio | Core; AVFoundation, CryptoKit |
 | [HolosContent](Sources/HolosContent/README.md) | Document and web extraction, the reading pipeline, the reading library and its files | Speech recognition, meetings | Core, Synthesis; AppKit, PDFKit, WebKit |
@@ -34,6 +34,7 @@ lists Holos targets, then notable system or package frameworks.
 | [HolosDesktop](Sources/HolosDesktop/README.md) | Global hotkey, text insertion into other apps | Dictation logic, storage | Core; AppKit, ApplicationServices, Carbon |
 | [HolosDictation](Sources/HolosDictation/README.md) | `DictationController` (one utterance at a time), Run Again, on-device fix | Insertion, windows | Core, Audio, Speech; FoundationModels |
 | [HolosSpeakers](Sources/HolosSpeakers/README.md) | Pure speaker algorithms: alignment, runs, projection, carry-over, echo, recognition math, exports | Any file I/O, engines, names inferred from text | Core; Accelerate |
+| [HolosSpelling](Sources/HolosSpelling/README.md) | `SystemSpellChecker` (`NSSpellChecker`), which each executable installs as Core's `SpellChecking` | The questions asked of it (`Lexicon`, `DictationSeams`) | Core; AppKit |
 | [HolosMeeting](Sources/HolosMeeting/README.md) | Recorder workflow and state machine, `MeetingController`, post-processing, `ReviewSession`, summaries, people and voice profiles, import, catalog | AppKit, FluidAudio, WhisperKit, evaluation code, new path literals inside a session (existing ones: see below) | Core, Storage, Audio, Speech, Speakers; AVFoundation, Vision, NaturalLanguage |
 | [HolosDiarization](Sources/HolosDiarization/README.md) | The FluidAudio diarizer adapter and model install/verification | Being linked by the app | Core; FluidAudio |
 | [HolosWhisper](Sources/HolosWhisper/README.md) | WhisperKit deep transcription and model install | Being linked by the app | Core; WhisperKit, CoreML |
@@ -48,7 +49,6 @@ and `HolosSessionTestSupport` (adds HolosStorage); see `Tests/HolosTestSupport/R
 
 Known exceptions today (not precedents; do not add to them):
 
-- `HolosCore` holds `Lexicon` (AppKit) and `Corrections` (file I/O, flock).
 - Session paths are also built outside HolosStorage: HolosEvaluation's `EvalPaths` (`eval/`, `derived/eval-cloud/`); and names inside a session in HolosMeeting:
   `stop.request` (`RecordingWorkflow`), `control/<id>.json` (`RecorderChannel`), `derived/deep-<track>-16k.caf`
   (`DeepTranscriptionStage`), `echo/frames-<hash>.bin` (`EchoAnalysisStage`), `exports/edited-<stamp>.<ext>`

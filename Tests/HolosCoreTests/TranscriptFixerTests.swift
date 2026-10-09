@@ -3,7 +3,7 @@ import Synchronization
 import Testing
 @testable import HolosCore
 
-@Test func guardAcceptsAMisheardWordFix() {
+@Test(.systemSpelling) func guardAcceptsAMisheardWordFix() {
     #expect(AIFixGuard.check(original: "When a press escape they don't disappear.",
                              fixed: "When I press escape, they don't disappear.") == .accept)
     #expect(AIFixGuard.check(original: "I would like to by a new pear of shoes for the whether this weekend.",
@@ -253,7 +253,7 @@ let taughtList = [
     Correction(heard: "a bunch of ubuntu", meant: "a bunch of windows"), Correction(heard: "This is", meant: "this is"),
 ]
 
-@Test func referenceSelectsAPairOnlyWhereItsHeardPhraseIsSaid() {
+@Test(.systemSpelling) func referenceSelectsAPairOnlyWhereItsHeardPhraseIsSaid() {
     func selected(_ text: String) -> [String] {
         AIFixReference.select(from: taughtList, for: text, budget: 1_000).map(\.heard)
     }
@@ -335,7 +335,7 @@ let unrelatedWords = [
     #expect(AIFixGuard.check(original: "That's a point", fixed: "That's ubuntu", taught: [bundo]) != .accept)
 }
 
-@Test func aTaughtPairCoversOnlyTheWordsThatSaidItsHeardPhrase() {
+@Test(.systemSpelling) func aTaughtPairCoversOnlyTheWordsThatSaidItsHeardPhrase() {
     let bundo = Correction(heard: "a Bundo", meant: "ubuntu")
     // The neighbouring word is not part of the heard phrase, said or not.
     #expect(AIFixGuard.check(original: "use Bundo", fixed: "Ubuntu Bundo", taught: [bundo])
@@ -367,7 +367,7 @@ let unrelatedWords = [
         == .accept)
 }
 
-@Test func aTaughtSpellingIsFrozen() {
+@Test(.systemSpelling) func aTaughtSpellingIsFrozen() {
     // A pair's meant words are not changed again, even to a homophone: "side -> site" does not let "syde" become
     // "sight" through "site".
     let site = Correction(heard: "side", meant: "site")
@@ -611,7 +611,7 @@ func aFixThatChangesMeaningIsRefused(original: String, fixed: String) {
 /// What a fix may do: a word the language does not know replaced by one real word said alike, a real word by a
 /// listed homophone, a taught pair spelled where its heard phrase was said, commas, closing marks and the capital
 /// that starts a sentence.
-@Test(arguments: [
+@Test(.systemSpelling, arguments: [
     ("When a press escape they don't disappear.", "When I press escape, they don't disappear."),
     ("I would like to by a new pear of shoes for the whether this weekend.",
      "I would like to buy a new pair of shoes for the weather this weekend."),
@@ -636,7 +636,7 @@ func aMishearingIsFixed(original: String, fixed: String) {
                              language: "en-US") == .accept, "\(original) -> \(fixed)")
 }
 
-@Test(arguments: [
+@Test(.systemSpelling, arguments: [
     ("Il prend ces affaires", "Il prend ses affaires"), ("Il est a Paris", "Il est à Paris"),
     ("Je pense que ces une bonne idée", "Je pense que c'est une bonne idée"), ("je peut venir", "je peux venir"),
     ("Merci pour ton aide je te revaudrai sa", "Merci pour ton aide, je te revaudrai ça."),
@@ -649,7 +649,7 @@ func aFrenchMishearingIsFixed(original: String, fixed: String) {
     #expect(AIFixGuard.check(original: original, fixed: fixed, language: "fr-FR") == .accept, "\(original) -> \(fixed)")
 }
 
-@Test func aTaughtPairMatchesARealWordOnlyAsItIs() {
+@Test(.systemSpelling) func aTaughtPairMatchesARealWordOnlyAsItIs() {
     // A fuzzy match needs a word the language does not know: "bat" is a word, so "bit -> byte" is not said there.
     let byte = Correction(heard: "bit", meant: "byte")
     #expect(AIFixReference.matches(of: "bit", in: "Use the bat now", language: "en-US").isEmpty)
@@ -682,7 +682,7 @@ func aFrenchMishearingIsFixed(original: String, fixed: String) {
     #expect(AIFixReference.select(from: [enable], for: "Users are enible to access files", budget: 1_000) == [enable])
 }
 
-@Test func theLexiconKnowsTheLanguagesWordsNamesAndTaughtSpellings() async {
+@Test(.systemSpelling) func theLexiconKnowsTheLanguagesWordsNamesAndTaughtSpellings() async {
     let english = Lexicon(language: "en-US", taught: ["the nudger", "Jev model"])
     for word in ["bat", "teeth", "wanted", "windows", "ubuntu", "mary", "don't", "10", "jev"] {
         #expect(english.isWord(word), "\(word)")
@@ -734,7 +734,7 @@ func aFrenchMishearingIsFixed(original: String, fixed: String) {
     #expect(SpokenWords.meaning(of: "don't", language: nil).person == nil)
 }
 
-@Test func aPairMayAddWordsWhereItsHeardPhraseWasSaid() {
+@Test(.systemSpelling) func aPairMayAddWordsWhereItsHeardPhraseWasSaid() {
     let prefix = Correction(heard: "server", meant: "production server")
     #expect(AIFixGuard.check(original: "open server now", fixed: "open production server now", taught: [prefix])
         == .accept)
@@ -755,7 +755,7 @@ func aFrenchMishearingIsFixed(original: String, fixed: String) {
     #expect(AIFixGuard.check(original: "I called all stayt today", fixed: "I called Allstate today") != .accept)
 }
 
-@Test func aTaughtPairBringsItsMarksWhereItWasSaid() {
+@Test(.systemSpelling) func aTaughtPairBringsItsMarksWhereItWasSaid() {
     let commentFree = Correction(heard: "common free", meant: "comment-free")
     #expect(AIFixGuard.check(original: "type comin free now", fixed: "type comment-free now", taught: [commentFree])
         == .accept)
@@ -807,7 +807,7 @@ func aFrenchMishearingIsFixed(original: String, fixed: String) {
     #expect(SpokenWords.sound("witch") == SpokenWords.sound("which"))
 }
 
-@Test func functionWordsAreThoseOfTheLanguageDictated() {
+@Test(.systemSpelling) func functionWordsAreThoseOfTheLanguageDictated() {
     // The French "son" is an English content word.
     #expect(SpokenWords.isContent("son", language: "en-US") && !SpokenWords.isContent("son", language: "fr_CA"))
     #expect(!SpokenWords.isContent("son") && !SpokenWords.isContent("the", language: "en-US"))
@@ -844,7 +844,7 @@ func aFrenchMishearingIsFixed(original: String, fixed: String) {
                              fixed: "food requests and there pool requests", taught: [pool]) == .accept)
 }
 
-@Test func aHeardPhraseIsNotSaidAcrossTheEndOfASentence() {
+@Test(.systemSpelling) func aHeardPhraseIsNotSaidAcrossTheEndOfASentence() {
     let bull = Correction(heard: "bull request", meant: "pull request")
     #expect(AIFixReference.matches(of: "bull request", in: "Watch the bull. Request access.").isEmpty)
     #expect(AIFixReference.matches(of: "bull request", in: "Open the bull request (now)") == [2..<4])
@@ -1094,7 +1094,7 @@ private func fixer(corrections: CorrectionList = CorrectionList(), timeout: Dura
     #expect(failing == .init(text: "all good here", outcome: .failed))
 }
 
-@Test func fixerListsLearnedCorrectionsAndKeepsTheWordsTheyProduced() async {
+@Test(.systemSpelling) func fixerListsLearnedCorrectionsAndKeepsTheWordsTheyProduced() async {
     let corrections = CorrectionList(entries: [Correction(heard: "get hub", meant: "GitHub")])
     let seenInstructions = Mutex("")
     let fix = fixer(corrections: corrections) { instructions, _ in
@@ -1120,7 +1120,7 @@ private func fixer(corrections: CorrectionList = CorrectionList(), timeout: Dura
     #expect(seenInstructions.withLock { $0 }.contains("get hub -> GitHub"))
 }
 
-@Test func fixerNeverRewritesACorrectedWordThroughAChain() async {
+@Test(.systemSpelling) func fixerNeverRewritesACorrectedWordThroughAChain() async {
     // "foo" was already corrected to "bar" before the chunk reached the fixer.
     let chain = CorrectionList(entries: [Correction(heard: "foo", meant: "bar"), Correction(heard: "bar", meant: "baz")])
     let chained = await fixer(corrections: chain) { _, _ in "I said baz" }.fix("I said bar", isFinal: true)
@@ -1136,7 +1136,7 @@ private func fixer(corrections: CorrectionList = CorrectionList(), timeout: Dura
     #expect(twin == .init(text: "bar bar", outcome: .fixed))
 }
 
-@Test func guardProtectsEveryOccurrenceOfAMeantPhrase() {
+@Test(.systemSpelling) func guardProtectsEveryOccurrenceOfAMeantPhrase() {
     let corrections = [Correction(heard: "bull request", meant: "pull request")]
     #expect(AIFixGuard.check(original: "a pull request and a pull request", fixed: "a pull request and a full request",
                              protecting: corrections) == .reject(.changedCorrection))
