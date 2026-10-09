@@ -41,4 +41,5 @@ Durable files: the session folder (`<id>.holos`), its locks, and the global stor
 built and parsed outside this target with different rules (one `SessionPaths.folder`/`parse` is planned).
 
 **Tests:** `Tests/HolosStorageTests` (`AtomicFileTests`, `SessionLocksTests`, `LeaseHandOffTests`, `FolderChainTests`,
-`DescriptorSwapTests`, …).
+`DescriptorSwapTests`, …), built on `HolosTestSupport` and `HolosSessionTestSupport`;
+`./scripts/test-target.sh HolosStorageTests` builds and runs only them.
