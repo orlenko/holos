@@ -407,7 +407,7 @@ final class ImportStaging {
     func createSession(name sessionTitle: String, locale: String, backend: SpeechBackend) throws -> SessionArchive {
         precondition(sessionFD < 0, "createSession is called once")
         Self.beforeSession?(url)
-        let sessionName = "\(UUID().uuidString).holos"
+        let sessionName = SessionPaths.folderName(for: UUID().uuidString)
         guard mkdirat(folderFD, sessionName, 0o700) == 0 else {
             throw HolosError.io("Cannot create the session folder: \(Self.errnoText()).")
         }
@@ -833,16 +833,20 @@ private final class ProgressMeter: Sendable {
 }
 
 /// A speech session that reports the seconds of audio each `append` fed, for import and language-pass progress.
-struct CountingSpeechSession: LiveSpeechSession {
+public struct CountingSpeechSession: LiveSpeechSession {
     let base: any LiveSpeechSession
     let fed: @Sendable (Double) -> Void
 
-    func append(_ frame: PCMFrame) async throws {
+    public init(base: any LiveSpeechSession, fed: @escaping @Sendable (Double) -> Void) {
+        self.base = base; self.fed = fed
+    }
+
+    public func append(_ frame: PCMFrame) async throws {
         try await base.append(frame)
         fed(frame.duration)
     }
 
-    func finish() async throws -> [TranscriptSegment] { try await base.finish() }
+    public func finish() async throws -> [TranscriptSegment] { try await base.finish() }
 
-    func cancel() async { await base.cancel() }
+    public func cancel() async { await base.cancel() }
 }

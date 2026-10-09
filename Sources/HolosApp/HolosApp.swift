@@ -371,7 +371,7 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
     }
 
     /// The menu bar menu: the dictation status and toggle, the kept result's Copy items, the meeting block, then the
-    /// main window's items (docs/design.md "Menu bar menu"). The language and shortcut are chosen in Settings.
+    /// main window's items (docs/design.md "Main window"). The language and shortcut are chosen in Settings.
     func rebuildMenu() {
         guard statusItem != nil else { return }
         let menu = NSMenu()

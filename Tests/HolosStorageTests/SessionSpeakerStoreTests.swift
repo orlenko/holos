@@ -2,22 +2,12 @@ import Foundation
 import Testing
 import HolosCore
 @testable import HolosStorage
+import HolosTestSupport
+import HolosSessionTestSupport
+
+private let speakersSession = SessionFixtureBuilder(name: "Speakers", source: .microphoneAndSystem)
 
 private let storeDate = Date(timeIntervalSince1970: 1_790_000_000)
-
-private func storeTemporaryRoot() throws -> URL {
-    let root = FileManager.default.temporaryDirectory.appendingPathComponent("holos-speakers-\(UUID().uuidString)")
-    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-    return root
-}
-
-/// A finished session and its ID.
-private func storeMakeSession(in root: URL) async throws -> (session: URL, id: String) {
-    let archive = try SessionArchive.create(root: root, name: "Speakers", source: .microphoneAndSystem,
-                                            locale: "en-CA", backend: .speech)
-    try await archive.finish(status: ArchiveStatus.complete)
-    return (archive.directory, archive.id)
-}
 
 private func storeRun(sessionID: String, id: String = UUID().uuidString) -> DiarizationRun {
     DiarizationRun(
@@ -45,10 +35,6 @@ private func storeEdit(runID: String, name: String) -> SpeakerEdit {
                 action: .rename(speakerID: "system:S1", name: name), expected: "")
 }
 
-private func storeMode(_ url: URL) throws -> Int {
-    try #require(FileManager.default.attributesOfItem(atPath: url.path)[.posixPermissions] as? NSNumber).intValue
-}
-
 private func storeAppendRaw(_ text: String, to url: URL) throws {
     let handle = try FileHandle(forWritingTo: url)
     try handle.seekToEnd()
@@ -56,15 +42,10 @@ private func storeAppendRaw(_ text: String, to url: URL) throws {
     try handle.close()
 }
 
-private func isInvalidInput(_ error: HolosError?) -> Bool {
-    if case .invalidInput? = error { return true }
-    return false
-}
-
 @Test func runRoundTripsAndRefusesOverwrite() async throws {
-    let root = try storeTemporaryRoot()
+    let root = try TemporaryDirectory("speakers").url
     defer { try? FileManager.default.removeItem(at: root) }
-    let (session, sessionID) = try await storeMakeSession(in: root)
+    let (session, sessionID) = try await speakersSession.finished(in: root)
     #expect(try SessionSpeakerStore.runIDs(session: session) == [])
     let run = storeRun(sessionID: sessionID)
     try SessionArchive.withSpeakerLock(at: session) { try SessionSpeakerStore.writeRun(run, session: session) }
@@ -74,9 +55,9 @@ private func isInvalidInput(_ error: HolosError?) -> Bool {
         try SessionArchive.withSpeakerLock(at: session) { try SessionSpeakerStore.writeRun(run, session: session) }
     }
     #expect(isInvalidInput(error))
-    #expect(try storeMode(SessionPaths.run(run.id, in: session)) == 0o600)
-    #expect(try storeMode(SessionPaths.runs(session)) == 0o700)
-    #expect(try storeMode(session.appendingPathComponent("speakers")) == 0o700)
+    #expect(try FileInspection.permissions(SessionPaths.run(run.id, in: session)) == 0o600)
+    #expect(try FileInspection.permissions(SessionPaths.runs(session)) == 0o700)
+    #expect(try FileInspection.permissions(session.appendingPathComponent("speakers")) == 0o700)
     #expect(try FileManager.default.contentsOfDirectory(atPath: SessionPaths.runs(session).path) == ["\(run.id).json"])
 
     let second = storeRun(sessionID: sessionID, id: "0-second-run")
@@ -93,9 +74,9 @@ private func isInvalidInput(_ error: HolosError?) -> Bool {
 }
 
 @Test func headRefusesUnknownRun() async throws {
-    let root = try storeTemporaryRoot()
+    let root = try TemporaryDirectory("speakers").url
     defer { try? FileManager.default.removeItem(at: root) }
-    let (session, sessionID) = try await storeMakeSession(in: root)
+    let (session, sessionID) = try await speakersSession.finished(in: root)
     #expect(try SessionSpeakerStore.readHead(session: session) == nil)
     let missing = SpeakerHead(runID: UUID().uuidString, updatedAt: storeDate)
     let error = #expect(throws: HolosError.self) { try SessionSpeakerStore.writeHead(missing, session: session) }
@@ -109,13 +90,13 @@ private func isInvalidInput(_ error: HolosError?) -> Bool {
         try SessionSpeakerStore.writeHead(head, session: session)
     }
     #expect(try SessionSpeakerStore.readHead(session: session) == head)
-    #expect(try storeMode(SessionPaths.head(session)) == 0o600)
+    #expect(try FileInspection.permissions(SessionPaths.head(session)) == 0o600)
 }
 
 @Test func editsAppendAndReadInOrder() async throws {
-    let root = try storeTemporaryRoot()
+    let root = try TemporaryDirectory("speakers").url
     defer { try? FileManager.default.removeItem(at: root) }
-    let (session, _) = try await storeMakeSession(in: root)
+    let (session, _) = try await speakersSession.finished(in: root)
     #expect(try SessionSpeakerStore.readEdits(session: session) == EditJournal())
     let runID = UUID().uuidString
     let e1 = storeEdit(runID: runID, name: "Maria")
@@ -134,7 +115,7 @@ private func isInvalidInput(_ error: HolosError?) -> Bool {
     #expect(journal.edits == [e1, e2, e3])
     #expect(!journal.tornTail)
     #expect(journal.unreadableLines == 0)
-    #expect(try storeMode(SessionPaths.edits(session)) == 0o600)
+    #expect(try FileInspection.permissions(SessionPaths.edits(session)) == 0o600)
     let lines = try String(contentsOf: SessionPaths.edits(session), encoding: .utf8).split(separator: "\n")
     #expect(lines.count == 3)
 
@@ -147,9 +128,9 @@ private func isInvalidInput(_ error: HolosError?) -> Bool {
 }
 
 @Test func tornTailIsReportedThenRepairedOnAppend() async throws {
-    let root = try storeTemporaryRoot()
+    let root = try TemporaryDirectory("speakers").url
     defer { try? FileManager.default.removeItem(at: root) }
-    let (session, _) = try await storeMakeSession(in: root)
+    let (session, _) = try await speakersSession.finished(in: root)
     let runID = UUID().uuidString
     let e1 = storeEdit(runID: runID, name: "One")
     let e2 = storeEdit(runID: runID, name: "Two")
@@ -172,7 +153,7 @@ private func isInvalidInput(_ error: HolosError?) -> Bool {
     #expect(backups.count == 1)
     if let backup = backups.first {
         #expect(try Data(contentsOf: speakers.appendingPathComponent(backup)) == torn)
-        #expect(try storeMode(speakers.appendingPathComponent(backup)) == 0o600)
+        #expect(try FileInspection.permissions(speakers.appendingPathComponent(backup)) == 0o600)
     }
     let repaired = try SessionSpeakerStore.readEdits(session: session)
     #expect(repaired.edits == [e1, e2, e4])
@@ -181,9 +162,9 @@ private func isInvalidInput(_ error: HolosError?) -> Bool {
 }
 
 @Test func newerSchemaLineIsSkippedAndCounted() async throws {
-    let root = try storeTemporaryRoot()
+    let root = try TemporaryDirectory("speakers").url
     defer { try? FileManager.default.removeItem(at: root) }
-    let (session, _) = try await storeMakeSession(in: root)
+    let (session, _) = try await speakersSession.finished(in: root)
     let runID = UUID().uuidString
     let e1 = storeEdit(runID: runID, name: "One")
     try SessionSpeakerStore.appendEdits([e1], session: session)
@@ -207,9 +188,9 @@ private func isInvalidInput(_ error: HolosError?) -> Bool {
 }
 
 @Test func voiceDataIsPrivateAndNotBackedUp() async throws {
-    let root = try storeTemporaryRoot()
+    let root = try TemporaryDirectory("speakers").url
     defer { try? FileManager.default.removeItem(at: root) }
-    let (session, sessionID) = try await storeMakeSession(in: root)
+    let (session, sessionID) = try await speakersSession.finished(in: root)
     let runID = UUID().uuidString
     #expect(try SessionSpeakerStore.readVoiceData(runID: runID, session: session) == nil)
     let voice = SessionVoiceData(
@@ -221,8 +202,8 @@ private func isInvalidInput(_ error: HolosError?) -> Bool {
     #expect(try SessionSpeakerStore.readVoiceData(runID: runID, session: session) == voice)
 
     let folder = SessionPaths.voiceDirectory(session)
-    #expect(try storeMode(SessionPaths.voiceData(runID, in: session)) == 0o600)
-    #expect(try storeMode(folder) == 0o700)
+    #expect(try FileInspection.permissions(SessionPaths.voiceData(runID, in: session)) == 0o600)
+    #expect(try FileInspection.permissions(folder) == 0o700)
     let values = try URL(fileURLWithPath: folder.path).resourceValues(forKeys: [.isExcludedFromBackupKey])
     #expect(values.isExcludedFromBackup == true)
 
@@ -239,10 +220,10 @@ private func isInvalidInput(_ error: HolosError?) -> Bool {
 }
 
 @Test func runAndVoiceDataOfAnotherSessionAreRefusedOnRead() async throws {
-    let root = try storeTemporaryRoot()
+    let root = try TemporaryDirectory("speakers").url
     defer { try? FileManager.default.removeItem(at: root) }
-    let (session, _) = try await storeMakeSession(in: root)
-    let (other, otherID) = try await storeMakeSession(in: root)
+    let (session, _) = try await speakersSession.finished(in: root)
+    let (other, otherID) = try await speakersSession.finished(in: root)
     // Files written into the other session, then copied here under the same names.
     let run = storeRun(sessionID: otherID)
     try SessionSpeakerStore.writeRun(run, session: other)
@@ -267,9 +248,9 @@ private func isInvalidInput(_ error: HolosError?) -> Bool {
 }
 
 @Test func recognitionIsReplacedAndReadBack() async throws {
-    let root = try storeTemporaryRoot()
+    let root = try TemporaryDirectory("speakers").url
     defer { try? FileManager.default.removeItem(at: root) }
-    let (session, _) = try await storeMakeSession(in: root)
+    let (session, _) = try await speakersSession.finished(in: root)
     let runID = UUID().uuidString
     #expect(try SessionSpeakerStore.readRecognition(runID: runID, session: session) == nil)
     let thresholds = RecognitionThresholds(likelyMaxDistance: 0, likelyMinMargin: 0.1, possibleMaxDistance: 0.4,
@@ -283,13 +264,13 @@ private func isInvalidInput(_ error: HolosError?) -> Bool {
     result.matches = []
     try SessionSpeakerStore.writeRecognition(result, session: session)
     #expect(try SessionSpeakerStore.readRecognition(runID: runID, session: session) == result)
-    #expect(try storeMode(SessionPaths.recognition(runID, in: session)) == 0o600)
+    #expect(try FileInspection.permissions(SessionPaths.recognition(runID, in: session)) == 0o600)
 }
 
 @Test func runFromANewerHolosIsRefused() async throws {
-    let root = try storeTemporaryRoot()
+    let root = try TemporaryDirectory("speakers").url
     defer { try? FileManager.default.removeItem(at: root) }
-    let (session, sessionID) = try await storeMakeSession(in: root)
+    let (session, sessionID) = try await speakersSession.finished(in: root)
     var run = storeRun(sessionID: sessionID)
     run.schemaVersion = 2
     #expect(isInvalidInput(#expect(throws: HolosError.self) { try SessionSpeakerStore.writeRun(run, session: session) }))
@@ -298,11 +279,6 @@ private func isInvalidInput(_ error: HolosError?) -> Bool {
     try AtomicFile.writeJSON(run, to: SessionPaths.run(run.id, in: session))
     let error = #expect(throws: HolosError.self) { try SessionSpeakerStore.readRun(id: run.id, session: session) }
     guard case .unavailable? = error else { Issue.record("Expected unavailable, got \(String(describing: error))"); return }
-}
-
-private func isUnavailable(_ error: HolosError?) -> Bool {
-    if case .unavailable? = error { return true }
-    return false
 }
 
 /// Encodes `value`, lets `change` edit the JSON object, and writes the result to `url`.
@@ -314,9 +290,9 @@ private func storeWriteEdited<T: Encodable>(_ value: T, to url: URL,
 }
 
 @Test func newerRunWithAnUnknownCaseIsRefusedAsNewer() async throws {
-    let root = try storeTemporaryRoot()
+    let root = try TemporaryDirectory("speakers").url
     defer { try? FileManager.default.removeItem(at: root) }
-    let (session, sessionID) = try await storeMakeSession(in: root)
+    let (session, sessionID) = try await speakersSession.finished(in: root)
     let run = storeRun(sessionID: sessionID)
     try AtomicFile.ensurePrivateDirectory(session.appendingPathComponent("speakers"))
     try AtomicFile.ensurePrivateDirectory(SessionPaths.runs(session))
@@ -343,9 +319,9 @@ private func storeWriteEdited<T: Encodable>(_ value: T, to url: URL,
 }
 
 @Test func newerRecognitionHeadAndVoiceDataAreRefusedAsNewer() async throws {
-    let root = try storeTemporaryRoot()
+    let root = try TemporaryDirectory("speakers").url
     defer { try? FileManager.default.removeItem(at: root) }
-    let (session, sessionID) = try await storeMakeSession(in: root)
+    let (session, sessionID) = try await speakersSession.finished(in: root)
     let runID = UUID().uuidString
     let thresholds = RecognitionThresholds(likelyMaxDistance: 0, likelyMinMargin: 0.1, possibleMaxDistance: 0.4,
                                            minSampleSeconds: 20)
@@ -391,7 +367,7 @@ private func storeWriteEdited<T: Encodable>(_ value: T, to url: URL,
 }
 
 @Test func speakerLockRefusesAFolderThatIsNotASession() throws {
-    let root = try storeTemporaryRoot()
+    let root = try TemporaryDirectory("speakers").url
     defer { try? FileManager.default.removeItem(at: root) }
     #expect(isInvalidInput(#expect(throws: HolosError.self) { try SessionArchive.withSpeakerLock(at: root) {} }))
     #expect(isInvalidInput(#expect(throws: HolosError.self) {
@@ -401,9 +377,9 @@ private func storeWriteEdited<T: Encodable>(_ value: T, to url: URL,
 }
 
 @Test func deleteVoiceDataNeverFollowsSymbolicLinks() async throws {
-    let root = try storeTemporaryRoot()
+    let root = try TemporaryDirectory("speakers").url
     defer { try? FileManager.default.removeItem(at: root) }
-    let (session, _) = try await storeMakeSession(in: root)
+    let (session, _) = try await speakersSession.finished(in: root)
     let fm = FileManager.default
     // Outside the session: a folder that looks like speakers/, with its own voice/ and a file in it.
     let outside = root.appendingPathComponent("outside", isDirectory: true)
@@ -450,12 +426,12 @@ private func storeWriteEdited<T: Encodable>(_ value: T, to url: URL,
 /// /var/folders do): its speaker folders are created on first write, which a comparison through
 /// `standardizedFileURL` refused (it drops "/private" only for paths that exist, so only for the session).
 @Test func speakerFoldersAreCreatedUnderAPrivatePrefixedPath() async throws {
-    let root = try storeTemporaryRoot()
+    let root = try TemporaryDirectory("speakers").url
     defer { try? FileManager.default.removeItem(at: root) }
     let path = root.resolvingSymlinksInPath().path
     let privateRoot = URL(fileURLWithPath: path.hasPrefix("/private/") ? path : "/private" + path, isDirectory: true)
     try #require(FileManager.default.fileExists(atPath: privateRoot.path))
-    let (session, id) = try await storeMakeSession(in: privateRoot)
+    let (session, id) = try await speakersSession.finished(in: privateRoot)
     #expect(session.path.hasPrefix("/private/"))
     let run = storeRun(sessionID: id)
     try SessionSpeakerStore.writeRun(run, session: session)

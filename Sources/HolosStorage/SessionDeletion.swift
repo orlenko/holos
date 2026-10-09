@@ -219,7 +219,7 @@ public enum SessionDeletion {
     public static func moveToTrashWithoutManifest(session: URL,
                                                   logDirectory: URL = SessionDeletion.defaultLogDirectory,
                                                   trash: (URL) throws -> Void = SessionDeletion.systemTrash) throws {
-        guard session.standardizedFileURL.pathExtension == "holos" else {
+        guard SessionPaths.isSessionFolderName(session.standardizedFileURL.lastPathComponent) else {
             throw HolosError.invalidInput("\(session.lastPathComponent) is not a .holos folder.")
         }
         let folder = try SessionLockFile.openSessionFolder(session)
@@ -274,12 +274,10 @@ public enum SessionDeletion {
         return fd
     }
 
-    /// The manifest's session ID, else the folder's `<UUID>` when it names one; nil otherwise.
+    /// The manifest's session ID, else the ID the folder is named after (`SessionPaths.parse`); nil otherwise.
     private static func sessionID(of session: URL) -> String? {
         if let manifest = try? SessionArchive.readManifest(at: session) { return manifest.id }
-        let name = session.standardizedFileURL.lastPathComponent
-        guard name.hasSuffix(".holos"), let uuid = UUID(uuidString: String(name.dropLast(6))) else { return nil }
-        return uuid.uuidString
+        return SessionPaths.parse(folderName: session.standardizedFileURL.lastPathComponent)
     }
 
     /// Deletes `recorder-<sessionID>.log` from `directory` without following a symbolic link; nothing when either is

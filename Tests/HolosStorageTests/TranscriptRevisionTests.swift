@@ -2,15 +2,10 @@ import Foundation
 import HolosCore
 @testable import HolosStorage
 import Testing
+import HolosTestSupport
 
 // `SessionArchive.saveTranscriptRevision`: a transcription in another language kept beside the current transcript,
 // never made current (docs/meeting-design.md §4.14).
-
-private func revisionRoot() throws -> URL {
-    let root = FileManager.default.temporaryDirectory.appendingPathComponent("holos-revision-\(UUID().uuidString)")
-    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-    return root
-}
 
 private func revisionTranscript(locale: String, createdAt seconds: TimeInterval) -> Transcript {
     Transcript(createdAt: Date(timeIntervalSince1970: seconds), source: "mic", locale: locale, backend: .speech,
@@ -18,7 +13,7 @@ private func revisionTranscript(locale: String, createdAt seconds: TimeInterval)
 }
 
 @Test func revisionIsSavedWithoutBecomingCurrent() async throws {
-    let root = try revisionRoot()
+    let root = try TemporaryDirectory("revision").url
     defer { try? FileManager.default.removeItem(at: root) }
     let writer = try SessionArchive.create(root: root, name: "Revision", source: .microphone, locale: "fr-CA",
                                            backend: .speech)
@@ -37,7 +32,7 @@ private func revisionTranscript(locale: String, createdAt seconds: TimeInterval)
 }
 
 @Test func revisionPinsTheCurrentTranscriptOfAnArchiveWithoutAPointer() async throws {
-    let root = try revisionRoot()
+    let root = try TemporaryDirectory("revision").url
     defer { try? FileManager.default.removeItem(at: root) }
     let writer = try SessionArchive.create(root: root, name: "Legacy", source: .microphone, locale: "fr-CA",
                                            backend: .speech)
@@ -53,7 +48,7 @@ private func revisionTranscript(locale: String, createdAt seconds: TimeInterval)
 }
 
 @Test func revisionNeedsACurrentTranscript() async throws {
-    let root = try revisionRoot()
+    let root = try TemporaryDirectory("revision").url
     defer { try? FileManager.default.removeItem(at: root) }
     let writer = try SessionArchive.create(root: root, name: "Empty", source: .microphone, locale: "fr-CA",
                                            backend: .speech)

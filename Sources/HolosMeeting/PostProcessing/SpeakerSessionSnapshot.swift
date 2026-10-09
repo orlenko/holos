@@ -218,11 +218,9 @@ extension SpeakerSessionSnapshot: CustomStringConvertible, CustomDebugStringConv
 }
 
 /// Session files the post-processing code reads besides the speaker store (docs/meeting-design.md §2.1).
-enum SessionFiles {
+public enum SessionFiles {
     private static let log = Logger(subsystem: "ca.orlenko.holos.app", category: "meeting")
     static let maxTranscriptBytes = 256 << 20
-
-    private struct VersionProbe: Decodable { var schemaVersion: Int? }
 
     /// Whether `error` means a file is missing or damaged (so the data it held cannot be used), rather than that it
     /// could not be read now (I/O, permissions, cancellation) or was written by a newer Holos: those are thrown on.
@@ -237,19 +235,12 @@ enum SessionFiles {
     /// decoded, so one written by a newer Holos is refused (`unavailable`) even when it uses values this build does
     /// not know; a version below 1, or data that does not decode, is damage (`invalidInput`).
     static func decode<T: Decodable>(_ type: T.Type, from data: Data, current: Int, name: String) throws -> T {
-        if let version = (try? HolosJSON.decoder().decode(VersionProbe.self, from: data))?.schemaVersion {
-            if version > current {
-                throw HolosError.unavailable("\(name) was written by a newer version of Voice is Local; update Voice is Local to read it.")
-            }
-            if version < 1 {
-                throw HolosError.invalidInput("\(name) has an unsupported schema version \(version).")
-            }
-        }
-        do {
-            return try HolosJSON.decoder().decode(type, from: data)
-        } catch {
-            throw HolosError.invalidInput("\(name) is damaged or was not written by Voice is Local.")
-        }
+        try SchemaVersion.decode(type, from: data, current: current, name: name, damage: .plain)
+    }
+
+    /// A version 1 session file `name` of at most `maxBytes`, read as `decode` reads one (`VersionedFile`).
+    private static func file<T: ValidatedDecodable>(_ name: String, maxBytes: Int) -> VersionedFile<T> {
+        VersionedFile(name, current: 1, maxBytes: maxBytes, damage: .plain)
     }
 
     /// `error` with `prefix` before its message, keeping its `HolosError` kind.
@@ -266,20 +257,19 @@ enum SessionFiles {
     }
 
     /// A transcript revision; its ID must match the file name.
-    static func transcript(id: String, session: URL) throws -> Transcript {
+    public static func transcript(id: String, session: URL) throws -> Transcript {
         guard SessionArchive.validToken(id) else { throw HolosError.invalidInput("Invalid transcript ID.") }
         let name = "transcripts/\(id).json"
-        guard let data = try AtomicFile.readIfPresent(SessionPaths.transcript(id, in: session),
-                                                      maxBytes: maxTranscriptBytes) else {
+        guard let transcript: Transcript = try file(name, maxBytes: maxTranscriptBytes)
+            .read(SessionPaths.transcript(id, in: session)) else {
             throw HolosError.incomplete("\(name) is missing.")
         }
-        let transcript = try decode(Transcript.self, from: data, current: 1, name: name)
         guard transcript.id == id else { throw HolosError.invalidInput("\(name) does not describe transcript \(id).") }
         return transcript
     }
 
     /// The current transcript, or nil when the session has none.
-    static func currentTranscript(session: URL) throws -> Transcript? {
+    public static func currentTranscript(session: URL) throws -> Transcript? {
         guard let id = try SessionArchive.currentTranscriptID(at: session) else { return nil }
         return try transcript(id: id, session: session)
     }
@@ -300,12 +290,10 @@ enum SessionFiles {
     /// postprocess.json; nil when it does not exist. One written by a newer Holos is refused (`unavailable`); a
     /// damaged one, or one that belongs to another session than the manifest's (read when `manifest` is nil), is
     /// `invalidInput`, so a record copied or restored into the wrong session is never trusted.
-    static func postProcessingRecord(session: URL, manifest: SessionManifest? = nil) throws -> PostProcessingRecord? {
+    public static func postProcessingRecord(session: URL, manifest: SessionManifest? = nil) throws -> PostProcessingRecord? {
         let name = "postprocess.json"
-        guard let data = try AtomicFile.readIfPresent(SessionPaths.postprocess(session), maxBytes: 1 << 20) else {
-            return nil
-        }
-        let record = try decode(PostProcessingRecord.self, from: data, current: 1, name: name)
+        guard let record: PostProcessingRecord = try file(name, maxBytes: 1 << 20)
+            .read(SessionPaths.postprocess(session)) else { return nil }
         let sessionID = try manifest?.id ?? SessionArchive.readManifest(at: session).id
         guard record.sessionID == sessionID else {
             throw HolosError.invalidInput("\(name) belongs to another session.")
@@ -314,11 +302,11 @@ enum SessionFiles {
     }
 
     /// meeting.json, or `MeetingInfo.inferred` for archives from before it existed.
-    static func meetingInfo(session: URL, manifest: SessionManifest) throws -> MeetingInfo {
-        guard let data = try AtomicFile.readIfPresent(SessionPaths.meetingInfo(session), maxBytes: 1 << 20) else {
+    public static func meetingInfo(session: URL, manifest: SessionManifest) throws -> MeetingInfo {
+        guard let info: MeetingInfo = try file("meeting.json", maxBytes: 1 << 20)
+            .read(SessionPaths.meetingInfo(session)) else {
             return MeetingInfo.inferred(sessionID: manifest.id, source: manifest.source, createdAt: manifest.createdAt)
         }
-        let info = try decode(MeetingInfo.self, from: data, current: 1, name: "meeting.json")
         guard info.sessionID == manifest.id else {
             throw HolosError.invalidInput("meeting.json belongs to another session.")
         }

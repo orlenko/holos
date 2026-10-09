@@ -1,5 +1,6 @@
 import Foundation
 import HolosCore
+@testable import HolosEvaluation
 @testable import HolosMeeting
 import HolosSpeakers
 import HolosStorage
