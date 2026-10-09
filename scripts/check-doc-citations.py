@@ -103,7 +103,7 @@ def tracked_files():
 
 def code_span_end(text, i):
     """The end of the code span opening at text[i] (a run of backticks), or i + the run's length when unclosed."""
-    run = len(text) - len(text[i:].lstrip("`"))
+    run = len(text[i:]) - len(text[i:].lstrip("`"))
     closing = re.compile(r"(?<!`)" + "`" * run + r"(?!`)")
     match = closing.search(text, i + run)
     return match.end() if match else i + run
@@ -564,6 +564,8 @@ SELF_TEST_FILES = {
     "destinations.md": "[x](missing.md 'title') §9.6\n\n[x](missing.md (title)) §9.5\n\n[x](<docs/a.md>) §1.3\n\n"
                        "[x](miss(ing).md) §8.9\n",
     "reference.md": "[spec][s] §9.4 and [s] §1.3\n\n[s]: docs/a.md\n",
+    "code-span.md": "Some words before a `code` then [x](missing.md) §8.8; and `[y](missing2.md) §8.7` is code, "
+                    "not a link.\n",
     "quote.md": "> see docs/a.md\n>\n> §9.3 is bare: a blank quoted line ends the paragraph\n",
     "table.md": "a | b\n--- | ---\ndocs/a.md §1.3 | x\n§9.2 | bare in its own row\n",
     "heading-forms.md": "docs/a.md §9.1, docs/spec.md §1.4\n",
@@ -619,6 +621,8 @@ SELF_TEST_PROBLEMS = [
     "destinations.md:3: missing.md §9.5: no such file",
     "destinations.md:7: miss(ing).md §8.9: no such file",
     "reference.md:1: docs/a.md §9.4: no heading 9.4 in docs/a.md",
+    "code-span.md:1: missing.md §8.8: no such file",
+    "code-span.md:1: missing.md §8.7: no such file",
     "heading-forms.md:1: docs/a.md §9.1: no heading 9.1 in docs/a.md",
     "docs/regions2.md:5: docs/index.md §7.7: no heading 7.7 in docs/index.md or the file its index maps it to",
     "docs/regions2.md:7: <!-- /citations --> with no region open",
