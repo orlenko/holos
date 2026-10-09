@@ -72,6 +72,13 @@ public struct ReadingManifest: Codable, Sendable, Equatable {
     /// The finished file's size, saved with its checksum: a copy that a crash cut off is smaller; a file with the
     /// copy's identity that is as large is the finished file edited in place since, never removed as a partial one.
     public var outputSize: Int64? = nil
+    /// The natural voices' model commit the parts were rendered with (`NaturalVoiceModels.revision`); nil for an Apple
+    /// voice. A reading is resumed only with the same one, so no file mixes parts of two versions of the voices.
+    public var modelRevision: String? = nil
+    /// What the renderer rendered the first part with besides voice, text, and speed (a natural voice's fallback
+    /// system voice and check policy, `NaturalRenderSettings`), saved when the reading starts and given back for every
+    /// part, so a resumed reading does not mix them; nil for a renderer that has none.
+    public var rendererSettings: [String: String]? = nil
 
     /// Manifests are small (under 1 KB per part); a larger `manifest.json` is not read.
     static let maximumBytes = 64 << 20
@@ -92,6 +99,7 @@ public struct ReadingManifest: Codable, Sendable, Equatable {
     func sameSettings(voiceIdentifier: String, rate: Float?, metadata: AudioBookMetadata, output: URL,
                       volume: ReadingPathIdentity.VolumeQuery = ReadingPathIdentity.volumeRules) -> Bool {
         self.voiceIdentifier == voiceIdentifier && self.rate == rate
+            && modelRevision == ReadingPipeline.modelRevision(for: voiceIdentifier)
             && title == metadata.title && author == metadata.author && language == metadata.language
             && comment == metadata.comment && format == .current
             // Compared byte for byte: Swift's `==` takes NFC and NFD spellings for one string.
@@ -120,34 +128,6 @@ public struct ReadingResult: Sendable, Equatable {
     /// found there, read unchanged while its checksum was checked); nil when that could not be told. Not looked up
     /// at `output` afterwards, where another file may have taken its place.
     public var outputIdentity: ReadingFileIdentity? = nil
-}
-
-@MainActor public protocol ReadingAudioRenderer {
-    func render(text: String, voiceIdentifier: String?, rate: Float?, to output: URL)
-        async throws -> RenderedAudio
-    /// Fails unless the renderer can speak with the voice `identifier`. Checked before a reading
-    /// creates anything.
-    func checkVoice(_ identifier: String) throws
-}
-
-extension ReadingAudioRenderer {
-    /// A renderer that cannot tell which voices it has accepts every one here; `render` fails
-    /// for one it lacks.
-    public func checkVoice(_ identifier: String) throws {}
-}
-
-extension NativeSpeechRenderer: ReadingAudioRenderer {}
-
-@MainActor public protocol ReadingAudioJoiner {
-    func join(parts: [AudioBookPart], metadata: AudioBookMetadata, to output: URL) async throws -> AudioBookSummary
-}
-
-public struct AudioBookJoiner: ReadingAudioJoiner {
-    public init() {}
-    public func join(parts: [AudioBookPart], metadata: AudioBookMetadata,
-                     to output: URL) async throws -> AudioBookSummary {
-        try await AudioBookWriter.write(parts: parts, metadata: metadata, to: output)
-    }
 }
 
 /// Renders a script part by part into a cache of PCM files (so an interrupted reading resumes
@@ -203,10 +183,15 @@ public struct AudioBookJoiner: ReadingAudioJoiner {
         let comment: String
         let format: ReadingFormatSettings
         let segments: [Segment]
+        /// The natural voices' model commit; nil (and left out of the encoding, so the key of a reading with an Apple
+        /// voice is what it always was) for an Apple voice.
+        var modelRevision: String? = nil
 
-        // Nil values are written as null rather than left out, so each field is always present.
+        // Nil values are written as null rather than left out, so each field is always present (but the model
+        // revision, written only for a natural voice).
         enum CodingKeys: String, CodingKey {
             case kind, schemaVersion, voiceIdentifier, rate, title, author, language, comment, format, segments
+            case modelRevision
         }
 
         func encode(to encoder: any Encoder) throws {
@@ -221,6 +206,7 @@ public struct AudioBookJoiner: ReadingAudioJoiner {
             try container.encode(comment, forKey: .comment)
             try container.encode(format, forKey: .format)
             try container.encode(segments, forKey: .segments)
+            if let modelRevision { try container.encode(modelRevision, forKey: .modelRevision) }
         }
     }
 
@@ -235,7 +221,8 @@ public struct AudioBookJoiner: ReadingAudioJoiner {
             kind: ReadingManifest.readingKind, schemaVersion: ReadingManifest.currentSchemaVersion,
             voiceIdentifier: voiceIdentifier, rate: rate.map { "\($0)" }, title: metadata.title, author: metadata.author,
             language: metadata.language, comment: metadata.comment, format: .current,
-            segments: script.segments.map { Identity.Segment(chapter: $0.chapter, text: $0.text) })
+            segments: script.segments.map { Identity.Segment(chapter: $0.chapter, text: $0.text) },
+            modelRevision: modelRevision(for: voiceIdentifier))
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
         // Only strings, integers, and the format's finite constants are encoded: this cannot fail.
@@ -251,19 +238,15 @@ public struct AudioBookJoiner: ReadingAudioJoiner {
         let directory = location.workDirectory
         let output = location.output
         // Every setting is checked before anything (lock, cache, source, manifest) is created, so
-        // a bad one never leaves a cache behind that cannot be resumed.
+        // a bad one never leaves a cache behind that cannot be resumed. A resume of a reading from another commit of
+        // the natural voices is refused before that: checking its voice would ask for a pack that cannot help.
+        if resume { try await Self.refuseAnotherCommit(in: directory) }
         try validateSettings(script: script, voiceIdentifier: voiceIdentifier, rate: rate, metadata: metadata,
                              location: location)
         // Planned off the main actor: a book is split into hundreds of parts, each hashed.
         let (planned, expected) = try await offMain { () -> ([ReadingScript.Part], [ReadingPart]) in
             let planned = script.parts(maxUTF16Units: maxPartUTF16Units)
-            let expected = planned.map { part in
-                ReadingPart(index: part.index, sourceUTF16Offset: part.offset, sourceUTF16Length: part.length,
-                            textSHA256: sha256(Data(part.text.utf8)),
-                            relativeAudioPath: Self.partPath(part.index),
-                            chapter: part.chapter, startsSection: part.startsSegment, status: "pending")
-            }
-            return (planned, expected)
+            return (planned, Self.plan(planned))
         }
         try Task.checkCancellation()
         let manifestURL = directory.appendingPathComponent(ReadingManifest.fileName)
@@ -273,9 +256,12 @@ public struct AudioBookJoiner: ReadingAudioJoiner {
         // off the main actor: the output folder may be on a slow share. The lock and the reservation are held until
         // this render returns.
         let (text, fault) = (script.text, initializationFault)
+        // Saved with a new reading (a resume keeps those it saved).
+        let settings = renderer.renderSettings(for: voiceIdentifier)
         let prepared = try await offMain {
             try Self.prepare(directory: directory, output: output, resume: resume, text: text, expected: expected,
-                             voiceIdentifier: voiceIdentifier, rate: rate, metadata: metadata, run: run, fault: fault)
+                             voiceIdentifier: voiceIdentifier, rate: rate, metadata: metadata, settings: settings,
+                             run: run, fault: fault)
         }
         // The joined file's name for this run: the joiner makes it, and it goes on every exit, cancellation (Ctrl-C in
         // `voiceislocal read`) included. The name carries this run's UUID, so nothing but this run's joiner makes a
@@ -406,7 +392,8 @@ public struct AudioBookJoiner: ReadingAudioJoiner {
             }
             do {
                 let result = try await renderer.render(text: part.text, voiceIdentifier: voiceIdentifier,
-                                                       rate: rate, to: audio)
+                                                       rate: rate, savedSettings: manifest.rendererSettings,
+                                                       to: audio)
                 guard result.url.standardizedFileURL == audio.standardizedFileURL else {
                     throw HolosError.io("Speech renderer returned an unexpected part path.")
                 }
@@ -524,7 +511,8 @@ public struct AudioBookJoiner: ReadingAudioJoiner {
     /// are removed last: the lock means no other run of this reading is active, and only names this reading's runs
     /// create are touched.
     nonisolated static func prepare(directory: URL, output: URL, resume: Bool, text: String, expected: [ReadingPart],
-                                    voiceIdentifier: String, rate: Float?, metadata: AudioBookMetadata, run: UUID,
+                                    voiceIdentifier: String, rate: Float?, metadata: AudioBookMetadata,
+                                    settings: [String: String]? = nil, run: UUID,
                                     fault: (ReadingCache.Step) throws -> Void) throws -> Prepared {
         try checkLocation(directory: directory, output: output, resume: resume)
         let writerLock = try ReadingDirectoryLock.acquire(for: directory)
@@ -556,6 +544,7 @@ public struct AudioBookJoiner: ReadingAudioJoiner {
             let savedSource = try? fileSHA256(sourceURL)
             // A Stop during the check is a stop, never "the source differs".
             if Task.isCancelled { throw CancellationError() }
+            try ReadingResumeVoice.checkRevision(manifest, again: "Delete it and make it again.")
             guard manifest.sourceSHA256 == sourceHash,
                   manifest.sameSettings(voiceIdentifier: voiceIdentifier, rate: rate, metadata: metadata, output: output),
                   savedSource == sourceHash else {
@@ -584,7 +573,9 @@ public struct AudioBookJoiner: ReadingAudioJoiner {
                                        title: metadata.title, author: metadata.author, language: metadata.language,
                                        comment: metadata.comment, format: .current, output: output.path,
                                        outputSHA256: nil, duration: nil, chapters: [],
-                                       status: "incomplete", parts: expected)
+                                       status: "incomplete", parts: expected,
+                                       modelRevision: modelRevision(for: voiceIdentifier),
+                                       rendererSettings: settings)
             try ReadingCache.create(directory, source: Data(text.utf8), manifest: manifest, fault: fault)
             if reservation == nil { reservation = try ReadingOutputReservation.acquire(output: output) }
         }
@@ -694,6 +685,11 @@ public struct AudioBookJoiner: ReadingAudioJoiner {
 
     nonisolated static func partPath(_ index: Int) -> String {
         String(format: "parts/part%04d.%@", index + 1, partExtension)
+    }
+
+    /// Whether a saved part plan is the one `planned` gives (its parts' places, texts, chapters, and sections).
+    nonisolated static func samePlan(_ saved: [ReadingPart], _ planned: [ReadingPart]) -> Bool {
+        saved.count == planned.count && zip(saved, planned).allSatisfy { samePlan($0, $1) }
     }
 
     nonisolated private static func samePlan(_ saved: ReadingPart, _ planned: ReadingPart) -> Bool {
@@ -1550,7 +1546,7 @@ enum ReadingCache {
     }
 }
 
-private func sha256(_ data: Data) -> String {
+func sha256(_ data: Data) -> String {
     hex(SHA256.hash(data: data))
 }
 

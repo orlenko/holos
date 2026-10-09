@@ -23,6 +23,16 @@ public enum ReadingPreview {
         return lines.joined(separator: "\n")
     }
 
+    /// `voiceislocal read --print-text`: `text` with the voice as "<voice name> (<identifier>)" and the file the
+    /// command would write for `output` and the file name `fileName` (`ReadingOutput.previewPath`).
+    public static func printed(script: ReadingScript, metadata: AudioBookMetadata, voiceName: String, voiceID: String,
+                               output: String?, fileName: String, identity: String,
+                               readingsRoot: URL) throws -> String {
+        let file = try ReadingOutput.previewPath(output: output, name: fileName, identity: identity,
+                                                 readingsRoot: readingsRoot)
+        return text(script: script, metadata: metadata, voice: "\(voiceName) (\(voiceID))", fileName: file)
+    }
+
     /// The chapters the finished file gets: the part plan `ReadingPipeline` renders, through the
     /// rules `AudioBookWriter` encodes with (see `AudioBookChapterPlan`).
     static func chapters(script: ReadingScript, metadata: AudioBookMetadata,

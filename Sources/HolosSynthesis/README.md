@@ -21,6 +21,9 @@ natural voices' catalog and pack install (their backend is in `HolosPocket`).
   again or read by a system voice (`ParagraphFallback`) when it fails; one render at a time per renderer.
   `NaturalRenderSettings` are what a reading pins. `NaturalVoiceTemporaries` sweeps the folders a killed render
   leaves.
+- `NaturalHelperRun`, `ProcessExitWatch`, `NaturalOutputLock`, `NaturalHelperScratch`
+  (`NaturalVoiceHelperGuard.swift`): the app's `voiceislocal say` helper stops when the app ends, waits for an
+  earlier helper writing the same output, and removes only the scratch folder the app made for it.
 - `ExclusivePublisher`: moves a finished file into place without ever replacing an existing one; every file the
   renderer and the reading pipeline publish goes through `publish`.
 

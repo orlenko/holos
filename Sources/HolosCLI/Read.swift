@@ -22,9 +22,11 @@ struct Read: AsyncParsableCommand {
         the document's title, with a chapter at each heading. It plays on iPhone, Android, Windows, \
         and in browsers; share it with AirDrop, Messages, or Mail. Prints the file's path.
 
-        Without --output the file goes in Application Support/Holos/Readings/<UUID>/. The voice is \
-        the best installed one (Premium, then Enhanced) for the text's language unless --voice says \
-        otherwise; `voiceislocal voices list` shows each voice's quality.
+        Without --output the file goes in Application Support/Holos/Readings/<UUID>/. Unless --voice \
+        says otherwise, the voice is the natural voice for the text's language once its pack is \
+        installed (Alba in English, Estelle in French; voiceislocal setup --natural-voices), else the \
+        best installed Apple voice (Premium, then Enhanced); `voiceislocal voices list` shows each \
+        voice's quality. --resume keeps the voice the reading was started with.
 
         An interrupted reading continues where it stopped: run the same command with --resume. A \
         reading made without --output resumes with --output set to its Readings folder. A web page \
@@ -42,7 +44,7 @@ struct Read: AsyncParsableCommand {
     @Option(name: .shortAndLong, help: "A .m4a file path, or an existing directory to write <Title>.m4a in.")
     var output: String?
     @Option(name: .shortAndLong, help: ArgumentHelp(
-        "Voice name as `say -v '?'` or `voiceislocal voices list` prints it, such as \"Ava (Premium)\", or its identifier.",
+        "Voice name as `say -v '?'` or `voiceislocal voices list` prints it, such as \"Ava (Premium)\" or \"Alba (Natural)\", or its identifier (pocket:en:alba).",
         valueName: "name"))
     var voice: String?
     @Option(parsing: .unconditional, help: speechRateHelp, transform: parseSpeechRate)
@@ -145,9 +147,6 @@ struct Read: AsyncParsableCommand {
         let script = ReadingScript(document: document)
         // A declared language that is not a usable tag ("english") is ignored, not trusted.
         let language = AudioBookMetadata.languageTag(document.language) ?? ReadingLanguage.detect(script.text)
-        // `read` takes Apple's voices; natural voices are for `say`.
-        let selected = try await resolveVoice(request.voice, language: language, explainDefault: true,
-                                              allowNatural: false)
         // The first title with readable text: `--title` (checked in `validate`), the document's,
         // then the file's name.
         let metadata = AudioBookMetadata(
@@ -158,14 +157,35 @@ struct Read: AsyncParsableCommand {
         let readings = try ReadingOutput.readingsRoot(support: HolosPaths.supportRoot,
                                                       configured: ProcessInfo.processInfo.environment["HOLOS_SUPPORT_DIR"],
                                                       create: !request.printText)
-        let identity = ReadingPipeline.identity(script: script, voiceIdentifier: selected.id, rate: request.rate,
-                                                metadata: metadata)
+        func cacheIdentity(_ voice: String) -> String {
+            ReadingPipeline.identity(script: script, voiceIdentifier: voice, rate: request.rate, metadata: metadata)
+        }
+        // A resume finds the saved reading first (with --voice, one made with a voice that name can mean, Apple's or
+        // natural, whichever is installed today) and refuses one made with another version of the natural voices
+        // before anything else; it keeps the voice the reading was started with, which the default may no longer be
+        // (natural voices installed since). Without a saved reading, the voice is resolved as for a new one.
+        var saved: ReadingManifest?
+        if request.resume {
+            saved = try await ReadingResumeVoice.saved(
+                output: request.output, name: name, readingsRoot: readings, script: script, rate: request.rate,
+                metadata: metadata, voices: request.voice.map { voiceIdentifiers(forQuery: $0, language: language) })
+            if let saved { try ReadingResumeVoice.checkRevision(saved) }
+        }
+        let selected: VoiceDescriptor
+        if let saved {
+            let installed = await NaturalVoicesCLI.installedPacks()
+            selected = try savedVoice(ReadingResumeVoice.voice(of: saved, installed: installed))
+        } else {
+            selected = try await resolveVoice(request.voice, language: language, explainDefault: true)
+        }
+        let identity = cacheIdentity(selected.id)
         if request.printText {
-            let voice = "\(VoiceSelection.displayNames(NativeSpeechRenderer.voices())[selected.id] ?? selected.name) (\(selected.id))"
+            let voiceName = NaturalVoiceCatalog.voice(id: selected.id)?.title
+                ?? VoiceSelection.displayNames(NativeSpeechRenderer.voices())[selected.id] ?? selected.name
             // The file this command would write, resolved as below but with nothing created.
-            let file = try ReadingOutput.previewPath(output: request.output, name: name, identity: identity,
-                                                     readingsRoot: readings)
-            Console.output(ReadingPreview.text(script: script, metadata: metadata, voice: voice, fileName: file))
+            Console.output(try ReadingPreview.printed(
+                script: script, metadata: metadata, voiceName: voiceName, voiceID: selected.id,
+                output: request.output, fileName: name, identity: identity, readingsRoot: readings))
             return nil
         }
 
@@ -175,10 +195,12 @@ struct Read: AsyncParsableCommand {
         if try request.resume && !ReadingOutput.exists(location.workDirectory) {
             // With an explicit output the cache is keyed by the text and settings, so a changed
             // source (a web page that was edited since) or setting finds no reading here.
-            throw HolosError.invalidInput("No reading to resume for \(location.output.path): none was started with this output, or its source, voice, rate, or title has changed since.")
+            throw HolosError.invalidInput("No reading to resume for \(location.output.path): none was started with this output, or its source, voice, rate, or title has changed since (or, for a natural voice, the voices were updated: a reading started with an earlier version cannot be resumed).")
         }
         progress.resumeHint = "To continue, run the same command with --resume --output \"\(request.output ?? location.workDirectory.path)\"."
-        let result = try await ReadingPipeline().render(
+        let packs = await NaturalVoicesCLI.installedPacks()
+        let renderer = RoutingSpeechRenderer(natural: NaturalVoicesCLI.renderer(installed: packs))
+        let result = try await ReadingPipeline(renderer: renderer).render(
             script: script, voiceIdentifier: selected.id, rate: request.rate, metadata: metadata,
             location: location, resume: request.resume)
         // The file is published: bookkeeping that failed after that is a warning, not a failure.
@@ -241,6 +263,27 @@ let speechRateHelp = ArgumentHelp(
     } catch HolosError.invalidInput(let message) {
         throw ValidationError(message)
     }
+}
+
+/// Every identifier `--voice` can name, without asking whether the voice is installed (a natural voice's pack, an
+/// Apple voice): what a saved reading is looked up by, so a name both catalogs have finds the reading made with either.
+@MainActor func voiceIdentifiers(forQuery query: String, language: String?) -> Set<String> {
+    var ids: Set<String> = [query]
+    if let apple = VoiceSelection.match(query, in: NativeSpeechRenderer.voices(), language: language) {
+        ids.insert(apple.id)
+    }
+    if let natural = NaturalVoiceCatalog.match(query) { ids.insert(natural.id) }
+    return ids
+}
+
+/// The voice a reading being resumed was started with, by identifier (checked by `ReadingResumeVoice.voice(of:)`);
+/// an Apple voice must still be installed.
+@MainActor func savedVoice(_ id: String) throws -> VoiceDescriptor {
+    if let natural = NaturalVoiceCatalog.voice(id: id) { return natural.descriptor }
+    guard let voice = NativeSpeechRenderer.voices().first(where: { $0.id == id }) else {
+        throw HolosError.unavailable("The voice this reading was started with is not installed any more: \(id)")
+    }
+    return voice
 }
 
 /// `--voice` by name or identifier (an Apple voice, or a natural voice such as "pocket:en:alba"); without it, the
