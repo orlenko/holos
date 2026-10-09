@@ -10,12 +10,31 @@ import Foundation
 /// own ("1st" gives "one st").
 public enum SpelledNumbers {
     /// A digit run: a minus sign only at the start of a word (so "1990-2000" is two runs, not a negative), digits,
-    /// and grouping separators or decimal marks between digits (no plain space: "10 200" is two numbers).
+    /// and grouping separators or decimal marks between digits (no plain space: "10 200" is two numbers, but French
+    /// groups of three are joined first, `frenchGroups`).
     private static let digitRun = try! NSRegularExpression(
         pattern: #"(?<![\p{L}\p{N}])[-−]?\p{Nd}(?:[\p{Nd}.,'   ]*\p{Nd})?"#)
 
+    /// French groups thousands with a space, an ordinary one too: "1 234 567" is one number when every group after the
+    /// first has exactly three digits (and the first one to three).
+    private static let frenchGroups = try! NSRegularExpression(
+        pattern: #"(?<![\p{L}\p{N}])\p{Nd}{1,3}(?:[ \u00A0\u202F]\p{Nd}{3})+(?!\p{N})"#)
+
+    /// `text` with the spaces inside French grouped numbers taken out.
+    private static func joiningFrenchGroups(_ text: String) -> String {
+        var result = ""
+        var rest = text.startIndex
+        for match in frenchGroups.matches(in: text, range: NSRange(text.startIndex..., in: text)) {
+            guard let range = Range(match.range, in: text) else { continue }
+            result += text[rest..<range.lowerBound] + text[range].filter(\.isNumber)
+            rest = range.upperBound
+        }
+        return result + text[rest...]
+    }
+
     public static func spellingOut(_ text: String, language: String) -> String {
         let french = language.lowercased().hasPrefix("fr")
+        let text = french ? joiningFrenchGroups(text) : text
         let parser = NumberFormatter()
         parser.locale = Locale(identifier: french ? "fr_FR" : "en_US")
         parser.numberStyle = .decimal
