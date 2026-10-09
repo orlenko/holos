@@ -8,6 +8,10 @@ transcription with a cloud reference and with a reviewer's corrections. Develope
 - Cloud reference runs: `CloudEvaluation` (render, segment, upload, save each answer),
   `ConsentGate` (only an explicit yes or `--yes` uploads), `CloudTranscriptionClient` over a `CloudHTTPTransport`
   (`URLSessionTransport`, an ephemeral session), `CloudSegmentation`, `CloudVocabulary`, `CloudModels`.
+- The library side of `voiceislocal eval`: `EvalCloudCommand` (lease, preparation, the caller's consent question,
+  upload), `EvalLocalCommand`, `EvalCompareCommand`, `EvalReviewCommand`, `EvalApplyCommand`, `EvalDeleteCommand`.
+  They report what they say as `EvalCommandMessage`s in order with their steps, run their long steps through an
+  `EvalInterruption` (the CLI's stops them on Ctrl-C), and read the user's files through `EvalUserFiles`.
 - Local candidate runs: `EvalLocal`, `EvalAudio`.
 - Scoring: `EvalNormalization`, `EvalAlignment`, `EvalCompare` (`CompareReport`), `EvalTerms`.
 - Review: `EvalReviewPage` (a local HTML page), `EvalReview`, `EvalApply` (`ReviewDecisions`, `GoldTranscript`).
@@ -19,8 +23,9 @@ transcription with a cloud reference and with a reviewer's corrections. Develope
 
 **Invariants**
 - This is the only code that sends audio off the Mac: `voiceislocal eval cloud` uploads to OpenAI with the key
-  from `OPENAI_API_KEY`. The CLI asks `ConsentGate` before it calls `CloudEvaluation.upload`; `upload` itself does
-  not ask, so any new caller must ask first.
+  from `OPENAI_API_KEY`. `EvalCloudCommand` uploads only when its caller's consent callback (the CLI's
+  `ConsentGate` question) says to proceed; `CloudEvaluation.upload` itself does not ask, so any other caller must ask
+  first.
 - A run records each track's audio fingerprint (`SessionManifest.audioFingerprint(track:)` in HolosStorage, shared
   with the echo analysis). Resuming a cloud run, and building a review page while the audio is still there, refuse
   when it no longer matches the session's audio. Comparing a saved local run with a cloud run checks that the two

@@ -53,8 +53,11 @@ public enum EvalPaths {
     }
     /// Temporary audio of a run, under derived/ so Delete Audio removes it with the rest of the audio.
     public static func work(_ id: String, in session: URL) -> URL {
+        workRoot(session).appendingPathComponent(id, isDirectory: true)
+    }
+    /// derived/eval-cloud/: every run's temporary audio.
+    public static func workRoot(_ session: URL) -> URL {
         SessionPaths.derived(session).appendingPathComponent("eval-cloud", isDirectory: true)
-            .appendingPathComponent(id, isDirectory: true)
     }
 }
 
