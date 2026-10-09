@@ -8,7 +8,19 @@ import IOKit.ps
 import os
 
 /// Deep transcription after meetings in the app (docs/meeting-design.md §4.16, "App"): the queue, its power policy,
-/// and the model's install. The pass itself is `voiceislocal session deep-transcribe`, run as a maintenance command.
+/// and the model's install. The pass itself is `voiceislocal session deep-transcribe`, run as a maintenance command
+/// by `coordinator`.
+///
+/// Invariants:
+/// 1. Every change to the queue (`queue`, kept by `jobs`) is saved in UserDefaults (`queueKey`), and every change to
+///    `considered` too (`consideredKey`): a pass cut short by a quit or crash runs again at the next launch.
+/// 2. The after-meeting queueing and the launch check never queue a meeting already in `considered`, and every
+///    meeting they queue joins it.
+/// 3. Every turn of the setting changes `activation`; an automatic after-meeting language read or a reconciliation
+///    begun under another activation queues nothing. A Make Final Transcript Now request is not bound to it: its
+///    language read queues it whatever the setting did meanwhile.
+/// 4. `coordinator` is made once (`setUpBackgroundJobs`), after the meeting controller and its maintenance launcher,
+///    and is the only thing that starts a pass; it runs `jobs`.
 @MainActor
 final class DeepTranscriptionAppState {
     /// Settings › Meetings › "Deep transcription after meetings" (off until turned on, and only once the model is
@@ -31,9 +43,17 @@ final class DeepTranscriptionAppState {
         set { UserDefaults.standard.set(newValue, forKey: enabledSinceKey) }
     }
 
+    /// The queue and what its passes come to; `BackgroundJobCoordinator` runs them.
+    private(set) lazy var jobs = DeepTranscriptionJobs(
+        queue: DeepTranscriptionQueue.decode(UserDefaults.standard.data(forKey: Self.queueKey)),
+        save: { UserDefaults.standard.set($0.encoded(), forKey: Self.queueKey) },
+        conditions: { [unowned self] in
+            DeepTranscriptionJobs.Conditions(enabled: Self.enabled, modelInstalled: model == "installed", power: power)
+        })
     /// Saved on every change, so a pass cut short by a quit or crash runs again at the next launch.
-    var queue = DeepTranscriptionQueue.decode(UserDefaults.standard.data(forKey: queueKey)) {
-        didSet { UserDefaults.standard.set(queue.encoded(), forKey: Self.queueKey) }
+    var queue: DeepTranscriptionQueue {
+        get { jobs.queue }
+        set { jobs.queue = newValue }
     }
     /// Meetings just saved whose languages are being read to decide whether a final transcript is queued: a summary
     /// waits for that decision (§4.17), so none is made of a transcript a final one is about to replace.
@@ -41,27 +61,12 @@ final class DeepTranscriptionAppState {
     var considered: [String] = UserDefaults.standard.stringArray(forKey: consideredKey) ?? [] {
         didSet { UserDefaults.standard.set(considered, forKey: Self.consideredKey) }
     }
-    /// The pass this app is running now (its own child; the app manages no other): its meeting and the child's handle
-    /// (nil while it starts), which signals it only until the app reaps it.
-    var running: (sessionID: String, child: CommandHandle?)?
-    /// Another process holds `DeepTranscriptionLock` (a pass started in Terminal, or one left running from before a
-    /// relaunch): nothing starts until it is free, checked every 30 s. The app never signals or adopts it.
-    var otherPassRunning = false
+    /// Runs the passes, one background job at a time on this Mac (invariant 4).
+    var coordinator: BackgroundJobCoordinator?
     /// Meetings whose Review was asked for while this app's pass works on them: opened when the pass ends.
     var reviewAfterPass: [String: (directory: URL, name: String)] = [:]
-    /// The pass stopped because a meeting started: it stays queued and runs again from the start afterwards.
-    var preempted: String?
-    /// Starting the command failed (a transient process limit), or another process held the meeting or the lock:
-    /// tried again after this.
-    var retryAfter: Date?
     /// Counts every turn of the setting on or off: a scan begun before one is dropped when it ends.
     var activation = 0
-    /// An automatic pass held back for the summary scan going on, which may start a summary the user asked for
-    /// (asked-for work goes first, §4.17): looked at again when the scan ends.
-    var waitsForSummaryScan = false
-    /// Meetings whose command was refused because another command held them: skipped until then, so the others
-    /// are not held up (another pass holding the lock delays everything, `retryAfter`).
-    var delayed: [String: Date] = [:]
     /// Counts the 30 s timer's ticks: some checks run every other one.
     var ticks = 0
     /// `voiceislocal doctor --json` deepTranscriptionModel ("installed", "downloading", "notInstalled"); "unknown" when
@@ -96,14 +101,14 @@ enum PowerSource {
 
 extension HolosAppDelegate {
     private static let deepLog = Logger(subsystem: "ca.orlenko.holos.app", category: "meeting")
-    /// What the Meetings list shows while the pass runs (`MeetingController.beginUsing`).
-    static let deepRunningText = "Final transcript in progress…"
 
     /// At launch: every 30 s checks the power source (and so notices AC power coming back), checks the model again
     /// while another process downloads it (every 60 s while it is not installed and the setting is on or Settings
-    /// shows, so an install in Terminal is noticed), and retries the queue. Run Now requests whose languages were
-    /// being read when the app quit are read again.
+    /// shows, so an install in Terminal is noticed), and looks for the next background job (`BackgroundJobCoordinator`:
+    /// a meeting a review held, one turned down for now, or one that waited for another job). Run Now requests whose
+    /// languages were being read when the app quit are read again.
     func setUpDeepTranscription() {
+        setUpBackgroundJobs()
         meeting.deep.power = PowerSource.current()
         for request in meeting.deep.queue.pending {
             checkRunNowLanguages(sessionID: request.sessionID, directory: URL(fileURLWithPath: request.path), name: nil)
@@ -125,10 +130,10 @@ extension HolosAppDelegate {
                           DeepTranscriptionAppState.enabled || self.settingsShowing {
                     self.refreshSpeakerModels()
                 }
-                self.scheduleDeepTranscription()
+                self.scheduleBackgroundJobs()
             }
         }
-        scheduleDeepTranscription()
+        scheduleBackgroundJobs()
     }
 
     /// The doctor check reported the model (or could not run).
@@ -143,19 +148,7 @@ extension HolosAppDelegate {
             // it is installed the reconciliation runs (and then lets them start); a failed download lets them start.
             meetingSummaryLaunchReconciled()
         }
-        scheduleDeepTranscription()
-    }
-
-    /// A meeting is starting, recording, or saving: this app's pass running now is stopped (SIGTERM; it publishes
-    /// nothing, or says it was cancelled late) and stays queued, so the meeting has the Mac to itself; it runs again
-    /// afterwards. A pass another process runs is left alone: it is the user's own explicit run.
-    func deepTranscriptionMeetingStateChanged() {
-        guard let controller = meeting.controller, meetingIsBusy(controller.state),
-              let running = meeting.deep.running, meeting.deep.preempted == nil,
-              running.child?.terminate() == true else { return }
-        meeting.deep.preempted = running.sessionID
-        Self.deepLog.notice("Deep transcription of \(running.sessionID, privacy: .public) stopped for a meeting")
-        updateDeepStates()
+        scheduleBackgroundJobs()
     }
 
     /// Whether the meeting state leaves no room for a pass: a meeting starting, recording, or saving, one that
@@ -205,7 +198,7 @@ extension HolosAppDelegate {
             self.meeting.deep.queue.enqueue(sessionID: sessionID, path: directory.path, at: Date())
             self.meeting.deep.consider(sessionID)
             self.updateDeepStates()
-            self.scheduleDeepTranscription()
+            self.scheduleBackgroundJobs()
         }
     }
 
@@ -256,7 +249,7 @@ extension HolosAppDelegate {
             }
             Self.deepLog.notice("Deep transcription: queued \(found.count, privacy: .public) meetings saved while the app was closed")
             self.updateDeepStates()
-            self.scheduleDeepTranscription()
+            self.scheduleBackgroundJobs()
         }
     }
 
@@ -291,9 +284,9 @@ extension HolosAppDelegate {
             guard let self, self.meeting.deep.queue.isPending(sessionID) else { return }
             let accepted = problem == nil
             self.meeting.deep.queue.resolveRunNow(sessionID, accepted: accepted)
-            if accepted { self.meeting.deep.retryAfter = nil }
+            if accepted { self.meeting.deep.coordinator?.clearRetry(self.meeting.deep.jobs) }
             self.updateDeepStates()
-            self.scheduleDeepTranscription()
+            self.scheduleBackgroundJobs()
             guard !accepted else { return }
             let shown = name ?? (try? SessionArchive.readManifest(at: directory).name) ?? "The meeting"
             self.showDeepAlert("“\(Self.short(shown))” keeps its transcript.", problem ?? "")
@@ -304,142 +297,23 @@ extension HolosAppDelegate {
     /// cancels and says whether the new transcript was already published).
     func cancelDeepTranscription(_ sessionID: String) {
         // Only this app's own pass is signalled.
-        if let running = meeting.deep.running, running.sessionID == sessionID {
-            running.child?.terminate()
-        }
-        if meeting.deep.preempted == sessionID { meeting.deep.preempted = nil }
-        meeting.deep.delayed[sessionID] = nil
+        meeting.deep.coordinator?.cancel(meeting.deep.jobs, sessionID)
         meeting.deep.queue.remove(sessionID)
         updateDeepStates()
     }
 
-    /// Starts the next pass when `DeepTranscriptionSchedule` says so.
-    func scheduleDeepTranscription() {
-        // With the setting off, automatic items go (the app's running pass keeps its own until it ends): at launch,
-        // on every 30 s tick, and after every pass, however it ended.
-        if meeting.deep.queue.dropAutomatic(enabled: DeepTranscriptionAppState.enabled,
-                                            running: meeting.deep.running?.sessionID) {
-            updateDeepStates()
-        }
-        guard let controller = meeting.controller, let commands = meeting.commands else { return }
-        // Another process's pass holds the lock: wait for it (checked again every 30 s). One at a time on this Mac.
-        // A meeting summary and an echo analysis share the lock (§4.17, §5.11), this app's own while it starts too
-        // (before the command takes it): wait for them, without saying another final transcript runs.
-        if meeting.deep.running == nil {
-            let lock = DeepTranscriptionLock.state()
-            let other = lock.isDeepPass
-            if other != meeting.deep.otherPassRunning {
-                meeting.deep.otherPassRunning = other
-                updateDeepStates()
-            }
-            if lock != .free || meeting.summaries.running != nil || meeting.echo.running != nil { return }
-        }
-        if let retryAfter = meeting.deep.retryAfter, retryAfter > Date() { return }
-        meeting.deep.retryAfter = nil
-        let busy = meetingIsBusy(controller.state)
-        let now = Date()
-        meeting.deep.delayed = meeting.deep.delayed.filter { $0.value > now }
-        // Review owns a meeting while it is open, opening, or still saving.
-        let inUse = Set(controller.sessionsInUse.keys).union(controller.sessionsUnderReview())
-        let situation = DeepTranscriptionSchedule.Situation(
-            enabled: DeepTranscriptionAppState.enabled, modelInstalled: meeting.deep.model == "installed",
-            power: meeting.deep.power, meetingBusy: busy, running: meeting.deep.running?.sessionID, inUse: inUse,
-            delayed: Set(meeting.deep.delayed.keys))
-        // A meeting deleted while queued is taken off, and the next ready one is picked in the same call.
-        var queue = meeting.deep.queue
-        let decision = DeepTranscriptionSchedule.nextPresent(&queue, situation) {
-            FileManager.default.fileExists(atPath: $0)
-        }
-        if queue != meeting.deep.queue { meeting.deep.queue = queue }
-        guard case .run(let sessionID) = decision,
-              let item = meeting.deep.queue.items.first(where: { $0.sessionID == sessionID }) else {
-            updateDeepStates()
-            return
-        }
-        // A Summarize Again the user asked for goes before an automatic pass: while the summary scan that may start
-        // it goes on, the pass waits for its end (`meetingSummaryScanEnded`).
-        if !item.runNow, meeting.summaries.scanning, !meeting.summaries.requests.isEmpty {
-            meeting.deep.waitsForSummaryScan = true
-            return
-        }
-        // A call's missing echo analysis goes before an automatic pass: it takes seconds and fixes the meeting's
-        // playback and labels now (§5.11). A pass asked for from the menu does not wait for it.
-        if !item.runNow, echoCatchUpReady() {
-            scheduleEchoCatchUp()
-            return
-        }
-        // Marked running before the meeting is taken: taking it schedules again (`onSessionsInUseChanged`), which must
-        // then see one pass running and start no other.
-        meeting.deep.running = (sessionID, nil)
-        guard controller.beginUsing(sessionID, for: Self.deepRunningText) else {
-            meeting.deep.running = nil
-            return
-        }
-        // Asked for from the meeting's menu: made again even when made before, and over edited labels.
-        let arguments = ["session", "deep-transcribe", item.path, "--json"]
-            + (DeepTranscriptionSchedule.forces(item) ? ["--force"] : [])
-        do {
-            let child = try commands.start(arguments, output: "deep", errors: "deep-err", maxOutputBytes: 16 << 20,
-                                           as: PostProcessingRecord.self) { [weak self] result in
-                self?.deepTranscriptionEnded(sessionID, result)
-            }
-            meeting.deep.running = (sessionID, child)
-            Self.deepLog.notice("Deep transcription of \(sessionID, privacy: .public) started")
-        } catch {
-            // Kept queued: the scheduler tries again in a minute.
-            meeting.deep.running = nil
-            meeting.deep.retryAfter = Date().addingTimeInterval(60)
-            controller.endUsing(sessionID)
-            Self.deepLog.error("Cannot start deep transcription: \(error.localizedDescription, privacy: .private)")
-        }
-        updateDeepStates()
-    }
-
-    private func deepTranscriptionEnded(_ sessionID: String, _ result: CommandResult<PostProcessingRecord>) {
-        let code = result.code
-        let errorText = result.errors
-        let record = result.outcome
-        let item = meeting.deep.queue.items.first { $0.sessionID == sessionID }
-        var failure: String?
+    /// The app's pass ended (`DeepTranscriptionJobs.onEnded`, once the next jobs were looked for): a Review asked
+    /// for meanwhile opens, and a Make Final Transcript Now that was not done says why (a cancel takes it off the queue
+    /// first, so it says nothing).
+    func deepTranscriptionEnded(_ report: DeepTranscriptionJobs.PassReport) {
+        let sessionID = report.sessionID
+        let code = report.result.code
+        let errorText = report.result.errors
         let lateCancel = errorText.split(separator: "\n").first { $0.hasPrefix("Cancelled after the new transcript") }
-        let preempted = meeting.deep.preempted == sessionID
-        if preempted { meeting.deep.preempted = nil }
-        switch DeepTranscriptionSchedule.passEnded(code: code, preempted: preempted, errors: errorText) {
-        case .keepPreempted:
-            // Stopped for a meeting: stays queued, and runs again from the start once the meeting is saved (an
-            // automatic one only while the setting is on, which the scheduler applies).
-            break
-        case .retryLater(let global):
-            // Stays queued. Another command holds the meeting: only it waits a minute, the others go on. Another
-            // process's pass holds the lock: everything waits.
-            if global {
-                meeting.deep.retryAfter = Date().addingTimeInterval(60)
-            } else {
-                meeting.deep.delayed[sessionID] = Date().addingTimeInterval(60)
-            }
-        case .done:
-            // Asked for from the menu and not done (a cancel takes it off the queue first): the user is told why.
-            if item?.runNow == true, code != 0, lateCancel == nil {
-                failure = DeepTranscriptionSchedule.failureText(code: code, record: record, errors: errorText)
-            }
-            // Done, refused (exit 1: no model, deleted audio, its language), partial (3), or cancelled: off the
-            // queue either way. Only a pass the app did not see end (a quit, a crash) stays queued, and runs again
-            // from the start at the next launch. Off the queue before the meeting is let go of, since letting go
-            // schedules the next pass.
-            meeting.deep.queue.remove(sessionID)
-            meeting.deep.delayed[sessionID] = nil
+        var failure: String?
+        if report.end == .done, report.item?.runNow == true, code != 0, lateCancel == nil {
+            failure = DeepTranscriptionSchedule.failureText(code: code, record: report.result.outcome, errors: errorText)
         }
-        meeting.deep.running = nil
-        meeting.controller?.endUsing(sessionID)
-        Self.deepLog.notice("Deep transcription of \(sessionID, privacy: .public) ended with \(code, privacy: .public)")
-        meeting.maintenanceEnded[sessionID, default: 0] += 1
-        meeting.meetingsPane?.refresh()
-        updateDeepStates()
-        // The final transcript is a new transcript: its summary follows (§4.17). Looked for first, so a summary the
-        // user asked for goes before the next automatic job (which waits for the scan).
-        scheduleMeetingSummaries()
-        scheduleEchoCatchUp()
-        scheduleDeepTranscription()
         // Review asked for while the pass worked on the meeting.
         if let review = meeting.deep.reviewAfterPass.removeValue(forKey: sessionID) {
             openReview(sessionID: sessionID, directory: review.directory, name: review.name)
@@ -449,7 +323,7 @@ extension HolosAppDelegate {
             showDeepAlert("A final transcript was cancelled after it was saved.",
                           String(lateCancel).replacingOccurrences(of: "Run voiceislocal session diarize on the meeting",
                                                                   with: "Choose Label Speakers in Meetings"))
-        } else if let failure, let item {
+        } else if let failure, let item = report.item {
             let name = (try? SessionArchive.readManifest(at: URL(fileURLWithPath: item.path)).name).map {
                 Self.short($0)
             } ?? "the meeting"
@@ -460,20 +334,22 @@ extension HolosAppDelegate {
 
     /// The Meetings list's State column for queued and running passes.
     func updateDeepStates() {
+        let running = deepRunning
+        // Another process's pass holds the lock (one started in Terminal, or one left running from before a
+        // relaunch): the queue waits for it. The app never signals or adopts it.
+        let otherPassRunning = meeting.deep.coordinator?.lock.isDeepPass ?? false
         var states: [String: String] = [:]
         for item in meeting.deep.queue.items + meeting.deep.queue.pending {
             if let text = DeepTranscriptionSchedule.stateText(sessionID: item.sessionID, queue: meeting.deep.queue,
-                                                              running: meeting.deep.running?.sessionID,
-                                                              power: meeting.deep.power,
-                                                              otherPassRunning: meeting.deep.otherPassRunning) {
+                                                              running: running, power: meeting.deep.power,
+                                                              otherPassRunning: otherPassRunning) {
                 states[item.sessionID] = text
             }
         }
         let offersRunNow = Set(meeting.deep.queue.items.map(\.sessionID).filter {
-            DeepTranscriptionSchedule.offersRunNow(sessionID: $0, queue: meeting.deep.queue,
-                                                   running: meeting.deep.running?.sessionID)
+            DeepTranscriptionSchedule.offersRunNow(sessionID: $0, queue: meeting.deep.queue, running: running)
         })
-        meeting.meetingsPane?.update(deepStates: states, running: meeting.deep.running?.sessionID,
+        meeting.meetingsPane?.update(deepStates: states, running: running,
                                      queuedAutomatically: offersRunNow)
     }
 
@@ -532,14 +408,14 @@ extension HolosAppDelegate {
             reconcileDeepTranscription()
         } else {
             // The pass running now keeps its item until it ends (then it is taken off).
-            meeting.deep.queue.removeAutomatic(keeping: meeting.deep.running?.sessionID)
+            meeting.deep.queue.removeAutomatic(keeping: deepRunning)
             // No final transcripts to wait for: summaries held back at launch (the model still being checked or
             // downloaded) may start.
             meetingSummaryLaunchReconciled()
         }
         updateSettings()
         updateDeepStates()
-        scheduleDeepTranscription()
+        scheduleBackgroundJobs()
     }
 
     /// Settings' "Deep transcription" row: the model state, its progress or error, and the setting.
@@ -555,8 +431,8 @@ extension HolosAppDelegate {
     /// holder). Review would load a transcript and labels the pass is about to replace, so it waits: the alert says
     /// so and offers to cancel this app's pass; Review opens when this app's pass ends. Returns whether it waits.
     func reviewWaitsForDeepTranscription(sessionID: String, directory: URL, name: String) -> Bool {
-        let own = meeting.controller?.sessionsInUse[sessionID] == Self.deepRunningText
-            && meeting.deep.running?.sessionID == sessionID
+        let own = meeting.controller?.sessionsInUse[sessionID] == DeepTranscriptionJobs.runningText
+            && deepRunning == sessionID
         var other = false
         if !own, case .held(let holder?) = DeepTranscriptionLock.state(), holder.isDeepPass {
             other = holder.sessionID == sessionID

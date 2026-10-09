@@ -42,29 +42,85 @@ public enum ReviewParagraphSplit: Sendable, Equatable {
     case breakBefore(turnID: String)
 }
 
+/// What joining a row to the row before it does (`ReviewParagraphs.join`): Backspace at the start of a row in edit
+/// mode, forward Delete at the end of the row before, or Join With Previous Turn.
+public struct ReviewParagraphJoin: Sendable, Equatable {
+    /// The later row's turns, which take the earlier row's speaker (one change, as the row's speaker pop-up makes);
+    /// empty when they have it already.
+    public let reassign: [String]
+    /// The earlier row's speaker (nil: the unknown speaker).
+    public let speakerID: String?
+    /// The later row's turns, in order (never empty): the window joins each to the paragraph before it
+    /// (`ReviewParagraphBreaks.join`), so the rows read as one whatever kept them apart (a break, a split's second
+    /// part, the time gap), and the later row stays whole through its new speaker (a named speaker's microphone and
+    /// system-audio turns given to the unknown speaker would otherwise part by track).
+    public let turnIDs: [String]
+
+    /// The later row's first turn, where the rows meet.
+    public var turnID: String { turnIDs[0] }
+
+    public init(reassign: [String], speakerID: String?, turnIDs: [String]) {
+        precondition(!turnIDs.isEmpty, "A join joins at least one turn.")
+        self.reassign = reassign
+        self.speakerID = speakerID
+        self.turnIDs = turnIDs
+    }
+}
+
 /// The paragraph breaks "Split Turn" made in the window without splitting a turn (`ReviewParagraphSplit.breakBefore`),
-/// never saved. They belong to the run they were made on: a new run drops them (a relabel gives turn IDs such as "T1"
-/// to other turns), except one published while the window reverts a word fix (`beginCarryOver`), which keeps the same
-/// turns (their estimated starts may move): there a break follows its turn by ID and track. Within a run, a break goes
-/// with its turn. Pure.
+/// and the joins a row joined to the row before it made (`join`), never saved. They belong to the run they were made
+/// on: a new run drops them (a relabel gives turn IDs such as "T1" to other turns), except one published while the
+/// window reverts a word fix (`beginCarryOver`), which keeps the same turns (their estimated starts may move): there a
+/// break or a join follows its turn by ID and track. Within a run, each goes with its turn. A turn has one mark at
+/// most: the later one asked replaces the other. Joins are only how rows read: the window drops them all
+/// (`clearJoins`) on any Undo, any change that fails, and any relabel. Pure.
 public struct ReviewParagraphBreaks: Sendable, Equatable {
-    /// Turn ID → its track, on `runID`.
-    private var tracks: [String: String] = [:]
+    private enum Mark: Sendable, Equatable {
+        case breakBefore
+        case join
+    }
+
+    private struct Held: Sendable, Equatable {
+        var track: String
+        var mark: Mark
+    }
+
+    /// Turn ID → its mark and track, on `runID`.
+    private var marks: [String: Held] = [:]
     private var runID: String?
     /// Word-fix reverts in flight.
     private var carryOvers = 0
 
     public init() {}
 
-    public var isEmpty: Bool { tracks.isEmpty }
+    public var isEmpty: Bool { marks.isEmpty }
 
-    /// Breaks the paragraph before `turn` of run `runID`.
+    /// The turns joined to the paragraph before them (`ReviewParagraphs.group`'s `joins`), as of the last `active`.
+    public var joins: Set<String> { Set(marks.compactMap { $0.value.mark == .join ? $0.key : nil }) }
+
+    /// Breaks the paragraph before `turn` of run `runID` (a join before it goes).
     public mutating func insert(before turn: ProjectedTurn, runID: String?) {
-        if runID != self.runID {
-            tracks = [:]
-            self.runID = runID
-        }
-        tracks[turn.id] = turn.track
+        start(runID)
+        marks[turn.id] = Held(track: turn.track, mark: .breakBefore)
+    }
+
+    /// Joins `turn` of run `runID` to the paragraph before it (a break before it goes): it reads on in that paragraph
+    /// while it has that paragraph's speaker, whatever the time gap, and also as a split's second part.
+    public mutating func join(_ turn: ProjectedTurn, runID: String?) {
+        start(runID)
+        marks[turn.id] = Held(track: turn.track, mark: .join)
+    }
+
+    /// Every join goes (the breaks stay): rows read as they group on their own again.
+    public mutating func clearJoins() {
+        marks = marks.filter { $0.value.mark != .join }
+    }
+
+    /// A break or join made on another run than the ones held starts afresh.
+    private mutating func start(_ runID: String?) {
+        guard runID != self.runID else { return }
+        marks = [:]
+        self.runID = runID
     }
 
     /// A word-fix revert starts: the runs it publishes keep the turns.
@@ -77,13 +133,16 @@ public struct ReviewParagraphBreaks: Sendable, Equatable {
         carryOvers = max(0, carryOvers - 1)
     }
 
-    /// The turns of `turns` (of run `runID`) to break before (`ReviewParagraphs.group`). A new run that is not carried
-    /// over drops every break; otherwise a break stays while a turn with its ID and track does. `keepsTurnsOf` says
-    /// whether `runID` replaced a given earlier run keeping its turns (a word edit in Review, or its undo,
-    /// `ReviewSession.keepsTurns`): the breaks of that run are carried over too.
+    /// The turns of `turns` (of run `runID`) to break before (`ReviewParagraphs.group`); the joins kept are `joins`
+    /// then. A new run that is not carried over drops every break and join; one carried over only because a revert
+    /// is in flight keeps its breaks but drops its joins; otherwise each stays while a turn with its ID and track does. `keepsTurnsOf` says whether `runID` replaced a given earlier run keeping its turns (a
+    /// word edit in Review, or its undo, `ReviewSession.keepsTurns`): the breaks and joins of that run are carried
+    /// over too. `resolve` gives the ID a turn held now has (`ReviewSession.resolvedTurnID`): a break or join made on
+    /// a split's second part while the split was still saving names its temporary ID, which the saved split replaces.
     public mutating func active(in turns: [ProjectedTurn], runID: String?,
-                                keepsTurnsOf: (String) -> Bool = { _ in false }) -> Set<String> {
-        guard !tracks.isEmpty else {
+                                keepsTurnsOf: (String) -> Bool = { _ in false },
+                                resolve: (String) -> String = { $0 }) -> Set<String> {
+        guard !isEmpty else {
             self.runID = runID
             return []
         }
@@ -91,14 +150,20 @@ public struct ReviewParagraphBreaks: Sendable, Equatable {
             let kept = self.runID.map(keepsTurnsOf) ?? false
             self.runID = runID
             guard carryOvers > 0 || kept else {
-                tracks = [:]
+                marks = [:]
                 return []
             }
+            // Carried over by a revert in flight but not shown to keep the turns (a relabel may have landed): the
+            // breaks carry over, the joins never do.
+            if !kept { marks = marks.filter { $0.value.mark == .breakBefore } }
         }
-        var kept: [String: String] = [:]
-        for turn in turns where tracks[turn.id] == turn.track { kept[turn.id] = turn.track }
-        tracks = kept
-        return Set(kept.keys)
+        let held = Dictionary(marks.map { (resolve($0.key), $0.value) }, uniquingKeysWith: { first, _ in first })
+        var kept: [String: Held] = [:]
+        for turn in turns {
+            if let mark = held[turn.id], mark.track == turn.track { kept[turn.id] = mark }
+        }
+        marks = kept
+        return Set(kept.compactMap { $0.value.mark == .breakBefore ? $0.key : nil })
     }
 }
 
@@ -109,22 +174,23 @@ public struct ReviewParagraphBreaks: Sendable, Equatable {
 /// an unknown microphone turn never joins an unknown system-audio one, nor a named speaker's. A named speaker's
 /// microphone and system-audio turns do join. A turn starts a paragraph of its own when it is the second part of a
 /// split ("T5/…"), when the window was asked to break before it (`breaks`), or when its start or the paragraph's end
-/// is not a number.
+/// is not a number. A turn the window joined to the paragraph before it (`joins`, a row joined to the row before)
+/// joins it whenever it has the same speaker, whatever else would keep it apart.
 public enum ReviewParagraphs {
     /// Turns of one speaker this many seconds apart or more are separate paragraphs.
     public static let gapSeconds = 3.0
 
     /// `turns` (in the projection's order, which is time order) as paragraphs, in the same order.
-    public static func group(_ turns: [ProjectedTurn], breaks: Set<String> = [],
+    public static func group(_ turns: [ProjectedTurn], breaks: Set<String> = [], joins: Set<String> = [],
                              gapSeconds: Double = gapSeconds) -> [ReviewParagraph] {
         var paragraphs: [ReviewParagraph] = []
         var open: [ProjectedTurn] = []
         var openEnd = 0.0
         for turn in turns {
             if let first = open.first, let last = open.last, first.speakerID == turn.speakerID,
-               turn.speakerID != nil || last.track == turn.track,
-               !turn.id.contains("/"), !breaks.contains(turn.id),
-               turn.start.isFinite, openEnd.isFinite, turn.start - openEnd < gapSeconds {
+               joins.contains(turn.id) || (turn.speakerID != nil || last.track == turn.track)
+                   && !turn.id.contains("/") && !breaks.contains(turn.id)
+                   && turn.start.isFinite && openEnd.isFinite && turn.start - openEnd < gapSeconds {
                 open.append(turn)
                 openEnd = max(openEnd, turn.end)
                 continue
@@ -189,5 +255,14 @@ public enum ReviewParagraphs {
             offset += turnWords.count
         }
         return nil
+    }
+
+    /// Joins `later` to `earlier`, the paragraph shown just before it, as removing the line break between two
+    /// paragraphs of text does: every turn of `later` takes `earlier`'s speaker (nothing to change when it has it), and
+    /// `later`'s first turn is joined to the paragraph before it, so whatever kept them apart (a break the window made,
+    /// a split's second part, the time gap) no longer does.
+    public static func join(_ later: ReviewParagraph, to earlier: ReviewParagraph) -> ReviewParagraphJoin {
+        ReviewParagraphJoin(reassign: later.speakerID == earlier.speakerID ? [] : later.turnIDs,
+                            speakerID: earlier.speakerID, turnIDs: later.turnIDs)
     }
 }
