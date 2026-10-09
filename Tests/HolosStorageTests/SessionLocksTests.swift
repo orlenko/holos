@@ -4,25 +4,10 @@ import Synchronization
 import Testing
 import HolosCore
 @testable import HolosStorage
+import HolosTestSupport
+import HolosSessionTestSupport
 
-private func locksTemporaryRoot() throws -> URL {
-    let root = FileManager.default.temporaryDirectory.appendingPathComponent("holos-locks-\(UUID().uuidString)")
-    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-    return root
-}
-
-/// A finished session: no writer, no lease.
-private func locksMakeSession(in root: URL) async throws -> URL {
-    let archive = try SessionArchive.create(root: root, name: "Locks", source: .microphone,
-                                            locale: "en-CA", backend: .speech)
-    try await archive.finish(status: ArchiveStatus.complete)
-    return archive.directory
-}
-
-private func isUnavailable(_ error: HolosError?) -> Bool {
-    if case .unavailable? = error { return true }
-    return false
-}
+private let locksSession = SessionFixtureBuilder(name: "Locks")
 
 /// Every descriptor of this process open on the file at `url` (same device and inode).
 private func descriptors(openOn url: URL) -> [Int32] {
@@ -43,9 +28,9 @@ private func isCloseOnExec(_ fd: Int32) -> Bool {
 }
 
 @Test func speakerLockTimesOutForSecondHolder() async throws {
-    let root = try locksTemporaryRoot()
+    let root = try TemporaryDirectory("locks").url
     defer { try? FileManager.default.removeItem(at: root) }
-    let session = try await locksMakeSession(in: root)
+    let session = try await locksSession.finished(in: root).session
     let result = try SessionArchive.withSpeakerLock(at: session) { () -> Int in
         let waited = ContinuousClock().measure {
             let error = #expect(throws: HolosError.self) {
@@ -61,9 +46,9 @@ private func isCloseOnExec(_ fd: Int32) -> Bool {
 }
 
 @Test func speakerLockIsReleasedWhenTheBodyThrows() async throws {
-    let root = try locksTemporaryRoot()
+    let root = try TemporaryDirectory("locks").url
     defer { try? FileManager.default.removeItem(at: root) }
-    let session = try await locksMakeSession(in: root)
+    let session = try await locksSession.finished(in: root).session
     #expect(throws: HolosError.self) {
         try SessionArchive.withSpeakerLock(at: session) { throw HolosError.io("body failed") }
     }
@@ -71,9 +56,9 @@ private func isCloseOnExec(_ fd: Int32) -> Bool {
 }
 
 @Test func processingLeaseIsExclusive() async throws {
-    let root = try locksTemporaryRoot()
+    let root = try TemporaryDirectory("locks").url
     defer { try? FileManager.default.removeItem(at: root) }
-    let session = try await locksMakeSession(in: root)
+    let session = try await locksSession.finished(in: root).session
     #expect(try !SessionArchive.isProcessing(at: session))
     let lease = try SessionArchive.acquireProcessingLease(at: session)
     #expect(lease.session == session)
@@ -94,9 +79,9 @@ private func isCloseOnExec(_ fd: Int32) -> Bool {
 }
 
 @Test func leaseAcquisitionSurvivesAProbe() async throws {
-    let root = try locksTemporaryRoot()
+    let root = try TemporaryDirectory("locks").url
     defer { try? FileManager.default.removeItem(at: root) }
-    let session = try await locksMakeSession(in: root)
+    let session = try await locksSession.finished(in: root).session
     let path = session.appendingPathComponent(SessionLockFile.processing).path
     let fd = Darwin.open(path, O_CREAT | O_RDWR | O_CLOEXEC, 0o600)
     try #require(fd >= 0)
@@ -117,9 +102,9 @@ private func isCloseOnExec(_ fd: Int32) -> Bool {
 }
 
 @Test func leaseReleasedOnDeinit() async throws {
-    let root = try locksTemporaryRoot()
+    let root = try TemporaryDirectory("locks").url
     defer { try? FileManager.default.removeItem(at: root) }
-    let session = try await locksMakeSession(in: root)
+    let session = try await locksSession.finished(in: root).session
     func processingWhileHeld() throws -> Bool {
         let lease = try SessionArchive.acquireProcessingLease(at: session)
         defer { withExtendedLifetime(lease) {} }
@@ -130,7 +115,7 @@ private func isCloseOnExec(_ fd: Int32) -> Bool {
 }
 
 @Test func lockDescriptorsAreCloseOnExec() async throws {
-    let root = try locksTemporaryRoot()
+    let root = try TemporaryDirectory("locks").url
     defer { try? FileManager.default.removeItem(at: root) }
     let archive = try SessionArchive.create(root: root, name: "Locks", source: .microphone,
                                             locale: "en-CA", backend: .speech)
@@ -157,7 +142,7 @@ private func isCloseOnExec(_ fd: Int32) -> Bool {
 }
 
 @Test func locksRefuseAMissingSessionFolder() throws {
-    let root = try locksTemporaryRoot()
+    let root = try TemporaryDirectory("locks").url
     defer { try? FileManager.default.removeItem(at: root) }
     let missing = root.appendingPathComponent("\(UUID().uuidString).holos")
     #expect(throws: HolosError.self) { try SessionArchive.acquireProcessingLease(at: missing, retry: .zero) }
@@ -204,15 +189,10 @@ private final class LeaseProbes: Sendable {
     var all: [Bool] { values.withLock { $0 } }
 }
 
-private func isInvalidInput(_ error: HolosError?) -> Bool {
-    if case .invalidInput? = error { return true }
-    return false
-}
-
 @Test func leaseReleasedDuringMaintenanceOpenStaysLockedUntilTheOpenEnds() async throws {
-    let root = try locksTemporaryRoot()
+    let root = try TemporaryDirectory("locks").url
     defer { try? FileManager.default.removeItem(at: root) }
-    let session = try await locksMakeSession(in: root)
+    let session = try await locksSession.finished(in: root).session
     let lease = try SessionArchive.acquireProcessingLease(at: session)
     let writer = try WriterHolder(session)
     defer { writer.letGo() }
@@ -235,9 +215,9 @@ private func isInvalidInput(_ error: HolosError?) -> Bool {
 }
 
 @Test func leaseReleasedDuringRecoveryStaysLockedUntilRecoveryEnds() async throws {
-    let root = try locksTemporaryRoot()
+    let root = try TemporaryDirectory("locks").url
     defer { try? FileManager.default.removeItem(at: root) }
-    let session = try await locksMakeSession(in: root)
+    let session = try await locksSession.finished(in: root).session
     let lease = try SessionArchive.acquireProcessingLease(at: session)
     let writer = try WriterHolder(session)
     defer { writer.letGo() }
@@ -257,9 +237,9 @@ private func isInvalidInput(_ error: HolosError?) -> Bool {
 /// `release()` from another thread races `openForMaintenance(at:lease:)` and `recover(at:lease:)`: each either
 /// fails with "already released" before doing anything, or finishes with the lease locked throughout.
 @Test func leaseReleaseRacingItsUseNeverUnlocksMidOperation() async throws {
-    let root = try locksTemporaryRoot()
+    let root = try TemporaryDirectory("locks").url
     defer { try? FileManager.default.removeItem(at: root) }
-    let session = try await locksMakeSession(in: root)
+    let session = try await locksSession.finished(in: root).session
     for iteration in 0..<40 {
         let lease = try SessionArchive.acquireProcessingLease(at: session, retry: .seconds(5))
         let writer = try WriterHolder(session)

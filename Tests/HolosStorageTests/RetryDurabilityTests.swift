@@ -2,6 +2,10 @@ import Foundation
 import Testing
 import HolosCore
 @testable import HolosStorage
+import HolosTestSupport
+import HolosSessionTestSupport
+
+private let retrySession = SessionFixtureBuilder(name: "Retry", source: .microphoneAndSystem)
 
 // Multi-step writes whose retry must finish a failed attempt: every fsync, rename, unlink, and new-folder reopen
 // step fails in turn
@@ -9,17 +13,6 @@ import HolosCore
 // replaced, or removed must be covered by a later fsync of its folder.
 
 private let retryDate = Date(timeIntervalSince1970: 1_790_000_000)
-
-private func retryTemporaryRoot() throws -> URL {
-    let root = FileManager.default.temporaryDirectory.appendingPathComponent("holos-retry-\(UUID().uuidString)")
-    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-    return root
-}
-
-private func retryNewSession(in root: URL) throws -> SessionArchive {
-    try SessionArchive.create(root: root, name: "Retry", source: .microphoneAndSystem, locale: "en-CA",
-                              backend: .speech)
-}
 
 /// Temporary files (".<UUID>.tmp") left in `folder`.
 private func temporaryFiles(in folder: URL) throws -> [String] {
@@ -59,7 +52,7 @@ private func makeFixture(_ write: RetryWrite, root: URL) async throws -> RetryFi
     let fixture = RetryFixture()
     switch write {
     case .saveTranscript:
-        let writer = try retryNewSession(in: root)
+        let writer = try retrySession.create(in: root)
         let directory = writer.directory
         fixture.writer = writer
         try await writer.saveTranscript(Transcript(createdAt: retryDate, source: "mic", locale: "en-CA",
@@ -85,7 +78,7 @@ private func makeFixture(_ write: RetryWrite, root: URL) async throws -> RetryFi
             #expect(try temporaryFiles(in: SessionPaths.exports(directory)) == [], comment)
         }
     case .runAndHead:
-        let archive = try retryNewSession(in: root)
+        let archive = try retrySession.create(in: root)
         try await archive.finish(status: ArchiveStatus.complete)
         let session = archive.directory
         let run = DiarizationRun(sessionID: archive.id, createdAt: retryDate, transcriptID: UUID().uuidString,
@@ -119,7 +112,7 @@ private func makeFixture(_ write: RetryWrite, root: URL) async throws -> RetryFi
 @discardableResult
 private func runWithFault(_ write: RetryWrite, failAt: Int?, alsoFailAt: Set<Int> = [],
                           label: String = "") async throws -> [String] {
-    let root = try retryTemporaryRoot()
+    let root = try TemporaryDirectory("retry").url
     defer { try? FileManager.default.removeItem(at: root) }
     let fixture = try await makeFixture(write, root: root)
     let plan = FaultPlan(failAt: alsoFailAt.union(failAt.map { [$0] } ?? []))
@@ -180,10 +173,10 @@ func aRetryAfterAnyFailedStepFinishesTheWriteDurably(_ write: RetryWrite) async 
 }
 
 @Test func recoverRetryFsyncsTheSessionFolderAfterAFailedManifestSync() async throws {
-    let root = try retryTemporaryRoot()
+    let root = try TemporaryDirectory("retry").url
     defer { try? FileManager.default.removeItem(at: root) }
     func abandoned() async throws -> URL {
-        let writer = try retryNewSession(in: root)
+        let writer = try retrySession.create(in: root)
         try await writer.recordEvent(kind: "tick", details: [:])
         return writer.directory
     }
@@ -205,9 +198,9 @@ func aRetryAfterAnyFailedStepFinishesTheWriteDurably(_ write: RetryWrite) async 
 }
 
 @Test func deleteVoiceDataRetryFsyncsTheFolderAfterAFailedSync() async throws {
-    let root = try retryTemporaryRoot()
+    let root = try TemporaryDirectory("retry").url
     defer { try? FileManager.default.removeItem(at: root) }
-    let archive = try retryNewSession(in: root)
+    let archive = try retrySession.create(in: root)
     try await archive.finish(status: ArchiveStatus.complete)
     let session = archive.directory
     try AtomicFile.ensurePrivateDirectory(SessionPaths.voiceDirectory(session))

@@ -1,7 +1,9 @@
 import Foundation
 import HolosCore
+@testable import HolosEvaluation
 @testable import HolosMeeting
 import HolosStorage
+import HolosTestSupport
 import Testing
 
 // `voiceislocal eval apply --add-vocabulary` and the word list's "often heard as" words (docs/design.md "Meeting word

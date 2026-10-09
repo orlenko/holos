@@ -103,8 +103,12 @@ final class MainWindowController: NSObject, NSWindowDelegate, NSToolbarDelegate 
     /// Where the window keeps the sidebar's width (the split view's autosave) and whether it is hidden (a
     /// UserDefaults key), for the next opening and the next launch.
     struct Autosave {
-        var split: String
+        /// The split view's autosave name (AppKit keeps it in the standard defaults); nil saves no divider position.
+        var split: String?
         var sidebarHidden: String
+        /// The defaults suite `sidebarHidden` is kept in (nil: the standard defaults); tests pass one of their own.
+        var suite: String?
+        var defaults: UserDefaults { suite.flatMap(UserDefaults.init(suiteName:)) ?? .standard }
         static let standard = Autosave(split: "VoiceIsLocalMainSplit", sidebarHidden: "mainWindowSidebarHidden")
     }
 
@@ -179,11 +183,11 @@ final class MainWindowController: NSObject, NSWindowDelegate, NSToolbarDelegate 
         split.addSplitViewItem(contentItem)
         split.splitView.autosaveName = autosave?.split
         // Hidden as it was left (the split view's autosave is not relied on for that).
-        if let key = autosave?.sidebarHidden, UserDefaults.standard.bool(forKey: key) {
+        if let autosave, autosave.defaults.bool(forKey: autosave.sidebarHidden) {
             sidebarItem.isCollapsed = true
         }
         split.onSidebarCollapsedChange = { [weak self] collapsed in
-            if let key = autosave?.sidebarHidden { UserDefaults.standard.set(collapsed, forKey: key) }
+            if let autosave { autosave.defaults.set(collapsed, forKey: autosave.sidebarHidden) }
             if collapsed { self?.sidebarDidCollapse() }
         }
         window.contentViewController = split

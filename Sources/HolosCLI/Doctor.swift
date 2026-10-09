@@ -6,6 +6,7 @@ import FoundationModels
 import HolosAudio
 import HolosCore
 import HolosDiarization
+import HolosMeeting
 import HolosSpeech
 import HolosSynthesis
 import HolosWhisper
@@ -36,7 +37,7 @@ struct Doctor: AsyncParsableCommand {
             speechAssetStatus: (try? await AppleSpeechEngine.assetStatus(locale: locale, backend: .speech)) ?? "unsupported",
             dictationAssetStatus: (try? await AppleSpeechEngine.assetStatus(locale: locale, backend: .dictation)) ?? "unsupported",
             sessionsDirectory: HolosPaths.sessions.path,
-            speakerModels: speakerModels, deepTranscriptionModel: whisperModel,
+            speakerModels: speakerModels.doctorValue, deepTranscriptionModel: whisperModel,
             naturalVoices: Dictionary(uniqueKeysWithValues: NaturalVoicePack.allCases.map {
                 ($0.rawValue, NaturalVoiceModels.status(pack: $0))
             }))
@@ -57,7 +58,7 @@ struct Doctor: AsyncParsableCommand {
         Console.output("Speaker models: \(speakerModels.summary)")
         Console.output("Deep transcription model (\(DeepTranscriptionModel.displayName)): \(whisperModel.summary)")
         for pack in NaturalVoicePack.allCases {
-            Console.output("Natural voices (\(pack.languageName)): \(report.naturalVoices[pack.rawValue]?.summary ?? "unknown")")
+            Console.output("Natural voices (\(pack.languageName)): \(report.naturalVoices?[pack.rawValue]?.summary ?? "unknown")")
         }
         Console.output("Install transcription assets with: voiceislocal setup --locale \(locale)")
         if speakerModels != .verified { Console.output("Install speaker models with: voiceislocal setup --speakers") }
@@ -65,30 +66,6 @@ struct Doctor: AsyncParsableCommand {
             Console.output("Install the deep transcription model with: voiceislocal setup --whisper (about 1.6 GB)")
         }
     }
-}
-
-private struct DoctorReport: Encodable {
-    var os: String
-    var microphone: String
-    var systemAudioPermission: Bool
-    var accessibilityPermission: Bool
-    var foundationModel: String
-    var contextSize: Int?
-    var voiceCount: Int
-    var speech: SpeechCapabilities
-    var dictation: SpeechCapabilities
-    /// The locale `speechAssetStatus` and `dictationAssetStatus` describe: `--locale`, else the default one, which
-    /// depends on the Mac's preferred languages.
-    var locale: String
-    var speechAssetStatus: String
-    var dictationAssetStatus: String
-    var sessionsDirectory: String
-    /// Encodes as "verified", "notInstalled", or "damaged" (`ModelInstallStatus.doctorValue`).
-    var speakerModels: ModelInstallStatus
-    /// "installed", "downloading", or "notInstalled" (docs/meeting-design.md §4.16).
-    var deepTranscriptionModel: DeepModelStatus
-    /// Each natural voice pack ("english", "french"): "installed", "downloading", or "notInstalled".
-    var naturalVoices: [String: DeepModelStatus]
 }
 
 struct Setup: AsyncParsableCommand {

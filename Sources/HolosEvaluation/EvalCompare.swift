@@ -1,5 +1,6 @@
 import Foundation
 import HolosCore
+import HolosMeeting
 import HolosSpeakers
 import HolosStorage
 

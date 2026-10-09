@@ -3,6 +3,7 @@ import Foundation
 import Testing
 import HolosCore
 @testable import HolosStorage
+import HolosTestSupport
 
 // words.json (docs/design.md "Word list"): versioned, written whole and atomically (0600), changed under a lock on
 // the list as it is on disk; and `voiceislocal words` as library calls (WordListCommand).
@@ -10,15 +11,8 @@ import HolosCore
 private let wordsDate = Date(timeIntervalSince1970: 1_790_000_000)
 
 private func wordsStore() throws -> WordListStore {
-    let root = FileManager.default.temporaryDirectory.appendingPathComponent("holos-words-\(UUID().uuidString)")
-    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    let root = try TemporaryDirectory("words").url
     return WordListStore(url: root.appendingPathComponent(WordListStore.fileName))
-}
-
-private func mode(_ url: URL) -> mode_t? {
-    var info = stat()
-    guard lstat(url.path, &info) == 0 else { return nil }
-    return info.st_mode & 0o777
 }
 
 @Test func aMissingWordListLoadsEmptyAndCreatesNothing() throws {
@@ -33,7 +27,7 @@ private func mode(_ url: URL) -> mode_t? {
     let (list, outcome, stamp) = try store.update { $0.add("Keycloak", at: wordsDate) }
     #expect(outcome == .added("Keycloak") && list.terms == ["Keycloak"])
     #expect(stamp != nil && stamp == store.stamp())
-    #expect(mode(store.url) == 0o600)
+    #expect(FileInspection.mode(store.url) == 0o600)
     let text = try String(contentsOf: store.url, encoding: .utf8)
     #expect(text.contains("\"schemaVersion\" : 1") && text.contains("\"source\" : \"user\"")
         && text.contains("\"addedAt\" : \"2026-09-2"))

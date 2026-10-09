@@ -328,16 +328,4 @@ public enum EvalStore {
         let second = try AtomicFile.removeTree(["derived", "eval-cloud"], in: session)
         return first || second
     }
-
-    /// SHA-256 of a track's chunk list (IDs, times, frame counts, sample rates, and each chunk's content hash as the
-    /// manifest records it).
-    public static func audioFingerprint(manifest: SessionManifest, track: String) -> String {
-        let lines = manifest.chunks.filter { $0.track == track }
-            .sorted { ($0.start, $0.relativePath) < ($1.start, $1.relativePath) }
-            .map {
-                "\($0.id) \($0.relativePath) \($0.start) \($0.end) \($0.frameCount) \($0.sampleRate) \($0.channels) "
-                    + ($0.sha256 ?? "-")
-            }
-        return SessionExports.sha256(Data(lines.joined(separator: "\n").utf8))
-    }
 }

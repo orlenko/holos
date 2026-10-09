@@ -35,12 +35,10 @@ struct Holos: AsyncParsableCommand {
 }
 
 /// Resuming pending forgets, and sweeping leftover voice renders, at the start of the commands that read or write
-/// people and speaker data.
+/// people and speaker data (`ForgetResumeScope`: not those that only read).
 enum ForgetResume {
-    static let commands: Set<String> = ["people", "speakers", "session"]
-
     static func beforeCommand(_ arguments: [String]) {
-        guard let command = arguments.first, commands.contains(command) else { return }
+        guard ForgetResumeScope.applies(to: arguments) else { return }
         DiarizerVoiceSampleExtractor.removeStaleRenders()
         do {
             try VoiceProfileService.resumePendingForgets(store: SpeakerProfileStore())
