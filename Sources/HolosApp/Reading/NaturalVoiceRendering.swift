@@ -145,16 +145,20 @@ import Synchronization
             return voice
         }
         let wanted = language ?? Locale.preferredLanguages.first ?? "en-US"
-        if let natural = NaturalVoiceCatalog.defaultVoice(language: wanted, installed: installed) {
-            return natural.descriptor
-        }
-        if let best = bestApple(wanted) { return best }
+        if let voice = automatic(language: wanted, installed: installed, bestApple: bestApple) { return voice }
         let fallback = try appleDefault()
         guard let voice = appleVoices.first(where: { $0.id == fallback }) else {
             throw HolosError.unavailable("No speech voice is installed. Add one in System Settings › Accessibility › "
                 + "Spoken Content › System Voice › Manage Voices.")
         }
         return voice
+    }
+
+    /// What Automatic means for `language`, for Make Audio and Preview alike: the pack's natural voice once it is
+    /// installed (Alba, Estelle), else the best Apple voice; nil when no voice speaks it.
+    static func automatic(language: String, installed: Set<NaturalVoicePack>,
+                          bestApple: (String) -> VoiceDescriptor?) -> VoiceDescriptor? {
+        NaturalVoiceCatalog.defaultVoice(language: language, installed: installed)?.descriptor ?? bestApple(language)
     }
 
     /// How a reading's row names its voice.

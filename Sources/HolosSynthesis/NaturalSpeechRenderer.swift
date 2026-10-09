@@ -62,9 +62,11 @@ public enum NaturalSpeechPlan {
 }
 
 /// The check of a rendered paragraph against its text: the words a recognizer hears compared with the words written,
-/// case, accents, and punctuation ignored, numbers left out (a voice says "fifteen hundred" for "1,500", which a
-/// recognizer may write either way). It fails when the edits needed exceed 15 % of the paragraph's words (at least 2),
-/// or when the lengths differ by more than 8 words (a cut-off or a run-on take).
+/// case, accents, and punctuation ignored, and numbers left out on both sides, whichever way they are written: digits
+/// ("2015", "3.5", "2nd", "1er") and number words ("twenty fifteen", "three point five", "second", "deux mille
+/// quinze", "trois virgule cinq", "deuxième"). A voice reads "2015" as words that a recognizer may write as digits or
+/// spell out, so neither side's numbers are compared. It fails when the edits needed exceed 15 % of the paragraph's
+/// words (at least 2), or when the lengths differ by more than 8 words (a cut-off or a run-on take).
 public enum SpeechChunkCheck {
     public struct Verdict: Sendable, Equatable {
         public let passed: Bool
@@ -89,12 +91,41 @@ public enum SpeechChunkCheck {
                        heardWords: hypothesis.count)
     }
 
-    /// Lowercased, accent-free words of letters and digits; words with digits are left out.
+    /// Lowercased, accent-free words of letters and digits, numbers left out: every word with a digit, every number
+    /// word (English and French cardinals, ordinals, and their parts), and a joining word between two of them ("and",
+    /// "point", "et", "pour" in "cinquante pour cent").
     static func words(_ text: String) -> [String] {
-        text.folding(options: [.caseInsensitive, .diacriticInsensitive, .widthInsensitive], locale: nil)
+        let tokens = text.folding(options: [.caseInsensitive, .diacriticInsensitive, .widthInsensitive], locale: nil)
             .components(separatedBy: CharacterSet.alphanumerics.inverted)
-            .filter { !$0.isEmpty && $0.rangeOfCharacter(from: .decimalDigits) == nil }
+            .filter { !$0.isEmpty }
+        let numeric = tokens.map { $0.rangeOfCharacter(from: .decimalDigits) != nil || numberWords.contains($0) }
+        return tokens.indices.compactMap { index in
+            if numeric[index] { return nil }
+            if numberJoiners.contains(tokens[index]), index > 0, index + 1 < tokens.count,
+               numeric[index - 1], numeric[index + 1] { return nil }
+            return tokens[index]
+        }
     }
+
+    /// Number words, folded (no accents).
+    static let numberWords: Set<String> = Set([
+        "zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten", "eleven", "twelve",
+        "thirteen", "fourteen", "fifteen", "sixteen", "seventeen", "eighteen", "nineteen", "twenty", "thirty",
+        "forty", "fifty", "sixty", "seventy", "eighty", "ninety", "hundred", "hundreds", "thousand", "thousands",
+        "million", "millions", "billion", "billions", "first", "second", "third", "fourth", "fifth", "sixth",
+        "seventh", "eighth", "ninth", "tenth", "eleventh", "twelfth", "thirteenth", "fourteenth", "fifteenth",
+        "sixteenth", "seventeenth", "eighteenth", "nineteenth", "twentieth", "thirtieth", "fortieth", "fiftieth",
+        "sixtieth", "seventieth", "eightieth", "ninetieth", "hundredth", "thousandth", "millionth", "percent", "un",
+        "une", "deux", "trois", "quatre", "cinq", "six", "sept", "huit", "neuf", "dix", "onze", "douze", "treize",
+        "quatorze", "quinze", "seize", "vingt", "vingts", "trente", "quarante", "cinquante", "soixante", "cent",
+        "cents", "mille", "million", "milliard", "milliards", "virgule", "premier", "premiere", "premiers",
+        "premieres", "seconde", "deuxieme", "troisieme", "quatrieme", "cinquieme", "sixieme", "septieme", "huitieme",
+        "neuvieme", "dixieme", "onzieme", "douzieme", "treizieme", "quatorzieme", "quinzieme", "seizieme",
+        "vingtieme", "trentieme", "centieme", "millieme",
+    ])
+
+    /// Words that join the parts of a number.
+    static let numberJoiners: Set<String> = ["and", "point", "dot", "et", "pour"]
 
     static func editDistance(_ lhs: [String], _ rhs: [String]) -> Int {
         if lhs.isEmpty { return rhs.count }
@@ -275,27 +306,36 @@ public struct NaturalSpeechStats: Sendable, Equatable {
         try SpeechRate.validate(rate)
         let speed = NaturalSpeechSpeed.factor(rate: rate)
         var stats = NaturalSpeechStats()
-        var samples: [Float] = []
         var checking = checker != nil
+        // Each paragraph goes to the file as soon as it is made, so a long text never holds more than one paragraph's
+        // samples; the file is written beside the output and published once whole.
+        let temporary = output.deletingLastPathComponent()
+            .appendingPathComponent(".holos-\(UUID().uuidString).\(ext)")
+        defer { _ = unlink(temporary.path) }
+        let writer = try NaturalSpeechFileWriter(url: temporary, sampleRate: Self.sampleRate)
         for (index, block) in blocks.enumerated() {
             try Task.checkCancellation()
             var speech = try await paragraph(block.text, index: index, voice: voice, checking: &checking,
                                              stats: &stats)
             speech = try TimeStretch.apply(speech, sampleRate: Self.sampleRate, rate: speed)
-            samples += speech
-            samples += [Float](repeating: 0, count: Int((block.pauseAfter * Self.sampleRate).rounded()))
+            try writer.append(speech)
+            try writer.appendSilence(seconds: block.pauseAfter)
         }
+        writer.close()
+        let frames = writer.frames
         stats.paragraphs = blocks.count
-        stats.audioSeconds = Double(samples.count) / Self.sampleRate
+        stats.audioSeconds = Double(frames) / Self.sampleRate
         lastStats = stats
+        guard frames > 0 else { throw HolosError.incomplete("The natural voice produced no audio.") }
         try Task.checkCancellation()
-        let (rename, sampleRate) = (exclusiveRename, Self.sampleRate)
-        let published = samples
+        let rename = exclusiveRename
+        // Off the main actor: on a volume that cannot rename exclusively the file is copied.
         try await Task.detached(priority: .userInitiated) {
-            try Self.write(published, sampleRate: sampleRate, to: output, fileExtension: ext, exclusiveRename: rename)
+            try ExclusivePublisher.publish(temporary, to: output, exclusiveRename: rename,
+                                           existing: "Speech output already exists")
         }.value
-        return RenderedAudio(url: output, duration: Double(samples.count) / sampleRate,
-                             frameCount: Int64(samples.count), sampleRate: sampleRate)
+        return RenderedAudio(url: output, duration: Double(frames) / Self.sampleRate, frameCount: frames,
+                             sampleRate: Self.sampleRate)
     }
 
     /// One paragraph: rendered, checked, rendered again once with the next seed, else read by a system voice.
@@ -357,24 +397,18 @@ public struct NaturalSpeechStats: Sendable, Equatable {
         Self.log.notice("Paragraph \(index + 1, privacy: .public) read by \(fallen.voice, privacy: .public) instead")
         return fallen.samples
     }
-
-    /// Writes mono float samples to `output` through a temporary file in its folder published with
-    /// `ExclusivePublisher` (never over a file already there).
-    nonisolated static func write(_ samples: [Float], sampleRate: Double, to output: URL, fileExtension: String,
-                                  exclusiveRename: ExclusivePublisher.ExclusiveRename) throws {
-        guard !samples.isEmpty else { throw HolosError.incomplete("The natural voice produced no audio.") }
-        let temporary = output.deletingLastPathComponent()
-            .appendingPathComponent(".holos-\(UUID().uuidString).\(fileExtension)")
-        defer { _ = unlink(temporary.path) }
-        try NaturalSpeechFile.write(samples, sampleRate: sampleRate, to: temporary)
-        try ExclusivePublisher.publish(temporary, to: output, exclusiveRename: exclusiveRename,
-                                       existing: "Speech output already exists")
-    }
 }
 
-/// Mono float samples written as an audio file: 16-bit PCM in .wav and .caf, AAC (64 kbit/s) in .m4a.
-public enum NaturalSpeechFile {
-    public static func write(_ samples: [Float], sampleRate: Double, to url: URL) throws {
+/// Mono float samples written as an audio file, a piece at a time: 16-bit PCM in .wav and .caf, AAC (64 kbit/s) in
+/// .m4a.
+public final class NaturalSpeechFileWriter {
+    private let file: AVAudioFile
+    private let format: AVAudioFormat
+    private let sampleRate: Double
+    /// The frames written so far.
+    public private(set) var frames: Int64 = 0
+
+    public init(url: URL, sampleRate: Double) throws {
         let fileExtension = url.pathExtension.lowercased()
         var settings: [String: Any] = [AVSampleRateKey: sampleRate, AVNumberOfChannelsKey: 1]
         switch fileExtension {
@@ -394,8 +428,12 @@ public enum NaturalSpeechFile {
         guard let format = AVAudioFormat(standardFormatWithSampleRate: sampleRate, channels: 1) else {
             throw HolosError.io("Could not prepare the speech file.")
         }
-        let file = try AVAudioFile(forWriting: url, settings: settings, commonFormat: .pcmFormatFloat32,
-                                   interleaved: false)
+        self.format = format
+        self.sampleRate = sampleRate
+        file = try AVAudioFile(forWriting: url, settings: settings, commonFormat: .pcmFormatFloat32, interleaved: false)
+    }
+
+    public func append(_ samples: [Float]) throws {
         let chunk = 65_536
         var offset = 0
         while offset < samples.count {
@@ -410,7 +448,28 @@ public enum NaturalSpeechFile {
             try file.write(from: buffer)
             offset += count
         }
-        file.close()
+        frames += Int64(samples.count)
+    }
+
+    public func appendSilence(seconds: Double) throws {
+        var remaining = Int((seconds * sampleRate).rounded())
+        while remaining > 0 {
+            let count = min(remaining, 65_536)
+            try append([Float](repeating: 0, count: count))
+            remaining -= count
+        }
+    }
+
+    /// Finishes the file (an AAC file's last packets are written here).
+    public func close() { file.close() }
+}
+
+/// A whole file of mono float samples (see `NaturalSpeechFileWriter`).
+public enum NaturalSpeechFile {
+    public static func write(_ samples: [Float], sampleRate: Double, to url: URL) throws {
+        let writer = try NaturalSpeechFileWriter(url: url, sampleRate: sampleRate)
+        try writer.append(samples)
+        writer.close()
     }
 }
 

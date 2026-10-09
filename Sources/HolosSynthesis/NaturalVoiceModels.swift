@@ -86,14 +86,19 @@ public enum NaturalVoiceModels {
 
     // MARK: - Install
 
-    /// Downloads `pack` into the base folder `base` (FluidAudio resumes what an earlier download left there);
-    /// `progress` 0...1 from any thread.
+    /// Downloads `pack` into the base folder `base`, fetching only the files missing or damaged there (FluidAudio
+    /// resumes a partial file), and returns only once every file of the repository's listing is there, complete
+    /// (`NaturalVoicePackFiles.verify`); otherwise it throws and keeps what it got. `progress` 0...1 from any thread.
     public typealias Download = @Sendable (_ pack: NaturalVoicePack, _ base: URL,
                                            _ progress: @escaping @Sendable (Double) -> Void) async throws -> Void
     /// Loads the pack from `base` and speaks a short sentence with its default voice: the first load compiles the
-    /// models for this Mac (one to several minutes), so a reading never waits for it. Removes the voices the app does
-    /// not offer from the pack's folder.
+    /// models for this Mac, so a reading never waits for it. Downloads nothing (FluidAudio's load only looks for the
+    /// pack's folders, which are all there).
     public typealias WarmUp = @Sendable (_ pack: NaturalVoicePack, _ base: URL) async throws -> Void
+    /// Tidies an installed pack (removes the voices the app does not offer). Run only once the pack is marked
+    /// installed, so a setup cut off before then finds every file the listing has, and checking them needs no
+    /// download; run again by a setup that finds the pack installed, so one cut off after the marker is finished.
+    public typealias Finish = @Sendable (_ pack: NaturalVoicePack, _ base: URL) -> Void
 
     /// What `setUp` says it is doing, for stderr (and the app's Settings row, which shows the last line).
     public static func downloadingLine(_ pack: NaturalVoicePack, resuming: Bool) -> String {
@@ -112,13 +117,15 @@ public enum NaturalVoiceModels {
     /// `voiceislocal setup --natural-voices` (network). An installed pack is kept unless `force`. Otherwise downloads
     /// into `<root>/<pack>.download` (resuming; `force` starts over), renames it into place, then warms it up from
     /// there (Core ML keys its compiled models by path, so they are compiled where they are used) and writes the
-    /// marker last. A pack in place without a marker (a warm-up cut off) is warmed up again without a download; one
-    /// that does not load there is downloaded again. Throws `unavailable` while another process installs it.
+    /// marker last, then tidies it (`finish`). A pack in place without a marker (a warm-up cut off) is warmed up again
+    /// without a download; one that does not load there goes back to the staging folder, where the download checks
+    /// every file and fetches only what is missing or damaged. Throws `unavailable` while another process installs it.
     public static func setUp(root: URL = root, pack: NaturalVoicePack, force: Bool, download: Download,
-                             warmUp: WarmUp, notice: @Sendable (String) -> Void,
+                             warmUp: WarmUp, finish: Finish = { _, _ in }, notice: @Sendable (String) -> Void,
                              progress: @escaping @Sendable (Double) -> Void) async throws {
         let directory = directory(root: root, pack: pack)
         if !force, isInstalled(root: root, pack: pack) {
+            finish(pack, directory)
             notice("The \(pack.languageName) natural voices are already installed.")
             progress(1)
             return
@@ -127,6 +134,7 @@ public enum NaturalVoiceModels {
         let lock = try InstallLock(path: lockPath(root: root, pack: pack), pack: pack)
         defer { lock.release() }
         if !force, isInstalled(root: root, pack: pack) {
+            finish(pack, directory)
             notice("The \(pack.languageName) natural voices are already installed.")
             progress(1)
             return
@@ -146,12 +154,22 @@ public enum NaturalVoiceModels {
                 try await warmUp(pack, directory)
                 try Task.checkCancellation()
                 try writeMarker(pack, in: directory)
+                finish(pack, directory)
                 progress(1)
                 return
             } catch {
                 if error is CancellationError || Task.isCancelled { throw CancellationError() }
-                log.error("Natural voices did not load in place; downloading them again")
-                try FileManager.default.removeItem(at: directory)
+                // Moved back to the staging folder, not deleted: the download checks every file against the
+                // repository's listing and fetches only what is missing or damaged.
+                log.error("Natural voices did not load in place; checking their files again")
+                if FileManager.default.fileExists(atPath: staging.path) {
+                    try FileManager.default.removeItem(at: directory)
+                } else {
+                    guard renamex_np(directory.path, staging.path, UInt32(RENAME_EXCL)) == 0 else {
+                        throw HolosError.io("Cannot move the natural voices back to \(staging.path): "
+                            + String(cString: strerror(errno)) + ".")
+                    }
+                }
             }
         }
         notice(downloadingLine(pack, resuming: FileManager.default.fileExists(atPath: staging.path)))
@@ -179,6 +197,7 @@ public enum NaturalVoiceModels {
         }
         try Task.checkCancellation()
         try writeMarker(pack, in: directory)
+        finish(pack, directory)
         log.info("Natural voices installed")
         progress(1)
     }

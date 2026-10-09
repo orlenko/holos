@@ -619,18 +619,29 @@ French, against about 3,000 characters (three minutes of speech, 40–90 s of re
 
 **Defaults.** Automatic picks the pack's default voice once that pack is installed: Alba for English, Estelle for
 French (`NaturalVoiceCatalog.defaultVoice(language:installed:)`); until then, and for other languages, the best
-Apple voice. A reading keeps the voice it started with, so a resume never switches voice; a natural voice whose pack
-is gone fails with where to download it.
+Apple voice. A reading keeps the voice it started with, so a resume never switches voice: the app saves it in the
+reading's entry before rendering, and `voiceislocal read --resume` without `--voice` uses the voice in the reading's
+manifest (`ReadingResumeVoice`: for an explicit output, whose cache is keyed by the voice, the default voices of
+now and of before the packs were installed are tried in turn). A natural voice whose pack is gone fails with where to
+download it. Preview of Automatic speaks with the voice Make Audio would use for the user's first language
+(`ReadingVoices.automatic`).
 
 **Models.** `voiceislocal setup --natural-voices [--language fr]` downloads a pack into
 `Application Support/Holos/Models/pocket-tts/<pack>/` (`$HOLOS_POCKET_MODELS_DIR` to use another folder; FluidAudio
 takes the base folder as `PocketTtsManager(directory:)`, so nothing goes to its default `~/.cache/fluidaudio`):
 English about 530 MB, French (24-layer pack) about 1.9 GB, as listed on Hugging Face on 2026-10-08 (491 MB on disk
-for English after the voices not offered are removed). It downloads into `<pack>.download/` (an interrupted download
-resumes), renames it into place, then loads it and speaks a test sentence there (the first load compiles the models
-for this Mac; Core ML keys compiled models by path, so this happens where they are used), and writes
-`installed.json` last (`NaturalVoiceModels`). A pack in place without the marker is warmed up again, and downloaded
-again if it does not load; a lock file keeps two installs apart. Settings › Reading has a row per pack: Download
+for English after the voices not offered are removed). It downloads into `<pack>.download/`: the repository's
+listing is read first (each file's size, and SHA-256 for LFS files), every listed file is ensured with FluidAudio's
+`ModelHub.download(subdirectory:)` (a file already there is kept, a partial one resumed), and every file is then
+checked against the listing (`NaturalVoicePackFiles`); one that fails is removed and the download fails, keeping the
+rest for the next try. FluidAudio's own `ensureModels` is not used for this: it skips the download once the pack's
+top-level folders exist, so a download cancelled inside the last model's weights would pass. Only a complete pack is
+renamed into place, loaded, and made to speak a test sentence there (the first load compiles the models for this
+Mac; Core ML keys compiled models by path, so this happens where they are used); `installed.json` is written next,
+and only then are the voices not offered removed (a setup that finds the pack installed removes them again, in case
+one was cut off). A pack in place without the marker is warmed up again without a download; one that does not load
+there goes back to `<pack>.download/`, where the next download checks it and fetches only what is missing or
+damaged. A lock file keeps two installs apart. Settings › Reading has a row per pack: Download
 (with the size), the tool's progress line and Cancel while it runs (SIGTERM; what was downloaded is kept), and the
 failure's reason (offline, for instance) with Try Again; Apple's voices stay available throughout. The voice menus
 end with a disabled "Natural voices: download them in Settings › Reading" while a pack is missing.
@@ -643,7 +654,9 @@ extra pause is put between sentences: measured on a made-up 4-paragraph text, Po
 its sentences. Each paragraph is a fresh session (`PocketTtsManager.makeSession(voice:seed:)`) with one fixed seed,
 so a resumed reading sounds as it would have: two renders of the same text were byte-identical (also across debug
 and release builds). The samples get FluidAudio's own post-processing (rumble removed, de-essed), as its one-shot
-synthesis does.
+synthesis does. Each paragraph is written to a temporary file beside the output as soon as it is made (the file is
+published once whole), so a long text never holds more than one paragraph's samples; a part is at most about 3,000
+characters anyway.
 
 **Speed.** Pocket TTS has no speed control. The slider's speed (the inverse of `ReadingSpeed.rate(for:)`, so 1.2× is
 1.2×; continued linearly for `--rate` outside the slider, within 0.5×–2×) time-stretches each paragraph's speech
@@ -651,7 +664,11 @@ afterwards with `AVAudioUnitTimePitch` rendered offline (`TimeStretch`), pitch k
 
 **Per-paragraph check.** After a paragraph is rendered it is heard back with Apple's on-device recognizer
 (SpeechAnalyzer, `AppleSpeechChunkChecker` in the tool: no extra model, already installed for dictation) and compared
-with its text (`SpeechChunkCheck`): words case-, accent-, and punctuation-folded, words with digits left out. It fails
+with its text (`SpeechChunkCheck`): words case-, accent-, and punctuation-folded, and numbers left out on both
+sides, whichever way they are written: words with digits ("2015", "3,5", "2nd", "1er"), English and French number
+words ("twenty fifteen", "trois virgule cinq", "deuxième"), and "and", "point", "et", "pour" between two of them. The
+voice reads "2015" as words the recognizer may write as digits or spell out; leaving numbers out on both sides makes
+the check blind to a misread number but never fails a right one. It fails
 when the word edits exceed 15 % of the paragraph's words (at least 2), when the lengths differ by more than 8 words
 (cut off or run on), or when nothing is heard. A failed paragraph is rendered again with the next seed; one that
 fails again (or that the model cannot make) is read by the best Apple voice for the language, converted to 24 kHz,

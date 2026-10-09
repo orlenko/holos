@@ -126,6 +126,27 @@ import Testing
         #expect(!popup.itemArray.map(\.title).contains(ReadingVoicePopup.naturalHint))
     }
 
+    @Test func previewOfAutomaticUsesTheVoiceMakeAudioWouldUse() async throws {
+        let preview = VoicePreview()
+        let asked = Mutex<[String]>([])
+        preview.installedPacks = { [.english] }
+        preview.preferredLanguage = { "en-CA" }
+        // The sample is never made (nor played): the render fails once it is asked for.
+        preview.renderNatural = { _, voice, _, _ in
+            asked.withLock { $0.append(voice) }
+            throw HolosError.io("not rendered in tests")
+        }
+        let failed = Mutex(false)
+        preview.onError = { _ in failed.withLock { $0 = true } }
+        preview.speak(voiceIdentifier: nil, speed: 1)
+        for _ in 0..<10_000 where !failed.withLock({ $0 }) { await Task.yield() }
+        #expect(asked.withLock { $0 } == ["pocket:en:alba"])
+        #expect(!preview.isSpeaking)
+        #expect(ReadingVoices.automatic(language: "fr-CA", installed: [.english], bestApple: { _ in nil }) == nil)
+        #expect(ReadingVoices.automatic(language: "fr-CA", installed: [.english, .french], bestApple: { _ in nil })?.id
+            == "pocket:fr:estelle")
+    }
+
     // MARK: Rendering through the tool
 
     private final class Launches: Sendable {

@@ -17,17 +17,24 @@ final class VoicePreview: NSObject, AVSpeechSynthesizerDelegate, AVAudioPlayerDe
     /// A natural sample could not be made.
     var onError: ((String) -> Void)?
 
+    /// The natural voice packs installed now, and the user's first language (what Automatic is previewed in).
+    var installedPacks: () -> Set<NaturalVoicePack> = { NaturalVoiceModels.installedPacks() }
+    var preferredLanguage: () -> String = { Locale.preferredLanguages.first ?? "en-US" }
+
     var isSpeaking: Bool { synthesizer != nil || natural != nil || player != nil }
 
-    /// Speaks the sample in `voiceIdentifier`'s language (nil: the best voice for the user's first language).
+    /// Speaks the sample in `voiceIdentifier`'s language. Nil (Automatic): the voice Make Audio would read the user's
+    /// first language with (`ReadingVoices.automatic`): the natural voice once its pack is installed, else the best
+    /// Apple voice.
     func speak(voiceIdentifier: String?, speed: Double) {
         stop()
-        if let voiceIdentifier, let voice = NaturalVoiceCatalog.voice(id: voiceIdentifier) {
+        let identifier = voiceIdentifier
+            ?? ReadingVoices.automatic(language: preferredLanguage(), installed: installedPacks(),
+                                       bestApple: NativeSpeechRenderer.bestVoice(language:))?.id
+        if let identifier, let voice = NaturalVoiceCatalog.voice(id: identifier) {
             speakNatural(voice, speed: speed)
             return
         }
-        let identifier = voiceIdentifier
-            ?? NativeSpeechRenderer.bestVoice(language: Locale.preferredLanguages.first ?? "en-US")?.id
         let voice = identifier.flatMap(AVSpeechSynthesisVoice.init(identifier:))
         let utterance = AVSpeechUtterance(string: Self.sample(language: voice?.language ?? "en"))
         utterance.voice = voice

@@ -609,3 +609,31 @@ public enum ReadingLanguage {
         return language.rawValue
     }
 }
+
+/// The voice a reading resumed without `--voice` was started with (`voiceislocal read --resume`): the default voice
+/// can have changed since (natural voices installed after the reading was started), and a reading resumes only with
+/// its own voice. `--output` naming the reading's folder: the voice its manifest saved. An explicit output, whose
+/// cache is keyed by the voice among the other settings: the first of `candidates` (the voices the reading could
+/// have been started with by default) whose cache holds a reading made with it. Nil when none is found (the resume then
+/// says there is no reading to resume, as before).
+public enum ReadingResumeVoice {
+    public static func saved(output: String?, name: String, readingsRoot: URL, candidates: [String],
+                             identity: (String) -> String) -> String? {
+        for candidate in candidates {
+            guard let (location, destination) = try? ReadingOutput.resolve(
+                      output: output, name: name, identity: identity(candidate), readingsRoot: readingsRoot),
+                  let manifest = manifest(in: location.workDirectory) else { continue }
+            if destination == .readingFolder { return manifest.voiceIdentifier }
+            if manifest.voiceIdentifier == candidate { return candidate }
+        }
+        return nil
+    }
+
+    static func manifest(in directory: URL) -> ReadingManifest? {
+        let url = directory.appendingPathComponent(ReadingManifest.fileName)
+        guard ReadingManifest.isReading(url),
+              let data = try? readSmallFile(url, maximumBytes: ReadingManifest.maximumBytes) else { return nil }
+        return try? JSONDecoder().decode(ReadingManifest.self, from: data)
+    }
+}
+

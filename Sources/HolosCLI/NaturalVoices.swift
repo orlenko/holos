@@ -103,7 +103,8 @@ enum NaturalVoiceSetup {
     static func run(pack: NaturalVoicePack, force: Bool) async throws {
         let progress = NaturalProgressPrinter(label: "Natural voices (\(pack.languageName))")
         try await NaturalVoiceModels.setUp(pack: pack, force: force, download: PocketSpeechBackend.download,
-                                           warmUp: PocketSpeechBackend.warmUp, notice: { Console.error($0) },
+                                           warmUp: PocketSpeechBackend.warmUp, finish: PocketSpeechBackend.finish,
+                                           notice: { Console.error($0) },
                                            progress: progress.report)
         Console.output(NaturalVoiceModels.readyMessage(pack))
         Console.output(NaturalVoiceModels.creditsLine)
