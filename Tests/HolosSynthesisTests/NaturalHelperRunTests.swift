@@ -33,7 +33,8 @@ import Testing
         {
             flags.started.withLock { $0 = true }
             defer { flags.cleanedUp.withLock { $0 = true } }
-            while true { try await Task.sleep(for: .seconds(3_600)) }
+            // Short waits: a cancellation ends the next one at once.
+            while true { try await Task.sleep(for: .milliseconds(10)) }
         }
     }
 

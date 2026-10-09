@@ -238,7 +238,9 @@ public struct ReadingResult: Sendable, Equatable {
         let directory = location.workDirectory
         let output = location.output
         // Every setting is checked before anything (lock, cache, source, manifest) is created, so
-        // a bad one never leaves a cache behind that cannot be resumed.
+        // a bad one never leaves a cache behind that cannot be resumed. A resume of a reading from another commit of
+        // the natural voices is refused before that: checking its voice would ask for a pack that cannot help.
+        if resume { try await Self.refuseAnotherCommit(in: directory) }
         try validateSettings(script: script, voiceIdentifier: voiceIdentifier, rate: rate, metadata: metadata,
                              location: location)
         // Planned off the main actor: a book is split into hundreds of parts, each hashed.
@@ -542,12 +544,7 @@ public struct ReadingResult: Sendable, Equatable {
             let savedSource = try? fileSHA256(sourceURL)
             // A Stop during the check is a stop, never "the source differs".
             if Task.isCancelled { throw CancellationError() }
-            if manifest.voiceIdentifier == voiceIdentifier,
-               manifest.modelRevision != modelRevision(for: voiceIdentifier) {
-                throw HolosError.invalidInput("This reading was started with another version of the natural voices "
-                    + "(\(manifest.modelRevision ?? "unknown")); its parts cannot be joined with ones the current voices "
-                    + "make. Delete it and make it again.")
-            }
+            try ReadingResumeVoice.checkRevision(manifest, again: "Delete it and make it again.")
             guard manifest.sourceSHA256 == sourceHash,
                   manifest.sameSettings(voiceIdentifier: voiceIdentifier, rate: rate, metadata: metadata, output: output),
                   savedSource == sourceHash else {
