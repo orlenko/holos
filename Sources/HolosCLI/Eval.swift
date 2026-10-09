@@ -179,9 +179,10 @@ struct Eval: AsyncParsableCommand {
 
         mutating func run() async throws {
             let directory = try SessionLocator.resolve(session)
+            let opener: ((URL) throws -> Void)? = noOpen ? nil : { try Self.open($0) }
             try await EvalReviewCommand.run(
                 EvalReviewCommand.Request(session: directory, runID: runID), interruption: Eval.interruption,
-                open: noOpen ? nil : Self.open, report: Eval.printMessage)
+                open: opener, report: Eval.printMessage)
         }
 
         /// Opens the page in the default browser.
