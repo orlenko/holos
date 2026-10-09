@@ -3,21 +3,15 @@ import Foundation
 import Testing
 import HolosCore
 @testable import HolosStorage
+import HolosTestSupport
+import HolosSessionTestSupport
 
 // `AtomicFile.writeStream`, `openForReading`, and the public `readIfPresent`/`removeTree` the post-processor uses
 // inside a session (docs/meeting-design.md §1.7, §4.13).
 
 private func streamedMakeSession() async throws -> (root: URL, session: URL) {
-    let root = FileManager.default.temporaryDirectory.appendingPathComponent("holos-streamed-\(UUID().uuidString)")
-    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-    let archive = try SessionArchive.create(root: root, name: "Streamed", source: .microphone,
-                                            locale: "en-CA", backend: .speech)
-    try await archive.finish(status: ArchiveStatus.complete)
-    return (root, archive.directory)
-}
-
-private func streamedEntries(_ folder: URL) -> [String] {
-    ((try? FileManager.default.contentsOfDirectory(atPath: folder.path)) ?? []).sorted()
+    let root = try TemporaryDirectory("streamed").url
+    return (root, try await SessionFixtureBuilder(name: "Streamed").finished(in: root).session)
 }
 
 @Test func writeStreamPublishesTheWholeFile() async throws {
@@ -37,7 +31,7 @@ private func streamedEntries(_ folder: URL) -> [String] {
     #expect(try AtomicFile.readIfPresent(url, maxBytes: 1 << 10) == Data("HEADER--body".utf8))
     var info = stat()
     #expect(stat(url.path, &info) == 0 && info.st_mode & 0o777 == 0o600)
-    #expect(streamedEntries(derived) == ["mic-16k.caf"])
+    #expect(FileInspection.entriesIfAny(derived) == ["mic-16k.caf"])
 
     // Replaced by a later write, and never replaced with `exclusive`.
     try AtomicFile.writeStream(to: url) { try AtomicFile.writeAll(Data("second".utf8), fd: $0) }
@@ -46,7 +40,7 @@ private func streamedEntries(_ folder: URL) -> [String] {
         try AtomicFile.writeStream(to: url, exclusive: true) { try AtomicFile.writeAll(Data("third".utf8), fd: $0) }
     }
     #expect(try AtomicFile.readIfPresent(url, maxBytes: 1 << 10) == Data("second".utf8))
-    #expect(streamedEntries(derived) == ["mic-16k.caf"])
+    #expect(FileInspection.entriesIfAny(derived) == ["mic-16k.caf"])
 }
 
 @Test func writeStreamPublishesNothingWhenFillingFails() async throws {
@@ -61,7 +55,7 @@ private func streamedEntries(_ folder: URL) -> [String] {
             throw CancellationError()
         }
     }
-    #expect(streamedEntries(derived).isEmpty, "No file and no temporary file is left.")
+    #expect(FileInspection.entriesIfAny(derived).isEmpty, "No file and no temporary file is left.")
 }
 
 @Test func openForReadingRefusesLinks() async throws {

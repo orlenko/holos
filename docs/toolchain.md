@@ -15,10 +15,22 @@ after rebuilding the package graph. The explicit plugin argument makes discovery
 repeatable. The script uses `--disable-xctest` because the package's tests use
 Swift Testing; it forwards additional SwiftPM test options unchanged.
 
-`swift test --filter` still builds the package's other targets, including the CLI.
-If an unrelated target is being edited and does not compile yet, build a library
-in isolation with `swift build --target HolosSpeech`, then rerun the script after
-integration compiles. Warnings about nonexistent Command Line Tools framework
+`swift test --filter` (and so `./scripts/test.sh --filter`) still builds every
+target, including WhisperKit, FluidAudio, the app, and the CLI. To build and run one
+test target, use:
+
+```sh
+./scripts/test-target.sh HolosStorageTests
+./scripts/test-target.sh HolosStorageTests --filter TranscriptPointer
+```
+
+It sets up the same environment and plug-in as `scripts/test.sh`, builds only that
+target and the modules it depends on (`swift build --target`; SwiftPM still resolves
+and checks out every package dependency, but compiles none it does not need), and
+runs that target's bundle with SwiftPM's own test runner. Options after the target
+go to Swift Testing as `swift test` passes them. If an unrelated target is being
+edited and does not compile yet, this is also the way to test a library in
+isolation. Shared test helpers are in `Tests/HolosTestSupport` (see its README). Warnings about nonexistent Command Line Tools framework
 search directories have not prevented builds or tests here.
 
 The initial package build may fetch `swift-argument-parser`. The test script does

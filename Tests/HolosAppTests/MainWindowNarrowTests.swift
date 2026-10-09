@@ -540,12 +540,12 @@ struct MainWindowNarrowTests {
     /// A hidden sidebar stays hidden in the next window (the next launch), and a shown one shown.
     @Test func theHiddenSidebarIsRememberedForTheNextWindow() throws {
         NSApplication.shared.setActivationPolicy(.prohibited)
-        let name = "VoiceIsLocalMainSplitTest-\(UUID().uuidString)"
-        let autosave = MainWindowController.Autosave(split: name, sidebarHidden: "\(name)-hidden")
-        defer {
-            UserDefaults.standard.removeObject(forKey: "NSSplitView Subview Frames \(name)")
-            UserDefaults.standard.removeObject(forKey: autosave.sidebarHidden)
-        }
+        let suite = "VoiceIsLocalMainSplitTest-\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        // No split autosave name: AppKit would keep the divider in the standard defaults.
+        let autosave = MainWindowController.Autosave(split: nil, sidebarHidden: "mainWindowSidebarHidden",
+                                                     suite: suite)
         func make() -> MainWindowController {
             let controller = MainWindowController(autosave: autosave) { _ in FocusSection() }
             SettingsEmbeddingTests.retained.append(controller)

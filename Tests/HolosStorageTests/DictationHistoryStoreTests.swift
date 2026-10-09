@@ -3,23 +3,12 @@ import Foundation
 import Testing
 import HolosCore
 @testable import HolosStorage
+import HolosTestSupport
 
 // DictationHistoryStore (docs/design.md "Dictation history"): append-only JSON lines, private files, atomic
 // rewrites for delete, clear, and the retention sweep.
 
 private let storeNow = Date(timeIntervalSince1970: 1_790_000_000)
-
-private func historyRoot() throws -> URL {
-    let root = FileManager.default.temporaryDirectory.appendingPathComponent("holos-history-\(UUID().uuidString)")
-    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-    return root
-}
-
-private func historyMode(_ url: URL) -> mode_t? {
-    var info = stat()
-    guard lstat(url.path, &info) == 0 else { return nil }
-    return info.st_mode & 0o777
-}
 
 private func entry(_ text: String, date: Date = storeNow) -> DictationRecord {
     DictationRecord(id: UUID(), date: date, app: "Notes", language: "fr-CA", text: text, heard: text,
@@ -27,7 +16,7 @@ private func entry(_ text: String, date: Date = storeNow) -> DictationRecord {
 }
 
 @Test func missingHistoryLoadsEmptyAndCreatesNothing() throws {
-    let root = try historyRoot()
+    let root = try TemporaryDirectory("history").url
     defer { try? FileManager.default.removeItem(at: root) }
     let store = DictationHistoryStore(directory: root.appendingPathComponent("History"))
     #expect(try store.load() == .init(records: [], skippedLines: 0))
@@ -36,21 +25,21 @@ private func entry(_ text: String, date: Date = storeNow) -> DictationRecord {
 }
 
 @Test func appendKeepsOrderAndFilesArePrivate() throws {
-    let root = try historyRoot()
+    let root = try TemporaryDirectory("history").url
     defer { try? FileManager.default.removeItem(at: root) }
     let store = DictationHistoryStore(directory: root.appendingPathComponent("History"))
     let first = entry("premier"), second = entry("second")
     try store.append(first)
     try store.append(second)
     #expect(try store.load().records == [first, second])
-    #expect(historyMode(store.fileURL) == 0o600)
-    #expect(historyMode(store.directory) == 0o700)
+    #expect(FileInspection.mode(store.fileURL) == 0o600)
+    #expect(FileInspection.mode(store.directory) == 0o700)
     let text = try String(contentsOf: store.fileURL, encoding: .utf8)
     #expect(text.split(separator: "\n").count == 2, "One JSON line per dictation.")
 }
 
 @Test func deleteAndClearRewriteTheFile() throws {
-    let root = try historyRoot()
+    let root = try TemporaryDirectory("history").url
     defer { try? FileManager.default.removeItem(at: root) }
     let store = DictationHistoryStore(directory: root.appendingPathComponent("History"))
     let first = entry("one"), second = entry("two"), third = entry("three")
@@ -58,7 +47,7 @@ private func entry(_ text: String, date: Date = storeNow) -> DictationRecord {
     #expect(try store.delete(id: second.id))
     #expect(try !store.delete(id: second.id), "Already gone.")
     #expect(try store.load().records == [first, third])
-    #expect(historyMode(store.fileURL) == 0o600)
+    #expect(FileInspection.mode(store.fileURL) == 0o600)
     #expect(try store.clear() == 2)
     #expect(try store.load().records.isEmpty)
     let data = try Data(contentsOf: store.fileURL)
@@ -66,7 +55,7 @@ private func entry(_ text: String, date: Date = storeNow) -> DictationRecord {
 }
 
 @Test func sweepRemovesOldRecordsAndUnreadableLines() throws {
-    let root = try historyRoot()
+    let root = try TemporaryDirectory("history").url
     defer { try? FileManager.default.removeItem(at: root) }
     let store = DictationHistoryStore(directory: root.appendingPathComponent("History"))
     let old = entry("old", date: storeNow.addingTimeInterval(-40 * 86_400))
@@ -94,7 +83,7 @@ private func entry(_ text: String, date: Date = storeNow) -> DictationRecord {
 }
 
 @Test func appendAfterClearStartsAgain() throws {
-    let root = try historyRoot()
+    let root = try TemporaryDirectory("history").url
     defer { try? FileManager.default.removeItem(at: root) }
     let store = DictationHistoryStore(directory: root.appendingPathComponent("History"))
     try store.append(entry("before"))
@@ -105,7 +94,7 @@ private func entry(_ text: String, date: Date = storeNow) -> DictationRecord {
 }
 
 @Test func loadStreamsLinesAcrossReadsAndSkipsOnlyOversizedOnes() throws {
-    let root = try historyRoot()
+    let root = try TemporaryDirectory("history").url
     defer { try? FileManager.default.removeItem(at: root) }
     var store = DictationHistoryStore(directory: root.appendingPathComponent("History"))
     let records = (0..<12).map { entry("dictation number \($0)") }
@@ -134,7 +123,7 @@ private func entry(_ text: String, date: Date = storeNow) -> DictationRecord {
 }
 
 @Test func linesFromANewerSchemaSurviveEveryRewriteButClear() throws {
-    let root = try historyRoot()
+    let root = try TemporaryDirectory("history").url
     defer { try? FileManager.default.removeItem(at: root) }
     let store = DictationHistoryStore(directory: root.appendingPathComponent("History"))
     let first = entry("first", date: storeNow.addingTimeInterval(-3600))
@@ -175,7 +164,7 @@ private func entry(_ text: String, date: Date = storeNow) -> DictationRecord {
 }
 
 @Test func loadRefusesASymbolicLinkInPlaceOfTheFile() throws {
-    let root = try historyRoot()
+    let root = try TemporaryDirectory("history").url
     defer { try? FileManager.default.removeItem(at: root) }
     let store = DictationHistoryStore(directory: root.appendingPathComponent("History"))
     try AtomicFile.ensurePrivateDirectory(store.directory)

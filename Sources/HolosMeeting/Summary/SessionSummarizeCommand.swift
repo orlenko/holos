@@ -105,7 +105,8 @@ public enum SessionSummarizeCommand {
         }
     }
 
-    public struct Outcome: Sendable, Encodable {
+    /// What `voiceislocal session summarize --json` prints, and what the app reads from it.
+    public struct Outcome: Sendable, Codable {
         public var sessionID: String?
         public var status: Status
         /// The transcript the summary is (or would have been) of.

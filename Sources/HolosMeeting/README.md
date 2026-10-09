@@ -11,7 +11,10 @@ recorder ↔ app protocol.
   seams `MeetingCapture`, `LiveSpeechSession`, `SessionClock`, `RecorderStopSource`.
 - App-side control: `MeetingController` (`@MainActor`) with the pure `MeetingReducer`; `RecorderChannel` (reads
   status, sends requests); `RecorderLauncher` (`ChildProcessLauncher`, `InProcessLauncher`), `MaintenanceLauncher`,
-  and `ProcessSpawner` (the one `posix_spawn` helper).
+  and `ProcessSpawner` (the one `posix_spawn` helper). `CommandRunner` runs a `voiceislocal` command for the app
+  through `MaintenanceLauncher`, with its output in `TemporaryArtifact`s, decoded off the main actor into a
+  `CommandResult`; `CommandHandle` stops it with SIGTERM until it is reaped. `DoctorReport` is what `doctor --json`
+  prints and the app reads; the `Session*Command.Outcome` types play the same role for the session commands.
 - `PostProcessing/`: `MeetingPostProcessor` and its stages (render, echo, diarize, align, recognize, export), the
   language, word-fix, live-hint and deep-transcription stages, `SessionExports`, `SpeakerSessionSnapshot`, and the
   library side of the `voiceislocal session …` commands (`Session*Command`).
@@ -40,5 +43,6 @@ NaturalLanguage, CryptoKit.
 **Known size debt:** `ReviewSession` (3,872 lines), `RecordingWorkflow`, `VoiceProfileService`. Do not grow them;
 move code out first, in a moves-only PR.
 
-**Tests:** `Tests/HolosMeetingTests`. Shared helpers: `Fakes.swift` (`PollBudget`, `eventually`, fakes),
-`SessionFixtures.swift`, `RecorderTestSupport.swift`.
+**Tests:** `Tests/HolosMeetingTests` (`./scripts/test-target.sh HolosMeetingTests`). Target-local helpers:
+`Fakes.swift` (its own `PollBudget` and `eventually`, fakes), `SessionFixtures.swift`, `RecorderTestSupport.swift`;
+this target has not moved to `HolosTestSupport` yet.
