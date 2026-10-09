@@ -228,7 +228,7 @@ entry point (`ReviewSession.submit(_:seen:)`), a lock-token type.
   resolve to an existing heading: `scripts/check-doc-citations.py` checks every `<path>.md §N.M` citation in the
   repository, and that a bare `§N.M` in a `docs/` file names a heading of that file, in under a second
   (`--self-test` runs its own cases). Run it before every PR that moves a section or adds a citation. In docs, cite
-  another file's section by its relative path (`recorder.md §4.3` from `docs/meeting/`).
+  another file's section by its path relative to the citing file (`../<file>.md §<N.M>`).
 - A PR that changes behaviour updates the cited section in the same PR.
 - Comments explain why and state rules; they do not narrate review rounds.
 
