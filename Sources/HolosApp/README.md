@@ -26,7 +26,8 @@ through `HolosMeeting`'s `CommandRunner` and decode into the library's types (`D
 `HolosStorage`, and `CommandPrinted` (`HolosApp+Meeting.swift`) reads the result line of `session recover`,
 `diarize`, `delete` and `rename` output as untyped JSON. Shrink these, do not copy them.
 
-**Depends on:** HolosCore, HolosAudio, HolosSpeech, HolosDesktop, HolosDictation, HolosStorage, HolosSpeakers,
+**Depends on:** HolosCore, HolosAppModel (the app's decisions without AppKit, tested without the executable),
+HolosAudio, HolosSpeech, HolosDesktop, HolosDictation, HolosStorage, HolosSpeakers,
 HolosMeeting, HolosSynthesis, HolosContent. Never HolosDiarization, HolosWhisper or HolosPocket (they run in a
 `voiceislocal` child), nor HolosEvaluation. AppKit, AVFoundation, ApplicationServices.
 

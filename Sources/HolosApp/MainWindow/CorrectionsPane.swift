@@ -1,4 +1,5 @@
 import AppKit
+import HolosAppModel
 import HolosCore
 
 /// The main window's Corrections section: fix a dictation here (the last one, or one chosen in History); Holos

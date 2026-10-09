@@ -1,5 +1,5 @@
 import Testing
-@testable import HolosCore
+@testable import HolosAppModel
 
 @Test func permissionButtonsEachDoOneThing() {
     // Not granted: Allow… only asks macOS; System Settings… only opens the page.

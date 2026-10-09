@@ -1,5 +1,5 @@
 import Testing
-@testable import HolosCore
+@testable import HolosAppModel
 
 private let sections: Set<String> = ["history", "corrections", "meetings", "people", "reading", "settings"]
 

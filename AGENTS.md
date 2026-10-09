@@ -39,6 +39,7 @@ lists Holos targets, then notable system or package frameworks.
 | [HolosWhisper](Sources/HolosWhisper/README.md) | WhisperKit deep transcription and model install | Being linked by the app | Core; WhisperKit, CoreML |
 | [HolosPocket](Sources/HolosPocket/README.md) | The Pocket TTS natural-voice backend (FluidAudio) and its pinned download and check | Being linked by the app; which voices are offered | Core, Synthesis; FluidAudio |
 | [HolosEvaluation](Sources/HolosEvaluation/README.md) | The reference evaluation behind `voiceislocal eval`: cloud and local runs, scoring, review | Being linked by the app; anything the recording path needs | Core, Storage, Audio, Speakers, Meeting; AVFoundation, CryptoKit |
+| [HolosAppModel](Sources/HolosAppModel/README.md) | The app's own decisions without AppKit (settings search, setup assistant flow, permission buttons, launch, Copy Result) | AppKit, controllers, anything another library or the CLI needs | Core |
 | [HolosApp](Sources/HolosApp/README.md) | AppKit views, windows, menus, wiring of controllers | Business logic, session-file layout, decoding CLI output by hand | All libraries except Diarization, Whisper, Pocket and Evaluation |
 | [HolosCLI](Sources/HolosCLI/README.md) | Argument parsing and printing over library `*Command` types | A second copy of workflow logic | All libraries except Desktop; ArgumentParser |
 
@@ -47,8 +48,7 @@ and `HolosSessionTestSupport` (adds HolosStorage); see `Tests/HolosTestSupport/R
 
 Known exceptions today (not precedents; do not add to them):
 
-- `HolosCore` holds `Lexicon` (AppKit), `Corrections` (file I/O, flock) and app-only flows (`SetupAssistantFlow`,
-  `SettingsSearch`, `PermissionButtons`, …).
+- `HolosCore` holds `Lexicon` (AppKit) and `Corrections` (file I/O, flock).
 - Session paths are also built outside HolosStorage: HolosEvaluation's `EvalPaths` (`eval/`, `derived/eval-cloud/`); and names inside a session in HolosMeeting:
   `stop.request` (`RecordingWorkflow`), `control/<id>.json` (`RecorderChannel`), `derived/deep-<track>-16k.caf`
   (`DeepTranscriptionStage`), `echo/frames-<hash>.bin` (`EchoAnalysisStage`), `exports/edited-<stamp>.<ext>`
@@ -71,8 +71,9 @@ Known exceptions today (not precedents; do not add to them):
   prints.
 - Anything that needs FluidAudio or WhisperKit: `HolosDiarization`/`HolosWhisper`/`HolosPocket`, reached by the app
   only through a `voiceislocal` child process.
-- Evaluation and cloud comparison code: `HolosEvaluation` (of the products, only `HolosCLI` links it). App-only
-  models stay in `HolosApp` (no `HolosAppModel` target yet; planned in `docs/architecture-roadmap.md §6`).
+- Evaluation and cloud comparison code: `HolosEvaluation` (of the products, only `HolosCLI` links it).
+- An app-only decision that needs no AppKit (what a settings row, the Setup Assistant or a menu item does):
+  `HolosAppModel`, tested in `HolosAppModelTests` without building the app.
 
 ## Size caps
 

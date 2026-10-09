@@ -1,4 +1,5 @@
 import AppKit
+import HolosAppModel
 import HolosCore
 
 /// The credits of the About panel (docs/meeting-design.md §4.8): the app has no resource bundle, so the text of

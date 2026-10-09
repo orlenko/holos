@@ -1,4 +1,5 @@
 import AppKit
+import HolosAppModel
 import HolosCore
 import HolosDesktop
 import HolosSynthesis
@@ -631,8 +632,7 @@ final class SettingsPane: NSViewController, MainSectionContent, NSSearchFieldDel
     }
 
     /// A status row (`addRow`): its title and detail line as shown when searched.
-    func addRowItem(_ chapter: SettingsChapter, _ action: SetupAction, title: String? = nil,
-                            keywords: [String]) {
+    func addRowItem(_ chapter: SettingsChapter, _ action: SetupAction, title: String? = nil, keywords: [String]) {
         guard let row = rows[action] else { return }
         let titleLabel = row.title
         items.append(SearchItem(chapter: chapter, entry: SettingsSearch.Entry(

@@ -1,5 +1,5 @@
 import Testing
-@testable import HolosCore
+@testable import HolosAppModel
 
 private let granted = SetupAssistantFacts(microphone: "authorized", accessibility: true, speechModel: "supported",
                                           speakerModels: "notInstalled")

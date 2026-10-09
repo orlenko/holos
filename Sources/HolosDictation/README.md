@@ -24,8 +24,8 @@ Dictation without the UI: one microphone utterance at a time, and Run Again over
   progress.
 - Run Again writes nothing into any app and copies nothing.
 
-**Known split:** `HolosCore/DictationRerun.swift` (pure text pipeline) and `HolosDictation/DictationRerun.swift`
-(I/O and settings) share a file name but hold different types. The dictation session that drives this controller
+**Known split:** Run Again's pure text steps and report types are in `HolosCore/DictationTextPipeline.swift`; its
+I/O and settings are in `HolosDictation/DictationRerun.swift`. The dictation session that drives this controller
 still lives in `HolosApp/HolosApp.swift`.
 
 **Tests:** `Tests/HolosDictationTests` (`DictationControllerTests`, `DictationRerunTests`,

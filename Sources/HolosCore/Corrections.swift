@@ -487,7 +487,8 @@ public struct CorrectionList: Codable, Sendable, Equatable {
         return try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive])
     }
 
-    static func normalized(_ text: String) -> String {
+    /// `text` lowercased with its whitespace collapsed: how heard phrases are compared (`key(_:)` also trims).
+    public static func normalized(_ text: String) -> String {
         text.lowercased().split(whereSeparator: \.isWhitespace).joined(separator: " ")
     }
 

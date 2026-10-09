@@ -1,5 +1,5 @@
 import Testing
-@testable import HolosCore
+@testable import HolosAppModel
 
 private typealias Entry = SettingsSearch.Entry
 

@@ -1,6 +1,7 @@
 import AppKit
 @preconcurrency import ApplicationServices
 import Foundation
+import HolosAppModel
 import HolosAudio
 import HolosCore
 import HolosDesktop

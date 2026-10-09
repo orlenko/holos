@@ -1,4 +1,5 @@
 import Foundation
+import HolosCore
 
 /// Swaps that learning declined (see `CorrectionList.learnReportingDeclined`), kept until the user adds
 /// or skips each one, so every declined pair can still be added by hand.

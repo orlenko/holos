@@ -55,8 +55,11 @@ let package = Package(
         .target(name: "HolosPocket", dependencies: [
             "HolosCore", "HolosSynthesis", .product(name: "FluidAudio", package: "FluidAudio"),
         ], exclude: ["README.md"]),
+        // App-only models without AppKit (settings search, setup assistant flow, ...): the app's logic that tests can
+        // reach without building the app executable.
+        .target(name: "HolosAppModel", dependencies: ["HolosCore"], exclude: ["README.md"]),
         .executableTarget(name: "HolosApp", dependencies: [
-            "HolosCore", "HolosAudio", "HolosSpeech", "HolosDesktop", "HolosDictation",
+            "HolosCore", "HolosAppModel", "HolosAudio", "HolosSpeech", "HolosDesktop", "HolosDictation",
             "HolosStorage", "HolosSpeakers", "HolosMeeting", "HolosSynthesis", "HolosContent",
         ], exclude: ["README.md"]),
         .executableTarget(name: "HolosCLI", dependencies: [
@@ -73,6 +76,7 @@ let package = Package(
         .target(name: "HolosSessionTestSupport", dependencies: ["HolosCore", "HolosStorage"],
                 path: "Tests/HolosSessionTestSupport"),
         .testTarget(name: "HolosCoreTests", dependencies: ["HolosCore"]),
+        .testTarget(name: "HolosAppModelTests", dependencies: ["HolosAppModel", "HolosCore"]),
         .testTarget(name: "HolosAppTests", dependencies: ["HolosApp", "HolosContent", "HolosCore", "HolosMeeting", "HolosSynthesis",
                                                          "HolosStorage", "HolosTestSupport"]),
         .testTarget(name: "HolosStorageTests", dependencies: [
