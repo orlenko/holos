@@ -145,7 +145,8 @@ struct Read: AsyncParsableCommand {
         let script = ReadingScript(document: document)
         // A declared language that is not a usable tag ("english") is ignored, not trusted.
         let language = AudioBookMetadata.languageTag(document.language) ?? ReadingLanguage.detect(script.text)
-        let selected = try resolveVoice(request.voice, language: language, explainDefault: true)
+        // Natural voices read through the reading pipeline in a later change; `say` takes them already.
+        let selected = try resolveVoice(request.voice, language: language, explainDefault: true, allowNatural: false)
         // The first title with readable text: `--title` (checked in `validate`), the document's,
         // then the file's name.
         let metadata = AudioBookMetadata(
@@ -241,16 +242,30 @@ let speechRateHelp = ArgumentHelp(
     }
 }
 
-/// `--voice` by name or identifier; without it, the best installed voice for `language`.
-@MainActor func resolveVoice(_ query: String?, language: String?, explainDefault: Bool) throws -> VoiceDescriptor {
+/// `--voice` by name or identifier (an Apple voice, or a natural voice such as "pocket:en:alba"); without it, the
+/// natural voice for `language` once its pack is installed (`allowNatural`), else the best installed Apple voice.
+@MainActor func resolveVoice(_ query: String?, language: String?, explainDefault: Bool,
+                             allowNatural: Bool = true) throws -> VoiceDescriptor {
     let voices = NativeSpeechRenderer.voices()
     if let query {
+        if NaturalVoiceCatalog.isNatural(query), !allowNatural {
+            throw HolosError.unavailable("Natural voices cannot be used here: \(query)")
+        }
+        // An Apple voice of that name goes first ("Alba" could be both); then a natural one.
+        if NaturalVoiceCatalog.isNatural(query) || VoiceSelection.match(query, in: voices, language: language) == nil,
+           allowNatural, let natural = try NaturalVoicesCLI.resolve(query) {
+            return natural.descriptor
+        }
         guard let match = VoiceSelection.match(query, in: voices, language: language) else {
             throw HolosError.unavailable("No installed voice is named \"\(query)\". See: voiceislocal voices list")
         }
         return match
     }
     let wanted = language ?? Locale.preferredLanguages.first ?? "en-US"
+    if allowNatural, let natural = NaturalVoiceCatalog.defaultVoice(language: wanted,
+                                                                   installed: NaturalVoiceModels.installedPacks()) {
+        return natural.descriptor
+    }
     let chosen: VoiceDescriptor
     if let best = NativeSpeechRenderer.bestVoice(language: wanted) {
         chosen = best
