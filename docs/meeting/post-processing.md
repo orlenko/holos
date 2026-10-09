@@ -79,7 +79,7 @@ stage 1d `wordFixes` (learned corrections and the word list's "often heard as" t
 to the live-corrected transcript, which becomes a new current revision; docs/design.md
 "Meeting word fixes"). Text-changing stages are skipped with `keepTranscript`; speaker-name
 hints are still applied. A live-hint or word-fix problem makes the record `partial` too.
-Stage 1b′ `deepTranscription` (deep-transcription.md §4.16) runs between 1b and 1c, only when asked for by name
+Stage 1b′ `deepTranscription` (docs/meeting/deep-transcription.md §4.16) runs between 1b and 1c, only when asked for by name
 (`PostProcessingOptions.deepTranscribe`).
 
 **Render time map** (PR7b, in `TrackRenderer`). A meeting left paused for hours would

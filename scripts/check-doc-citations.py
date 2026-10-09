@@ -8,8 +8,10 @@
 Each file is split into paragraphs: in Markdown, a paragraph, a list item, a table row (with or without a leading
 pipe) or a heading, read through block quote markers (a blank quoted line ends a paragraph, a change of quote depth
 starts one; inside fenced code, each run of non-blank lines); in Swift, a run of `//` lines or a whole `/* ... */`
-block, nested to any depth; in shell and Python, a run of `#` lines; every other source line on its own. Within a
-paragraph, every `§<N.M>` cites the last Markdown file named before it in that paragraph. A file is named by
+block, nested to any depth, with string literals (escapes, interpolations, raw and multiline strings) lexed so a
+comment marker inside one is text; in shell and Python, a run of `#` lines; every other source line on its own.
+Within a paragraph, every `§<N.M>` cites the last Markdown file named before it in that paragraph. A file is named
+by
 
 - a Markdown link to it: inline (`[label](<file>.md)`, `[label](<<file>.md>)`, a title in quotes or parentheses,
   a destination with balanced parentheses) or by reference (`[label][ref]`, `[ref][]`, `[ref]` with
@@ -17,7 +19,8 @@ paragraph, every `§<N.M>` cites the last Markdown file named before it in that 
   backslash escapes and code spans; its text never names a file (a `§` inside it cites the link's file). Links in
   code spans are not links;
 - a path: `docs/<file>.md`, `./<file>.md`, any number of `../` before it, any path with a folder, and in Markdown
-  files under `docs/` also a plain `<file>.md`.
+  files under `docs/` also a plain `<file>.md`. A path that a section follows must be written from the repository
+  root (`docs/<file>.md §<N.M>`, AGENTS.md); only link destinations are relative.
 
 A citation resolves when the file exists and has a heading, outside fenced code and HTML comments and possibly in a
 block quote, whose text starts with the number: `§4.1` needs a heading `4.1 ...` (not `4.10 ...`), and `§3` a
@@ -37,8 +40,8 @@ it appears in, or, in older code comments, of the meeting design, whose section 
 lines `<!-- citations: <file>.md -->` and `<!-- /citations -->` of a Markdown file (outside fenced code; regions
 nest, the innermost counts, and each must be closed), a bare `§<N.M>` cites that file (from the repository root). It
 resolves to a heading of that file or, when that file is an index, to a heading of the file its table maps the
-number to (a row naming `§<N.M>`, or a range `§<N.M>–<N.K>` that holds it, and a link; a number not listed is looked
-up by its parents: `§0.2` by `§0`).
+number to: a row names `§<N.M>`, or a range `§<N.M>–<N.K>` that holds it, and the first cell after it with a link
+has exactly one (inline or by reference); a number not listed is looked up by its parents: `§0.2` by `§0`.
 
 Prints each problem as `file:line: ...` and a summary; exits 1 when there is any.
 """
@@ -65,6 +68,8 @@ REGION_CLOSE = re.compile(r"^[ \t]*<!--[ \t]*/citations[ \t]*-->[ \t]*$")
 SECTION_RUN = re.compile(r"§(\d+(?:\.\d+)*)(?:[–-]§?(\d+(?:\.\d+)*))?(?!\d)")
 LIST_ITEM = re.compile(r"^[ \t]*(?:[-*+]|\d+[.)])[ \t]+")
 QUOTE_PREFIX = re.compile(r"^(?:[ \t]{0,3}>[ \t]?)+")
+SWIFT_CODE = re.compile(r'//|/\*|(#*)"("")?')
+SWIFT_COMMENT = re.compile(r"/\*|\*/")
 TABLE_DELIMITER = re.compile(r"^[ \t]*\|?[ \t]*:?-+:?[ \t]*(?:\|[ \t]*:?-+:?[ \t]*)+\|?[ \t]*$|^[ \t]*\|[ \t]*:?-+:?[ \t]*\|[ \t]*$")
 
 
@@ -316,34 +321,91 @@ def markdown_paragraphs(lines):
     return paragraphs
 
 
+def swift_string_end(line, j, hashes, close):
+    """The index after a Swift string's closing delimiter `close`, scanning from line[j] inside the string, or None
+    when the line ends first. Escapes (`\\` and `#`s for a raw string) are skipped, and an interpolation `\\(...)`
+    is skipped whole, strings inside it included."""
+    escape = "\\" + "#" * hashes
+    while j < len(line):
+        if line.startswith(close, j):
+            return j + len(close)
+        if line.startswith(escape, j):
+            j += len(escape)
+            if j < len(line) and line[j] == "(":
+                depth = 0
+                while j < len(line):
+                    if line[j] == "(":
+                        depth += 1
+                    elif line[j] == ")":
+                        depth -= 1
+                        if depth == 0:
+                            break
+                    elif line[j] == '"':
+                        end = swift_string_end(line, j + 1, 0, '"')
+                        j = len(line) if end is None else end
+                        continue
+                    j += 1
+            j += 1
+            continue
+        j += 1
+    return None
+
+
+def swift_scan(line, state):
+    """The Swift lexer state after a line: (block comment depth, hashes of an open multiline string or None). String
+    literals (`"..."`, raw `#"..."#`, multiline `\"\"\"...\"\"\"`) are skipped, so a `/*` or `//` inside one is text."""
+    depth, multiline = state
+    j = 0
+    while j < len(line):
+        if multiline is not None:
+            end = swift_string_end(line, j, multiline, '"""' + "#" * multiline)
+            if end is None:
+                return depth, multiline
+            j, multiline = end, None
+        elif depth:
+            match = SWIFT_COMMENT.search(line, j)
+            if not match:
+                return depth, None
+            depth += 1 if match.group() == "/*" else -1
+            j = match.end()
+        else:
+            match = SWIFT_CODE.search(line, j)
+            if not match or match.group() == "//":
+                return 0, None
+            if match.group() == "/*":
+                depth, j = 1, match.end()
+            elif match.group(2):
+                multiline, j = len(match.group(1)), match.end()
+            else:
+                hashes = len(match.group(1))
+                end = swift_string_end(line, match.end(), hashes, '"' + "#" * hashes)
+                j = len(line) if end is None else end
+    return depth, multiline
+
+
 def source_paragraphs(lines, swift):
     """Paragraphs of a source file: runs of comment lines (`//` lines and whole `/* ... */` blocks, nested to any
-    depth, in Swift; `#` lines in shell and Python); every other line alone."""
-    paragraphs, current, depth = [], [], 0
+    depth, in Swift; `#` lines in shell and Python); every other line alone. Swift string literals are lexed, so a
+    comment marker inside one is text; a line that cannot change the lexer state (no `/*`, no `\"\"\"`, outside a
+    block comment and a multiline string) is not lexed."""
+    paragraphs, current, state = [], [], (0, None)
     for number, line in enumerate(lines, 1):
-        start_depth, stripped = depth, line.lstrip()
+        start, stripped = state, line.lstrip()
         if swift:
-            j = 0
-            while j < len(line):
-                pair = line[j:j + 2]
-                if depth == 0 and pair == "//":
-                    break
-                if pair == "/*":
-                    depth, j = depth + 1, j + 2
-                elif pair == "*/" and depth:
-                    depth, j = depth - 1, j + 2
-                else:
-                    j += 1
-            starts_comment = stripped.startswith(("//", "/*"))
+            if state != (0, None) or "/*" in line or '"""' in line:
+                state = swift_scan(line, state)
+            starts_comment = start == (0, None) and stripped.startswith(("//", "/*"))
+            inside = start[0] > 0
         else:
             starts_comment = stripped.startswith("#") and not line.startswith("#!")
-        if start_depth or starts_comment:
+            inside = False
+        if inside or starts_comment:
             current.append((number, line))
             continue
         if current:
             paragraphs.append(current)
             current = []
-        if depth:
+        if state[0]:
             current.append((number, line))
         elif "§" in line or ".md" in line:
             paragraphs.append([(number, line)])
@@ -416,21 +478,54 @@ def tokens(text, in_docs, refs):
     return sorted(found, key=lambda token: (token[0], token[1] == "section"))
 
 
+def row_cells(line):
+    """The cells of a table row as (start, end) spans, split at pipes outside code spans and escapes."""
+    cells, start, j = [], 0, 0
+    while j < len(line):
+        if line[j] == "\\":
+            j += 2
+            continue
+        if line[j] == "`":
+            j = code_span_end(line, j)
+            continue
+        if line[j] == "|":
+            cells.append((start, j))
+            start = j + 1
+        j += 1
+    cells.append((start, len(line)))
+    return cells
+
+
+def row_sections(line, refs):
+    """The section numbers of an index row with the `.md` links they map to: [(number, offset, [destinations])].
+    A number maps to the links of the first cell after its own that has any; a well-formed row has exactly one."""
+    cells = row_cells(line)
+    dests = []
+    for start, end in cells:
+        found = [link[4].split("#", 1)[0] for link in links(line[start:end], refs)]
+        dests.append([dest for dest in found if dest.endswith(".md") and "://" not in dest])
+    rows = []
+    for number, offset in sections(line):
+        cell = next(index for index, (start, end) in enumerate(cells) if start <= offset < end)
+        rows.append((number, offset, next((found for found in dests[cell + 1:] if found), [])))
+    return rows
+
+
 def index_map(tree, rel, cache):
-    """What an index's table rows map each listed section number to: {number: file}."""
+    """What an index's table rows map each listed section number to: {number: file}. Reference links resolve
+    through the index's own definitions."""
     key = ("index", rel)
     if key not in cache:
         mapping = {}
-        for line in tree.read(rel).split("\n"):
-            if "|" not in QUOTE_PREFIX.sub("", line):
+        text = tree.read(rel)
+        refs = references(text)
+        for line in text.split("\n"):
+            line = QUOTE_PREFIX.sub("", line)
+            if "|" not in line:
                 continue
-            dests = [link[4].split("#", 1)[0] for link in links(line, {})]
-            dests = [dest for dest in dests if dest.endswith(".md") and "://" not in dest]
-            if not dests:
-                continue
-            target = os.path.normpath(os.path.join(os.path.dirname(rel), dests[-1]))
-            for number, _ in sections(line):
-                mapping.setdefault(number, target)
+            for number, _, dests in row_sections(line, refs):
+                if len(dests) == 1:
+                    mapping.setdefault(number, os.path.normpath(os.path.join(os.path.dirname(rel), dests[0])))
         cache[key] = mapping
     return cache[key]
 
@@ -475,6 +570,11 @@ def regions(lines):
     return found, problems
 
 
+def root_form(tree, cited):
+    """Whether a path is written from the repository root (`docs/...`, `Sources/...`)."""
+    return "/" in cited and not cited.startswith(".") and tree.isdir(cited.split("/", 1)[0])
+
+
 def check(paths, tree):
     cache = {}
     problems = []
@@ -505,9 +605,11 @@ def check(paths, tree):
                 return [number for start, number in starts if start <= position][-1]
 
             named = None
+            if "§" not in joined and not (in_docs and ".md" in joined):
+                continue
             for position, kind, value, link in tokens(joined, in_docs, refs):
                 if kind == "file":
-                    named = (value, resolve(tree, value, rel, link))
+                    named = (value, resolve(tree, value, rel, link), link)
                     continue
                 if named is None:
                     region = region_of.get(line_of(position))
@@ -521,7 +623,10 @@ def check(paths, tree):
                                             f"{target} or the file its index maps it to")
                     continue
                 count += 1
-                cited, target = named
+                cited, target, linked = named
+                if not linked and not root_form(tree, cited):
+                    problems.append(f"{rel}:{line_of(position)}: {cited} §{value}: cite by the path from the repository "
+                                    f"root (AGENTS.md)")
                 if target is None:
                     problems.append(f"{rel}:{line_of(position)}: {cited} §{value}: no such file")
                 elif not has_section(headings(tree, target, cache), value):
@@ -564,6 +669,11 @@ SELF_TEST_FILES = {
     "destinations.md": "[x](missing.md 'title') §9.6\n\n[x](missing.md (title)) §9.5\n\n[x](<docs/a.md>) §1.3\n\n"
                        "[x](miss(ing).md) §8.9\n",
     "reference.md": "[spec][s] §9.4 and [s] §1.3\n\n[s]: docs/a.md\n",
+    "strings.swift": 'let a = "/* docs/a.md"\n// §9.7 is bare\nlet b = #"raw "/* docs/a.md"#\n// §9.6 is bare\n'
+                     'let c = """\n  /* docs/a.md\n  """\n// §9.5 is bare\nlet d = "\\("/*") docs/a.md"\n// §9.4 is bare\n'
+                     'let e = "done" /* docs/a.md\n §9.3 */\n',
+    "docs/index3.md": "# I\n\n| §1.1 One | [B][b] |\n| §1.2 Two | [spec](spec.md) | [B](sub/b.md) |\n\n[b]: sub/b.md\n",
+    "docs/region3.md": "<!-- citations: docs/index3.md -->\n| §1.1 | §1.2 |\n<!-- /citations -->\n",
     "code-span.md": "Some words before a `code` then [x](missing.md) §8.8; and `[y](missing2.md) §8.7` is code, "
                     "not a link.\n",
     "quote.md": "> see docs/a.md\n>\n> §9.3 is bare: a blank quoted line ends the paragraph\n",
@@ -581,7 +691,8 @@ SELF_TEST_FILES = {
 }
 SELF_TEST_PATHS = [name for name in SELF_TEST_FILES if name not in ("docs/a.md", "docs/c.md", "docs/sub/b.md",
                                                                      "docs/spec.md", "docs/conventions.md",
-                                                                     "docs/fenced.md", "docs/index.md", "docs/r.md")]
+                                                                     "docs/fenced.md", "docs/index.md", "docs/r.md",
+                                                                     "docs/index3.md")]
 SELF_TEST_PROBLEMS = [
     "link-target.md:1: docs/a.md §3.2: no heading 3.2 in docs/a.md",
     "link-text.md:1: missing.md §4.10: no such file",
@@ -594,6 +705,12 @@ SELF_TEST_PROBLEMS = [
     "comma-and.swift:1: docs/a.md §3.2: no heading 3.2 in docs/a.md",
     "subheading.swift:2: docs/a.md §5.11: no heading 5.11 in docs/a.md",
     "docs/sub/relative.md:1: ./a.md §1.3: no such file",
+    "docs/sub/relative.md:1: ./b.md §1.1: cite by the path from the repository root (AGENTS.md)",
+    "docs/sub/relative.md:1: ../a.md §1.3: cite by the path from the repository root (AGENTS.md)",
+    "docs/sub/relative.md:1: ./a.md §1.3: cite by the path from the repository root (AGENTS.md)",
+    "docs/sub/deep.md:1: ../../docs/spec.md §99.9: cite by the path from the repository root (AGENTS.md)",
+    "docs/folder.md:1: missing/status.md §1.1: cite by the path from the repository root (AGENTS.md)",
+    "docs/folder.md:1: sub/b.md §1.1: cite by the path from the repository root (AGENTS.md)",
     "fence.md:1: docs/a.md §9.9: no heading 9.9 in docs/a.md",
     "fence-indent.md:1: docs/c.md §7.1: no heading 7.1 in docs/c.md",
     "prefix.md:1: docs/a.md §4.1: no heading 4.1 in docs/a.md",
@@ -622,6 +739,7 @@ SELF_TEST_PROBLEMS = [
     "destinations.md:7: miss(ing).md §8.9: no such file",
     "reference.md:1: docs/a.md §9.4: no heading 9.4 in docs/a.md",
     "code-span.md:1: missing.md §8.8: no such file",
+    "strings.swift:12: docs/a.md §9.3: no heading 9.3 in docs/a.md",
     "code-span.md:1: missing.md §8.7: no such file",
     "heading-forms.md:1: docs/a.md §9.1: no heading 9.1 in docs/a.md",
     "docs/regions2.md:5: docs/index.md §7.7: no heading 7.7 in docs/index.md or the file its index maps it to",
