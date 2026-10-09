@@ -115,14 +115,18 @@ struct NaturalVoiceDownload: Equatable {
 }
 
 /// The natural voice packs the voice menus were last filled with: whether the installed ones changed since.
+///
+/// Invariants:
+/// 1. `known` starts empty: the menus are first filled before the first look at the packs (which runs off the main
+///    actor), with none, so a first look that finds packs installed is a change and the menus are filled again.
+/// 2. Each `observe` records what it was given.
 struct NaturalVoicesWatch: Equatable {
-    private(set) var known: Set<NaturalVoicePack>?
+    private(set) var known: Set<NaturalVoicePack> = []
 
-    /// Records `installed`; true when it differs from what was known (never on the first look: the menus were just
-    /// filled with it).
+    /// Records `installed`; true when it differs from what was known.
     mutating func observe(_ installed: Set<NaturalVoicePack>) -> Bool {
         defer { known = installed }
-        return known.map { $0 != installed } ?? false
+        return known != installed
     }
 }
 

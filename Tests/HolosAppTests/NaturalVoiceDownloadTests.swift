@@ -90,6 +90,15 @@ import Testing
         #expect(removed)
     }
 
+    @Test func packsFoundByTheFirstLookFillTheMenusAgain() {
+        // The menus were filled at launch before the packs were looked at (off the main actor): with none.
+        var watch = NaturalVoicesWatch()
+        let found = watch.observe([.english])
+        #expect(found)
+        let again = watch.observe([.english])
+        #expect(!again)
+    }
+
     @Test func anInstallElsewhereIsFollowedUntilItEnds() async {
         // What a fake status source says at each look: installing for three looks, then installed.
         var looks = 0

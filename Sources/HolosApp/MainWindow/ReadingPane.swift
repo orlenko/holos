@@ -312,7 +312,7 @@ final class ReadingPane: NSViewController, MainSectionContent, NSTableViewDataSo
     /// Adds the readings; false (with the reason shown) when the list takes none.
     @discardableResult
     private func add(_ sources: [ReadingSource]) async -> Bool {
-        let (voice, speed) = (selectedVoice, speedSlider.doubleValue)
+        let (voice, speed) = (chosenVoice, speedSlider.doubleValue)  // chosen, even before its pack is offered
         var last: UUID?
         for source in sources {
             do {
