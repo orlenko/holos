@@ -56,11 +56,7 @@ public enum SpeechChunkCheck {
     }
 
     /// Every word of `text`, folded, numbers included.
-    static func tokens(_ text: String) -> [String] {
-        text.folding(options: [.caseInsensitive, .diacriticInsensitive, .widthInsensitive], locale: nil)
-            .components(separatedBy: CharacterSet.alphanumerics.inverted)
-            .filter { !$0.isEmpty }
-    }
+    static func tokens(_ text: String) -> [String] { SpokenNumbers.tokens(text) }
 
     /// Number words, folded (no accents).
     static let numberWords: Set<String> = Set([

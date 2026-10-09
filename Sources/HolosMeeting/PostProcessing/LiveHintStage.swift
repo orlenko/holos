@@ -209,9 +209,8 @@ enum LiveHintStage {
                                 current: Transcript,
                                 result: LiveHints.TextOutcome,
                                 session: URL, lease: ProcessingLease) async throws -> Bool {
-        let archive = try SessionArchive.openForMaintenance(at: session, lease: lease)
-        do {
-            let preserved = try await SessionArchive.withSpeakerLockAsync(at: session) { () async throws -> Bool in
+        return try await SessionArchive.withMaintenanceArchive(at: session, lease: lease) { archive in
+            try await SessionArchive.withSpeakerLockAsync(at: session) { () async throws -> Bool in
                 guard try SessionFiles.currentTranscript(session: session)?.id == current.id else {
                     throw HolosError.unavailable("The transcript changed while live corrections were being saved.")
                 }
@@ -245,11 +244,6 @@ enum LiveHintStage {
                 }
                 return plan != nil
             }
-            await archive.releaseLock()
-            return preserved
-        } catch {
-            await archive.releaseLock()
-            throw error
         }
     }
 
@@ -264,9 +258,8 @@ enum LiveHintStage {
                                                     lease: ProcessingLease) async throws -> Bool {
         let initial = try SpeakerAnalysis.headState(session: session, transcript: transcript)
         guard let initial, !initial.sameTranscript, initial.run != nil else { return false }
-        let archive = try SessionArchive.openForMaintenance(at: session, lease: lease)
-        do {
-            let repaired = try await SessionArchive.withSpeakerLockAsync(at: session) { () async throws -> Bool in
+        return try await SessionArchive.withMaintenanceArchive(at: session, lease: lease) { _ in
+            try await SessionArchive.withSpeakerLockAsync(at: session) { () async throws -> Bool in
                 guard try SessionFiles.currentTranscript(session: session)?.id == transcript.id else {
                     throw HolosError.invalidInput("The transcript changed while its speaker labels were being repaired.")
                 }
@@ -288,11 +281,6 @@ enum LiveHintStage {
                 try SpeakerTranscriptRetarget.publishHead(plan, session: session)
                 return true
             }
-            await archive.releaseLock()
-            return repaired
-        } catch {
-            await archive.releaseLock()
-            throw error
         }
     }
 }

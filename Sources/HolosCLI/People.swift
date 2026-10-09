@@ -373,7 +373,7 @@ enum PeopleCommand {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         if let uuid = UUID(uuidString: trimmed) {
             let id = uuid.uuidString
-            let url = HolosPaths.sessions.appendingPathComponent("\(id).holos", isDirectory: true)
+            let url = SessionPaths.folder(for: id, in: HolosPaths.sessions)
             return (id, try? SessionArchive.readManifest(at: url).name)
         }
         let manifest = try SessionArchive.readManifest(at: try SessionLocator.resolve(trimmed))

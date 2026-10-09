@@ -3,7 +3,7 @@ import Foundation
 import HolosCore
 import HolosSynthesis
 
-/// Kyutai Pocket TTS through FluidAudio (docs/design.md "Natural voices"): the natural voices' backend in the
+/// Kyutai Pocket TTS through FluidAudio (Sources/HolosPocket/README.md): the natural voices' backend in the
 /// `voiceislocal` tool. One `PocketTtsManager` per language pack, loaded on first use from the pack's folder under
 /// `NaturalVoiceModels.root` and kept for the process. Each paragraph is one fresh session with the given seed, so
 /// the same paragraph and seed give the same take (Pocket TTS draws its noise from a seeded generator).

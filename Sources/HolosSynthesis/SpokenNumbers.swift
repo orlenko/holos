@@ -1,14 +1,14 @@
 import Foundation
 
 /// The numbers a text says, each as its value in digits ("2015", "3.5"), so a paragraph of numbers can be compared
-/// with what a recognizer heard (`SpeechChunkCheck`). Digits are read as written: thousands separators ("2,015",
+/// with what a recognizer heard (the natural voices' per-paragraph check). Digits are read as written: thousands separators ("2,015",
 /// "1 500" with a no-break space, "1.500"), a decimal point or comma, ordinal suffixes ("2nd", "1er", "3e"). English
 /// and French number words are read as one number each: "two thousand and fifteen", "fifteen hundred", "twenty
 /// fifteen" (a year), "deux mille quinze", "quatre-vingt-dix-sept", "vingt et un", "three point five", "trois virgule
 /// cinq". A word that cannot continue a number ends it; other words are skipped.
 enum SpokenNumbers {
     static func values(in text: String) -> [String] {
-        let words = SpeechChunkCheck.tokens(prepared(text))
+        let words = tokens(prepared(text))
         var values: [String] = []
         var index = 0
         while index < words.count {
@@ -23,6 +23,13 @@ enum SpokenNumbers {
             values.append(value)
         }
         return values
+    }
+
+    /// Every word of `text`, folded (case, accents, width), numbers included.
+    static func tokens(_ text: String) -> [String] {
+        text.folding(options: [.caseInsensitive, .diacriticInsensitive, .widthInsensitive], locale: nil)
+            .components(separatedBy: CharacterSet.alphanumerics.inverted)
+            .filter { !$0.isEmpty }
     }
 
     /// Whether two lists of numbers are the same.
