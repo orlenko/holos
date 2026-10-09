@@ -9,7 +9,6 @@ import HolosDictation
 import HolosMeeting
 import HolosSpeech
 import HolosStorage
-import HolosSynthesis
 import os
 import Security
 
@@ -141,8 +140,6 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
     let history = DictationHistoryService()
     /// The Reading list and the readings being made (HolosApp+Reading.swift).
     let readings = ReadingController()
-    /// Settings › Reading's natural voice downloads (HolosApp+Reading.swift).
-    let naturalVoices = NaturalVoicesAppState()
     /// The dictation in progress, for its History record; nil when there is none or it was refused.
     private var historyDraft: HistoryDraft?
     /// What happened to this dictation's text, for its History record.
@@ -258,13 +255,8 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
         history.onChange = { [weak self] in self?.historyChanged() }
         history.onFailure = { [weak self] problem in self?.showHistoryProblem(problem) }
         history.start()
-        // Readings the user kept rendering over the last quit continue.
-        readings.start()
-        // Natural voice temporaries a crash or a SIGKILL left behind (a day old, so none in use).
-        DispatchQueue.global(qos: .utility).async { NaturalVoiceTemporaries.sweep() }
-        // The natural voice packs the menus start with; a change later (Terminal) is noticed at activation.
-        checkNaturalVoicesInstalled()
-        pollNaturalVoiceInstalls()
+        // Readings the user kept rendering over the last quit continue; the natural voices are looked at.
+        startReadings()
         PeopleLaunch.resumePendingForgetsOnce()
         Task { await loadLanguages() }
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
@@ -342,10 +334,8 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         if reopenAfterQuit { reopenOnceExited() }
-        // Natural voice helpers (a reading's part, a Preview) run detached: stopped now, their folders removed.
-        NaturalVoiceHelpers.stopAll()
         enableTask?.cancel(); assetTask?.cancel(); overlayHideTask?.cancel(); resultExpiryTask?.cancel()
-        setupRefreshTask?.cancel(); assistantRefreshTask?.cancel()
+        setupRefreshTask?.cancel(); assistantRefreshTask?.cancel(); stopNaturalVoiceHelpers()
         history.stop()
         // A dictation just recorded, deleted, or cleared must reach the file before the process exits; bounded, so a
         // stuck disk never holds up the quit.
@@ -1524,7 +1514,6 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
               let settings = mainWindow.existingController(for: .settings) as? SettingsPane else { return }
         let speakerLabels = speakerLabelsSetupState()
         let deep = deepTranscriptionSetupState()
-        refreshNaturalVoices()
         settings.update(SetupState(
             microphone: AudioCapture.microphonePermission, accessibility: AXIsProcessTrusted(),
             inputMonitoring: CGPreflightListenEventAccess(), inputMonitoringNeeded: inputMonitoringNeeded,
@@ -1549,8 +1538,7 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
             historyRetention: history.retention, historyCount: history.keptCount,
             historyUnreadable: history.unreadable, historyKeepsAudio: history.keepsAudio,
             historyAudioBytes: history.audioBytes,
-            openWindowAtLaunch: openWindowAtLaunch, appearance: appearance,
-            naturalVoices: naturalVoices.downloads))
+            openWindowAtLaunch: openWindowAtLaunch, appearance: appearance, naturalVoices: naturalVoiceDownloads()))
     }
 
     /// The sidebar's dictation status, independent of meeting recording.
@@ -1617,14 +1605,10 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
         case .toggleMeetingScreenCapture:
             MeetingAppState.screenCaptureDefault.toggle()
             updateSettings()
-        case .speakerModels:
-            installSpeakerModels()
+        case .speakerModels: installSpeakerModels()
         case .deepTranscriptionModel:
             installDeepTranscriptionModel()
-        case .naturalVoicesEnglish:
-            toggleNaturalVoiceDownload(.english)
-        case .naturalVoicesFrench:
-            toggleNaturalVoiceDownload(.french)
+        case .naturalVoicesEnglish, .naturalVoicesFrench: toggleNaturalVoiceDownload(for: action)
         case .toggleDeepTranscription:
             toggleDeepTranscription()
         case .toggleMeetingSummaries:

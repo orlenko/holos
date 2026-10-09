@@ -373,10 +373,13 @@ import Testing
 
     @Test func aPartIsRenderedByTheToolFromATextFile() async throws {
         let launches = Launches()
+        let scratchWasMarked = Mutex(false)
         let renderer = HelperNaturalRenderer(launch: { arguments, _, onExit in
             launches.arguments.withLock { $0.append(arguments) }
             // What the tool would do: read the text file, write the part.
             let text = try String(contentsOfFile: arguments[4], encoding: .utf8)
+            let marked = NaturalHelperScratch.isMade(URL(fileURLWithPath: arguments[6]), for: getpid())
+            scratchWasMarked.withLock { $0 = marked }
             #expect(text == "First.\n\nSecond.")
             let output = URL(fileURLWithPath: arguments[8])
             try NaturalSpeechFile.write([Float](repeating: 0.1, count: 12_000), sampleRate: 24_000, to: output)
@@ -395,6 +398,8 @@ import Testing
         // The tool's temporary files go in the folder this app tracks (and deletes on Stop or Quit): the text file's.
         #expect(arguments[5] == "--scratch-directory")
         #expect(arguments[6] == URL(fileURLWithPath: arguments[4]).deletingLastPathComponent().path)
+        // Made and marked for this app, so the tool removes it if the app ends (and no other folder).
+        #expect(scratchWasMarked.withLock { $0 })
         // The tool stops when this app ends, and waits for one an ended app left writing the same part.
         #expect(Array(arguments.suffix(6)) == ["--output", output.path, "--parent-pid", "\(getpid())", "--rate",
                                                "\(rate!)"])

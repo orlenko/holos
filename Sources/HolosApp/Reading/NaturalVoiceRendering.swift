@@ -95,10 +95,8 @@ import Synchronization
         // reading's part, and a Preview started again waits for the one it replaced to have exited.
         try await gate.acquire()
         defer { gate.release() }
-        let folder = FileManager.default.temporaryDirectory
-            .appendingPathComponent("holos-natural-\(UUID().uuidString)", isDirectory: true)
-        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: false,
-                                                attributes: [.posixPermissions: 0o700])
+        // Marked as this app's (its pid): the tool removes it if this app ends, and no other folder.
+        let folder = try NaturalHelperScratch.create()
         NaturalVoiceHelpers.using(folder)
         defer {
             try? FileManager.default.removeItem(at: folder)
@@ -249,6 +247,18 @@ enum NaturalVoiceHelpers {
                 + "Spoken Content › System Voice › Manage Voices.")
         }
         return voice
+    }
+
+    /// The voice the reading was started with; else the one asked for; else the best installed voice for its
+    /// language (as `voiceislocal read` picks it).
+    static func voice(for entry: ReadingEntry, language: String?, saved: ReadingManifest? = nil) throws
+        -> VoiceDescriptor {
+        try choose(
+            fixed: entry.voiceIdentifier ?? entry.requestedVoice, fixedName: entry.voiceName, language: language,
+            saved: saved,
+            installed: NaturalVoiceModels.installedPacks(), appleVoices: NativeSpeechRenderer.voices(),
+            bestApple: NativeSpeechRenderer.bestVoice(language:),
+            appleDefault: NativeSpeechRenderer.defaultVoiceIdentifier)
     }
 
     /// What Automatic means for `language`, for Make Audio and Preview alike: the pack's natural voice once it is

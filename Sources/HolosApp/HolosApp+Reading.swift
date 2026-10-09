@@ -21,11 +21,44 @@ final class NaturalVoicesAppState {
     var poll: Task<Void, Never>?
     /// The launcher of the bundled tool, made on first use.
     lazy var launcher = MaintenanceLauncher(executable: ChildProcessLauncher.bundledExecutable)
+
+    /// The app's one state (the app delegate's `naturalVoices`).
+    static let shared = NaturalVoicesAppState()
 }
 
 /// Natural voices: the download from Settings › Reading.
 extension HolosAppDelegate {
     private static let readingLog = Logger(subsystem: "ca.orlenko.holos.app", category: "reading")
+
+    /// Settings › Reading's natural voice downloads.
+    var naturalVoices: NaturalVoicesAppState { .shared }
+
+    /// At launch: readings the user kept rendering over the last quit continue; natural voice temporaries a crash or
+    /// a SIGKILL left behind (a day old, so none in use) are removed; the voice menus start with the packs installed
+    /// (a change later, in Terminal, is noticed at activation, or by polling while another process installs one).
+    func startReadings() {
+        readings.start()
+        DispatchQueue.global(qos: .utility).async { NaturalVoiceTemporaries.sweep() }
+        checkNaturalVoicesInstalled()
+        pollNaturalVoiceInstalls()
+    }
+
+    /// At quit: natural voice helpers (a reading's part, a Preview) run detached, so they are stopped now and their
+    /// folders removed.
+    func stopNaturalVoiceHelpers() {
+        NaturalVoiceHelpers.stopAll()
+    }
+
+    /// Settings › Reading's rows: each pack's download, its files checked first.
+    func naturalVoiceDownloads() -> [NaturalVoicePack: NaturalVoiceDownload] {
+        refreshNaturalVoices()
+        return naturalVoices.downloads
+    }
+
+    /// The Settings action of a pack's row.
+    func toggleNaturalVoiceDownload(for action: SetupAction) {
+        toggleNaturalVoiceDownload(action == .naturalVoicesFrench ? .french : .english)
+    }
 
     /// Settings › Reading's natural voice row for `pack`: starts its download, or cancels the one running.
     func toggleNaturalVoiceDownload(_ pack: NaturalVoicePack) {

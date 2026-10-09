@@ -676,7 +676,9 @@ helper still running (a reading's part, a Preview) and removes their temporary f
 from `applicationWillTerminate`); a part cut off so is rendered again on Resume. A crash or SIGKILL skips that, so
 the app also passes its pid (`--parent-pid`): the tool watches it (a process-exit event, and `getppid()` once the
 watch is set, for an app that ended before) and, when it ends, cancels the render (its temporary file beside the
-part goes) and removes the app's folder for it (`NaturalHelperRun`, HolosSynthesis). A tool started so also takes a
+part goes) and removes the app's folder for it, only when that folder is the one the app made for it (a
+`holos-natural-<UUID>` folder in the temporary folder holding a marker that names the app's pid;
+`NaturalHelperScratch`), never another folder named with `--scratch-directory` (`NaturalHelperRun`, HolosSynthesis). A tool started so also takes a
 lock on its output (`NaturalOutputLock`: one file per output path in `holos-output-locks` in the temporary folder),
 so the tool a relaunched app starts for the same part waits until one an ended app left running has exited. The
 tool's own temporary files (the
@@ -696,7 +698,8 @@ continues, whatever voice it used, or only one made with `--voice` when it is gi
 commit of the voices is refused as such before any voice or pack is checked (`ReadingResumeVoice.checkRevision`, the
 app's Resume included), and one whose pack is gone says to install it again). A reading also saves its renderer's
 settings when it starts (`ReadingManifest.rendererSettings`: a natural voice's fallback system voice and whether
-paragraphs are heard back), and every part, a resume's included, is rendered with them; the app passes them to the
+paragraphs are heard back), and every part, a resume's included, is rendered with them (`HOLOS_NATURAL_CHECK=0`
+changes only the default for new readings); the app passes them to the
 tool (`--fallback-voice`, `--check`). A natural voice whose pack is gone fails with where to
 download it. Preview of Automatic speaks with the voice Make Audio would use for the user's first language
 (`ReadingVoices.automatic`); a sample that does not start playing is reported under the card, not left as Stop.

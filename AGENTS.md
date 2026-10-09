@@ -160,7 +160,8 @@ Exist today:
   decodes it off the main actor into a `CommandResult`, and removes the files. Decode into the library's own types:
   `DoctorReport`, `PostProcessingRecord`, `SessionSummarizeCommand.Outcome`, `SessionEchoAnalyzeCommand.Outcome`,
   `SessionRenameCommand.Outcome`. Long-running installs whose progress is read while they run (`setup --speakers`,
-  `setup --whisper`) go through `MaintenanceLauncher` directly.
+  `setup --whisper`, `setup --natural-voices`) and the natural-voice `say` helper go through `MaintenanceLauncher`
+  directly.
 - Exports: `SessionExports.regenerate(session:people:)`. Reading files: `ExclusivePublisher.publish`.
 - Logging: `Logger(subsystem: "ca.orlenko.holos.app", category: …)`; categories and privacy rules in
   `docs/meeting-design.md §1.5`.
