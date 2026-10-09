@@ -137,6 +137,68 @@ struct ReviewWindowJoinTests {
                                       charactersIgnoringModifiers: "z", isARepeat: false, keyCode: 6))
     }
 
+    /// A key typed as the window receives it (`characters`, with `flags`).
+    private func key(_ window: ReviewWindow, _ characters: String, code: UInt16,
+                     flags: NSEvent.ModifierFlags = []) throws -> NSEvent {
+        try #require(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: flags, timestamp: 0,
+                                      windowNumber: window.window.windowNumber, context: nil, characters: characters,
+                                      charactersIgnoringModifiers: characters, isARepeat: false, keyCode: code))
+    }
+
+    /// Backspace joins another speaker's row and the speaker change takes a while to save: the field is closed until
+    /// it has, and what is typed meanwhile (K, Space and J, playback keys outside a field) goes into the field that
+    /// opens again at the join, as typed there.
+    @Test(.timeLimit(.minutes(1))) func typingWhileTheJoinSavesGoesIntoTheReopenedField() async throws {
+        let (window, session) = try await open([Spec(speaker: "S1", start: 0, words: ["amber", "birch"]),
+                                                Spec(speaker: "S2", start: 2, words: ["cedar", "dune"])])
+        let (stream, release) = AsyncStream<Void>.makeStream()
+        let calls = Calls()
+        window.review.beforeEdit = {
+            _ = calls.next()
+            for await _ in stream {}
+        }
+        window.setEditMode(true)
+        press(window, row: 1, word: 0, caret: 0, #selector(NSResponder.deleteBackward(_:)))
+        #expect(await until { calls.peek() == 1 && rows(window) == [["T1", "T2"]] })
+        #expect(window.turnList.wordEdit == nil, "Closed while the speaker change saves.")
+        for (characters, code) in [("k", UInt16(40)), (" ", 49), ("j", 38)] {
+            window.window.sendEvent(try key(window, characters, code: code))
+        }
+        release.finish()
+        #expect(await until { journal(session).count == 1 && window.turnList.wordEdit != nil })
+        #expect(window.turnList.editField.stringValue == "k jcedar")
+        window.turnList.cancelWordEdit()
+        await window.closeAndWait()
+    }
+
+    /// Keys typed while the join saves, when the join is then dropped (its speaker change is refused: the labels were
+    /// changed elsewhere meanwhile): no field opens, and the footer says what was typed.
+    @Test(.timeLimit(.minutes(1))) func typingWhileAJoinThatFailsSavesIsShownInTheFooter() async throws {
+        let (window, session) = try await open([Spec(speaker: "S1", start: 0, words: ["amber", "birch"]),
+                                                Spec(speaker: "S2", start: 2, words: ["cedar", "dune"])])
+        let (stream, release) = AsyncStream<Void>.makeStream()
+        let calls = Calls()
+        window.review.beforeEdit = {
+            _ = calls.next()
+            for await _ in stream {}
+        }
+        // Elsewhere (a command): T2 goes to S1.
+        let view = try #require(try SpeakerSessionSnapshot.load(session: session).projection)
+        _ = try SpeakerEditor.apply([.reassignTurns(turnIDs: ["T2"], to: "S1")], view: view, session: session,
+                                    source: "cli", regenerateExports: false)
+        window.setEditMode(true)
+        press(window, row: 1, word: 0, caret: 0, #selector(NSResponder.deleteBackward(_:)))
+        #expect(await until { calls.peek() == 1 && rows(window) == [["T1", "T2"]] })
+        for (characters, code) in [("k", UInt16(40)), ("o", 31)] {
+            window.window.sendEvent(try key(window, characters, code: code))
+        }
+        release.finish()
+        #expect(await until { window.paragraphJoins.isEmpty && window.problem?.contains("“ko”") == true })
+        #expect(window.turnList.wordEdit == nil)
+        #expect(journal(session) == [.reassignTurns(turnIDs: ["T2"], to: "S1")], "Only the change made elsewhere.")
+        await window.closeAndWait()
+    }
+
     /// After Backspace joins another speaker's row, the field opens again at the join with nothing typed in it: ⌘Z
     /// there is the review's undo (the banner says so), which gives the row its speaker back, never the field's own
     /// typing undo. With something typed, ⌘Z undoes the typing.
