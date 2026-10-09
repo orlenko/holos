@@ -53,8 +53,7 @@ Known exceptions today (not precedents; do not add to them):
   `stop.request` (`RecordingWorkflow`), `control/<id>.json` (`RecorderChannel`), `derived/deep-<track>-16k.caf`
   (`DeepTranscriptionStage`), `echo/frames-<hash>.bin` (`EchoAnalysisStage`), `exports/edited-<stamp>.<ext>`
   (`SessionExports`).
-- `HolosApp` holds the dictation session and the summary scheduler (`HolosApp+MeetingSummary`), and 13 of its
-  files import `HolosStorage`.
+- `HolosApp` holds the dictation session, and 13 of its files import `HolosStorage`.
 - `CommandPrinted` (`HolosApp+Meeting.swift`) still reads the result line (`summary`, `message`, `runID`) of the
   JSON that `session recover`, `diarize` and `delete` print (and `rename`, besides its typed outcome) as
   `[String: Any]` with `JSONSerialization`. The other outputs the app reads (`doctor`, `deep-transcribe`,
@@ -161,8 +160,8 @@ Exist today:
   close-on-exec default, own session). The one other spawn is `voiceislocal eval` running `/usr/bin/open`.
 - Running a background job on meetings (one at a time on this Mac, held back by meetings, Review and the
   background job lock, stopped when a meeting starts, retried when turned down): a `BackgroundJobKind` run by
-  `BackgroundJobCoordinator` (HolosMeeting; final transcripts and echo analyses; summaries still have their own
-  scheduler in the app).
+  `BackgroundJobCoordinator` (HolosMeeting; final transcripts, echo analyses and summaries). `MeetingController`'s
+  automatic relabel keeps its own scheduler: it runs beside those jobs, not one at a time with them.
 - Running a `voiceislocal` command from the app and reading its output: `CommandRunner` (`start` returns a
   `CommandHandle` to stop it with SIGTERM; `run` awaits it), which writes its output to `TemporaryArtifact`s,
   decodes it off the main actor into a `CommandResult`, and removes the files. Decode into the library's own types:

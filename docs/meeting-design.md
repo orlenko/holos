@@ -5598,7 +5598,8 @@ as its heading when the user did not name the meeting; `transcript.json` gets a 
 (`title`, `summary`, `points`, `actions`, `model`); `transcript.txt` keeps Otter's layout. Every
 export uses the summary only for the transcript it was made from.
 
-In the app (`MeetingSummaryAppState`, `MeetingSummarySchedule`), with Settings › Meetings ›
+In the app (`MeetingSummaryJobs`, run by `BackgroundJobCoordinator` with final transcripts and echo analyses;
+`MeetingSummarySchedule`), with Settings › Meetings ›
 "Title and summarize meetings with Apple Intelligence" on (the default; off and disabled, with
 the reason, when Apple Intelligence cannot be used): every 30 s, 10 s after launch, after a
 meeting is saved, after a final transcript or another command ends, the sessions folder is
@@ -5614,8 +5615,8 @@ the app was closed (or had nothing to do; while the model downloads it waits for
 final transcripts are turned off, which lets summaries start); every later
 reconciliation (the model installed, the setting turned on) holds summaries back too, and stops
 one running (it is made again afterwards). Work the user asked for goes before automatic work, across both
-queues (`BackgroundJobOrder` orders final transcripts and echo analyses; summaries ask the coordinator,
-`askedForWorkWaiting` and `catchUpReady`): when a final transcript or a summary ends, or a command lets a meeting go, summaries are looked for
+queues (`BackgroundJobOrder`; an automatic summary comes after an automatic final transcript ready at the same
+look): when a final transcript or a summary ends, or a command lets a meeting go, summaries are looked for
 first, and an automatic final
 transcript waits for that scan while a Summarize Again is pending; an automatic summary waits while a Make Final
 Transcript Now pass is ready to run or has its languages read (`Situation.askedForPassWaiting`); automatic work keeps its order.

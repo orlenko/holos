@@ -3,8 +3,9 @@ import HolosCore
 @testable import HolosMeeting
 import Testing
 
-// `BackgroundJobCoordinator` with its two kinds, final transcripts and echo analyses (docs/meeting-design.md §4.16
-// "App", §4.17, §5.11 "Catching up in the app"): the order between them, the holds, preemption, retries and the lock.
+// `BackgroundJobCoordinator` with its three kinds, final transcripts, echo analyses and summaries
+// (docs/meeting-design.md §4.16 "App", §4.17, §5.11 "Catching up in the app"): the order between them, the holds,
+// preemption, retries and the lock.
 // A fake runner stands for `CommandRunner` (no process starts) and an injected clock for the time; the meetings are
 // invented IDs.
 
@@ -25,7 +26,7 @@ private let base = Date(timeIntervalSince1970: 1_800_000_000)
     struct Start {
         var command: BackgroundJobCommand
         var handle: Handle
-        var finish: @MainActor (_ code: Int32, _ errors: String) -> Void
+        var finish: @MainActor (_ code: Int32, _ errors: String, _ outcome: Data?) -> Void
     }
 
     var starts: [Start] = []
@@ -41,24 +42,25 @@ private let base = Date(timeIntervalSince1970: 1_800_000_000)
             throw HolosError.io("Resource temporarily unavailable.")
         }
         let handle = Handle()
-        starts.append(Start(command: command, handle: handle) { code, errors in
+        starts.append(Start(command: command, handle: handle) { code, errors, outcome in
             handle.exited = true
-            completion(CommandResult(code: code, outcome: nil, errors: errors))
+            let decoded = outcome.flatMap { try? HolosJSON.decoder().decode(Outcome.self, from: $0) }
+            completion(CommandResult(code: code, outcome: decoded, errors: errors))
         })
         onStart(command)
         return handle
     }
 
-    /// "deep A" / "echo C" for each command started, in order.
+    /// "deep A" / "echo C" / "summary S" for each command started, in order.
     var started: [String] {
         starts.map { start in
-            let kind = start.command.arguments[1] == "deep-transcribe" ? "deep" : "echo"
+            let kind = ["deep-transcribe": "deep", "echo-analyze": "echo"][start.command.arguments[1]] ?? "summary"
             return "\(kind) \(URL(fileURLWithPath: start.command.arguments[2]).deletingPathExtension().lastPathComponent)"
         }
     }
 
-    func finishLast(_ code: Int32, errors: String = "") {
-        starts.last?.finish(code, errors)
+    func finishLast(_ code: Int32, errors: String = "", outcome: (any Encodable)? = nil) {
+        starts.last?.finish(code, errors, outcome.flatMap { try? HolosJSON.encoder().encode($0) })
     }
 }
 
@@ -70,11 +72,9 @@ private let base = Date(timeIntervalSince1970: 1_800_000_000)
     /// Meetings the jobs took (`beginUsing`).
     var taken: [String: String] = [:]
     var lock = DeepTranscriptionLock.State.free
-    var summaryRunning = false
-    var summaryRequestScan = false
     var now = base
     var conditions = DeepTranscriptionJobs.Conditions(enabled: true, modelInstalled: true, power: .ac)
-    /// What happened, in order: "summaries", "command echo C", "released deep A", "reported deep A".
+    /// What happened, in order: "command echo C", "released deep A", "reported deep A", "scanned", "alert S".
     var events: [String] = []
     var saved: DeepTranscriptionQueue?
     /// Folders deleted from Meetings while queued.
@@ -91,6 +91,13 @@ private let base = Date(timeIntervalSince1970: 1_800_000_000)
     var releasedHolds: [String: ReviewMaintenance.Hold] = [:]
     var reports: [DeepTranscriptionJobs.PassReport] = []
     private(set) var jobs: BackgroundJobCoordinator!
+    /// Summaries: off until a test opens the way (`launchReady`); each scan finds `summaryScan`, after `scanGate`.
+    let summaries: MeetingSummaryJobs
+    let summaryScan = LockedValue(MeetingSummaryJobs.Scan.scanned([], gone: []))
+    let scanGate = LockedValue<DispatchSemaphore?>(nil)
+    let scans = LockedValue(0)
+    var summaryConditions = MeetingSummaryJobs.Conditions(enabled: true, modelAvailable: true, onBattery: false)
+    var savedRequests: [MeetingSummarySchedule.Request]?
 
     init(deep items: [String] = [], runNow: Set<String> = [], echo calls: [String] = []) {
         var queue = DeepTranscriptionQueue()
@@ -107,6 +114,12 @@ private let base = Date(timeIntervalSince1970: 1_800_000_000)
             EchoCatchUpSchedule.Candidate(sessionID: id, path: "/m/\(id).holos",
                                           createdAt: base.addingTimeInterval(-Double(index) * 3600))
         }
+        let summaryScan = summaryScan, scanGate = scanGate, scans = scans
+        summaries = MeetingSummaryJobs(requests: [], save: { _ in }) { _, _ in
+            scanGate.value?.wait()
+            _ = scans.withLock { $0 += 1 }
+            return summaryScan.value
+        }
         deep = DeepTranscriptionJobs(queue: queue, save: { [unowned self] in self.saved = $0 },
                                      conditions: { [unowned self] in self.conditions },
                                      exists: { [unowned self] in !self.deleted.contains($0) })
@@ -114,8 +127,15 @@ private let base = Date(timeIntervalSince1970: 1_800_000_000)
             self.reports.append(report)
             self.events.append("reported deep \(report.sessionID)")
         }
+        summaries.root = URL(fileURLWithPath: "/m")
+        summaries.conditions = { [unowned self] in self.summaryConditions }
+        summaries.onScanned = { [unowned self] in
+            self.events.append("scanned")
+            self.jobs.schedule()
+        }
+        summaries.onRequestFailed = { [unowned self] id, _ in self.events.append("alert \(id)") }
         runner.onStart = { [unowned self] _ in self.events.append("command \(self.runner.started.last ?? "")") }
-        jobs = BackgroundJobCoordinator(runner: runner, kinds: [deep, echo], environment: .init(
+        jobs = BackgroundJobCoordinator(runner: runner, kinds: [deep, echo, summaries], environment: .init(
             meetingBusy: { [unowned self] in self.busy },
             sessionsInUse: { [unowned self] in self.held.union(self.taken.keys) },
             beginUsing: { [unowned self] id, doing in
@@ -126,9 +146,6 @@ private let base = Date(timeIntervalSince1970: 1_800_000_000)
                 return true
             },
             lockState: { [unowned self] in self.lock },
-            otherJobRunning: { [unowned self] in self.summaryRunning },
-            summaryRequestScan: { [unowned self] in self.summaryRequestScan },
-            scheduleOthers: { [unowned self] in self.events.append("summaries") },
             released: { [unowned self] kind, id, hold in
                 self.taken[id] = nil
                 self.releasedHolds[id] = hold
@@ -137,7 +154,7 @@ private let base = Date(timeIntervalSince1970: 1_800_000_000)
             now: { [unowned self] in self.now }))
     }
 
-    func name(_ kind: any BackgroundJobKind) -> String { kind === deep ? "deep" : "echo" }
+    func name(_ kind: any BackgroundJobKind) -> String { kind === deep ? "deep" : kind === echo ? "echo" : "summary" }
 
     /// Waits for the echo analysis's check (off the main actor) to start its command or let the meeting go.
     func settle() async -> Bool {
@@ -172,13 +189,22 @@ private let leaseMessage = "Error: Another Voice is Local process is processing 
     world.deep.queue = queue
     world.jobs.schedule()
     #expect(world.runner.started.isEmpty, "The echo analysis waits, and the automatic pass waits for it.")
-    #expect(world.jobs.askedForWorkWaiting())
     // Without echo work, an automatic pass does not wait for the request.
     world.echo.queue = []
     world.jobs.schedule()
     #expect(world.runner.started == ["deep A"])
+}
+
+@Test(.timeLimit(.minutes(1)))
+@MainActor func aMakeFinalTranscriptNowWithoutTheModelHoldsNothingBack() async {
+    let world = World(echo: ["C"])
+    var queue = world.deep.queue
+    queue.reserveRunNow(sessionID: "P", path: "/m/P.holos", at: base)
+    world.deep.queue = queue
     world.conditions.modelInstalled = false
-    #expect(!world.jobs.askedForWorkWaiting(), "Not without the model.")
+    world.jobs.schedule()
+    #expect(await world.settle())
+    #expect(world.runner.started == ["echo C"])
 }
 
 @Test @MainActor func automaticWorkWaitsForTheFirstEchoScanOfTheLaunch() {
@@ -186,9 +212,7 @@ private let leaseMessage = "Error: Another Voice is Local process is processing 
     world.echo.scanned = false
     world.jobs.schedule()
     #expect(world.runner.started.isEmpty)
-    #expect(world.jobs.catchUpReady(), "An automatic summary waits too.")
     world.echo.scanned = true
-    #expect(!world.jobs.catchUpReady())
     world.echo.scanning = true
     world.jobs.schedule()
     #expect(world.runner.started.isEmpty, "So does a scan after a meeting was saved.")
@@ -197,48 +221,12 @@ private let leaseMessage = "Error: Another Voice is Local process is processing 
     #expect(world.runner.started == ["deep A"])
 }
 
-@Test @MainActor func aSummarizeAgainScanHoldsCatchUpAndAutomaticWorkUntilItEnds() {
-    let world = World(deep: ["A"], echo: ["C"])
-    world.summaryRequestScan = true
-    world.jobs.schedule()
-    #expect(world.runner.started.isEmpty)
-    #expect(world.jobs.waitsForSummaryScan)
-    // The scan started the summary asked for: it is another job, so nothing starts at the scan's end.
-    world.summaryRequestScan = false
-    world.summaryRunning = true
-    world.jobs.summaryScanEnded()
-    #expect(world.runner.started.isEmpty)
-    #expect(!world.jobs.waitsForSummaryScan)
-    world.summaryRunning = false
-    world.jobs.schedule()
-    #expect(world.taken["C"] == EchoCatchUpSchedule.runningText, "Then the echo analysis.")
-}
-
-@Test @MainActor func theEndOfASummarizeAgainScanThatStartedNothingStartsTheHeldPass() {
-    let world = World(deep: ["A"])
-    world.summaryRequestScan = true
-    world.jobs.schedule()
-    #expect(world.runner.started.isEmpty)
-    // The scan ends without starting a summary (the meeting asked for was not ready): the pass goes on by itself.
-    world.summaryRequestScan = false
-    world.jobs.summaryScanEnded()
-    #expect(world.runner.started == ["deep A"])
-}
-
-@Test @MainActor func aMakeFinalTranscriptNowDoesNotWaitForASummarizeAgainScan() {
-    let world = World(deep: ["A"], runNow: ["A"], echo: ["C"])
-    world.summaryRequestScan = true
-    world.jobs.schedule()
-    #expect(world.runner.started == ["deep A"])
-    #expect(world.jobs.isRunning, "Summaries count it as a job running.")
-}
-
-@Test @MainActor func aJobEndingLooksForSummariesBeforeTheNextJobAndReportsLast() {
+@Test @MainActor func aJobEndingLetsGoBeforeTheNextJobAndReportsLast() {
     let world = World(deep: ["A", "B"])
     world.jobs.schedule()
     world.events = []
     world.runner.finishLast(0)
-    #expect(world.events == ["released deep A", "summaries", "command deep B", "reported deep A"])
+    #expect(world.events == ["released deep A", "command deep B", "reported deep A"])
     #expect(world.reports.first?.end == .done)
 }
 
@@ -303,11 +291,7 @@ private let leaseMessage = "Error: Another Voice is Local process is processing 
     world.jobs.schedule()
     #expect(world.runner.started.isEmpty)
     #expect(!world.jobs.lock.isDeepPass)
-    world.summaryRunning = true
     world.lock = .free
-    world.jobs.schedule()
-    #expect(world.runner.started.isEmpty, "This app's summary is another job.")
-    world.summaryRunning = false
     world.jobs.schedule()
     #expect(world.runner.started == ["deep A"])
 }
@@ -476,7 +460,6 @@ private let leaseMessage = "Error: Another Voice is Local process is processing 
     #expect(await world.settle())
     #expect(world.runner.started == ["echo C"])
     #expect(!world.jobs.isRunning, "Nothing was started for it.")
-    #expect(!world.jobs.catchUpReady(), "Automatic work does not wait for it.")
     // The next launch.
     let next = World(echo: ["C"])
     next.jobs.schedule()
@@ -500,8 +483,7 @@ private let leaseMessage = "Error: Another Voice is Local process is processing 
     world.jobs.schedule()
     #expect(world.runner.started.isEmpty)
     #expect(world.deep.queue.contains("A") && world.taken.isEmpty, "Kept queued, the meeting let go of.")
-    #expect(world.events == ["released deep A", "summaries"],
-            "The other schedulers look for their next jobs.")
+    #expect(world.events == ["released deep A"])
     world.now = base.addingTimeInterval(59)
     world.jobs.schedule()
     #expect(world.runner.started.isEmpty)
@@ -548,18 +530,19 @@ private let leaseMessage = "Error: Another Voice is Local process is processing 
     #expect(world.runner.started.count == 6)
 }
 
-@Test @MainActor func aMakeFinalTranscriptNowAcceptedAfterAFailedStartRunsAtOnce() {
-    let world = World(deep: ["A"])
+@Test(.timeLimit(.minutes(1)))
+@MainActor func aMakeFinalTranscriptNowAcceptedAfterAFailedStartRunsAtOnce() async {
+    let world = World(deep: ["A"], runNow: ["A"])
     world.runner.failNextStart = true
     world.jobs.schedule()
-    var queue = world.deep.queue
-    queue.enqueue(sessionID: "A", path: "/m/A.holos", at: base, runNow: true)
-    world.deep.queue = queue
-    #expect(!world.jobs.askedForWorkWaiting(), "Not while every pass waits after the failed start.")
-    world.jobs.clearRetry(world.deep)
-    #expect(world.jobs.askedForWorkWaiting())
+    // While every pass waits after the failed start, the Make Final Transcript Now does not hold echo work back.
+    world.echo.queue = [EchoCatchUpSchedule.Candidate(sessionID: "C", path: "/m/C.holos", createdAt: base)]
     world.jobs.schedule()
-    #expect(world.runner.started == ["deep A"])
+    #expect(await world.settle())
+    #expect(world.runner.started == ["echo C"])
+    world.jobs.clearRetry(world.deep)
+    world.runner.finishLast(0)
+    #expect(world.runner.started == ["echo C", "deep A"])
 }
 
 // MARK: - The echo analysis's check
@@ -621,4 +604,208 @@ private let leaseMessage = "Error: Another Voice is Local process is processing 
     #expect(world.releasedHolds["E"]?.command == .echoAnalysis, "A failed start.")
     #expect(world.runner.started == ["echo C"])
     #expect(["C", "D", "E"].allSatisfy { world.jobs.reviewHold(on: $0) == nil })
+}
+
+// MARK: - Summaries
+
+private func summaryCandidate(_ id: String, hoursAgo: Double = 1, current: Bool = false,
+                              answers: String? = nil) -> MeetingSummarySchedule.Candidate {
+    MeetingSummarySchedule.Candidate(sessionID: id, path: "/m/\(id).holos",
+                                     createdAt: base.addingTimeInterval(-hoursAgo * 3600), transcriptID: "T-\(id)",
+                                     summaryTranscriptID: current ? "T-\(id)" : nil, idle: true,
+                                     summaryAnswersRequest: answers)
+}
+
+private func summaryOutcome(_ status: SessionSummarizeCommand.Status, code: Int32,
+                            message: String = "") -> SessionSummarizeCommand.Outcome {
+    SessionSummarizeCommand.Outcome(sessionID: nil, status: status, message: message, exitCode: code)
+}
+
+extension World {
+    /// Summaries may start, and each scan finds `candidates` (and `gone`).
+    func summarize(_ candidates: [MeetingSummarySchedule.Candidate], gone: Set<String> = []) {
+        summaries.launchReady = true
+        summaryScan.withLock { $0 = .scanned(candidates, gone: gone) }
+    }
+
+    /// Looks, and waits for the scan that look starts to end.
+    func lookAndScan() async -> Bool {
+        let before = scans.value
+        jobs.schedule()
+        return await eventually { self.scans.value > before && !self.summaries.scanning }
+    }
+}
+
+@Test(.timeLimit(.minutes(1)))
+@MainActor func aSummarizeAgainGoesFirstAndHoldsAutomaticWorkWhileItsScanRuns() async {
+    let world = World(deep: ["A"], echo: ["C"])
+    world.summarize([summaryCandidate("S")])
+    world.summaries.requests = [MeetingSummarySchedule.Request(sessionID: "S", id: "R1")]
+    let gate = DispatchSemaphore(value: 0)
+    world.scanGate.withLock { $0 = gate }
+    world.jobs.schedule()
+    #expect(world.summaries.scanning)
+    #expect(world.runner.started.isEmpty, "The scan may start the Summarize Again: echo and automatic work wait.")
+    world.scanGate.withLock { $0 = nil }
+    gate.signal()
+    #expect(await eventually { !world.runner.started.isEmpty })
+    #expect(world.runner.started == ["summary S"])
+    let arguments = world.runner.starts[0].command.arguments
+    #expect(arguments.contains("--force") && arguments.suffix(2) == ["--answers-request", "R1"])
+    #expect(world.taken["S"] == MeetingSummaryJobs.runningText)
+}
+
+@Test(.timeLimit(.minutes(1)))
+@MainActor func anAutomaticSummaryWaitsForEchoWorkAndComesAfterAnAutomaticPass() async {
+    let world = World(deep: ["A"])
+    world.summarize([summaryCandidate("S"), summaryCandidate("Q", hoursAgo: 0.5)])
+    world.summaryConditions.finalTranscriptQueued = ["Q"]
+    world.echo.scanned = false
+    #expect(await world.lookAndScan())
+    #expect(world.runner.started.isEmpty, "Echo work is not known yet.")
+    world.echo.scanned = true
+    world.echo.queue = [EchoCatchUpSchedule.Candidate(sessionID: "C", path: "/m/C.holos", createdAt: base)]
+    world.jobs.schedule()
+    #expect(await world.settle())
+    #expect(world.runner.started == ["echo C"])
+    world.runner.finishLast(0)
+    #expect(world.runner.started == ["echo C", "deep A"])
+    world.runner.finishLast(0)
+    #expect(await eventually { world.runner.started.count == 3 })
+    #expect(world.runner.started.last == "summary S", "Q is summarized after its final transcript.")
+}
+
+@Test(.timeLimit(.minutes(1)))
+@MainActor func summariesLookOnlyOnceTheLaunchIsReadyAndNoReconciliationOrMeetingRuns() async {
+    let world = World()
+    world.summaryScan.withLock { $0 = .scanned([summaryCandidate("S")], gone: []) }
+    world.jobs.schedule()
+    world.summaries.reconcileStarted()
+    world.summaries.reconcileEnded()
+    #expect(world.summaries.launchReady, "A reconciliation's end opens the way at launch.")
+    world.summaries.reconcileStarted()
+    world.jobs.schedule()
+    world.busy = true
+    world.summaries.reconcileEnded()
+    world.jobs.schedule()
+    #expect(world.scans.value == 0 && !world.summaries.scanning)
+    world.busy = false
+    #expect(await world.lookAndScan())
+    #expect(world.runner.started == ["summary S"])
+    // A reconciliation stops the summary going on, which is made again a minute later.
+    world.summaries.reconcileStarted()
+    world.jobs.preempt(world.summaries)
+    #expect(world.runner.starts[0].handle.signals == 1)
+    world.summaries.reconcileEnded()
+    world.runner.finishLast(DeepTranscriptionSchedule.terminatedExitCode)
+    world.now = base.addingTimeInterval(59)
+    #expect(await world.lookAndScan())
+    #expect(world.runner.started.count == 1)
+    world.now = base.addingTimeInterval(60)
+    #expect(await world.lookAndScan())
+    #expect(world.runner.started == ["summary S", "summary S"])
+}
+
+@Test(.timeLimit(.minutes(1)))
+@MainActor func aSummaryTurnedDownWaitsAMinuteAndOneSavedWithoutItsFilesFiveMinutes() async {
+    let world = World()
+    world.summarize([summaryCandidate("S")])
+    world.summaries.requests = [MeetingSummarySchedule.Request(sessionID: "S", id: "R1")]
+    #expect(await world.lookAndScan())
+    world.runner.finishLast(1, outcome: summaryOutcome(.busy, code: 1))
+    #expect(world.summaries.requested == ["S"], "A request stays.")
+    world.now = base.addingTimeInterval(59)
+    #expect(await world.lookAndScan())
+    #expect(world.runner.started.count == 1)
+    world.now = base.addingTimeInterval(60)
+    #expect(await world.lookAndScan())
+    #expect(world.runner.started.count == 2)
+    world.runner.finishLast(3, outcome: summaryOutcome(.written, code: 3))
+    #expect(world.summaries.requests.isEmpty)
+    world.now = base.addingTimeInterval(60 + 299)
+    #expect(await world.lookAndScan())
+    #expect(world.runner.started.count == 2)
+    world.now = base.addingTimeInterval(60 + 300)
+    #expect(await world.lookAndScan())
+    #expect(world.runner.started.count == 3, "Its files are rewritten later.")
+}
+
+@Test(.timeLimit(.minutes(1)))
+@MainActor func aSummarizeAgainThatFailsSaysWhyAndIsNotTriedAgainForTheSameTranscript() async {
+    let world = World()
+    world.summarize([summaryCandidate("S")])
+    world.summaries.requests = [MeetingSummarySchedule.Request(sessionID: "S", id: "R1")]
+    #expect(await world.lookAndScan())
+    world.events = []
+    world.runner.finishLast(1, outcome: summaryOutcome(.failed, code: 1, message: "Unsupported language."))
+    #expect(world.events.prefix(2) == ["alert S", "released summary S"], "Said before the meeting is let go of.")
+    #expect(world.summaries.requests.isEmpty && world.summaries.attempted["S"] == "T-S")
+    world.now = base.addingTimeInterval(3_600)
+    #expect(await world.lookAndScan())
+    #expect(world.runner.started.count == 1, "Not tried again for this transcript and these names.")
+    world.summaries.attempted = [:]
+    #expect(await world.lookAndScan())
+    #expect(world.runner.started.count == 2, "Turning the setting on again tries it once more.")
+}
+
+@Test(.timeLimit(.minutes(1)))
+@MainActor func aSummaryThatCannotStartHoldsOnlyItsMeetingBack() async {
+    let world = World()
+    world.summarize([summaryCandidate("S", hoursAgo: 1), summaryCandidate("T", hoursAgo: 2)])
+    world.runner.failNextStart = true
+    #expect(await world.lookAndScan())
+    #expect(await eventually { world.runner.started == ["summary T"] }, "S waits a minute; T goes on.")
+    #expect(world.taken["S"] == nil)
+}
+
+@Test(.timeLimit(.minutes(1)))
+@MainActor func summarizeAgainRunsAtOnceAndCancelOnlyStopsTheRun() async {
+    let world = World()
+    world.summarize([summaryCandidate("S")])
+    #expect(await world.lookAndScan())
+    world.runner.finishLast(1, outcome: summaryOutcome(.changed, code: 1))
+    // Summarize Again: no wait for the minute.
+    world.summaries.requests.append(MeetingSummarySchedule.Request(sessionID: "S", id: "R2"))
+    world.jobs.clearDelay(world.summaries, "S")
+    #expect(await world.lookAndScan())
+    #expect(world.runner.started.count == 2)
+    // Cancel Summarize: the request goes and the run stops; how it ends decides the rest.
+    world.summaries.removeRequest("S")
+    world.jobs.stop(world.summaries, "S")
+    #expect(world.runner.starts[1].handle.signals == 1)
+    world.runner.finishLast(DeepTranscriptionSchedule.terminatedExitCode, outcome: summaryOutcome(.cancelled, code: 143))
+    #expect(world.summaries.requests.isEmpty)
+    #expect(await world.lookAndScan())
+    #expect(world.runner.started.count == 2, "Cancelled: tried again a minute later, as a busy one.")
+}
+
+@Test(.timeLimit(.minutes(1)))
+@MainActor func aScanDropsRequestsForMeetingsGoneOrAlreadyAnswered() async {
+    let world = World()
+    world.summaries.requests = [MeetingSummarySchedule.Request(sessionID: "G", id: "R1"),
+                                MeetingSummarySchedule.Request(sessionID: "D", id: "R2"),
+                                MeetingSummarySchedule.Request(sessionID: "S", id: "R3")]
+    world.summarize([summaryCandidate("D", current: true, answers: "R2"), summaryCandidate("S", current: true)],
+                    gone: ["G"])
+    world.busy = false
+    world.held = ["S"]
+    #expect(await world.lookAndScan())
+    #expect(world.summaries.requested == ["S"])
+}
+
+@Test(.timeLimit(.minutes(1)))
+@MainActor func aSummaryIsAJobLikeTheOthersAndAMeetingStopsIt() async {
+    let world = World(deep: ["A"])
+    world.summarize([summaryCandidate("S")])
+    world.summaries.requests = [MeetingSummarySchedule.Request(sessionID: "S", id: "R1")]
+    #expect(await world.lookAndScan())
+    #expect(world.runner.started == ["summary S"])
+    world.jobs.schedule()
+    #expect(world.runner.started == ["summary S"], "One job at a time.")
+    world.busy = true
+    world.jobs.meetingStateChanged()
+    #expect(world.runner.starts[0].handle.signals == 1)
+    // No result: stopped for the meeting, so made again a minute later, and the request stays.
+    world.runner.finishLast(DeepTranscriptionSchedule.terminatedExitCode)
+    #expect(world.summaries.requested == ["S"])
 }

@@ -1,9 +1,9 @@
 import Foundation
 import HolosMeeting
 
-/// The wiring of `BackgroundJobCoordinator` (docs/meeting-design.md §4.16 "App", §5.11 "Catching up in the app"):
-/// final transcripts (`meeting.deep.jobs`) and echo analyses (`meeting.echo`), one job at a time, beside this app's
-/// summaries (§4.17), which keep their own scheduler.
+/// The wiring of `BackgroundJobCoordinator` (docs/meeting-design.md §4.16 "App", §4.17, §5.11 "Catching up in the
+/// app"): final transcripts (`meeting.deep.jobs`), echo analyses (`meeting.echo`) and summaries
+/// (`meeting.summaries.jobs`), one job at a time.
 extension HolosAppDelegate {
     /// Creates the coordinator once the meeting controller and the maintenance launcher exist.
     func setUpBackgroundJobs() {
@@ -20,23 +20,33 @@ extension HolosAppDelegate {
                 return Set(controller.sessionsInUse.keys).union(controller.sessionsUnderReview())
             },
             beginUsing: { [weak controller] sessionID, doing in controller?.beginUsing(sessionID, for: doing) ?? false },
-            otherJobRunning: { [weak self] in self?.meeting.summaries.running != nil },
-            summaryRequestScan: { [weak self] in
-                guard let self else { return false }
-                return self.meeting.summaries.scanning && !self.meeting.summaries.requests.isEmpty
-            },
-            scheduleOthers: { [weak self] in self?.scheduleMeetingSummaries() },
-            released: { [weak self] _, sessionID, hold in self?.backgroundJobReleased(sessionID, hold: hold) },
+            released: { [weak self] kind, sessionID, hold in self?.backgroundJobReleased(kind, sessionID, hold: hold) },
             changed: { [weak self] in
-                self?.updateDeepStates()
-                self?.updateEchoStates()
+                guard let self else { return }
+                self.updateDeepStates()
+                self.updateEchoStates()
+                self.meeting.meetingsPane?.update(summarizing: self.summaryRunning)
             })
-        meeting.deep.coordinator = BackgroundJobCoordinator(runner: commands, kinds: [meeting.deep.jobs, meeting.echo],
-                                                environment: environment)
+        let summaries = meeting.summaries.jobs
+        summaries.root = controller.root
+        summaries.conditions = { [weak self] in
+            self?.meetingSummaryConditions() ?? .init(enabled: false, modelAvailable: false, onBattery: false)
+        }
+        summaries.onScanned = { [weak self] in self?.scheduleBackgroundJobs() }
+        summaries.onProblemChanged = { [weak self] in self?.meetingSummaryProblemChanged() }
+        // Asked for from the meeting's menu and not made: the user is told why (as Make Final Transcript Now), for
+        // example a language Apple Intelligence does not support.
+        summaries.onRequestFailed = { [weak self] _, message in
+            self?.showSummaryAlert("The meeting was not summarized.", message)
+        }
+        // Kinds in their order when two picks have the same priority: final transcripts, echo analyses, summaries.
+        meeting.deep.coordinator = BackgroundJobCoordinator(runner: commands,
+                                                            kinds: [meeting.deep.jobs, meeting.echo, summaries],
+                                                            environment: environment)
         meeting.deep.jobs.onEnded = { [weak self] report in self?.deepTranscriptionEnded(report) }
     }
 
-    /// Starts the next final transcript or echo analysis when one may start.
+    /// Starts the next final transcript, echo analysis or summary when one may start (a summary after its scan).
     func scheduleBackgroundJobs() {
         meeting.deep.coordinator?.schedule()
     }
@@ -55,7 +65,12 @@ extension HolosAppDelegate {
     /// an echo analysis held read-only (its `hold`, `BackgroundJobCoordinator.reviewHold(on:)`) becomes editable
     /// again, so its labels and playback follow the new mask. A final transcript holds no review: Review waits for it
     /// (`reviewWaitsForDeepTranscription`).
-    private func backgroundJobReleased(_ sessionID: String, hold: ReviewMaintenance.Hold?) {
+    private func backgroundJobReleased(_ kind: any BackgroundJobKind, _ sessionID: String,
+                                       hold: ReviewMaintenance.Hold?) {
+        if kind === meeting.summaries.jobs {
+            meetingSummaryReleased(sessionID)
+            return
+        }
         if let hold {
             maintenanceFinished(sessionID, hold: hold)
         } else {

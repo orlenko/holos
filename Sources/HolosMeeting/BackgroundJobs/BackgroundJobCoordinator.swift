@@ -2,24 +2,26 @@ import Foundation
 import os
 
 /// Runs the app's background jobs on meetings, one at a time on this Mac (docs/meeting-design.md §4.16 "App",
-/// §4.17, §5.11 "Catching up in the app"): final transcripts (`DeepTranscriptionJobs`) and echo analyses
-/// (`EchoCatchUpJobs`). Each kind keeps its queue and says what runs next and what an exit comes to; the coordinator
-/// probes the background job lock, applies the holds, orders the kinds' picks (`BackgroundJobOrder`), takes the
-/// meeting, starts the command through `BackgroundJobRunner`, stops it when a meeting starts, and retries what was
-/// turned down. Summaries keep their own scheduler: they count as another job here (`Environment.otherJobRunning`),
-/// and a Summarize Again their scan may start goes first (`Environment.summaryRequestScan`).
+/// §4.17, §5.11 "Catching up in the app"): final transcripts (`DeepTranscriptionJobs`), echo analyses
+/// (`EchoCatchUpJobs`) and summaries (`MeetingSummaryJobs`). Each kind keeps its queue and says what runs next and what
+/// an exit comes to; the coordinator probes the background job lock, applies the holds, orders the kinds' picks
+/// (`BackgroundJobOrder`), takes the meeting, starts the command through `BackgroundJobRunner`, stops it when a meeting
+/// starts, and retries what was turned down.
+///
+/// `MeetingController`'s automatic relabel is not one of its jobs: it runs beside them (it takes no background job
+/// lock, waits for none of them, and is never stopped for a meeting, since it starts only while none goes on), and
+/// meets them only through `MeetingController.sessionsInUse`.
 ///
 /// The app calls `schedule()` whenever something may let a job start (a job or command ending, a meeting saved, a
 /// queue changing, and a 30 s tick, which also ends delays), and `meetingStateChanged()` on every meeting state change.
 ///
 /// Invariants:
 /// 1. At most one job of this coordinator runs (`running`), and none starts while a meeting is starting, recording or
-///    saving, while another scheduler of this app runs a job, or while any process holds `DeepTranscriptionLock`.
+///    saving, or while any process holds `DeepTranscriptionLock`.
 /// 2. A job is marked running before its meeting is taken (`Environment.beginUsing`): the look that taking it
 ///    triggers (`MeetingController.onSessionsInUseChanged`) sees it and starts nothing else.
 /// 3. A job that took its meeting lets it go exactly once (`Environment.released`), however it ends or fails to
-///    start, before the other schedulers and then this one look for their next jobs, and before the kind shows its
-///    end (`settled`).
+///    start, before the next jobs are looked for, and before the kind shows its end (`settled`).
 /// 4. Only this coordinator's own child is signalled, at most once per run for a meeting (`preempted`); a job another
 ///    process runs is never signalled or adopted.
 /// 5. Retries live for the launch: a kind waits `retryDelay` after a failed start or a `.retryAll` exit
@@ -40,12 +42,6 @@ import os
         /// Takes a meeting for a job (`MeetingController.beginUsing`); false when the app already uses it.
         public var beginUsing: @MainActor (_ sessionID: String, _ doing: String) -> Bool
         public var lockState: @MainActor () -> DeepTranscriptionLock.State
-        /// Another scheduler of this app runs a job (a summary).
-        public var otherJobRunning: @MainActor () -> Bool
-        /// The summary scan going on may start a Summarize Again.
-        public var summaryRequestScan: @MainActor () -> Bool
-        /// Looks for the other schedulers' next jobs (summaries), before this coordinator looks for its own.
-        public var scheduleOthers: @MainActor () -> Void
         /// A job let go of its meeting (invariant 3): the app ends its use (`MeetingController.endUsing`).
         /// With the job's review hold (invariant 6), if it had one: the app's review of the meeting takes it back.
         public var released: @MainActor (_ kind: any BackgroundJobKind, _ sessionID: String,
@@ -58,15 +54,11 @@ import os
                     sessionsInUse: @escaping @MainActor () -> Set<String>,
                     beginUsing: @escaping @MainActor (String, String) -> Bool,
                     lockState: @escaping @MainActor () -> DeepTranscriptionLock.State = { DeepTranscriptionLock.state() },
-                    otherJobRunning: @escaping @MainActor () -> Bool = { false },
-                    summaryRequestScan: @escaping @MainActor () -> Bool = { false },
-                    scheduleOthers: @escaping @MainActor () -> Void = {},
                     released: @escaping @MainActor (any BackgroundJobKind, String, ReviewMaintenance.Hold?) -> Void,
                     changed: @escaping @MainActor () -> Void = {},
                     now: @escaping @MainActor () -> Date = { Date() }) {
             self.meetingBusy = meetingBusy; self.sessionsInUse = sessionsInUse; self.beginUsing = beginUsing
-            self.lockState = lockState; self.otherJobRunning = otherJobRunning
-            self.summaryRequestScan = summaryRequestScan; self.scheduleOthers = scheduleOthers
+            self.lockState = lockState
             self.released = released; self.changed = changed; self.now = now
         }
     }
@@ -101,9 +93,6 @@ import os
     private var retries: [ObjectIdentifier: Retries] = [:]
     /// The background job lock as last probed while no job of this coordinator ran.
     public private(set) var lock: DeepTranscriptionLock.State = .free
-    /// A look held a job back while the summary scan that may start a Summarize Again went on: `summaryScanEnded`
-    /// looks again.
-    public private(set) var waitsForSummaryScan = false
 
     public init(runner: any BackgroundJobRunner, kinds: [any BackgroundJobKind], environment: Environment) {
         self.runner = runner
@@ -129,70 +118,67 @@ import os
         return running.hold
     }
 
-    /// Whether automatic work of another scheduler (a summary) waits for catch-up work: a catch-up queue is not known
-    /// yet, or, with no job of this coordinator running, a catch-up job could start were nothing else going on.
-    public func catchUpReady() -> Bool {
-        if kinds.contains(where: \.finding) { return true }
-        guard running == nil else { return false }
-        return picks(busy: environment.meetingBusy(), inUse: environment.sessionsInUse(), now: environment.now())
-            .contains { $0.pick.priority == .catchUp }
-    }
-
-    /// Whether work the user asked for of one of the kinds waits (ready or not): automatic summaries wait for it.
-    public func askedForWorkWaiting() -> Bool {
-        let now = environment.now()
-        let inUse = environment.sessionsInUse()
-        let busy = environment.meetingBusy()
-        return kinds.contains { $0.askedForWaiting(holds(for: $0, busy: busy, inUse: inUse, now: now)) }
-    }
-
     // MARK: - Scheduling
 
-    /// Starts the next job when one may start (invariant 1), in `BackgroundJobOrder`'s order. `catchUpOnly`: only a
-    /// catch-up job may start (a catch-up queue just found, before summaries are looked for).
+    /// Starts the next job when one may start (invariant 1), in `BackgroundJobOrder`'s order. A full look first lets
+    /// the kinds look for work (a summary scan), also while a job runs; `catchUpOnly`: only a catch-up job may start,
+    /// and no kind looks for work (a catch-up queue just found).
     public func schedule(catchUpOnly: Bool = false) {
         for kind in kinds { kind.willLook(running: runningSession(of: kind)) }
         let now = environment.now()
         // Also while a job runs, so a clock set back before it ends brings no wait back (invariant 5).
         expireRetries(now: now)
+        let busy = environment.meetingBusy()
+        if !catchUpOnly {
+            let inUse = environment.sessionsInUse()
+            for kind in kinds { kind.lookForWork(holds(for: kind, busy: busy, inUse: inUse, now: now)) }
+        }
         guard running == nil else {
             environment.changed()
             return
         }
         lock = environment.lockState()
-        let busy = environment.meetingBusy()
         let inUse = environment.sessionsInUse()
-        let found = picks(busy: busy, inUse: inUse, now: now).filter { !catchUpOnly || $0.pick.priority == .catchUp }
+        let askedFor = kinds.contains { $0.askedForWaiting(holds(for: $0, busy: busy, inUse: inUse, now: now)) }
+        let found = picks(busy: busy, inUse: inUse, askedFor: askedFor, now: now)
+            .filter { !catchUpOnly || $0.pick.priority == .catchUp }
         let situation = BackgroundJobOrder.Situation(
-            blocked: busy || lock != .free || environment.otherJobRunning(),
-            askedForWaiting: kinds.contains { $0.askedForWaiting(holds(for: $0, busy: busy, inUse: inUse, now: now)) },
-            summaryRequestScan: environment.summaryRequestScan(),
+            blocked: busy || lock != .free, askedForWaiting: askedFor,
+            askedForFinding: kinds.contains(where: \.askedForFinding),
             catchUpPending: kinds.contains(where: \.finding))
         guard let index = BackgroundJobOrder.next(found.map(\.pick.priority), situation) else {
-            if situation.summaryRequestScan, !found.isEmpty { waitsForSummaryScan = true }
             environment.changed()
             return
         }
         start(found[index].kind, found[index].pick)
     }
 
-    /// The summary scan ended: a job held back for it is looked at again (it starts unless the scan started a
-    /// summary).
-    public func summaryScanEnded() {
-        guard waitsForSummaryScan else { return }
-        waitsForSummaryScan = false
-        schedule()
-    }
-
     /// Every meeting state change: while a meeting is starting, recording, or saving, this coordinator's running
     /// command is stopped (SIGTERM; invariant 4); the kind keeps it queued when the signal ended it.
     public func meetingStateChanged() {
-        guard environment.meetingBusy(), let job = running, !job.preempted, job.handle?.terminate() == true else {
-            return
-        }
+        guard environment.meetingBusy(), let job = running else { return }
+        preempt(job.kind, because: "for a meeting")
+    }
+
+    /// `kind`'s running command is stopped as for a meeting (SIGTERM; invariant 4): a summary when a final-transcript
+    /// reconciliation starts, which may queue a final transcript of its meeting.
+    public func preempt(_ kind: any BackgroundJobKind, because reason: String = "for a reconciliation") {
+        guard let job = running, job.kind === kind, !job.preempted, job.handle?.terminate() == true else { return }
         running?.preempted = true
-        Self.log.notice("\(job.kind.name, privacy: .public) of \(job.sessionID, privacy: .public) stopped for a meeting")
+        Self.log.notice("\(job.kind.name, privacy: .public) of \(job.sessionID, privacy: .public) stopped \(reason, privacy: .public)")
         environment.changed()
+    }
+
+    /// The user cancelled `kind`'s run on `sessionID` without taking it off the kind's work (Cancel Summarize: the
+    /// request goes, nothing else): its command is stopped (SIGTERM).
+    public func stop(_ kind: any BackgroundJobKind, _ sessionID: String) {
+        guard let job = running, job.kind === kind, job.sessionID == sessionID else { return }
+        job.handle?.terminate()
+    }
+
+    /// `kind`'s meeting `sessionID` may start again at once (Summarize Again).
+    public func clearDelay(_ kind: any BackgroundJobKind, _ sessionID: String) {
+        retries[ObjectIdentifier(kind)]?.delays[sessionID] = nil
     }
 
     /// The user cancelled `kind`'s job on `sessionID`: its command is stopped (SIGTERM), it is no longer counted as
@@ -213,10 +199,11 @@ import os
     // MARK: - Running a job
 
     /// What each kind would start next were nothing else going on; a kind waiting after a failed start has none.
-    private func picks(busy: Bool, inUse: Set<String>, now: Date)
+    private func picks(busy: Bool, inUse: Set<String>, askedFor: Bool, now: Date)
         -> [(kind: any BackgroundJobKind, pick: BackgroundJobPick)] {
         kinds.compactMap { kind in
-            let holds = holds(for: kind, busy: busy, inUse: inUse, now: now)
+            var holds = holds(for: kind, busy: busy, inUse: inUse, now: now)
+            holds.askedForWaiting = askedFor
             guard holds.retryOver, let pick = kind.next(holds) else { return nil }
             return (kind, pick)
         }
@@ -267,11 +254,9 @@ import os
             running?.handle = handle
             Self.log.notice("\(kind.name, privacy: .public) of \(sessionID, privacy: .public) started")
         } catch {
-            // A transient process limit: the job stays queued and the kind waits a minute.
-            retries[ObjectIdentifier(kind), default: Retries()].retryAfter =
-                environment.now().addingTimeInterval(Self.retryDelay)
+            // A transient process limit: the job stays queued and the kind (or the meeting) waits a minute.
             Self.log.error("Cannot start \(kind.name.lowercased(), privacy: .public): \(error.localizedDescription, privacy: .private)")
-            finish(kind, sessionID, .stopped)
+            finish(kind, sessionID, kind.startFailed(sessionID))
         }
     }
 
@@ -283,7 +268,7 @@ import os
     }
 
     /// The job on `sessionID` ended (or did not start) as `end`: its retries follow, the meeting is let go of, and the
-    /// other schedulers and then this one look for their next jobs (invariant 3).
+    /// next jobs are looked for, a summary scan first (invariant 3).
     private func finish(_ kind: any BackgroundJobKind, _ sessionID: String, _ end: BackgroundJobEnd) {
         switch end {
         case .finished:
@@ -295,12 +280,15 @@ import os
         case .retryAll:
             retries[ObjectIdentifier(kind), default: Retries()].retryAfter =
                 environment.now().addingTimeInterval(Self.retryDelay)
+        case .wait(let seconds):
+            let attempts = retries[ObjectIdentifier(kind)]?.delays[sessionID]?.attempts ?? 0
+            retries[ObjectIdentifier(kind), default: Retries()].delays[sessionID] =
+                (attempts, environment.now().addingTimeInterval(seconds))
         }
         let hold = running?.hold
         running = nil
         environment.released(kind, sessionID, hold)
         environment.changed()
-        environment.scheduleOthers()
         schedule()
         kind.settled(sessionID)
     }

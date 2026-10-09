@@ -39,10 +39,7 @@ extension HolosAppDelegate {
             // The analysis goes first; the automatic jobs held back while the queue was not known go on (or keep
             // waiting for a call it found).
             self.meeting.deep.coordinator?.schedule(catchUpOnly: true)
-            if !self.meeting.echo.scanning {
-                self.scheduleMeetingSummaries()
-                self.scheduleBackgroundJobs()
-            }
+            if !self.meeting.echo.scanning { self.scheduleBackgroundJobs() }
         }
     }
 
