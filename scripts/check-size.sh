@@ -4,10 +4,10 @@
 #   scripts/check-size.sh
 #       Check the tree against scripts/size-baseline.txt.
 #   scripts/check-size.sh --update-baseline [--allow-growth FILE]...
-#       Rewrite the baseline from the tree. Refused while a check would fail, and while any file in the
-#       baseline has grown (even under the hard cap), unless each such file is named with --allow-growth (a
-#       reason goes in the PR description). Shrunk, removed and new files under the hard cap are recorded
-#       freely. A new file over the hard cap is never accepted; for a file moved whole, rename its path in the
+#       Rewrite the baseline from the tree. Refused while any file in the baseline has grown, unless each
+#       such file is named with --allow-growth (a reason goes in the PR description) and ends at or below the
+#       hard cap. Growth above the hard cap, and a new file over it, are never accepted. Shrunk, removed and
+#       new files under the hard cap are recorded freely; for a file moved whole, rename its path in the
 #       baseline.
 #
 # The baseline lists every source file over the soft cap (600 lines) with its line count, one
@@ -59,11 +59,23 @@ fi
 
 cd "$root"
 
-# Line counts of every Swift file under Sources/. find exits non-zero when it cannot read a
-# folder or when wc fails on a file, so a partial scan stops the script instead of passing.
+# Line counts of every Swift file under Sources/. A partial scan stops the script instead of passing: each wc
+# runs in a wrapper that records its failure in a file (find's own exit status does not report a failed -exec on
+# every system), anything either prints on stderr counts as a failure, and the number of files counted must match
+# the number found.
 counts="$work/counts"
-if ! find Sources -type f -name '*.swift' -exec wc -l {} + >"$counts"; then
+scan_errors="$work/scan-errors"
+wc_failed="$work/wc-failed"
+if ! find Sources -type f -name '*.swift' -exec sh -c 'wc -l "$@" || echo failed >>"$0"' "$wc_failed" {} + \
+    >"$counts" 2>"$scan_errors" || [ -s "$scan_errors" ] || [ -e "$wc_failed" ]; then
+    cat "$scan_errors" >&2
     echo "check-size: could not read every file under Sources/" >&2
+    exit 2
+fi
+found=$(find Sources -type f -name '*.swift' | wc -l | tr -d ' ')
+counted=$(awk '$2 ~ /^Sources\// { n++ } END { print n + 0 }' "$counts")
+if [ "$found" != "$counted" ]; then
+    echo "check-size: found $found Swift files under Sources/ but counted $counted" >&2
     exit 2
 fi
 
@@ -124,10 +136,12 @@ awk -v soft="$soft" -v hard="$hard" -v mode="$mode" -v base="$baseline" -v allow
             printf "warn  %s: %d lines, over the %d-line soft cap\n", f, n, soft; warned++
         }
     }
-    # --allow-growth only lets a file already in the baseline grow; the hard cap for a new file is absolute.
+    # --allow-growth only lets a file already in the baseline grow, and only to at most the hard cap: growth
+    # above the cap, and a new file over it, always fail.
     function fail(message) {
-        if (mode == "update" && (f in allow) && (f in limit)) { printf "allow %s\n", message; return }
+        if (mode == "update" && (f in allow) && (f in limit) && n <= hard) { printf "allow %s\n", message; return }
         if ((f in allow) && !(f in limit)) message = message " (--allow-growth does not apply to new files)"
+        else if ((f in allow) && n > hard) message = message " (--allow-growth does not apply above the cap)"
         printf "FAIL  %s\n", message; failed++
     }
     END {
@@ -136,7 +150,8 @@ awk -v soft="$soft" -v hard="$hard" -v mode="$mode" -v base="$baseline" -v allow
         for (f in allow) if (!(f in seen)) { printf "FAIL  --allow-growth %s: no such file under Sources/\n", f; failed++ }
         if (mode == "update") {
             if (failed > 0) {
-                printf "check-size: %d failure(s); baseline not written (name each grown baseline file with --allow-growth; a new file over the hard cap is never accepted)\n", failed
+                printf "check-size: %d failure(s); baseline not written\n", failed
+                printf "  name each grown baseline file with --allow-growth; nothing may grow past %d lines\n", hard
                 exit 1
             }
             print "# Line counts of Sources/ Swift files over " soft " lines; read by scripts/check-size.sh." > out
