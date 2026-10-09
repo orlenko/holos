@@ -10,7 +10,7 @@ Status: implementation-ready design for PR1–PR11 of
 [meeting-recording-plan.md](meeting-recording-plan.md) (PR12, minutes, is out of scope).
 Written 2026-09-23 from the code on branch `meeting-plan`, FluidAudio 0.17.1 sources
 (`5c51c5c9`), and the user's decisions in plan §8. Revised 2026-09-24 after a three-lens
-design review (80 findings, §10) and spike S1 ([speaker-evaluation.md](speaker-evaluation.md)).
+design review (80 findings, meeting-design.md §10) and spike S1 ([speaker-evaluation.md](speaker-evaluation.md)).
 No product code exists for it yet.
 
 Several engineers build this in parallel, one PR each, without talking to each other.
@@ -2349,7 +2349,7 @@ stage 1d `wordFixes` (learned corrections and the word list's "often heard as" t
 to the live-corrected transcript, which becomes a new current revision; docs/design.md
 "Meeting word fixes"). Text-changing stages are skipped with `keepTranscript`; speaker-name
 hints are still applied. A live-hint or word-fix problem makes the record `partial` too.
-Stage 1b′ `deepTranscription` (§4.16) runs between 1b and 1c, only when asked for by name
+Stage 1b′ `deepTranscription` (meeting-design.md §4.16) runs between 1b and 1c, only when asked for by name
 (`PostProcessingOptions.deepTranscribe`).
 
 **Render time map** (PR7b, in `TrackRenderer`). A meeting left paused for hours would
@@ -5166,7 +5166,7 @@ existing file. Signatures are the contract; bodies are the implementer's. When t
 compiler demands a small annotation change (for example `Sendable` on a protocol),
 make it without changing names or shapes and say so in the PR description. Every PR
 description ends with a "Docs note" paragraph for the PR that writes the wave's
-`README.md` and `docs/status.md` updates (§6).
+`README.md` and `docs/status.md` updates (meeting-design.md §6).
 
 ### 5.1 PR6: Contracts and storage foundations (wave 0)
 
@@ -5339,7 +5339,7 @@ post-processing hand-off. No user-visible behaviour change (the only new CLI sur
   (`subcommands:` one per line), `Package.swift` (§1.2 wave 1), `docs/contracts.md`
   (ownership table: `HolosMeeting` replaces `HolosWorkflows`, add `HolosSpeakers` and
   `HolosDiarization`; the "local app/session control" paragraph points to
-  meeting-design §4.1).
+  meeting-design.md §4.1).
 - Add `Tests/HolosMeetingTests/RecordingWorkflowTests.swift`, `Tests/HolosMeetingTests/Fakes.swift`.
 - Docs: PR1 merges last in wave 1 and writes the wave-1 `README.md` and
   `docs/status.md` notes for PR1 and PR5a–c.
@@ -5783,7 +5783,7 @@ selection, and the environment events that retry a waiting recorder.
   exit codes); add `RecordControl.swift` (`pause`, `resume`, `marker`, registered in
   `Record`'s `subcommands:`).
 - Docs: append a "Long recordings" section to `docs/hardware-validation.md` (H4–H10
-  procedures from §7.2).
+  procedures from meeting-design.md §7.2).
 - Tests: `Tests/HolosAudioTests/{Int16ChunkTests, FrameContinuityTests, ChunkWriterPumpTests}.swift`;
   `Tests/HolosMeetingTests/{RecorderMachineTests, DiskPolicyTests, ControlInboxTests, RecorderChannelTests, StatusWriterTests, RecorderEpochTests, LiveTrackTests, TranscriptCoverageTests, StopPathTests, SpeechFixtureTests}.swift`,
   helpers in `RecorderTestSupport.swift` (`fileprivate` or prefixed `recorder…`, §1.8).
@@ -6111,7 +6111,7 @@ reader, and `holos session diarize`, all tested with `FakeDiarizer`. PR7c (after
   `Sources/HolosCLI/Doctor.swift` (model status line; `"speakerModels": "verified" |
   "notInstalled" | "damaged"` in `--json`; `setup --speakers`), `Package.swift` (§1.2
   wave 2).
-- Add `THIRD_PARTY_NOTICES.md` (§4.8).
+- Add `THIRD_PARTY_NOTICES.md` (meeting-design.md §4.8).
 - Tests: `Tests/HolosDiarizationTests/{ModelVerificationTests, SampleSourceTests, FluidDiarizerFixtureTests}.swift`.
 
 **API:** §4.8.
@@ -6367,7 +6367,7 @@ holos session score <path> --otter <transcript.txt> [--collar 0.25] [--json]    
 above and the calibration run; numbers recorded in `speaker-evaluation.md` and the PR
 description (counts and metrics only): runtime, peak RSS (`/usr/bin/time -l`),
 agreement confusion per configuration, speaker counts, track offsets, and calibration
-percentiles. The `exclusiveSegments` default follows §4.8. Temporary sessions and audio
+percentiles. The `exclusiveSegments` default follows meeting-design.md §4.8. Temporary sessions and audio
 are deleted.
 
 **Does not touch.** HolosDiarization, `MeetingPostProcessor.swift`, HolosAudio,
@@ -6966,7 +6966,7 @@ commands behind the buttons: Recover when `SessionRecoveryCommand.rebuilds` woul
 meeting whose transcript cannot be read qualifies) or the meeting is interrupted, never for a
 damaged manifest or a transcript from a newer Holos; Label Speakers for speaker state none,
 notLabelled, failed, or interrupted, or (any state but unreadable) while a missed language of
-a meeting in several can be detected now (`LanguageWork.ready`, §4.14 step 5), with a
+a meeting in several can be detected now (`LanguageWork.ready`, meeting-design.md §4.14 step 5), with a
 readable transcript and audio, not interrupted. No
 lease-taking action while the app uses the meeting or another process holds it (liveness
 capturing, processing, maintenance).
