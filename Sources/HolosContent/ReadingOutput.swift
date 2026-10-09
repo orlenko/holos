@@ -629,6 +629,14 @@ public enum ReadingResumeVoice {
         return nil
     }
 
+    /// The voices a reading in `language` may have been started with without `--voice`: its pack's natural voice
+    /// (whether that pack is installed now or not: it may have been removed since), then `apple`, the best Apple
+    /// voice.
+    public static func candidates(language: String, apple: String) -> [String] {
+        [NaturalVoicePack.forLanguage(language).map { NaturalVoiceCatalog.defaultVoice(for: $0).id }, apple]
+            .compactMap { $0 }
+    }
+
     static func manifest(in directory: URL) -> ReadingManifest? {
         let url = directory.appendingPathComponent(ReadingManifest.fileName)
         guard ReadingManifest.isReading(url),

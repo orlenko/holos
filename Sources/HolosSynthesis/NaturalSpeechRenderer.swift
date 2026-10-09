@@ -48,8 +48,9 @@ public enum NaturalSpeechPlan {
     /// followed by others that is short, one line, and ends without sentence punctuation is a heading (a part that
     /// starts a section starts with its heading; see `ReadingScript`).
     public static func blocks(_ text: String) -> [Block] {
+        // A blank line may hold spaces or tabs (a no-break space too).
         let paragraphs = text.replacingOccurrences(of: "\r\n", with: "\n")
-            .components(separatedBy: "\n\n")
+            .split(separator: /\n[ \t\u{00A0}]*\n/, omittingEmptySubsequences: false)
             .map { $0.split(whereSeparator: \.isWhitespace).joined(separator: " ") }
             .filter { !$0.isEmpty }
         return paragraphs.enumerated().flatMap { index, paragraph -> [Block] in
@@ -72,11 +73,15 @@ public enum NaturalSpeechPlan {
             .flatMap { $0.count > maximumLength ? $0.split(separator: " ").map(String.init) : [$0] }
             .flatMap { piece -> [String] in
                 guard piece.count > maximumLength else { return [piece] }
-                return stride(from: 0, to: piece.count, by: maximumLength).map { start in
-                    let from = piece.index(piece.startIndex, offsetBy: start)
-                    let to = piece.index(from, offsetBy: min(maximumLength, piece.count - start))
-                    return String(piece[from..<to])
+                // Each cut starts where the last ended: one pass over the piece.
+                var cuts: [String] = []
+                var from = piece.startIndex
+                while from < piece.endIndex {
+                    let to = piece.index(from, offsetBy: maximumLength, limitedBy: piece.endIndex) ?? piece.endIndex
+                    cuts.append(String(piece[from..<to]))
+                    from = to
                 }
+                return cuts
             }
         var groups: [String] = []
         var current = ""

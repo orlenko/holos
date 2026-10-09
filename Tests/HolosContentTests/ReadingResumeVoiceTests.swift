@@ -62,3 +62,40 @@ import Testing
         #expect(lines.contains { $0.hasPrefix("File: ") && $0.hasSuffix("/Out/Garden.m4a") })
     }
 }
+
+@Suite struct ReadingResumeCandidateTests {
+    @Test func theNaturalVoiceIsACandidateWhetherOrNotItsPackIsInstalled() throws {
+        #expect(ReadingResumeVoice.candidates(language: "en-CA", apple: "ava") == ["pocket:en:alba", "ava"])
+        #expect(ReadingResumeVoice.candidates(language: "fr", apple: "amelie") == ["pocket:fr:estelle", "amelie"])
+        #expect(ReadingResumeVoice.candidates(language: "de-DE", apple: "anna") == ["anna"])
+        // A reading started with Alba is found (its pack may have been removed since; that is told afterwards).
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("holos-candidates-\(UUID().uuidString)")
+        let readings = root.appendingPathComponent("Readings", isDirectory: true)
+        try FileManager.default.createDirectory(at: readings, withIntermediateDirectories: true)
+        let output = root.appendingPathComponent("Garden.m4a")
+        let identity = { (voice: String) in "identity-of-\(voice)" }
+        let (location, _) = try ReadingOutput.resolve(output: output.path, name: "Garden.m4a",
+                                                      identity: identity("pocket:en:alba"), readingsRoot: readings)
+        try FileManager.default.createDirectory(at: location.workDirectory, withIntermediateDirectories: true)
+        let manifest = ReadingManifest(
+            kind: ReadingManifest.readingKind, schemaVersion: ReadingManifest.currentSchemaVersion, sourceSHA256: "s",
+            voiceIdentifier: "pocket:en:alba", rate: nil, title: "Garden", author: nil, language: "en", comment: "c",
+            format: .current, output: output.path, outputSHA256: nil, duration: nil, chapters: [],
+            status: "incomplete", parts: [])
+        try JSONEncoder().encode(manifest).write(to: location.workDirectory.appendingPathComponent(ReadingManifest.fileName))
+        #expect(ReadingResumeVoice.saved(output: output.path, name: "Garden.m4a", readingsRoot: readings,
+                                         candidates: ReadingResumeVoice.candidates(language: "en", apple: "ava"),
+                                         identity: identity) == "pocket:en:alba")
+    }
+}
+
+@Suite struct StrictTextDecodingTests {
+    @Test func malformedBytesAreRefusedAndAByteOrderMarkIsDropped() {
+        #expect(DocumentText.decodeStrictly(Data("Garden\r\nPath".utf8)) == "Garden\nPath")
+        #expect(DocumentText.decodeStrictly(Data([0xEF, 0xBB, 0xBF]) + Data("Café".utf8)) == "Café")
+        #expect(DocumentText.decodeStrictly(Data([0x47, 0x61, 0xFF, 0x72])) == nil)
+        #expect(DocumentText.decodeStrictly(Data([0xEF, 0xBB, 0xBF, 0x47, 0xC3])) == nil)
+        #expect(DocumentText.decodeStrictly(Data([0xFF, 0xFE, 0x48, 0x00, 0x69, 0x00])) == "Hi")
+    }
+}
+

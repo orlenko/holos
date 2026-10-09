@@ -1,5 +1,6 @@
 import ArgumentParser
 import Foundation
+import HolosContent
 import HolosCore
 import HolosStorage
 import HolosSynthesis
@@ -71,7 +72,11 @@ struct Say: AsyncParsableCommand {
             let url = fileURL(textFile)
             let size = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
             guard size <= 16 << 20 else { throw HolosError.invalidInput("\(textFile) is larger than 16 MB.") }
-            input = String(decoding: try Data(contentsOf: url), as: UTF8.self)
+            guard let text = DocumentText.decodeStrictly(try Data(contentsOf: url)),
+                  !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                throw HolosError.invalidInput("\(textFile) is empty or is not UTF-8 text.")
+            }
+            input = text
         } else {
             input = try readText(arguments: text)
         }

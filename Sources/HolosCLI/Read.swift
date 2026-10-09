@@ -252,22 +252,27 @@ let speechRateHelp = ArgumentHelp(
     }
 }
 
-/// The voices a reading in `language` gets without `--voice`, now or before natural voices were installed: the
-/// natural one (when its pack is installed), then the best Apple voice.
+/// The voices a reading in `language` may have been started with without `--voice` (see
+/// `ReadingResumeVoice.candidates`).
 @MainActor func defaultVoiceCandidates(language: String?) throws -> [String] {
-    let wanted = language ?? Locale.preferredLanguages.first ?? "en-US"
-    let natural = NaturalVoiceCatalog.defaultVoice(language: wanted, installed: NaturalVoiceModels.installedPacks())
-    return [natural?.id, try resolveVoice(nil, language: language, explainDefault: false, allowNatural: false).id]
-        .compactMap { $0 }
+    ReadingResumeVoice.candidates(
+        language: language ?? Locale.preferredLanguages.first ?? "en-US",
+        apple: try resolveVoice(nil, language: language, explainDefault: false, allowNatural: false).id)
 }
 
 /// The voice a reading being resumed was started with, by identifier; it must still be there.
 @MainActor func savedVoice(_ id: String) throws -> VoiceDescriptor {
     if NaturalVoiceCatalog.isNatural(id) {
-        guard let natural = try NaturalVoicesCLI.resolve(id) else {
+        // Found by its cache; whether its pack is still installed is told now, with how to get it back.
+        guard let voice = NaturalVoiceCatalog.voice(id: id) else {
             throw HolosError.unavailable("The voice this reading was started with is not available: \(id)")
         }
-        return natural.descriptor
+        guard NaturalVoiceModels.installedPacks().contains(voice.pack) else {
+            throw HolosError.unavailable("This reading was started with \(voice.title), and the \(voice.pack.languageName) "
+                + "natural voices are no longer installed. Run voiceislocal setup --natural-voices"
+                + (voice.pack == .english ? "" : " --language \(voice.pack.languageCode)") + ", then resume.")
+        }
+        return voice.descriptor
     }
     guard let voice = NativeSpeechRenderer.voices().first(where: { $0.id == id }) else {
         throw HolosError.unavailable("The voice this reading was started with is not installed any more: \(id)")

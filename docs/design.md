@@ -627,7 +627,8 @@ French (`NaturalVoiceCatalog.defaultVoice(language:installed:)`); until then, an
 Apple voice. A reading keeps the voice it started with, so a resume never switches voice: the app saves it in the
 reading's entry before rendering, and `voiceislocal read --resume` without `--voice` uses the voice in the reading's
 manifest (`ReadingResumeVoice`: for an explicit output, whose cache is keyed by the voice, the default voices of
-now and of before the packs were installed are tried in turn). A natural voice whose pack is gone fails with where to
+now and of before the packs were installed are tried in turn, the natural one whether its pack is installed or
+not; a reading found with a natural voice whose pack is gone says to install it again). A natural voice whose pack is gone fails with where to
 download it. Preview of Automatic speaks with the voice Make Audio would use for the user's first language
 (`ReadingVoices.automatic`).
 
@@ -652,7 +653,7 @@ failure's reason (offline, for instance) with Try Again; Apple's voices stay ava
 end with a disabled "Natural voices: download them in Settings › Reading" while a pack is missing; when a download
 ends, they are filled again with the new voices and keep the voice and speed chosen on the Reading card.
 
-**Rendering a part.** `NaturalSpeechPlan` splits the part into paragraphs (blank lines; line breaks inside one read
+**Rendering a part.** `NaturalSpeechPlan` splits the part into paragraphs (blank lines, spaces or tabs on them allowed; line breaks inside one read
 as spaces) and feeds Pocket TTS one paragraph at a time; it splits a paragraph into sentences itself. A paragraph
 over 1,000 characters (a text without blank lines is one paragraph) is fed in groups of whole sentences of at most
 1,000 characters (a longer sentence split after its clauses, then between words), with no pause between groups but

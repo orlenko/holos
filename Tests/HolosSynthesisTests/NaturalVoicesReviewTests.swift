@@ -297,3 +297,21 @@ private actor CountingBackend: NaturalSpeechBackend {
     }
 }
 
+@Suite struct NaturalSpeechPlanCodexTests {
+    @Test func blankLinesWithSpacesOrTabsSeparateParagraphs() {
+        let blocks = NaturalSpeechPlan.blocks("First one.\n  \nSecond one.\n\t\nThird one.\r\n \r\nFourth.")
+        #expect(blocks.map(\.text) == ["First one.", "Second one.", "Third one.", "Fourth."])
+        #expect(blocks.map(\.pauseAfter) == [0.6, 0.6, 0.6, 0])
+        // A single line break inside a paragraph is still a space.
+        #expect(NaturalSpeechPlan.blocks("One line\nand the next.").map(\.text) == ["One line and the next."])
+    }
+
+    @Test func aLongUnbrokenTokenIsCutInOnePass() {
+        let token = String(repeating: "ab", count: 100_000)
+        let cuts = NaturalSpeechPlan.split(token, maximumLength: 1_000)
+        #expect(cuts.count == 200)
+        #expect(cuts.allSatisfy { $0.count == 1_000 })
+        #expect(cuts.joined() == token)
+    }
+}
+

@@ -108,6 +108,14 @@ public enum DocumentText {
     /// Markdown, and paragraph breaks are found whichever system saved the file. The one place
     /// line endings are normalized: the decoders (this one and `HTMLReader.decode`) apply it
     /// before any parsing, and so do the readers that take a string (see `normalized`).
+    /// `data` as text, refusing malformed bytes: UTF-8 (a leading UTF-8 byte order mark dropped) decoded strictly, or
+    /// UTF-16 or UTF-32 with their byte order mark (as `decode`); nil when it is not text. Line endings become LF.
+    public static func decodeStrictly(_ data: Data) -> String? {
+        if let (_, encoding) = byteOrderMark(data), encoding != .utf8 { return decode(data) }
+        let body = data.starts(with: [0xEF, 0xBB, 0xBF]) ? data.dropFirst(3) : data[...]
+        return String(data: Data(body), encoding: .utf8).map(withLFLineEndings)
+    }
+
     public static func withLFLineEndings(_ text: String) -> String {
         guard text.utf8.contains(0x0D) else { return text }
         return text.replacingOccurrences(of: "\r\n", with: "\n").replacingOccurrences(of: "\r", with: "\n")
