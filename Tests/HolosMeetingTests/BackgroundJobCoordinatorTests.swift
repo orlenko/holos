@@ -394,6 +394,27 @@ private let leaseMessage = "Error: Another Voice is Local process is processing 
     #expect(world.runner.started.count == 4)
 }
 
+@Test(.timeLimit(.minutes(1)))
+@MainActor func anEchoWaitThatEndedDoesNotComeBackWhenTheClockIsSetBack() async {
+    let world = World(echo: ["C"])
+    world.jobs.schedule()
+    #expect(await world.settle())
+    world.runner.finishLast(1, errors: leaseMessage)
+    world.now = base.addingTimeInterval(60)
+    world.jobs.schedule()
+    #expect(await world.settle())
+    #expect(world.runner.started == ["echo C", "echo C"])
+    // The clock is set back, and a meeting stops the run: once the meeting is saved, C runs again at once.
+    world.now = base.addingTimeInterval(10)
+    world.busy = true
+    world.jobs.meetingStateChanged()
+    world.runner.finishLast(DeepTranscriptionSchedule.terminatedExitCode)
+    world.busy = false
+    world.jobs.schedule()
+    #expect(await world.settle())
+    #expect(world.runner.started == ["echo C", "echo C", "echo C"])
+}
+
 @Test @MainActor func aPassTurnedDownForItsMeetingWaitsAMinuteAndTheOthersGoOn() {
     let world = World(deep: ["A", "B"])
     world.jobs.schedule()

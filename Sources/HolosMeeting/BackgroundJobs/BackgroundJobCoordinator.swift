@@ -24,7 +24,8 @@ import os
 ///    process runs is never signalled or adopted.
 /// 5. Retries live for the launch: a kind waits `retryDelay` after a failed start or a `.retryAll` exit
 ///    (`retryAfter`), and a meeting after a `.retryMeeting` exit waits the delay its kind gives for that many refusals
-///    in a row (`BackgroundJobKind.retryDelay(attempts:)`; a flat minute for final transcripts). A look clears every
+///    in a row (`BackgroundJobKind.retryDelay(attempts:)`; a flat minute for final transcripts, 1, 2, 4… up to 30 minutes for
+///    echo analyses). A look clears every
 ///    deadline it finds past, so a clock set back does not bring one back; a meeting's count is forgotten when its job
 ///    finishes or is cancelled.
 @MainActor public final class BackgroundJobCoordinator {
