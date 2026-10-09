@@ -40,6 +40,16 @@ import Testing
         #expect(state.mayStart(.english))
     }
 
+    @Test func anInstallAnotherProcessRunsCountsAsBusy() async {
+        let state = NaturalVoicesAppState()
+        // `voiceislocal setup --natural-voices --language fr` runs in Terminal (its install lock held).
+        state.scan = { [.english: .notInstalled, .french: .downloading] }
+        let done = Mutex(false)
+        state.refresh { done.withLock { $0 = true } }
+        #expect(await eventually { done.withLock { $0 } })
+        #expect(!state.mayStart(.english))
+    }
+
     @Test func anInstallThatEndsDuringALookWaitsForTheNextOne() async {
         let state = NaturalVoicesAppState()
         let looks = Mutex(0)

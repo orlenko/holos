@@ -1,10 +1,18 @@
 import AVFoundation
 import AppKit
+import HolosContent
 import HolosCore
 import HolosMeeting
 import HolosSynthesis
+import os
 
 /// ▶ Preview: speaks a short sample with a voice and speed; a second press stops it.
+///
+/// Invariants:
+/// 1. At most one of `synthesizer`, `natural` and `player` is set: what speaks now (`isSpeaking`); `speak` stops the
+///    one before.
+/// 2. A natural sample's folder is registered with `NaturalVoiceHelpers` while it exists, so a quit removes it.
+/// 3. A sample that fails, or does not start playing, clears `natural` and says so (`onError`); a stop says nothing.
 @MainActor
 final class VoicePreview: NSObject, AVSpeechSynthesizerDelegate, AVAudioPlayerDelegate {
     private var synthesizer: AVSpeechSynthesizer?
@@ -71,13 +79,24 @@ final class VoicePreview: NSObject, AVSpeechSynthesizerDelegate, AVAudioPlayerDe
         natural = Task { [weak self] in
             let folder = FileManager.default.temporaryDirectory
                 .appendingPathComponent("holos-preview-\(UUID().uuidString)", isDirectory: true)
+            // Made and removed off the main actor.
             defer {
-                try? FileManager.default.removeItem(at: folder)
-                NaturalVoiceHelpers.done(folder)
+                Task.detached(priority: .utility) {
+                    do {
+                        try FileManager.default.removeItem(at: folder)
+                    } catch CocoaError.fileNoSuchFile {
+                    } catch {
+                        Logger(subsystem: "ca.orlenko.holos.app", category: "reading")
+                            .error("Could not remove a preview folder: \(error.localizedDescription, privacy: .public)")
+                    }
+                    NaturalVoiceHelpers.done(folder)
+                }
             }
             do {
-                try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: false,
-                                                        attributes: [.posixPermissions: 0o700])
+                try await offMain {
+                    try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: false,
+                                                            attributes: [.posixPermissions: 0o700])
+                }
                 NaturalVoiceHelpers.using(folder)
                 let file = folder.appendingPathComponent("preview.caf")
                 try await renderNatural(text, voice.id, rate, file)

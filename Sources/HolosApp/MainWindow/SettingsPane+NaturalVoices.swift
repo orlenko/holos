@@ -23,15 +23,15 @@ extension SettingsPane {
     }
 
     /// Each pack's row; voices installed since the menu was filled (a download that just ended) are offered. While one
-    /// pack downloads, the other's Download waits (one model is set up at a time).
+    /// pack is being installed (here, or by another process), the other's Download waits (one model at a time).
     func showNaturalVoices(_ state: SetupState) {
-        let busy = state.naturalVoices.values.contains(where: \.isRunning)
+        let busy = state.naturalVoices.values.contains { $0.isRunning || $0.phase == .otherProcess }
         for (action, pack) in [(SetupAction.naturalVoicesEnglish, NaturalVoicePack.english),
                                (.naturalVoicesFrench, .french)] {
             let download = state.naturalVoices[pack] ?? NaturalVoiceDownload(pack: pack)
             let row = download.row
             set(action, row.done ? .done : row.problem ? .problem : .pending, row.detail, button: row.button,
-                enabled: row.enabled && (download.isRunning || !busy))
+                enabled: row.enabled && (download.isRunning || download.phase == .otherProcess || !busy))
         }
         let installed = Set(state.naturalVoices.filter { $0.value.phase == .installed }.keys)
         if installed != shownNaturalVoices {

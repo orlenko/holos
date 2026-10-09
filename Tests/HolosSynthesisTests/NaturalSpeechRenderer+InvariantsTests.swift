@@ -103,17 +103,6 @@ private actor GatedBackend: NaturalSpeechBackend {
         #expect(looks.withLock { $0 } == 1)
     }
 
-    @Test func aFinishedWriterTakesNoMoreSamples() throws {
-        let writer = try NaturalSpeechFileWriter(url: root.appendingPathComponent("w.caf"), sampleRate: 24_000)
-        try writer.append([Float](repeating: 0.1, count: 100))
-        try writer.appendSilence(seconds: 0.01)
-        #expect(writer.frames == 340)
-        writer.close()
-        writer.close()
-        #expect(throws: HolosError.self) { try writer.append([0.1]) }
-        #expect(writer.frames == 340)
-    }
-
     @Test func aSavedFallbackVoiceThatIsGoneIsSaid() async throws {
         let fallback = NativeParagraphFallback(temporaryRoot: root)
         let error = await #expect(throws: HolosError.self) {

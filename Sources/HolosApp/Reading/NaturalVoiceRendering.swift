@@ -12,6 +12,11 @@ import Synchronization
 /// voices"): `voiceislocal say --voice pocket:… --text-file <part text> --output <part file>`. The app does not link
 /// FluidAudio, so the model's memory (about 1 GB while it speaks) lives in that process and goes with it; each part
 /// loads the compiled model again (a few seconds against minutes of rendering). A Stop sends it SIGTERM.
+///
+/// Invariants:
+/// 1. One helper at a time, app-wide (`gate`): a render holds the gate from before its launch until its child is reaped.
+/// 2. Each render's folder is made, registered and removed off the main actor (`NaturalVoiceHelpers.makeFolder`).
+/// 3. `notesLogged` only grows: a note the tool repeats for every part is logged once per launch.
 @MainActor final class HelperNaturalRenderer: ReadingAudioRenderer {
     /// Starts `voiceislocal <arguments>` with stderr written to `standardError`; returns its pid. `onExit` gets the
     /// exit code (128 + the signal for a killed child).
@@ -195,6 +200,10 @@ import Synchronization
     }
 
     /// The child's pid once started, and whether the render was cancelled before or after.
+    ///
+    /// Invariants:
+    /// 1. `ended` only goes from false to true; once it is true `pid` is nil, so nothing signals a reaped process.
+    /// 2. `cancelled` only goes from false to true; a child started after it is stopped at once (`started`).
     private final class ChildState: Sendable {
         private let state = Mutex<(pid: Int32?, cancelled: Bool, ended: Bool)>((nil, false, false))
 
@@ -235,6 +244,11 @@ import Synchronization
 /// The `voiceislocal` helpers rendering natural voices for this app (a reading's part, a Preview) and the temporary
 /// folders they use. They run detached, so a quit stops them here (`stopAll`), from `applicationWillTerminate`:
 /// the cancellations that would stop them (a reading's Stop, Preview's stop) end only after the app has exited.
+///
+/// Invariants:
+/// 1. A pid is recorded from its launch until it is reaped; a folder from when it is made until it is removed.
+/// 2. `stopped` (a quit has begun) refuses every new folder (`makeFolder`); only `stopAll(ending: false)` clears it.
+/// 3. `stopAll` takes and clears the record under the lock, then signals and removes outside it.
 enum NaturalVoiceHelpers {
     private static let state = Mutex<(pids: Set<Int32>, folders: Set<String>, stopped: Bool)>(([], [], false))
 
@@ -360,6 +374,11 @@ enum NaturalVoiceHelpers {
 
 /// Lets one natural-voice helper run at a time in this app (`HelperNaturalRenderer`): the next waits, in order, until
 /// the one before has exited. A wait cancelled (Stop) ends at once and starts nothing.
+///
+/// Invariants:
+/// 1. `busy` is true while a helper holds the gate; `release` hands it to the first waiter (it stays busy) or frees it.
+/// 2. Waiters resume in the order they came; a cancelled one is removed and resumed with `CancellationError`, never
+///    handed the gate.
 @MainActor final class NaturalVoiceHelperGate {
     static let shared = NaturalVoiceHelperGate()
 
