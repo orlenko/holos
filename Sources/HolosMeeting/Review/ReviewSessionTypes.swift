@@ -17,7 +17,27 @@ public enum ReviewAssignTarget: Sendable, Equatable {
     case person(profileID: String)
 }
 
-/// A word edit saved in Review (`ReviewSession.editWords`).
+/// What the window showed when the person acted (an edit field opened, a split or a join asked for), as
+/// `ReviewSession.revision` gave it then: handed back with the command, so the review follows the words to where they
+/// are now through the word moves saved since, or refuses the command when the words or the labels were changed
+/// elsewhere.
+public struct ReviewRevision: Sendable, Equatable {
+    /// How many of the review's word moves (`ReviewSession.wordMoves`) the words shown follow.
+    public var moves: Int
+    /// `ReviewSession.wordsEpoch`: words changed elsewhere since (no word move says where they went) cannot be
+    /// followed.
+    public var wordsEpoch: Int
+    /// The speaker labels' run the turns were shown from (`SpeakerProjection.runID`): labelled again since (a new run
+    /// that did not keep them), a turn ID may name another turn.
+    public var runID: String?
+
+    public init(moves: Int = 0, wordsEpoch: Int = 0, runID: String? = nil) {
+        self.moves = moves
+        self.wordsEpoch = wordsEpoch
+        self.runID = runID
+    }
+}
+
 /// Where a split at a word falls (`ReviewSession.splitPlace`).
 public enum ReviewSplitPlace: Sendable, Equatable {
     /// Inside a turn: it splits before `word`.
@@ -28,6 +48,7 @@ public enum ReviewSplitPlace: Sendable, Equatable {
     case turnEnd(turnID: String)
 }
 
+/// A word edit saved in Review (`ReviewSession.editWords`).
 public struct ReviewWordEdit: Sendable, Equatable {
     /// What the recognizer wrote over the edited span.
     public let heard: String

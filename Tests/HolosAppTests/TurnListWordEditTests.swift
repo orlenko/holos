@@ -21,7 +21,7 @@ struct TurnListWordEditTests {
     private func editingList() -> (TurnListView, () -> [Saved]) {
         let list = TurnListViewTests.list()
         var saved: [Saved] = []
-        list.onEditWords = { words, text, addTerm, _, _ in saved.append(Saved(words: words.map(\.text), text: text,
+        list.onEditWords = { words, text, addTerm, _ in saved.append(Saved(words: words.map(\.text), text: text,
                                                                            addTerm: addTerm)) }
         return (list, { saved })
     }
@@ -91,7 +91,7 @@ struct TurnListWordEditTests {
         list.editField.stringValue = "Beta"
         let taken = list.takeOpenWordEdit()
         #expect(taken?.words.map(\.ref) == [WordRef(segmentID: "T1", word: 1)] && taken?.text == "Beta")
-        #expect(taken?.movesSeen == 0)
+        #expect(taken?.seen.moves == 0)
         #expect(list.wordEdit == nil && list.editField.superview == nil)
         // The field closed without saving on its own: only the close saves it, once.
         list.controlTextDidEndEditing(Notification(name: NSControl.textDidEndEditingNotification,
@@ -178,9 +178,9 @@ struct TurnListWordEditTests {
     @Test func everySaveCarriesTheEpochItsFieldOpenedUnder() {
         let (list, _) = editingList()
         var epochs: [Int] = []
-        list.onEditWords = { _, _, _, _, epoch in epochs.append(epoch) }
+        list.onEditWords = { _, _, _, seen in epochs.append(seen.wordsEpoch) }
         var kept: [Int] = []
-        list.onKeepWordEdit = { _, _, _, epoch in kept.append(epoch) }
+        list.onKeepWordEdit = { _, _, seen in kept.append(seen.wordsEpoch) }
         list.editingWords = true
         list.wordsEpoch = 2
         // Return.
@@ -193,7 +193,7 @@ struct TurnListWordEditTests {
         list.table.handleWordClick(row: 0, word: 0, through: 0, extend: false)
         list.editField.stringValue = "Alfa"
         list.wordsEpoch = 4
-        #expect(list.takeOpenWordEdit()?.wordsEpoch == 3)
+        #expect(list.takeOpenWordEdit()?.seen.wordsEpoch == 3)
         // Kept when the review turns read-only.
         list.table.handleWordClick(row: 0, word: 0, through: 0, extend: false)
         list.editField.stringValue = "Alfa"
@@ -216,9 +216,10 @@ struct TurnListWordEditTests {
         words["T1"] = [TurnListViewTests.word("T1", 0, "go", 0), TurnListViewTests.word("T1", 1, "go", 0.5),
                        TurnListViewTests.word("T1", 2, "go", 1)]
         update(list, words: words, moves: [ReviewWordMove(segmentID: "T1", replaced: 0..<1, replacement: 0..<2)])
-        #expect(!list.reopenWordEdit([second], typed: "stop", message: "Not saved.", movesSeen: 0, wordsEpoch: 1),
+        #expect(!list.reopenWordEdit([second], typed: "stop", message: "Not saved.",
+                                     seen: ReviewRevision(wordsEpoch: 1)),
                 "Words changed elsewhere since: not reopened.")
-        #expect(list.reopenWordEdit([second], typed: "stop", message: "Not saved.", movesSeen: 0, wordsEpoch: 0))
+        #expect(list.reopenWordEdit([second], typed: "stop", message: "Not saved.", seen: ReviewRevision()))
         #expect(list.wordEdit?.words.map(\.ref) == [WordRef(segmentID: "T1", word: 2)])
         #expect(list.editField.stringValue == "stop")
     }
@@ -409,14 +410,14 @@ struct TurnListWordEditTests {
         let alpha = try #require(TurnListViewTests.words["T1"]?[0])
         let epsilon = try #require(TurnListViewTests.words["T2"]?[0])
         let failures = [
-            FailedWordEdit(words: [alpha], text: "Alfa", movesSeen: 0, wordsEpoch: 0,
+            FailedWordEdit(words: [alpha], text: "Alfa", seen: ReviewRevision(),
                            message: "The disk is full. What you typed: “Alfa”."),
-            FailedWordEdit(words: [epsilon], text: "Epsilon", movesSeen: 0, wordsEpoch: 0,
+            FailedWordEdit(words: [epsilon], text: "Epsilon", seen: ReviewRevision(),
                            message: "The disk is full. What you typed: “Epsilon”."),
         ]
         func reopen(_ failed: FailedWordEdit) -> Bool {
             list.reopenWordEdit(failed.words, typed: failed.text, message: failed.message,
-                                movesSeen: failed.movesSeen, wordsEpoch: failed.wordsEpoch)
+                                seen: failed.seen)
         }
         // While the close waits, editing is off: the save's own attempt to open its field does nothing.
         list.canEditWords = false
@@ -428,8 +429,8 @@ struct TurnListWordEditTests {
         #expect(footer.map(\.message) == ["The disk is full. What you typed: “Epsilon”."])
         // When the first one's words are gone, the footer says them all.
         list.cancelWordEdit()
-        let gone = FailedWordEdit(words: [TurnListViewTests.word("T9", 0, "gone", 0)], text: "Gone", movesSeen: 0,
-                                  wordsEpoch: 0, message: "Not saved. What you typed: “Gone”.")
+        let gone = FailedWordEdit(words: [TurnListViewTests.word("T9", 0, "gone", 0)], text: "Gone",
+                                  seen: ReviewRevision(), message: "Not saved. What you typed: “Gone”.")
         #expect(ReviewCloseRecovery.recover([gone] + failures.dropFirst(), reopen: reopen).map(\.text)
             == ["Gone", "Epsilon"])
         #expect(ReviewCloseRecovery.recover([], reopen: reopen).isEmpty)
@@ -442,13 +443,13 @@ struct TurnListWordEditTests {
         let (list, _) = editingList()
         list.editingWords = true
         let alpha = try #require(TurnListViewTests.words["T1"]?[0])
-        let gone = FailedWordEdit(words: [TurnListViewTests.word("T9", 0, "gone", 0)], text: "Gone", movesSeen: 0,
-                                  wordsEpoch: 0, message: "Not saved. What you typed: “Gone”.")
-        let alfa = FailedWordEdit(words: [alpha], text: "Alfa", movesSeen: 0, wordsEpoch: 0,
+        let gone = FailedWordEdit(words: [TurnListViewTests.word("T9", 0, "gone", 0)], text: "Gone",
+                                  seen: ReviewRevision(), message: "Not saved. What you typed: “Gone”.")
+        let alfa = FailedWordEdit(words: [alpha], text: "Alfa", seen: ReviewRevision(),
                                   message: "The disk is full. What you typed: “Alfa”.")
         func reopen(_ failed: FailedWordEdit) -> Bool {
             list.reopenWordEdit(failed.words, typed: failed.text, message: failed.message,
-                                movesSeen: failed.movesSeen, wordsEpoch: failed.wordsEpoch)
+                                seen: failed.seen)
         }
         var unsaved = UnsavedWordEdits()
         #expect(!unsaved.holdsClose)
@@ -674,11 +675,11 @@ struct TurnListWordEditTests {
         let beta = try #require(TurnListViewTests.words["T1"]?[1])
         // The request names the field's own word, with the moves and epoch the field follows: the review follows them.
         // With the field's words and text, for the window to open it again if the split is refused once queued.
-        #expect(requests == [ReviewSplitRequest(word: beta.ref, after: false, turnID: "T1", movesSeen: 0,
-                                                wordsEpoch: 0, field: .init(words: [beta], text: "beta"))])
+        #expect(requests == [ReviewSplitRequest(word: beta.ref, after: false, turnID: "T1", seen: ReviewRevision(),
+                                                field: .init(words: [beta], text: "beta"))])
         // Refused once queued, the window opens the field again with the caret where Return found it: Return there
         // asks for the same split again, never the one after the word.
-        #expect(list.reopenWordEdit([beta], typed: "beta", message: "Not split.", movesSeen: 0, wordsEpoch: 0,
+        #expect(list.reopenWordEdit([beta], typed: "beta", message: "Not split.", seen: ReviewRevision(),
                                     caret: 0))
         #expect(list.editField.currentEditor()?.selectedRange == NSRange(location: 0, length: 0))
         press(list, #selector(NSResponder.insertNewline(_:)))
@@ -857,13 +858,13 @@ struct TurnListWordEditTests {
         list.runID = "R1"
         let cell = try TurnListViewTests.cell(list, row: 0)
         _ = list.table.wordMenu(row: 0, cell: cell, word: cell.bodyText.reviewWord(at: 1), index: 1)
-        #expect(requests.last?.runID == "R1")
+        #expect(requests.last?.seen.runID == "R1")
         list.editingWords = true
         list.table.handleWordClick(row: 0, word: 1, through: 1, extend: false)
         list.runID = "R2"
         list.editField.currentEditor()?.selectedRange = NSRange(location: 0, length: 0)
         press(list, #selector(NSResponder.insertNewline(_:)))
-        #expect(requests.count == 2 && requests.last?.runID == "R1", "The run the field's turn is of.")
+        #expect(requests.count == 2 && requests.last?.seen.runID == "R1", "The run the field's turn is of.")
     }
 
     @Test func aRefusedSplitsFieldOpensAgainOnlyWhereThePersonLeftIt() {
@@ -1101,7 +1102,7 @@ struct TurnListWordEditTests {
     @Test func tabAfterADeletionKeepsTheNextFieldOpenOnTheMergedWord() {
         let (list, saved) = editingList()
         var seen: [Int] = []
-        list.onEditWords = { _, _, _, movesSeen, _ in seen.append(movesSeen) }
+        list.onEditWords = { _, _, _, revision in seen.append(revision.moves) }
         list.editingWords = true
         // "alpha" deleted, Tab: the field opens on "beta" before the save ends.
         list.table.handleWordClick(row: 0, word: 0, through: 0, extend: false)
@@ -1230,7 +1231,7 @@ struct TurnListWordEditTests {
         var messages: [String?] = []
         list.onEditMessage = { messages.append($0) }
         var kept: [([String], String)] = []
-        list.onKeepWordEdit = { words, text, _, _ in kept.append((words.map(\.text), text)) }
+        list.onKeepWordEdit = { words, text, _ in kept.append((words.map(\.text), text)) }
         list.editingWords = true
         list.table.handleWordClick(row: 0, word: 1, through: 1, extend: false)
         list.editField.stringValue = "Beta"

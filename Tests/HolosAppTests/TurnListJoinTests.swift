@@ -49,7 +49,7 @@ struct TurnListJoinTests {
         #expect(joins().map(\.join) == [Self.s1Joined])
         let epsilon = try #require(TurnListViewTests.words["T3"]?[0]).ref
         #expect(joins().first?.request == ReviewJoinRequest(paragraphID: "T3", forward: false, word: epsilon,
-                                                            turnID: "T3", runID: nil, fromField: true))
+                                                            turnID: "T3", fromField: true))
         #expect(list.wordEdit == nil, "Nothing was typed: the field closed.")
     }
 
