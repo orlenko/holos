@@ -8,12 +8,14 @@ import HolosCore
 /// lets a pack move into place.
 public enum NaturalVoicePackFiles {
     /// Removes the files at `paths` (relative to `folder`); fails naming every one that could not be removed, so a
-    /// damaged file is never kept and checked again forever.
+    /// damaged file is never kept and checked again forever. A file already missing needs nothing removed.
     public static func remove(_ paths: [String], in folder: URL) throws {
         var leftovers: [String] = []
         for path in paths {
             do {
                 try FileManager.default.removeItem(at: folder.appendingPathComponent(path))
+            } catch let error as CocoaError where error.code == .fileNoSuchFile {
+                continue
             } catch {
                 leftovers.append(path)
             }
@@ -120,13 +122,24 @@ public enum NaturalVoicePackFiles {
     /// One entry of the repository's tree listing (`/api/models/<repo>/tree/<revision>/<path>?recursive=1`).
     struct Entry: Decodable { let type: String }
 
-    /// The files of a listing (its directories left out), filtered by `wanted`.
+    /// The files of a listing (its directories left out), filtered by `wanted`. A path that is not a plain relative
+    /// one (empty, absolute, or with an empty, `.` or `..` component) fails the listing: files are checked and
+    /// removed at these paths under the pack's folder.
     public static func files(fromListing data: Data) throws -> [Expected] {
         let entries = try JSONDecoder().decode([Entry].self, from: data)
         let files = try JSONDecoder().decode([Expected].self, from: data)
+        for file in files where !isPlainRelative(file.path) {
+            throw HolosError.unavailable("The natural voices' listing has an unsafe path: \(file.path)")
+        }
         return zip(entries, files).compactMap { entry, file in
             entry.type == "file" && wanted(file.path) ? file : nil
         }
+    }
+
+    /// Whether `path` is relative, with only named components (no empty, `.` or `..` one).
+    static func isPlainRelative(_ path: String) -> Bool {
+        !path.isEmpty && !path.hasPrefix("/")
+            && path.split(separator: "/", omittingEmptySubsequences: false).allSatisfy { !["", ".", ".."].contains($0) }
     }
 
     /// The Core ML models the voices load (FluidAudio's fp16 GPU placement), and the constants folder.
