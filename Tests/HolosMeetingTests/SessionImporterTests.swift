@@ -224,8 +224,8 @@ func importPassesVocabulary() async throws {
 
 @Test func importCleansVocabularyAsARecordingDoes() {
     let long = String(repeating: "x", count: 101)
-    #expect(SessionImporter.cleaned(["  Maria Chen ", "", "   ", long, "Strata"]) == ["Maria Chen", "Strata"])
-    #expect(SessionImporter.cleaned((0..<1_200).map { "term \($0)" }).count == 1_000)
+    #expect(MeetingVocabulary.cleaned(["  Maria Chen ", "", "   ", long, "Strata"]) == ["Maria Chen", "Strata"])
+    #expect(MeetingVocabulary.cleaned((0..<1_200).map { "term \($0)" }).count == 1_000)
 }
 
 /// The session is built in `.import-<UUID>/` and then moved, so nothing it persists may name the staging folder:

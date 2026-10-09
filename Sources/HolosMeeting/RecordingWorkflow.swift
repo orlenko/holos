@@ -2,6 +2,7 @@ import Darwin
 import Foundation
 import HolosAudio
 import HolosCore
+import HolosSpeech
 import HolosStorage
 import os
 
@@ -18,8 +19,8 @@ public struct RecordingOptions: Sendable, Equatable {
     public var recordOnly: Bool
     /// Capture system audio only from this application.
     public var applicationBundleID: String?
-    /// Contextual strings for every speech session of this recording (§4.12): at most 1,000 entries of at most 100
-    /// characters (longer entries are dropped). Saved as `vocabulary.json`.
+    /// Contextual strings for every speech session of this recording (§4.12), as `MeetingVocabulary.cleaned` keeps
+    /// them. Saved as `vocabulary.json`.
     public var vocabulary: [String]
     /// The session ID (a UUID, passed to `SessionArchive.create(id:)`); nil makes one. No folder may exist for it.
     public var sessionID: String?
@@ -93,6 +94,9 @@ public struct RecordingDependencies: Sendable {
     /// A recorder running inside the app sets this to wait, after `run` returns, for an exited status that could not
     /// be written at once (`ExitRetry`); nil (a child recorder): the process exit releases the locks instead.
     public var exitStatusWait: ExitStatusWait?
+    /// The language of a meeting from the app whose settings name none (`RecordingOptions(settings:…)`), as
+    /// `voiceislocal record start` takes it without `--locale`; inert: `DictationLanguage.standard`.
+    public var defaultLocale: @Sendable () async -> String = { DictationLanguage.standard }
     /// Loop cadence and queue sizes; tests shorten them.
     var tuning = RecorderTuning()
     /// Tests only: sees every status.json written, in order.
@@ -125,7 +129,7 @@ public struct RecordingDependencies: Sendable {
     }
 
     /// LiveMeetingCapture + AppleSpeechSession.make, `ContinuousSessionClock`, `VolumeFreeSpace`, `SystemPowerMonitor`,
-    /// `PowerAssertion`, `BuiltInMicrophone.devices`, and `AudioEnvironmentEvents`.
+    /// `PowerAssertion`, `BuiltInMicrophone.devices`, `AudioEnvironmentEvents`, `AppleSpeechEngine.defaultLocale`.
     public static func live(stop: any RecorderStopSource, reporter: any RecordingReporter,
                             postProcess: PostProcessHook?) -> RecordingDependencies {
         var dependencies = RecordingDependencies(makeCapture: { IndependentMeetingCapture() }, makeSpeech: appleSpeechFactory,
@@ -134,6 +138,7 @@ public struct RecordingDependencies: Sendable {
                               power: livePowerMonitor(), makePowerAssertion: livePowerAssertion,
                               findInputDevices: { BuiltInMicrophone.devices() },
                               environmentEvents: AudioEnvironmentEvents())
+        dependencies.defaultLocale = { await AppleSpeechEngine.defaultLocale(backend: .speech) }
         dependencies.makeDisplayAssertion = { reason in
             do { return try PowerAssertion(reason: reason, kind: .display) }
             catch {
@@ -218,8 +223,6 @@ public struct RecordingOutcome: Sendable, Equatable {
 
 public enum RecordingWorkflow {
     private static let log = Logger(subsystem: "ca.orlenko.holos.app", category: "recorder")
-    static let maxVocabularyEntries = 1_000
-    static let maxVocabularyLength = 100
 
     /// Records until stop, saves audio and transcript, then (with a hook) takes the processing lease,
     /// finishes the archive, and runs the hook under the lease (§4.6 steps 5–8).
@@ -328,10 +331,7 @@ public enum RecordingWorkflow {
             }
             options.sessionID = uuid.uuidString
         }
-        options.vocabulary = Array(options.vocabulary
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty && $0.count <= maxVocabularyLength }
-            .prefix(maxVocabularyEntries))
+        options.vocabulary = MeetingVocabulary.cleaned(options.vocabulary)
         return options
     }
 
