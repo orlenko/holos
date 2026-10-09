@@ -38,7 +38,7 @@ natural voices' catalog and pack install (their backend is in `HolosPocket`).
   confirmed, `CleanupFailed` names the file so the caller can finish later.
 - A natural voice pack counts as installed only when its marker names `NaturalVoiceModels.revision` and every file
   it inventories is in place, read under the pack's shared lock; one process installs a pack at a time
-  (`.<pack>.install.lock`).
+  (`.<pack>.install.lock`), and one install of any pack downloads or warms up at a time (`.install.lock`).
 - A render that names a voice fails (`HolosError.unavailable`) when that voice is missing; it never substitutes
   another. A render that names none uses an English system voice (`defaultVoiceIdentifier`: the current locale
   when it is English, else en-US).

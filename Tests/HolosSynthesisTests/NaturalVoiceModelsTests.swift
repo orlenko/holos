@@ -1,5 +1,6 @@
 import Foundation
 import HolosCore
+import HolosTestSupport
 import Synchronization
 import Testing
 @testable import HolosSynthesis
@@ -131,7 +132,7 @@ func fillPack(_ base: URL, _ pack: NaturalVoicePack) throws {
     }
 }
 
-@Suite final class NaturalVoiceInstallLockTests {
+@Suite(.timeLimit(.minutes(1))) final class NaturalVoiceInstallLockTests {
     private let root = FileManager.default.temporaryDirectory.appendingPathComponent("holos-lock-\(UUID().uuidString)")
 
     deinit { try? FileManager.default.removeItem(at: root) }
@@ -161,6 +162,58 @@ func fillPack(_ base: URL, _ pack: NaturalVoicePack) throws {
         // Once it is done, the pack is reported installed again.
         try await NaturalVoiceModels.setUp(root: root, pack: .english, force: false, download: { pack, base, _ in try fillPack(base, pack) },
                                            warmUp: { _, _ in }, notice: { _ in }, progress: { _ in })
+    }
+
+    /// An English install the test holds in its download, and what a French install started meanwhile did.
+    private final class TwoInstalls: Sendable {
+        let downloading = Mutex(false)
+        let released = Mutex(false)
+        let frenchSteps = Mutex(0)
+    }
+
+    @Test func anotherPacksInstallIsRefusedWhileOneRuns() async throws {
+        let installs = TwoInstalls()
+        let english = Task { [root] in
+            try await NaturalVoiceModels.setUp(root: root, pack: .english, force: false, download: { pack, base, _ in
+                installs.downloading.withLock { $0 = true }
+                while !installs.released.withLock({ $0 }) { try await Task.sleep(for: .milliseconds(5)) }
+                try fillPack(base, pack)
+            }, warmUp: { _, _ in }, notice: { _ in }, progress: { _ in })
+        }
+        #expect(await eventually { installs.downloading.withLock { $0 } })
+        // The French install (the app's Download, or a second Terminal) starts while English downloads: refused
+        // before it downloads or warms up anything.
+        let error = await #expect(throws: HolosError.self) {
+            try await NaturalVoiceModels.setUp(root: root, pack: .french, force: false, download: { pack, base, _ in
+                installs.frenchSteps.withLock { $0 += 1 }
+                try fillPack(base, pack)
+            }, warmUp: { _, _ in installs.frenchSteps.withLock { $0 += 1 } }, notice: { _ in }, progress: { _ in })
+        }
+        #expect(error?.localizedDescription.contains("Other natural voices are being installed") == true)
+        #expect(installs.frenchSteps.withLock { $0 } == 0)
+        installs.released.withLock { $0 = true }
+        try await english.value
+        // Once English is done, French installs.
+        try await NaturalVoiceModels.setUp(root: root, pack: .french, force: false, download: { pack, base, _ in
+            try fillPack(base, pack)
+        }, warmUp: { _, _ in }, notice: { _ in }, progress: { _ in })
+        #expect(NaturalVoiceModels.installedPacks(root: root) == [.english, .french])
+    }
+
+    @Test func anInstalledPackIsStillReportedWhileAnotherPackInstalls() async throws {
+        try await NaturalVoiceModels.setUp(root: root, pack: .english, force: false,
+                                           download: { pack, base, _ in try fillPack(base, pack) },
+                                           warmUp: { _, _ in }, notice: { _ in }, progress: { _ in })
+        let fd = open(NaturalVoiceModels.anyInstallLockPath(root: root), O_RDWR | O_CREAT, 0o600)
+        #expect(fd >= 0)
+        defer { close(fd) }
+        #expect(flock(fd, LOCK_EX | LOCK_NB) == 0)
+        // Another pack's install holds the shared lock: English is still installed, and its setup says so.
+        #expect(NaturalVoiceModels.installedPacks(root: root) == [.english])
+        try await NaturalVoiceModels.setUp(root: root, pack: .english, force: false,
+                                           download: { pack, base, _ in try fillPack(base, pack) },
+                                           warmUp: { _, _ in }, notice: { _ in }, progress: { _ in })
+        flock(fd, LOCK_UN)
     }
 
     @Test func theReadinessIsReadUnderTheInstallLock() async throws {

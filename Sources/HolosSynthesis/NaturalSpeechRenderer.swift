@@ -432,28 +432,37 @@ extension Duration {
             throw HolosError.unavailable("No system voice speaks \(language) to read a paragraph the natural voice "
                 + "could not.")
         }
-        // The folder is made and removed, and the speech read and resampled, off the main actor.
+        // The folder is made and removed, and the speech read and resampled, off the main actor. The removal is
+        // awaited before this returns or throws, so a short `say --output` cannot exit and leave the folder behind.
         let folder = temporaryRoot.appendingPathComponent("holos-fallback-\(UUID().uuidString)", isDirectory: true)
         try await Task.detached(priority: .userInitiated) {
             try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: false,
                                                     attributes: [.posixPermissions: 0o700])
         }.value
-        defer {
-            Task.detached(priority: .utility) {
-                do {
-                    try FileManager.default.removeItem(at: folder)
-                } catch {
-                    Logger(subsystem: "ca.orlenko.holos.app", category: "reading")
-                        .error("Could not remove a fallback folder: \(error.localizedDescription, privacy: .public)")
-                }
-            }
+        let outcome: Result<[Float], any Error>
+        do {
+            let rendered = try await NativeSpeechRenderer().render(text: text, voiceIdentifier: voice.id, rate: nil,
+                                                                   to: folder.appendingPathComponent("speech.caf"))
+            outcome = .success(try await Task.detached(priority: .userInitiated) {
+                try AudioSamples.mono(from: rendered.url, sampleRate: sampleRate)
+            }.value)
+        } catch {
+            outcome = .failure(error)
         }
-        let rendered = try await NativeSpeechRenderer().render(text: text, voiceIdentifier: voice.id, rate: nil,
-                                                               to: folder.appendingPathComponent("speech.caf"))
-        let samples = try await Task.detached(priority: .userInitiated) {
-            try AudioSamples.mono(from: rendered.url, sampleRate: sampleRate)
+        await Self.remove(folder)
+        return (try outcome.get(), voice.name)
+    }
+
+    /// Removes a fallback folder off the main actor; a failure is logged, since the samples are already read.
+    private static func remove(_ folder: URL) async {
+        await Task.detached(priority: .userInitiated) {
+            do {
+                try FileManager.default.removeItem(at: folder)
+            } catch {
+                Logger(subsystem: "ca.orlenko.holos.app", category: "reading")
+                    .error("Could not remove a fallback folder: \(error.localizedDescription, privacy: .public)")
+            }
         }.value
-        return (samples, voice.name)
     }
 }
 
