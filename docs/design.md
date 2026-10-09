@@ -219,8 +219,10 @@ between), the first letter of the next result is lowered, unless:
 - the word has another capital, a digit or a symbol ("PR", "NASA", "GPT-4", "McDonald's");
 - it is one letter ("plan B", "dash P"), but for the one-letter words "A" (and French "À", "Y");
 - a term of the word list, a learned correction's meant phrase, or a person's name in People
-  has the word with a capital (asked as each dictation starts; People's store is read again
-  only when its file changed, `PeopleNames`, which Run Again uses too);
+  has the word with a capital (asked as each dictation starts; People's names are the ones last
+  read: `PeopleNames` reads them in the background at launch and whenever a dictation starts
+  after the store's file changed, decoding the names alone, never the voice samples, and
+  never on the main thread; Run Again uses the same names);
 - `NLTagger` (name type, in the dictation language) tags it as a person, place or
   organization, reading the result before the pause and the one after it as one text;
 - the spell checker of the dictation language does not know its lowercase form ("alice",

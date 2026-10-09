@@ -232,7 +232,9 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
         }
         loadWordList()
         controller.contextualStrings = dictationVocabulary(language: locale)
-        // Asked at each dictation's start: the word list and corrections as held then, and People as it is now.
+        // Asked at each dictation's start: the word list and corrections as held then, and People's names as last read
+        // in the background (read now, so the first dictation has them).
+        peopleNames.refresh()
         controller.seamTerms = { [weak self] in self?.dictationSeamTerms() ?? [] }
         let folder = CorrectionList.defaultURL.deletingLastPathComponent()
         correctionsWatcher = FolderWatcher(folder: folder) { [weak self] in

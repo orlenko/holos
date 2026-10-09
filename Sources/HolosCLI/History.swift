@@ -143,10 +143,11 @@ struct History: ParsableCommand {
             var chosen = language ?? preferences.language
             if chosen == nil { chosen = await RecognitionOptions.defaultLocale(backend: .speech) }
             let locale = chosen ?? DictationLanguage.standard
+            let names = await PeopleNames().refreshed()
             let (pipeline, note) = DictationRerun.pipeline(language: locale, removeFillers: preferences.removeFillers,
                                                            corrections: corrections, wordList: wordList.terms,
                                                            heardAs: wordList.heardAsPairs,
-                                                           names: PeopleNames().current(),
+                                                           names: names,
                                                            aiFix: preferences.aiFix && !noAIFix,
                                                            spokenCode: preferences.spokenCode && !noSpokenCode,
                                                            backticks: preferences.spokenCodeBackticks)
