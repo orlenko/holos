@@ -1,7 +1,7 @@
 # HolosMeeting
 
 Meetings end to end, without AppKit: recording, the app's controllers, everything after the stop, Review, people
-and voice profiles. `docs/meeting-design.md` section 4 is the spec; `docs/meeting/recorder.md §4.1` is the
+and voice profiles. The files in `docs/meeting/` are the spec; `docs/meeting/recorder.md §4.1` is the
 recorder ↔ app protocol.
 
 **Owns** (by folder)

@@ -1,7 +1,8 @@
 # HolosSpeakers
 
 Pure speaker algorithms over values: who said which words, how edits apply, and how a meeting is exported.
-`docs/meeting/post-processing.md §4.8` to `docs/meeting/exports.md §4.11` describe the rules.
+`docs/meeting/post-processing.md §4.8`, `docs/meeting/speaker-labels.md §4.9`, `docs/meeting/people-voice.md §4.10`
+and `docs/meeting/exports.md §4.11` describe the rules.
 
 **Owns**
 - Labelling: `DiarizationNormalizer`, `SpeakerAlignment` (words to diarization segments), `WordTiming`,
