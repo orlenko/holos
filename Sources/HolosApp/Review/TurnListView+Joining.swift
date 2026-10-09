@@ -127,4 +127,44 @@ extension TurnListView {
         case nil: break
         }
     }
+
+    /// A new row's VoiceOver join action (`TurnTextView.joinChoice`, `onJoinChosen`).
+    func wireJoin(_ cell: TurnCellView) {
+        cell.bodyText.joinChoice = { [weak self, weak cell] in
+            guard let self, let cell, !self.editingWords else { return nil }
+            return self.joinOffer(row: self.table.row(for: cell), index: 0)?.choice
+        }
+        cell.bodyText.onJoinChosen = { [weak self] choice in self?.joinChosen(choice) }
+    }
+}
+
+extension TurnTableView {
+    /// The word menu's Join With Previous Turn (`wordMenu`), or nil where none is offered.
+    func joinMenuItem(row: Int, word: ReviewWord?, index: Int?) -> NSMenuItem? {
+        // On a row's first word, as Split Turn Here: not in edit mode, where Backspace at the row's start joins.
+        guard !editingWords, word != nil, let index, let offer = joinOffer?(row, index) else { return nil }
+        let item = NSMenuItem(title: TurnListView.joinTitle, action: #selector(joinHere(_:)), keyEquivalent: "")
+        item.target = self
+        item.representedObject = offer.choice
+        item.isEnabled = offer.refusal == nil
+        item.toolTip = offer.refusal ?? TurnListView.joinHelp
+        return item
+    }
+
+    @objc private func joinHere(_ sender: NSMenuItem) {
+        guard let choice = sender.representedObject as? JoinChoice else { return }
+        onJoinChosen?(choice)
+    }
+}
+
+extension TurnTextView {
+    /// VoiceOver's Join With Previous Turn (`accessibilityCustomActions`), or nil where none is offered.
+    func joinAction() -> NSAccessibilityCustomAction? {
+        guard let join = joinChoice?() else { return nil }
+        return NSAccessibilityCustomAction(name: TurnListView.joinTitle) { [weak self] in
+            guard let onJoinChosen = self?.onJoinChosen else { return false }
+            onJoinChosen(join)
+            return true
+        }
+    }
 }

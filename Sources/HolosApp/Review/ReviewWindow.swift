@@ -191,18 +191,23 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, NSM
                                     action: nil)
     private let statusLabel = NSTextField(labelWithString: "")
     private let notices = NSStackView()
-    /// The last action's error, until the next action.
-    private var problem: String?
+    /// The last action's error, until the next action. Internal (as the join state below) for `ReviewWindow+Joining`.
+    var problem: String?
     /// What the last action did, when it says so (a term added to the word list), until the next action.
     private var notice: String?
     private var query = ""
     /// Where "Split Turn" broke a paragraph without splitting a turn, and where a row was joined to the row before
     /// it: the window's view only, never saved; kept with its turn on its run and through this window's word-fix
     /// reverts, dropped by any other new run (a relabel).
-    private var paragraphBreaks = ReviewParagraphBreaks()
+    var paragraphBreaks = ReviewParagraphBreaks()
     /// Every row as grouped, before a search filters them: a join finds the row before or after the one it is asked
     /// at here, never a row the search left next to it.
-    private var allParagraphs: [ReviewParagraph] = []
+    private(set) var allParagraphs: [ReviewParagraph] = []
+    /// How many times every join was dropped (`clearJoins`).
+    var joinsCleared = 0
+    /// How many reverts the labels shown had at the last refresh: one more (an undo saved, here or elsewhere) drops
+    /// every join.
+    private var revertsSeen = 0
     /// The turns joined to the row before them in this window (for tests).
     var paragraphJoins: Set<String> { paragraphBreaks.joins }
     private var positioned = false
@@ -861,7 +866,7 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, NSM
         return item
     }
 
-    private func refreshFooter() {
+    func refreshFooter() {
         let projection = review.projection
         let changes = review.changeCount
         let shown = review.shownTurns.count
@@ -973,7 +978,7 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, NSM
     // MARK: - Actions
 
     /// Runs one change; its error shows in the footer until the next action.
-    private func perform(_ change: @escaping @MainActor (ReviewSession) async throws -> Void) {
+    func perform(_ change: @escaping @MainActor (ReviewSession) async throws -> Void) {
         clearTransientMessages()
         let review = self.review
         Task { [weak self] in
@@ -992,7 +997,7 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, NSM
     }
 
     /// A change begins: the footer stops saying what happened to the one before (a problem, a notice, a term offered).
-    private func clearTransientMessages() {
+    func clearTransientMessages() {
         problem = nil
         notice = nil
         offeredTerm = nil
@@ -1398,136 +1403,6 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, NSM
         case nil:
             return .refused("Those words are no longer shown; try the split again.")
         }
-    }
-
-    // MARK: - Joining rows
-
-    /// What a join asked at a row's edge makes now (`TurnListView.resolveJoin`): checked as a split is (the review
-    /// editable, the same labels run), then found among every row grouped (`joinResolution`).
-    private func resolveJoin(_ request: ReviewJoinRequest) -> ReviewJoinResolution {
-        // Held read-only (a maintenance command, labels that could not be reread): no join, as no split.
-        guard review.isEditable else {
-            return .refused(review.pauseReason ?? review.reloadProblem ?? "This meeting cannot be changed right now.")
-        }
-        if let seen = request.runID, seen != review.projection.runID,
-           !review.keepsTurns(of: seen, in: review.projection.runID) {
-            return .refused(Self.joinRelabelled)
-        }
-        return Self.joinResolution(paragraphID: review.resolvedTurnID(request.paragraphID), forward: request.forward,
-                                   paragraphs: allParagraphs)
-    }
-
-    static let joinRelabelled = "The speakers were labelled again since; try the join again."
-    static let joinNotShown = "That turn no longer starts a row; try the join again."
-
-    /// `resolveJoin`'s rule over every row grouped (`paragraphs`, before a search filters them): the row
-    /// `paragraphID` joins the row before it (with `forward`, the row after it joins it). Nothing to join with at the
-    /// meeting's first row (last, `forward`); refused when no row starts with that turn any more.
-    static func joinResolution(paragraphID: String, forward: Bool,
-                               paragraphs: [ReviewParagraph]) -> ReviewJoinResolution {
-        guard let index = paragraphs.firstIndex(where: { $0.id == paragraphID }) else { return .refused(joinNotShown) }
-        let earlier = forward ? index : index - 1
-        guard earlier >= 0 else { return .nothing(TurnListView.nothingBefore) }
-        guard earlier + 1 < paragraphs.count else { return .nothing(TurnListView.nothingAfter) }
-        return .join(ReviewParagraphs.join(paragraphs[earlier + 1], to: paragraphs[earlier]))
-    }
-
-    /// Makes `join`: the window joins each turn of the later row to the paragraph before it
-    /// (`ReviewParagraphBreaks.join`, never saved; every turn, so the row stays whole through its new speaker), and
-    /// when the rows' speakers differ, the later row's turns take the earlier row's speaker through the review's
-    /// assignment (undoable with ⌘Z and learned from as any made with the row's pop-up), refused when the meeting was
-    /// labelled again since the rows were shown. Joins are only how rows read, with the simplest life: made at once,
-    /// and all dropped on any Undo, any change that fails, and any relabel (`clearJoins`). Then, asked from the field,
-    /// the field opens again where the rows met (the caret at the start of the later row's first word, or at the end
-    /// of the earlier row's last word for forward Delete), where that word is after the word edits saved meanwhile
-    /// (`joinBoundary`), so typing goes on there; asked from the menu, the joined row is selected. VoiceOver hears
-    /// that the rows were joined. Nothing of that once the joins were dropped meanwhile (⌘Z pressed, say).
-    private func applyJoin(_ join: ReviewParagraphJoin, request: ReviewJoinRequest) {
-        let runID = review.projection.runID
-        // The rows the join was asked on: labelled again since, a turn or speaker ID may name another now.
-        let seenRun = request.runID ?? runID
-        let sameLabels = { [review] in
-            seenRun == review.projection.runID || review.keepsTurns(of: seenRun, in: review.projection.runID)
-        }
-        guard sameLabels() else {
-            problem = Self.joinRelabelled
-            refreshFooter()
-            return
-        }
-        let turns = join.turnIDs.compactMap { id in review.projection.turns.first { $0.id == id } }
-        guard !turns.isEmpty else { return }
-        // A word's field opened since the join was asked (the speaker change took a while): it keeps the keyboard.
-        let fieldsOpened = turnList.fieldsOpened
-        let message = join.reassign.isEmpty ? TurnListView.joined : TurnListView.joinedSpeaker
-        let finish = { [weak self] in
-            guard let self else { return }
-            self.refresh()
-            if NSWorkspace.shared.isVoiceOverEnabled {
-                NSAccessibility.post(element: self.window, notification: .announcementRequested, userInfo: [
-                    .announcement: message, .priority: NSAccessibilityPriorityLevel.medium.rawValue,
-                ])
-            }
-            guard !self.turnList.typingElsewhere, self.turnList.fieldsOpened == fieldsOpened else { return }
-            if request.fromField, self.turnList.editingWords, self.reopenJoinField(request, message: message) { return }
-            self.turnList.select([self.review.resolvedTurnID(join.turnID)], scroll: true)
-        }
-        // Made here, as a row break is: what the footer said of an earlier change goes.
-        clearTransientMessages()
-        for turn in turns { paragraphBreaks.join(turn, runID: runID) }
-        guard !join.reassign.isEmpty else {
-            finish()
-            return
-        }
-        refresh()
-        let cleared = joinsCleared
-        let target: ReviewAssignTarget = join.speakerID.map { .speaker($0) } ?? .unknown
-        perform { [weak self] review in
-            // Checked again as the assignment is queued: a reload may have adopted a relabel since.
-            guard sameLabels() else { throw HolosError.invalidInput(Self.joinRelabelled) }
-            try await review.assign(join.reassign, to: target)
-            // Dropped meanwhile (⌘Z pressed, a change failed) or relabelled since (its turn IDs may name other turns
-            // now): no field, no announcement.
-            guard let self, self.joinsCleared == cleared, sameLabels() else { return }
-            finish()
-        }
-    }
-
-    /// How many times every join was dropped (`clearJoins`).
-    private var joinsCleared = 0
-    /// How many reverts the labels shown had at the last refresh: one more (an undo saved, here or elsewhere) drops
-    /// every join.
-    private var revertsSeen = 0
-
-    /// Drops every join (Undo, a change that failed, a relabel): rows read as they group on their own again.
-    private func clearJoins() {
-        joinsCleared += 1
-        guard !paragraphBreaks.joins.isEmpty else { return }
-        paragraphBreaks.clearJoins()
-        refresh()
-    }
-
-    /// Opens the field again where a join from it met the rows: `request.word`, followed through the word moves saved
-    /// since it was chosen (a word edit queued before the join's speaker change saves first), at the same edge; at a
-    /// word deleted meanwhile, the start of the word after it, else the end of the one before. Nothing when the words
-    /// were changed elsewhere since.
-    private func reopenJoinField(_ request: ReviewJoinRequest, message: String) -> Bool {
-        guard request.wordsEpoch == review.wordsEpoch,
-              let place = Self.joinBoundary(request.word, atEnd: request.forward,
-                                            through: review.shownWordMoves.dropFirst(request.movesSeen)) else {
-            return false
-        }
-        let turnID = request.turnID.map(review.resolvedTurnID)
-        if turnList.reopenField(at: place.word, atEnd: place.atEnd, message: message, inTurn: turnID) { return true }
-        guard !place.atEnd, place.word.word > 0 else { return false }
-        return turnList.reopenField(at: WordRef(segmentID: place.word.segmentID, word: place.word.word - 1),
-                                    atEnd: true, message: message, inTurn: turnID)
-    }
-
-    /// Where the edge of `word` (its start; its end, `atEnd`) is after `moves`, as for a split
-    /// (`splitBoundary`).
-    static func joinBoundary(_ word: WordRef, atEnd: Bool,
-                             through moves: ArraySlice<ReviewWordMove>) -> (word: WordRef, atEnd: Bool)? {
-        splitBoundary(ReviewWord(ref: word, text: "", start: 0), atEnd: atEnd, through: moves)
     }
 
     /// Reverts a word fix. It publishes a new run with the same turns, whose estimated starts may move, so the
@@ -2436,121 +2311,5 @@ private final class ExportFormatChooser: NSObject {
         panel.allowedContentTypes = [type]
         let base = (panel.nameFieldStringValue as NSString).deletingPathExtension
         panel.nameFieldStringValue = base + "." + format.rawValue
-    }
-}
-
-/// Where to split a row: its words in a read-only text; a click puts the caret where the second part starts. "Play
-/// from Here" plays from that word. At a word that starts a turn of the row, nothing is split: the row only breaks
-/// there.
-@MainActor
-private final class SplitSheet: NSObject, NSTextViewDelegate {
-    let panel: NSPanel
-    private let words: [ReviewWord]
-    /// Indices of words that start a turn (other than the first).
-    private let turnStarts: Set<Int>
-    /// Each word's range in the shown text.
-    private var ranges: [NSRange] = []
-    private let scroll = NSTextView.scrollableTextView()
-    private var textView: NSTextView {
-        // `scrollableTextView()` always holds a text view.
-        scroll.documentView as? NSTextView ?? NSTextView()
-    }
-    private let hint = NSTextField(wrappingLabelWithString: "")
-    private let splitButton = NSButton(title: "Split", target: nil, action: nil)
-    private let playButton = NSButton(title: "Play from Here", target: nil, action: nil)
-    private let onPlay: (Double) -> Void
-
-    /// The first word of the second part (an index into `words`), when the caret is after the first word.
-    private(set) var splitIndex: Int?
-
-    init(words: [ReviewWord], turnStarts: Set<Int> = [], onPlay: @escaping (Double) -> Void) {
-        self.words = words
-        self.turnStarts = turnStarts
-        self.onPlay = onPlay
-        panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 520, height: 300), styleMask: [.titled],
-                        backing: .buffered, defer: true)
-        super.init()
-        var text = ""
-        for word in words {
-            if !text.isEmpty { text += " " }
-            let location = (text as NSString).length
-            text += word.text
-            ranges.append(NSRange(location: location, length: (word.text as NSString).length))
-        }
-        let title = NSTextField(labelWithString: "Click in the text where the second part starts.")
-        title.font = .systemFont(ofSize: 13, weight: .medium)
-        let textView = self.textView
-        textView.isRichText = false
-        textView.isEditable = false
-        textView.isSelectable = true
-        textView.string = text
-        textView.font = .systemFont(ofSize: 13)
-        textView.delegate = self
-        textView.textContainerInset = NSSize(width: 4, height: 4)
-        scroll.borderType = .bezelBorder
-        scroll.translatesAutoresizingMaskIntoConstraints = false
-        hint.textColor = .secondaryLabelColor
-        splitButton.keyEquivalent = "\r"
-        splitButton.target = self
-        splitButton.action = #selector(split)
-        playButton.target = self
-        playButton.action = #selector(play)
-        let cancel = NSButton(title: "Cancel", target: self, action: #selector(cancel))
-        cancel.keyEquivalent = "\u{1b}"
-        let buttons = NSStackView(views: [playButton, NSView(), cancel, splitButton])
-        let stack = NSStackView(views: [title, scroll, hint, buttons])
-        stack.orientation = .vertical
-        stack.alignment = .leading
-        stack.spacing = 8
-        stack.edgeInsets = NSEdgeInsets(top: 16, left: 16, bottom: 16, right: 16)
-        stack.translatesAutoresizingMaskIntoConstraints = false
-        let content = NSView()
-        content.addSubview(stack)
-        NSLayoutConstraint.activate([
-            stack.leadingAnchor.constraint(equalTo: content.leadingAnchor),
-            stack.trailingAnchor.constraint(equalTo: content.trailingAnchor),
-            stack.topAnchor.constraint(equalTo: content.topAnchor),
-            stack.bottomAnchor.constraint(equalTo: content.bottomAnchor),
-            scroll.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -32),
-            scroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 150),
-            hint.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -32),
-            buttons.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -32),
-        ])
-        panel.contentView = content
-        panel.initialFirstResponder = textView
-        update()
-    }
-
-    func textViewDidChangeSelection(_ notification: Notification) { update() }
-
-    /// The word containing the caret (or the next one after it) starts the second part; never the first word.
-    private func update() {
-        let caret = textView.selectedRange().location
-        let index = ranges.firstIndex { $0.location + $0.length > caret }
-        if let index, index > 0 {
-            splitIndex = index
-            hint.stringValue = "The second part starts at “\(words[index].text)” (\(TimeFormat.clock(words[index].start)))."
-                + (turnStarts.contains(index) ? " A turn already starts there, so the text only breaks there." : "")
-        } else {
-            splitIndex = nil
-            hint.stringValue = "Click after the first word, where the second part starts."
-        }
-        splitButton.isEnabled = splitIndex != nil
-        playButton.isEnabled = true
-    }
-
-    @objc private func split() {
-        guard splitIndex != nil else { return }
-        panel.sheetParent?.endSheet(panel, returnCode: .OK)
-    }
-
-    @objc private func cancel() {
-        panel.sheetParent?.endSheet(panel, returnCode: .cancel)
-    }
-
-    @objc private func play() {
-        let caret = textView.selectedRange().location
-        let index = ranges.firstIndex { $0.location + $0.length > caret } ?? 0
-        onPlay(words[index].start)
     }
 }
