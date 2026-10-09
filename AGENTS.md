@@ -227,7 +227,10 @@ entry point (`ReviewSession.submit(_:seen:)`), a lock-token type.
   and whose §6 Status column tracks steps by PR. Its guidance (what to do next, how to verify) stays current.
 - Cite specs as `docs/<file>.md §N.M`, or `docs/design.md "<Heading>"` for docs without numbers. A citation must
   resolve to an existing heading. A `§N.M` cites the last Markdown file named before it in its paragraph, list item,
-  table row or comment block, so after naming another file, name the cited one again.
+  table row or comment block, so after naming another file, name the cited one again. A table that lists another
+  file's sections without naming it in every row (`docs/architecture-roadmap.md §4.3` lists the meeting design's
+  old numbers) goes between `<!-- citations: <file>.md -->` and `<!-- /citations -->`: a bare `§N.M` there cites
+  that file, and once that file is an index (`docs/meeting-design.md`), the file its table maps the number to.
   `scripts/check-doc-citations.py` checks every citation in the repository in under a second (`--self-test` runs
   its own cases). Run it before every PR that moves a section or adds a citation.
 - A PR that changes behaviour updates the cited section in the same PR.
