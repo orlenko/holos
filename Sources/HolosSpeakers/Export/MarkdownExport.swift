@@ -35,7 +35,7 @@ import HolosCore
 /// HTML, entity, strikethrough, or table changes them; a block's text is one paragraph with its leading block syntax
 /// ("# ", "- ", "1. ", "[x]: ", …) escaped too, so it renders literally as a visible paragraph.
 ///
-/// A meeting summarized for this transcript (docs/meeting-design.md §4.17) gets "## Summary" after the header (the
+/// A meeting summarized for this transcript (docs/meeting/titles-summaries.md §4.17) gets "## Summary" after the header (the
 /// summary, **Key points** and **Action items** lists, and where it came from) and "## Transcript" before the turns;
 /// its title is the heading when the user did not name the meeting (`ExportSummary.titleIsHeading`).
 enum MarkdownExport {
@@ -153,7 +153,7 @@ enum MarkdownExport {
     }
 
     /// "French (Canada), English (Canada)" (English names, as the rest of the header) for a transcript merged from
-    /// several languages (docs/meeting-design.md §4.14); nil for one language. The text itself carries no language
+    /// several languages (docs/meeting/languages.md §4.14); nil for one language. The text itself carries no language
     /// marks: the language changes every few seconds, often inside a sentence, and marks there would break it up; the
     /// JSON export names each turn's languages.
     private static func languages(_ transcript: Transcript) -> String? {

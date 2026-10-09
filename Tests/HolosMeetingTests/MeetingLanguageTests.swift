@@ -5,7 +5,7 @@ import HolosStorage
 import HolosTestSupport
 import Testing
 
-// A meeting's languages from the start panel to meeting.json (docs/meeting-design.md §4.14): the settings, the
+// A meeting's languages from the start panel to meeting.json (docs/meeting/languages.md §4.14): the settings, the
 // recorder's arguments, and the recording.
 
 /// Records three scripted microphone frames with `options`, then stops.

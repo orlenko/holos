@@ -5,7 +5,7 @@ import HolosStorage
 import HolosTestSupport
 import Testing
 
-// Renaming a finished meeting (docs/meeting-design.md §4.17): the name the user types as it is saved, the default name
+// Renaming a finished meeting (docs/meeting/titles-summaries.md §4.17): the name the user types as it is saved, the default name
 // a meeting gets back with its generated title, what the list's editor asks for, and `voiceislocal session rename` on
 // fixture sessions (the manifest, meeting.json's nameSource, the transcript files, refusals). Every name is invented.
 

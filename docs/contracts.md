@@ -2,7 +2,7 @@
 
 The contracts between targets and processes as the code implements them. Ownership (what each target owns, must
 not own, and may import) is the module map in [AGENTS.md](../AGENTS.md#module-map), with details in each
-`Sources/<Module>/README.md`. The full meeting design is [meeting-design.md](meeting-design.md), sections 1–4.
+`Sources/<Module>/README.md`. The meeting design is [conventions.md](conventions.md) and the files in [meeting/](meeting/).
 
 Prefer concrete structs, enums and actors; add a protocol only at a real seam (an engine, the hardware, a child
 process, a clock). Do not build a plugin framework.

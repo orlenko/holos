@@ -3,7 +3,7 @@ import HolosCore
 @testable import HolosMeeting
 import Testing
 
-// The app's deep transcription queue and when it runs a pass (docs/meeting-design.md §4.16, "App"). Pure.
+// The app's deep transcription queue and when it runs a pass (docs/meeting/deep-transcription.md §4.16, "App"). Pure.
 
 private let date = Date(timeIntervalSince1970: 1_800_000_000)
 

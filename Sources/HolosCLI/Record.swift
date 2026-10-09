@@ -34,7 +34,7 @@ struct Record: AsyncParsableCommand {
                 """)
         @Option(help: "Session display name (default: Meeting).") var name: String?
         /// The app's start panel passes it when the user left the name it suggested: the Meetings list may then show a
-        /// generated title instead (docs/meeting-design.md §4.17).
+        /// generated title instead (docs/meeting/titles-summaries.md §4.17).
         @Flag(help: .hidden) var defaultName = false
         @Option(help: """
             Audio sources: mic (the built-in microphone unless --microphone default), system, or mic+system (the \

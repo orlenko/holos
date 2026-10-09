@@ -33,15 +33,15 @@ import HolosCore
 /// is a turn with `speakerID` `null` and `score` 0, and the `edits` counts are 0. Suggestions and the profile IDs of
 /// automatic matches are never written.
 ///
-/// A transcript merged from several languages (docs/meeting-design.md §4.14) adds two keys, left out otherwise:
+/// A transcript merged from several languages (docs/meeting/languages.md §4.14) adds two keys, left out otherwise:
 /// top-level `languages` (the languages it chose from, the preferred one first) and each turn's `languages` (those of
 /// its words, in the order they first appear).
 ///
-/// Turns are those the Review list shows (`SpeakerProjection.shownTurns`, docs/meeting-design.md §5.10): a hidden
+/// Turns are those the Review list shows (`SpeakerProjection.shownTurns`, docs/meeting/review-window.md §5.10): a hidden
 /// short interjection is not written, and one shown with a neighbour's speaker adds `"interjection": "attached"`
 /// (its `speakerID` is that speaker's), left out otherwise.
 ///
-/// A meeting summarized for this transcript (docs/meeting-design.md §4.17) adds a top-level `summary` object (`title`,
+/// A meeting summarized for this transcript (docs/meeting/titles-summaries.md §4.17) adds a top-level `summary` object (`title`,
 /// `summary`, `points`, `actions`, `model`), left out otherwise.
 enum JSONExport {
     static func render(_ content: ExportContent) throws -> Data {
@@ -122,7 +122,7 @@ private struct TranscriptFile: Encodable {
     }
 }
 
-/// The generated summary (docs/meeting-design.md §4.17), left out when there is none for this transcript.
+/// The generated summary (docs/meeting/titles-summaries.md §4.17), left out when there is none for this transcript.
 private struct SummaryEntry: Encodable {
     let title: String
     let summary: String

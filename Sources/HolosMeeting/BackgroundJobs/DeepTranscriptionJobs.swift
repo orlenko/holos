@@ -1,7 +1,7 @@
 import Foundation
 import HolosCore
 
-/// Final transcripts after meetings as a `BackgroundJobKind` (docs/meeting-design.md §4.16, "App"): the app's saved
+/// Final transcripts after meetings as a `BackgroundJobKind` (docs/meeting/deep-transcription.md §4.16, "App"): the app's saved
 /// queue of `voiceislocal session deep-transcribe` passes, what runs next (`DeepTranscriptionSchedule`), and what a
 /// pass's exit comes to (`DeepTranscriptionSchedule.passEnded`). Make Final Transcript Now passes are asked-for work;
 /// the others are automatic.

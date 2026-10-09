@@ -32,7 +32,7 @@ public struct InMemoryEchoAudio: EchoAudioSource {
     }
 }
 
-/// Acoustic detection of microphone echo in calls (docs/meeting-design.md §5.11): when the laptop speakers play a
+/// Acoustic detection of microphone echo in calls (docs/meeting/online-calls-echo.md §5.11): when the laptop speakers play a
 /// call, the microphone records it again a moment later. The analysis measures that delay, predicts the microphone
 /// from the system audio with a short filter per frequency, and calls each 16 ms microphone frame silence, echo
 /// (the prediction explains it), or local speech (much of it is left after the prediction is taken away), so speech

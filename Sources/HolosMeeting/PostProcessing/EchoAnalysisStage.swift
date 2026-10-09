@@ -7,7 +7,7 @@ import HolosSpeakers
 import HolosStorage
 import os
 
-/// Contents of `echo/mask.json` (docs/meeting-design.md §5.11): the acoustic echo analysis of a call's audio. It is
+/// Contents of `echo/mask.json` (docs/meeting/online-calls-echo.md §5.11): the acoustic echo analysis of a call's audio. It is
 /// kept in the meeting folder, not in `derived/` (deleted after every run), and is keyed to the audio it was computed
 /// from, so a relabel reuses it and an analysis of other audio, or of another analysis version, is never used.
 public struct EchoMaskRecord: Codable, Sendable, Equatable {
@@ -54,7 +54,7 @@ public struct EchoMaskRecord: Codable, Sendable, Equatable {
     }
 }
 
-/// Reads and writes `echo/` (docs/meeting-design.md §5.11).
+/// Reads and writes `echo/` (docs/meeting/online-calls-echo.md §5.11).
 public enum EchoMaskStore {
     private static let log = Logger(subsystem: "ca.orlenko.holos.app", category: "postprocess")
     static let folder = "echo"
@@ -232,7 +232,7 @@ public enum EchoMaskStore {
     }
 }
 
-/// The post-processor's echo stage (docs/meeting-design.md §5.11) and what `voiceislocal session echo-analyze` shares
+/// The post-processor's echo stage (docs/meeting/online-calls-echo.md §5.11) and what `voiceislocal session echo-analyze` shares
 /// with it.
 enum EchoAnalysisStage {
     private static let log = Logger(subsystem: "ca.orlenko.holos.app", category: "postprocess")

@@ -3,7 +3,7 @@ import HolosCore
 import HolosSpeakers
 import HolosStorage
 
-/// What `voiceislocal session languages` does (docs/meeting-design.md §4.14), as a library call: the CLI parses its
+/// What `voiceislocal session languages` does (docs/meeting/languages.md §4.14), as a library call: the CLI parses its
 /// arguments and prints the outcome. It runs the post-processor with the languages named, so the transcript is merged
 /// from one transcription in each, then speakers are labelled again on it and the exports rewritten, as after a
 /// recording (without speaker models the exports are speaker-less, as there). When the transcript stays as it was

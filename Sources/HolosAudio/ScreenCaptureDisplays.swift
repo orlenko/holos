@@ -2,7 +2,7 @@ import CoreGraphics
 import Foundation
 import HolosStorage
 
-/// A connected display as the capture sees it when it starts (docs/meeting-design.md §4.15).
+/// A connected display as the capture sees it when it starts (docs/meeting/screen-context.md §4.15).
 public struct ScreenDisplayCandidate: Sendable, Equatable {
     public var id: CGDirectDisplayID
     /// Where it sits in the arrangement, in global points (the main display's origin is 0, 0).
@@ -15,7 +15,7 @@ public struct ScreenDisplayCandidate: Sendable, Equatable {
     }
 }
 
-/// The numbers of the displays a capture starts with (docs/meeting-design.md §4.15). Pure. A display the meeting's
+/// The numbers of the displays a capture starts with (docs/meeting/screen-context.md §4.15). Pure. A display the meeting's
 /// saved keyframes already name keeps its number (a recorder restart in a new epoch); the others are numbered after
 /// every number used so far, by arrangement: left to right, then top to bottom. A display past
 /// `ScreenContextStore.maximumDisplays` is not captured.
@@ -36,7 +36,7 @@ enum ScreenDisplayNumbering {
     }
 }
 
-/// The storage caps every display of a meeting shares (docs/meeting-design.md §4.15): 1000 keyframes and 256 MiB of
+/// The storage caps every display of a meeting shares (docs/meeting/screen-context.md §4.15): 1000 keyframes and 256 MiB of
 /// JPEGs in all. Pure, so the order in which displays stop is tested without a screen.
 ///
 /// Each display beyond the first holds back a tenth of either cap (at most three tenths) for the others. Once the

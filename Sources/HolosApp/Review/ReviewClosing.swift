@@ -10,7 +10,7 @@ protocol ClosingReview: AnyObject {
     func closeAndWait() async
 }
 
-/// Quitting with review windows open (docs/meeting-design.md §5.10, "Editing words").
+/// Quitting with review windows open (docs/meeting/review-window.md §5.10, "Editing words").
 enum ReviewQuit {
     /// Every review starts closing at once, so each queues the edit its open field holds before any slow close (a
     /// voice sync of another review) is waited for; then they are awaited together, at most `limit`. True when all

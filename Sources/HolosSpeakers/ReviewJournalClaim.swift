@@ -1,7 +1,7 @@
 import HolosCore
 
 /// Which lines a reread of the speaker journal adds are the review window's own (`ReviewSession.adopt`,
-/// docs/meeting-design.md §5.10). The new lines (those whose IDs `known` lacks) are grouped by batch, in the order
+/// docs/meeting/review-window.md §5.10). The new lines (those whose IDs `known` lacks) are grouped by batch, in the order
 /// their first lines appear. Each matcher, in order, claims the newest group not yet claimed whose every line has one
 /// of `sources` and which the matcher accepts. Lines no matcher claimed are changes made elsewhere.
 public enum ReviewJournalClaim {

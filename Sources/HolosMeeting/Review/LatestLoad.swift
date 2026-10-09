@@ -1,7 +1,7 @@
 import Foundation
 
 /// One replaceable background load whose result only counts while it is the newest (the review window's playback
-/// audio, docs/meeting-design.md §5.10).
+/// audio, docs/meeting/review-window.md §5.10).
 ///
 /// `start` cancels the load before it; `isLoading` is true from `start` until the newest load delivers its result,
 /// failed or not, or `cancel` is called, so a failed load can be started again. A load that was replaced or cancelled

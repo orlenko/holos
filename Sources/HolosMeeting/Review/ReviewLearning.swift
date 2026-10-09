@@ -3,7 +3,7 @@ import HolosCore
 import HolosSpeakers
 import HolosStorage
 
-/// What a meeting's word edits teach (docs/meeting-design.md §5.10, "Editing words"), worked out when a review window
+/// What a meeting's word edits teach (docs/meeting/review-window.md §5.10, "Editing words"), worked out when a review window
 /// closes from every word edited in the meeting's transcript as it is then: nothing is learned while editing, so
 /// nothing has to be taken back, and an edit undone or reverted is not in the transcript. What the meeting taught is
 /// kept in corrections.json with the rules (`CorrectionList.reviewTaught`, saved with them), so a close teaches only

@@ -103,7 +103,7 @@ public enum MeetingEventKind {
     /// at, requestID, label (optional)
     public static let marker = "marker"
     /// nameSource: the user renamed the meeting (`user`), or chose its generated title again (`default`); the name
-    /// itself is in the manifest (docs/meeting-design.md §4.17)
+    /// itself is in the manifest (docs/meeting/titles-summaries.md §4.17)
     public static let renamed = "renamed"
     /// at, phaseBeforeSleep (recording | paused | waiting)
     public static let systemWillSleep = "systemWillSleep"
@@ -142,12 +142,12 @@ public enum MeetingEventKind {
     public static let wordsFixed = "wordsFixed"
     /// transcriptID, base, applied, unmatched: live text hints reconciled with the finished transcript.
     public static let liveHintsApplied = "liveHintsApplied"
-    /// transcriptID, base, segment, and `undo` ("1") for an undo: words edited in Review (docs/meeting-design.md §5.10,
+    /// transcriptID, base, segment, and `undo` ("1") for an undo: words edited in Review (docs/meeting/review-window.md §5.10,
     /// "Editing words"), journaled before the edited revision is saved; `base` is the revision it was edited from.
     public static let transcriptEdited = "transcriptEdited"
     /// transcriptID, base, engine, language, tracks, seconds, segments, words, droppedSilent, droppedRepeats,
     /// promptTerms: journaled before a transcript made from the saved audio by the deep transcription pass is saved as
-    /// current; `base` is the recorded transcript it replaced, which is kept (docs/meeting-design.md §4.16)
+    /// current; `base` is the recorded transcript it replaced, which is kept (docs/meeting/deep-transcription.md §4.16)
     public static let deepTranscribed = "deepTranscribed"
 }
 
@@ -165,7 +165,7 @@ public enum MeetingOrigin: String, Codable, Sendable {
     case imported
 }
 
-/// Where a meeting's name (`SessionManifest.name`) came from (docs/meeting-design.md §4.17): `user` named it (typed a
+/// Where a meeting's name (`SessionManifest.name`) came from (docs/meeting/titles-summaries.md §4.17): `user` named it (typed a
 /// name in the start panel, `--name`, or renamed it), `default` is the name Voice is Local made up ("Meeting 2026-10-03 14:00", an
 /// imported file's name). A generated title never replaces a `user` name; any value a newer Voice is Local writes is
 /// treated as `user`, so it is never overwritten either.
@@ -183,7 +183,7 @@ public struct MeetingNameSource: OpenStringCode {
 }
 
 /// How a meeting was set up. Written to `meeting.json` when a recording or import starts; a rename changes its
-/// `nameSource` (docs/meeting-design.md §4.17).
+/// `nameSource` (docs/meeting/titles-summaries.md §4.17).
 public struct MeetingInfo: Codable, Sendable, Equatable {
     public var schemaVersion: Int
     public var sessionID: String
@@ -207,7 +207,7 @@ public struct MeetingInfo: Codable, Sendable, Equatable {
     /// `MeetingNaming.source` infers from the name.
     public var nameSource: MeetingNameSource?
     /// The meeting's name, written by a rename together with `nameSource` in one write (the rename's commit point,
-    /// docs/meeting-design.md §4.17); the manifest's name is a copy updated after it. Nil until a rename: the
+    /// docs/meeting/titles-summaries.md §4.17); the manifest's name is a copy updated after it. Nil until a rename: the
     /// manifest's name is the meeting's.
     public var name: String?
 
@@ -324,11 +324,11 @@ public struct PostProcessingStage: OpenStringCode {
     /// new revision (docs/design.md "Meeting word fixes").
     public static let wordFixes = PostProcessingStage("wordFixes")
     /// The saved audio transcribed again with a local Whisper model after the meeting, which becomes a new current
-    /// revision before live corrections and word fixes (docs/meeting-design.md §4.16).
+    /// revision before live corrections and word fixes (docs/meeting/deep-transcription.md §4.16).
     public static let deepTranscription = PostProcessingStage("deepTranscription")
     public static let render = PostProcessingStage("render")
     /// A call's microphone checked for acoustic echo of the system audio; the mask is kept in `echo/`
-    /// (docs/meeting-design.md §5.11).
+    /// (docs/meeting/online-calls-echo.md §5.11).
     public static let echo = PostProcessingStage("echo")
     public static let diarize = PostProcessingStage("diarize")
     public static let align = PostProcessingStage("align")

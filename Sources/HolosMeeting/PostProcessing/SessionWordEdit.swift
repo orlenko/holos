@@ -3,7 +3,7 @@ import HolosCore
 import HolosSpeakers
 import HolosStorage
 
-/// Publishes a word edit made in Review (docs/meeting-design.md §5.10, "Editing words"), and its undo: new transcript
+/// Publishes a word edit made in Review (docs/meeting/review-window.md §5.10, "Editing words"), and its undo: new transcript
 /// revisions (`TranscriptWordEdit`) and an immutable speaker run with the current effective edits replayed, under the
 /// same lease and locks as `SessionWordFixRevert`. It never diarizes audio.
 enum SessionWordEdit {

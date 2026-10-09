@@ -424,7 +424,7 @@ public actor SessionArchive {
     }
 
     /// Saves an immutable transcript revision without making it current: one transcription of the session in another
-    /// language, kept so the merged transcript can be made from it again (docs/meeting-design.md §4.14). An archive
+    /// language, kept so the merged transcript can be made from it again (docs/meeting/languages.md §4.14). An archive
     /// saved before `transcripts/current.json` existed first gets the pointer, naming the revision that is current
     /// now, so the new revision never becomes current by being the newest. Refuses an existing revision, and an
     /// archive with no current transcript (the new revision would be the only one, and so current).
@@ -510,7 +510,7 @@ public actor SessionArchive {
         manifest = updated
     }
 
-    /// Replaces the meeting's name in the manifest, keeping its status (a rename, docs/meeting-design.md §4.17;
+    /// Replaces the meeting's name in the manifest, keeping its status (a rename, docs/meeting/titles-summaries.md §4.17;
     /// maintenance only: a finished archive opened with `openForMaintenance`). The name must not be blank.
     public func setName(_ name: String) throws {
         try ensureOpen()

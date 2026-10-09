@@ -6,7 +6,7 @@ import HolosStorage
 import HolosTestSupport
 import Testing
 
-// Online-call refinements (docs/meeting-design.md §5.11, PR11): the echo filter in post-processing. (The echoRisk
+// Online-call refinements (docs/meeting/online-calls-echo.md §5.11, PR11): the echo filter in post-processing. (The echoRisk
 // warning is gone: meetings record the microphone and the computer's audio without warning about it.)
 
 // MARK: - Helpers

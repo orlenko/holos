@@ -1,7 +1,7 @@
 import Foundation
 import HolosCore
 
-/// What the acoustic echo analysis (`EchoAnalysis`, docs/meeting-design.md §5.11) found in each 16 ms frame of a
+/// What the acoustic echo analysis (`EchoAnalysis`, docs/meeting/online-calls-echo.md §5.11) found in each 16 ms frame of a
 /// call's microphone track: silence, echo of the system audio, or local speech (the user, or someone in the room).
 /// Frame k is the 1,024-sample window starting at session sample 256·k (16 kHz), so its centre is at
 /// `firstCentreSeconds + k · hopSeconds`.

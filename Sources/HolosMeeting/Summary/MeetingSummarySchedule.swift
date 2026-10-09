@@ -4,7 +4,7 @@ import HolosCore
 import HolosStorage
 import Synchronization
 
-/// When the app makes a meeting's summary (docs/meeting-design.md §4.17): one meeting at a time, in the background,
+/// When the app makes a meeting's summary (docs/meeting/titles-summaries.md §4.17): one meeting at a time, in the background,
 /// with `voiceislocal session summarize`. A finished meeting whose summary.json is missing or of an earlier transcript
 /// is summarized once per transcript (a run that failed is not repeated until the transcript changes or the app starts
 /// again); one the user asked for comes first. Nothing starts while a meeting records or saves, while a final

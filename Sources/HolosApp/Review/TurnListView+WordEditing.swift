@@ -3,7 +3,7 @@ import HolosCore
 import HolosMeeting
 import HolosSpeakers
 
-/// The words being edited in a row (docs/meeting-design.md §5.10, "Editing words").
+/// The words being edited in a row (docs/meeting/review-window.md §5.10, "Editing words").
 struct WordEditTarget: Equatable {
     /// The row's paragraph.
     var paragraphID: String

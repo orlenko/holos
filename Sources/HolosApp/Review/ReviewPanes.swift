@@ -1,7 +1,7 @@
 import AppKit
 
 /// The review window's two panes side by side: the speakers on the left, the turn list on the right
-/// (docs/meeting-design.md §5.10). The speakers pane can be hidden (View ▸ Hide Speakers, ⌥⌘S, the toolbar's
+/// (docs/meeting/review-window.md §5.10). The speakers pane can be hidden (View ▸ Hide Speakers, ⌥⌘S, the toolbar's
 /// Speakers button) once its work is done: it collapses, animated, and the turn list takes its width. Dragging the
 /// divider to the left edge hides it too.
 @MainActor

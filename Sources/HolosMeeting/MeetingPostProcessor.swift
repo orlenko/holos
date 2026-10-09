@@ -27,7 +27,7 @@ public struct PostProcessingOptions: Sendable, Equatable {
     /// The stop reason when called right after a recording; `diskLow` skips rendering.
     public var stopReason: StopReason?
     /// The meeting's languages for this run, the preferred one first (`voiceislocal session languages`): the
-    /// transcript is merged from one transcription in each (docs/meeting-design.md §4.14). Nil: meeting.json's, unless
+    /// transcript is merged from one transcription in each (docs/meeting/languages.md §4.14). Nil: meeting.json's, unless
     /// the current transcript was already merged for languages asked for this way. `force` with these also lets it
     /// replace a transcript whose speaker labels were edited (`force` alone never does).
     public var languages: [String]?
@@ -43,7 +43,7 @@ public struct PostProcessingOptions: Sendable, Equatable {
     /// fix, `force` with it lets it replace a transcript whose speaker labels were edited, and when it leaves the
     /// transcript as it was the speaker labels stay as they are. `keepTranscript` skips the stage.
     public var fixWords: Bool
-    /// Run the deep transcription pass (`voiceislocal session deep-transcribe`, docs/meeting-design.md §4.16): the saved
+    /// Run the deep transcription pass (`voiceislocal session deep-transcribe`, docs/meeting/deep-transcription.md §4.16): the saved
     /// audio is transcribed again with the local Whisper model and the result becomes the current transcript before
     /// live corrections, word fixes, and speakers. `force` with it transcribes again a transcript the model already
     /// made and replaces one whose speaker labels were edited. `keepTranscript` skips the stage.
@@ -67,7 +67,7 @@ public struct PostProcessingOptions: Sendable, Equatable {
 }
 
 /// Where a pass gets a voice sample extractor for a session, to bring the voice samples people have from it in step
-/// with what the labels show (`VoiceProfileService.refreshSamples`, docs/meeting-design.md §5.11). Every entry point
+/// with what the labels show (`VoiceProfileService.refreshSamples`, docs/meeting/online-calls-echo.md §5.11). Every entry point
 /// that post-processes names one (no default), so a pass that leaves samples alone says so: `.none`.
 public struct VoiceSampleSource: Sendable {
     /// Nil: the pass leaves samples to the next one. A function returning nil: no extractor can be made (speaker
@@ -266,7 +266,7 @@ public struct MeetingPostProcessor: Sendable {
 
         // A word edit made in Review whose speaker head was never published (the app quit in between) is finished
         // first: the old head is the only copy of the speaker edits, so no stage below may replace the transcript or
-        // relabel over it (docs/meeting-design.md §5.10, "Editing words").
+        // relabel over it (docs/meeting/review-window.md §5.10, "Editing words").
         if let current {
             do {
                 _ = try await SessionWordEdit.repairPendingHead(session: session, transcript: current, lease: lease)
@@ -720,7 +720,7 @@ public struct MeetingPostProcessor: Sendable {
     }
 
     /// Brings the voice samples people have from this meeting in step with what the labels show
-    /// (`VoiceProfileService.refreshSamples`, as after an edit; docs/meeting-design.md §5.11), with no lock held.
+    /// (`VoiceProfileService.refreshSamples`, as after an edit; docs/meeting/online-calls-echo.md §5.11), with no lock held.
     /// Freshness is worked out from the files (each sample's input digest), so this runs on every pass and a pass
     /// whose sync failed is simply retried by the next; nothing records it as done. Skipped without people or a voice
     /// sample source, and when nobody has a sample from this meeting. Returns why it failed (also logged), nil

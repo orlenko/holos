@@ -198,7 +198,7 @@ timeline and a larger local-model benchmark are follow-ups.
   60 % echo is not listed and its remaining words become unknown speaker. In-person
   meetings are unchanged. The filter runs only with speaker labels, so a call exported
   without the speaker models keeps the echo, and misheard echo shorter than 3 matching
-  words stays. Acoustic echo (docs/meeting-design.md §5.11): post-processing also compares
+  words stays. Acoustic echo (docs/meeting/online-calls-echo.md §5.11): post-processing also compares
   a call's microphone with the system audio (stage `echo`): it measures the echo delay (about
   46 ms on laptop speakers), predicts the microphone from the call audio, and marks each 16 ms
   microphone frame as silence, echo, or local speech. The result is saved in the meeting's
@@ -447,7 +447,7 @@ timeline and a larger local-model benchmark are follow-ups.
   and revert menu have not been seen on screen. `eval apply --add-vocabulary` proposes and adds
   often-heard-as words where reviewed passages replaced real words by a term. `eval local`
   applies the stage to its candidate by default (`--no-word-fixes` opts out).
-- Deep transcription after meetings (docs/meeting-design.md §4.16): `voiceislocal
+- Deep transcription after meetings (docs/meeting/deep-transcription.md §4.16): `voiceislocal
   setup --whisper` downloads Whisper large-v3 turbo for WhisperKit (about 1.6 GB, resumable,
   loaded once before it counts as installed; `doctor` reports it), and `voiceislocal session
   deep-transcribe <session> [--force]` transcribes a finished meeting's saved audio again on
@@ -474,7 +474,7 @@ timeline and a larger local-model benchmark are follow-ups.
   reference (system track, `eval local --backend whisper`): 14.6 % WER (339 deletions) and 63 of
   82 word-list terms, against Apple's 20.9 % and 31 of 82, after WhisperKit's first-token check,
   which emptied whole chunks (725 deletions), was turned off.
-- Meeting titles and summaries (docs/meeting-design.md §4.17): `voiceislocal session summarize
+- Meeting titles and summaries (docs/meeting/titles-summaries.md §4.17): `voiceislocal session summarize
   <session> [--force] [--json]` has Apple's on-device model write a title (at most 8 words), a
   one- or two-sentence summary, key points and action items from the current transcript with
   speaker names, by map and reduce over parts that fit the model's context; they go to
@@ -491,7 +491,7 @@ timeline and a larger local-model benchmark are follow-ups.
   Week and month, with the title, start, length, people, the summary, and badges instead of
   columns; a search field filters by title, summary and people; the row's menu has every action.
   Rendered offscreen with invented meetings in light and dark; not yet seen in the running app.
-- Renaming a meeting (docs/meeting-design.md §4.17): Rename… in the row's menu, ⌘R, or a
+- Renaming a meeting (docs/meeting/titles-summaries.md §4.17): Rename… in the row's menu, ⌘R, or a
   double-click on the title edits the name in the row (Return saves, Escape cancels; empty, or
   Use Generated Title, gives back the generated title); `voiceislocal session rename <session>
   <name> | --generated [--json]` does the same. The name and its `nameSource` (`user`, or
@@ -725,7 +725,7 @@ recording, in a temporary sessions folder: 37.4 % word error rate against Otter,
 measured 37.5 %), and 19.7 % on turns that mix the two languages (French alone: 35.1 %). The
 stage took about 4 minutes. On an English-only 20-minute control, recorded as French with
 English detected, it kept no passage in French and matched English alone (10.9 %). Otter is
-another recognizer, not ground truth; see docs/meeting-design.md §4.14.
+another recognizer, not ground truth; see docs/meeting/languages.md §4.14.
 
 Speaker labels were run end to end (`session import`, `session diarize`,
 `session score`) on the three private Otter recordings (7, 20, and 89 minutes).

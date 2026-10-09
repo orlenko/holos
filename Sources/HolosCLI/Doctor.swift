@@ -149,7 +149,7 @@ enum SpeakerModelSetup {
     }
 }
 
-/// `voiceislocal setup --whisper` (docs/meeting-design.md §4.16).
+/// `voiceislocal setup --whisper` (docs/meeting/deep-transcription.md §4.16).
 enum WhisperModelSetup {
     static func run(force: Bool) async throws {
         let progress = ProgressPrinter(label: "Deep transcription model")

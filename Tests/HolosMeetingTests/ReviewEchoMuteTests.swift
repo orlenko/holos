@@ -5,7 +5,7 @@ import HolosCore
 import HolosSpeakers
 import Testing
 
-// Echo-free review playback (docs/meeting-design.md §5.10): the microphone's volume from the echo mask's local-speech
+// Echo-free review playback (docs/meeting/review-window.md §5.10): the microphone's volume from the echo mask's local-speech
 // intervals. Pure, synthetic intervals; nothing is played. The composition and the mask on disk are in
 // AudioCompositionTests.
 

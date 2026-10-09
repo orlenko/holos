@@ -11,7 +11,7 @@ import ScreenCaptureKit
 import Synchronization
 import UniformTypeIdentifiers
 
-/// What a meeting's optional screen capture records (docs/meeting-design.md §4.15). `record start --screen` takes the
+/// What a meeting's optional screen capture records (docs/meeting/screen-context.md §4.15). `record start --screen` takes the
 /// raw value, or `off`.
 public enum ScreenCaptureTarget: String, Codable, Sendable, Equatable, CaseIterable {
     /// Every display, each in its own stream, every window on them except Voice is Local's own; a display connected
@@ -118,7 +118,7 @@ public enum ScreenCapturePlan {
 /// meeting is not captured until the next meeting, or until the recorder starts a new capture epoch (resuming after
 /// a pause or sleep, or after an audio device change), which asks again; hot-plug is a possible follow-up.
 ///
-/// The invariants every path keeps (docs/meeting-design.md §4.15):
+/// The invariants every path keeps (docs/meeting/screen-context.md §4.15):
 /// 1. The set of streams is decided once, at the start; afterwards streams only end (an error, a cap, `stop()`).
 /// 2. Every asynchronous step of a stream (its start beginning and returning, an error callback, a sample, its stop)
 ///    is checked against the stream's identity (object or token) and phase: a stream that has ended is never

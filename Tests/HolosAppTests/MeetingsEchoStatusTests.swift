@@ -5,7 +5,7 @@ import HolosMeeting
 import Testing
 @testable import HolosApp
 
-/// What the Meetings list shows of the echo catch-up (docs/meeting-design.md §5.11, "Catching up in the app"), in the
+/// What the Meetings list shows of the echo catch-up (docs/meeting/online-calls-echo.md §5.11, "Catching up in the app"), in the
 /// real main window laid out offscreen (never shown): a queued meeting's badge, the running one's use of the meeting
 /// in its place, and a run that failed in this launch as a badge and the selected meeting's status line. No process is
 /// started; the pane is fed what the app delegate would give it.

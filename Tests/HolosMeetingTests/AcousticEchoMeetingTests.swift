@@ -10,7 +10,7 @@ import Synchronization
 import Testing
 
 // The acoustic echo analysis in post-processing, Recover and `voiceislocal session echo-analyze`, and the labels'
-// view that hides the echo (docs/meeting-design.md §5.11), on synthetic audio only. Stored runs never hold it.
+// view that hides the echo (docs/meeting/online-calls-echo.md §5.11), on synthetic audio only. Stored runs never hold it.
 
 // MARK: - Synthetic call audio
 

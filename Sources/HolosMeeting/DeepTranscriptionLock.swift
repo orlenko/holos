@@ -2,7 +2,7 @@ import Darwin
 import Foundation
 import HolosCore
 
-/// The one deep transcription pass running on this Mac (docs/meeting-design.md §4.16, "App"): `voiceislocal session
+/// The one deep transcription pass running on this Mac (docs/meeting/deep-transcription.md §4.16, "App"): `voiceislocal session
 /// deep-transcribe` holds an exclusive `flock` on `<supportRoot>/deep-transcription.lock` for its whole life and
 /// writes who it is into the file once it holds it. The kernel lets go of the lock when the process ends, however it
 /// ends, so while the lock is held a pass is running: the app starts none of its own until the lock is free, and

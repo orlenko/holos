@@ -9,7 +9,7 @@ public enum ShortInterjection: Sendable, Equatable {
     case hidden
 }
 
-/// Short turns of the unknown speaker, as the Review list and the exports show them (docs/meeting-design.md §5.10,
+/// Short turns of the unknown speaker, as the Review list and the exports show them (docs/meeting/review-window.md §5.10,
 /// "Short interjections"). Presentation only: nothing is stored, the run and the edit journal keep these turns as they
 /// are, and voice learning, voice matching and every edit read the projection's own `turns`. Pure and deterministic.
 ///

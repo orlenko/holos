@@ -55,7 +55,7 @@ public struct ProjectedSpeaker: Sendable, Equatable, Identifiable {
 
 /// A turn after the edit journal is applied. Text and timing stay in the transcript; spans reference words.
 ///
-/// With an acoustic echo mask (docs/meeting-design.md §5.11), a turn keeps its ID and speaker and simply leaves out
+/// With an acoustic echo mask (docs/meeting/online-calls-echo.md §5.11), a turn keeps its ID and speaker and simply leaves out
 /// the microphone words the mask calls echo: its spans skip them, and its start, end and timing are its remaining
 /// words'. A turn with no word left is not shown. Edits name turns as always: a split goes before one of the words
 /// shown (a `WordRef` names the same word in the stored turn).
@@ -156,7 +156,7 @@ public struct SpeakerProjection: Sendable, Equatable {
     /// rejected that profile nor been linked to another. Speaker IDs in list order; groups by first speaker.
     public let mergeSuggestions: [MergeSuggestion]
     /// Short turns of the unknown speaker the Review list and the exports show with a neighbour's speaker or leave out
-    /// (`ShortInterjections`, docs/meeting-design.md §5.10), by turn ID. Presentation only: `turns` keeps them as they
+    /// (`ShortInterjections`, docs/meeting/review-window.md §5.10), by turn ID. Presentation only: `turns` keeps them as they
     /// are, and edits, voice learning and voice matching read `turns`.
     public let interjections: [String: ShortInterjection]
     /// `turns` as the Review list and every export show them: attached interjections with their neighbour's speaker,
@@ -210,7 +210,7 @@ public struct SpeakerProjection: Sendable, Equatable {
     ///    start with "user:", …). Stale edits change nothing.
     /// 5. Derive names and provenance: explicit name → `userRenamed`; linked profile → `userConfirmed`; automatic
     ///    likely match not rejected → `recognized`; channel → `channelAssumption`; else `diarizer`.
-    /// 6. With `acousticEcho` (a call's mask, docs/meeting-design.md §5.11): the microphone words it flags
+    /// 6. With `acousticEcho` (a call's mask, docs/meeting/online-calls-echo.md §5.11): the microphone words it flags
     ///    (`EchoFilter.acousticEchoSpans`, not judging words the run already dropped) are in no turn. A turn that loses
     ///    some keeps its ID and speaker without them (`ProjectedTurn`); one that loses all is not shown. A diarized
     ///    microphone cluster
@@ -220,7 +220,7 @@ public struct SpeakerProjection: Sendable, Equatable {
     ///    turns in steps 1–4, so the stored journal keeps naming stored turns whatever mask is shown.
     ///    A turn with no words at all (every one deleted in Review with its segment: `DiarizationRun.removedSegments`)
     ///    is not shown either, whether or not there is a mask; edits still name it.
-    /// 7. Short interjections (`ShortInterjections`, docs/meeting-design.md §5.10) are decided on the turns of step 6:
+    /// 7. Short interjections (`ShortInterjections`, docs/meeting/review-window.md §5.10) are decided on the turns of step 6:
     ///    `shownTurns` shows them with a neighbour's speaker or leaves them out. `turns` and `speakers` are unchanged.
     ///
     /// Listed speakers: every speaker with at least one turn shown, plus speakers created by `newSpeaker`. Speakers

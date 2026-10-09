@@ -1,7 +1,7 @@
 import Foundation
 
 /// Settings › Meetings › "Capture the screen during meetings (slides, shared screens) to improve transcripts"
-/// (docs/meeting-design.md §4.15): the start panel's "Capture screen" begins checked when it is on.
+/// (docs/meeting/screen-context.md §4.15): the start panel's "Capture screen" begins checked when it is on.
 public enum MeetingScreenPreference {
     public static let key = "meetingScreenCapture"
     /// Before the whole display was captured, this key offered a choice of window by default.

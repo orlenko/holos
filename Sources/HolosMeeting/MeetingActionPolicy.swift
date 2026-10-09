@@ -119,7 +119,7 @@ public enum MeetingActionPolicy {
     /// `voiceislocal session diarize` labels the meeting: its speaker state is none, notLabelled, failed, or
     /// interrupted, or (for labelled speakers too) a language of a meeting in several was missed and can be detected
     /// now (`LanguageWork.ready`: `session diarize` detects it first, also without speaker models,
-    /// docs/meeting-design.md §4.14); it has a readable transcript and its audio, and it is not an interrupted
+    /// docs/meeting/languages.md §4.14); it has a readable transcript and its audio, and it is not an interrupted
     /// recording (Recover rebuilds and labels that). Speaker files that cannot be read (`unreadable`) are left to
     /// Recover.
     public static func labels(_ summary: SessionSummary) -> Bool {

@@ -6,7 +6,7 @@ import HolosSpeakers
 import Testing
 @testable import HolosApp
 
-/// Joining a row to the row before it (docs/meeting-design.md §5.10), the inverse of Return's split, laid out
+/// Joining a row to the row before it (docs/meeting/review-window.md §5.10), the inverse of Return's split, laid out
 /// offscreen with `TurnListViewTests`' synthetic turns: row 0 is T1 "alpha beta" and T2 "gamma delta" (S1), row 1 T3
 /// "epsilon zeta" (S2).
 @MainActor

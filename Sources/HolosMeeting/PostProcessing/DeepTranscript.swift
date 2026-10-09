@@ -3,7 +3,7 @@ import HolosAudio
 import HolosCore
 import HolosSpeakers
 
-/// The vocabulary prompt of the deep transcription pass (docs/meeting-design.md §4.16): the meeting's name, then the
+/// The vocabulary prompt of the deep transcription pass (docs/meeting/deep-transcription.md §4.16): the meeting's name, then the
 /// word list's terms and the names of people the app knows, the ones this meeting's vocabulary.json used first, as
 /// many as fit in Whisper's prompt budget. Pure; the token count comes from the model's tokenizer.
 public enum DeepTranscriptionPrompt {
@@ -304,7 +304,7 @@ public enum DeepAudio {
     }
 }
 
-/// The guards of the deep transcription pass against Whisper's known failures (docs/meeting-design.md §4.16). Pure.
+/// The guards of the deep transcription pass against Whisper's known failures (docs/meeting/deep-transcription.md §4.16). Pure.
 public enum DeepTranscriptGuards {
     /// A segment whose audio is quieter than this (RMS, dBFS) is near silence. Speech on both tracks measured well
     /// above it, while capture gaps are digital silence and quiet rooms sit below it (§4.16 has the measurements).

@@ -17,7 +17,7 @@ public enum SessionImportCommand {
         public var transcribe: Bool
         /// Label speakers after the import; ignored without `transcribe`.
         public var postprocess: Bool
-        /// The meeting's languages, `locale` first, when there are several (docs/meeting-design.md §4.14): recorded in
+        /// The meeting's languages, `locale` first, when there are several (docs/meeting/languages.md §4.14): recorded in
         /// meeting.json, and post-processing merges the transcript from one transcription in each. Empty: `locale`
         /// only.
         public var languages: [String]

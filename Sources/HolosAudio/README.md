@@ -15,7 +15,7 @@ staying awake while recording.
   long lead-in) shrink to 5 s by default, so render time is not session time. `RenderedTrack.timeMap` lists the
   spans, and consumers map render times back with `RenderTimeMap.sessionTime` or `RenderTimeMap.map`.
 - `MeetingScreenCapture` (`@MainActor`): optional display capture for screen context
-  (`docs/meeting-design.md §4.15`), with the pure `ScreenCapturePlan`, `ScreenFrameDifference`,
+  (`docs/meeting/screen-context.md §4.15`), with the pure `ScreenCapturePlan`, `ScreenFrameDifference`,
   `ScreenStoragePolicy`.
 - Power: `SystemPowerMonitor` (`SystemPowerEvents`), `PowerAssertion`.
 

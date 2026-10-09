@@ -8,7 +8,7 @@ import HolosStorage
 import HolosTestSupport
 import Testing
 
-// Opt-in measurement behind `DeepTranscriptGuards.silenceThresholdDB` (docs/meeting-design.md §4.16):
+// Opt-in measurement behind `DeepTranscriptGuards.silenceThresholdDB` (docs/meeting/deep-transcription.md §4.16):
 // HOLOS_DEEP_MEASURE_SESSION=<a copy of a .holos folder> prints, per track, the loudness of the audio under the
 // recorded transcript's words and of one-second windows with no word near them. Reads the session; renders into a
 // temporary folder; prints numbers only, never transcript text.

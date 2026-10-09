@@ -3,7 +3,7 @@ import HolosCore
 import HolosMeeting
 import HolosSpeakers
 
-/// The left pane of the review window (docs/meeting-design.md §5.10): one row per speaker with a name field (a combo
+/// The left pane of the review window (docs/meeting/review-window.md §5.10): one row per speaker with a name field (a combo
 /// box of known people, most recently used first), talk time, the start of the speaker's two longest turns, Play
 /// samples, "This is me", Merge into…, and the suggestion ("Maybe Maria" with Confirm / Not Maria) or automatic name
 /// ("Jim (auto)" with Not Jim). Speakers without turns are not listed (except ones made in the window).

@@ -1,7 +1,7 @@
 import Foundation
 import HolosCore
 
-/// Microphone echo of system audio in calls (docs/meeting-design.md §5.11, PR11). When the laptop speakers play a
+/// Microphone echo of system audio in calls (docs/meeting/online-calls-echo.md §5.11, PR11). When the laptop speakers play a
 /// call, the microphone hears the other people too, so speech recognition writes their words twice: on the system
 /// track and, a moment later, on the microphone track. The filter finds the microphone copies; `SpeakerRunBuilder`
 /// leaves them out of every turn and lists them in `DiarizationRun.droppedWords` with reason `echo`.
@@ -29,7 +29,7 @@ public enum EchoFilter {
     /// starting at most echoWindowSeconds after its system counterpart and at most `echoLeadToleranceSeconds`
     /// before it.
     ///
-    /// The window is one-sided (a deviation from the "±echoWindowSeconds" of docs/meeting-design.md §5.11): echo
+    /// The window is one-sided (a deviation from the "±echoWindowSeconds" of docs/meeting/online-calls-echo.md §5.11): echo
     /// reaches the microphone after the system audio plays. A microphone phrase clearly ahead of the same words in
     /// the system audio is the user speaking while the far end sends their voice back into the call, and it stays
     /// with the user.
@@ -162,7 +162,7 @@ public enum EchoFilter {
         return spans
     }
 
-    /// The words under a `reviewEdit` fix (edited in Review, docs/meeting-design.md §5.10): neither echo filter drops
+    /// The words under a `reviewEdit` fix (edited in Review, docs/meeting/review-window.md §5.10): neither echo filter drops
     /// or hides them.
     public static func reviewEditedWords(in transcript: Transcript) -> Set<WordRef> {
         var refs = Set<WordRef>()

@@ -6,7 +6,7 @@ import HolosStorage
 import HolosTestSupport
 import Testing
 
-// Meeting titles and summaries (docs/meeting-design.md §4.17): cutting the transcript into parts, the prompts, checking
+// Meeting titles and summaries (docs/meeting/titles-summaries.md §4.17): cutting the transcript into parts, the prompts, checking
 // the model's answer, the map-reduce run with a scripted model, summary.json and when it is made again, the name's
 // source, and `voiceislocal session summarize` on fixture sessions. No model is loaded; every sentence is invented.
 

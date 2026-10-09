@@ -70,7 +70,7 @@ public struct TranscriptWordFixKind: OpenStringCode {
     public static let reviewRevert = TranscriptWordFixKind("reviewRevert")
     /// A correction made against a finalized phrase while its meeting was still recording.
     public static let liveCorrection = TranscriptWordFixKind("liveCorrection")
-    /// Words the person typed in Review's edit mode (docs/meeting-design.md §5.10, "Editing words"). `heard` is what
+    /// Words the person typed in Review's edit mode (docs/meeting/review-window.md §5.10, "Editing words"). `heard` is what
     /// the recognizer wrote over the whole edited span; like a live correction, the edit is in the unfixed base too,
     /// so automatic word fixes never replace it.
     public static let reviewEdit = TranscriptWordFixKind("reviewEdit")
@@ -114,7 +114,7 @@ public struct TranscriptSegmentWords: Codable, Sendable, Equatable {
     }
 }
 
-/// What a segment held before every one of its words was deleted in Review (docs/meeting-design.md §5.10, "Editing
+/// What a segment held before every one of its words was deleted in Review (docs/meeting/review-window.md §5.10, "Editing
 /// words"): its text, timed words, and word fixes as they were, so an undo or a Restore brings back the recognizer's
 /// words with their times and provenance. The segment keeps its ID, times, track, and language, with no text, words,
 /// or fixes, so the transcript, the exports, and the speaker labels have nothing of it.
@@ -143,7 +143,7 @@ public struct TranscriptSegment: Codable, Sendable, Equatable, Identifiable {
     public var track: String?
     public var speakerID: String?
     /// The language this segment was transcribed in ("fr-CA"), in a transcript merged from several languages
-    /// (`Transcript.languages`, docs/meeting-design.md §4.14); nil in a transcript made in one language.
+    /// (`Transcript.languages`, docs/meeting/languages.md §4.14); nil in a transcript made in one language.
     public var language: String?
     /// Words changed by the automatic word-fix or live-correction stages; nil when none, so unchanged segments encode
     /// as before. The transcript's lineage says which stage made the revision.
@@ -179,7 +179,7 @@ public struct Transcript: Codable, Sendable, Equatable {
     public var locale: String
     public var backend: SpeechBackend
     public var segments: [TranscriptSegment]
-    /// For a transcript merged from one transcription per language (docs/meeting-design.md §4.14): the languages it
+    /// For a transcript merged from one transcription per language (docs/meeting/languages.md §4.14): the languages it
     /// chose from, the first one (`locale`) preferred on a tie; each segment names its own (`language`). Nil for a
     /// transcript made in `locale` alone.
     public var languages: [String]?
@@ -190,7 +190,7 @@ public struct Transcript: Codable, Sendable, Equatable {
     /// words and speaker edits can be mapped in the same stable word space.
     public var liveCorrectedFrom: String?
     /// What recognized the words when it was not Apple's speech recognition (`backend`): "whisper:<model>" for a
-    /// transcript made by the deep transcription pass after a meeting (docs/meeting-design.md §4.16), and every
+    /// transcript made by the deep transcription pass after a meeting (docs/meeting/deep-transcription.md §4.16), and every
     /// revision made from it (live corrections, word fixes). Nil otherwise, so other transcripts encode as before.
     public var engine: String?
 

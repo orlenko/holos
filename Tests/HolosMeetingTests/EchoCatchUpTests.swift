@@ -7,7 +7,7 @@ import HolosStorage
 import HolosTestSupport
 import Testing
 
-// The app's echo catch-up (docs/meeting-design.md §5.11, "Catching up in the app"): which meetings get
+// The app's echo catch-up (docs/meeting/online-calls-echo.md §5.11, "Catching up in the app"): which meetings get
 // `voiceislocal session echo-analyze`, in what order, when, and what a run's end comes to. Invented meetings and
 // short synthetic tracks in temporary folders; no process is started.
 

@@ -658,7 +658,7 @@ transcripts. It is gitignored; keep originals out of commits.
 - [Menu bar meeting recording checks](docs/meeting-validation.md) and
   [people and voice profile checks](docs/voice-profile-validation.md)
 - [Meeting recording plan](docs/meeting-recording-plan.md) and
-  [implementation design](docs/meeting-design.md) (in progress)
+  [implementation design](docs/meeting-design.md) (where each section is)
 - [Speaker labelling evaluation](docs/speaker-evaluation.md) and
   [third-party notices](THIRD_PARTY_NOTICES.md)
 

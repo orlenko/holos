@@ -1,7 +1,7 @@
 @testable import HolosMeeting
 import Testing
 
-// Which background job goes next among the ones the kinds would start (docs/meeting-design.md §4.17, §5.11). Pure.
+// Which background job goes next among the ones the kinds would start (docs/meeting/titles-summaries.md §4.17, docs/meeting/online-calls-echo.md §5.11). Pure.
 
 @Test func askedForWorkGoesFirstThenCatchUpThenAutomaticWork() {
     #expect(BackgroundJobOrder.next([.automatic, .catchUp, .askedFor], .init()) == 2)

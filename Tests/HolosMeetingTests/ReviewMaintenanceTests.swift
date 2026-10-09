@@ -3,7 +3,7 @@ import Foundation
 import Testing
 
 // What a review window does while maintenance works on its meeting, the transcript files still to rewrite, and the
-// waits behind them (docs/meeting-design.md §5.10, PR9).
+// waits behind them (docs/meeting/review-window.md §5.10, PR9).
 
 @Test func maintenanceClosesReviewsOnlyForDeletingTheMeeting() {
     let responses = Dictionary(uniqueKeysWithValues: ReviewMaintenance.Command.allCases.map {

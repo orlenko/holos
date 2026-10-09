@@ -1,6 +1,6 @@
 import AppKit
 
-/// The words of Settings › Meetings' screen row and the start panel's "Capture screen" (docs/meeting-design.md §4.15).
+/// The words of Settings › Meetings' screen row and the start panel's "Capture screen" (docs/meeting/screen-context.md §4.15).
 enum MeetingScreenText {
     static let settingTitle = "Capture the screen during meetings (slides, shared screens) to improve transcripts"
     static let settingCaption = "Everything stays on this Mac. Every connected display is saved "

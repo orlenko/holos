@@ -3,7 +3,7 @@ import HolosCore
 import HolosStorage
 import os
 
-/// Meeting titles and summaries as a `BackgroundJobKind` (docs/meeting-design.md §4.17): `voiceislocal session
+/// Meeting titles and summaries as a `BackgroundJobKind` (docs/meeting/titles-summaries.md §4.17): `voiceislocal session
 /// summarize`, one meeting at a time, as `MeetingSummarySchedule` picks it from a scan of the sessions folder. A
 /// Summarize Again is asked-for work; the others are automatic, after final transcripts and echo analyses that are
 /// ready at the same look. Its candidates come from a scan made off the main actor: a full look starts one when none

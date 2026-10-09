@@ -17,7 +17,7 @@ public struct ScreenTextLine: Codable, Sendable, Equatable {
     }
 }
 
-/// The display a keyframe came from, as the meeting knows it (docs/meeting-design.md §4.15). The same physical display
+/// The display a keyframe came from, as the meeting knows it (docs/meeting/screen-context.md §4.15). The same physical display
 /// keeps its number for the whole meeting, also in the recorder's next capture epoch (after a pause, say).
 public struct ScreenDisplay: Codable, Sendable, Equatable, Hashable {
     /// The `CGDirectDisplayID`: stable for one physical display while it stays connected, and usually across a

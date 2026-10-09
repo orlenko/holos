@@ -2,7 +2,7 @@ import Foundation
 import HolosCore
 import HolosStorage
 
-/// The app's catch-up of acoustic echo analyses (docs/meeting-design.md §5.11, "Catching up in the app"): every
+/// The app's catch-up of acoustic echo analyses (docs/meeting/online-calls-echo.md §5.11, "Catching up in the app"): every
 /// finished call whose analysis is needed (`EchoAnalysisStage.needed`: missing, or of other audio or an older analysis
 /// version) gets `voiceislocal session echo-analyze`, run by the app in the background one meeting at a time, newest
 /// first. Nothing records the work: the queue is worked out from the files at each launch (and after each meeting is

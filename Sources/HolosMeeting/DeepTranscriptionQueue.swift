@@ -1,7 +1,7 @@
 import Foundation
 import HolosCore
 
-/// The app's queue of deep transcription passes (docs/meeting-design.md §4.16, "App"): meetings waiting for
+/// The app's queue of deep transcription passes (docs/meeting/deep-transcription.md §4.16, "App"): meetings waiting for
 /// `voiceislocal session deep-transcribe`, kept across launches (UserDefaults), so a pass cut short by a quit or a
 /// crash runs again (from the start, with the flags it was queued with) at the next launch. No process identity is
 /// saved; keys an earlier version saved (`pid`, `pidStart`, `started`, `verifyOnly`) are ignored when it is read.
@@ -103,7 +103,7 @@ public struct DeepTranscriptionQueue: Codable, Sendable, Equatable {
     public func encoded() -> Data? { try? HolosJSON.encoder(pretty: false).encode(self) }
 }
 
-/// When the app runs the next deep transcription pass (docs/meeting-design.md §4.16, "App"). Pure.
+/// When the app runs the next deep transcription pass (docs/meeting/deep-transcription.md §4.16, "App"). Pure.
 public enum DeepTranscriptionSchedule {
     /// Where the Mac's power comes from.
     public enum Power: Sendable, Equatable {

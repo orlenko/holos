@@ -21,7 +21,7 @@ public struct DoctorReport: Codable, Sendable {
     public var sessionsDirectory: String
     /// "verified", "notInstalled", or "damaged" (`ModelInstallStatus.doctorValue`).
     public var speakerModels: String
-    /// "installed", "downloading", or "notInstalled" (docs/meeting-design.md §4.16).
+    /// "installed", "downloading", or "notInstalled" (docs/meeting/deep-transcription.md §4.16).
     public var deepTranscriptionModel: DeepModelStatus
     /// Each natural voice pack ("english", "french"): "installed", "downloading", or "notInstalled".
     public var naturalVoices: [String: DeepModelStatus]?

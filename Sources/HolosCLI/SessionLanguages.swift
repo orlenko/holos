@@ -5,7 +5,7 @@ import HolosMeeting
 import HolosStorage
 import Synchronization
 
-/// `--languages fr-CA,en-CA` for `record start` and `session import` (docs/meeting-design.md §4.14): the meeting's
+/// `--languages fr-CA,en-CA` for `record start` and `session import` (docs/meeting/languages.md §4.14): the meeting's
 /// languages, the one it is transcribed in live first. Instead of `--locale`.
 struct MeetingLanguageOptions: ParsableArguments {
     @Option(help: ArgumentHelp(
@@ -34,7 +34,7 @@ struct MeetingLanguageOptions: ParsableArguments {
 }
 
 extension Session {
-    /// `voiceislocal session languages` (docs/meeting-design.md §4.14).
+    /// `voiceislocal session languages` (docs/meeting/languages.md §4.14).
     struct Languages: AsyncParsableCommand {
         static let configuration = CommandConfiguration(
             abstract: "Detect the languages of a finished session, passage by passage, and label its speakers again.",
