@@ -42,11 +42,13 @@ The protocols that exist, and what implements them:
 
 ## Capture and recognition
 
-- `PCMFrame` owns its samples and timing. Capture callbacks copy borrowed buffers before returning and only enqueue
-  into bounded queues: no `await`, file I/O, resampling or model work in them.
+- `PCMFrame` owns its samples and timing. Audio capture callbacks (`AudioCapture`) copy borrowed buffers before
+  returning and only enqueue into bounded queues: no `await`, file I/O, resampling or model work in them (short
+  `Mutex` sections only).
 - Queues are bounded with explicit overflow handling: dictation's capture fails on overflow
   (`CaptureOverflow.fail`); a meeting drops, counts, and records the gap as a discontinuity (`.dropAndCount`,
-  `ChunkWriterPump`). Missing audio is never filled with fabricated samples.
+  `ChunkWriterPump`). Recorded chunks never fill missing audio with fabricated samples; renders made for
+  analysis do insert silence for gaps (`RenderedTrack.timeMap` maps their times back).
 - Recognition results are `TranscriptUpdate` values (a segment plus `isFinal`). `TranscriptReducer` replaces
   provisional segments over the same interval, never duplicates them, and refuses to replace finalized audio. Empty
   final results add no text.
@@ -62,12 +64,16 @@ The protocols that exist, and what implements them:
   decrease; a failed append is truncated back, and a damaged line is skipped and counted. Details and lock
   rules: `docs/meeting-design.md §1.6`, `docs/meeting-design.md §1.7`.
 - Encoding: session files and the HolosStorage stores (speaker data, profiles, dictation history, word list) use
-  `HolosJSON`. Exceptions today: `corrections.json` (`CorrectionList`, plain `JSONEncoder`), the reading pipeline
-  and library files (`ReadingManifest`, `library.json`, their own encoders), and some `UserDefaults` values
-  (review maintenance entries, the meeting-source notice; plain `JSONEncoder`).
-- Versions: top-level persisted JSON objects carry `schemaVersion`, except `events.jsonl` lines (`ArchiveEvent`),
-  `corrections.json`, and the `UserDefaults` values above. Growable code sets read across builds are
-  `OpenStringCode`s; `RecorderPhase` is an enum that decodes unknown values as `.unknown`.
+  `HolosJSON`. Exceptions today: `corrections.json` (`CorrectionList`, plain `JSONEncoder`); the reading
+  pipeline's files (`ReadingManifest`, the output reservation's `.holos-output-*.lock` and `.takeover` records) and
+  the reading library's `library.json`, which use their own encoders; and some `UserDefaults` values (review
+  maintenance entries, the meeting-source notice; plain `JSONEncoder`).
+- Versions: most top-level persisted JSON objects carry `schemaVersion`. Exceptions today: `events.jsonl` lines
+  (`ArchiveEvent`), `corrections.json`, the reading output reservation records (`ReadingOutputReservation.Record`),
+  the deep-transcription lock's holder record (`DeepTranscriptionLock.Holder`), and these `UserDefaults` values:
+  review maintenance entries, the meeting-source notice, the Summarize Again queue
+  (`MeetingSummarySchedule.Request`). Growable code sets read across builds are `OpenStringCode`s;
+  `RecorderPhase` is an enum that decodes unknown values as `.unknown`.
 - A version newer than the reader knows is handled per file (the rule is `docs/meeting-design.md §1.6`, rule 3):
   - Whole files are refused with `HolosError.unavailable` by the readers that need them: the transcript pointer
     and revisions, `meeting.json`, `status.json`, `postprocess.json`, the speaker head and runs, `summary.json`,
@@ -78,6 +84,9 @@ The protocols that exist, and what implements them:
     when reading and keeps them when compacting; dictation history keeps them unshown and loads the rest.
   - The reading library shows a newer `library.json` read-only. The deep-transcription queue (`UserDefaults`) is
     dropped unless its version is 1.
+  - HolosEvaluation's records under `eval/` carry `schemaVersion`, but most are read without checking it
+    (`EvalStore.read`; a cloud run's `run.json` is decoded and rewritten when the run resumes). Local run records
+    refuse a newer version, and a reviewer's decisions file must be version 1.
 - New persisted files use `HolosJSON`, carry `schemaVersion`, and refuse newer versions.
 - Speaker edits go to an append-only journal (`speakers/edits.jsonl`; a torn last line is backed up and cut off
   before the next append); `SpeakerProjection` applies it to a run. An edit that no longer

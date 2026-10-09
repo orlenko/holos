@@ -26,9 +26,9 @@ BIN_DIR=$(swift build --show-bin-path)
 "$BIN_DIR/voiceislocal" --help
 ```
 
-Run the test suite with `./scripts/test.sh`. Unless you set them yourself, it points
-`HOLOS_DATA_DIR` (sessions) and `HOLOS_SUPPORT_DIR` (Application Support files) at a
-temporary folder and removes it afterwards, so tests never touch your real data. Do
+Run the test suite with `./scripts/test.sh`. It always points `HOLOS_DATA_DIR`
+(sessions) and `HOLOS_SUPPORT_DIR` (Application Support files) at a fresh temporary
+folder, replacing any values set in your shell, and removes it afterwards. Do
 not use `swift run` for capture permission checks; the identity that owns macOS
 permissions still needs validation.
 

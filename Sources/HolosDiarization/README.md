@@ -1,6 +1,7 @@
 # HolosDiarization
 
-Speaker diarization with FluidAudio's offline Core ML models (`docs/meeting-design.md §4.8`). Only `HolosCLI` links
+Speaker diarization with FluidAudio's offline Core ML models (`docs/meeting-design.md §4.8`). Of the products,
+only `HolosCLI` links
 it; the app runs diarization in a `voiceislocal` process.
 
 **Owns**

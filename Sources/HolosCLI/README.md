@@ -17,7 +17,7 @@ that needs FluidAudio or WhisperKit, and for recording (unless the app's in-proc
 app and tests can use it.
 
 **Depends on:** every library except HolosDesktop, including HolosDiarization, HolosWhisper and HolosEvaluation
-(only this target links them). ArgumentParser, FoundationModels (`doctor`, `session summarize`).
+(of the products, only this target links them). ArgumentParser, FoundationModels (`doctor`, `session summarize`).
 
 **Conventions** (`docs/meeting-design.md §1.4`)
 - Stdout carries content and `--json` output; progress and messages go to stderr.

@@ -6,9 +6,9 @@ Pure speaker algorithms over values: who said which words, how edits apply, and 
 **Owns**
 - Labelling: `DiarizationNormalizer`, `SpeakerAlignment` (words to diarization segments), `WordTiming`,
   `SpeakerRunBuilder` (turns of a run), `ShortInterjections`, `TurnOrder`, `FakeDiarizer` (the test diarizer).
-- Edits: `SpeakerProjection` (a run with its edit journal applied: the one view every reader uses),
-  `SpeakerCarryOver` (names carried to a new labelling), `SameNameSpeakers` (same name in one meeting shows as one
-  speaker; display only).
+- Edits: `SpeakerProjection` (a run with its edit journal applied: the view exports, Review, the CLI and enrollment
+  read), `SpeakerCarryOver` (names carried to a new labelling), `SameNameSpeakers` (same name in one meeting shows
+  as one speaker; display only).
 - Voices: `TurnEmbeddings`, `VoiceEnrollment`, `SpeakerRecognizer`, `RecognitionCalibration`, `MeetingVoiceMatcher`,
   `VectorMath`.
 - Echo of call audio on the microphone: `EchoFilter` (word copies), `EchoAnalysis` and `AcousticEchoMask`
@@ -26,7 +26,8 @@ engines, clocks, names inferred from transcript text.
   defaulted), so tests pass fixed ones.
 - Every journal line of a run ends up in exactly one of applied, reverted, stale, or an effective revert
   (`SpeakerProjection`).
-- Nothing merges speakers automatically; `SameNameSpeakers` joins only for display, from the journal alone.
+- `SameNameSpeakers` never merges: it joins same-name speakers for display only, from the journal alone. (Review's
+  opt-in "Merge matching voices automatically", in HolosMeeting, writes real merge edits.)
 - Do not import FluidAudio here: its `WordTiming` and `AudioSource` clash with Holos types
   (`docs/meeting-design.md §1.1`).
 

@@ -1,10 +1,11 @@
 # HolosEvaluation
 
 The reference evaluation behind `voiceislocal eval` (docs/reference-evaluation.md "Cloud reference"): comparing local
-transcription with a cloud reference and with a reviewer's corrections. Developer tooling; only `HolosCLI` links it.
+transcription with a cloud reference and with a reviewer's corrections. Developer tooling; of the products, only
+`HolosCLI` links it.
 
 **Owns**
-- Cloud reference runs: `CloudEvaluation` (render, segment, upload after consent, save each answer),
+- Cloud reference runs: `CloudEvaluation` (render, segment, upload, save each answer),
   `ConsentGate` (only an explicit yes or `--yes` uploads), `CloudTranscriptionClient` over a `CloudHTTPTransport`
   (`URLSessionTransport`, an ephemeral session), `CloudSegmentation`, `CloudVocabulary`, `CloudModels`.
 - Local candidate runs: `EvalLocal`, `EvalAudio`.
@@ -18,9 +19,13 @@ transcription with a cloud reference and with a reviewer's corrections. Develope
 
 **Invariants**
 - This is the only code that sends audio off the Mac: `voiceislocal eval cloud` uploads to OpenAI with the key
-  from `OPENAI_API_KEY`, and only after `ConsentGate` says yes.
+  from `OPENAI_API_KEY`. The CLI asks `ConsentGate` before it calls `CloudEvaluation.upload`; `upload` itself does
+  not ask, so any new caller must ask first.
 - A run records each track's audio fingerprint (`SessionManifest.audioFingerprint(track:)` in HolosStorage, shared
-  with the echo analysis); resuming, comparing and reviewing check it against the session's current audio.
+  with the echo analysis). Resuming a cloud run, and building a review page while the audio is still there, refuse
+  when it no longer matches the session's audio. Comparing a saved local run with a cloud run checks that the two
+  runs recorded the same fingerprint and audio digest (reading the current audio only for older cloud runs
+  without a digest); comparing the current transcript with a cloud run does no audio check.
 - Its output (reports, the review page, gold transcripts) contains transcript text and stays in the session
   folder on the Mac; never copy it into the repository (`docs/meeting-design.md §1.9`).
 

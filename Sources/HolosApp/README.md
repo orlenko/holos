@@ -26,13 +26,14 @@ through `HolosMeeting`'s `CommandRunner` and decode into the library's types (`D
 
 **Depends on:** HolosCore, HolosAudio, HolosSpeech, HolosDesktop, HolosDictation, HolosStorage, HolosSpeakers,
 HolosMeeting, HolosSynthesis, HolosContent. Never HolosDiarization or HolosWhisper (they run in a `voiceislocal`
-child). AppKit, AVFoundation, ApplicationServices.
+child), nor HolosEvaluation. AppKit, AVFoundation, ApplicationServices.
 
 **Invariants**
 - One instance: a second launch with the same bundle identifier exits.
 - The clipboard is written only by explicit Copy actions (the menu's Copy Result and Copy Original, History's Copy
   and Copy As Heard, Review's and Corrections' copy commands), never automatically after dictation.
-- Closing the last window does not quit; dictation, recordings and readings keep running from the menu bar.
+- Closing the last window does not quit (`applicationShouldTerminateAfterLastWindowClosed` returns false), so
+  dictation, recordings and readings keep running from the menu bar.
 
-**Tests:** `Tests/HolosAppTests` (16 files, `@testable import HolosApp`, so a focused run builds the whole app).
-Views are tested offscreen; nothing launches the app.
+**Tests:** `Tests/HolosAppTests` (`@testable import HolosApp`, so even a focused run builds the whole app). Tests
+build views and windows inside the test process; none launches the app bundle.
