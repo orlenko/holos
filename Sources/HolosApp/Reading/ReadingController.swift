@@ -67,8 +67,9 @@ enum ReadingPreferences {
 
 /// The Reading list and the readings being made (docs/design.md "Reading section"): the index
 /// (`ReadingLibraryStore`), one reading at a time through `ReadingWorkQueue`, each loaded with `DocumentLoader` or
-/// `WebArticleExtractor` and rendered in this process with `ReadingPipeline` into the output folder. Created at
-/// launch, so readings the user kept rendering over a quit continue.
+/// `WebArticleExtractor` and rendered with `ReadingPipeline` into the output folder: Apple's voices in this process,
+/// natural voices part by part in the bundled `voiceislocal` helper (`HelperNaturalRenderer`). Created at launch, so
+/// readings the user kept rendering over a quit continue.
 @MainActor
 final class ReadingController {
     /// What a reading being made is doing, for its row.

@@ -217,7 +217,8 @@ twice it is read by an Apple voice instead. From Terminal: `voiceislocal setup
 list`. Only voices whose recordings allow commercial use are offered; credits are in About
 and THIRD_PARTY_NOTICES.md.
 
-Readings are made one at a time, in this process; the list shows each one's title and
+Readings are made one at a time, Apple's voices in the app itself and natural voices in its
+bundled `voiceislocal` helper; the list shows each one's title and
 source, then "Rendering part N of M" with a progress bar and **Stop**, or, once made, its
 length, chapters, size and voice with **▶ Play** (Space; shows the position), **Share…**
 (⇧⌘S: AirDrop, Messages, Mail…), **Show in Finder**, and **Delete…** (⌫, asks first; the
