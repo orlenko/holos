@@ -4,6 +4,7 @@ import HolosCore
 @testable import HolosMeeting
 import HolosSpeakers
 import HolosStorage
+import HolosTestSupport
 import Testing
 
 // MeetingPostProcessor stages (docs/meeting-design.md §4.7) and `voiceislocal session diarize` (§5.5 PR7b), all with

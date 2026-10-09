@@ -2,6 +2,7 @@ import Darwin
 import Foundation
 import HolosCore
 @testable import HolosMeeting
+import HolosTestSupport
 import Testing
 
 // `CommandRunner`: the app's `voiceislocal` commands with their output in temporary files, decoded off the main actor

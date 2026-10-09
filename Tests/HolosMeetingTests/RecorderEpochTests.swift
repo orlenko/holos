@@ -3,6 +3,7 @@ import HolosAudio
 import HolosCore
 @testable import HolosMeeting
 import HolosStorage
+import HolosTestSupport
 import Testing
 
 // Capture epochs and the session timeline (docs/meeting-design.md §2.3, §4.2, §4.3).

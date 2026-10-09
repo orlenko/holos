@@ -3,6 +3,7 @@ import HolosCore
 @testable import HolosMeeting
 import HolosSpeakers
 import HolosStorage
+import HolosTestSupport
 import Testing
 
 // Deleting every word of a segment in Review (docs/meeting-design.md §5.10, "Editing words"): the segment loses its

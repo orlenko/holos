@@ -186,8 +186,9 @@ commands), a lock-token type.
 - Shared helpers live in `Tests/HolosTestSupport` (`TemporaryDirectory`, `PollBudget`, `eventually`,
   `FileInspection`, `SeededNumbers`, transcript and audio fixtures) and `Tests/HolosSessionTestSupport`
   (`SessionFixtureBuilder`); see `Tests/HolosTestSupport/README.md`. Use them in new tests; HolosStorageTests and
-  HolosSpeakersTests have moved to them, other targets still have local copies (such as
-  `Tests/HolosMeetingTests/Fakes.swift`) that go when the target is next touched.
+  HolosSpeakersTests have moved to them, HolosMeetingTests uses the shared `TemporaryDirectory` and `PollBudget`
+  (its `eventually` stays local: it polls on the main actor), and other targets still have local copies that go
+  when the target is next touched.
 - Swift Testing only (`@Test`, `#expect`, `#require`). Test names describe behaviour.
 - Name new files `<Source>Tests.swift` or `<Source>+<Feature>Tests.swift` so the tests for a file can be found.
   Rename old ones when their source file is split, not in bulk.

@@ -4,6 +4,7 @@ import HolosCore
 @testable import HolosMeeting
 import HolosSpeakers
 import HolosStorage
+import HolosTestSupport
 import Testing
 
 // The deep transcription pass (docs/meeting-design.md §4.16) with a scripted transcriber: no model is downloaded or

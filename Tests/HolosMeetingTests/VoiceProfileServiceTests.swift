@@ -4,6 +4,7 @@ import HolosCore
 @testable import HolosMeeting
 import HolosSpeakers
 import HolosStorage
+import HolosTestSupport
 import Testing
 
 // People and voice profiles (docs/meeting-design.md §4.10, §5.9 PR10): VoiceProfileService, the extractors, and

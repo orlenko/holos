@@ -3,6 +3,7 @@ import Foundation
 import HolosAudio
 import HolosCore
 @testable import HolosMeeting
+import HolosTestSupport
 import Synchronization
 import Testing
 

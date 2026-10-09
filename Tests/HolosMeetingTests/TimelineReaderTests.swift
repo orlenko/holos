@@ -2,6 +2,7 @@ import Foundation
 import HolosCore
 import HolosMeeting
 import HolosStorage
+import HolosTestSupport
 import Testing
 
 // SessionTimelineReader (docs/meeting-design.md §5.5 PR7b): gaps and markers for exports from events.jsonl.

@@ -3,6 +3,7 @@ import HolosAudio
 import HolosCore
 @testable import HolosMeeting
 import HolosStorage
+import HolosTestSupport
 import Testing
 
 // A replay that fails after partial progress keeps what it already transcribed (docs/meeting-design.md §4.6).

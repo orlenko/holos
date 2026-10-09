@@ -5,6 +5,7 @@ import HolosCore
 @testable import HolosMeeting
 import HolosSpeakers
 import HolosStorage
+import HolosTestSupport
 import Testing
 
 // Opt-in measurement behind `DeepTranscriptGuards.silenceThresholdDB` (docs/meeting-design.md §4.16):

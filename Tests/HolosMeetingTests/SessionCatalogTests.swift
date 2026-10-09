@@ -5,6 +5,7 @@ import HolosCore
 @testable import HolosMeeting
 import HolosSpeakers
 import HolosStorage
+import HolosTestSupport
 import Testing
 
 // SessionCatalog (docs/meeting-design.md §5.6 PR3): state mapping, sizes, and speaker-label state.

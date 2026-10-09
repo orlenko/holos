@@ -5,6 +5,7 @@ import HolosCore
 import HolosMeeting
 import HolosSpeakers
 import HolosStorage
+import HolosTestSupport
 import Testing
 
 // MARK: - Helpers

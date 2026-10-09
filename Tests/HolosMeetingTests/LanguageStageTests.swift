@@ -4,6 +4,7 @@ import HolosCore
 @testable import HolosMeeting
 import HolosSpeakers
 import HolosStorage
+import HolosTestSupport
 import Testing
 
 // The post-processor's `languages` stage and `voiceislocal session languages` (docs/meeting-design.md §4.14), on

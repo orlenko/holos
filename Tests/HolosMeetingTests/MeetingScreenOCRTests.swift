@@ -6,6 +6,7 @@ import HolosAudio
 import HolosCore
 @testable import HolosMeeting
 import HolosStorage
+import HolosTestSupport
 import ImageIO
 import Testing
 import UniformTypeIdentifiers

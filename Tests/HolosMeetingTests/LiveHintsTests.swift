@@ -3,6 +3,7 @@ import HolosCore
 @testable import HolosMeeting
 import HolosSpeakers
 import HolosStorage
+import HolosTestSupport
 import Testing
 
 private func hint(_ segment: TranscriptSegment, words: Range<Int>, action: LiveHint.Action,

@@ -2,6 +2,7 @@ import Foundation
 import HolosAudio
 import HolosCore
 import HolosMeeting
+import HolosTestSupport
 import Synchronization
 
 // Shared test helpers for HolosMeetingTests. Only the first-merged PR of each wave edits this file
@@ -26,67 +27,10 @@ final class SharedValue<Value: Sendable>: Sendable {
     }
 }
 
-/// A private folder `FileManager.default.temporaryDirectory/holos-<area>-<UUID>`. Remove it with
-/// `defer { temp.remove() }`.
-struct TemporaryDirectory: Sendable {
-    let url: URL
-
-    init(_ area: String = "meeting") throws {
-        url = FileManager.default.temporaryDirectory
-            .appendingPathComponent("holos-\(area)-\(UUID().uuidString)", isDirectory: true)
-        try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true,
-                                                attributes: [.posixPermissions: 0o700])
-    }
-
-    func remove() { try? FileManager.default.removeItem(at: url) }
-}
-
-/// How long an `eventually` loop may keep polling. `timeout` is a budget of *polling* time, not of wall-clock
-/// time: when a 5 ms sleep returns far later than it asked for, the cooperative thread pool was starved, and the
-/// work the condition is waiting for was stalled exactly as hard as the poll was. Charging that overshoot to the
-/// budget is what made a loaded suite fail tests whose background work had simply not been given a thread yet —
-/// the whole suite finishes in about 45 s, and the tests in this family were failing after waiting 36-40 s of it,
-/// one of them having managed a single poll in 30 s. A stall costs the budget what the poll asked for, so the
-/// wait grows with the load instead of expiring under it; `hardDeadline` still ends a wait for something that is
-/// never coming.
-struct PollBudget {
-    static let defaultInterval = Duration.milliseconds(5)
-
-    private let clock = ContinuousClock()
-    private let hardDeadline: ContinuousClock.Instant
-    private let timeout: Duration
-    private let interval: Duration
-    private var spent = Duration.zero
-
-    /// `interval` is how long each poll waits. A loop that samples something short-lived passes a finer one; it
-    /// changes how often the condition is looked at, not how much load the budget tolerates.
-    init(timeout: Duration, interval: Duration = PollBudget.defaultInterval) {
-        self.timeout = timeout
-        self.interval = interval
-        hardDeadline = ContinuousClock().now.advanced(by: max(timeout * 4, .seconds(60)))
-    }
-
-    var isSpent: Bool { spent >= timeout || clock.now >= hardDeadline }
-
-    /// Waits one interval and charges the budget for it, never more than four intervals of scheduling jitter.
-    mutating func poll() async {
-        let before = clock.now
-        do {
-            try await Task.sleep(for: interval)
-            spent += min(before.duration(to: clock.now), interval * 4)
-        } catch {
-            // Cancelled: swift-testing has given up on this test, and `Task.sleep` returns at once from here on.
-            // Charging what that call actually cost would be charging nothing, leaving the loop spinning on its
-            // condition until the hard deadline -- minutes, for the 300 s wait in `LiveTrackTests`, holding the
-            // main actor while the test it belongs to is trying to end. The budget ends with the wait instead.
-            spent = timeout
-        }
-    }
-}
-
 /// Polls `condition` every 5 ms until it holds or the poll budget runs out, and returns its last value. The
 /// default budget is generous so a heavily loaded machine still passes; a condition that holds returns at once,
-/// so only a failing test waits that long.
+/// so only a failing test waits that long. Unlike HolosTestSupport's `eventually`, which polls in the caller's
+/// isolation, this one polls on the main actor; declared in this target, it is the one this target's tests call.
 @MainActor
 func eventually(timeout: Duration = .seconds(30), _ condition: () -> Bool) async -> Bool {
     var budget = PollBudget(timeout: timeout)

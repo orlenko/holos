@@ -4,6 +4,7 @@ import HolosCore
 @testable import HolosMeeting
 import HolosSpeakers
 import HolosStorage
+import HolosTestSupport
 import Testing
 
 // The app's echo catch-up (docs/meeting-design.md §5.11, "Catching up in the app"): which meetings get

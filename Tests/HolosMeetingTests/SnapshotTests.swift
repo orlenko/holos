@@ -3,6 +3,7 @@ import HolosCore
 @testable import HolosMeeting
 import HolosSpeakers
 import HolosStorage
+import HolosTestSupport
 import Testing
 
 // SpeakerSessionSnapshot (docs/meeting-design.md §2.4, §5.5 PR7b).

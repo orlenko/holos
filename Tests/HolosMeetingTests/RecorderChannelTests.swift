@@ -3,6 +3,7 @@ import Foundation
 import HolosCore
 @testable import HolosMeeting
 import HolosStorage
+import HolosTestSupport
 import Testing
 
 // The app's and the CLI's side of the recorder protocol (docs/meeting-design.md §4.1).

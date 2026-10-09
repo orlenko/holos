@@ -15,11 +15,13 @@ import HolosStorage
 ///    orphaned); a revision saved and journaled before the new transcript, if any; the event that explains the new
 ///    transcript, before its pointer, so a current transcript is always explained; the transcript pointer; the speaker
 ///    head on the retargeted run.
-/// 3. A failure up to the pointer leaves the transcript and head as they were, and its error is thrown as it is. Once
-///    the pointer names the new transcript, a failure (a save that throws after its rename, with `committed`; the
-///    head) leaves the one incomplete state: the new transcript current, the old head published. The caller's error
-///    says the transcript was published; the old head remains a complete snapshot, and a repair
-///    (`Decision.repairHead`) publishes the retargeted head from it later.
+/// 3. A failure before the pointer is renamed leaves the transcript and head as they were, and its error is thrown as
+///    it is. Once the pointer names the new transcript, a failure leaves it current, and the caller's error says so
+///    (`committed` for a save that throws after its rename, `headFailed` for the head; a direct save, without
+///    `committed`, throws its own error). The head is then in one of two states: the old head, when the failure came
+///    before head.json was renamed, or the new head, when it came after (its folder sync). Every repair rereads the
+///    head with both locks held and writes nothing when it is already on the current transcript; otherwise the old
+///    head, still a complete snapshot, is retargeted and published (`Decision.repairHead`).
 enum TranscriptPublisher {
     /// A journal event: its kind (`MeetingEventKind`) and details.
     struct Event: Sendable, Equatable {

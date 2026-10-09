@@ -47,5 +47,5 @@ NaturalLanguage, CryptoKit.
 move code out first, in a moves-only PR.
 
 **Tests:** `Tests/HolosMeetingTests` (`./scripts/test-target.sh HolosMeetingTests`). Target-local helpers:
-`Fakes.swift` (its own `PollBudget` and `eventually`, fakes), `SessionFixtures.swift`, `RecorderTestSupport.swift`;
-this target has not moved to `HolosTestSupport` yet.
+`Fakes.swift` (its own `eventually`, which polls on the main actor, and fakes), `SessionFixtures.swift`,
+`RecorderTestSupport.swift`; `TemporaryDirectory` and `PollBudget` come from `HolosTestSupport`.

@@ -2,6 +2,7 @@ import Foundation
 import HolosCore
 @testable import HolosMeeting
 import HolosStorage
+import HolosTestSupport
 import Testing
 
 // Which actions the Meetings window offers (docs/meeting-design.md §5.8): the rules of the commands behind them.

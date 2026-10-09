@@ -2,6 +2,7 @@ import Foundation
 import HolosCore
 @testable import HolosMeeting
 import HolosStorage
+import HolosTestSupport
 import Testing
 
 // Free-space rules (docs/meeting-design.md §4.5). Sizes are decimal.

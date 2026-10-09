@@ -6,6 +6,7 @@ import HolosCore
 @testable import HolosMeeting
 import HolosSpeakers
 @testable import HolosStorage
+import HolosTestSupport
 import Testing
 
 // `voiceislocal session import` and `voiceislocal session score` (docs/meeting-design.md §5.5 PR7c), with generated audio and

@@ -4,6 +4,7 @@ import HolosCore
 @testable import HolosMeeting
 import HolosSpeakers
 import HolosStorage
+import HolosTestSupport
 import Testing
 
 // One meeting mode from the app (docs/status.md "Meeting recording"): the system default input and the computer's

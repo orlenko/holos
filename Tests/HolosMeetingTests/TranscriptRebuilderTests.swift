@@ -5,6 +5,7 @@ import HolosCore
 @testable import HolosMeeting
 import HolosSpeakers
 import HolosStorage
+import HolosTestSupport
 import Testing
 
 // TranscriptRebuilder and the `voiceislocal session recover` chain (docs/meeting-design.md §5.6 PR3).

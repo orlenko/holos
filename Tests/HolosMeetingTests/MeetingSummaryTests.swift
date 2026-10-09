@@ -3,6 +3,7 @@ import HolosCore
 @testable import HolosMeeting
 import HolosSpeakers
 import HolosStorage
+import HolosTestSupport
 import Testing
 
 // Meeting titles and summaries (docs/meeting-design.md §4.17): cutting the transcript into parts, the prompts, checking

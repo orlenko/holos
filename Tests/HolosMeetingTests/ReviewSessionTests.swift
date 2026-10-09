@@ -3,6 +3,7 @@ import HolosCore
 @testable import HolosMeeting
 import HolosSpeakers
 import HolosStorage
+import HolosTestSupport
 import Testing
 
 // The review window's model (docs/meeting-design.md §5.10, PR9): ReviewSession on fixture sessions, with the people

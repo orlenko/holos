@@ -2,6 +2,7 @@ import Foundation
 import HolosCore
 @testable import HolosMeeting
 import HolosStorage
+import HolosTestSupport
 import Testing
 
 // `TranscriptPublisher` failing at each step, for each kind of publication the stages and Review make. The expected

@@ -3,6 +3,7 @@ import HolosAudio
 import HolosCore
 @testable import HolosMeeting
 import HolosStorage
+import HolosTestSupport
 import Testing
 
 // A capture stop after the frame stream already ended is cleanup (docs/meeting-design.md §4.2, §4.6 step 1): its

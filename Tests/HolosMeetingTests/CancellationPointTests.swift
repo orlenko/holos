@@ -3,6 +3,7 @@ import HolosAudio
 import HolosCore
 @testable import HolosMeeting
 import HolosStorage
+import HolosTestSupport
 import Testing
 
 // Table-driven: every await point of `RecordingWorkflow.run`, with a fake that, at that point, (a) cancels the

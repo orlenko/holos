@@ -5,6 +5,7 @@ import HolosAudio
 import HolosCore
 @testable import HolosMeeting
 import HolosStorage
+import HolosTestSupport
 import Testing
 
 // The stop path: timeouts, coverage-based replay, and the hand-off to post-processing (docs/meeting-design.md §4.6).

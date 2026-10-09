@@ -4,6 +4,7 @@ import HolosAudio
 import HolosCore
 @testable import HolosMeeting
 import HolosStorage
+import HolosTestSupport
 import Testing
 
 // The app's side of a meeting without AppKit (docs/meeting-design.md §5.8, §4.1 "Reattach", §4.12).

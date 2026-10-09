@@ -2,6 +2,7 @@ import Foundation
 import HolosCore
 @testable import HolosMeeting
 import HolosStorage
+import HolosTestSupport
 import Testing
 
 // Renaming a finished meeting (docs/meeting-design.md §4.17): the name the user types as it is saved, the default name

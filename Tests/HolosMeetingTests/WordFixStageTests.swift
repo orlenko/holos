@@ -3,6 +3,7 @@ import HolosCore
 @testable import HolosMeeting
 import HolosSpeakers
 import HolosStorage
+import HolosTestSupport
 import Testing
 
 // The post-processor's `wordFixes` stage and `voiceislocal session fix-words` (docs/design.md "Meeting word fixes"),

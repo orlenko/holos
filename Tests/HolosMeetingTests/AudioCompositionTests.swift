@@ -4,6 +4,7 @@ import HolosCore
 @testable import HolosMeeting
 import HolosSpeakers
 import HolosStorage
+import HolosTestSupport
 import Testing
 
 // SessionAudioComposition (docs/meeting-design.md §5.10, PR9): the review window's playback of a session's chunks on
