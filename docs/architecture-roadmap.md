@@ -374,6 +374,8 @@ All steps preserve behaviour unless marked. Sizes are non-test lines, with moved
 
 **Later, as files are touched:**
 - Content splits (§2.5): lane C, 3 PRs, fully parallel.
+- App pane splits, moves only: `SetupState`/`SetupAction` out of `SettingsPane.swift` and `ReadingVoicePopup` out of
+  `ReadingPane.swift` (#138), ahead of the natural voices' app changes to them.
 - VoiceProfileService: PeopleQueries → VoiceForgetting → VoiceSampleSync. First make the stale-names sites read names under the locks they write in (§3, "Snapshot read before the lock"); that is a race fix and changes behaviour.
 - `SessionGeneration` stamp: changes behaviour. Every file that gets the stamp (`.generated.json`, `summary.json`
   (`MeetingSummaryRecord`), caches) needs a schema version bump and a rule for reading old files without it.
