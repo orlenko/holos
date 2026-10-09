@@ -3,7 +3,9 @@ import Synchronization
 import Testing
 import HolosCore
 import HolosStorage
+@testable import HolosEvaluation
 @testable import HolosMeeting
+import HolosTestSupport
 
 // `voiceislocal eval` against real session folders, with the HTTP layer faked: nothing here reaches the network.
 

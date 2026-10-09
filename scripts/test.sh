@@ -1,9 +1,10 @@
 #!/bin/sh
 set -eu
 
-# Keep the suite away from the user's real data: unless the caller already chose folders,
-# HOLOS_DATA_DIR (sessions) and HOLOS_SUPPORT_DIR (Application Support files such as speaker
-# models and voice profiles) point into a fresh temporary folder that is removed on exit.
+# Keep the suite away from the user's real data: HOLOS_DATA_DIR (sessions) and HOLOS_SUPPORT_DIR
+# (Application Support files such as speaker models and voice profiles) always point into a fresh
+# temporary folder that is removed on exit. Values already set in the environment are replaced,
+# so a shell that points them at real data cannot leak into a test run.
 holos_test_root=""
 cleanup() {
     if [ -n "$holos_test_root" ]; then
@@ -14,18 +15,14 @@ trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
-if [ -z "${HOLOS_DATA_DIR:-}" ] || [ -z "${HOLOS_SUPPORT_DIR:-}" ]; then
-    temporary_base=${TMPDIR:-/tmp}
-    holos_test_root=$(mktemp -d "${temporary_base%/}/holos-test.XXXXXX")
+if [ -n "${HOLOS_DATA_DIR:-}" ] || [ -n "${HOLOS_SUPPORT_DIR:-}" ]; then
+    echo "test.sh: ignoring HOLOS_DATA_DIR/HOLOS_SUPPORT_DIR from the environment; tests use a temporary folder" >&2
 fi
-if [ -z "${HOLOS_DATA_DIR:-}" ]; then
-    HOLOS_DATA_DIR="$holos_test_root/Sessions"
-    mkdir -m 700 "$HOLOS_DATA_DIR"
-fi
-if [ -z "${HOLOS_SUPPORT_DIR:-}" ]; then
-    HOLOS_SUPPORT_DIR="$holos_test_root/Support"
-    mkdir -m 700 "$HOLOS_SUPPORT_DIR"
-fi
+temporary_base=${TMPDIR:-/tmp}
+holos_test_root=$(mktemp -d "${temporary_base%/}/holos-test.XXXXXX")
+HOLOS_DATA_DIR="$holos_test_root/Sessions"
+HOLOS_SUPPORT_DIR="$holos_test_root/Support"
+mkdir -m 700 "$HOLOS_DATA_DIR" "$HOLOS_SUPPORT_DIR"
 export HOLOS_DATA_DIR HOLOS_SUPPORT_DIR
 
 # Apple's Command Line Tools can import Testing.framework but its swiftbuild driver

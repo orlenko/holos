@@ -51,7 +51,7 @@ public struct DeepTranscriptionDependencies: Sendable {
 /// in several languages is skipped: Whisper's language detection cannot be limited to the meeting's languages, so v1
 /// handles meetings in one language. A current transcript the same model made is kept unless forced. Cancellation
 /// publishes nothing; a run cancelled or killed starts over next time.
-enum DeepTranscriptionStage {
+public enum DeepTranscriptionStage {
     private static let log = Logger(subsystem: "ca.orlenko.holos.app", category: "postprocess")
 
     struct Request {
@@ -89,7 +89,7 @@ enum DeepTranscriptionStage {
     static let severalLanguages = "This meeting is in several languages; deep transcription handles meetings in one "
         + "language for now, so the transcript was kept."
     static let audioDeleted = "The meeting's audio was deleted, so it cannot be transcribed again."
-    static let noDiskSpace = "Not enough disk space to transcribe the meeting again. Free some space, then try again."
+    public static let noDiskSpace = "Not enough disk space to transcribe the meeting again. Free some space, then try again."
     static let kept = "Kept the transcript as it was."
 
     /// The meeting's language for the pass: the transcript's (the one the current one stands for), else meeting.json's
@@ -268,7 +268,7 @@ enum DeepTranscriptionStage {
     /// The transcript the current one stands for (`unfixed`: the one its live corrections and word fixes were made
     /// from), and the recorded transcript its words are checked against (`reference`): for a deep transcript, the one
     /// its `deepTranscribed` event names as `base` (nil when that cannot be read); else the current transcript itself.
-    static func recordedBase(of current: Transcript, events: [ArchiveEvent], session: URL)
+    public static func recordedBase(of current: Transcript, events: [ArchiveEvent], session: URL)
         -> (unfixed: Transcript, reference: Transcript?) {
         let unfixedID = WordFixStage.unfixedID(current.id, events: events)
         let unfixed = unfixedID == current.id ? current
@@ -354,10 +354,11 @@ enum DeepTranscriptionStage {
     /// shortened; deleted afterwards), read in pieces of at most `DeepAudio.pieceSeconds` that end at a quiet moment,
     /// each piece transcribed and mapped back through the render's time map, with each segment's level. `progress`
     /// gets the seconds of the render done. A render that fails throws `RenderFailure`.
-    static func transcribeTrack(_ track: String, session: URL, manifest: SessionManifest, renderTo output: URL,
-                                transcriber: any DeepTranscriber, language: String?, prompt: String,
-                                reference: Transcript?,
-                                progress: @escaping @Sendable (Double) -> Void) async throws -> [DeepHeardSegment] {
+    public static func transcribeTrack(_ track: String, session: URL, manifest: SessionManifest,
+                                       renderTo output: URL, transcriber: any DeepTranscriber, language: String?,
+                                       prompt: String, reference: Transcript?,
+                                       progress: @escaping @Sendable (Double) -> Void) async throws
+        -> [DeepHeardSegment] {
         let rendered: RenderedTrack
         do {
             rendered = try TrackRenderer.render(session: session, manifest: manifest, track: track, to: output)
@@ -403,7 +404,7 @@ enum DeepTranscriptionStage {
 
     /// The transcript segments of a pass: the guards applied against `reference` (the recorded transcript; nil when
     /// there is none), then each kept segment built with its word timings, in time order.
-    static func segments(_ heard: [DeepHeardSegment], reference: Transcript?)
+    public static func segments(_ heard: [DeepHeardSegment], reference: Transcript?)
         -> (segments: [TranscriptSegment], guards: DeepTranscriptGuards.Result, lost: [DeepHeardSegment]) {
         let guarded = DeepTranscriptGuards.apply(heard.filter { !$0.unheard }, reference: reference?.segments)
         let segments = guarded.kept.compactMap(DeepAudio.transcriptSegment)
@@ -442,7 +443,7 @@ enum DeepTranscriptionStage {
 
     /// "2 stretches of audible audio where the recorded transcript has words came back without words from the model
     /// (from 312 s, 1,204 s)."
-    static func lostMessage(_ lost: [DeepHeardSegment]) -> String {
+    public static func lostMessage(_ lost: [DeepHeardSegment]) -> String {
         let what = lost.count == 1 ? "1 stretch of audible audio" : "\(lost.count) stretches of audible audio"
         let starts = lost.prefix(5).map { "\(Int($0.start.rounded())) s" }.joined(separator: ", ")
         return "\(what) where the recorded transcript has words came back without words from the model (from \(starts))."

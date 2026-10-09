@@ -1,6 +1,7 @@
 import Foundation
 import HolosAudio
 import HolosCore
+import HolosMeeting
 import HolosStorage
 
 /// Whether to go ahead with an upload (`voiceislocal eval cloud`): only an explicit yes, typed at a terminal or given
@@ -176,7 +177,7 @@ public enum CloudEvaluation {
                     + "; resume it with the same options.")
             }
             for track in record.tracks
-            where EvalStore.audioFingerprint(manifest: manifest, track: track.track) != track.audioFingerprint {
+            where manifest.audioFingerprint(track: track.track) != track.audioFingerprint {
                 throw HolosError.invalidInput("The \(track.track) audio changed since run \(record.id) started; "
                     + "start a new run (delete this one with voiceislocal eval delete).")
             }
@@ -236,7 +237,7 @@ public enum CloudEvaluation {
                 for index in segments.indices { segments[index].audioSHA256 = digests[index] }
                 let plan = CloudTrackPlan(track: track, sampleRate: rendered.sampleRate,
                                           frameCount: rendered.frameCount, timeMap: rendered.timeMap.map(EvalSpan.init),
-                                          audioFingerprint: EvalStore.audioFingerprint(manifest: manifest, track: track),
+                                          audioFingerprint: manifest.audioFingerprint(track: track),
                                           contentSHA256: try EvalLocal.contentDigest(session: session,
                                                                                      manifest: manifest, track: track),
                                           segments: segments)

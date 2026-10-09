@@ -41,9 +41,9 @@ final class DeepTranscriptionAppState {
     var considered: [String] = UserDefaults.standard.stringArray(forKey: consideredKey) ?? [] {
         didSet { UserDefaults.standard.set(considered, forKey: Self.consideredKey) }
     }
-    /// The pass this app is running now (its own child; the app manages no other): its meeting and the child's pid
-    /// (0 while it starts), which no other process can have until the app reaps it.
-    var running: (sessionID: String, pid: Int32)?
+    /// The pass this app is running now (its own child; the app manages no other): its meeting and the child's handle
+    /// (nil while it starts), which signals it only until the app reaps it.
+    var running: (sessionID: String, child: CommandHandle?)?
     /// Another process holds `DeepTranscriptionLock` (a pass started in Terminal, or one left running from before a
     /// relaunch): nothing starts until it is free, checked every 30 s. The app never signals or adopts it.
     var otherPassRunning = false
@@ -151,8 +151,8 @@ extension HolosAppDelegate {
     /// afterwards. A pass another process runs is left alone: it is the user's own explicit run.
     func deepTranscriptionMeetingStateChanged() {
         guard let controller = meeting.controller, meetingIsBusy(controller.state),
-              let running = meeting.deep.running, running.pid > 0, meeting.deep.preempted == nil,
-              kill(running.pid, SIGTERM) == 0 else { return }
+              let running = meeting.deep.running, meeting.deep.preempted == nil,
+              running.child?.terminate() == true else { return }
         meeting.deep.preempted = running.sessionID
         Self.deepLog.notice("Deep transcription of \(running.sessionID, privacy: .public) stopped for a meeting")
         updateDeepStates()
@@ -304,8 +304,8 @@ extension HolosAppDelegate {
     /// cancels and says whether the new transcript was already published).
     func cancelDeepTranscription(_ sessionID: String) {
         // Only this app's own pass is signalled.
-        if let running = meeting.deep.running, running.sessionID == sessionID, running.pid > 0 {
-            kill(running.pid, SIGTERM)
+        if let running = meeting.deep.running, running.sessionID == sessionID {
+            running.child?.terminate()
         }
         if meeting.deep.preempted == sessionID { meeting.deep.preempted = nil }
         meeting.deep.delayed[sessionID] = nil
@@ -321,7 +321,7 @@ extension HolosAppDelegate {
                                             running: meeting.deep.running?.sessionID) {
             updateDeepStates()
         }
-        guard let controller = meeting.controller, let maintenance = meeting.maintenance else { return }
+        guard let controller = meeting.controller, let commands = meeting.commands else { return }
         // Another process's pass holds the lock: wait for it (checked again every 30 s). One at a time on this Mac.
         // A meeting summary and an echo analysis share the lock (§4.17, §5.11), this app's own while it starts too
         // (before the command takes it): wait for them, without saying another final transcript runs.
@@ -370,43 +370,35 @@ extension HolosAppDelegate {
         }
         // Marked running before the meeting is taken: taking it schedules again (`onSessionsInUseChanged`), which must
         // then see one pass running and start no other.
-        meeting.deep.running = (sessionID, 0)
+        meeting.deep.running = (sessionID, nil)
         guard controller.beginUsing(sessionID, for: Self.deepRunningText) else {
             meeting.deep.running = nil
             return
         }
-        let output = Self.temporaryFile("deep")
-        let errors = Self.temporaryFile("deep-err")
         // Asked for from the meeting's menu: made again even when made before, and over edited labels.
         let arguments = ["session", "deep-transcribe", item.path, "--json"]
             + (DeepTranscriptionSchedule.forces(item) ? ["--force"] : [])
         do {
-            let pid = try maintenance.run(arguments, standardOutput: output, standardError: errors) { [weak self] code in
-                self?.deepTranscriptionEnded(sessionID, code: code, output: output, errors: errors)
+            let child = try commands.start(arguments, output: "deep", errors: "deep-err", maxOutputBytes: 16 << 20,
+                                           as: PostProcessingRecord.self) { [weak self] result in
+                self?.deepTranscriptionEnded(sessionID, result)
             }
-            meeting.deep.running = (sessionID, pid)
+            meeting.deep.running = (sessionID, child)
             Self.deepLog.notice("Deep transcription of \(sessionID, privacy: .public) started")
         } catch {
             // Kept queued: the scheduler tries again in a minute.
             meeting.deep.running = nil
             meeting.deep.retryAfter = Date().addingTimeInterval(60)
             controller.endUsing(sessionID)
-            Self.removeFile(output)
-            Self.removeFile(errors)
             Self.deepLog.error("Cannot start deep transcription: \(error.localizedDescription, privacy: .private)")
         }
         updateDeepStates()
     }
 
-    private func deepTranscriptionEnded(_ sessionID: String, code: Int32, output: URL, errors: URL) {
-        let errorText = (try? AtomicFile.readIfPresent(errors, maxBytes: 1 << 16)).flatMap {
-            $0.map { String(decoding: $0, as: UTF8.self) }
-        } ?? ""
-        let record = (try? AtomicFile.readIfPresent(output, maxBytes: 16 << 20)).flatMap {
-            $0.flatMap { try? HolosJSON.decoder().decode(PostProcessingRecord.self, from: $0) }
-        }
-        Self.removeFile(output)
-        Self.removeFile(errors)
+    private func deepTranscriptionEnded(_ sessionID: String, _ result: CommandResult<PostProcessingRecord>) {
+        let code = result.code
+        let errorText = result.errors
+        let record = result.outcome
         let item = meeting.deep.queue.items.first { $0.sessionID == sessionID }
         var failure: String?
         let lateCancel = errorText.split(separator: "\n").first { $0.hasPrefix("Cancelled after the new transcript") }
