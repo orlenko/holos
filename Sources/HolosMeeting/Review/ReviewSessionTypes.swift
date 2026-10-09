@@ -259,6 +259,8 @@ extension ReviewSession {
         var continuation: CheckedContinuation<Void, any Error>?
         /// How it finished, for a change nobody waits on yet (`queued`).
         var result: Result<Void, any Error>?
+        /// Called as it finishes (`ReviewSession.operationFinished`, a test seam).
+        var onFinish: ((Operation) -> Void)?
 
         init(kind: Kind, basis: Int, runID: String?, optimistic: [SpeakerEditAction]) {
             self.kind = kind
@@ -290,6 +292,7 @@ extension ReviewSession {
         func finish(_ result: Result<Void, any Error>) {
             finished = true
             self.result = result
+            onFinish?(self)
             continuation?.resume(with: result)
             continuation = nil
         }

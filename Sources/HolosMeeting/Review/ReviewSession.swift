@@ -116,6 +116,8 @@ import os
 
     /// Test seam: awaited off the main actor before each change is written, so a test can hold a save back.
     var beforeEdit: (@Sendable () async -> Void)?
+    /// Test seam: each queued operation as it finishes, so a test can read the states it ended in.
+    var operationFinished: ((Operation) -> Void)?
     /// Test seam: called once a word edit or its undo is committed, before the labels are reread; throwing makes the
     /// reread fail.
     var beforeWordChangeReread: (() throws -> Void)?
@@ -1670,6 +1672,7 @@ import os
         let shown = optimistic.isEmpty ? [] : projection.fanningOut(optimistic)
         let op = Operation(kind: kind, basis: savedVersion, runID: snapshot.run?.id, optimistic: shown)
         op.movesSeen = wordMoves.count
+        op.onFinish = operationFinished
         // A newer change: voice samples wait for it (`holdSampleSync`); exports alone change no label.
         if case .exports = kind {} else { holdSampleSync() }
         queue.append(op)
