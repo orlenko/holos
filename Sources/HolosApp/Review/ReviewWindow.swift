@@ -21,6 +21,24 @@ import UniformTypeIdentifiers
 /// Playing goes on through the meeting until paused; a click on a timestamp or on a word plays from there. While a
 /// meeting plays, the turn list tints the turn and word playing and keeps them in view, except for a few seconds after
 /// the reader scrolls it (`ReviewFollow`).
+///
+/// Invariants:
+/// 1. `closeTask` is set once, by `beginClosing`, and never cleared (`isClosing`). Setting it invalidates playback and
+///    detaches `review.onChange`, so no model change refreshes a closing window, and hands the open field's edit (or
+///    the one `heldOpenEdit` holds) to `ReviewSession.close`.
+/// 2. Every word edit and Restore goes through `trackWordChange`: it is queued in the review before anything awaits,
+///    and listed in `pendingWordEdits` until its save ends.
+/// 3. A close by hand (`windowShouldClose`) is refused while `unsavedEdits` holds an edit, and otherwise waits for
+///    `pendingWordEdits` and the open field's edit through `closeGate`. While that close saves, no field opens and
+///    no word change starts (`canEditWordsNow`).
+/// 4. What was typed is never dropped: an edit that is not saved opens its field again with it, or is kept in
+///    `unsavedEdits` (or in the close's outcome while a close by hand saves).
+/// 5. Joins and paragraph breaks are the window's view only, never saved. Every join goes when a change fails, on
+///    Undo, and when the labels show more reverts than at the last refresh (`clearJoins`, `refresh`).
+/// 6. `problem`, `notice` and `offeredTerm` describe the last action only: a new action clears them first
+///    (`clearTransientMessages`, `editWords`).
+/// 7. Model changes reported in one turn of the main queue make one `refresh` (`scheduleRefresh`).
+/// 8. While the scrubber is dragged (`scrubbing`), the play head does not move it.
 @MainActor
 final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, NSMenuItemValidation, ClosingReview {
     let sessionID: String
