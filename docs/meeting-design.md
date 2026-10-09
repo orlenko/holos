@@ -9003,7 +9003,9 @@ genuinely local (the user, or people in the room) stays even while the call play
   Judged words are those the mask judges as the labels do (not dropped by the text filter, not
   edited in Review, timed); "user's" are judged words not echo; "in echo" are those whose
   ±0.5 s surroundings hold at least three times as many echo frames as local ones (local->echo
-  is split the same way: "elsewhere" are likelier the user's own words lost); rows are
+  is split the same way: "elsewhere" are likelier the user's own words lost, and both are
+  bucketed by the median predicted echo over the word's local frames, ≥0, −1..0, −3..−1,
+  −6..−3, <−6 dB, and by its share of local frames, 30–50, 50–80, ≥80 %); rows are
   the microphone rows Review shows (short interjections applied, then consecutive turns of one
   speaker grouped into rows by `ReviewParagraphs.group`), "unknown" those without a speaker;
   "rows changed" the microphone rows (matched before and after through a shared turn) whose

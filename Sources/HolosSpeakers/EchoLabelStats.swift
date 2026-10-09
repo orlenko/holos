@@ -22,6 +22,12 @@ public struct EchoLabelStats: Sendable, Equatable, Encodable {
     /// and the others (rather the user's own words the rule now misses).
     public var localToEchoInEcho = 0
     public var localToEchoElsewhere = 0
+    /// The words of `localToEcho`, and of `localToEchoElsewhere`, by the median predicted echo over their local frames
+    /// and by their share of local frames (`EchoLabelStats+Buckets.swift`).
+    public var localToEchoLevels = LevelBuckets()
+    public var localToEchoElsewhereLevels = LevelBuckets()
+    public var localToEchoShares = ShareBuckets()
+    public var localToEchoElsewhereShares = ShareBuckets()
     /// Words counted as the microphone's own whose surroundings the echo dominates (`echoDominated`), before and now:
     /// echo kept as the user's, mostly.
     public var localInEchoBefore = 0
@@ -100,6 +106,7 @@ public struct EchoLabelStats: Sendable, Equatable, Encodable {
                 if !echoBefore && echoAfter {
                     stats.localToEcho += 1
                     if dominated { stats.localToEchoInEcho += 1 } else { stats.localToEchoElsewhere += 1 }
+                    stats.countMoved(mask, start: word.start, end: word.end, elsewhere: !dominated)
                 }
                 if echoBefore && !echoAfter { stats.echoToLocal += 1 }
             }
@@ -179,6 +186,10 @@ public struct EchoLabelStats: Sendable, Equatable, Encodable {
         echoToLocal += other.echoToLocal
         localToEchoInEcho += other.localToEchoInEcho
         localToEchoElsewhere += other.localToEchoElsewhere
+        localToEchoLevels.add(other.localToEchoLevels)
+        localToEchoElsewhereLevels.add(other.localToEchoElsewhereLevels)
+        localToEchoShares.add(other.localToEchoShares)
+        localToEchoElsewhereShares.add(other.localToEchoElsewhereShares)
         localInEchoBefore += other.localInEchoBefore
         localInEchoAfter += other.localInEchoAfter
         func sum(_ left: Int?, _ right: Int?) -> Int? {
@@ -193,7 +204,8 @@ public struct EchoLabelStats: Sendable, Equatable, Encodable {
     }
 
     /// One line of counts: "mic words 1200, judged 1100; user's 400 -> 340 (local->echo 60 [in echo 52, elsewhere 8],
-    /// echo->local 0); in echo 90 -> 35; mic rows 120 -> 104, unknown 30 -> 18; rows changed 22".
+    /// echo->local 0); in echo 90 -> 35; mic rows 120 -> 104, unknown 30 -> 18; rows changed 22", then the moved
+    /// words' buckets when there are any (`bucketsText`).
     public var line: String {
         var text = "mic words \(microphoneWords), judged \(judgedWords); user's \(localBefore) -> \(localAfter) "
             + "(local->echo \(localToEcho) [in echo \(localToEchoInEcho), elsewhere \(localToEchoElsewhere)], "
@@ -204,6 +216,7 @@ public struct EchoLabelStats: Sendable, Equatable, Encodable {
                 + "\(unknownRowsAfter)"
         }
         if let rowsChanged { text += "; rows changed \(rowsChanged)" }
+        if localToEcho > 0 { text += "; " + bucketsText }
         return text
     }
 }

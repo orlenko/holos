@@ -891,6 +891,10 @@ private let falseLocalInWordSix = levelledMask(seconds: 30, local: [
     #expect(stats.judgedWords == 10)
     #expect((stats.localBefore, stats.localAfter, stats.localToEcho, stats.echoToLocal) == (4, 3, 1, 0))
     #expect((stats.localToEchoInEcho, stats.localToEchoElsewhere) == (1, 0))
+    // Word 6's local frames: the echo predicted 2 and 3.5 dB over the microphone, 6 or 7 of its 19 frames.
+    #expect(stats.localToEchoLevels.atLeast0 == 1)
+    #expect(stats.localToEchoShares.from30To50 == 1)
+    #expect(stats.localToEchoElsewhereLevels == EchoLabelStats.LevelBuckets())
     // Word 6 is surrounded by echo; the user's words are not.
     #expect((stats.localInEchoBefore, stats.localInEchoAfter) == (1, 0))
     #expect((stats.microphoneRowsBefore, stats.microphoneRowsAfter) == (1, 1))
@@ -933,6 +937,10 @@ private let falseLocalInWordSix = levelledMask(seconds: 30, local: [
     first.localToEcho = 10
     first.localToEchoInEcho = 7
     first.localToEchoElsewhere = 3
+    for level in [0.5, -2, -2, -4, -10, -10, -10] { first.localToEchoLevels.add(level: level) }
+    for level: Double in [-2, -4, -10] { first.localToEchoElsewhereLevels.add(level: level) }
+    for share in [0.3, 0.6, 0.9] { first.localToEchoShares.add(share: share) }
+    first.localToEchoElsewhereShares.add(share: 0.9)
     first.localInEchoBefore = 12
     first.localInEchoAfter = 3
     first.microphoneRowsBefore = 20
@@ -949,7 +957,9 @@ private let falseLocalInWordSix = levelledMask(seconds: 30, local: [
     total.add(first)
     total.add(second)
     #expect(total.line == "mic words 110, judged 100; user's 44 -> 34 (local->echo 10 [in echo 7, elsewhere 3], "
-        + "echo->local 0); in echo 12 -> 3; mic rows 20 -> 17, unknown 6 -> 2; rows changed 5")
+        + "echo->local 0); in echo 12 -> 3; mic rows 20 -> 17, unknown 6 -> 2; rows changed 5; levels ≥0:1 −1..0:0 "
+        + "−3..−1:2 −6..−3:1 <−6:3 (elsewhere ≥0:0 −1..0:0 −3..−1:1 −6..−3:1 <−6:1); shares 30-50%:1 50-80%:1 ≥80%:1 "
+        + "(elsewhere 30-50%:0 50-80%:0 ≥80%:1)")
     #expect(second.line == "mic words 10, judged 10; user's 4 -> 4 (local->echo 0 [in echo 0, elsewhere 0], "
         + "echo->local 0); in echo 0 -> 0")
 }
@@ -1248,4 +1258,21 @@ private func playback108(_ mask: AcousticEchoMask) -> [AcousticEchoMask.Interval
     let apart = echoMask(count: 400, local: [(200..<210, -4), (214..<217, 4)])
     #expect(isEcho(apart, 200..<210) == false)
     #expect(isEcho(apart, 214..<217) == true)
+}
+
+@Test func movedWordsAreBucketedByTheirLevelAndShare() {
+    var levels = EchoLabelStats.LevelBuckets()
+    for level in [0, -0.5, -1, -2.9, -3, -6, -6.5, -64] { levels.add(level: level) }
+    #expect((levels.atLeast0, levels.from1To0, levels.from3To1, levels.from6To3, levels.below6) == (1, 2, 2, 1, 2))
+    var shares = EchoLabelStats.ShareBuckets()
+    for share in [0.3, 0.5, 0.79, 0.8, 1] { shares.add(share: share) }
+    #expect((shares.from30To50, shares.from50To80, shares.atLeast80) == (1, 2, 2))
+    // A word over frames 100..<110: 4 local at +2 dB, 2 local with no predicted echo, 4 echo. The median of its local
+    // levels is the middle of +2 and +2 (the two lowest sort first), its share 60 %.
+    let mask = echoMask(count: 300, local: [(100..<104, 4), (104..<106, .min)])
+    let times = word(100..<110)
+    let measured = EchoLabelStats.localFrames(mask, start: times.start, end: times.end)
+    #expect(measured?.level == 2)
+    #expect(measured?.share == 0.6)
+    #expect(EchoLabelStats.localFrames(mask, start: word(200..<210).start, end: word(200..<210).end) == nil)
 }
