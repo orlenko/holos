@@ -450,11 +450,19 @@ private func turnSpeaker(_ projection: SpeakerProjection, _ id: String) -> Strin
 
 // MARK: - Label Again
 
-@Test func namesCarriedOverFromSpeakersShownAsOneNameOneSpeaker() {
-    // Two stored "Alice"s shown as one carry one name: the joined speaker's turns all count for it.
-    var journal = Journal()
-    journal.append(.rename(speakerID: "system:S1", name: "Alice"))
-    journal.append(.rename(speakerID: "system:S3", name: "Alice"))
+@Test func eachStoredSpeakerCarriesItsOwnNameAndLinkThoughShownAsOne() {
+    // Two stored Alexes linked to two people, shown as one: Label Again carries each name and link to the new speaker
+    // its own speech lands in (here the same run), never one person onto the other's speech.
+    var journal = Journal(names: ["P-ALEX1": "Alex", "P-ALEX2": "Alex"])
+    journal.append(.linkProfile(speakerID: "system:S1", profileID: "P-ALEX1"))
+    journal.append(.rename(speakerID: "system:S1", name: "Alex"))
+    journal.append(.linkProfile(speakerID: "system:S3", profileID: "P-ALEX2"))
+    journal.append(.rename(speakerID: "system:S3", name: "Alex"))
+    #expect(journal.view.speakers.first?.memberIDs == ["system:S1", "system:S3"])
     let carried = SpeakerCarryOver.carry(from: journal.view, to: run)
-    #expect(carried.actions == [.rename(speakerID: "system:S1", name: "Alice")])
+    #expect(carried.actions == [.rename(speakerID: "system:S1", name: "Alex"),
+                                .linkProfile(speakerID: "system:S1", profileID: "P-ALEX1"),
+                                .rename(speakerID: "system:S3", name: "Alex"),
+                                .linkProfile(speakerID: "system:S3", profileID: "P-ALEX2")])
+    #expect(carried.unmatchedSpeakers.isEmpty)
 }

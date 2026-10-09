@@ -3349,7 +3349,19 @@ speaker, with its own link and its own voice.
   added, on every stored speaker (`unjoined`), not on the speaker shown: linking the shown
   Alex to the person it already shows still links a stored Alex that is not.
   `SpeakerEditor.saved(_:asAsked:)` lets a caller (Review) recognize its batch among the
-  lines read back.
+  lines read back. A `newSpeaker` named as nobody in the caller's view is, but as somebody
+  in the labels under the lock (another window named a speaker so meanwhile), is refused as
+  made on outdated labels: on the labels as they are, the caller gives the turns to that
+  speaker instead.
+- *Who reads which.* The joined list is for showing: the exports, Review's rows and
+  sidebar, the CLI's listing and selectors (whose edits fan out), summaries, participant
+  lists and Review's voice suggestions. Whatever maps identities, links or voice reads
+  the stored speakers (`unjoined`): voice learning and forgetting, Label Again
+  (`SpeakerCarryOver` carries each stored speaker's name and link to the new speaker its
+  own speech lands in, so two Alexes linked to two people keep their links on the right
+  speech), the editor's refusal messages, and the CLI's link report. Live speaker names
+  (`LiveHintStage`) treat a same-name group as named by hand when any of its stored
+  speakers is, since a name given to the one shown would reach them all.
 - *Choosing a name that exists.* Review's "New Speaker…" (and `voiceislocal speakers assign
   --to new:NAME`) with a name a speaker is shown under gives the turns to the one shown
   (`SpeakerProjection.speaker(named:)`: matched on the name each stored speaker joins by in

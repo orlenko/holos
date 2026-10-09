@@ -39,7 +39,10 @@ public enum SpeakerCarryOver {
     ///   carried: the new run gets its own recognition.
     /// - `droppedTurnEdits` counts the old projection's applied turn-level edits and merges; reverted and stale
     ///   ones never took effect and are not counted. A merge only shapes which new speaker the name maps to.
-    public static func carry(from old: SpeakerProjection, to new: DiarizationRun) -> Result {
+    public static func carry(from shown: SpeakerProjection, to new: DiarizationRun) -> Result {
+        // Each stored speaker as itself (`SpeakerProjection.unjoined`): same-named speakers shown as one may be linked
+        // to different people, and each name and link goes to the new speaker its own speech lands in.
+        let old = shown.unjoined
         let labelled = old.speakers.filter {
             $0.explicitName != nil || $0.profileID != nil || !$0.rejectedProfileIDs.isEmpty
         }

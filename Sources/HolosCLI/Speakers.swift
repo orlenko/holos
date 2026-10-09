@@ -657,7 +657,8 @@ enum SpeakerCommand {
     static func reportLink(speakerID: String, snapshot: SpeakerSessionSnapshot, learnVoice: Bool,
                            extractorAvailable: Bool, loaded: LoadedSpeakers) throws {
         let database = try loaded.store.load()
-        let speaker = snapshot.projection?.speakers.first { $0.id == speakerID }
+        // The stored speaker linked, as itself (it may be shown joined with a same-named one).
+        let speaker = snapshot.projection?.unjoined.speakers.first { $0.id == speakerID }
         guard let profileID = speaker?.profileID,
               let profile = database.profiles.first(where: { $0.id == profileID }) else {
             Console.output("Linked \(speakerID).")

@@ -1,5 +1,6 @@
 import Foundation
 import HolosCore
+import HolosSpeakers
 import HolosStorage
 
 /// Reconciles corrections saved while recording with the final transcript and speaker run. Text runs after language
@@ -43,10 +44,7 @@ enum LiveHintStage {
             let snapshot = try SpeakerSessionSnapshot.load(session: session)
             guard snapshot.transcript.id == transcript.id, let projection = snapshot.projection else { return true }
             let applied = Set(projection.appliedEditIDs)
-            let protected = Set(snapshot.journal.edits.compactMap { edit -> String? in
-                guard applied.contains(edit.id), case .rename(let speakerID, _) = edit.action else { return nil }
-                return speakerID
-            })
+            let protected = protectedSpeakers(snapshot.journal.edits, applied: applied, projection: projection)
             let plan = LiveHints.speakerActionPlan(hints, projection: projection, transcript: transcript)
             if plan.unmatched > 0 { return true }
             let proposed = plan.actions
@@ -59,6 +57,21 @@ enum LiveHintStage {
         } catch {
             return true
         }
+    }
+
+    /// Speakers a live speaker name must not rename: those an applied `rename` named, and with them every speaker of
+    /// their same-name group (`ProjectedSpeaker.memberIDs`), since a rename of any of them reaches all of them
+    /// (`SpeakerProjection.fanningOut`) and the one shown may be another than the one renamed.
+    static func protectedSpeakers(_ edits: [SpeakerEdit], applied: Set<String>,
+                                  projection: SpeakerProjection) -> Set<String> {
+        var protected = Set(edits.compactMap { edit -> String? in
+            guard applied.contains(edit.id), case .rename(let speakerID, _) = edit.action else { return nil }
+            return speakerID
+        })
+        for speaker in projection.speakers where speaker.memberIDs.contains(where: protected.contains) {
+            protected.formUnion(speaker.memberIDs)
+        }
+        return protected
     }
 
     static func applyText(session: URL, transcript: Transcript, lease: ProcessingLease) async throws -> TextOutcome {
@@ -149,10 +162,7 @@ enum LiveHintStage {
                 return SpeakerOutcome(problem: "Live speaker names could not be applied because this transcript has no speaker labels.")
             }
             let applied = Set(projection.appliedEditIDs)
-            let protected = Set(snapshot.journal.edits.compactMap { edit -> String? in
-                guard applied.contains(edit.id), case .rename(let speakerID, _) = edit.action else { return nil }
-                return speakerID
-            })
+            let protected = protectedSpeakers(snapshot.journal.edits, applied: applied, projection: projection)
             let plan = LiveHints.speakerActionPlan(hints, projection: projection, transcript: transcript)
             let proposed = plan.actions
             let actions = proposed.filter { action in

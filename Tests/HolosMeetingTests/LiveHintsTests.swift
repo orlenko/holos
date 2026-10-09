@@ -954,3 +954,30 @@ func aLaterPassRepairsLiveTextWhoseSpeakerHeadWasNotPublished() async throws {
     #expect(final.segments[0].fixes?.contains { $0.kind == .correction } == true)
     #expect(final.segments[0].fixes?.contains { $0.kind == .liveCorrection } == true)
 }
+
+@Test func aLiveNameNeverOverwritesANameGivenToASpeakerShownJoinedWithIt() async throws {
+    // A call: the microphone's speaker ("Me", ordinal 1) and system S2, which the user named "me" by hand. They are
+    // shown as one (the microphone's speaker). A live name given to the microphone's words must not rename S2.
+    let temp = try TemporaryDirectory()
+    defer { temp.remove() }
+    let mic = SessionFixtures.segment(["hello", "there", "all"], track: "mic", start: 0.1, id: "M1")
+    let system = SessionFixtures.alternatingSegments(track: "system")
+    let transcript = SessionFixtures.transcript([mic] + system)
+    let session = try await SessionFixtures.makeSession(in: temp.url, source: .microphoneAndSystem,
+                                                        audioSeconds: ["mic": 20, "system": 20], mode: .call,
+                                                        transcript: transcript)
+    _ = try SessionFixtures.writeHeadRun(
+        session: session, transcript: transcript,
+        outputs: ["system": FakeDiarizer.alternating(speakers: ["S1", "S2"], turnSeconds: 5, duration: 20)],
+        policies: ["mic": .channel(speakerID: "mic:me", displayName: "Me")])
+    try SpeakerEditor.apply([.rename(speakerID: "system:S2", name: "me")], view: SessionFixtures.view(session),
+                            session: session, source: "app", regenerateExports: false)
+    let view = try SessionFixtures.view(session)
+    #expect(view.speakers.first { $0.id == "mic:me" }?.memberIDs == ["mic:me", "system:S2"])
+
+    let live = hint(mic, words: 0..<3, action: .nameSpeaker("Ada"), id: "H1")
+    _ = LiveHintStage.applySpeakers([live], session: session, transcript: transcript, profiles: nil)
+
+    let stored = try SessionFixtures.view(session).unjoined.speakers
+    #expect(stored.first { $0.id == "system:S2" }?.name == "me")
+}

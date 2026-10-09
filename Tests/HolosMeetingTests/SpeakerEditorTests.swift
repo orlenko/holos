@@ -844,3 +844,22 @@ func appendWithoutJoining(_ actions: [SpeakerEditAction], session: URL) throws {
     #expect(after.speakers.map(\.name) == ["Bob"])
     #expect(after.unjoined.speakers.map(\.name) == ["Bob", "Bob", "Bob"])
 }
+
+@Test func aNewSpeakerNamedAsSomebodyNamedMeanwhileIsRefused() async throws {
+    let temp = try TemporaryDirectory("editor")
+    defer { temp.remove() }
+    let (session, _, _) = try await SessionFixtures.labelledSession(in: temp.url)
+    // A window has no Alex, so "New Speaker… Alex" makes a new speaker; another window names S1 Alex first.
+    let older = try SessionFixtures.view(session)
+    try SpeakerEditor.apply([.rename(speakerID: "system:S1", name: "Alex")], view: try SessionFixtures.view(session),
+                            session: session, source: "app", regenerateExports: false)
+    let lines = try editorJournal(session).count
+    let message = editorRefusal("unavailable") {
+        try SpeakerEditor.apply([.newSpeaker(speakerID: "user:A", name: "alex", turnIDs: ["T2"])], view: older,
+                                session: session, source: "app", regenerateExports: false)
+    }
+    #expect(message == SpeakerEditor.changedMessage)
+    #expect(try editorJournal(session).count == lines)
+    // On the labels as they are now, the same choice gives the turn to S1, which is called Alex.
+    #expect(try SessionFixtures.view(session).speaker(named: "alex")?.id == "system:S1")
+}

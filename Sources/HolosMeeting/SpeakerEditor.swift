@@ -147,6 +147,12 @@ public enum SpeakerEditor {
             // may not show a speaker another window has since named alike. The lines it adds carry the current
             // fingerprints; the caller's own lines must still match its view.
             for (action, added) in base.projection.fanningOutMarked(actions.map(cleaned)) {
+                // A new speaker named as nobody in the caller's view is, but as somebody now (another window named a
+                // speaker so meanwhile): the caller would have given the turns to that speaker, so its choice is stale.
+                if !added, case .newSpeaker(_, let name?, _) = action, current.speaker(named: name) != nil,
+                   viewState.speaker(named: name) == nil {
+                    throw refusedStaleView(base.run)
+                }
                 let expected = current.fingerprint(for: action)
                 guard added || viewState.fingerprint(for: action) == expected else { throw refusedStaleView(base.run) }
                 if case .revert(let target) = action,
@@ -529,7 +535,8 @@ public enum SpeakerEditor {
     static func refusal(_ action: SpeakerEditAction, reason: String, on projection: SpeakerProjection) -> HolosError {
         switch reason {
         case "speaker not found":
-            let listed = Set(projection.speakers.map(\.id))
+            // Every stored speaker: one shown joined with a same-named speaker is there, though not listed itself.
+            let listed = Set(projection.unjoined.speakers.map(\.id))
             let missing = referencedSpeakers(action).filter { !listed.contains($0) }
             if !missing.isEmpty {
                 return HolosError.invalidInput("There is no speaker \(missing.joined(separator: ", ")) in this "
