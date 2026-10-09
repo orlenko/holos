@@ -11,9 +11,11 @@ wiring between them and the library controllers (docs/design.md "Main window").
   `BackgroundJobCoordinator`, which runs final transcripts, echo analyses and summaries.
 - `MainWindow/`: `MainWindowController` (sidebar window) and the panes (History, Meetings, People, Corrections,
   Reading, Settings, live meeting view).
-- `Review/`: `ReviewWindow` (+Layout, +Joining; its close types in `ReviewClosing`), `TurnListView` (+WordEditing,
-  +Splitting, +Joining) with its `TurnTableView`, `TurnTextView`, `TurnScrollView` and `AssignMenu`,
-  `SpeakerSidebarView`, `ReviewPlayer`, `ScreenTextPanel`. The model is `HolosMeeting`'s `ReviewSession`.
+- `Review/`: `ReviewWindow` (+Layout, +Joining, +WordEdits; its close types in `ReviewClosing`), its word edits'
+  saves, refusals and close by hand in `ReviewWordEditCoordinator` (no AppKit; the window is its
+  `ReviewWordEditHost`), `TurnListView` (+WordEditing, +Splitting, +Joining) with its `TurnTableView`,
+  `TurnTextView`, `TurnScrollView` and `AssignMenu`, `SpeakerSidebarView`, `ReviewPlayer`, `ScreenTextPanel`. The
+  model is `HolosMeeting`'s `ReviewSession`.
 - `Reading/`: `ReadingController`, voice preview, natural voices (`HelperNaturalRenderer` runs each natural part
   in `voiceislocal say`; `NaturalVoiceDownload` is Settings › Reading's pack rows). Dictation UI:
   `DictationOverlay`, `DictationFixing`. Setup: `SetupAssistantWindow`. Meeting start: `MeetingStartPanel`.
