@@ -133,7 +133,7 @@ extension HolosAppDelegate: NSMenuDelegate {
             // automatic job (which waits for that scan); the echo analysis goes before an automatic final transcript.
             self?.scheduleMeetingSummaries()
             self?.scheduleEchoCatchUp()
-            self?.scheduleDeepTranscription()
+            self?.scheduleBackgroundJobs()
         }
         // Reviews open, opening, or still saving after they closed: the automatic relabel leaves those meetings alone.
         controller.sessionsUnderReview = { [weak self] in
@@ -177,7 +177,7 @@ extension HolosAppDelegate: NSMenuDelegate {
         meeting.meetingsPane?.update(meetingState: state)
         // A meeting needs the Mac: a final transcript, a summary or an echo analysis in progress is stopped and runs
         // again afterwards.
-        deepTranscriptionMeetingStateChanged()
+        meeting.deep.coordinator?.meetingStateChanged()
         meetingSummaryMeetingStateChanged()
         echoCatchUpMeetingStateChanged()
     }

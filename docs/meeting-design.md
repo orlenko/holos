@@ -5125,7 +5125,9 @@ carried over.
 
 **App.** The app does not link WhisperKit; it runs `voiceislocal setup --whisper` and
 `voiceislocal session deep-transcribe <session> --json` as maintenance commands
-(`HolosApp+DeepTranscription.swift`).
+(`HolosApp+DeepTranscription.swift`). The passes are a kind of background job (`DeepTranscriptionJobs`) that
+`BackgroundJobCoordinator` runs: it owns the lock probe, the holds, preemption, the retries and the order
+(`BackgroundJobOrder`); summaries (§4.17) and the echo catch-up (§5.11) keep their own schedulers beside it.
 
 - *Settings › Meetings.* A "Final transcript" row with the model's state from `voiceislocal
   doctor --json` (`deepTranscriptionModel`) and Download (1.6 GB), showing `setup --whisper`'s
@@ -5231,7 +5233,11 @@ carried over.
   takes only meetings the pass transcribes (`transcribable`).
   While a meeting is queued or the app's own pass runs on it, Cancel Final Transcript (SIGTERM: the command cancels and says whether the new
   transcript was already published).
-- *Tests.* `DeepTranscriptionQueueTests` (order and run-now upgrade, saving and damaged data,
+- *Tests.* `BackgroundJobCoordinatorTests` (with a fake runner and clock: Run Now before an automatic pass; an
+  automatic pass waiting for echo work; a Run Now still reading its languages; a Summarize Again scan; the other
+  schedulers looked for before the next pass; meetings busy, in use or under review; the lock held by another
+  process; a pass stopped for a meeting and run again; Cancel; a meeting turned down; the lock refusing a pass; a
+  failed start; a deleted meeting), `BackgroundJobTests` (the order), `DeepTranscriptionQueueTests` (order and run-now upgrade, saving and damaged data,
   one at a time, AC/battery/no battery, busy meetings, meetings in use or in Review, run-now on
   battery, the setting off, queuing only one-language meetings, the State column's texts,
   commands refused for another process, an earlier version's queue read without its process
@@ -5607,7 +5613,8 @@ the app was closed (or had nothing to do; while the model downloads it waits for
 final transcripts are turned off, which lets summaries start); every later
 reconciliation (the model installed, the setting turned on) holds summaries back too, and stops
 one running (it is made again afterwards). Work the user asked for goes before automatic work, across both
-queues: when a final transcript or a summary ends, or a command lets a meeting go, summaries are looked for
+queues (`BackgroundJobOrder` orders final transcripts; summaries and the echo catch-up ask the coordinator,
+`askedForWorkWaiting`): when a final transcript or a summary ends, or a command lets a meeting go, summaries are looked for
 first, and an automatic final
 transcript waits for that scan while a Summarize Again is pending; an automatic summary waits while a Make Final
 Transcript Now pass is ready to run or has its languages read (`Situation.askedForPassWaiting`); automatic work keeps its order.
