@@ -644,7 +644,10 @@ for English after the voices not offered are removed). Everything comes from one
 its `constants_bin/*.safetensors`), never the moving `main`: the listing, FluidAudio's downloads (through
 `ModelRegistry.revisionOverrides`), and, for the French pack, the root `encoder_recover_pinv.bin` that FluidAudio
 would otherwise fetch from `main` at every load. The marker records the commit; a pack from another commit counts as
-not installed, and the next setup downloads it again at the pinned one (the constant is updated with the FluidAudio
+not installed, and the next setup downloads it again at the pinned one. A reading made with a natural voice records
+the commit in its cache key and manifest (`ReadingManifest.modelRevision`; none for an Apple voice, whose key is
+unchanged), so after the commit changes it is never resumed with parts of two versions: the resume says the voices
+changed and the reading must be made again (the constant is updated with the FluidAudio
 pin, after checking the new commit's card, licences, and listing). It downloads into `<pack>.download/`: the
 repository's listing is read first (each file's size, and SHA-256 for LFS files), every listed file is ensured with FluidAudio's
 `ModelHub.download(subdirectory:)` (a file already there is kept, a partial one resumed), and every file is then

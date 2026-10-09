@@ -183,7 +183,7 @@ struct Read: AsyncParsableCommand {
         if try request.resume && !ReadingOutput.exists(location.workDirectory) {
             // With an explicit output the cache is keyed by the text and settings, so a changed
             // source (a web page that was edited since) or setting finds no reading here.
-            throw HolosError.invalidInput("No reading to resume for \(location.output.path): none was started with this output, or its source, voice, rate, or title has changed since.")
+            throw HolosError.invalidInput("No reading to resume for \(location.output.path): none was started with this output, or its source, voice, rate, or title has changed since (or, for a natural voice, the voices were updated: a reading started with an earlier version cannot be resumed).")
         }
         progress.resumeHint = "To continue, run the same command with --resume --output \"\(request.output ?? location.workDirectory.path)\"."
         let renderer = RoutingSpeechRenderer(natural: NaturalVoicesCLI.renderer())
