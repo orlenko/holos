@@ -35,8 +35,10 @@ recorder ↔ app protocol.
   time: it probes `DeepTranscriptionLock`, applies the holds (a meeting starting, recording or saving; meetings in
   use or under review), orders the kinds' picks (`BackgroundJobOrder`, pure: asked-for work, then catch-up, then
   automatic work), stops its job when a meeting starts, and retries what was turned down. The kinds
-  (`BackgroundJobKind`) are `DeepTranscriptionJobs` (the saved queue of final transcripts) and `EchoCatchUpJobs`;
-  commands start through `BackgroundJobRunner` (`CommandRunner`, or a fake in tests).
+  (`BackgroundJobKind`) are `DeepTranscriptionJobs` (the saved queue of final transcripts), `EchoCatchUpJobs` and
+  `MeetingSummaryJobs` (Summarize Again requests and the scans summaries are picked from); commands start through
+  `BackgroundJobRunner` (`CommandRunner`, or a fake in tests). `MeetingController`'s automatic relabel is not one of
+  them: it takes no background job lock and runs beside them.
 
 **Must not own:** AppKit or windows, FluidAudio or WhisperKit (diarization and deep transcription run in a
 `voiceislocal` child), evaluation code (`HolosEvaluation`, which depends on this target), network access,

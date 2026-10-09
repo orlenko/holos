@@ -131,7 +131,6 @@ extension HolosAppDelegate: NSMenuDelegate {
             // A meeting another command let go of may be the next deep transcription's, the next summary's, or the
             // next echo analysis's. Summaries are looked for first, so a Summarize Again waiting goes before the next
             // automatic job (which waits for that scan); the echo analysis goes before an automatic final transcript.
-            self?.scheduleMeetingSummaries()
             self?.scheduleBackgroundJobs()
         }
         // Reviews open, opening, or still saving after they closed: the automatic relabel leaves those meetings alone.
@@ -177,7 +176,6 @@ extension HolosAppDelegate: NSMenuDelegate {
         // A meeting needs the Mac: a final transcript, a summary or an echo analysis in progress is stopped and runs
         // again afterwards.
         meeting.deep.coordinator?.meetingStateChanged()
-        meetingSummaryMeetingStateChanged()
     }
 
     private func handleMeetingEffect(_ effect: MeetingEffect) {
@@ -701,7 +699,7 @@ extension HolosAppDelegate: NSMenuDelegate {
         }
         pane.onSummarize = { [weak self] summary in self?.summarizeMeetingAgain(summary) }
         pane.onCancelSummary = { [weak self] id in self?.cancelMeetingSummary(id) }
-        pane.summaryRequested = { [weak self] id in self?.meeting.summaries.requested.contains(id) ?? false }
+        pane.summaryRequested = { [weak self] id in self?.meeting.summaries.jobs.requested.contains(id) ?? false }
         pane.summaryUnavailableReason = { [weak self] in self?.meetingSummaryUnavailableReason }
         // A rename, here or in Terminal, or a new generated title shows in the meeting's Review window (the live
         // transcript's header follows the list).
@@ -713,7 +711,7 @@ extension HolosAppDelegate: NSMenuDelegate {
         pane.onRecordingCommand = { [weak self, weak pane] command, sessionID in
             self?.performMeetingRecordingCommand(command, sessionID: sessionID, window: pane?.view.window)
         }
-        pane.update(summarizing: meeting.summaries.running?.sessionID)
+        pane.update(summarizing: summaryRunning)
         pane.update(meetingState: controller.state)
         meeting.meetingsPane = pane
         updateDeepStates()

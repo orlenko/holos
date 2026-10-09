@@ -174,7 +174,7 @@ extension HolosAppDelegate {
     func queueDeepTranscriptionAfterMeeting(sessionID: String) {
         guard DeepTranscriptionAppState.enabled, meeting.deep.model == "installed", let root = meeting.controller?.root,
               let directory = try? SessionLocator.resolve(sessionID, root: root) else {
-            scheduleMeetingSummaries()
+            scheduleBackgroundJobs()
             return
         }
         let activation = meeting.deep.activation
@@ -186,7 +186,7 @@ extension HolosAppDelegate {
             }.value
             defer {
                 self?.meeting.deep.deciding.remove(sessionID)
-                self?.scheduleMeetingSummaries()
+                self?.scheduleBackgroundJobs()
             }
             // The setting was turned off (and maybe on again) while it was read: that turning off took it off.
             // Checked against the live queue and the meetings considered: the user may have asked for it (and maybe
