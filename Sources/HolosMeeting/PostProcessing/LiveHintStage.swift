@@ -1,5 +1,6 @@
 import Foundation
 import HolosCore
+import HolosSpeakers
 import HolosStorage
 
 /// Reconciles corrections saved while recording with the final transcript and speaker run. Text runs after language
@@ -43,10 +44,7 @@ enum LiveHintStage {
             let snapshot = try SpeakerSessionSnapshot.load(session: session)
             guard snapshot.transcript.id == transcript.id, let projection = snapshot.projection else { return true }
             let applied = Set(projection.appliedEditIDs)
-            let protected = Set(snapshot.journal.edits.compactMap { edit -> String? in
-                guard applied.contains(edit.id), case .rename(let speakerID, _) = edit.action else { return nil }
-                return speakerID
-            })
+            let protected = protectedSpeakers(snapshot.journal.edits, applied: applied, projection: projection)
             let plan = LiveHints.speakerActionPlan(hints, projection: projection, transcript: transcript)
             if plan.unmatched > 0 { return true }
             let proposed = plan.actions
@@ -59,6 +57,21 @@ enum LiveHintStage {
         } catch {
             return true
         }
+    }
+
+    /// Speakers a live speaker name must not rename: those an applied `rename` named, and with them every speaker of
+    /// their same-name group (`ProjectedSpeaker.memberIDs`), since a rename of any of them reaches all of them
+    /// (`SpeakerProjection.fanningOut`) and the one shown may be another than the one renamed.
+    static func protectedSpeakers(_ edits: [SpeakerEdit], applied: Set<String>,
+                                  projection: SpeakerProjection) -> Set<String> {
+        var protected = Set(edits.compactMap { edit -> String? in
+            guard applied.contains(edit.id), case .rename(let speakerID, _) = edit.action else { return nil }
+            return speakerID
+        })
+        for speaker in projection.speakers where speaker.memberIDs.contains(where: protected.contains) {
+            protected.formUnion(speaker.memberIDs)
+        }
+        return protected
     }
 
     static func applyText(session: URL, transcript: Transcript, lease: ProcessingLease) async throws -> TextOutcome {
@@ -139,6 +152,20 @@ enum LiveHintStage {
         guard hints.contains(where: { if case .nameSpeaker = $0.action { true } else { false } }) else {
             return SpeakerOutcome()
         }
+        // Planned on the labels as read, outside the speaker lock: when they changed before the save (another
+        // window renamed a speaker, joining or leaving a same-name group), the editor refuses the plan, and it is
+        // made again, with its protection, on the labels as they are then.
+        for attempt in 1...3 {
+            let outcome = applySpeakersOnce(hints, session: session, transcript: transcript, profiles: profiles,
+                                            retrying: attempt < 3)
+            if let outcome { return outcome }
+        }
+        return SpeakerOutcome(problem: "Live speaker names could not be saved: " + SpeakerEditor.changedMessage)
+    }
+
+    /// One plan and save of `applySpeakers`; nil when `retrying` and the editor refused it as made on changed labels.
+    private static func applySpeakersOnce(_ hints: [LiveHint], session: URL, transcript: Transcript,
+                                          profiles: SpeakerProfileStore?, retrying: Bool) -> SpeakerOutcome? {
         do {
             let names = profiles.map { VoiceProfileService.profileNames(store: $0) } ?? [:]
             let snapshot = try SpeakerSessionSnapshot.load(session: session, profileNames: names,
@@ -149,10 +176,7 @@ enum LiveHintStage {
                 return SpeakerOutcome(problem: "Live speaker names could not be applied because this transcript has no speaker labels.")
             }
             let applied = Set(projection.appliedEditIDs)
-            let protected = Set(snapshot.journal.edits.compactMap { edit -> String? in
-                guard applied.contains(edit.id), case .rename(let speakerID, _) = edit.action else { return nil }
-                return speakerID
-            })
+            let protected = protectedSpeakers(snapshot.journal.edits, applied: applied, projection: projection)
             let plan = LiveHints.speakerActionPlan(hints, projection: projection, transcript: transcript)
             let proposed = plan.actions
             let actions = proposed.filter { action in
@@ -174,6 +198,8 @@ enum LiveHintStage {
             return SpeakerOutcome(note: count == 1 ? "Applied 1 live speaker name."
                                                    : "Applied \(count) live speaker names.",
                                   problem: unmatchedProblem)
+        } catch HolosError.unavailable(let message) where retrying && message == SpeakerEditor.changedMessage {
+            return nil
         } catch {
             return SpeakerOutcome(problem: "Live speaker names could not be saved: \(error.localizedDescription)")
         }
@@ -183,47 +209,34 @@ enum LiveHintStage {
                                 current: Transcript,
                                 result: LiveHints.TextOutcome,
                                 session: URL, lease: ProcessingLease) async throws -> Bool {
-        let archive = try SessionArchive.openForMaintenance(at: session, lease: lease)
-        do {
-            let preserved = try await SessionArchive.withSpeakerLockAsync(at: session) { () async throws -> Bool in
-                guard try SessionFiles.currentTranscript(session: session)?.id == current.id else {
-                    throw HolosError.unavailable("The transcript changed while live corrections were being saved.")
+        return try await TranscriptPublisher.publish(session: session, lease: lease) {
+            () throws -> TranscriptPublisher.Decision<Bool> in
+            guard try SessionFiles.currentTranscript(session: session)?.id == current.id else {
+                throw HolosError.unavailable("The transcript changed while live corrections were being saved.")
+            }
+            var plan: SpeakerTranscriptRetarget.Plan?
+            if let head = try SpeakerAnalysis.headState(session: session, transcript: current),
+               head.usableRunID != nil {
+                let snapshot = try SpeakerSessionSnapshot.load(session: session)
+                plan = try SpeakerTranscriptRetarget.plan(session: session, from: snapshot, to: transcript)
+                if head.hasEdits, plan == nil {
+                    throw HolosError.invalidInput("The edited speaker labels cannot be kept across the live correction.")
                 }
-                var plan: SpeakerTranscriptRetarget.Plan?
-                if let head = try SpeakerAnalysis.headState(session: session, transcript: current),
-                   head.usableRunID != nil {
-                    let snapshot = try SpeakerSessionSnapshot.load(session: session)
-                    plan = try SpeakerTranscriptRetarget.plan(session: session, from: snapshot, to: transcript)
-                    if head.hasEdits, plan == nil {
-                        throw HolosError.invalidInput("The edited speaker labels cannot be kept across the live correction.")
-                    }
-                }
-                try Task.checkCancellation()
-                if let plan { try SpeakerTranscriptRetarget.stage(plan, session: session) }
-                if transcript.id != liveBase.id {
-                    try await archive.saveTranscriptRevision(liveBase)
-                    try await archive.recordEvent(kind: MeetingEventKind.liveHintsApplied, details: [
-                        "transcriptID": liveBase.id, "base": liveSource.id,
-                        "applied": String(result.applied), "unmatched": String(result.unmatched),
-                    ])
-                }
-                try await archive.recordEvent(kind: MeetingEventKind.liveHintsApplied, details: [
+            }
+            var change = TranscriptPublisher.Change(
+                transcript: transcript,
+                event: .init(kind: MeetingEventKind.liveHintsApplied, details: [
                     "transcriptID": transcript.id, "base": current.id,
                     "applied": String(result.applied), "unmatched": String(result.unmatched),
-                ])
-                try await archive.saveTranscript(transcript, writeLegacyExports: false)
-                if let plan {
-                    do { try SpeakerTranscriptRetarget.publishHead(plan, session: session) } catch {
-                        throw IncompletePublication(message: error.localizedDescription)
-                    }
-                }
-                return plan != nil
+                ]),
+                retarget: plan, headFailed: { IncompletePublication(message: $0.localizedDescription) })
+            if transcript.id != liveBase.id {
+                change.revision = (liveBase, .init(kind: MeetingEventKind.liveHintsApplied, details: [
+                    "transcriptID": liveBase.id, "base": liveSource.id,
+                    "applied": String(result.applied), "unmatched": String(result.unmatched),
+                ]))
             }
-            await archive.releaseLock()
-            return preserved
-        } catch {
-            await archive.releaseLock()
-            throw error
+            return .publish(change, plan != nil)
         }
     }
 
@@ -238,35 +251,25 @@ enum LiveHintStage {
                                                     lease: ProcessingLease) async throws -> Bool {
         let initial = try SpeakerAnalysis.headState(session: session, transcript: transcript)
         guard let initial, !initial.sameTranscript, initial.run != nil else { return false }
-        let archive = try SessionArchive.openForMaintenance(at: session, lease: lease)
-        do {
-            let repaired = try await SessionArchive.withSpeakerLockAsync(at: session) { () async throws -> Bool in
-                guard try SessionFiles.currentTranscript(session: session)?.id == transcript.id else {
-                    throw HolosError.invalidInput("The transcript changed while its speaker labels were being repaired.")
-                }
-                guard let head = try SpeakerAnalysis.headState(session: session, transcript: transcript),
-                      head.runID == initial.runID else {
-                    throw HolosError.invalidInput("The speaker labels changed while they were being repaired.")
-                }
-                if head.sameTranscript { return false }
-                let snapshot = try SpeakerSessionSnapshot.load(session: session)
-                guard let plan = try SpeakerTranscriptRetarget.plan(session: session, from: snapshot,
-                                                                   to: transcript) else {
-                    if head.hasEdits {
-                        throw HolosError.invalidInput("The edited speaker labels cannot be kept across the live correction.")
-                    }
-                    return false
-                }
-                try Task.checkCancellation()
-                try SpeakerTranscriptRetarget.stage(plan, session: session)
-                try SpeakerTranscriptRetarget.publishHead(plan, session: session)
-                return true
+        return try await TranscriptPublisher.publish(session: session, lease: lease) {
+            () throws -> TranscriptPublisher.Decision<Bool> in
+            guard try SessionFiles.currentTranscript(session: session)?.id == transcript.id else {
+                throw HolosError.invalidInput("The transcript changed while its speaker labels were being repaired.")
             }
-            await archive.releaseLock()
-            return repaired
-        } catch {
-            await archive.releaseLock()
-            throw error
+            guard let head = try SpeakerAnalysis.headState(session: session, transcript: transcript),
+                  head.runID == initial.runID else {
+                throw HolosError.invalidInput("The speaker labels changed while they were being repaired.")
+            }
+            if head.sameTranscript { return .keep(false) }
+            let snapshot = try SpeakerSessionSnapshot.load(session: session)
+            guard let plan = try SpeakerTranscriptRetarget.plan(session: session, from: snapshot,
+                                                               to: transcript) else {
+                if head.hasEdits {
+                    throw HolosError.invalidInput("The edited speaker labels cannot be kept across the live correction.")
+                }
+                return .keep(false)
+            }
+            return .repairHead(plan, now: nil, true)
         }
     }
 }

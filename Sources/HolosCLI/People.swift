@@ -332,7 +332,8 @@ struct People: AsyncParsableCommand {
 // MARK: - Shared steps
 
 enum PeopleCommand {
-    /// A person by ID (any case) or by name (case-insensitive, unique).
+    /// A person by ID (any case) or by name (unique; compared as `SameNameSpeakers.key` does: case, accents, width
+    /// and spaces ignored).
     static func profileID(_ text: String, store: SpeakerProfileStore) throws -> String {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { throw HolosError.invalidInput("Name a person.") }
@@ -341,7 +342,8 @@ enum PeopleCommand {
             return exact.id
         }
         let wanted = SpeakerEditor.cleanName(trimmed) ?? trimmed
-        let named = profiles.filter { $0.displayName.caseInsensitiveCompare(wanted) == .orderedSame }
+        let key = SameNameSpeakers.key(wanted)
+        let named = profiles.filter { key != nil && SameNameSpeakers.key($0.displayName) == key }
         switch named.count {
         case 1:
             return named[0].id
@@ -371,7 +373,7 @@ enum PeopleCommand {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         if let uuid = UUID(uuidString: trimmed) {
             let id = uuid.uuidString
-            let url = HolosPaths.sessions.appendingPathComponent("\(id).holos", isDirectory: true)
+            let url = SessionPaths.folder(for: id, in: HolosPaths.sessions)
             return (id, try? SessionArchive.readManifest(at: url).name)
         }
         let manifest = try SessionArchive.readManifest(at: try SessionLocator.resolve(trimmed))

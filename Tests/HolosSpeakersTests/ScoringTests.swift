@@ -1,4 +1,5 @@
 import Foundation
+import HolosTestSupport
 import Testing
 @testable import HolosSpeakers
 
@@ -199,7 +200,7 @@ private func near(_ value: Double, _ expected: Double) -> Bool {
 // MARK: - Assignment
 
 @Test func hungarianMatchesBruteForce() {
-    var numbers = SeededNumbers(seed: 7)
+    var numbers = SplitMix64(state: 7)
     for _ in 0..<300 {
         let rows = numbers.next(in: 1...5)
         let columns = numbers.next(in: rows...6)
@@ -222,20 +223,4 @@ private func bruteForceMinimum(_ cost: [[Int]]) -> Int {
         return best
     }
     return search(0, [])
-}
-
-/// A small deterministic generator (SplitMix64), so failures reproduce.
-private struct SeededNumbers {
-    var state: UInt64
-
-    init(seed: UInt64) { state = seed }
-
-    mutating func next(in range: ClosedRange<Int>) -> Int {
-        state &+= 0x9E37_79B9_7F4A_7C15
-        var z = state
-        z = (z ^ (z >> 30)) &* 0xBF58_476D_1CE4_E5B9
-        z = (z ^ (z >> 27)) &* 0x94D0_49BB_1331_11EB
-        z ^= z >> 31
-        return range.lowerBound + Int(z % UInt64(range.count))
-    }
 }

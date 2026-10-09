@@ -10,9 +10,11 @@ public enum ReviewAssignTarget: Sendable, Equatable {
     case speaker(String)
     /// The unknown speaker.
     case unknown
-    /// A new speaker of this meeting, optionally named.
+    /// A new speaker of this meeting, optionally named; a name a listed speaker already has gives the turns to that
+    /// speaker instead (same name, same person).
     case newSpeaker(name: String?)
-    /// A known person: the meeting's speaker linked to them, or a new speaker linked to them.
+    /// A known person: the meeting's speaker linked to them, else the one called their name, else a new speaker linked
+    /// to them.
     case person(profileID: String)
 }
 
@@ -999,8 +1001,20 @@ public struct ReviewDeletedWords: Sendable, Equatable {
             var actions: [SpeakerEditAction] = [.rename(speakerID: speakerID, name: nil)]
             // A linked person, or the person an automatic name ("Jim (auto)") comes from, as "Not Jim" does: either
             // would otherwise keep showing its name.
-            if let profileID = speaker.profileID ?? automaticProfileID(for: speakerID) {
-                actions.append(.rejectProfile(speakerID: speakerID, profileID: profileID))
+            let shownPerson = speaker.profileID ?? automaticProfileID(for: speakerID)
+            if let shownPerson {
+                actions.append(.rejectProfile(speakerID: speakerID, profileID: shownPerson))
+            }
+            // Shown joined with same-named speakers: each is cleared (`fanningOut` repeats the above for them), and one
+            // linked to somebody else than the person shown is unlinked from them too, or that link would name it again.
+            if speaker.memberIDs.count > 1 {
+                let stored = projection.unjoined.speakers
+                for member in speaker.memberIDs.dropFirst() {
+                    guard let own = stored.first(where: { $0.id == member })?.profileID, own != shownPerson else {
+                        continue
+                    }
+                    actions.append(.rejectProfile(speakerID: member, profileID: own))
+                }
             }
             try await apply(actions)
             return
@@ -1010,7 +1024,10 @@ public struct ReviewDeletedWords: Sendable, Equatable {
             return
         }
         if let person = person(named: name) {
-            if speaker.profileID == person.id, speaker.name == person.displayName { return }
+            // Already so: every stored speaker it shows (same-named ones too) linked to them under that name.
+            if SpeakerEditor.changesNothing([.linkProfile(speakerID: speakerID, profileID: person.id),
+                                             .rename(speakerID: speakerID, name: person.displayName)],
+                                            on: projection) { return }
             try await link(speakerID: speakerID, to: .existing(profileID: person.id), byName: true)
         } else {
             // Return pressed again while this speaker's link to that new name is still waiting or saving.
@@ -1019,17 +1036,18 @@ public struct ReviewDeletedWords: Sendable, Equatable {
         }
     }
 
-    /// The known person called `name` (cleaned, ignoring case), the most recently used one when two share it.
+    /// The known person called `name` (compared as `SameNameSpeakers.key` does: ignoring case, accents and extra
+    /// spaces), the most recently used one when two share it.
     private func person(named name: String) -> SpeakerProfile? {
-        guard let clean = SpeakerEditor.cleanName(name) else { return nil }
-        return people.first { $0.displayName.caseInsensitiveCompare(clean) == .orderedSame }
+        guard let key = SameNameSpeakers.key(name) else { return nil }
+        return people.first { SameNameSpeakers.key($0.displayName) == key }
     }
 
     /// A name-field link of `speakerID` to a new person called `name` is queued or saving and not undone.
     private func pendingLinkByName(speakerID: String, name: String) -> Bool {
         queue.contains { op in
             guard !op.undone, case .link(let id, .new(let pending), _, true) = op.kind else { return false }
-            return id == speakerID && pending.caseInsensitiveCompare(name) == .orderedSame
+            return id == speakerID && SameNameSpeakers.key(pending) == SameNameSpeakers.key(name)
         }
     }
 
@@ -1045,9 +1063,15 @@ public struct ReviewDeletedWords: Sendable, Equatable {
         case .unknown:
             try await apply([.reassignTurns(turnIDs: ids, to: nil)])
         case .newSpeaker(let name):
+            // Same name, same person: a name a listed speaker already has gives the turns to that speaker.
+            if let name, let speaker = projection.speaker(named: name) {
+                try await apply([.reassignTurns(turnIDs: ids, to: speaker.id)])
+                return
+            }
             try await apply([.newSpeaker(speakerID: Self.newSpeakerID(), name: name, turnIDs: ids)])
         case .person(let profileID):
-            if let speaker = projection.speakers.first(where: { $0.profileID == profileID }) {
+            // The stored speaker linked to that very person (it may be shown joined with same-named ones).
+            if let speaker = projection.unjoined.speakers.first(where: { $0.profileID == profileID }) {
                 try await apply([.reassignTurns(turnIDs: ids, to: speaker.id)])
                 return
             }
@@ -1055,13 +1079,33 @@ public struct ReviewDeletedWords: Sendable, Equatable {
             guard let person = people.first(where: { $0.id == profileID }) else {
                 throw HolosError.invalidInput("That person is not known to Voice is Local any more; reopen the window.")
             }
+            // A listed speaker already called this person's name and linked to nobody is them (same name, same
+            // person): the turns go to it, linked to the person in the same change unless it said "Not <person>" (the
+            // rejection keeps the link off; the name still makes it them). One linked to somebody else of that name
+            // is that other person: the person asked for gets a speaker of their own (shown apart, since the two are
+            // linked to different people).
+            if let speaker = projection.speaker(named: person.displayName), speaker.profileID == nil {
+                let move = SpeakerEditAction.reassignTurns(turnIDs: ids, to: speaker.id)
+                guard !speaker.rejectedProfileIDs.contains(profileID) else {
+                    try await apply([move])
+                    return
+                }
+                try validate([move])
+                mergeArmed = true
+                try await enqueue(.assignPerson(create: move, speakerID: speaker.id, profileID: profileID,
+                                                learnVoice: learnVoices),
+                                  optimistic: [move, .linkProfile(speakerID: speaker.id, profileID: profileID),
+                                               .rename(speakerID: speaker.id, name: person.displayName)])
+                return
+            }
             let speakerID = Self.newSpeakerID()
             let create = SpeakerEditAction.newSpeaker(speakerID: speakerID, name: person.displayName, turnIDs: ids)
             try validate([create])
             mergeArmed = true
             try await enqueue(.assignPerson(create: create, speakerID: speakerID, profileID: profileID,
                                             learnVoice: learnVoices),
-                              optimistic: [create, .linkProfile(speakerID: speakerID, profileID: profileID)])
+                              optimistic: [create, .linkProfile(speakerID: speakerID, profileID: profileID),
+                                           .rename(speakerID: speakerID, name: person.displayName)])
         }
     }
 
@@ -1780,6 +1824,8 @@ public struct ReviewDeletedWords: Sendable, Equatable {
             case edit([SpeakerEditAction], requireCompleteJournal: Bool = false)
             /// `byName`: from the name field; a `.new` target is linked to a person of that name existing at save time.
             case link(speakerID: String, target: ProfileTarget, learnVoice: Bool, byName: Bool)
+            /// `create` gives the turns to `speakerID` (a new speaker, or a listed one already called the person's
+            /// name), which is then linked to the person; one change.
             case assignPerson(create: SpeakerEditAction, speakerID: String, profileID: String, learnVoice: Bool)
             case confirmAll(learnVoices: Bool, suggestions: [String: String])
             case markSelf(speakerID: String, learnVoice: Bool)
@@ -1869,8 +1915,15 @@ public struct ReviewDeletedWords: Sendable, Equatable {
     }
 
     /// Queues a change at once (it runs once the changes before it ran); `wait` for its outcome.
+    ///
+    /// Every change is shown at once as `SpeakerEditor` will save it (an edit, a link, "This is me", Confirm All, an
+    /// assignment to a person): its actions made to each stored speaker a speaker shown joined by name shows
+    /// (`SpeakerProjection.fanningOut`, which the editor applies to the saved batch too), worked out on the labels
+    /// shown now. Otherwise renaming such a speaker would show its other stored speakers apart, under the old name,
+    /// until the save.
     private func queued(_ kind: Operation.Kind, optimistic: [SpeakerEditAction]) -> Operation {
-        let op = Operation(kind: kind, basis: savedVersion, runID: snapshot.run?.id, optimistic: optimistic)
+        let shown = optimistic.isEmpty ? [] : projection.fanningOut(optimistic)
+        let op = Operation(kind: kind, basis: savedVersion, runID: snapshot.run?.id, optimistic: shown)
         op.movesSeen = wordMoves.count
         // A newer change: voice samples wait for it (`holdSampleSync`); exports alone change no label.
         if case .exports = kind {} else { holdSampleSync() }
@@ -1990,7 +2043,7 @@ public struct ReviewDeletedWords: Sendable, Equatable {
             try requireBasis(op)
             let sent = actions.map(resolve)
             try await saveEdit(sent, op: op, requireCompleteJournal: requireCompleteJournal) { batch in
-                batch.map(\.action) == sent
+                SpeakerEditor.saved(batch.map(\.action), asAsked: sent)
             }
         case .link(let speakerID, let asked, let learnVoice, let byName):
             try requireBasis(op)
@@ -2010,15 +2063,15 @@ public struct ReviewDeletedWords: Sendable, Equatable {
             }
         case .assignPerson(let create, let speakerID, let profileID, let learnVoice):
             try requireBasis(op)
+            // One batch: the move (or the new speaker) and the link, as shown at once, so one undo takes back both.
             let sent = resolve(create)
-            try await saveEdit([sent], op: op) { batch in batch.map(\.action) == [sent] }
             let view = savedProjection
-            try await savePeopleChange(op, matching: Self.linkBatch(speakerID),
+            try await savePeopleChange(op, matching: Self.linkBatch(speakerID, after: sent),
                                        learn: learnVoice) { session, store, extractor, deferred in
                 try await VoiceProfileService.link(session: session, speakerID: speakerID,
                                                    to: .existing(profileID: profileID), view: view,
                                                    learnVoice: learnVoice, extractor: extractor, store: store,
-                                                   deferSamples: deferred)
+                                                   deferSamples: deferred, preceding: [sent])
             }
         case .confirmAll(let learnVoices, let chosen):
             try requireBasis(op)
@@ -3664,22 +3717,31 @@ public struct ReviewDeletedWords: Sendable, Equatable {
         text.split(whereSeparator: { $0.isWhitespace || $0.isNewline }).joined(separator: " ")
     }
 
-    /// linkProfile + rename of `speakerID` (a link, "This is me").
-    private nonisolated static func linkBatch(_ speakerID: String) -> ([SpeakerEdit]) -> Bool {
-        { batch in
-            guard batch.count == 2,
-                  case .linkProfile(let linked, _) = batch[0].action, linked == speakerID,
-                  case .rename(let renamed, _) = batch[1].action, renamed == speakerID else { return false }
-            return true
+    /// linkProfile + rename of `speakerID` (a link, "This is me"), then what the editor adds for the stored speakers
+    /// it shows joined by name (`SpeakerEditor.saved(_:asAsked:)`). With `first` ("Assign to <person>"), that action
+    /// comes before them in the same batch.
+    private nonisolated static func linkBatch(_ speakerID: String,
+                                              after first: SpeakerEditAction? = nil) -> ([SpeakerEdit]) -> Bool {
+        { saved in
+            var batch = saved.map(\.action)
+            if let first {
+                guard batch.first == first else { return false }
+                batch.removeFirst()
+            }
+            guard batch.count >= 2,
+                  case .linkProfile(let linked, _) = batch[0], linked == speakerID,
+                  case .rename(let renamed, _) = batch[1], renamed == speakerID else { return false }
+            return batch.dropFirst(2).allSatisfy(SpeakerEditor.isFannedOut)
         }
     }
 
-    /// linkProfile + rename pairs (Confirm All).
-    private nonisolated static func confirmBatch(_ batch: [SpeakerEdit]) -> Bool {
-        guard !batch.isEmpty, batch.count % 2 == 0 else { return false }
-        return stride(from: 0, to: batch.count, by: 2).allSatisfy { index in
-            guard case .linkProfile(let linked, _) = batch[index].action,
-                  case .rename(let renamed, _) = batch[index + 1].action else { return false }
+    /// linkProfile + rename pairs (Confirm All); the editor's additions for the stored speakers a joined speaker shows
+    /// are such pairs too.
+    private nonisolated static func confirmBatch(_ saved: [SpeakerEdit]) -> Bool {
+        guard !saved.isEmpty, saved.count % 2 == 0 else { return false }
+        return stride(from: 0, to: saved.count, by: 2).allSatisfy { index in
+            guard case .linkProfile(let linked, _) = saved[index].action,
+                  case .rename(let renamed, _) = saved[index + 1].action else { return false }
             return linked == renamed
         }
     }

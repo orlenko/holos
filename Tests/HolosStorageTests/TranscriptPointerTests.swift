@@ -2,16 +2,10 @@ import Foundation
 import Testing
 import HolosCore
 @testable import HolosStorage
+import HolosTestSupport
+import HolosSessionTestSupport
 
-private func pointerTemporaryRoot() throws -> URL {
-    let root = FileManager.default.temporaryDirectory.appendingPathComponent("holos-pointer-\(UUID().uuidString)")
-    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-    return root
-}
-
-private func pointerArchive(in root: URL) throws -> SessionArchive {
-    try SessionArchive.create(root: root, name: "Pointer", source: .microphone, locale: "en-CA", backend: .speech)
-}
+private let pointerSession = SessionFixtureBuilder(name: "Pointer")
 
 private func pointerTranscript(createdAt seconds: TimeInterval, text: String = "Hello") -> Transcript {
     Transcript(createdAt: Date(timeIntervalSince1970: seconds), source: "mic", locale: "en-CA", backend: .speech,
@@ -19,9 +13,9 @@ private func pointerTranscript(createdAt seconds: TimeInterval, text: String = "
 }
 
 @Test func transcriptPointerFollowsLatestSave() async throws {
-    let root = try pointerTemporaryRoot()
+    let root = try TemporaryDirectory("pointer").url
     defer { try? FileManager.default.removeItem(at: root) }
-    let writer = try pointerArchive(in: root)
+    let writer = try pointerSession.create(in: root)
     #expect(try SessionArchive.currentTranscriptID(at: writer.directory) == nil)
     // B is saved last but carries the older date: the pointer, not the date, decides.
     let a = pointerTranscript(createdAt: 1_790_000_001)
@@ -38,9 +32,9 @@ private func pointerTranscript(createdAt seconds: TimeInterval, text: String = "
 }
 
 @Test func legacyArchiveWithoutPointer() async throws {
-    let root = try pointerTemporaryRoot()
+    let root = try TemporaryDirectory("pointer").url
     defer { try? FileManager.default.removeItem(at: root) }
-    let writer = try pointerArchive(in: root)
+    let writer = try pointerSession.create(in: root)
     let only = pointerTranscript(createdAt: 1_790_000_000)
     try await writer.saveTranscript(only)
     try await writer.finish(status: ArchiveStatus.complete)
@@ -55,9 +49,9 @@ private func pointerTranscript(createdAt seconds: TimeInterval, text: String = "
 }
 
 @Test func saveTranscriptCanSkipLegacyExports() async throws {
-    let root = try pointerTemporaryRoot()
+    let root = try TemporaryDirectory("pointer").url
     defer { try? FileManager.default.removeItem(at: root) }
-    let writer = try pointerArchive(in: root)
+    let writer = try pointerSession.create(in: root)
     let transcript = pointerTranscript(createdAt: 1_790_000_000)
     try await writer.saveTranscript(transcript, writeLegacyExports: false)
     try await writer.finish(status: ArchiveStatus.complete)
@@ -67,9 +61,9 @@ private func pointerTranscript(createdAt seconds: TimeInterval, text: String = "
 }
 
 @Test func pointerFromANewerHolosIsRefused() async throws {
-    let root = try pointerTemporaryRoot()
+    let root = try TemporaryDirectory("pointer").url
     defer { try? FileManager.default.removeItem(at: root) }
-    let writer = try pointerArchive(in: root)
+    let writer = try pointerSession.create(in: root)
     let transcript = pointerTranscript(createdAt: 1_790_000_000)
     try await writer.saveTranscript(transcript, writeLegacyExports: false)
     try await writer.finish(status: ArchiveStatus.complete)
@@ -80,9 +74,9 @@ private func pointerTranscript(createdAt seconds: TimeInterval, text: String = "
 }
 
 @Test func retryDoesNotOverwriteAnUnreadablePointer() async throws {
-    let root = try pointerTemporaryRoot()
+    let root = try TemporaryDirectory("pointer").url
     defer { try? FileManager.default.removeItem(at: root) }
-    let writer = try pointerArchive(in: root)
+    let writer = try pointerSession.create(in: root)
     let a = pointerTranscript(createdAt: 1_790_000_000, text: "A")
     let b = pointerTranscript(createdAt: 1_790_000_001, text: "B")
     try await writer.saveTranscript(a, writeLegacyExports: false)
@@ -110,9 +104,9 @@ private func pointerTranscript(createdAt seconds: TimeInterval, text: String = "
 }
 
 @Test func olderRevisionCannotBeRepublished() async throws {
-    let root = try pointerTemporaryRoot()
+    let root = try TemporaryDirectory("pointer").url
     defer { try? FileManager.default.removeItem(at: root) }
-    let writer = try pointerArchive(in: root)
+    let writer = try pointerSession.create(in: root)
     let a = pointerTranscript(createdAt: 1_790_000_000, text: "A")
     let b = pointerTranscript(createdAt: 1_790_000_001, text: "B")
     try await writer.saveTranscript(a)
@@ -127,9 +121,9 @@ private func pointerTranscript(createdAt seconds: TimeInterval, text: String = "
 }
 
 @Test func onlyThePendingSaveCanBeRetried() async throws {
-    let root = try pointerTemporaryRoot()
+    let root = try TemporaryDirectory("pointer").url
     defer { try? FileManager.default.removeItem(at: root) }
-    let writer = try pointerArchive(in: root)
+    let writer = try pointerSession.create(in: root)
     let pointerURL = SessionPaths.transcriptPointer(writer.directory)
     // The first save fails while publishing the pointer, so no pointer exists yet.
     try FileManager.default.createDirectory(at: pointerURL, withIntermediateDirectories: false)
@@ -156,9 +150,9 @@ private func pointerTranscript(createdAt seconds: TimeInterval, text: String = "
 }
 
 @Test func pointerToAMissingRevisionIsReported() async throws {
-    let root = try pointerTemporaryRoot()
+    let root = try TemporaryDirectory("pointer").url
     defer { try? FileManager.default.removeItem(at: root) }
-    let writer = try pointerArchive(in: root)
+    let writer = try pointerSession.create(in: root)
     let transcript = pointerTranscript(createdAt: 1_790_000_000)
     try await writer.saveTranscript(transcript, writeLegacyExports: false)
     try await writer.finish(status: ArchiveStatus.complete)
@@ -167,9 +161,9 @@ private func pointerTranscript(createdAt seconds: TimeInterval, text: String = "
 }
 
 @Test func transcriptIDCannotShadowThePointer() async throws {
-    let root = try pointerTemporaryRoot()
+    let root = try TemporaryDirectory("pointer").url
     defer { try? FileManager.default.removeItem(at: root) }
-    let writer = try pointerArchive(in: root)
+    let writer = try pointerSession.create(in: root)
     for id in ["current", "Current"] {
         let transcript = Transcript(id: id, source: "mic", locale: "en-CA", backend: .speech)
         await #expect(throws: HolosError.self) { try await writer.saveTranscript(transcript) }
@@ -178,9 +172,9 @@ private func pointerTranscript(createdAt seconds: TimeInterval, text: String = "
 }
 
 @Test func pointerNamingThePointerFileIsRefused() async throws {
-    let root = try pointerTemporaryRoot()
+    let root = try TemporaryDirectory("pointer").url
     defer { try? FileManager.default.removeItem(at: root) }
-    let writer = try pointerArchive(in: root)
+    let writer = try pointerSession.create(in: root)
     try await writer.saveTranscript(pointerTranscript(createdAt: 1_790_000_000), writeLegacyExports: false)
     try await writer.finish(status: ArchiveStatus.complete)
     // A hand-edited pointer naming itself: transcripts/current.json is a regular file, so only the ID check

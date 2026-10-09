@@ -25,10 +25,15 @@ public struct DictationStatus: Sendable, Equatable {
         self.message = message
     }
 
-    /// One normalization for preview, committed, and final text, so committed text stays a prefix of the result.
+    /// One normalization for preview, committed, and final text, so committed text stays a prefix of the result:
+    /// with `seams`, a capital a pause left inside a sentence is lowered (`DictationSeams`).
     /// Run Again joins a saved dictation's results the same way (`DictationTextPipeline.transcript`).
-    static func transcript(_ segments: [TranscriptSegment]) -> String {
-        DictationTextPipeline.transcript(segments.sorted { $0.start < $1.start }.map(\.text))
+    /// `provisional`: results still being recognized, whose pauses are decided again at each revision.
+    static func transcript(_ segments: [TranscriptSegment], provisional: [TranscriptSegment] = [],
+                           seams: DictationSeams? = nil) -> String {
+        let pieces = (segments.map { ($0, true) } + provisional.map { ($0, false) }).sorted { $0.0.start < $1.0.start }
+        guard let seams else { return DictationTextPipeline.transcript(pieces.map(\.0.text)) }
+        return seams.join(pieces.map { DictationSeams.Piece($0.0.text, isFinal: $0.1) })
     }
 }
 
@@ -80,6 +85,9 @@ public final class DictationController {
     public var contextualStrings: [String] = []
     /// The recognizer's locale; read when each utterance starts, so a change never affects one in progress.
     public var locale: String
+    /// Words whose capitals stay after a pause (`DictationSeams.terms`: the word list, learned corrections' meant
+    /// phrases, people's names); asked when each utterance starts, so a change counts from the next one.
+    public var seamTerms: @MainActor () -> [String] = { [] }
     /// Given each microphone frame the recognizer took, with its utterance ID, in order: History keeps the audio of a
     /// dictation from exactly what was recognized.
     public var frameTap: (@MainActor (UUID, PCMFrame) -> Void)?
@@ -94,6 +102,8 @@ public final class DictationController {
     private var generation: UUID?
     private var releaseRequested = false
     private var reducer = TranscriptReducer()
+    /// This utterance's joining of the recognizer's results; its decisions last the utterance.
+    private var seams: DictationSeams?
     private var capture: (any DictationCapture)?
     private var speech: (any DictationSpeech)?
     private var updateContinuation: AsyncStream<TranscriptUpdate>.Continuation?
@@ -141,6 +151,7 @@ public final class DictationController {
         generation = id
         releaseRequested = false
         reducer = TranscriptReducer()
+        seams = DictationSeams(language: locale, terms: seamTerms())
         capture = nil
         speech = nil
         updateContinuation = nil
@@ -291,7 +302,7 @@ public final class DictationController {
             updateContinuation?.finish()
             await previewTask?.value
             guard generation == id else { return }
-            let text = DictationStatus.transcript(segments)
+            let text = DictationStatus.transcript(segments, seams: seams)
             generation = nil
             releaseRequested = false
             reducer = TranscriptReducer()
@@ -310,8 +321,10 @@ public final class DictationController {
         do {
             try reducer.apply(update)
             publish(.init(phase: status.phase, utteranceID: id,
-                          text: DictationStatus.transcript(reducer.finalized + reducer.provisional),
-                          committedText: DictationStatus.transcript(reducer.finalized), message: status.message))
+                          text: DictationStatus.transcript(reducer.finalized, provisional: reducer.provisional,
+                                                           seams: seams),
+                          committedText: DictationStatus.transcript(reducer.finalized, seams: seams),
+                          message: status.message))
         } catch {
             // The final segments returned by the engine remain authoritative.
         }

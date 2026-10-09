@@ -3,6 +3,7 @@ import HolosCore
 @testable import HolosMeeting
 import HolosSpeakers
 import HolosStorage
+import HolosTestSupport
 import os
 import Testing
 
@@ -134,7 +135,7 @@ private let s4 = "system:S4"
 
 @Test(.timeLimit(.minutes(1)))
 func theCacheServesCoveredTurnsOfTheHeadRunAndFallsBackOtherwise() async throws {
-    let temp = try TemporaryDirectory("voice")
+    let temp = try TemporaryDirectory("voice", permissions: 0o700)
     defer { temp.remove() }
     let fixture = try await SessionFixtures.labelledSession(in: temp.url, speakers: ["S1", "S2"], duration: 20)
     let turns = try SessionFixtures.view(fixture.session).turns.map(TurnRef.init)
@@ -213,7 +214,7 @@ func aRunAWordEditRetargetedKeepsOnlyTheVoicesOfTurnsAtTheSameTimes() {
 
 @Test(.timeLimit(.minutes(1))) @MainActor
 func turnsAWordEditMovedWhileThePassRanAreWorkedOutAgain() async throws {
-    let temp = try TemporaryDirectory("review")
+    let temp = try TemporaryDirectory("review", permissions: 0o700)
     defer { temp.remove() }
     // One untimed segment shared by two speakers' turns of four words each (T1 0–8 s, T2 8–16 s).
     let segment = TranscriptSegment(id: "U1", start: 0, end: 16, text: "one two three four five six seven eight",
@@ -259,7 +260,7 @@ func turnsAWordEditMovedWhileThePassRanAreWorkedOutAgain() async throws {
 
 @Test(.timeLimit(.minutes(1))) @MainActor
 func aSplitUndoneAfterThePassGetsItsTurnsVoiceBack() async throws {
-    let temp = try TemporaryDirectory("review")
+    let temp = try TemporaryDirectory("review", permissions: 0o700)
     defer { temp.remove() }
     // One timed segment of eight words, two seconds each, shared by two speakers' turns (T1 0–8 s, T2 8–16 s).
     let segment = SessionFixtures.segment(["one", "two", "three", "four", "five", "six", "seven", "eight"],
@@ -332,7 +333,7 @@ func aLearnerWaitsForThePassOrStopsWhenCancelled() async throws {
 
 @Test(.timeLimit(.minutes(1))) @MainActor
 func namingASpeakerSuggestsTheSpeakersWithItsVoice() async throws {
-    let temp = try TemporaryDirectory("voice")
+    let temp = try TemporaryDirectory("voice", permissions: 0o700)
     defer { temp.remove() }
     let store = try voiceStore(temp)
     let fixture = try await SessionFixtures.labelledSession(in: temp.url, speakers: ["S1", "S2", "S3", "S4"],
@@ -362,7 +363,7 @@ func namingASpeakerSuggestsTheSpeakersWithItsVoice() async throws {
 
 @Test(.timeLimit(.minutes(1))) @MainActor
 func notJimOnAVoiceSuggestionIsSavedAndConfirmAllTakesTheRest() async throws {
-    let temp = try TemporaryDirectory("voice")
+    let temp = try TemporaryDirectory("voice", permissions: 0o700)
     defer { temp.remove() }
     let store = try voiceStore(temp)
     let fixture = try await SessionFixtures.labelledSession(in: temp.url, speakers: ["S1", "S2", "S3", "S4"],
@@ -384,14 +385,23 @@ func notJimOnAVoiceSuggestionIsSavedAndConfirmAllTakesTheRest() async throws {
     try await review.undo()
     #expect(review.suggestion(for: s3)?.profileID == jim.id)
     try await review.confirmAllSuggestions()
-    #expect(review.speaker(s3)?.profileID == jim.id, "Confirm All links the voice suggestion.")
+    // Confirm All links the voice suggestion; S3 is then called Jim as S1 is, so the two are shown as one (S1, the
+    // lower ordinal). Nothing is merged.
+    let merged = try SessionSpeakerStore.readEdits(session: fixture.session).edits.contains {
+        if case .merge = $0.action { true } else { false }
+    }
+    #expect(!merged)
+    #expect(review.speaker(s1)?.memberIDs == [s1, s3])
+    #expect(review.speaker(s3) == nil)
+    #expect(review.speaker(s1)?.profileID == jim.id)
+    #expect(review.projection.turns.first { $0.id == "T3" }?.speakerID == s1)
     #expect(review.suggestionCount == 0)
     await review.close()
 }
 
 @Test(.timeLimit(.minutes(1))) @MainActor
 func aTurnHintGivesTheTurnToTheNamedSpeaker() async throws {
-    let temp = try TemporaryDirectory("voice")
+    let temp = try TemporaryDirectory("voice", permissions: 0o700)
     defer { temp.remove() }
     let store = try voiceStore(temp, remember: false)
     let fixture = try await SessionFixtures.labelledSession(in: temp.url, speakers: ["S1", "S2", "S3", "S4"],
@@ -410,7 +420,7 @@ func aTurnHintGivesTheTurnToTheNamedSpeaker() async throws {
 @Test(.timeLimit(.minutes(1))) @MainActor
 func matchingVoicesAreMergedOnlyWhenAsked() async throws {
     for automatic in [false, true] {
-        let temp = try TemporaryDirectory("voice")
+        let temp = try TemporaryDirectory("voice", permissions: 0o700)
         defer { temp.remove() }
         let store = try voiceStore(temp, remember: false)
         // Five turns of 3 s each: enough speech (10 s) on both sides to merge without asking.
@@ -440,7 +450,7 @@ func matchingVoicesAreMergedOnlyWhenAsked() async throws {
 
 @Test(.timeLimit(.minutes(1))) @MainActor
 func nothingIsSuggestedWhileTheJournalHasAnUnreadableLine() async throws {
-    let temp = try TemporaryDirectory("voice")
+    let temp = try TemporaryDirectory("voice", permissions: 0o700)
     defer { temp.remove() }
     let store = try voiceStore(temp, remember: false)
     let fixture = try await SessionFixtures.labelledSession(in: temp.url, speakers: ["S1", "S2", "S3", "S4"],
@@ -463,7 +473,7 @@ func nothingIsSuggestedWhileTheJournalHasAnUnreadableLine() async throws {
 
 @Test(.timeLimit(.minutes(1))) @MainActor
 func aVoiceAskedForBeforeAForgetIsNotLearned() async throws {
-    let temp = try TemporaryDirectory("voice")
+    let temp = try TemporaryDirectory("voice", permissions: 0o700)
     defer { temp.remove() }
     let store = try voiceStore(temp)
     let fixture = try await SessionFixtures.labelledSession(in: temp.url, speakers: ["S1", "S2"], duration: 20)
@@ -480,7 +490,7 @@ func aVoiceAskedForBeforeAForgetIsNotLearned() async throws {
 
 @Test(.timeLimit(.minutes(1))) @MainActor
 func anUndoneOrNewerLinkTakesBackAVoiceNotLearnedYet() async throws {
-    let temp = try TemporaryDirectory("voice")
+    let temp = try TemporaryDirectory("voice", permissions: 0o700)
     defer { temp.remove() }
     let store = try voiceStore(temp)
     let fixture = try await SessionFixtures.labelledSession(in: temp.url, speakers: ["S1", "S2"], duration: 20)
@@ -509,7 +519,7 @@ func anUndoneOrNewerLinkTakesBackAVoiceNotLearnedYet() async throws {
 
 @Test(.timeLimit(.minutes(1))) @MainActor
 func undoingOneLinkKeepsAnotherLinksRequestToLearnTheVoice() async throws {
-    let temp = try TemporaryDirectory("voice")
+    let temp = try TemporaryDirectory("voice", permissions: 0o700)
     defer { temp.remove() }
     let store = try voiceStore(temp)
     let fixture = try await SessionFixtures.labelledSession(in: temp.url, speakers: ["S1", "S2"], duration: 20)
@@ -525,7 +535,7 @@ func undoingOneLinkKeepsAnotherLinksRequestToLearnTheVoice() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func aDeferredLinkRecordsWhoItLinkedAndLearnsNothing() async throws {
-    let temp = try TemporaryDirectory("voice")
+    let temp = try TemporaryDirectory("voice", permissions: 0o700)
     defer { temp.remove() }
     let store = try voiceStore(temp)
     let fixture = try await SessionFixtures.labelledSession(in: temp.url, speakers: ["S1", "S2"], duration: 20)
@@ -542,7 +552,7 @@ func aDeferredLinkRecordsWhoItLinkedAndLearnsNothing() async throws {
 
 @Test(.timeLimit(.minutes(1))) @MainActor
 func noVoicesAreWorkedOutUnlessAsked() async throws {
-    let temp = try TemporaryDirectory("voice")
+    let temp = try TemporaryDirectory("voice", permissions: 0o700)
     defer { temp.remove() }
     let fixture = try await SessionFixtures.labelledSession(in: temp.url, speakers: ["S1", "S2"], duration: 20)
     let extractor = VoiceFakeExtractor(voices: voiceMap)
@@ -558,7 +568,7 @@ func noVoicesAreWorkedOutUnlessAsked() async throws {
 
 @Test(.timeLimit(.minutes(1))) @MainActor
 func aNameIsSavedWhileItsVoiceIsStillBeingLearned() async throws {
-    let temp = try TemporaryDirectory("voice")
+    let temp = try TemporaryDirectory("voice", permissions: 0o700)
     defer { temp.remove() }
     let store = try voiceStore(temp)
     let fixture = try await SessionFixtures.labelledSession(in: temp.url, speakers: ["S1", "S2"], duration: 20)
@@ -583,7 +593,7 @@ func aNameIsSavedWhileItsVoiceIsStillBeingLearned() async throws {
 
 @Test(.timeLimit(.minutes(1))) @MainActor
 func aNewerChangeStopsAVoiceBeingLearnedAndItIsLearnedAfter() async throws {
-    let temp = try TemporaryDirectory("voice")
+    let temp = try TemporaryDirectory("voice", permissions: 0o700)
     defer { temp.remove() }
     let store = try voiceStore(temp)
     let fixture = try await SessionFixtures.labelledSession(in: temp.url, speakers: ["S1", "S2"], duration: 20)
@@ -604,7 +614,7 @@ func aNewerChangeStopsAVoiceBeingLearnedAndItIsLearnedAfter() async throws {
 
 @Test(.timeLimit(.minutes(1))) @MainActor
 func closingLearnsAVoiceStillWaitingForItsDelay() async throws {
-    let temp = try TemporaryDirectory("voice")
+    let temp = try TemporaryDirectory("voice", permissions: 0o700)
     defer { temp.remove() }
     let store = try voiceStore(temp)
     let fixture = try await SessionFixtures.labelledSession(in: temp.url, speakers: ["S1", "S2"], duration: 20)
@@ -625,7 +635,7 @@ func aSampleSyncThatFailsSaysSoAndKeepsTheName() async throws {
             throw HolosError.unavailable("The speaker models are missing.")
         }
     }
-    let temp = try TemporaryDirectory("voice")
+    let temp = try TemporaryDirectory("voice", permissions: 0o700)
     defer { temp.remove() }
     let store = try voiceStore(temp)
     let fixture = try await SessionFixtures.labelledSession(in: temp.url, speakers: ["S1", "S2"], duration: 20)
@@ -659,7 +669,7 @@ private struct VoiceSlotExtractor: VoiceSampleExtractor {
 
 @Test(.timeLimit(.minutes(1))) @MainActor
 func aPassThatFailsOnOneTrackMatchesNothing() async throws {
-    let temp = try TemporaryDirectory("voice")
+    let temp = try TemporaryDirectory("voice", permissions: 0o700)
     defer { temp.remove() }
     let store = try voiceStore(temp)
     let transcript = SessionFixtures.transcript(SessionFixtures.alternatingSegments(track: "system", duration: 60)
@@ -718,7 +728,7 @@ private func voicePending() -> (pending: PendingVoiceSamples, done: () -> Void) 
 
 @Test(.timeLimit(.minutes(1))) @MainActor
 func aVoiceThatFailsWhileTheReviewClosesIsLearnedWhenItOpensAgain() async throws {
-    let temp = try TemporaryDirectory("voice")
+    let temp = try TemporaryDirectory("voice", permissions: 0o700)
     defer { temp.remove() }
     let (pending, done) = voicePending()
     defer { done() }
@@ -756,7 +766,7 @@ func aVoiceThatFailsWhileTheReviewClosesIsLearnedWhenItOpensAgain() async throws
 
 @Test(.timeLimit(.minutes(1))) @MainActor
 func aVoiceStoppedByQuittingIsTriedAgainAndAFailureThenShows() async throws {
-    let temp = try TemporaryDirectory("voice")
+    let temp = try TemporaryDirectory("voice", permissions: 0o700)
     defer { temp.remove() }
     let (pending, done) = voicePending()
     defer { done() }

@@ -30,6 +30,8 @@ final class MeetingAppState {
 
     var controller: MeetingController?
     var maintenance: MaintenanceLauncher?
+    /// Runs the maintenance commands whose output the app reads (`CommandRunner`).
+    var commands: CommandRunner? { maintenance.map { CommandRunner(launcher: $0) } }
     /// Set in in-process mode (UserDefaults "meetingRecorderMode" = "inProcess").
     var inProcess: InProcessLauncher?
     /// The latest `announce` text, shown under the meeting's first menu line.
@@ -59,6 +61,14 @@ final class MeetingAppState {
     var automaticHolds: [String: ReviewMaintenance.Hold] = [:]
     /// How many maintenance commands have ended per meeting, so a review that opened meanwhile rereads it.
     var maintenanceEnded: [String: Int] = [:]
+    /// A deletion of several meetings from Meetings, one at a time (`performBulkMeetingAction`): its action, how many
+    /// meetings it has still to do (what a quit says), and whether a quit waits for it.
+    var bulkRun: Task<Void, Never>?
+    var bulkAction: MeetingBulkPlan.Action?
+    var bulkRemaining = 0
+    var bulkQuitting = false
+    /// Its failure report while a quit waits on it, shown if the quit does not go ahead.
+    var bulkReport = MeetingBulkReportHold()
     /// Holos is quitting: review windows close without alerts.
     var quitting = false
     var savingWindow: NSWindow?
@@ -699,6 +709,7 @@ extension HolosAppDelegate: NSMenuDelegate {
         // transcript's header follows the list).
         pane.onTitleChanged = { [weak self] id in self?.refreshReviewTitle(id) }
         pane.runRename = { [weak self] summary, request in self?.runRename(summary, request) }
+        pane.performBulk = { [weak self] action, plan in self?.performBulkMeetingAction(action, plan) }
         // The live transcript's Stop and Save… and Pause / Resume, and the meeting's menu: the menu bar's path, with
         // Stop's question as a sheet on the main window.
         pane.onRecordingCommand = { [weak self, weak pane] command, sessionID in
@@ -743,26 +754,181 @@ extension HolosAppDelegate: NSMenuDelegate {
             guard confirm("Delete the audio of “\(name)”?",
                           "The audio is deleted for good. The transcript, speaker labels, and transcript files stay.",
                           button: "Delete Audio") else { return }
-            arguments = ["session", "delete", path, "--audio-only", "--yes", "--json"]
-            doing = "Deleting audio…"
+            (arguments, doing) = Self.deletion(.deleteAudio, path: path)
         case .deleteMeeting:
             guard let forget = confirmDeleteMeeting(name) else { return }
             forgetSamples = forget
-            arguments = ["session", "delete", path, "--yes", "--json"]
-            doing = "Moving to the Trash…"
+            (arguments, doing) = Self.deletion(.deleteMeeting, path: path)
         }
         startMeetingCommand(action, summary, arguments: arguments, doing: doing, forgetSamples: forgetSamples)
+    }
+
+    /// The command line of a deletion and what the list says while it runs, the same for one meeting and several.
+    private static func deletion(_ action: MeetingBulkPlan.Action, path: String) -> (arguments: [String],
+                                                                                     doing: String) {
+        switch action {
+        case .deleteAudio: (["session", "delete", path, "--audio-only", "--yes", "--json"], "Deleting audio…")
+        case .deleteMeeting: (["session", "delete", path, "--yes", "--json"], "Moving to the Trash…")
+        }
+    }
+
+    /// Delete Meeting… or Delete Audio… on several meetings from Meetings (`MeetingBulkPlan`): one confirmation, with
+    /// the meetings skipped and why, then each meeting in turn through the single deletion's path
+    /// (`startMeetingCommand`: registered as in use, its review let go, the voice samples forgotten when asked, the
+    /// `voiceislocal session delete` child holding the lease and locks). A meeting that fails does not stop the rest;
+    /// one alert lists the failures at the end. Right after the confirmation every target is reserved in
+    /// `sessionsInUse` ("Waiting to …", `MeetingBulkRun.reserve`), so no background job starts on one still waiting;
+    /// each meeting's turn takes its reservation over (`startMeetingCommand(reserved:)`). The list shows the waiting
+    /// meetings and the progress meanwhile; a quit asks whether to finish first (`meetingShouldTerminate`).
+    func performBulkMeetingAction(_ action: MeetingsPane.Action, _ plan: MeetingBulkPlan) {
+        guard let controller = meeting.controller else { return }
+        guard meeting.bulkRun == nil else {
+            showMeetingAlert("Voice is Local is still deleting the meetings selected before.",
+                             "Try again when it finishes; the Meetings list shows its progress.")
+            return
+        }
+        guard !plan.targets.isEmpty else {
+            showMeetingAlert(plan.nothingTitle, plan.skipText ?? "")
+            return
+        }
+        var forgetSamples = false
+        switch plan.action {
+        case .deleteMeeting:
+            guard let forget = confirmBulkDelete(plan) else { return }
+            forgetSamples = forget
+        case .deleteAudio:
+            guard confirm(plan.confirmationTitle, plan.confirmationText, button: plan.confirmationButton) else { return }
+        }
+        let waiting = plan.action == .deleteMeeting ? "Waiting to move to the Trash…" : "Waiting to delete audio…"
+        // At once, before anything else runs on the main actor: the background schedulers check `sessionsInUse`.
+        let reservation = MeetingBulkRun.reserve(plan.targets, waiting: waiting, in: controller)
+        meeting.bulkAction = plan.action
+        meeting.bulkRemaining = plan.targets.count
+        // The list remembers its order now, to select the meeting after the first deleted one once the run ended.
+        meeting.meetingsPane?.bulkDeletionStarted(plan.targets.map(\.id))
+        meeting.bulkRun = Task { [weak self, controller] in
+            let result = await MeetingBulkRun.run(reservation, waiting: waiting, uses: controller, progress: { done in
+                self?.meeting.bulkRemaining = plan.targets.count - done
+                self?.meeting.meetingsPane?.update(bulkStatus: plan.progressText(done: done))
+            }, each: { summary in
+                guard let self else { return "Voice is Local stopped." }
+                let (arguments, doing) = Self.deletion(plan.action, path: summary.directory.path)
+                return await withCheckedContinuation { continuation in
+                    self.startMeetingCommand(action, summary, arguments: arguments, doing: doing,
+                                             forgetSamples: forgetSamples, reserved: true) { failure in
+                        continuation.resume(returning: failure)
+                    }
+                }
+            })
+            guard let self else { return }
+            self.meeting.bulkRun = nil
+            self.meeting.bulkAction = nil
+            self.meeting.bulkRemaining = 0
+            self.meeting.meetingsPane?.update(bulkStatus: nil)
+            self.meeting.meetingsPane?.bulkDeletionEnded()
+            let report = plan.report(result).map { MeetingBulkReportHold.Report(title: $0.title, text: $0.text) }
+            // Quitting (Finish Deleting or Quit Now): held, not an alert that would hold up the quit; shown if the
+            // quit does not go ahead (`bulkQuitDecided`).
+            let quitting = self.meeting.bulkQuitting || result.cancelled
+            if quitting, report != nil {
+                Self.meetingLog.error("Deletion of several meetings ended with \(result.failures.count, privacy: .public) not done while quitting")
+            }
+            if let shown = self.meeting.bulkReport.runEnded(report, quitting: quitting) {
+                self.showMeetingAlert(shown.title, shown.text)
+            }
+        }
+    }
+
+    /// The quit that waited for a deletion of several meetings was decided: when it did not go ahead, the report of
+    /// the meetings not done is shown after all.
+    private func bulkQuitDecided(terminating: Bool) {
+        guard let report = meeting.bulkReport.quitEnded(terminating: terminating) else { return }
+        showMeetingAlert(report.title, report.text)
+    }
+
+    /// A quit while a deletion of several meetings runs: asks whether to finish it first (Finish Deleting) or to quit
+    /// once the meeting being deleted now is done (Quit Now, the others left as they are; their reservations are
+    /// released), or cancels. Either way the quit waits for the run to end, then goes on as `meetingShouldTerminate`
+    /// would have; nil when no deletion runs.
+    private func quitAfterBulkDeletion() -> NSApplication.TerminateReply? {
+        guard let run = meeting.bulkRun, let action = meeting.bulkAction else { return nil }
+        let question = MeetingBulkRun.quitQuestion(remaining: max(1, meeting.bulkRemaining), action: action)
+        let alert = NSAlert()
+        alert.messageText = question.title
+        alert.informativeText = question.text
+        alert.addButton(withTitle: question.wait)
+        alert.addButton(withTitle: question.quit)
+        alert.addButton(withTitle: "Cancel")
+        NSApplication.shared.activate()
+        let response = alert.runModal()
+        guard response == .alertFirstButtonReturn || response == .alertSecondButtonReturn else {
+            return .terminateCancel
+        }
+        meeting.bulkQuitting = true
+        if response == .alertSecondButtonReturn { run.cancel() }
+        Task { [weak self] in
+            await run.value
+            guard let self else {
+                NSApplication.shared.reply(toApplicationShouldTerminate: true)
+                return
+            }
+            self.meeting.bulkQuitting = false
+            switch self.meetingShouldTerminate() {
+            case .terminateNow:
+                self.bulkQuitDecided(terminating: true)
+                NSApplication.shared.reply(toApplicationShouldTerminate: true)
+            case .terminateCancel:
+                self.reopenAfterQuit = false
+                self.readings.quitCancelled()
+                NSApplication.shared.reply(toApplicationShouldTerminate: false)
+                self.bulkQuitDecided(terminating: false)
+            case .terminateLater: break  // that path replies itself, and decides the held report (`bulkQuitDecided`)
+            @unknown default: NSApplication.shared.reply(toApplicationShouldTerminate: true)
+            }
+        }
+        return .terminateLater
+    }
+
+    /// The one confirmation of a deletion of several meetings, with "Also forget voice samples learned from these
+    /// meetings"; nil when cancelled, else whether the box was checked.
+    private func confirmBulkDelete(_ plan: MeetingBulkPlan) -> Bool? {
+        let alert = NSAlert()
+        alert.messageText = plan.confirmationTitle
+        alert.informativeText = plan.confirmationText
+        let box = NSButton(checkboxWithTitle: plan.forgetSamplesTitle, target: nil, action: nil)
+        alert.accessoryView = box
+        alert.addButton(withTitle: plan.confirmationButton)
+        alert.addButton(withTitle: "Cancel")
+        NSApplication.shared.activate()
+        guard alert.runModal() == .alertFirstButtonReturn else { return nil }
+        return box.state == .on
     }
 
     /// Registers the meeting as in use (`MeetingController.beginUsing`; a meeting the app already uses is turned down
     /// with an alert), lets a review of it go (`ReviewMaintenance`), then runs the command. Delete Meeting with
     /// "Also forget voice samples" forgets them first, after the review closed and before the meeting moves.
+    ///
+    /// `completion` (a deletion of several meetings): called once when the command ended, with nil when it succeeded,
+    /// else why not; it then takes the place of the alerts about this meeting. `reserved`: the deletion of several
+    /// already holds the meeting in `sessionsInUse` (`MeetingBulkRun.reserve`), and this takes that use over without
+    /// releasing it in between.
     private func startMeetingCommand(_ action: MeetingsPane.Action, _ summary: SessionSummary, arguments: [String],
-                                     doing: String, forgetSamples: Bool = false) {
-        guard meeting.maintenance != nil, let controller = meeting.controller else { return }
+                                     doing: String, forgetSamples: Bool = false, reserved: Bool = false,
+                                     completion: ((String?) -> Void)? = nil) {
+        guard meeting.maintenance != nil, let controller = meeting.controller else {
+            completion?("Voice is Local cannot run meeting commands now.")
+            return
+        }
         // The automatic relabel or another command may have taken the meeting while the confirmation was open.
-        guard controller.beginUsing(summary.id, for: doing) else {
-            showSessionInUse(summary, doing: controller.sessionsInUse[summary.id])
+        let registered = reserved ? controller.continueUsing(summary.id, for: doing)
+            : controller.beginUsing(summary.id, for: doing)
+        guard registered else {
+            if let completion {
+                let doing = controller.sessionsInUse[summary.id]
+                completion("Voice is Local is working on it" + (doing.map { " (\($0))" } ?? "") + ".")
+            } else {
+                showSessionInUse(summary, doing: controller.sessionsInUse[summary.id])
+            }
             return
         }
         let name = Self.short(summary.displayTitle)
@@ -780,14 +946,27 @@ extension HolosAppDelegate: NSMenuDelegate {
                     }
                 }.value
                 if let failure {
-                    guard let self else { return }
+                    guard let self else {
+                        completion?(failure)
+                        return
+                    }
                     self.maintenanceFinished(summary.id)
-                    self.showMeetingAlert("Voice is Local could not forget the voice samples learned from “\(name)”.",
-                                          "The meeting was not moved to the Trash. \(failure)")
+                    if let completion {
+                        completion("Its voice samples could not be forgotten, so it was not moved to the Trash. "
+                                   + failure)
+                    } else {
+                        self.showMeetingAlert(
+                            "Voice is Local could not forget the voice samples learned from “\(name)”.",
+                            "The meeting was not moved to the Trash. \(failure)")
+                    }
                     return
                 }
             }
-            self?.runMeetingCommand(action, summary, arguments: arguments)
+            guard let self else {
+                completion?("Voice is Local stopped.")
+                return
+            }
+            self.runMeetingCommand(action, summary, arguments: arguments, completion: completion)
         }
     }
 
@@ -818,21 +997,28 @@ extension HolosAppDelegate: NSMenuDelegate {
 
     /// Runs the maintenance command of a Meetings action, the meeting already registered as in use
     /// (`startMeetingCommand`); `maintenanceFinished` ends that use however the command ends.
-    private func runMeetingCommand(_ action: MeetingsPane.Action, _ summary: SessionSummary, arguments: [String]) {
-        guard let maintenance = meeting.maintenance else {
+    private func runMeetingCommand(_ action: MeetingsPane.Action, _ summary: SessionSummary, arguments: [String],
+                                   completion: ((String?) -> Void)? = nil) {
+        guard let commands = meeting.commands else {
             maintenanceFinished(summary.id)
+            completion?("Voice is Local cannot run meeting commands now.")
             return
         }
-        let output = Self.temporaryFile("out")
-        let errors = Self.temporaryFile("err")
         do {
-            try maintenance.run(arguments, standardOutput: output, standardError: errors) { [weak self] code in
-                self?.meetingCommandEnded(action, summary, code: code, output: output, errors: errors)
+            try commands.start(arguments, output: "out", errors: "err", maxOutputBytes: 4 << 20,
+                               decode: CommandPrinted.init) { [weak self] result in
+                guard let self else {
+                    completion?("Voice is Local stopped.")
+                    return
+                }
+                self.meetingCommandEnded(action, summary, result, completion: completion)
             }
         } catch {
             maintenanceFinished(summary.id)
-            Self.removeFile(output)
-            Self.removeFile(errors)
+            if let completion {
+                completion(error.localizedDescription)
+                return
+            }
             let title = action == .recover ? "Voice is Local could not recover “\(Self.short(summary.displayTitle))”."
                 : "Voice is Local could not run the command."
             showMeetingAlert(title, error.localizedDescription)
@@ -844,13 +1030,14 @@ extension HolosAppDelegate: NSMenuDelegate {
                          (doing.map { $0 + " " } ?? "") + "Try again when it finishes; the Meetings list shows when it is done.")
     }
 
-    private func meetingCommandEnded(_ action: MeetingsPane.Action, _ summary: SessionSummary, code: Int32,
-                                     output: URL, errors: URL) {
-        let result = Self.commandResult(output: output, errors: errors)
+    /// `completion` (a deletion of several meetings): told nil on success, else why not, in place of the alert. Only
+    /// deletions pass it: a failed Recover or Label Speakers still needs the labelling bookkeeping below.
+    private func meetingCommandEnded(_ action: MeetingsPane.Action, _ summary: SessionSummary,
+                                     _ run: CommandResult<CommandPrinted>, completion: ((String?) -> Void)? = nil) {
+        let code = run.code
+        let result = run.outcome?.result ?? run.lastErrorLine
         // `session diarize` succeeds without labels when the speaker models are missing; its record then has no run.
-        let madeRun = Self.jsonObject(output)?["runID"] is String
-        Self.removeFile(output)
-        Self.removeFile(errors)
+        let madeRun = run.outcome?.madeRun == true
         // Ending the use derives the naming offer again (a meeting deleted, recovered, or labelled changes it), and an
         // open review shows the meeting as the command left it (new transcript, labels, or no audio).
         maintenanceFinished(summary.id)
@@ -864,6 +1051,11 @@ extension HolosAppDelegate: NSMenuDelegate {
                 if meeting.lastSummary?.sessionID == summary.id { meeting.lastSummary = nil }
                 rebuildMenu()
             }
+            completion?(nil)
+            return
+        }
+        if let completion {
+            completion(result ?? "The command ended with code \(code).")
             return
         }
         let session = summary.directory
@@ -931,7 +1123,7 @@ extension HolosAppDelegate: NSMenuDelegate {
     /// whether its transcript files are out of date afterwards is read from the files (the Meetings list's
     /// `TranscriptFilesCache`), so a quit before it ends, or a rename in Terminal, shows the same way.
     func runRename(_ summary: SessionSummary, _ request: MeetingRenameRequest) {
-        guard let controller = meeting.controller, let maintenance = meeting.maintenance else { return }
+        guard let controller = meeting.controller, let commands = meeting.commands else { return }
         guard controller.beginUsing(summary.id, for: "Renaming…") else {
             showSessionInUse(summary, doing: controller.sessionsInUse[summary.id])
             return
@@ -939,33 +1131,27 @@ extension HolosAppDelegate: NSMenuDelegate {
         // A Review's failed rewrite marked before the rename started is the one its rewrite makes up for; a newer one
         // (a review that failed meanwhile) is kept.
         let pendingGeneration = PendingExports().generation(summary.id)
-        let output = Self.temporaryFile("out")
-        let errors = Self.temporaryFile("err")
         do {
-            try maintenance.run(MeetingRenameRun.arguments(session: summary.directory, request: request,
-                                                           expectedID: summary.id),
-                                standardOutput: output, standardError: errors) { [weak self] code in
-                self?.renameEnded(summary, code: code, pendingGeneration: pendingGeneration, output: output,
-                                  errors: errors)
+            try commands.start(MeetingRenameRun.arguments(session: summary.directory, request: request,
+                                                          expectedID: summary.id),
+                               output: "out", errors: "err", maxOutputBytes: 4 << 20,
+                               decode: RenamePrinted.init) { [weak self] result in
+                self?.renameEnded(summary, result, pendingGeneration: pendingGeneration)
             }
         } catch {
             controller.endUsing(summary.id)
-            Self.removeFile(output)
-            Self.removeFile(errors)
             meeting.meetingsPane?.renameEnded(summary, outcome: nil, failure: error.localizedDescription)
         }
     }
 
-    private func renameEnded(_ summary: SessionSummary, code: Int32, pendingGeneration: Int, output: URL,
-                             errors: URL) {
+    private func renameEnded(_ summary: SessionSummary, _ run: CommandResult<RenamePrinted>,
+                             pendingGeneration: Int) {
         // A result about another meeting (it cannot be, with --expect-id) is not applied to this one.
-        let outcome = (try? AtomicFile.readIfPresent(output, maxBytes: 1 << 20)).flatMap {
-            $0.flatMap { try? HolosJSON.decoder().decode(SessionRenameCommand.Outcome.self, from: $0) }
-        }.flatMap { $0.sessionID.map { $0.caseInsensitiveCompare(summary.id) == .orderedSame } ?? true ? $0 : nil }
-        let failure = Self.commandResult(output: output, errors: errors)
-            ?? "The rename command ended with code \(code)."
-        Self.removeFile(output)
-        Self.removeFile(errors)
+        let outcome = run.outcome?.outcome.flatMap {
+            $0.sessionID.map { $0.caseInsensitiveCompare(summary.id) == .orderedSame } ?? true ? $0 : nil
+        }
+        let failure = run.outcome?.printed.result ?? run.lastErrorLine
+            ?? "The rename command ended with code \(run.code)."
         // The files were rewritten from the saved speaker labels: a Review's earlier failed rewrite is made up for.
         if outcome?.exportsUpdated == true { PendingExports().clear(summary.id, ifGeneration: pendingGeneration) }
         meeting.controller?.endUsing(summary.id)
@@ -1207,21 +1393,6 @@ extension HolosAppDelegate: NSMenuDelegate {
         return .terminateLater
     }
 
-    /// The result line a command printed: `summary` or `message` of its JSON output, else its last stderr line.
-    private static func commandResult(output: URL, errors: URL) -> String? {
-        if let object = jsonObject(output) {
-            if let summary = object["summary"] as? String, !summary.isEmpty { return summary }
-            if let message = object["message"] as? String, !message.isEmpty { return message }
-        }
-        return lastLine(errors)
-    }
-
-    /// The JSON object a command printed on stdout, if any.
-    private static func jsonObject(_ output: URL) -> [String: Any]? {
-        guard let data = try? AtomicFile.readIfPresent(output, maxBytes: 4 << 20) else { return nil }
-        return (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
-    }
-
     private func confirm(_ title: String, _ text: String, button: String) -> Bool {
         let alert = NSAlert()
         alert.messageText = title
@@ -1270,21 +1441,19 @@ extension HolosAppDelegate: NSMenuDelegate {
 
     // MARK: - Speaker models (Setup "Speaker labels", start panel)
 
-    /// Reads `speakerModels` from `voiceislocal doctor --json`.
+    /// Reads `speakerModels` from `voiceislocal doctor --json` (`DoctorReport`).
     func refreshSpeakerModels() {
-        guard let maintenance = meeting.maintenance, !meeting.checkingSpeakerModels else { return }
+        guard let commands = meeting.commands, !meeting.checkingSpeakerModels else { return }
         meeting.checkingSpeakerModels = true
-        let output = Self.temporaryFile("doctor")
         do {
-            try maintenance.run(["doctor", "--json"], standardOutput: output, standardError: nil) { [weak self] _ in
+            try commands.start(["doctor", "--json"], output: "doctor", errors: nil, maxOutputBytes: 1 << 20,
+                               as: DoctorReport.self) { [weak self] result in
                 guard let self else { return }
                 self.meeting.checkingSpeakerModels = false
-                let data = try? AtomicFile.readIfPresent(output, maxBytes: 1 << 20)
-                Self.removeFile(output)
-                let object = data.flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }
+                let report = result.outcome
                 // The tool ran but reported nothing usable: unknown, not missing.
-                self.meeting.speakerModels = object?["speakerModels"] as? String ?? "unknown"
-                self.deepModelChecked(object?["deepTranscriptionModel"] as? String ?? "unknown")
+                self.meeting.speakerModels = report?.speakerModels ?? "unknown"
+                self.deepModelChecked(report?.deepTranscriptionModel.rawValue ?? "unknown")
                 self.updateSettings()
                 self.meeting.startPanel?.refresh()
                 if self.meeting.speakerModels == "verified" { self.meeting.controller?.runAutoRelabel() }
@@ -1293,7 +1462,6 @@ extension HolosAppDelegate: NSMenuDelegate {
             meeting.checkingSpeakerModels = false
             meeting.speakerModels = "unavailable"
             deepModelChecked("unavailable")
-            Self.removeFile(output)
             Self.meetingLog.error("Cannot check the speaker models (\(ProcessSpawner.logCategory(error), privacy: .public)): \(error.localizedDescription, privacy: .private)")
         }
     }
@@ -1368,6 +1536,8 @@ extension HolosAppDelegate: NSMenuDelegate {
     /// minutes for the transcript) or Cancel. An in-process meeting that is still saving its transcript is waited for.
     /// Open review windows close first in every case, so their last changes reach the transcript files.
     func meetingShouldTerminate() -> NSApplication.TerminateReply {
+        // A deletion of several meetings asks first, and the rest of this is asked once it ended.
+        if let reply = quitAfterBulkDeletion() { return reply }
         guard let controller = meeting.controller else { return quitAfterClosingReviews() }
         // Whether this process runs the recording, not which launcher is configured: in in-process mode Holos can
         // still follow a meeting started in a terminal, which quitting does not end.
@@ -1432,6 +1602,8 @@ extension HolosAppDelegate: NSMenuDelegate {
             self?.meeting.savingWindow?.close()
             if !undelivered, let self { await self.closeReviews(Array(self.meeting.reviewWindows.values)) }
             NSApplication.shared.reply(toApplicationShouldTerminate: !undelivered)
+            // A deletion of several meetings this quit waited for: its report, if the quit did not go ahead.
+            self?.bulkQuitDecided(terminating: !undelivered)
             if undelivered, let self {
                 self.reopenAfterQuit = false  // the quit was cancelled: a later quit must not reopen
                 self.readings.quitCancelled()  // readings kept for the next launch continue now
@@ -1493,15 +1665,13 @@ extension HolosAppDelegate: NSMenuDelegate {
 
     // MARK: - Helpers
 
-    /// A private temporary file name for a command's output.
-    static func temporaryFile(_ kind: String) -> URL {
-        FileManager.default.temporaryDirectory
-            .appendingPathComponent("holos-command-\(UUID().uuidString).\(kind)", isDirectory: false)
-    }
+    /// A private temporary file name for the output of a command `CommandRunner` does not run: a model install, whose
+    /// progress is read while it runs.
+    static func temporaryFile(_ kind: String) -> URL { TemporaryArtifact(kind: kind).url }
 
     /// Removes command outputs an app that quit or crashed left behind (older than an hour).
     private static func sweepCommandOutputs() {
-        ProcessSpawner.removeStaleFiles(in: FileManager.default.temporaryDirectory, prefix: "holos-command-",
+        ProcessSpawner.removeStaleFiles(in: FileManager.default.temporaryDirectory, prefix: TemporaryArtifact.prefix,
                                         olderThan: Date().addingTimeInterval(-3_600))
     }
 
@@ -1509,4 +1679,35 @@ extension HolosAppDelegate: NSMenuDelegate {
 
     /// The last non-empty line of a command's output, without ArgumentParser's "Error: ".
     static func lastLine(_ url: URL) -> String? { ProcessSpawner.lastLine(of: url) }
+}
+
+/// What the app reads from the JSON a Meetings command printed (recover, diarize, delete and rename print different
+/// records): its result line, `summary` or else `message`, and whether it names a speaker run (`runID`).
+struct CommandPrinted: Sendable {
+    var result: String?
+    var madeRun = false
+
+    init(_ data: Data) {
+        guard let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else { return }
+        if let summary = object["summary"] as? String, !summary.isEmpty {
+            result = summary
+        } else if let message = object["message"] as? String, !message.isEmpty {
+            result = message
+        }
+        madeRun = object["runID"] is String
+    }
+}
+
+/// What the app reads from `voiceislocal session rename --json`: its outcome (from at most 1 MiB of output) and its
+/// result line.
+struct RenamePrinted: Sendable {
+    var outcome: SessionRenameCommand.Outcome?
+    var printed: CommandPrinted
+
+    init(_ data: Data) {
+        if data.count <= 1 << 20 {
+            outcome = try? HolosJSON.decoder().decode(SessionRenameCommand.Outcome.self, from: data)
+        }
+        printed = CommandPrinted(data)
+    }
 }

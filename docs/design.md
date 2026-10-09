@@ -193,6 +193,62 @@ continue is held back, from the spelled letters or content word before its first
 symbol word, until it ends or the key is released; so is a last content word or run
 of spelled letters, which a symbol word may still follow.
 
+#### Pauses inside a sentence
+
+Apple's speech transcriber gives one result per stretch of speech between pauses and
+formats each as a sentence: a capital first word, sometimes a closing period. A pause in
+the middle of a sentence therefore left a capital there ("we are cleaning up our big
+Pull request", "you're saying that It will"). Dictation joins the results in one place,
+`DictationSeams` (HolosCore), which the preview, the committed text that streams into the
+field, the final text, History's "heard" and written text, and Run Again all go
+through (`DictationStatus.transcript`, `DictationTextPipeline.transcript`). It runs first,
+before filler removal, learned corrections, spoken code and Apple Intelligence's fix, so
+each of them sees the sentence starts the speaker meant: a correction that copies the
+capital of the words it replaces does not carry the pause's capital over, filler removal
+capitalizes after a filler only where a sentence began, and the fix, which counts a
+capitalized word inside a sentence as a name it may not change, no longer protects a word
+that is only capitalized because of a pause.
+
+Where the text before a pause does not end a sentence (no `.`, `!`, `?` or `…` at its
+end, past closing quotes, brackets and spaces in any order, so French `« C’est fini. »`
+ends one; and no line break in the spaces around the pause or in a result of spaces alone
+between), the first letter of the next result is lowered, unless:
+
+- the result opens with a quote or bracket (a quoted sentence), or not with a capital;
+- the word is "I" or one of its contractions (English);
+- the word has another capital, a digit or a symbol ("PR", "NASA", "GPT-4", "McDonald's");
+- it is one letter ("plan B", "dash P"), but for the one-letter words "A" (and French "À", "Y");
+- a term of the word list, a learned correction's meant phrase, or a person's name in People
+  has the word with a capital (asked as each dictation starts; People's names are the ones last
+  read: `PeopleNames` reads them in the background at launch and whenever a dictation starts
+  after the store's file changed, decoding the names alone, never the voice samples, and
+  never on the main thread; Run Again uses the same names);
+- `NLTagger` (name type, in the dictation language) tags it as a person, place or
+  organization, reading the result before the pause and the one after it as one text;
+- the spell checker of the dictation language does not know its lowercase form ("alice",
+  "london", "monday" in English), or has not answered yet. Hesitations ("Um", "Euh") are
+  lowered without asking.
+
+The spell checker is a service another process runs and may stall, so joining, which runs on
+the main actor with each recognizer update, never waits for it (`SeamSpelling`): the answers
+are kept per word and language for the process, a word not answered yet is asked once on the
+spell checker's queue, and meanwhile keeps its capital. A result still being recognized is
+decided again at each revision, so it is lowered once the answer comes (usually within the
+same result: a lookup takes about 0.3 ms); a final result is decided once, with what is known
+then, and keeps that decision for the utterance, so the committed text stays a prefix of what
+follows and a late answer never changes a word already written. Run Again, which has its results
+at once, asks about them first and waits at most 2 s. The tagger runs in the process (about 1
+ms at the 95th percentile; its model is loaded in the background when the first dictation in a
+language starts).
+
+Only English and French dictation is changed; other languages (German capitalizes its
+nouns) are joined as before, one space between trimmed results.
+
+A word that is both a product name and a dictionary word ("Slack", "Outlook") is not
+recognized as a name and is lowered after a pause; adding it to the word list keeps its
+capital. The periods a pause puts inside a sentence ("…the second step. which runs
+later") are left as the recognizer wrote them.
+
 ### Main window
 
 The app's windows other than the transient ones are one main window, "Voice is Local"
@@ -657,6 +713,21 @@ written, the only form History keeps. Corrections knows which dictation it holds
 so learning from an older one never replaces what Correct Last Dictation opens, even
 when the two have the same text.
 
+The History section (`HistoryPane`) shows the list (a search field, "Search dictations",
+over the dictations grouped by day) and the selected dictation's detail side by side, split
+by a divider. The list starts at 40% of the section's width, from 220 to 360 points; the
+divider widens it until the detail is down to its minimum (240 points) and narrows it to
+200 points, where the search field's placeholder still reads whole. The width a drag leaves
+is kept for the next opening and launch (UserDefaults `VoiceIsLocalHistoryListWidth`);
+resizing the window is not a drag. Whenever the section's width changes the list gets its
+width again (the default for the new width, or the dragged one) as far as the detail keeps
+its minimum; it goes under 200 points, down to 150, only when the window is too narrow for
+both minimums (400 points with the sidebar hidden), and once the window widens again the
+list returns to its width rather than staying where the narrow window left it. The
+list's width is set by moving the divider (`setPosition`), never by a width constraint: a
+preferred-width constraint at the detail's holding priority left the split's layout
+ambiguous, and AppKit then refused to move the divider at all.
+
 ### Dictation audio and Run Again
 
 History can keep each recorded dictation's microphone audio, so a change to the corrections,
@@ -698,7 +769,8 @@ Run Again (History detail, ⌘R; `voiceislocal history rerun`) reads the file ba
 frames and feeds them to the recognizer live dictation uses (`AppleSpeechSession`, the
 speech backend's progressive preset, the current dictation language, the word list and the
 learned corrections' words as contextual strings), then runs the text steps of live dictation
-(`DictationTextPipeline`, HolosCore): filler removal and corrections as on the final text,
+(`DictationTextPipeline`, HolosCore): the results joined as dictation joins them ("Pauses
+inside a sentence"), filler removal and corrections as on the final text,
 and, when Apple Intelligence's fix is on and available, the fix as dictation streams it:
 each recognizer result is taken as committed in turn (the last one too: the recognizer
 commits it when it finishes, before the result) and each new part, cleaned as streaming
@@ -1158,6 +1230,36 @@ Rename… and Use Generated Title, Summarize (Again), Make Final Transcript Now 
 Speakers, Delete Audio… and Delete Meeting…, each enabled as its button is. Right-clicking a
 row selects it.
 
+Several meetings can be selected as in any Mac list: click, ⇧-click for a range, ⌘-click to add
+or remove one, ⌘A for all, ⇧↑/↓ to extend. Day headers are never selected; a range over one
+selects the meetings on both sides. The selection is kept by meeting, not by row, when the list
+is read again (every 2 s, and as a meeting records or a command works on one), and once every
+selected meeting is deleted the meeting after the first of them is selected (the one before when
+they were last); for a deletion of several, once it ended, from the list as it was when it began,
+however the refreshes in between saw them go. With several selected, the line under the buttons sums them up ("5 meetings selected ·
+3 h 12 min · 1.2 GB") and VoiceOver announces the count. Show in Finder reveals all of them;
+Delete Meeting… (also ⌫ and ⌘⌫) and Delete Audio… act on every selected meeting that
+`MeetingActionPolicy` allows, the rule a single deletion follows; the actions for one meeting
+(open, Review…, Recover…, Label Speakers, Open and Save Transcript, Rename, Clean Up) are off.
+One confirmation names the count and what goes ("Delete 5 meetings?": the folders, with their
+audio, transcripts, speaker data and screen captures, go to the Trash; Delete Audio: the audio
+and screen captures, for good), offers to forget the voice samples learned from them, and says
+how many selected meetings are skipped and why (being recorded, being saved, being worked on by
+Voice is Local or held by another command, no audio to delete). The deletions then run one
+meeting at a time through the single deletion's own path (registered as in use, a Review of it
+closed or paused as for one meeting, the `voiceislocal session delete` child holding the lease
+and locks), off the main thread. Right after the confirmation every target is reserved in the
+app's meetings in use ("Waiting to move to the Trash…"), so no background job (speaker
+relabel, summary, final transcript, echo catch-up) starts on one still waiting its turn; each
+turn takes its reservation over. The status line shows the progress, a meeting that fails does
+not stop the rest, and one alert at the end lists those that failed and why. Quitting meanwhile
+asks first: Finish Deleting quits once the run ended, Quit Now once the meeting being deleted
+now is done (the rest are left as they are and released), Cancel keeps running. The list of
+failures then waits for the quit, and is shown if the quit does not go ahead after all. A damaged
+meeting is skipped by Delete Audio as damaged, since its audio may still be there. A right-click on a row of the selection acts on
+all of it (Show N in Finder, Delete Audio of N Meetings…, Delete N Meetings…); a right-click on
+another row selects that row and acts on it alone, as in the Finder.
+
 ### Meetings
 
 Record the microphone and remote/system audio into **separate timed tracks**. A
@@ -1197,6 +1299,10 @@ speakers; do not force every word into one speaker. Preserve word timing when
 splitting a sentence across a speaker turn. Manual rename/split/merge/reassignment
 are edits over machine results. Reprocessing creates a new revision and flags
 ambiguous transfers of existing human edits instead of silently discarding them.
+Within a meeting, the same name is the same person (ignoring case, accents and extra
+spaces): speakers of one name are shown and exported as one, an edit of that speaker
+reaches each of them, and nothing is merged behind the user's back, so each keeps its
+own link and voice (meeting-design §4.9, "Speakers with the same name").
 
 Optionally capture the screen during a meeting (Settings › Meetings, off by default;
 the start panel's "Capture screen" for one meeting), so text on slides and shared

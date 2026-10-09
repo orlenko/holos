@@ -34,15 +34,20 @@ public enum SpeakerCarryOver {
     ///   its next choice when its best one went to someone else. The first pair left for an old speaker decides
     ///   it: mapped when the pair passes the 50% rule, unmatched otherwise (a smaller speaker further down is not
     ///   tried, and the failing new speaker stays free for others).
+    /// - Stored speakers are matched one by one (`SpeakerProjection.unjoined`); one shown joined with same-named ones
+    ///   carries the group's identity (`identities`), and is not reported unmatched when another of the group was
+    ///   matched.
     /// - Actions follow the old projection's speaker order; per speaker: `rename` (explicit name), `linkProfile`,
     ///   then one `rejectProfile` per rejection in the order they were made. Automatic (recognized) names are not
     ///   carried: the new run gets its own recognition.
     /// - `droppedTurnEdits` counts the old projection's applied turn-level edits and merges; reverted and stale
     ///   ones never took effect and are not counted. A merge only shapes which new speaker the name maps to.
-    public static func carry(from old: SpeakerProjection, to new: DiarizationRun) -> Result {
-        let labelled = old.speakers.filter {
-            $0.explicitName != nil || $0.profileID != nil || !$0.rejectedProfileIDs.isEmpty
-        }
+    public static func carry(from shown: SpeakerProjection, to new: DiarizationRun) -> Result {
+        // Each stored speaker as itself (`SpeakerProjection.unjoined`), so each one's speech finds its own new
+        // speaker; one shown joined with same-named ones carries the identity of the group it is shown as.
+        let old = shown.unjoined
+        let identities = identities(old: old, shown: shown)
+        let labelled = old.speakers.filter { identities[$0.id]?.isEmpty == false }
         let labelledIDs = Set(labelled.map(\.id))
 
         var oldRanges: [String: [String: [SecondsRange]]] = [:]
@@ -92,19 +97,53 @@ public enum SpeakerCarryOver {
         var actions: [SpeakerEditAction] = []
         var unmatched: [String] = []
         for speaker in labelled {
+            guard let identity = identities[speaker.id] else { continue }
             guard let target = mapping[speaker.id] else {
-                unmatched.append(speaker.id)
+                // Not one whose group-mate carried the same identity to a new speaker.
+                if !identity.members.contains(where: { mapping[$0] != nil }) { unmatched.append(speaker.id) }
                 continue
             }
-            if let name = speaker.explicitName { actions.append(.rename(speakerID: target, name: name)) }
-            if let profileID = speaker.profileID { actions.append(.linkProfile(speakerID: target, profileID: profileID)) }
-            for profileID in speaker.rejectedProfileIDs {
-                actions.append(.rejectProfile(speakerID: target, profileID: profileID))
-            }
+            if let name = identity.name { actions.append(.rename(speakerID: target, name: name)) }
+            if let profileID = identity.profileID { actions.append(.linkProfile(speakerID: target, profileID: profileID)) }
+            for profileID in identity.rejected { actions.append(.rejectProfile(speakerID: target, profileID: profileID)) }
         }
         let excluded = excludedTurnIDs(from: old, to: new)
         if !excluded.isEmpty { actions.append(.excludeFromEnrollment(turnIDs: excluded)) }
         return Result(actions: actions, unmatchedSpeakers: unmatched, droppedTurnEdits: old.appliedTurnEditCount)
+    }
+
+    /// What each stored speaker carries: its own name, link and rejections, or, shown joined with same-named ones
+    /// (`ProjectedSpeaker.memberIDs`), the group's: the first name given among them, their one link (a joined group
+    /// has at most one), and all their rejections. So whichever of them a new speaker's speech comes from, it gets the
+    /// whole identity, and two new speakers matched by two of them both get it.
+    struct Identity {
+        var name: String?
+        var profileID: String?
+        var rejected: [String]
+        var members: [String]
+        var isEmpty: Bool { name == nil && profileID == nil && rejected.isEmpty }
+    }
+
+    static func identities(old: SpeakerProjection, shown: SpeakerProjection) -> [String: Identity] {
+        var stored: [String: ProjectedSpeaker] = [:]
+        for speaker in old.speakers where stored[speaker.id] == nil { stored[speaker.id] = speaker }
+        var result: [String: Identity] = [:]
+        for speaker in old.speakers {
+            result[speaker.id] = Identity(name: speaker.explicitName, profileID: speaker.profileID,
+                                          rejected: speaker.rejectedProfileIDs, members: [speaker.id])
+        }
+        for group in shown.speakers where group.memberIDs.count > 1 {
+            let members = group.memberIDs.compactMap { stored[$0] }
+            let profileID = members.lazy.compactMap(\.profileID).first
+            var rejected: [String] = []
+            for member in members {
+                for id in member.rejectedProfileIDs where id != profileID && !rejected.contains(id) { rejected.append(id) }
+            }
+            let identity = Identity(name: members.lazy.compactMap(\.explicitName).first, profileID: profileID,
+                                    rejected: rejected, members: group.memberIDs)
+            for member in group.memberIDs { result[member] = identity }
+        }
+        return result
     }
 
     /// The new run's turns (in run order) that share speech time with a turn the old projection keeps out of voice

@@ -1,0 +1,51 @@
+# Line counts of Sources/ Swift files over 600 lines; read by scripts/check-size.sh.
+# Regenerate with scripts/check-size.sh --update-baseline. A raised entry needs a
+# reason in the PR description (AGENTS.md "Size caps").
+# entries: 47
+1713 Sources/HolosApp/HolosApp+Meeting.swift
+1683 Sources/HolosApp/HolosApp.swift
+1021 Sources/HolosApp/MainWindow/HistoryPane.swift
+613 Sources/HolosApp/MainWindow/LiveMeetingView.swift
+709 Sources/HolosApp/MainWindow/MainWindowController.swift
+1785 Sources/HolosApp/MainWindow/MeetingsPane.swift
+971 Sources/HolosApp/MainWindow/ReadingPane.swift
+1369 Sources/HolosApp/MainWindow/SettingsPane.swift
+988 Sources/HolosApp/Reading/ReadingController.swift
+2369 Sources/HolosApp/Review/ReviewWindow.swift
+1191 Sources/HolosApp/Review/TurnListView.swift
+737 Sources/HolosAudio/MeetingScreenCapture.swift
+692 Sources/HolosAudio/TrackRenderer.swift
+649 Sources/HolosCLI/Speakers.swift
+1753 Sources/HolosContent/DocumentLoader.swift
+1269 Sources/HolosContent/ReadingLibrary.swift
+611 Sources/HolosContent/ReadingOutput.swift
+1726 Sources/HolosContent/ReadingPipeline.swift
+1180 Sources/HolosContent/WebArticleExtractor.swift
+615 Sources/HolosCore/DictationRerun.swift
+634 Sources/HolosCore/SpeakerModels.swift
+925 Sources/HolosCore/SpokenCode.swift
+1035 Sources/HolosCore/TranscriptFixer.swift
+1033 Sources/HolosEvaluation/EvalAlignment.swift
+703 Sources/HolosEvaluation/EvalCompare.swift
+742 Sources/HolosEvaluation/EvalLocal.swift
+1079 Sources/HolosEvaluation/EvalNormalization.swift
+847 Sources/HolosMeeting/LiveHints.swift
+637 Sources/HolosMeeting/LiveTrack.swift
+757 Sources/HolosMeeting/MeetingController.swift
+902 Sources/HolosMeeting/MeetingPostProcessor.swift
+815 Sources/HolosMeeting/PostProcessing/LanguageStage.swift
+748 Sources/HolosMeeting/PostProcessing/SpeakerTranscriptRetarget.swift
+776 Sources/HolosMeeting/PostProcessing/TranscriptWordEdit.swift
+834 Sources/HolosMeeting/PostProcessing/WordFixStage.swift
+664 Sources/HolosMeeting/RecorderLauncher.swift
+652 Sources/HolosMeeting/RecorderMachine.swift
+811 Sources/HolosMeeting/RecordingWorkflow.swift
+3872 Sources/HolosMeeting/Review/ReviewSession.swift
+839 Sources/HolosMeeting/SessionImporter.swift
+838 Sources/HolosMeeting/Summary/MeetingSummarizer.swift
+709 Sources/HolosMeeting/Summary/SessionRenameCommand.swift
+1817 Sources/HolosMeeting/VoiceProfileService.swift
+920 Sources/HolosSpeakers/EchoAnalysis.swift
+1278 Sources/HolosSpeakers/SpeakerProjection.swift
+882 Sources/HolosStorage/AtomicFile.swift
+971 Sources/HolosStorage/SessionArchive.swift

@@ -2,6 +2,7 @@ import Accelerate
 import Foundation
 import Testing
 import HolosCore
+import HolosTestSupport
 @testable import HolosSpeakers
 
 // Acoustic microphone echo in calls (docs/meeting-design.md §5.11): EchoAnalysis on synthetic signals only, the mask's
@@ -9,21 +10,7 @@ import HolosCore
 
 // MARK: - Synthetic call
 
-/// A deterministic generator (SplitMix64).
-private struct Noise {
-    var state: UInt64
-
-    mutating func next() -> UInt64 {
-        state &+= 0x9E37_79B9_7F4A_7C15
-        var z = state
-        z = (z ^ (z >> 30)) &* 0xBF58_476D_1CE4_E5B9
-        z = (z ^ (z >> 27)) &* 0x94D0_49BB_1331_11EB
-        return z ^ (z >> 31)
-    }
-
-    /// Uniform in [−1, 1).
-    mutating func uniform() -> Float { Float(Double(next() >> 11) / Double(1 << 52)) - 1 }
-
+private extension SplitMix64 {
     /// Roughly Gaussian (sum of four uniforms).
     mutating func gaussian() -> Float { (uniform() + uniform() + uniform() + uniform()) * 0.866 }
 }
@@ -33,7 +20,7 @@ private let rate = 16_000
 /// Speech-like noise: band-limited noise, modulated at a syllable rate of 4 Hz, inside `intervals` (seconds) only,
 /// scaled to `rms` while it speaks.
 private func speech(seconds: Double, intervals: [(Double, Double)], rms: Float, seed: UInt64) -> [Float] {
-    var noise = Noise(state: seed)
+    var noise = SplitMix64(state: seed)
     let count = Int(seconds * Double(rate))
     var out = [Float](repeating: 0, count: count)
     var low: Float = 0
@@ -77,7 +64,7 @@ private func level(_ signal: [Float], _ intervals: [(Double, Double)]) -> Float 
 
 /// The room's echo path: `delay` seconds to the direct sound, then 30 ms of decaying random reflections.
 private func echoPath(of system: [Float], delay: Double, gain: Float, seed: UInt64) -> [Float] {
-    var noise = Noise(state: seed)
+    var noise = SplitMix64(state: seed)
     let shift = Int((delay * Double(rate)).rounded())
     let response = (0..<480).map { $0 == 0 ? 1 : 0.4 * Float(exp(-Double($0) / 80)) * noise.uniform() }
     // out[i] = Σ response[lag] · system[i − shift − lag], with vDSP_conv over a zero-padded input.
@@ -121,7 +108,7 @@ private struct SyntheticCall {
         let overlapEcho = level(echo, [Self.doubleTalk])
         let over = speech(seconds: Self.seconds, intervals: [Self.doubleTalk], rms: overlapEcho * doubleTalkLevel,
                           seed: 4)
-        var floor = Noise(state: 5)
+        var floor = SplitMix64(state: 5)
         let hiss = (0..<echo.count).map { _ in floor.gaussian() * 1e-4 }
         microphone = add(echo, own, over, hiss)
     }
@@ -218,7 +205,7 @@ func headphonesLeaveNothingToMask() throws {
     let system = speech(seconds: SyntheticCall.seconds, intervals: SyntheticCall.systemTalks, rms: 0.05, seed: 1)
     let own = speech(seconds: SyntheticCall.seconds, intervals: SyntheticCall.localTalks + [SyntheticCall.doubleTalk],
                      rms: 0.02, seed: 3)
-    var floor = Noise(state: 5)
+    var floor = SplitMix64(state: 5)
     let microphone = add(own, (0..<own.count).map { _ in floor.gaussian() * 1e-4 })
     let result = try EchoAnalysis.analyze(microphone: InMemoryEchoAudio(microphone),
                                           system: InMemoryEchoAudio(system))
@@ -377,19 +364,20 @@ private func mask(_ classes: [AcousticEchoMask.FrameClass], levels: [Int8]? = ni
 }
 
 @Test func wordRuleCountsLocalShareOfActiveFrames() {
-    // Frame k is centred at 0.032 + 0.016 k: frames 0..<10 cover [0.032, 0.176].
-    let classes: [AcousticEchoMask.FrameClass] = [.local, .local, .echo, .echo, .echo, .echo, .echo, .silence,
-                                                  .silence, .silence]
-    let twoOfSix = mask(classes)
-    // Frames 0...9: 2 local of 7 active (29 %) → echo.
-    #expect(twoOfSix.isEcho(start: 0, end: 0.2) == true)
-    // Frames 0...3: 2 local of 4 → kept.
-    #expect(twoOfSix.isEcho(start: 0.03, end: 0.09) == false)
+    // Frame k is centred at 0.032 + 0.016 k: frames 0..<12 cover [0.032, 0.208]. The local run (3 frames, the
+    // shortest the analysis leaves) has the predicted echo 20 dB below the microphone: a stretch with evidence.
+    let classes: [AcousticEchoMask.FrameClass] = [.local, .local, .local] + Array(repeating: .echo, count: 8)
+        + [.silence]
+    let threeOfEleven = mask(classes)
+    // Frames 0...10: 3 local of 11 active (27 %) → echo.
+    #expect(threeOfEleven.isEcho(start: 0, end: 0.2) == true)
+    // Frames 0...3: 3 local of 4 → kept.
+    #expect(threeOfEleven.isEcho(start: 0.03, end: 0.09) == false)
     // A word between centres still gets the next frame.
-    #expect(twoOfSix.isEcho(start: 0.033, end: 0.034) == false)
+    #expect(threeOfEleven.isEcho(start: 0.033, end: 0.034) == false)
     // After the last frame, or with times that are not numbers: not judged.
-    #expect(twoOfSix.isEcho(start: 5, end: 6) == nil)
-    #expect(twoOfSix.isEcho(start: .nan, end: 1) == nil)
+    #expect(threeOfEleven.isEcho(start: 5, end: 6) == nil)
+    #expect(threeOfEleven.isEcho(start: .nan, end: 1) == nil)
 }
 
 @Test func quietWordIsEchoOnlyWhenThePredictionExplainsIt() {
@@ -507,20 +495,10 @@ private func echoMask(count: Int, local: [(frames: Range<Int>, level: Int8)]) ->
 
 private let session = "SESSION"
 
-/// A segment of 0.3 s words starting every 0.4 s.
+/// A segment of words "<id>w0", "<id>w1", …, each 0.3 s long, starting every 0.4 s.
 private func segment(_ id: String, words: Int, track: String, start: Double) -> TranscriptSegment {
-    var text = ""
-    var timed: [TimedWord] = []
-    for index in 0..<words {
-        let word = "\(id)w\(index)"
-        if !text.isEmpty { text += " " }
-        let wordStart = start + Double(index) * 0.4
-        timed.append(TimedWord(text: word, start: wordStart, end: wordStart + 0.3, utf16Offset: text.utf16.count,
-                               utf16Length: word.utf16.count))
-        text += word
-    }
-    return TranscriptSegment(id: id, start: start, end: start + Double(words) * 0.4, text: text, words: timed,
-                             track: track)
+    TranscriptFixtures.segment(TranscriptFixtures.numberedWords(id, count: words), id: id, track: track, start: start,
+                               every: 0.4, lasting: 0.3)
 }
 
 /// A mask of `seconds` whose frames inside `echo` (seconds) are echo and the rest local.
@@ -742,3 +720,581 @@ private let mostlyEcho = timedMask(seconds: 40, echo: [(10, 11.95)])
     #expect(masked.turns.filter { $0.track == "mic" }.count == 1)
 }
 
+
+// MARK: - Word rule: local frames need evidence
+
+/// Session times of a word over frames `frames`: from just before the first frame's centre to just after the last's.
+private func word(_ frames: Range<Int>) -> (start: Double, end: Double) {
+    (AcousticEchoMask.centre(ofFrame: frames.lowerBound) - 0.004,
+     AcousticEchoMask.centre(ofFrame: frames.upperBound - 1) + 0.004)
+}
+
+private func isEcho(_ mask: AcousticEchoMask, _ frames: Range<Int>) -> Bool? {
+    let times = word(frames)
+    return mask.isEcho(start: times.start, end: times.end)
+}
+
+@Test func echoWordsWithScatteredLocalFramesAreEcho() {
+    // A word of the call's echo, cancelled poorly: short local runs with the predicted echo at the microphone's level
+    // (0 dB), 3.5 dB above it, and 5.5 dB below it, half of the word's frames. Before, the microphone's; now echo,
+    // as review playback leaves it muted.
+    let scattered = echoMask(count: 300, local: [(100..<103, 0), (106..<109, -11), (112..<115, 7)])
+    #expect(isEcho(scattered.countingEveryLocalFrame(), 100..<118) == false)
+    #expect(isEcho(scattered, 100..<118) == true)
+    #expect(scattered.localSpeechIntervals().isEmpty)
+    #expect(scattered.localStretches() == [AcousticEchoMask.LocalStretch(frames: 100..<115, evidence: 0)])
+    // Exactly 6 dB below is no evidence, so #108 keeps it muted; but a run that far under the echo is an utterance of
+    // the user's.
+    let limit = echoMask(count: 300, local: [(100..<106, -12)])
+    #expect(limit.localSpeechIntervals().isEmpty)
+    #expect(isEcho(limit, 100..<110) == false)
+}
+
+@Test func doubleTalkWordsStayTheUsers() {
+    // The user over the call (as in `speechOverTheCallKeepsItsWeakFirstSyllable`): a quiet first word whose own local
+    // frames are 2 dB below the prediction, then louder speech with frames 8 dB below it, all one stretch.
+    let doubleTalk = echoMask(count: 400, local: [
+        (100..<104, -4), (110..<120, -4), (113..<116, -16), (130..<150, -3), (135..<137, -16), (160..<170, -4),
+    ])
+    #expect(isEcho(doubleTalk, 98..<106) == false, "The quiet first word, 0.24 s before louder frames.")
+    #expect(isEcho(doubleTalk, 108..<122) == false)
+    #expect(isEcho(doubleTalk, 128..<152) == false)
+    #expect(isEcho(doubleTalk, 300..<320) == true, "The call's echo after it.")
+    // The last quiet run, 0.4 s after the louder frames and alone in its half second, is an utterance of its own 2 dB
+    // under the echo: the user's.
+    #expect(isEcho(doubleTalk, 158..<172) == false)
+    // Every word the rule before kept, it keeps.
+    for frames in [98..<106, 108..<122, 128..<152, 158..<172, 300..<320] {
+        #expect(isEcho(doubleTalk, frames) == isEcho(doubleTalk.countingEveryLocalFrame(), frames))
+    }
+}
+
+@Test func quietSpeechWithoutPredictedEchoStaysTheUsers() {
+    // The call is quiet (no predicted echo: the lowest stored level) and the microphone hears the user softly, between
+    // silences: a long word, and a short sound of three local frames.
+    var classes = [AcousticEchoMask.FrameClass](repeating: .silence, count: 200)
+    for frame in Array(50..<80) + Array(150..<153) { classes[frame] = .local }
+    let quiet = mask(classes, levels: [Int8](repeating: .min, count: 200))
+    #expect(isEcho(quiet, 50..<80) == false)
+    #expect(isEcho(quiet, 148..<156) == false)
+    #expect(quiet.localStretches().map(\.hasEvidence) == [true, true])
+}
+
+@Test func aWordPartlyInAStretchWithEvidenceCountsOnlyItsFramesThere() {
+    // The user's speech (20 dB above the prediction) ends at frame 146; 19 frames of echo later (0.304 s: another
+    // stretch), a short local run at +2 dB with no evidence.
+    let mixed = echoMask(count: 400, local: [(100..<146, -40), (165..<170, 4)])
+    #expect(mixed.localStretches() == [
+        AcousticEchoMask.LocalStretch(frames: 100..<146, evidence: 46),
+        AcousticEchoMask.LocalStretch(frames: 165..<170, evidence: 0),
+    ])
+    // Over the end of the speech and the echo after it: 6 of its 18 frames local in the stretch (33 %), kept.
+    #expect(isEcho(mixed, 140..<158) == false)
+    // Reaching the other run too: before, 11 local of 30 (37 %); now only the 6 in the stretch count (20 %), echo.
+    #expect(isEcho(mixed.countingEveryLocalFrame(), 140..<170) == false)
+    #expect(isEcho(mixed, 140..<170) == true)
+    // A word over the other run alone: 5 of 12 local before, none now.
+    #expect(isEcho(mixed.countingEveryLocalFrame(), 160..<172) == false)
+    #expect(isEcho(mixed, 160..<172) == true)
+}
+
+@Test func playbackPlaysExactlyTheStretchesWithEvidence() {
+    // The masks of the playback tests: review plays exactly the stretches with evidence, padded. The word rule's own,
+    // wider trust (`trustedWordFrames`) is tested separately and leaves playback as it was.
+    let masks = [
+        echoMask(count: 500, local: [(20..<23, 2), (50..<53, 6), (80..<85, -8), (120..<124, 0), (200..<212, 2),
+                                     (300..<305, -8), (310..<314, -7)]),
+        echoMask(count: 300, local: [(100..<140, -40)]),
+        echoMask(count: 400, local: [(100..<104, -4), (110..<120, -4), (113..<116, -16), (130..<150, -3),
+                                     (135..<137, -16), (160..<170, -4)]),
+        echoMask(count: 400, local: [(100..<104, -4), (100..<102, -16), (110..<114, -4), (112..<113, -16)]),
+        echoMask(count: 400, local: [(100..<104, -4), (100..<102, -16), (150..<154, -4), (150..<151, -16)]),
+        echoMask(count: 600, local: [(100..<140, -40), (400..<430, -30), (200..<204, 2), (250..<253, 4),
+                                     (520..<532, 0)]),
+    ]
+    for mask in masks {
+        var padded: [AcousticEchoMask.Interval] = []
+        for stretch in mask.localStretches() where stretch.hasEvidence {
+            let interval = AcousticEchoMask.Interval(
+                start: max(0, stretch.start - AcousticEchoMask.playbackLeadSeconds),
+                end: stretch.end + AcousticEchoMask.playbackTailSeconds)
+            if let last = padded.last, interval.start <= last.end {
+                padded[padded.count - 1].end = max(last.end, interval.end)
+            } else {
+                padded.append(interval)
+            }
+        }
+        #expect(mask.localSpeechIntervals() == padded)
+        #expect(mask.countingEveryLocalFrame().localSpeechIntervals() == mask.localSpeechIntervals())
+    }
+    // Evidence adds up across the runs of one stretch, not across stretches.
+    #expect(masks[3].localStretches() == [AcousticEchoMask.LocalStretch(frames: 100..<114, evidence: 3)])
+    #expect(masks[4].localStretches().map(\.evidence) == [2, 1])
+}
+
+// MARK: - Labels and stats under the evidence rule
+
+/// Echo throughout `seconds` (the prediction explains the microphone, 0 dB), with local frames whose centre lies in
+/// each interval at its predicted echo level (stored half-dB steps).
+private func levelledMask(seconds: Double, local: [(start: Double, end: Double, level: Int8)]) -> AcousticEchoMask {
+    let count = Int(seconds / AcousticEchoMask.hopSeconds)
+    var classes = [AcousticEchoMask.FrameClass](repeating: .echo, count: count)
+    var levels = [Int8](repeating: 0, count: count)
+    for frame in 0..<count {
+        let centre = AcousticEchoMask.centre(ofFrame: frame)
+        for run in local where centre >= run.start && centre < run.end {
+            classes[frame] = .local
+            levels[frame] = run.level
+        }
+    }
+    return mask(classes, levels: levels)
+}
+
+/// M (`channelCall`, words every 0.4 s from 10 s): words 0–1 the user's (20 dB above the prediction), word 6 the
+/// call's echo with false local frames at +2 dB and +3.5 dB (6 of its 19 frames), word 9 the user's while the call
+/// is quiet (no prediction); every other frame echo.
+private let falseLocalInWordSix = levelledMask(seconds: 30, local: [
+    (10.0, 10.3, -40), (10.4, 10.7, -40), (12.4, 12.45, 4), (12.6, 12.65, 7), (13.6, 13.9, .min),
+])
+
+@Test func echoWithFalseLocalFramesLeavesTheUsersTurn() throws {
+    let (words, run) = channelCall()
+    let before = view(run, words, mask: falseLocalInWordSix.countingEveryLocalFrame())
+    #expect(shownWords(before.turns.first { $0.track == "mic" }) == [0, 1, 6, 9])
+    let after = view(run, words, mask: falseLocalInWordSix)
+    #expect(shownWords(after.turns.first { $0.track == "mic" }) == [0, 1, 9])
+
+    let stats = EchoLabelStats.compare(transcript: words, mask: falseLocalInWordSix, run: run)
+    #expect(stats.microphoneWords == 10)
+    #expect(stats.judgedWords == 10)
+    #expect((stats.localBefore, stats.localAfter, stats.localToEcho, stats.echoToLocal) == (4, 3, 1, 0))
+    #expect((stats.localToEchoInEcho, stats.localToEchoElsewhere) == (1, 0))
+    // Word 6's local frames: the echo predicted 2 and 3.5 dB over the microphone, 6 or 7 of its 19 frames.
+    #expect(stats.localToEchoLevels.atLeast0 == 1)
+    #expect(stats.localToEchoShares.from30To50 == 1)
+    #expect(stats.localToEchoElsewhereLevels == EchoLabelStats.LevelBuckets())
+    // Word 6 is surrounded by echo; the user's words are not.
+    #expect((stats.localInEchoBefore, stats.localInEchoAfter) == (1, 0))
+    #expect((stats.microphoneRowsBefore, stats.microphoneRowsAfter) == (1, 1))
+    #expect(stats.rowsChanged == 1)
+    // Without labels: words only.
+    let wordsOnly = EchoLabelStats.compare(transcript: words, mask: falseLocalInWordSix)
+    #expect(wordsOnly.localToEcho == 1)
+    #expect(wordsOnly.microphoneRowsBefore == nil && wordsOnly.rowsChanged == nil)
+}
+
+@Test func anEchoClusterWithFalseLocalFramesNowShowsUnknown() throws {
+    // `diarizedCall`: S1 holds E (seven words from 10 s). E's words 0–4 are the call's echo with false local frames
+    // (6 of each word's 19 frames, +2 dB); words 5–6 end with the user's own speech, 20 dB above the prediction (0.35
+    // s after the last false run, so another stretch). S2 holds U, the user's.
+    let (words, run) = diarizedCall()
+    var local: [(start: Double, end: Double, level: Int8)] = (0..<5).flatMap { index -> [(Double, Double, Int8)] in
+        let start = 10 + 0.4 * Double(index)
+        return [(start, start + 0.05, 4), (start + 0.15, start + 0.2, 4)]
+    }
+    local += [(12.15, 12.3, -40), (12.45, 12.7, -40), (20, 21.5, -40)]
+    let mask = levelledMask(seconds: 40, local: local)
+    let before = view(run, words, mask: mask.countingEveryLocalFrame())
+    #expect(before.speakers.map(\.id) == ["mic:S1", "mic:S2", "system:all"])
+    let after = view(run, words, mask: mask)
+    #expect(after.speakers.map(\.id) == ["mic:S2", "system:all"])
+    #expect(after.turns.first { $0.spans.first?.segmentID == "E" }?.speakerID == nil)
+
+    let stats = EchoLabelStats.compare(transcript: words, mask: mask, run: run)
+    #expect(stats.localToEcho == 5)
+    #expect((stats.unknownRowsBefore, stats.unknownRowsAfter) == (0, 1))
+    #expect((stats.microphoneRowsBefore, stats.microphoneRowsAfter) == (2, 2))
+}
+
+@Test func echoLabelStatsAddUpAndPrintCountsOnly() {
+    var first = EchoLabelStats()
+    first.microphoneWords = 100
+    first.judgedWords = 90
+    first.localBefore = 40
+    first.localAfter = 30
+    first.localToEcho = 10
+    first.localToEchoInEcho = 7
+    first.localToEchoElsewhere = 3
+    for level in [0.5, -2, -2, -4, -10, -10, -10] { first.localToEchoLevels.add(level: level) }
+    for level: Double in [-2, -4, -10] { first.localToEchoElsewhereLevels.add(level: level) }
+    for share in [0.3, 0.6, 0.9] { first.localToEchoShares.add(share: share) }
+    first.localToEchoElsewhereShares.add(share: 0.9)
+    first.localInEchoBefore = 12
+    first.localInEchoAfter = 3
+    first.microphoneRowsBefore = 20
+    first.microphoneRowsAfter = 17
+    first.unknownRowsBefore = 6
+    first.unknownRowsAfter = 2
+    first.rowsChanged = 5
+    var second = EchoLabelStats()
+    second.microphoneWords = 10
+    second.judgedWords = 10
+    second.localBefore = 4
+    second.localAfter = 4
+    var total = EchoLabelStats()
+    total.add(first)
+    total.add(second)
+    #expect(total.line == "mic words 110, judged 100; user's 44 -> 34 (local->echo 10 [in echo 7, elsewhere 3], "
+        + "echo->local 0); in echo 12 -> 3; mic rows 20 -> 17, unknown 6 -> 2; rows changed 5; levels ≥0:1 −1..0:0 "
+        + "−3..−1:2 −6..−3:1 <−6:3 (elsewhere ≥0:0 −1..0:0 −3..−1:1 −6..−3:1 <−6:1); shares 30-50%:1 50-80%:1 ≥80%:1 "
+        + "(elsewhere 30-50%:0 50-80%:0 ≥80%:1)")
+    #expect(second.line == "mic words 10, judged 10; user's 4 -> 4 (local->echo 0 [in echo 0, elsewhere 0], "
+        + "echo->local 0); in echo 0 -> 0")
+}
+
+@Test func aTotalLeavesRowsOutWhenASessionHasNoLabels() {
+    var labelled = EchoLabelStats()
+    labelled.microphoneWords = 100
+    labelled.microphoneRowsBefore = 20
+    labelled.microphoneRowsAfter = 17
+    labelled.unknownRowsBefore = 6
+    labelled.unknownRowsAfter = 2
+    labelled.rowsChanged = 5
+    var unlabelled = EchoLabelStats()
+    unlabelled.microphoneWords = 10
+    // Rows are counted only from labels: a total over a session without them has no row counts at all.
+    let mixed = EchoLabelStats.total([labelled, unlabelled])
+    #expect(mixed.microphoneWords == 110)
+    #expect(mixed.microphoneRowsBefore == nil && mixed.unknownRowsAfter == nil && mixed.rowsChanged == nil)
+    #expect(!mixed.line.contains("mic rows") && !mixed.line.contains("rows changed"))
+    let both = EchoLabelStats.total([labelled, labelled])
+    #expect((both.microphoneRowsBefore, both.microphoneRowsAfter) == (40, 34))
+    #expect((both.unknownRowsBefore, both.unknownRowsAfter, both.rowsChanged) == (12, 4, 10))
+}
+
+@Test func echoDominatesAWordWhenItsFramesAreThreeTimesTheLocalOnes() {
+    // ±0.5 s around the word's middle: about 62 frames.
+    let mostlyEcho = echoMask(count: 300, local: [(140..<150, -40)])
+    let middle = AcousticEchoMask.centre(ofFrame: 145)
+    #expect(EchoLabelStats.echoDominated(mostlyEcho, start: middle - 0.1, end: middle + 0.1))
+    let muchLocal = echoMask(count: 300, local: [(130..<160, -40)])
+    #expect(!EchoLabelStats.echoDominated(muchLocal, start: middle - 0.1, end: middle + 0.1))
+    let silent = mask([AcousticEchoMask.FrameClass](repeating: .silence, count: 300))
+    #expect(!EchoLabelStats.echoDominated(silent, start: middle - 0.1, end: middle + 0.1))
+}
+
+@Test func aQuietSoundSmoothedToOneLocalFrameWhileTheCallIsSilentStaysTheUsers() throws {
+    // Through the analysis's own frame rule: the microphone has a quiet sound 40 dB over its floor at frames 100, 102
+    // and 104, nothing between. The 5-frame smoothing leaves only frame 102 local; 100 and 104 stay active, as echo.
+    // One local frame of three: the rule before kept the word, and so does the rule now when the call predicts no
+    // echo there, or a negligible one (40 dB below the microphone).
+    for echo: Float in [0, 1e-8] {
+        let mask = EchoAnalysis.classify(framePowers([
+            (100..<101, 1e-4, echo, 1e-4, 1e-8), (102..<103, 1e-4, echo, 1e-4, 1e-8),
+            (104..<105, 1e-4, echo, 1e-4, 1e-8),
+        ]))
+        #expect((99...105).map(mask.frameClass) == [.silence, .echo, .silence, .local, .silence, .echo, .silence])
+        #expect(mask.localStretches() == [AcousticEchoMask.LocalStretch(frames: 102..<103, evidence: 1)])
+        #expect(isEcho(mask.countingEveryLocalFrame(), 100..<105) == false)
+        #expect(isEcho(mask, 100..<105) == false)
+        // Review playback is #108's: one frame is not evidence enough to open the microphone.
+        #expect(mask.localSpeechIntervals().isEmpty)
+        // The same single frame with the echo 10 dB below the microphone: not negligible, and alone.
+        var levels = mask.echoLevels
+        levels[102] = -20
+        let predicted = try #require(AcousticEchoMask(classes: mask.classes, echoLevels: levels))
+        #expect(isEcho(predicted, 100..<105) == true)
+    }
+}
+
+@Test func aHiddenInterjectionWhoseWordsChangeIsNoChangedRow() throws {
+    // The microphone: an unknown speaker's "mm" (the user's, 20 dB over the prediction) and, 0.7 s later, "okay", the
+    // call's echo with false local frames; then the user's sentence. "mm okay" is a filler turn Review hides under
+    // both rules, though the new rule drops "okay" from it: no row changes. The sentence's row does not change either.
+    let filler = TranscriptSegment(id: "F", start: 10, end: 11.3, text: "mm okay", words: [
+        TimedWord(text: "mm", start: 10.0, end: 10.3, utf16Offset: 0, utf16Length: 2),
+        TimedWord(text: "okay", start: 11.0, end: 11.3, utf16Offset: 3, utf16Length: 4),
+    ], track: "mic")
+    let words = transcript([filler, segment("M", words: 5, track: "mic", start: 20)])
+    var run = SpeakerRunBuilder.build(
+        sessionID: session, transcript: words,
+        tracks: [SpeakerRunBuilder.TrackInput(track: "mic", policy: .channel(speakerID: "mic:me", displayName: "Me"))],
+        engine: nil, parameters: callParameters, id: "RUN").run
+    let fillerTurn = try #require(run.turns.firstIndex { $0.spans.first?.segmentID == "F" })
+    #expect(run.turns.count == 2)
+    run.turns[fillerTurn].speakerID = nil
+    let mask = levelledMask(seconds: 30, local: [
+        (10.0, 10.3, -40), (11.0, 11.05, 4), (11.2, 11.25, 4), (20, 22, -40),
+    ])
+    let before = view(run, words, mask: mask.countingEveryLocalFrame())
+    let after = view(run, words, mask: mask)
+    let id = run.turns[fillerTurn].id
+    #expect(shownWords(before.turns.first { $0.id == id }) == [0, 1])
+    #expect(shownWords(after.turns.first { $0.id == id }) == [0])
+    #expect(!before.shownTurns(includingHidden: false).contains { $0.id == id })
+    #expect(!after.shownTurns(includingHidden: false).contains { $0.id == id })
+    let stats = EchoLabelStats.compare(transcript: words, mask: mask, run: run)
+    #expect(stats.localToEcho == 1)
+    #expect(stats.rowsChanged == 0)
+    #expect((stats.microphoneRowsBefore, stats.microphoneRowsAfter) == (1, 1))
+}
+
+/// Frame powers for `EchoAnalysis.classify`: `count` frames of a quiet microphone (1e-8, its noise floor) and silent
+/// system audio, with `set` giving frames their microphone, predicted echo, residual and system powers.
+private func framePowers(count: Int = 3_000,
+                         _ set: [(frames: Range<Int>, mic: Float, echo: Float, residual: Float, system: Float)])
+    -> EchoAnalysis.FramePowers {
+    var powers = EchoAnalysis.FramePowers(microphone: [Float](repeating: 1e-8, count: count),
+                                          echo: [Float](repeating: 0, count: count),
+                                          residual: [Float](repeating: 1e-8, count: count),
+                                          system: [Float](repeating: 1e-8, count: count))
+    for entry in set {
+        for frame in entry.frames {
+            powers.microphone[frame] = entry.mic
+            powers.echo[frame] = entry.echo
+            powers.residual[frame] = entry.residual
+            powers.system[frame] = entry.system
+        }
+    }
+    return powers
+}
+
+@Test func sustainedDoubleTalkAtTheEchosLoudnessStaysTheUsers() {
+    // The far end talks (well cancelled echo, frames 1300–1500), then the user talks over it as loud as the echo for
+    // 1.6 s: microphone 2e-4, predicted echo 1e-4, residual 1e-4. The frame rule calls it local all through, but the
+    // predicted echo is only 3 dB below the microphone, so no frame is 6 dB clear of it.
+    let mask = EchoAnalysis.classify(framePowers([
+        (1300..<1500, 1e-4, 1e-4, 1e-6, 1e-2),
+        (1500..<1600, 2e-4, 1e-4, 1e-4, 1e-2),
+    ]))
+    #expect((1502..<1598).allSatisfy { mask.frameClass($0) == .local })
+    #expect(mask.frameClass(1400) == .echo)
+    let stretch = mask.localStretches().first { $0.frames.contains(1550) }
+    #expect(stretch?.evidence == 0)
+    #expect(mask.wordStretches.contains { $0.contains(1502) && $0.contains(1597) })
+    // Every word of it is the user's, as before the evidence rule; the echo before it is echo.
+    for start in stride(from: 1500, to: 1580, by: 20) {
+        #expect(isEcho(mask, start..<(start + 18)) == false)
+        #expect(isEcho(mask.countingEveryLocalFrame(), start..<(start + 18)) == false)
+    }
+    #expect(isEcho(mask, 1400..<1418) == true)
+    // Review playback is unchanged (#108): the echo is as loud as the user there, so it stays muted.
+    #expect(mask.localSpeechIntervals().isEmpty)
+}
+
+@Test func scatteredFalseLocalRunsThroughTheFrameRuleStayEcho() {
+    // The far end talks (frames 600–1200), cancelled poorly in places: ten 5-frame runs 10 frames apart, and one of
+    // 20 frames, where the residual keeps the microphone's level and the prediction is 2 dB above it. They are local
+    // frames, but neither 6 dB clear of the echo nor quieter than it: the words over them are echo.
+    var set: [(frames: Range<Int>, mic: Float, echo: Float, residual: Float, system: Float)] = [
+        (600..<1200, 1e-4, 1e-4, 1e-6, 1e-2),
+    ]
+    for run in 0..<10 { set.append(((700 + 15 * run)..<(705 + 15 * run), 1e-4, 1.6e-4, 1e-4, 1e-2)) }
+    set.append((1000..<1020, 1e-4, 1.6e-4, 1e-4, 1e-2))
+    let mask = EchoAnalysis.classify(framePowers(set))
+    #expect((700..<705).allSatisfy { mask.frameClass($0) == .local })
+    #expect((1000..<1020).allSatisfy { mask.frameClass($0) == .local })
+    #expect(mask.localStretches().allSatisfy { !$0.hasEvidence })
+    #expect(mask.wordStretches.isEmpty)
+    for frames in [700..<715, 760..<775, 1000..<1020] {
+        #expect(isEcho(mask.countingEveryLocalFrame(), frames) == false)
+        #expect(isEcho(mask, frames) == true)
+    }
+    #expect(mask.localSpeechIntervals().isEmpty)
+}
+
+@Test func aQuietSoundKeepsItsExemptionBesideAFalseLocalRun() throws {
+    // The quiet sound smoothed to one local frame (102) while the call is silent, and 0.16 s later a short local run
+    // of the call's echo predicted at the microphone's level (113–115): one stretch. The quiet frame keeps its own
+    // exemption; the echo run does not share it.
+    let mask = EchoAnalysis.classify(framePowers([
+        (100..<101, 1e-4, 0, 1e-4, 1e-8), (102..<103, 1e-4, 0, 1e-4, 1e-8), (104..<105, 1e-4, 0, 1e-4, 1e-8),
+        (113..<116, 1e-4, 1e-4, 1e-4, 1e-2),
+    ]))
+    #expect((99...105).map(mask.frameClass) == [.silence, .echo, .silence, .local, .silence, .echo, .silence])
+    #expect((113..<116).allSatisfy { mask.frameClass($0) == .local })
+    #expect(mask.localStretches() == [AcousticEchoMask.LocalStretch(frames: 102..<116, evidence: 1)])
+    #expect(isEcho(mask, 100..<105) == false)
+    #expect(isEcho(mask, 112..<117) == true)
+    // Playback stays #108's: the quiet frame does not open the microphone, whose padding would reach the echo.
+    #expect(mask.localSpeechIntervals().isEmpty)
+}
+
+/// Review playback exactly as #108 made it: runs of local frames joined across gaps under 0.3 s, a stretch kept with
+/// at least 3 local frames 6 dB clear of the predicted echo, padded 64 ms before and 200 ms after.
+private func playback108(_ mask: AcousticEchoMask) -> [AcousticEchoMask.Interval] {
+    var stretches: [(interval: AcousticEchoMask.Interval, evidence: Int)] = []
+    var frame = 0
+    while frame < mask.frameCount {
+        guard mask.frameClass(frame) == .local else { frame += 1; continue }
+        let first = frame
+        var evidence = 0
+        while frame < mask.frameCount, mask.frameClass(frame) == .local {
+            if Double(mask.echoLevels[frame]) * 0.5 < -6 { evidence += 1 }
+            frame += 1
+        }
+        let start = AcousticEchoMask.centre(ofFrame: first) - 0.008
+        let end = AcousticEchoMask.centre(ofFrame: frame - 1) + 0.008
+        if let last = stretches.last, start - last.interval.end < 0.3 {
+            stretches[stretches.count - 1].interval.end = end
+            stretches[stretches.count - 1].evidence += evidence
+        } else {
+            stretches.append((AcousticEchoMask.Interval(start: start, end: end), evidence))
+        }
+    }
+    var padded: [AcousticEchoMask.Interval] = []
+    for (run, evidence) in stretches where evidence >= 3 {
+        let interval = AcousticEchoMask.Interval(start: max(0, run.start - 0.064), end: run.end + 0.2)
+        if let last = padded.last, interval.start <= last.end {
+            padded[padded.count - 1].end = max(last.end, interval.end)
+        } else {
+            padded.append(interval)
+        }
+    }
+    return padded
+}
+
+@Test func theWordRulesExemptionsLeavePlaybackAsItWas() {
+    // Sustained double-talk at the echo's loudness, a quiet frame beside echo, a run that turns from double-talk into
+    // false local frames, negligible predictions, and a quiet sound touching a false local run: the words keep their
+    // frames, and review plays exactly what #108 played.
+    let masks = [
+        EchoAnalysis.classify(framePowers([
+            (1300..<1500, 1e-4, 1e-4, 1e-6, 1e-2), (1500..<1600, 2e-4, 1e-4, 1e-4, 1e-2),
+        ])),
+        EchoAnalysis.classify(framePowers([
+            (100..<101, 1e-4, 0, 1e-4, 1e-8), (102..<103, 1e-4, 0, 1e-4, 1e-8), (104..<105, 1e-4, 0, 1e-4, 1e-8),
+            (113..<116, 1e-4, 1e-4, 1e-4, 1e-2),
+        ])),
+        echoMask(count: 400, local: [(100..<140, 4), (140..<165, -6)]),
+        echoMask(count: 400, local: [(100..<102, -80), (102..<106, 4), (200..<230, -40), (300..<301, .min)]),
+        echoMask(count: 300, local: [(200..<202, .min), (202..<206, 4)]),
+    ]
+    for mask in masks {
+        #expect(mask.localSpeechIntervals() == playback108(mask))
+        #expect(mask.countingEveryLocalFrame().localSpeechIntervals() == playback108(mask))
+    }
+    #expect(playback108(masks[1]).isEmpty, "The echo beside the quiet frame stays muted.")
+}
+
+@Test func sustainedDoubleTalkInARunThatBeganAsFalseLocalFramesIsKept() {
+    // One unbroken local run: 40 frames of the call cancelled poorly (+2 dB), then 25 frames of the user over the
+    // call at its loudness (−3 dB). Over the whole run the median is +2 dB; frame by frame, the double-talk
+    // qualifies.
+    let mask = echoMask(count: 400, local: [(100..<140, 4), (140..<165, -6)])
+    #expect(mask.localStretches().map(\.evidence) == [0])
+    #expect(isEcho(mask, 145..<163) == false)
+    #expect(isEcho(mask, 140..<165) == false)
+    #expect(isEcho(mask, 105..<125) == true)
+    #expect(isEcho(mask.countingEveryLocalFrame(), 105..<125) == false)
+    // Frames are trusted only where most local frames of their half second are below −1 dB.
+    #expect(mask.wordStretches == [140..<165])
+}
+
+@Test func aQuietSoundTouchingAFalseLocalRunStaysTheUsers() {
+    // While the call is silent the user makes a short sound (two local frames, nothing predicted), and the call
+    // resumes at once with local frames it cancels poorly (+2 dB): one run. The quiet frames stay trusted on their own.
+    let mask = echoMask(count: 300, local: [(200..<202, .min), (202..<206, 4)])
+    #expect(mask.wordStretches == [200..<202])
+    #expect(isEcho(mask, 199..<203) == false)
+    #expect(isEcho(mask, 202..<210) == true)
+    // A negligible prediction (40 dB below the microphone) is the same.
+    let tiny = echoMask(count: 300, local: [(200..<202, -80), (202..<206, 4)])
+    #expect(isEcho(tiny, 199..<203) == false)
+}
+
+@Test func syllabicDoubleTalkWithBriefGapsStaysTheUsers() {
+    // The user talks over the call in syllables: 10 local frames (microphone 3e-4, predicted echo 1e-4, residual
+    // 2e-4: the echo 4.8 dB below) then 4 frames of echo alone, again and again. No run is long, no frame is 6 dB
+    // clear.
+    var set: [(frames: Range<Int>, mic: Float, echo: Float, residual: Float, system: Float)] = [
+        (1300..<1700, 1e-4, 1e-4, 1e-6, 1e-2),
+    ]
+    for start in stride(from: 1400, to: 1600, by: 14) { set.append((start..<(start + 10), 3e-4, 1e-4, 2e-4, 1e-2)) }
+    let mask = EchoAnalysis.classify(framePowers(set))
+    #expect((1400..<1410).allSatisfy { mask.frameClass($0) == .local })
+    #expect((1410..<1414).allSatisfy { mask.frameClass($0) == .echo })
+    #expect(mask.localStretches().allSatisfy { !$0.hasEvidence })
+    // A word of 28 frames, 20 of them local: the user's.
+    #expect(isEcho(mask, 1442..<1470) == false)
+    #expect(isEcho(mask, 1500..<1528) == false)
+    #expect(isEcho(mask, 1320..<1348) == true, "The echo before it.")
+    #expect(mask.localSpeechIntervals().isEmpty, "Playback is #108's.")
+}
+
+@Test func evidenceSupportsOnlyFramesCloseToIt() {
+    // One short burst of the user's (3 frames 10 dB clear of the echo), then 4 false local frames (+2 dB) every 10
+    // frames for 5 s: one stretch, its gaps all under 0.3 s. The burst supports the frames within 18 of it, no more.
+    var local: [(frames: Range<Int>, level: Int8)] = [(100..<103, -20)]
+    for start in stride(from: 110, to: 410, by: 10) { local.append((start..<(start + 4), 4)) }
+    let mask = echoMask(count: 500, local: local)
+    #expect(mask.localStretches().count == 1)
+    #expect(isEcho(mask, 98..<112) == false)
+    #expect(isEcho(mask, 200..<220) == true)
+    #expect(isEcho(mask, 380..<400) == true)
+    #expect(isEcho(mask.countingEveryLocalFrame(), 380..<400) == false)
+    #expect(mask.wordStretches == [100..<103, 110..<114])
+}
+
+@Test func syllablesFarApartOverTheCallStayTheUsers() {
+    // The user over the call in syllables 160 ms long, 192 ms of echo alone between them: 10 local frames (microphone
+    // 3e-4, predicted echo 1e-4, residual 2e-4) then 12 echo frames, again and again. No syllable has its half second
+    // mostly local; each is an utterance 5 dB under the echo.
+    var set: [(frames: Range<Int>, mic: Float, echo: Float, residual: Float, system: Float)] = [
+        (1300..<1700, 1e-4, 1e-4, 1e-6, 1e-2),
+    ]
+    for start in stride(from: 1400, to: 1600, by: 22) { set.append((start..<(start + 10), 3e-4, 1e-4, 2e-4, 1e-2)) }
+    let mask = EchoAnalysis.classify(framePowers(set))
+    #expect((1400..<1410).allSatisfy { mask.frameClass($0) == .local })
+    #expect((1410..<1422).allSatisfy { mask.frameClass($0) == .echo })
+    #expect(isEcho(mask, 1400..<1428) == false)
+    #expect(isEcho(mask, 1466..<1494) == false)
+    #expect(isEcho(mask, 1320..<1348) == true, "The echo before it.")
+    #expect(mask.localSpeechIntervals().isEmpty, "Playback is #108's.")
+}
+
+@Test func aShortUtteranceAloneAfterTheUsersSpeechStaysTheUsers() {
+    // The user speaks (20 dB over the echo), the call goes on alone for 0.4 s, then the user says one short word 2 dB
+    // under the echo, alone in its half second: no evidence near it and no sustained speech around it.
+    let mask = echoMask(count: 400, local: [(100..<130, -40), (155..<165, -4)])
+    #expect(isEcho(mask, 153..<167) == false)
+    // The same short word 2 dB over the echo is the call cancelled poorly.
+    let over = echoMask(count: 400, local: [(100..<130, -40), (155..<165, 4)])
+    #expect(isEcho(over, 153..<167) == true)
+    // An utterance ends at a gap of 4 frames: a short run of the call's after the user's word does not share its
+    // level.
+    let apart = echoMask(count: 400, local: [(200..<210, -4), (214..<217, 4)])
+    #expect(isEcho(apart, 200..<210) == false)
+    #expect(isEcho(apart, 214..<217) == true)
+}
+
+@Test func movedWordsAreBucketedByTheirLevelAndShare() {
+    var levels = EchoLabelStats.LevelBuckets()
+    for level in [0, -0.5, -1, -2.9, -3, -6, -6.5, -64] { levels.add(level: level) }
+    #expect((levels.atLeast0, levels.from1To0, levels.from3To1, levels.from6To3, levels.below6) == (1, 2, 2, 1, 2))
+    var shares = EchoLabelStats.ShareBuckets()
+    for share in [0.3, 0.5, 0.79, 0.8, 1] { shares.add(share: share) }
+    #expect((shares.from30To50, shares.from50To80, shares.atLeast80) == (1, 2, 2))
+    // A word over frames 100..<110: 4 local at +2 dB, 2 local with no predicted echo, 4 echo. The median of its local
+    // levels is the middle of +2 and +2 (the two lowest sort first), its share 60 %.
+    let mask = echoMask(count: 300, local: [(100..<104, 4), (104..<106, .min)])
+    let times = word(100..<110)
+    let measured = EchoLabelStats.localFrames(mask, start: times.start, end: times.end)
+    #expect(measured?.level == 2)
+    #expect(measured?.share == 0.6)
+    #expect(EchoLabelStats.localFrames(mask, start: word(200..<210).start, end: word(200..<210).end) == nil)
+}
+
+@Test func anUtteranceLendsItsLevelOnlyToFramesNearIt() {
+    // 100 frames of the user 3 dB under the echo, then 30 runs of the call cancelled poorly (+2 dB), 3 frames each
+    // with 3 echo frames between: all one utterance, its gaps never over 3 frames. Only frames within 240 ms of the
+    // user's speech are trusted with it; the words after are echo.
+    var local: [(frames: Range<Int>, level: Int8)] = [(100..<200, -6)]
+    for run in 0..<30 { local.append(((203 + 6 * run)..<(206 + 6 * run), 4)) }
+    let mask = echoMask(count: 500, local: local)
+    #expect(isEcho(mask, 150..<190) == false)
+    #expect(isEcho(mask, 260..<280) == true)
+    #expect(isEcho(mask, 340..<360) == true)
+    #expect(isEcho(mask.countingEveryLocalFrame(), 260..<280) == false)
+    #expect(mask.wordStretches.allSatisfy { $0.upperBound <= 200 + AcousticEchoMask.utteranceReachFrames })
+}
+
+@Test func doubleTalkRunningStraightIntoPoorlyCancelledEchoTurnsBackToEcho() {
+    // The user over the call at its loudness (−3 dB) for 60 frames, then, with no gap, 40 frames the call cancels
+    // poorly (+2 dB): one run. The double-talk is the user's; the echo after it is echo again.
+    let mask = echoMask(count: 400, local: [(100..<160, -6), (160..<200, 4)])
+    #expect(isEcho(mask, 110..<150) == false)
+    #expect(isEcho(mask, 170..<195) == true)
+    #expect(isEcho(mask.countingEveryLocalFrame(), 170..<195) == false)
+    #expect(mask.wordStretches == [100..<160])
+}

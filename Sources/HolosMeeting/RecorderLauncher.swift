@@ -56,19 +56,21 @@ import Synchronization
     /// The name is joined to its option: as a separate element, a name starting with "-" ("- standup") would be
     /// parsed as an option and the recorder would exit with a usage error. The language is joined the same way:
     /// `--locale` for one, `--languages` for several (the first transcribed live, docs/meeting-design.md §4.14).
+    /// The values are those of `RecordingOptions(settings:…)`, the in-process recorder's options: no language means
+    /// the recorder's default, and a recording without the microphone gets no `--microphone`.
     public nonisolated static func arguments(_ settings: MeetingStartSettings, sessionID: String, root: URL,
                                              vocabularyFile: URL?) -> [String] {
         var arguments = ["record", "start", "--session-id", sessionID, "--name=\(settings.name)",
                          "--source", settings.source.rawValue]
         if settings.nameIsDefault { arguments.append("--default-name") }
-        if settings.locales.count > 1 {
-            arguments.append("--languages=\(settings.locales.joined(separator: ","))")
+        if !settings.recorderLanguages.isEmpty {
+            arguments.append("--languages=\(settings.recorderLanguages.joined(separator: ","))")
         } else if let locale = settings.locale {
             arguments.append("--locale=\(locale)")
         }
         if let app = settings.applicationBundleID { arguments += ["--app", app] }
         if settings.othersInRoom { arguments.append("--others-in-room") }
-        if let microphone = settings.microphone { arguments += ["--microphone", microphone.argument] }
+        if let microphone = settings.recorderMicrophone { arguments += ["--microphone", microphone.argument] }
         if let expected = settings.expectedSpeakers { arguments += ["--expected-speakers", String(expected)] }
         if let vocabularyFile { arguments += ["--vocabulary-file", vocabularyFile.path] }
         if let screen = settings.screen { arguments += ["--screen", screen.rawValue] }
@@ -124,7 +126,7 @@ import Synchronization
 // MARK: - In-process
 
 /// Runs `RecordingWorkflow.run` inside the app (decision 4's fallback, docs/meeting-design.md §4.1), with the same
-/// options as the child. Frames are consumed off the main actor; an activity keeps App Nap and timer coalescing away
+/// options as the child (`RecordingOptions(settings:…)`). Frames are consumed off the main actor; an activity keeps App Nap and timer coalescing away
 /// while recording. Post-processing still runs in a `voiceislocal session diarize` child, which inherits the processing lease
 /// (`--lease-fd 3`), so FluidAudio stays out of the app and the session is never without a lock.
 @MainActor public final class InProcessLauncher: RecorderLauncher {
@@ -148,17 +150,6 @@ import Synchronization
                        vocabularyFile: URL?) throws -> Int32? {
         guard running.isEmpty else { throw HolosError.unavailable("A meeting is already recording in Voice is Local.") }
         let vocabulary = try vocabularyFile.map { try VocabularyFile.consume($0) } ?? []
-        // The app always passes the language chosen in the start panel; `standard` only for a caller that does not.
-        let options = RecordingOptions(name: settings.name, source: settings.source,
-                                       locale: settings.locale ?? DictationLanguage.standard, backend: .speech,
-                                       root: root, applicationBundleID: settings.applicationBundleID,
-                                       vocabulary: vocabulary, sessionID: sessionID,
-                                       othersInRoom: settings.othersInRoom,
-                                       expectedSpeakers: settings.expectedSpeakers, liveText: false,
-                                       microphone: settings.microphone,
-                                       languages: settings.locales.count > 1 ? settings.locales : [],
-                                       screen: settings.screen,
-                                       nameSource: settings.nameIsDefault ? .default : .user)
         let stop = ManualStopSource()
         let log = Self.labellingLog(in: logDirectory, sessionID: sessionID)
         let labelling = LabellingStarted()
@@ -177,6 +168,10 @@ import Synchronization
             var code: Int32 = 0
             var message: String?
             do {
+                // The app always passes the language chosen in the start panel; the default is for a caller that does
+                // not, as the child takes it without `--locale`.
+                let options = await RecordingOptions(settings: settings, sessionID: sessionID, root: root,
+                                                     vocabulary: vocabulary, defaultLocale: dependencies.defaultLocale)
                 let outcome = try await RecordingWorkflow.run(options, dependencies: dependencies)
                 code = Self.exitCode(outcome)
             } catch {
@@ -278,7 +273,7 @@ import Synchronization
         progress: @escaping @Sendable (PostProcessingProgress) -> Void,
         pollInterval: Duration = .milliseconds(250)) async -> PostProcessingRecord {
         let startedAt = Date()
-        let sessionID = (try? SessionArchive.readManifest(at: session).id) ?? session.deletingPathExtension().lastPathComponent
+        let sessionID = (try? SessionArchive.readManifest(at: session).id) ?? SessionPaths.stem(ofFolderName: session.lastPathComponent)
         let output = FileManager.default.temporaryDirectory
             .appendingPathComponent("holos-postprocess-\(UUID().uuidString).json", isDirectory: false)
         defer { ProcessSpawner.removeRegularFile(output) }

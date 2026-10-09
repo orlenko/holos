@@ -36,6 +36,14 @@ extension HolosAppDelegate {
         RecognizerVocabulary.dictation(wordList: wordList.terms, corrections: corrections, language: language)
     }
 
+    /// The words whose capitals dictation keeps after a pause inside a sentence (`DictationSeams`): the word list's
+    /// terms, learned corrections' meant phrases, and people's names (as last read: `peopleNames` reads the people
+    /// store again in the background when it changed, never on the main thread). Live dictation asks it as each
+    /// dictation starts; Run Again uses the same names.
+    func dictationSeamTerms() -> [String] {
+        DictationSeams.terms(wordList: wordList.terms, corrections: corrections, names: peopleNames.current())
+    }
+
     /// A meeting's contextual strings in `languages`: the word list (read again if it changed), people's names, then
     /// the words of learned corrections. The recorder saves them as the meeting's `vocabulary.json`.
     func meetingVocabulary(languages: [String]) -> [String] {

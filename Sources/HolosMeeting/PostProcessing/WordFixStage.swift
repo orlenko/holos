@@ -53,7 +53,7 @@ public struct WordFixDependencies: Sendable {
 /// run and its effective edits onto the new word positions; `force` instead labels speakers again. Without the model (Apple
 /// Intelligence's fix off in Settings, or unavailable) only the corrections are applied, and a transcript whose terms
 /// the model chose before is kept as it is. Cancellation publishes nothing.
-enum WordFixStage {
+public enum WordFixStage {
     private struct IncompletePublication: LocalizedError {
         var message: String
         var errorDescription: String? { message }
@@ -256,14 +256,14 @@ enum WordFixStage {
     }
 
     /// What `fix` made of a transcript.
-    struct Computed {
+    public struct Computed {
         /// A new revision (`fixedFrom` the transcript given) with the fixes made and marked.
-        var transcript: Transcript
-        var counts: WordFixes.Counts
+        public var transcript: Transcript
+        public var counts: WordFixes.Counts
         /// Places put to the model.
         var asked: Int
         /// What the messages add: places not checked, and why.
-        var notes: [String]
+        public var notes: [String]
         /// Why the model could not be asked about some place (it was not), when it could not.
         var unavailable: String?
         /// Every often-heard-as place was decided by the model (`.term` or `.keep`). False for unavailable models,
@@ -317,11 +317,11 @@ enum WordFixStage {
     /// `maximumQuestions`, one after another, none once `maximumTimeoutsInARow` went unanswered in a row. `progress`
     /// gets the share of places asked. Throws only `CancellationError`. The stage publishes the result; an evaluation
     /// candidate can use it as is.
-    static func fix(_ base: Transcript, title: String, corrections: CorrectionList, terms: CorrectionList,
-                    dependencies: WordFixDependencies,
-                    preservingTermsFrom priorFixed: Transcript? = nil,
-                    screenContext: ScreenContextRecord? = nil,
-                    progress: (Double) -> Void = { _ in }) async throws -> Computed {
+    public static func fix(_ base: Transcript, title: String, corrections: CorrectionList, terms: CorrectionList,
+                           dependencies: WordFixDependencies,
+                           preservingTermsFrom priorFixed: Transcript? = nil,
+                           screenContext: ScreenContextRecord? = nil,
+                           progress: (Double) -> Void = { _ in }) async throws -> Computed {
         var working: [WordFixes.Working?] = base.segments.map {
             WordFixes.Working($0, preservingExistingFixes: true)
         }
@@ -760,41 +760,28 @@ enum WordFixStage {
     /// locks held publishes nothing.
     private static func publish(_ fixed: Transcript, details: [String: String], request: Request) async throws
         -> Publication {
-        let archive = try SessionArchive.openForMaintenance(at: request.session, lease: request.lease)
-        do {
-            let publication = try await SessionArchive.withSpeakerLockAsync(at: request.session) {
-                () async throws -> Publication in
-                let head = try SpeakerAnalysis.headState(session: request.session, transcript: request.transcript)
-                let edited = head?.needsForce(false) == true
-                if edited, !request.requested { return Publication(problem: editedHead) }
-                var plan: SpeakerTranscriptRetarget.Plan?
-                if request.requested, !request.force, head?.usableRunID != nil {
-                    let snapshot = try SpeakerSessionSnapshot.load(session: request.session)
-                    plan = try SpeakerTranscriptRetarget.plan(session: request.session, from: snapshot, to: fixed)
-                    if edited, plan == nil {
-                        return Publication(problem: "The speaker labels could not be kept, so the transcript was not changed.")
-                    }
+        try await TranscriptPublisher.publish(session: request.session, lease: request.lease) {
+            () throws -> TranscriptPublisher.Decision<Publication> in
+            let head = try SpeakerAnalysis.headState(session: request.session, transcript: request.transcript)
+            let edited = head?.needsForce(false) == true
+            if edited, !request.requested { return .keep(Publication(problem: editedHead)) }
+            var plan: SpeakerTranscriptRetarget.Plan?
+            if request.requested, !request.force, head?.usableRunID != nil {
+                let snapshot = try SpeakerSessionSnapshot.load(session: request.session)
+                plan = try SpeakerTranscriptRetarget.plan(session: request.session, from: snapshot, to: fixed)
+                if edited, plan == nil {
+                    return .keep(Publication(problem: "The speaker labels could not be kept, so the transcript was not "
+                                             + "changed."))
                 }
-                whilePublishing?()
-                try Task.checkCancellation()
-                if let plan { try SpeakerTranscriptRetarget.stage(plan, session: request.session) }
-                try await archive.recordEvent(kind: MeetingEventKind.wordsFixed, details: details)
-                try await archive.saveTranscript(fixed, writeLegacyExports: false)
-                if let plan {
-                    do {
-                        try SpeakerTranscriptRetarget.publishHead(plan, session: request.session)
-                    } catch {
-                        throw IncompletePublication(message: "The fixed transcript was saved, but the speaker head "
-                                                    + "could not be published: \(error.localizedDescription)")
-                    }
-                }
-                return Publication(problem: nil, labelsPreserved: plan != nil)
             }
-            await archive.releaseLock()
-            return publication
-        } catch {
-            await archive.releaseLock()
-            throw error
+            whilePublishing?()
+            let change = TranscriptPublisher.Change(
+                transcript: fixed, event: .init(kind: MeetingEventKind.wordsFixed, details: details), retarget: plan,
+                headFailed: { error in
+                    IncompletePublication(message: "The fixed transcript was saved, but the speaker head could not be "
+                                          + "published: \(error.localizedDescription)")
+                })
+            return .publish(change, Publication(problem: nil, labelsPreserved: plan != nil))
         }
     }
 
@@ -805,35 +792,25 @@ enum WordFixStage {
     private static func repairPreservedHeadIfNeeded(_ transcript: Transcript, request: Request) async throws -> Bool {
         let initial = try SpeakerAnalysis.headState(session: request.session, transcript: transcript)
         guard let initial, !initial.sameTranscript, initial.run != nil else { return false }
-        let archive = try SessionArchive.openForMaintenance(at: request.session, lease: request.lease)
-        do {
-            let repaired = try await SessionArchive.withSpeakerLockAsync(at: request.session) { () async throws -> Bool in
-                guard try SessionFiles.currentTranscript(session: request.session)?.id == transcript.id else {
-                    throw HolosError.invalidInput("The transcript changed while its speaker labels were being repaired.")
-                }
-                guard let head = try SpeakerAnalysis.headState(session: request.session, transcript: transcript),
-                      head.runID == initial.runID else {
-                    throw HolosError.invalidInput("The speaker labels changed while they were being repaired.")
-                }
-                if head.sameTranscript { return false }
-                let snapshot = try SpeakerSessionSnapshot.load(session: request.session)
-                guard let plan = try SpeakerTranscriptRetarget.plan(session: request.session, from: snapshot,
-                                                                   to: transcript) else {
-                    if head.hasEdits {
-                        throw HolosError.invalidInput("The edited speaker labels cannot be mapped to the fixed words.")
-                    }
-                    return false
-                }
-                try Task.checkCancellation()
-                try SpeakerTranscriptRetarget.stage(plan, session: request.session)
-                try SpeakerTranscriptRetarget.publishHead(plan, session: request.session)
-                return true
+        return try await TranscriptPublisher.publish(session: request.session, lease: request.lease) {
+            () throws -> TranscriptPublisher.Decision<Bool> in
+            guard try SessionFiles.currentTranscript(session: request.session)?.id == transcript.id else {
+                throw HolosError.invalidInput("The transcript changed while its speaker labels were being repaired.")
             }
-            await archive.releaseLock()
-            return repaired
-        } catch {
-            await archive.releaseLock()
-            throw error
+            guard let head = try SpeakerAnalysis.headState(session: request.session, transcript: transcript),
+                  head.runID == initial.runID else {
+                throw HolosError.invalidInput("The speaker labels changed while they were being repaired.")
+            }
+            if head.sameTranscript { return .keep(false) }
+            let snapshot = try SpeakerSessionSnapshot.load(session: request.session)
+            guard let plan = try SpeakerTranscriptRetarget.plan(session: request.session, from: snapshot,
+                                                               to: transcript) else {
+                if head.hasEdits {
+                    throw HolosError.invalidInput("The edited speaker labels cannot be mapped to the fixed words.")
+                }
+                return .keep(false)
+            }
+            return .repairHead(plan, now: nil, true)
         }
     }
 

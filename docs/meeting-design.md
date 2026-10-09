@@ -2378,7 +2378,12 @@ whoever started it (app or terminal). Only sessions under `HolosPaths.sessions` 
 visible to the app.
 
 **In-process fallback (decision 4).** `InProcessLauncher` (PR4) runs
-`RecordingWorkflow.run` in a task inside the app with the same options. Frames are
+`RecordingWorkflow.run` in a task inside the app with the same options: both launchers map
+`MeetingStartSettings` with `RecordingOptions(settings:…)`, and `ChildProcessLauncher.arguments`
+hands its values to the child. Settings without a language take the recorder's default, the
+supported language closest to the user's (`AppleSpeechEngine.defaultLocale`, the default
+dictation language Settings shows), in both; a recording without the microphone (`system`)
+ignores a microphone choice in both, and the child gets no `--microphone`. Frames are
 consumed off the main actor (§1.3), and the launcher holds
 `ProcessInfo.processInfo.beginActivity(options: [.userInitiated, .idleSystemSleepDisabled])`
 while recording so App Nap and timer coalescing do not apply. The recorder code writes
@@ -3143,6 +3148,9 @@ public struct ProjectedSpeaker: Sendable, Equatable, Identifiable {
     public let clusterIDs: [String]
     public let talkSeconds: Double
     public let turnCount: Int
+    /// The stored speakers shown as this one: its own ID first, then same-named speakers joined
+    /// into it ("Speakers with the same name", below).
+    public let memberIDs: [String]
 }
 
 public struct ProjectedTurn: Sendable, Equatable, Identifiable {
@@ -3213,7 +3221,8 @@ Application order in `make`:
    stale ("speaker not found" / "turn not found"). Otherwise apply.
 5. Derive names and provenance at the end: explicit name → `userRenamed`; linked profile
    → `userConfirmed`; automatic likely match not rejected → `recognized`; channel →
-   `channelAssumption`; else `diarizer`.
+   `channelAssumption`; else `diarizer`. Then list same-named speakers as one ("Speakers
+   with the same name", below).
 6. With a call's acoustic echo mask, hide the words and clusters it flags (§5.11). A turn
    with no words at all (every one deleted in Review with its segment, §5.10 "Editing
    words") is not shown either, mask or not; edits still name it.
@@ -3267,7 +3276,8 @@ Action semantics:
 
 - `rename(s, name)`: trims; empty or nil clears the explicit name.
 - `linkProfile(s, p)`: links, removes `p` from `s`'s rejections. Two speakers linked to
-  one profile is allowed (it yields a merge suggestion).
+  one profile is allowed (it yields a merge suggestion); given one name, they are one
+  speaker ("Speakers with the same name", below).
 - `rejectProfile(s, p)`: adds `p` to rejections; unlinks if linked; suppresses an
   automatic match or suggestion of `p`.
 - `merge(from, into)`: all turns of `from` go to `into`; `into.clusterIDs +=
@@ -3284,6 +3294,113 @@ Action semantics:
 
 Speakers listed: every speaker with at least one turn, plus user-created speakers.
 Talk time = sum of turn durations.
+
+**Speakers with the same name.** Within a meeting, the same name is the same person, and
+is shown as one speaker (`SameNameSpeakers`, HolosSpeakers). Names compare by
+`SameNameSpeakers.key`: runs of whitespace and control characters become one space, the
+ends are trimmed, and case, diacritics and character width are ignored ("Zoë  Smith" =
+"zoe smith"). Only names join: the name the user gave (`rename`, `newSpeaker`), or the
+channel speaker's own ("Me"), read from the journal's state alone. Links never join anyone
+(two speakers linked to one person under different names stay two, and a merge is
+suggested as before). One exception, also read from the journal alone: speakers of one
+name linked to two or more different people (two remembered people called Alex, each
+linked in the meeting) are those people, and are shown apart, each with its own link; an
+edit of one never reaches the other. A group with one link, or none (an unlinked Alex and
+an Alex linked to a person), is joined. "Not <person>" keeps that person's suggestions away
+and nothing else. A "Speaker N" fallback names nobody, and an
+automatic match ("Jim (auto)") or a suggestion is a guess nobody confirmed: neither joins
+anyone. Nothing here reads the people store, recognition, the echo mask or talk time, so
+every projection of a meeting (Review, the exports, the CLI, summaries,
+`SpeakerAnalysis.headState`) shows the same speakers as one.
+
+It is display only: nothing is ever merged automatically. The journal keeps every stored
+speaker, with its own link and its own voice.
+
+- *Showing (every meeting, nothing written).* After step 5, the projection lists each
+  group as one: `speakers` has one entry, `ProjectedSpeaker.memberIDs` lists the stored IDs
+  it shows (its own first), and `turns` (so `shownTurns`, the exports, Review, the CLI and
+  summaries) gives the others' turns to it. The groups (`SameNameSpeakers.joins`) are the
+  stored speakers of one name that hold a turn with words or were made by `newSpeaker`. The
+  one shown is the lowest (ordinal, ID), fixed by the journal. It keeps its ID, ordinal,
+  name and rejections, shows the group's person (its own link, else the link of the lowest
+  (ordinal, ID) other one that has one), and adds the others' clusters, talk time and turn
+  counts. `mergeSuggestions` are worked out on the joined list. Edits and fingerprints see
+  every stored speaker, so journals written before the rule replay exactly as before; only
+  their display changes. This is what shows a journal like "a new speaker named Alice for
+  one unknown turn, then the cluster renamed Alice" as one Alice in the exports'
+  Participants (talk time summed), in Review's sidebar and in every count, and what keeps
+  names carried over by Label Again (`SpeakerCarryOver` maps the joined speaker) from
+  listing a person twice.
+- *Voice.* `SpeakerProjection.unjoined` lists every stored speaker as itself (every one that
+  holds words or was made by `newSpeaker`, also one whose words the echo mask all hides),
+  and voice data reads it: samples are learned per stored speaker for the person it is
+  linked to, and forgetting a person removes exactly the clusters and turns of the stored
+  speakers linked to them, never those of a same-named speaker shown with them but linked
+  to nobody (`VoiceProfileService`: `syncSamples`, `samplesAffected`, earlier-run views,
+  `removeVoiceEntries`).
+- *Editing (`SpeakerEditor`, Review, the CLI).* Giving a speaker a name another speaker has
+  only renames it; the display joins them. An edit of any stored speaker of a same-name
+  group reaches every other one of the group, in the same batch
+  (`SpeakerProjection.fanningOut`, worked out by the editor under the speaker lock on the
+  current labels, and by Review on the labels shown for its preview). The group is the
+  journal's (`SameNameSpeakers.joins`). An edit must reach the stored speakers the
+  caller's view showed in its group: when the group changed since (another window named a
+  speaker into or out of it), the editor refuses the batch as made on outdated labels
+  (`SpeakerEditor.changedMessage`), and the caller rereads and asks again (Review reloads;
+  the live speaker-name pass plans again with its protection worked out afresh). A rename or clearing the name, a link, a rejection ("Not Jim"), "This
+  is me", a confirmed suggestion and Confirm All are made to each of them, one stored
+  speaker after another; a merge of one into another speaker ("Merge into…") moves each
+  of them into that speaker. Turns given to the speaker shown go to it. Review's name
+  field, clearing a name, also unlinks each stored speaker from its own person when that
+  differs from the person shown, so no link names it again. The lines added follow the
+  asked ones, carry the current fingerprints, and share the batch's ID: one undo takes all
+  of them back. Whether a change changes anything (`SpeakerEditor.changesNothing`,
+  `applyUnlessUnchanged`, a link of a person already shown) is decided with these lines
+  added, on every stored speaker (`unjoined`), not on the speaker shown: linking the shown
+  Alex to the person it already shows still links a stored Alex that is not.
+  `SpeakerEditor.saved(_:asAsked:)` lets a caller (Review) recognize its batch among the
+  lines read back. A `newSpeaker` named as nobody in the caller's view is, but as somebody
+  in the labels under the lock (another window named a speaker so meanwhile), is refused as
+  made on outdated labels: on the labels as they are, the caller gives the turns to that
+  speaker instead.
+- *Who reads which.* The joined list is for showing: the exports, Review's rows and
+  sidebar, the CLI's listing and selectors (whose edits fan out), summaries, participant
+  lists and Review's voice suggestions. Whatever maps identities, links or voice reads
+  the stored speakers (`unjoined`): voice learning and forgetting, Label Again
+  (`SpeakerCarryOver` matches each stored speaker to the new speaker its own speech lands
+  in, and gives it the identity of the group it is shown as: the group's name, its one
+  link and its rejections, so whichever of them a new speaker's speech comes from gets
+  the whole identity, two new speakers both get it, and a member whose group-mate carried
+  it is not reported unmatched; two Alexes linked to two people, shown apart, each keep
+  their own link on their own speech), the editor's refusal messages, and the CLI's link report. Live speaker names
+  (`LiveHintStage`) treat a same-name group as named by hand when any of its stored
+  speakers is, since a name given to the one shown would reach them all.
+- *Choosing a name that exists.* Review's "New Speaker…" (and `voiceislocal speakers assign
+  --to new:NAME`) with a name a speaker is shown under gives the turns to the one shown
+  (`SpeakerProjection.speaker(named:)`: matched on the name each stored speaker joins by in
+  the journal, the given name or the channel speaker's own "Me" whether or not it is
+  linked, never on a name shown only through a link, and never picked among several).
+  Every name typed to choose a speaker or a person (the CLI's selectors, Review's name
+  field) compares as `SameNameSpeakers.key` does.
+  "Assign to <person>" gives the turns to the
+  stored speaker linked to that person, else to the speaker called their name when it is
+  linked to nobody (linked to them in the same batch unless it said "Not <person>"), else
+  to a new speaker called their name and linked to them (one called their name but linked
+  to somebody else is that other person, and the new speaker is shown apart from it): the move (or the new speaker) and the link
+  are one batch (`VoiceProfileService.link(preceding:)`), shown and saved alike. Review's
+  name field links the known person whose name matches by `key` (accents and spaces too,
+  not only case) rather than creating a second person of that name.
+
+Why display only, rather than merging same-named speakers (when a name is given, or when
+Review opens a meeting with duplicates): a merge deletes a stored speaker, and with it the
+link that says whose voice its turns are, so forgetting that person later finds nothing to
+remove, a merge into another speaker loses which turns were somebody else's, and clearing a
+name or relinking reaches only the speaker that survived. Showing them as one needs no
+write (exports, the CLI and summaries of meetings nobody reopens are right too), cannot be
+undone into a loop of re-merges, covers names Label Again carries onto two new speakers,
+and keeps each person's voice data theirs. Fanning edits out keeps the stored speakers
+alike, so they keep showing as one. An older Voice is Local shows them as separate
+speakers.
 
 **`SpeakerEditor` (PR8)** is the only writer of the journal. A caller passes the
 projection it showed the user (`view`). Under `SessionArchive.withSpeakerLock` the
@@ -3495,7 +3612,8 @@ public struct SpeakerProfileDatabase: Codable, Sendable, Equatable {
   `RecognitionResult.removeProfiles`; removes any evaluation voice file entries;
   regenerates exports), then appends `{id, state: "done"}`.
   `VoiceProfileService.resumePendingForgets(store:sessionsRoot:)` runs at app launch and
-  at the start of every `holos people`, `speakers`, and `session` command and finishes any
+  at the start of every `holos people`, `speakers`, and `session` command (except the
+  read-only `session echo-label-stats`, `ForgetResumeScope`) and finishes any
   pending tombstone; each step is idempotent, so a crash at any point leaves nothing
   behind once the next run completes.
   - The `stored` line is what tells a resumed forget which phase it is in, rather than the
@@ -4171,8 +4289,9 @@ carries them; `TrackReplayer.replay`, `TranscriptRebuilder.rebuild`, and
 `SessionImporter.importAudio` take them too. The app builds the list with
 `RecognizerVocabulary.meeting`: the user's word list (design.md "Word list"), then known
 people's names (PR10), then `CorrectionList.vocabulary` (PR4), each once ignoring case,
-at most 100 strings (the recorder and the hand-off file allow up to 1,000 entries of at
-most 100 characters), writes it 0600 to
+at most 100 strings (the hand-off file, the recorder and import keep what
+`MeetingVocabulary.cleaned` keeps: each string trimmed, empty ones and ones over 100
+characters dropped, the first 1,000 in order, duplicates included), writes it 0600 to
 `$TMPDIR/holos-vocabulary-<id>.json`, and passes `--vocabulary-file`. The recorder copies
 it to `vocabulary.json` before its first `status.json` write and deletes the temporary file;
 replay, rebuild, and import read `vocabulary.json` (only `session recover
@@ -4246,7 +4365,9 @@ instantaneous meeting feedback. The dictation stays monolingual."
 **Phase 1 (LANG1, PR #43).** The start panel's Language pop-up (the dictation languages,
 `DictationLanguage.groups`) sets the meeting language; UserDefaults `meetingLocales` keeps
 a list, the first used; `MeetingStartSettings.locales`; the recorder gets
-`--locale=<first>`; the manifest records one `locale`.
+`--locale=<first>`; the manifest records one `locale`. Settings without a language (never
+from the start panel, which keeps Start off until it has one) record in the recorder's
+default, `AppleSpeechEngine.defaultLocale`, in process and as a child alike (§4.1).
 
 **Phase 2 (LANG2).** A meeting may name up to three languages (`DictationLanguage.
 maximumMeetingLanguages`), each a different language (`sameLanguage`: language and script;
@@ -8736,7 +8857,26 @@ genuinely local (the user, or people in the room) stays even while the call play
      is poorly cancelled (90th percentile of the residual ratio of echo-dominated frames + 1
      dB); 5-frame (80 ms) majority smoothing. Echo: every other active frame.
   5. *Words* (`AcousticEchoMask.isEcho`). A microphone word is echo when under 30 % of its
-     active frames are local; a word with no active frame is echo only when the predicted
+     active frames are local frames the word rule trusts (`trustedWordFrames`, worked out once
+     per mask, each local frame judged by a bounded window around it, never through runs or
+     stretches that can grow): (a) its predicted echo is 20 dB or more below the microphone, or
+     absent (`negligibleEchoDB`: smoothing can leave one local frame of a quiet sound); (b) at
+     least 3 local frames within 18 frames (288 ms) of it have the predicted echo more than 6 dB
+     below the microphone (`supportFrames`; support comes only from those frames, so it cannot
+     chain along later runs); (c) in the 31 frames (496 ms) centred on it at least half are
+     local and most local ones have the predicted echo below −1 dB (`sustainedWindowFrames`,
+     `sustainedDensity`, `sustainedLevelDB`): speech in the room makes the microphone louder
+     than the echo alone (−3 dB at equal loudness), syllables leave brief gaps, while poorly
+     cancelled echo predicts 0 to +3.5 dB in runs of 3–5 frames; (d) in its utterance (local
+     frames at most 3 frames apart: smoothing fills shorter gaps), at least 3 local frames lie
+     within 15 frames (240 ms) of it and most of them are below −1 dB (`utteranceReachFrames`),
+     however far from other speech; the reach bounds it, so echo running on after speech turns
+     back within 240 ms. Any other local frame is
+     the call cancelled poorly and counts as echo. Playback keeps #108's stretches only
+     (2026-10-08; before,
+     every local frame counted, and the scattered false-local frames of poorly cancelled echo
+     made echo words microphone turns and
+     "Unknown" rows). A word with no active frame is echo only when the predicted
      echo explains its energy (median echo − microphone ≥ −5 dB; a frame with no microphone
      sound or no predicted echo, such as a gap in the recording, explains nothing). A word past
      the last frame, without times, or with estimated times (a segment without word timing) is
@@ -8747,7 +8887,7 @@ genuinely local (the user, or people in the room) stays even while the call play
   per hour). One limit sets the longest call: `EchoMaskStore.maximumSeconds` (12 hours, so
   `maximumFrames` is 2.7 million); the reader takes frames files up to it, and a longer call is not analysed
   but saved with verdict `tooLong`, which hides nothing and counts as done. The record is
-  keyed to the audio (`EvalStore.audioFingerprint` of the mic and system chunk lists, which
+  keyed to the audio (`SessionManifest.audioFingerprint` of the mic and system chunk lists, which
   include each chunk's SHA-256) and to `EchoAnalysis.version`; any other key is out of date
   and analysed again, but one of a newer schema or a newer analysis version (checked before
   the record is decoded) is refused and left alone, never overwritten. It is in the
@@ -8779,9 +8919,19 @@ genuinely local (the user, or people in the room) stays even while the call play
   of an echo cluster shown as unknown, or one the mask cut down to "Yeah.", is a candidate
   like any other, and the exports leave hidden ones out as they leave out echo.
 - *Out of date when the mask changes.* The transcript files record the mask they were written
-  with (`.generated.json` `echoMask`: the SHA-256 of the frames, none without a mask), and
+  with (`.generated.json` `echoMask`: `EchoMaskStore.identity`, the SHA-256 of the frames and the
+  word rule's version, "<sha256>+words2"; none without a mask), and
   `SessionExports.filesState` calls them out of date when it is not the one the labels show now,
-  so the app offers Update Transcript Files. Recover rewrites them whenever they are, whatever
+  so the app offers Update Transcript Files. A new word rule (`AcousticEchoMask.wordRuleVersion`)
+  is a new identity for the same frames: files written under an earlier rule (which recorded
+  the SHA-256 alone) are out of date, and the echo catch-up (`needsAnalysis`, through
+  `echoMaskIsCurrent`) runs `echo-analyze` on them, which keeps the saved analysis and rewrites
+  the files and the voice samples the new view changed. A summary made under the earlier rule
+  is out of date when the rule hides different words (`MeetingSummaryKey` hashes every
+  rendered line), so with automatic summaries on it is made again, once, like after an edit. A meeting whose audio was deleted keeps its analysis (Review uses it): the catch-up
+  looks at it too, and `echo-analyze` rewrites its transcript files from the saved analysis
+  and removes a voice sample the new view changed (only a new analysis needs the audio; no
+  sample can be computed again without it). Recover rewrites them whenever they are, whatever
   else it did (`echoMaskIsCurrent`; a rewrite left pending counts as out of date). The people
   cache and the summary schedule key on the echo files' stamps. The mask is saved under the
   speaker lock (lease, then speakers, then profiles), and a voice sample is published only if
@@ -8875,9 +9025,10 @@ genuinely local (the user, or people in the room) stays even while the call play
   window takes the new mask (`ReviewEchoMaskFollow`) and its microphone volume follows; one that
   finished opening after the run ended rereads the meeting too (`maintenanceEnded`).
 - *Playback.* `AcousticEchoMask.localSpeechIntervals()` gives the microphone's own
-  speech: runs of local frames, joined into stretches across gaps under 300 ms; a stretch is
-  kept only when at least 3 of its local frames (`playbackEvidenceFrames`) have the predicted
-  echo more than 6 dB below the microphone (`playbackEvidenceDB`); kept stretches are padded
+  speech: runs of local frames, joined into stretches across gaps under 300 ms
+  (`localStretches()`, `stretchGapSeconds`; the word rule has its own, wider trust, `trustedWordFrames`); a stretch is
+  kept only when at least 3 of its local frames (`evidenceFrames`) have the predicted
+  echo more than 6 dB below the microphone (`evidenceDB`); kept stretches are padded
   64 ms before and 200 ms after. The review window plays the microphone only there (§5.10,
   echo-free playback). The evidence rule (2026-10-08) answers echo heard in review on a call
   through laptop speakers: where the call's speech is cancelled poorly, the frame rule calls
@@ -8897,6 +9048,31 @@ genuinely local (the user, or people in the room) stays even while the call play
   (13 frames cut the echo further but dropped 7 % of the clearly local frames, short sounds
   over a quiet call) and a partial volume for doubtful stretches (it still plays the echo,
   only quieter).
+- *Measuring the word rule.* `voiceislocal session echo-label-stats <session>… [--json]`
+  (hidden; `SessionEchoLabelStats`, `EchoLabelStats`) compares, for each call given, the
+  labels under the word rule before the evidence requirement
+  (`AcousticEchoMask.countingEveryLocalFrame()`) and now, and prints one line per session (by
+  session ID) and a total; counts only, never text, names, word times or paths. Example
+  (synthetic numbers): `<ID>: mic words 1200, judged 1150; user's 420 -> 350 (local->echo 70
+  [in echo 62, elsewhere 8], echo->local 0); in echo 95 -> 30; mic rows 140 -> 118, unknown
+  41 -> 22; rows changed 35`.
+  Judged words are those the mask judges as the labels do (not dropped by the text filter, not
+  edited in Review, timed); "user's" are judged words not echo; "in echo" are those whose
+  ±0.5 s surroundings hold at least three times as many echo frames as local ones (local->echo
+  is split the same way: "elsewhere" are likelier the user's own words lost, and both are
+  bucketed by the median predicted echo over the word's local frames, ≥0, −1..0, −3..−1,
+  −6..−3, <−6 dB, and by its share of local frames, 30–50, 50–80, ≥80 %); rows are
+  the microphone rows Review shows (short interjections applied, then consecutive turns of one
+  speaker grouped into rows by `ReviewParagraphs.group`), "unknown" those without a speaker;
+  "rows changed" the microphone rows (matched before and after through a shared turn) whose
+  turns, words or speaker differ (a short
+  interjection hidden under both rules is none). Each argument is resolved on its own: one that
+  names no session (missing, a symbolic link, an unknown ID) is listed by its place ("#3: not
+  measured (unreadable)") without its path or the reason. A session that is recording, has no
+  usable mask, no transcript, or cannot be read is listed as not measured; it exits 1 only when
+  none was measured. It only reads, takes no lock, and changes nothing: it is the one `session`
+  command that does not first resume a pending forget of voices (`ForgetResumeScope`), which
+  can delete and rewrite files.
 
 Validation. Synthetic tests (`Tests/HolosSpeakersTests/AcousticEchoTests.swift`,
 `Tests/HolosMeetingTests/AcousticEchoMeetingTests.swift`): the delay to within 1 ms (also an
@@ -8904,7 +9080,12 @@ inverted microphone, a 30 s call, outlying windows); echo-only frames echo, loca
 local, local speech over the call at echo level kept, gaps in the recording kept;
 headphones, missing or silent system audio, and one signal on both tracks are no-ops;
 playback keeps sustained local speech with its lead and double-talk from its weak first run,
-and leaves scattered local runs the call explains muted; the projection hides echo words from turns that keep their IDs, a split chosen among the words
+and leaves scattered local runs the call explains muted; the word rule makes words with
+scattered false-local frames echo, keeps double-talk and quiet speech without predicted echo
+the user's, counts only the frames it trusts for a word partly in them, and trusts more than
+playback opens (a word can stay the user's while its audio stays muted); files written under the earlier word rule are out
+of date and `echo-analyze` rewrites them; the stats count words, rows and unknown rows and
+print no text; the projection hides echo words from turns that keep their IDs, a split chosen among the words
 shown lands at that stored word (assign and undo too, through the review), hides echo
 clusters, keeps a named speaker whose turns are all echo with its name and assignments, and
 changes with the mask alone; a word fix across an echo boundary is judged once; stale,

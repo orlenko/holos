@@ -5,9 +5,9 @@ import HolosMeeting
 import HolosSpeakers
 import HolosStorage
 
-/// `voiceislocal speakers …` (docs/meeting-design.md §5.7, §5.9): list a session's speakers, correct them through
-/// `SpeakerEditor`, and link them to people through `VoiceProfileService`. Content goes to stdout; notes and warnings
-/// to stderr (§1.4).
+/// `voiceislocal speakers …` (docs/meeting-design.md §5.7, §5.9): list a session's speakers, and correct them and link
+/// them to people through `SpeakerEditCommand`, which prints here what it says. Content goes to stdout; notes and
+/// warnings to stderr (§1.4).
 struct Speakers: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         abstract: "List and correct the speaker labels of a session, and link speakers to people.",
@@ -114,7 +114,7 @@ struct Speakers: AsyncParsableCommand {
 
         @Argument(help: "Path to a .holos folder, or a session ID.") var session: String
         @Argument(help: "The turns to move (IDs or times).") var turns: [String]
-        @Option(help: "A speaker, unknown, or new (optionally new:NAME) for a new speaker.") var to: String
+        @Option(help: "A speaker, unknown, or new (optionally new:NAME) for a new speaker; new:NAME with a name a speaker already has gives the turns to that speaker.") var to: String
         @Option(help: "The track (mic or system) for turns given as times.") var track: String?
 
         func validate() throws {
@@ -126,7 +126,12 @@ struct Speakers: AsyncParsableCommand {
             let turnIDs = try SpeakerCommand.turnIDs(turns, track: track, in: loaded.view)
             let action: SpeakerEditAction
             if let name = SpeakerSelector.newSpeakerName(to) {
-                action = .newSpeaker(speakerID: "user:\(UUID().uuidString)", name: name, turnIDs: turnIDs)
+                // Same name, same person: a name a listed speaker already has gives the turns to that speaker.
+                if let name, let existing = loaded.view.speaker(named: name) {
+                    action = .reassignTurns(turnIDs: turnIDs, to: existing.id)
+                } else {
+                    action = .newSpeaker(speakerID: "user:\(UUID().uuidString)", name: name, turnIDs: turnIDs)
+                }
             } else {
                 switch try SpeakerSelector.speaker(to, in: loaded.view) {
                 case .speaker(let speakerID): action = .reassignTurns(turnIDs: turnIDs, to: speakerID)
@@ -202,37 +207,7 @@ struct Speakers: AsyncParsableCommand {
 
         mutating func run() async throws {
             let loaded = try SpeakerCommand.load(session)
-            let undone = SpeakerCommand.newestBatch(loaded)
-            let owners = SpeakerCommand.sampleOwners(loaded)
-            let result: SpeakerEditResult
-            do {
-                result = try SpeakerEditor.undoLast(view: loaded.view, session: loaded.session,
-                                                    source: SpeakerCommand.source, regenerateExports: false,
-                                                    profiles: loaded.store)
-            } catch HolosError.incomplete(let message) {
-                try await SpeakerCommand.refreshAfterSavedChange(HolosError.incomplete(message), loaded,
-                                                                 owners: owners)
-            }
-            let descriptions = undone.map {
-                SpeakerCommand.describe($0.action, before: loaded.view, after: nil, editID: $0.id,
-                                        people: loaded.people)
-            }
-            switch descriptions.count {
-            case 0: Console.output("Undid the last speaker change.")
-            case 1: Console.output("Undid: \(descriptions[0])")
-            default: Console.output("Undid \(descriptions.count) changes: " + descriptions.joined(separator: " "))
-            }
-            // Stale lines the undo would have brought back are reverted with it (SpeakerEditor.undoLast).
-            let keptOut = Set(loaded.view.staleEdits.map(\.editID))
-                .intersection(result.snapshot.projection?.revertedEditIDs ?? []).count
-            if keptOut > 0 {
-                Console.error("\(keptOut) earlier speaker \(keptOut == 1 ? "change" : "changes") that could not be "
-                              + "applied \(keptOut == 1 ? "stays" : "stay") out of effect; undo does not bring "
-                              + "\(keptOut == 1 ? "it" : "them") back.")
-            }
-            try await SpeakerCommand.finishChange(
-                needsSampleRefresh: result.needsSampleRefresh, rewritingExports: true, loaded, owners: owners,
-                diagnostics: result.diagnostics.merging(loaded.snapshot.diagnostics))
+            try await SpeakerCommand.run(.undo, loaded)
         }
     }
 
@@ -259,21 +234,7 @@ struct Speakers: AsyncParsableCommand {
             let loaded = try SpeakerCommand.load(session)
             let speakerID = try SpeakerCommand.speakerID(speaker, in: loaded.view)
             let target = try PeopleCommand.target(person, store: loaded.store)
-            // Also without --learn-voice: a sample the person already has from this meeting is kept in step.
-            let extractor = makeVoiceSampleExtractor(session: loaded.session)
-            let owners = SpeakerCommand.sampleOwners(loaded)
-            let snapshot: SpeakerSessionSnapshot
-            do {
-                snapshot = try await VoiceProfileService.link(
-                    session: loaded.session, speakerID: speakerID, to: target, view: loaded.view,
-                    learnVoice: learnVoice, extractor: extractor, store: loaded.store)
-            } catch {
-                SpeakerCommand.noteRemovedSamples(owners, loaded)
-                throw error
-            }
-            try SpeakerCommand.reportLink(speakerID: speakerID, snapshot: snapshot, learnVoice: learnVoice,
-                                          extractorAvailable: extractor != nil, loaded: loaded)
-            SpeakerCommand.noteRemovedSamples(owners, loaded)
+            try await SpeakerCommand.run(.link(speakerID: speakerID, to: target, learnVoice: learnVoice), loaded)
         }
     }
 
@@ -294,20 +255,7 @@ struct Speakers: AsyncParsableCommand {
         mutating func run() async throws {
             let loaded = try SpeakerCommand.load(session)
             let speakerID = try SpeakerCommand.speakerID(speaker, in: loaded.view)
-            let extractor = makeVoiceSampleExtractor(session: loaded.session)
-            let owners = SpeakerCommand.sampleOwners(loaded)
-            let snapshot: SpeakerSessionSnapshot
-            do {
-                snapshot = try await VoiceProfileService.markSelf(
-                    session: loaded.session, speakerID: speakerID, view: loaded.view, learnVoice: learnVoice,
-                    extractor: extractor, store: loaded.store)
-            } catch {
-                SpeakerCommand.noteRemovedSamples(owners, loaded)
-                throw error
-            }
-            try SpeakerCommand.reportLink(speakerID: speakerID, snapshot: snapshot, learnVoice: learnVoice,
-                                          extractorAvailable: extractor != nil, loaded: loaded)
-            SpeakerCommand.noteRemovedSamples(owners, loaded)
+            try await SpeakerCommand.run(.markSelf(speakerID: speakerID, learnVoice: learnVoice), loaded)
         }
     }
 
@@ -329,34 +277,7 @@ struct Speakers: AsyncParsableCommand {
             let loaded = try SpeakerCommand.load(session)
             let speakerID = try SpeakerCommand.speakerID(speaker, in: loaded.view)
             let profileID = try PeopleCommand.profileID(person, store: loaded.store)
-            let action = SpeakerEditAction.rejectProfile(speakerID: speakerID, profileID: profileID)
-            let owners = SpeakerCommand.sampleOwners(loaded)
-            let snapshot: SpeakerSessionSnapshot
-            do {
-                // Whether this changes nothing is decided on the meeting's current labels under the speaker lock,
-                // not on the loaded view: another window may have undone the rejection, or linked the speaker to
-                // the person, since the load.
-                guard let saved = try VoiceProfileService.reject(session: loaded.session, speakerID: speakerID,
-                                                                 profileID: profileID, view: loaded.view,
-                                                                 store: loaded.store) else {
-                    Console.output("Nothing to change; the speaker labels already look like that.")
-                    try await SpeakerCommand.finishChange(needsSampleRefresh: true, rewritingExports: false, loaded,
-                                                          owners: owners,
-                                                          diagnostics: loaded.snapshot.diagnostics)
-                    return
-                }
-                snapshot = saved
-            } catch HolosError.incomplete(let message) {
-                // Saved, but the exports (rewritten by the editor here) or the reload failed.
-                try await SpeakerCommand.refreshAfterSavedChange(HolosError.incomplete(message), loaded,
-                                                                 owners: owners)
-            }
-            Console.output(SpeakerCommand.describe(action, before: loaded.view, after: snapshot.projection,
-                                                   people: loaded.people))
-            // A person's sample from this meeting stops using the speaker's turns (a no-op when none is affected).
-            try await SpeakerCommand.finishChange(
-                needsSampleRefresh: true, rewritingExports: false, loaded, owners: owners,
-                diagnostics: snapshot.diagnostics.merging(loaded.snapshot.diagnostics))
+            try await SpeakerCommand.run(.reject(speakerID: speakerID, profileID: profileID), loaded)
         }
     }
 
@@ -426,7 +347,7 @@ struct Speakers: AsyncParsableCommand {
                                                     attributes: [.posixPermissions: 0o700])
             defer { try? FileManager.default.removeItem(at: scratch) }
             guard let extractor = makeVoiceSampleExtractor(session: loaded.session, temporaryDirectory: scratch) else {
-                throw HolosError.unavailable(SpeakerCommand.modelsMissing)
+                throw HolosError.unavailable(SpeakerEditCommand.modelsMissing)
             }
             let embeddings = try await extractor.turnEmbeddings(session: loaded.session, track: track, turns: refs)
             var data = try HolosJSON.encoder(pretty: false).encode(TurnEmbeddingsOutput(turnEmbeddings: embeddings))
@@ -466,43 +387,12 @@ struct Speakers: AsyncParsableCommand {
 
 // MARK: - Shared steps
 
-/// A session loaded for a speaker command: its snapshot and the projection selectors resolve against, which is also
-/// the view the edit is made on, with the people store and people's current names.
-struct LoadedSpeakers {
-    let session: URL
-    let snapshot: SpeakerSessionSnapshot
-    let view: SpeakerProjection
-    let store: SpeakerProfileStore
-    /// Profile ID → name.
-    let people: [String: String]
-    /// The people store as read when the session was loaded (nil when it could not be read), to tell whether a
-    /// change reset the calibration.
-    let peopleBefore: SpeakerProfileDatabase?
-}
-
+/// Loading, selectors, running a change, and listing for the `speakers` subcommands.
 enum SpeakerCommand {
-    /// `SpeakerEdit.source` of every CLI edit.
-    static let source = "cli"
-
-    static let modelsMissing = "Speaker models are not installed, so voices can't be learned. Install them with "
-        + "voiceislocal setup --speakers."
-
     /// Resolves the session and loads its snapshot with people's current names; refuses a session without usable
     /// speaker labels.
     static func load(_ text: String) throws -> LoadedSpeakers {
-        let session = try SessionLocator.resolve(text)
-        let store = SpeakerProfileStore()
-        let peopleBefore = try? store.load()
-        let people = VoiceProfileService.profileNames(store: store)
-        let snapshot = try SpeakerSessionSnapshot.load(
-            session: session, profileNames: people,
-            applyRecognition: VoiceProfileService.recognitionAllowed(store: store))
-        guard let view = snapshot.projection else {
-            throw HolosError.unavailable(snapshot.runProblem
-                ?? "This meeting has no speaker labels yet. Label them with voiceislocal session diarize \(session.path).")
-        }
-        return LoadedSpeakers(session: session, snapshot: snapshot, view: view, store: store, people: people,
-                              peopleBefore: peopleBefore)
+        try LoadedSpeakers.load(session: SessionLocator.resolve(text), store: SpeakerProfileStore())
     }
 
     /// A listed speaker (never "unknown", which only a turn can have).
@@ -520,267 +410,28 @@ enum SpeakerCommand {
             .filter { seen.insert($0).inserted }
     }
 
-    /// Saves one change on the loaded view, prints what it did, rewrites the exports, and updates the voice samples
-    /// the change affects. A change that would leave the labels as they are is not saved (it would only use up an
-    /// undo step); the editor decides that on the current labels under the speaker lock, after refusing a change
-    /// whose labels moved on since the load.
+    /// Saves one change on the loaded view (`SpeakerEditCommand`).
     static func save(_ actions: [SpeakerEditAction], _ loaded: LoadedSpeakers) async throws {
-        let owners = sampleOwners(loaded)
-        let result: SpeakerEditResult
-        do {
-            guard let saved = try SpeakerEditor.applyUnlessUnchanged(
-                actions, view: loaded.view, session: loaded.session, source: source, regenerateExports: false,
-                profileNames: loaded.people, profiles: loaded.store) else {
-                Console.output("Nothing to change; the speaker labels already look like that.")
-                // An earlier run of this same change may have saved its edit and then failed to bring this
-                // meeting's samples in step, which would leave a voiceprint holding speech the edit moved to
-                // someone else. Repeating the change lands here, so the refresh runs from here too; it is decided
-                // by input digests, so it costs nothing when the samples are already in step.
-                // The editor found the current labels as loaded, so the loaded snapshot's warnings still hold.
-                try await finishChange(needsSampleRefresh: true, rewritingExports: false, loaded, owners: owners,
-                                       diagnostics: loaded.snapshot.diagnostics)
-                return
-            }
-            result = saved
-        } catch HolosError.incomplete(let message) {
-            try await refreshAfterSavedChange(HolosError.incomplete(message), loaded, owners: owners)
-        }
-        for action in actions {
-            Console.output(describe(action, before: loaded.view, after: result.snapshot.projection,
-                                    people: loaded.people))
-        }
-        try await finishChange(needsSampleRefresh: result.needsSampleRefresh, rewritingExports: true, loaded,
-                               owners: owners,
-                               diagnostics: result.diagnostics.merging(loaded.snapshot.diagnostics))
+        try await run(.edit(actions), loaded)
     }
 
-    /// After a saved change: rewrites the exports (when asked), then updates the voice samples the change affects
-    /// whether or not the exports could be rewritten (a stale sample would hold turns the change moved to someone
-    /// else, and no later edit would notice), notes removed samples, and prints the label notes. Every failure is
-    /// reported together as `incomplete`.
-    static func finishChange(needsSampleRefresh: Bool, rewritingExports: Bool, _ loaded: LoadedSpeakers,
-                             owners: [String: String], diagnostics: SpeakerSnapshotDiagnostics) async throws {
-        var failures: [String] = []
-        if rewritingExports {
-            do {
-                try rewriteExports(loaded)
-            } catch {
-                failures.append(error.localizedDescription)
-            }
-        }
-        do {
-            try await refreshSamplesIfNeeded(needsSampleRefresh, loaded)
-        } catch is CancellationError {
-            throw CancellationError()
-        } catch {
-            failures.append(error.localizedDescription)
-        }
-        noteRemovedSamples(owners, loaded)
-        printNotes(diagnostics)
-        guard failures.isEmpty else { throw HolosError.incomplete(failures.joined(separator: " ")) }
-    }
-
-    /// The change was saved, then the editor failed (`incomplete`) before it could say whether samples are
-    /// affected: brings this meeting's samples in step anyway, then throws `error`.
-    static func refreshAfterSavedChange(_ saved: HolosError, _ loaded: LoadedSpeakers,
-                                        owners: [String: String]) async throws -> Never {
-        do {
-            try await VoiceProfileService.refreshSamples(
-                afterSaving: saved, session: loaded.session,
-                extractor: makeVoiceSampleExtractor(session: loaded.session), store: loaded.store)
-        } catch {
-            // `error` here is what the refresh threw, which is the combined report when the samples could not be
-            // brought in step, or a cancellation. The parameter is named `saved` so that is plain to read: a
-            // `catch` binds `error` itself, and a parameter of that name would be shadowed rather than rethrown.
-            noteRemovedSamples(owners, loaded)
-            throw error
-        }
-    }
-
-    /// After a saved change that affects a person's voice sample from this meeting, recomputes it (or removes it).
-    static func refreshSamplesIfNeeded(_ needed: Bool, _ loaded: LoadedSpeakers) async throws {
-        guard needed else { return }
-        do {
-            try await VoiceProfileService.refreshSamples(session: loaded.session,
-                                                         extractor: makeVoiceSampleExtractor(session: loaded.session),
-                                                         store: loaded.store)
-        } catch is CancellationError {
-            throw CancellationError()
-        } catch {
-            throw HolosError.incomplete("The change was saved, but a voice sample learned from this meeting could "
-                                        + "not be updated: \(error.localizedDescription)")
-        }
-    }
-
-    /// The people who have a voice sample from this meeting (profile ID → name); empty when the store cannot be read.
-    static func sampleOwners(_ loaded: LoadedSpeakers) -> [String: String] {
-        guard let database = try? loaded.store.load() else { return [:] }
-        let sessionID = loaded.snapshot.manifest.id
-        return Dictionary(database.profiles.filter { $0.samples.contains { $0.sessionID == sessionID } }
-            .map { ($0.id, $0.displayName) }, uniquingKeysWith: { first, _ in first })
-    }
-
-    /// On stderr, for each person in `before` who no longer has a sample from this meeting, and when a sample
-    /// change reset the calibration.
-    static func noteRemovedSamples(_ before: [String: String], _ loaded: LoadedSpeakers) {
-        PeopleCommand.noteCalibrationReset(before: loaded.peopleBefore, store: loaded.store)
-        guard !before.isEmpty else { return }
-        let after = sampleOwners(loaded)
-        for (profileID, name) in before.sorted(by: { $0.value < $1.value }) where after[profileID] == nil {
-            Console.error("Removed \(name)'s voice sample from this meeting: the speakers or turns it was learned "
-                          + "from changed, and it could not be learned again from the new labels.")
-        }
-    }
-
-    /// Rewrites exports/ after a change was saved (the editor has released the speaker lock).
-    static func rewriteExports(_ loaded: LoadedSpeakers) throws {
-        let session = loaded.session
-        let written: ExportWriteResult
-        do {
-            written = try SessionExports.regenerate(
-                session: session, profileNames: VoiceProfileService.profileNames(store: loaded.store),
-                applyRecognition: VoiceProfileService.recognitionAllowed(store: loaded.store))
-        } catch {
-            throw HolosError.incomplete("The change was saved, but the exports could not be rewritten: "
-                                        + "\(error.localizedDescription) Rewrite them with voiceislocal session export "
-                                        + "\(session.path) --all.")
-        }
-        for url in written.movedAside { Console.error(movedAsideNote(url)) }
-    }
-
-    /// Prints what `speakers link` or `me` did: the link, and what happened to the voice.
-    static func reportLink(speakerID: String, snapshot: SpeakerSessionSnapshot, learnVoice: Bool,
-                           extractorAvailable: Bool, loaded: LoadedSpeakers) throws {
-        let database = try loaded.store.load()
-        let speaker = snapshot.projection?.speakers.first { $0.id == speakerID }
-        guard let profileID = speaker?.profileID,
-              let profile = database.profiles.first(where: { $0.id == profileID }) else {
-            Console.output("Linked \(speakerID).")
-            printNotes(snapshot.diagnostics)
-            return
-        }
-        Console.output("Linked \(speakerID) to \(profile.displayName)\(profile.isSelf ? " (you)" : "").")
-        if learnVoice {
-            Console.error(voiceNote(profile: profile, database: database, snapshot: snapshot,
-                                    extractorAvailable: extractorAvailable))
-        }
-        printNotes(snapshot.diagnostics)
-    }
-
-    /// What happened to a voice that was asked to be learned.
-    static func voiceNote(profile: SpeakerProfile, database: SpeakerProfileDatabase, snapshot: SpeakerSessionSnapshot,
-                          extractorAvailable: Bool) -> String {
-        if let sample = profile.samples.first(where: { $0.sessionID == snapshot.manifest.id }) {
-            return "Learned \(profile.displayName)'s voice from this meeting "
-                + "(\(TimeFormat.duration(sample.speechSeconds)) of speech)."
-                + (sample.weak ? " It is short, so it can only give suggestions." : "")
-        }
-        if !database.rememberVoices {
-            return "Remember voices is off, so no voice was learned. Turn it on with voiceislocal people remember on."
-        }
-        if snapshot.audioDeleted { return VoiceProfileService.audioDeletedNote }
-        if !extractorAvailable { return modelsMissing }
-        if let model = profile.embeddingModel, let run = snapshot.run?.engine?.embeddingModel, model != run {
-            return "\(profile.displayName)'s voice samples come from other speaker models, so this one can't be "
-                + "added. Forget their samples first (voiceislocal people forget)."
-        }
-        return "No turn of this speaker was long and clear enough (2 s or more, without overlap) to learn the voice."
-    }
-
-    /// "Your edited transcript.md was kept as exports/edited-20260923-171200.md."
-    static func movedAsideNote(_ url: URL) -> String {
-        "Your edited transcript.\(url.pathExtension) was kept as exports/\(url.lastPathComponent)."
+    /// Makes `change` through `SpeakerEditCommand`, printing what it says as it goes: content on stdout, notes on
+    /// stderr.
+    static func run(_ change: SpeakerEditCommand.Change, _ loaded: LoadedSpeakers) async throws {
+        _ = try await SpeakerEditCommand.run(
+            SpeakerEditCommand.Request(loaded: loaded, change: change),
+            makeExtractor: { makeVoiceSampleExtractor(session: $0) },
+            report: { message in
+                switch message {
+                case .output(let text): Console.output(text)
+                case .note(let text): Console.error(text)
+                }
+            })
     }
 
     /// Warnings about the labels themselves, on stderr.
     static func printNotes(_ diagnostics: SpeakerSnapshotDiagnostics) {
         for note in diagnostics.notes { Console.error(note) }
-    }
-
-    /// The applied lines of the view's newest batch, in journal order (what `undoLast` will revert).
-    static func newestBatch(_ loaded: LoadedSpeakers) -> [SpeakerEdit] {
-        guard let batchID = loaded.view.lastUndoableBatchID else { return [] }
-        let applied = Set(loaded.view.appliedEditIDs)
-        return loaded.snapshot.journal.edits
-            .filter { $0.baseRunID == loaded.view.runID && ($0.batchID ?? $0.id) == batchID && applied.contains($0.id) }
-    }
-
-    // MARK: Describing changes
-
-    /// One sentence for a change: "Renamed system:S2 to Maria." Speakers are described on `before`, the labels the
-    /// change was made on; a speaker or turn the change created is described on `after` when given. `editID` is the
-    /// journal line's ID when the change is already saved (it names a split's second part). `people` (profile ID →
-    /// name) names the person of a link or rejection.
-    static func describe(_ action: SpeakerEditAction, before: SpeakerProjection, after: SpeakerProjection?,
-                         editID: String? = nil, people: [String: String] = [:]) -> String {
-        func person(_ id: String) -> String { people[id] ?? "person \(id)" }
-        func speaker(_ id: String) -> String {
-            let found = before.speakers.first { $0.id == id } ?? after?.speakers.first { $0.id == id }
-            return found.map { "\($0.id) (\($0.label))" } ?? id
-        }
-        switch action {
-        case .rename(let speakerID, let name):
-            if let name = name?.trimmingCharacters(in: .whitespacesAndNewlines), !name.isEmpty {
-                return "Renamed \(speakerID) to \(name)."
-            }
-            return "Cleared the name of \(speakerID)."
-        case .merge(let from, let into):
-            return "Merged \(speaker(from)) into \(speaker(into))."
-        case .reassignTurns(let turnIDs, let to):
-            return "Assigned \(turnList(turnIDs)) to \(to.map(speaker) ?? "Unknown speaker")."
-        case .newSpeaker(let speakerID, _, let turnIDs):
-            return "Assigned \(turnList(turnIDs)) to a new speaker, \(speaker(speakerID))."
-        case .splitTurn(let turnID, let word):
-            let part: ProjectedTurn?
-            if let editID {
-                // Already saved: the part is in `before` (undo), with the ID the split gave it.
-                part = before.turns.first { $0.id == "\(turnID)/\(editID)" }
-            } else {
-                let beforeIDs = Set(before.turns.map(\.id))
-                part = after?.turns.first { $0.id.hasPrefix("\(turnID)/") && !beforeIDs.contains($0.id) }
-            }
-            let head = before.turns.first { $0.id == turnID }
-            // Before the split the word is in the turn; after it, it follows the words the turn kept.
-            let position = wordNumber(word, in: head) ?? (editID == nil ? nil : head.map { wordCount($0) + 1 })
-            return "Split \(turnID)" + (position.map { " before its word \($0)" } ?? "")
-                + (part.map { "; the second part is \($0.id) from \(TimeFormat.clock($0.start))" } ?? "") + "."
-        case .excludeFromEnrollment(let turnIDs):
-            return "Excluded \(turnList(turnIDs)) from voice learning."
-        case .linkProfile(let speakerID, let profileID):
-            return "Linked \(speaker(speakerID)) to \(person(profileID))."
-        case .rejectProfile(let speakerID, let profileID):
-            return "Marked \(speaker(speakerID)) as not \(person(profileID))."
-        case .revert(let editID):
-            return "Reverted edit \(editID)."
-        }
-    }
-
-    /// "T4", "T4 and T5", "T4, T5, and T6", or "12 turns (T4, T5, T6, …)".
-    static func turnList(_ ids: [String]) -> String {
-        switch ids.count {
-        case 0: return "no turns"
-        case 1: return ids[0]
-        case 2: return "\(ids[0]) and \(ids[1])"
-        case 3...5: return ids.dropLast().joined(separator: ", ") + ", and \(ids[ids.count - 1])"
-        default: return "\(ids.count) turns (\(ids.prefix(3).joined(separator: ", ")), …)"
-        }
-    }
-
-    private static func wordCount(_ turn: ProjectedTurn) -> Int {
-        turn.spans.reduce(0) { $0 + max(0, $1.end - $1.first) }
-    }
-
-    /// The 1-based position of `word` among the turn's words.
-    private static func wordNumber(_ word: WordRef, in turn: ProjectedTurn?) -> Int? {
-        guard let turn else { return nil }
-        var position = 0
-        for span in turn.spans {
-            for index in span.first..<max(span.first, span.end) {
-                position += 1
-                if span.segmentID == word.segmentID, index == word.word { return position }
-            }
-        }
-        return nil
     }
 
     // MARK: Listing

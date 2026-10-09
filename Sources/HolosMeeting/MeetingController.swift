@@ -24,13 +24,25 @@ struct MeetingControllerTuning: Sendable {
 /// Effects the app acts on (`announce`, `finished`, `offerNaming`, `clearNamingOffer`) go to
 /// `onEffect`; `launch`, `send`, and `terminateChild` are carried out here. `onChange` follows every state change,
 /// including each new status of the followed meeting.
+///
+/// Invariants:
+/// 1. The meeting state changes only through `reducer` (`dispatch`, `start`), and each change is reported to
+///    `onChange`.
+/// 2. At most one control request waits for its acknowledgement: queued requests are sent in order, each once the
+///    previous one was acknowledged, could not be sent, or waited `ackTimeout` (`sendNext`).
+/// 3. `start` launches no recorder while another may still record: a followed or starting meeting, a recorder whose
+///    session is still live, or one this app launched whose exit was not seen (`recorderMayStillRun`).
+/// 4. A meeting is in `sessionsInUse` at most once (`beginUsing` refuses one already in use), and every change to it
+///    is reported to `onSessionsInUseChanged`.
+/// 5. `namingOffer` changes only in `setNamingOffer`, which reports each change once (`offerNaming`,
+///    `clearNamingOffer`).
+/// 6. A live meeting found in the sessions folder is followed only when its folder is named after the session its
+///    `status.json` names (`findLiveMeeting`).
 @MainActor public final class MeetingController {
     private static let log = Logger(subsystem: "ca.orlenko.holos.app", category: "meeting")
     /// Files older than this in the temporary folder are left over from a crash (§4.12).
     static let staleVocabularyAge: TimeInterval = 3_600
     static let vocabularyPrefix = "holos-vocabulary-"
-    static let maxVocabularyEntries = 1_000
-    static let maxVocabularyLength = 100
     /// UserDefaults key: attempts of the automatic relabel per session ID.
     static let relabelAttemptsKey = "meeting.relabelAttempts"
     /// UserDefaults key: recorder children launched by this app, or by an earlier run of it, whose exit was not seen,
@@ -277,7 +289,7 @@ struct MeetingControllerTuning: Sendable {
 
     /// The session folder of `sessionID` under the root.
     public func sessionURL(_ sessionID: String) -> URL {
-        root.appendingPathComponent("\(sessionID).holos", isDirectory: true)
+        SessionPaths.folder(for: sessionID, in: root)
     }
 
     // MARK: - Start checks
@@ -382,7 +394,9 @@ struct MeetingControllerTuning: Sendable {
             // meeting cannot start meanwhile.
             guard let status = try? RecorderChannel.readStatus(session: session),
                   status.phase.isMeetingActive || status.phase == .transcribing || status.phase == .postprocessing,
-                  session.deletingPathExtension().lastPathComponent == status.sessionID else { continue }
+                  session.lastPathComponent == SessionPaths.folderName(for: status.sessionID) else {
+                continue  // invariant 6
+            }
             let liveness = RecorderChannel.liveness(session: session, now: now)
             guard MeetingReducer.isFresh(status, liveness: liveness, at: now) else { continue }
             if status.phase.isMeetingActive { return status }
@@ -406,7 +420,7 @@ struct MeetingControllerTuning: Sendable {
             break
         case .send(let command, let label, let sessionID):
             pendingSends.append((command, label, sessionID))
-            if awaitingAck == nil { sendNext() }
+            if awaitingAck == nil { sendNext() }  // invariant 2
         case .terminateChild(let sessionID):
             launcher.terminate(sessionID: sessionID)
         case .finished(let sessionID, let summary, let ready):
@@ -512,6 +526,28 @@ struct MeetingControllerTuning: Sendable {
         return true
     }
 
+    /// Registers the app's use of each free meeting of `sessionIDs` for `doing` at once (one change reported): a
+    /// deletion of several meetings reserves them all, so no background job starts on one still waiting its turn.
+    /// Returns those registered.
+    public func beginUsing(_ sessionIDs: [String], for doing: String) -> Set<String> {
+        var registered: Set<String> = []
+        for id in sessionIDs where sessionsInUse[id] == nil {
+            sessionsInUse[id] = doing
+            registered.insert(id)
+        }
+        if !registered.isEmpty { onSessionsInUseChanged() }
+        return registered
+    }
+
+    /// Hands the app's use of `sessionID` over to `doing` without releasing it in between (a reserved meeting whose
+    /// turn came); false, with nothing registered, when the app does not use it.
+    public func continueUsing(_ sessionID: String, for doing: String) -> Bool {
+        guard sessionsInUse[sessionID] != nil else { return false }
+        sessionsInUse[sessionID] = doing
+        onSessionsInUseChanged()
+        return true
+    }
+
     /// Ends the app's use of `sessionID`, then derives the naming offer again: the use may have labelled, deleted, or
     /// changed the meeting.
     public func endUsing(_ sessionID: String) {
@@ -519,6 +555,9 @@ struct MeetingControllerTuning: Sendable {
         onSessionsInUseChanged()
         refreshNamingOffer()
     }
+
+    /// What the app is doing to `sessionID` now (`sessionsInUse`), or nil.
+    public func use(of sessionID: String) -> String? { sessionsInUse[sessionID] }
 
     /// `speakerLabelsReady` off the main actor: it loads the session's speaker snapshot (§1.3).
     private nonisolated static func speakerLabelsReadyOffMain(session: URL) async -> Bool {
@@ -618,12 +657,10 @@ struct MeetingControllerTuning: Sendable {
 
     // MARK: - Vocabulary hand-off (§4.12)
 
-    /// Writes `$TMPDIR/holos-vocabulary-<id>.json` (0600, created exclusively) with at most 1,000 entries of at most
-    /// 100 characters; nil when there is nothing to write.
+    /// Writes `$TMPDIR/holos-vocabulary-<id>.json` (0600, created exclusively) with the strings
+    /// `MeetingVocabulary.cleaned` keeps; nil when there is nothing to write.
     func writeVocabularyFile(sessionID: String, strings: [String]) throws -> URL? {
-        let entries = Array(strings.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty && $0.count <= Self.maxVocabularyLength }
-            .prefix(Self.maxVocabularyEntries))
+        let entries = MeetingVocabulary.cleaned(strings)
         guard !entries.isEmpty else { return nil }
         let url = vocabularyDirectory.appendingPathComponent("\(Self.vocabularyPrefix)\(sessionID).json",
                                                              isDirectory: false)

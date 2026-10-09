@@ -56,7 +56,18 @@ enum AboutCredits {
         `voiceislocal setup --whisper` and not included in the app; see THIRD_PARTY_NOTICES.md.
         """
 
-    static var text: String { [license, fluidAudio, readability, models, whisper].joined(separator: "\n\n") }
+    static let pocket = """
+        Natural Reading voices are made by the bundled voiceislocal tool with Pocket TTS by Kyutai \
+        (https://huggingface.co/kyutai/pocket-tts), licensed under the Creative Commons Attribution 4.0 International \
+        License (CC BY 4.0, https://creativecommons.org/licenses/by/4.0/), in Fluid Inference's Core ML conversion \
+        (https://huggingface.co/FluidInference/pocket-tts-coreml, CC BY 4.0), downloaded by `voiceislocal setup \
+        --natural-voices` and not included in the app. Voices: Alba (voiced by Alba MacKenna, CC BY 4.0); Anna, \
+        Azelma, Charles, Eponine, Eve, Fantine, George, Jane, Mary, Michael, Paul, and Vera (from the VCTK corpus, \
+        CSTR, The University of Edinburgh, CC BY 4.0); Bill Boerst, Caro Davy, Javert, Marius, Peter Yearsley, Stuart \
+        Bell, and Estelle (CC0); see THIRD_PARTY_NOTICES.md.
+        """
+
+    static var text: String { [license, fluidAudio, readability, models, whisper, pocket].joined(separator: "\n\n") }
 
     /// The credits as the About panel shows them.
     static func attributed() -> NSAttributedString {

@@ -3,6 +3,7 @@ import HolosCore
 @testable import HolosMeeting
 import HolosSpeakers
 import HolosStorage
+import HolosTestSupport
 import Testing
 
 // The review window's model (docs/meeting-design.md §5.10, PR9): ReviewSession on fixture sessions, with the people
@@ -100,7 +101,7 @@ private func reviewName(_ review: ReviewSession, _ speakerID: String) -> String?
 
 @Test(.timeLimit(.minutes(1))) @MainActor
 func reviewRevertsOneWordFixAndKeepsSpeakerEdits() async throws {
-    let temp = try TemporaryDirectory("review")
+    let temp = try TemporaryDirectory("review", permissions: 0o700)
     defer { temp.remove() }
     let (session, oldRun) = try await reviewCustomSession(in: temp, turns: [
         ReviewTurnSpec(speaker: "system:S1", start: 0, seconds: 3, words: ["ask", "cloud", "now"]),
@@ -156,7 +157,7 @@ func reviewRevertsOneWordFixAndKeepsSpeakerEdits() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func aFailedReviewRevertHeadCanBeRepublishedFromTheOldEditedHead() async throws {
-    let temp = try TemporaryDirectory("review")
+    let temp = try TemporaryDirectory("review", permissions: 0o700)
     defer { temp.remove() }
     let (session, oldRun) = try await reviewCustomSession(in: temp, turns: [
         ReviewTurnSpec(speaker: "system:S1", start: 0, seconds: 3, words: ["ask", "cloud", "now"]),
@@ -224,7 +225,7 @@ func aFailedReviewRevertHeadCanBeRepublishedFromTheOldEditedHead() async throws 
 
 @Test(.timeLimit(.minutes(1))) @MainActor
 func nextUncertainWrapsInTimeOrder() async throws {
-    let temp = try TemporaryDirectory("review")
+    let temp = try TemporaryDirectory("review", permissions: 0o700)
     defer { temp.remove() }
     var specs = (0..<10).map { index in
         ReviewTurnSpec(speaker: index % 2 == 0 ? "system:S1" : "system:S2", start: Double(index) * 3, seconds: 2.5,
@@ -245,7 +246,7 @@ func nextUncertainWrapsInTimeOrder() async throws {
 
 @Test(.timeLimit(.minutes(1))) @MainActor
 func nextUncertainSkipsHiddenInterjectionsUnlessTheyAreShown() async throws {
-    let temp = try TemporaryDirectory("review")
+    let temp = try TemporaryDirectory("review", permissions: 0o700)
     defer { temp.remove() }
     let (session, _) = try await reviewCustomSession(in: temp, turns: [
         ReviewTurnSpec(speaker: "system:S1", start: 0, seconds: 2, words: ["We", "are", "done."]),
@@ -272,7 +273,7 @@ func nextUncertainSkipsHiddenInterjectionsUnlessTheyAreShown() async throws {
 
 @Test(.timeLimit(.minutes(1))) @MainActor
 func choosingUnknownForAnAttachedTurnIsSavedAndUndone() async throws {
-    let temp = try TemporaryDirectory("review")
+    let temp = try TemporaryDirectory("review", permissions: 0o700)
     defer { temp.remove() }
     let (session, _) = try await reviewCustomSession(in: temp, turns: [
         ReviewTurnSpec(speaker: "system:S1", start: 0, seconds: 2, words: ["We", "asked,", "but", "they"]),
@@ -294,7 +295,7 @@ func choosingUnknownForAnAttachedTurnIsSavedAndUndone() async throws {
 
 @Test(.timeLimit(.minutes(1))) @MainActor
 func searchIsCaseInsensitive() async throws {
-    let temp = try TemporaryDirectory("review")
+    let temp = try TemporaryDirectory("review", permissions: 0o700)
     defer { temp.remove() }
     let (session, _) = try await reviewCustomSession(in: temp, turns: [
         ReviewTurnSpec(speaker: "system:S1", start: 0, seconds: 3, words: ["We", "discuss", "the", "budget"]),
@@ -312,7 +313,7 @@ func searchIsCaseInsensitive() async throws {
 
 @Test(.timeLimit(.minutes(1))) @MainActor
 func sampleClipsPickLongestNonOverlapped() async throws {
-    let temp = try TemporaryDirectory("review")
+    let temp = try TemporaryDirectory("review", permissions: 0o700)
     defer { temp.remove() }
     let (session, _) = try await reviewCustomSession(in: temp, turns: [
         ReviewTurnSpec(speaker: "system:S1", start: 0, seconds: 10, words: reviewWords(12)),
@@ -331,7 +332,7 @@ func sampleClipsPickLongestNonOverlapped() async throws {
 
 @Test(.timeLimit(.minutes(1))) @MainActor
 func previewsShowTwoLongestTurns() async throws {
-    let temp = try TemporaryDirectory("review")
+    let temp = try TemporaryDirectory("review", permissions: 0o700)
     defer { temp.remove() }
     let long = reviewWords(30, prefix: "long")
     let medium = ["medium", "turn", "text"]
@@ -354,7 +355,7 @@ func previewsShowTwoLongestTurns() async throws {
 
 @Test(.timeLimit(.minutes(1))) @MainActor
 func assignSelectionIsOneBatch() async throws {
-    let temp = try TemporaryDirectory("review")
+    let temp = try TemporaryDirectory("review", permissions: 0o700)
     defer { temp.remove() }
     let fixture = try await SessionFixtures.labelledSession(in: temp.url, duration: 30)
     let review = try await reviewOpen(fixture.session)
@@ -372,7 +373,7 @@ func assignSelectionIsOneBatch() async throws {
 
 @Test(.timeLimit(.minutes(1))) @MainActor
 func projectionUpdatesBeforeWriteCompletes() async throws {
-    let temp = try TemporaryDirectory("review")
+    let temp = try TemporaryDirectory("review", permissions: 0o700)
     defer { temp.remove() }
     let fixture = try await SessionFixtures.labelledSession(in: temp.url)
     let review = try await reviewOpen(fixture.session)
@@ -399,7 +400,7 @@ func projectionUpdatesBeforeWriteCompletes() async throws {
 
 @Test(.timeLimit(.minutes(1))) @MainActor
 func refusedEditReloads() async throws {
-    let temp = try TemporaryDirectory("review")
+    let temp = try TemporaryDirectory("review", permissions: 0o700)
     defer { temp.remove() }
     let fixture = try await SessionFixtures.labelledSession(in: temp.url)
     let review = try await reviewOpen(fixture.session)
@@ -426,7 +427,7 @@ func refusedEditReloads() async throws {
 
 @Test(.timeLimit(.minutes(1))) @MainActor
 func undoIsLastInFirstOut() async throws {
-    let temp = try TemporaryDirectory("review")
+    let temp = try TemporaryDirectory("review", permissions: 0o700)
     defer { temp.remove() }
     let fixture = try await SessionFixtures.labelledSession(in: temp.url)
     let review = try await reviewOpen(fixture.session)
@@ -454,7 +455,7 @@ func undoIsLastInFirstOut() async throws {
 
 @Test(.timeLimit(.minutes(1))) @MainActor
 func undoTakesBackOnlyTheWindowsChange() async throws {
-    let temp = try TemporaryDirectory("review")
+    let temp = try TemporaryDirectory("review", permissions: 0o700)
     defer { temp.remove() }
     let fixture = try await SessionFixtures.labelledSession(in: temp.url)
     let review = try await reviewOpen(fixture.session)
@@ -475,7 +476,7 @@ func undoTakesBackOnlyTheWindowsChange() async throws {
 
 @Test(.timeLimit(.minutes(1))) @MainActor
 func confirmAllIsOneUndo() async throws {
-    let temp = try TemporaryDirectory("review")
+    let temp = try TemporaryDirectory("review", permissions: 0o700)
     defer { temp.remove() }
     let store = reviewStore(temp)
     try store.update {
@@ -514,7 +515,7 @@ func confirmAllIsOneUndo() async throws {
 
 @Test(.timeLimit(.minutes(1))) @MainActor
 func exportsRegenerateAfterDelayAndOnClose() async throws {
-    let temp = try TemporaryDirectory("review")
+    let temp = try TemporaryDirectory("review", permissions: 0o700)
     defer { temp.remove() }
     let fixture = try await SessionFixtures.labelledSession(in: temp.url)
     let markdown = SessionPaths.export("md", in: fixture.session)
@@ -544,7 +545,7 @@ func exportsRegenerateAfterDelayAndOnClose() async throws {
 
 @Test(.timeLimit(.minutes(1))) @MainActor
 func splitPartCanBeAssignedBeforeTheSplitIsSaved() async throws {
-    let temp = try TemporaryDirectory("review")
+    let temp = try TemporaryDirectory("review", permissions: 0o700)
     defer { temp.remove() }
     let fixture = try await SessionFixtures.labelledSession(in: temp.url)
     let review = try await reviewOpen(fixture.session)
@@ -579,7 +580,7 @@ func splitPartCanBeAssignedBeforeTheSplitIsSaved() async throws {
 
 @Test(.timeLimit(.minutes(1))) @MainActor
 func undoDropsOrRevertsUnsavedChanges() async throws {
-    let temp = try TemporaryDirectory("review")
+    let temp = try TemporaryDirectory("review", permissions: 0o700)
     defer { temp.remove() }
     let fixture = try await SessionFixtures.labelledSession(in: temp.url)
     let review = try await reviewOpen(fixture.session)
@@ -611,7 +612,7 @@ func undoDropsOrRevertsUnsavedChanges() async throws {
 
 @Test(.timeLimit(.minutes(1))) @MainActor
 func changesQueuedBehindARefusalAreRefused() async throws {
-    let temp = try TemporaryDirectory("review")
+    let temp = try TemporaryDirectory("review", permissions: 0o700)
     defer { temp.remove() }
     let fixture = try await SessionFixtures.labelledSession(in: temp.url)
     let review = try await reviewOpen(fixture.session)
@@ -636,7 +637,7 @@ func changesQueuedBehindARefusalAreRefused() async throws {
 
 @Test(.timeLimit(.minutes(1))) @MainActor
 func nameFieldLinksOrCreatesPeople() async throws {
-    let temp = try TemporaryDirectory("review")
+    let temp = try TemporaryDirectory("review", permissions: 0o700)
     defer { temp.remove() }
     let store = reviewStore(temp)
     let fixture = try await SessionFixtures.labelledSession(in: temp.url, speakers: ["S1", "S2", "S3"], duration: 30)
@@ -648,11 +649,16 @@ func nameFieldLinksOrCreatesPeople() async throws {
     #expect(review.speaker("system:S1")?.profileID == jim.id)
     #expect(review.knownPeople().map(\.id) == [jim.id])
 
-    // A known name, typed in another case, links the same person.
+    // A known name, typed in another case, links the same person; S2 is then called Jim as S1 is, so the two are
+    // shown as one (S1, the lower ordinal). Nothing is merged.
     try await review.setName("jim", speakerID: "system:S2")
     #expect(try store.load().profiles.count == 1)
-    #expect(review.speaker("system:S2")?.profileID == jim.id)
-    #expect(review.projection.mergeSuggestions.map(\.speakerIDs) == [["system:S1", "system:S2"]])
+    #expect(try reviewJournal(fixture.session).last?.action == .rename(speakerID: "system:S2", name: "Jim"))
+    #expect(review.speaker("system:S1")?.memberIDs == ["system:S1", "system:S2"])
+    #expect(review.speaker("system:S2") == nil)
+    #expect(review.speaker("system:S1")?.profileID == jim.id)
+    #expect(review.projection.turns.first { $0.id == "T2" }?.speakerID == "system:S1")
+    #expect(review.projection.mergeSuggestions.isEmpty)
 
     // The same name again changes nothing.
     let lines = try reviewJournal(fixture.session).count
@@ -676,7 +682,7 @@ func nameFieldLinksOrCreatesPeople() async throws {
 
 @Test(.timeLimit(.minutes(1))) @MainActor
 func sameNewNameWhileTheFirstIsSavingMakesOnePerson() async throws {
-    let temp = try TemporaryDirectory("review")
+    let temp = try TemporaryDirectory("review", permissions: 0o700)
     defer { temp.remove() }
     let store = reviewStore(temp)
     let fixture = try await SessionFixtures.labelledSession(in: temp.url, speakers: ["S1", "S2", "S3"], duration: 30)
@@ -688,7 +694,8 @@ func sameNewNameWhileTheFirstIsSavingMakesOnePerson() async throws {
     let first = Task { @MainActor in try await review.setName("Jim", speakerID: "system:S1") }
     #expect(await eventually { gate.entered.value == 1 })
     let second = Task { @MainActor in try await review.setName("jim", speakerID: "system:S2") }
-    #expect(await eventually { reviewName(review, "system:S2") == "jim" })
+    // Called as S1 is, S2 shows as S1 at once (same name, same person).
+    #expect(await eventually { reviewName(review, "system:S2") == nil })
     try await review.setName("Jim", speakerID: "system:S1")
     gate.release.finish()
     try await first.value
@@ -699,10 +706,11 @@ func sameNewNameWhileTheFirstIsSavingMakesOnePerson() async throws {
     let jim = try #require(people.first)
     #expect(jim.displayName == "Jim")
     #expect(review.speaker("system:S1")?.profileID == jim.id)
-    #expect(review.speaker("system:S2")?.profileID == jim.id)
-    #expect(review.speaker("system:S2")?.name == "Jim")
-    #expect(review.projection.mergeSuggestions.map(\.speakerIDs) == [["system:S1", "system:S2"]])
-    #expect(try reviewJournal(fixture.session).count == 4, "Two links of two lines each; Return again saved nothing.")
+    #expect(review.speaker("system:S2") == nil)
+    #expect(review.projection.mergeSuggestions.isEmpty)
+    let lines = try reviewJournal(fixture.session)
+    #expect(lines.count == 4, "Two links of two lines each; Return again saved nothing.")
+    #expect(!lines.contains { if case .merge = $0.action { true } else { false } })
     #expect(review.snapshot.projection == review.projection)
 }
 
@@ -726,7 +734,7 @@ private final class ReviewFakeExtractor: VoiceSampleExtractor {
 /// (§4.10); giving it to Maria checks only that assigning to a person asks for nothing it may not.
 @MainActor
 private func reviewLearning(_ learn: Bool) async throws -> (asked: [String], samples: [String: Int]) {
-    let temp = try TemporaryDirectory("review")
+    let temp = try TemporaryDirectory("review", permissions: 0o700)
     defer { temp.remove() }
     let store = reviewStore(temp)
     try store.update {
@@ -780,7 +788,7 @@ func learnVoicesOnStoresASampleForEachPersonNamed() async throws {
 
 @Test(.timeLimit(.minutes(1))) @MainActor
 func failedRelabelKeepsTheExportsPending() async throws {
-    let temp = try TemporaryDirectory("review")
+    let temp = try TemporaryDirectory("review", permissions: 0o700)
     defer { temp.remove() }
     let fixture = try await SessionFixtures.labelledSession(in: temp.url)
     let markdown = SessionPaths.export("md", in: fixture.session)
@@ -806,7 +814,7 @@ func failedRelabelKeepsTheExportsPending() async throws {
 
 @Test(.timeLimit(.minutes(1))) @MainActor
 func assigningToAPersonCreatesALinkedSpeakerAsOneChange() async throws {
-    let temp = try TemporaryDirectory("review")
+    let temp = try TemporaryDirectory("review", permissions: 0o700)
     defer { temp.remove() }
     let store = reviewStore(temp)
     try store.update { $0.profiles = [SpeakerProfile(id: "MARIA", displayName: "Maria")] }
@@ -833,7 +841,7 @@ func assigningToAPersonCreatesALinkedSpeakerAsOneChange() async throws {
 
 @Test(.timeLimit(.minutes(1))) @MainActor
 func invalidChangeIsRefusedBeforeItIsQueued() async throws {
-    let temp = try TemporaryDirectory("review")
+    let temp = try TemporaryDirectory("review", permissions: 0o700)
     defer { temp.remove() }
     let fixture = try await SessionFixtures.labelledSession(in: temp.url)
     let review = try await reviewOpen(fixture.session)
@@ -862,7 +870,7 @@ func invalidChangeIsRefusedBeforeItIsQueued() async throws {
 
 @Test(.timeLimit(.minutes(1))) @MainActor
 func clearingAnAutomaticNameRejectsItsPerson() async throws {
-    let temp = try TemporaryDirectory("review")
+    let temp = try TemporaryDirectory("review", permissions: 0o700)
     defer { temp.remove() }
     let store = reviewStore(temp)
     // Automatic names are shown only with Remember voices on (`VoiceProfileService.recognitionAllowed`).
@@ -900,7 +908,7 @@ func clearingAnAutomaticNameRejectsItsPerson() async throws {
 
 @Test(.timeLimit(.minutes(1))) @MainActor
 func maintenancePauseSavesEarlierChangesAndRefusesNewOnes() async throws {
-    let temp = try TemporaryDirectory("review")
+    let temp = try TemporaryDirectory("review", permissions: 0o700)
     defer { temp.remove() }
     let fixture = try await SessionFixtures.labelledSession(in: temp.url)
     let markdown = SessionPaths.export("md", in: fixture.session)
@@ -946,7 +954,7 @@ func maintenancePauseSavesEarlierChangesAndRefusesNewOnes() async throws {
 
 @Test(.timeLimit(.minutes(1))) @MainActor
 func resumeRereadsTranscriptAndLabels() async throws {
-    let temp = try TemporaryDirectory("review")
+    let temp = try TemporaryDirectory("review", permissions: 0o700)
     defer { temp.remove() }
     let fixture = try await SessionFixtures.labelledSession(in: temp.url)
     let review = try await reviewOpen(fixture.session)
@@ -974,7 +982,7 @@ func resumeRereadsTranscriptAndLabels() async throws {
 
 @Test(.timeLimit(.minutes(1))) @MainActor
 func eachCommandRunHoldsTheReviewUntilItsOwnResume() async throws {
-    let temp = try TemporaryDirectory("review")
+    let temp = try TemporaryDirectory("review", permissions: 0o700)
     defer { temp.remove() }
     let fixture = try await SessionFixtures.labelledSession(in: temp.url)
     let review = try await reviewOpen(fixture.session)
@@ -1037,7 +1045,7 @@ func eachCommandRunHoldsTheReviewUntilItsOwnResume() async throws {
 
 @Test(.timeLimit(.minutes(1))) @MainActor
 func exportsNotWrittenAtCloseStayPendingForTheNextReview() async throws {
-    let temp = try TemporaryDirectory("review")
+    let temp = try TemporaryDirectory("review", permissions: 0o700)
     defer { temp.remove() }
     let fixture = try await SessionFixtures.labelledSession(in: temp.url)
     let markdown = SessionPaths.export("md", in: fixture.session)
@@ -1064,7 +1072,7 @@ func exportsNotWrittenAtCloseStayPendingForTheNextReview() async throws {
 
 @Test(.timeLimit(.minutes(1))) @MainActor
 func sessionWithoutLabelsDoesNotOpen() async throws {
-    let temp = try TemporaryDirectory("review")
+    let temp = try TemporaryDirectory("review", permissions: 0o700)
     defer { temp.remove() }
     let transcript = SessionFixtures.transcript(SessionFixtures.alternatingSegments(track: "system"))
     let session = try await SessionFixtures.makeSession(in: temp.url, source: .system, audioSeconds: ["system": 20],
@@ -1102,7 +1110,7 @@ private func reviewBlockRereads(_ session: URL, _ blocked: Bool) {
 
 @Test(.timeLimit(.minutes(1))) @MainActor
 func failedUndoKeepsTheChangeUndoable() async throws {
-    let temp = try TemporaryDirectory("review")
+    let temp = try TemporaryDirectory("review", permissions: 0o700)
     defer { temp.remove() }
     let fixture = try await SessionFixtures.labelledSession(in: temp.url)
     let journal = SessionPaths.edits(fixture.session)
@@ -1129,32 +1137,29 @@ func failedUndoKeepsTheChangeUndoable() async throws {
 }
 
 @Test(.timeLimit(.minutes(1))) @MainActor
-func failedUndoOfATwoBatchChangeCanBeFinished() async throws {
-    let temp = try TemporaryDirectory("review")
+func failedUndoOfAnAssignmentToAPersonCanBeDoneAgain() async throws {
+    let temp = try TemporaryDirectory("review", permissions: 0o700)
     defer { temp.remove() }
     let store = reviewStore(temp)
     try store.update { $0.profiles = [SpeakerProfile(id: "MARIA", displayName: "Maria")] }
     let fixture = try await SessionFixtures.labelledSession(in: temp.url)
     let journal = SessionPaths.edits(fixture.session)
     let review = try await reviewOpen(fixture.session, store: store)
-    // One change, two batches: a new speaker for T2, then its link to Maria.
+    // One change, one batch: a new speaker for T2 and its link to Maria.
     try await review.assign(["T2"], to: .person(profileID: "MARIA"))
-    #expect(Set(try reviewJournal(fixture.session).compactMap(\.batchID)).count == 2)
+    #expect(Set(try reviewJournal(fixture.session).compactMap(\.batchID)).count == 1)
 
-    // The first revert is saved; the journal then refuses the second.
-    let saves = SharedValue(0)
-    review.beforeEdit = {
-        if saves.update({ $0 += 1; return $0 }) == 2 { reviewSetWritable(journal, false) }
-    }
+    // The journal refuses the undo: nothing is taken back, and the change can still be undone.
+    review.beforeEdit = { reviewSetWritable(journal, false) }
     await #expect(throws: HolosError.self) { try await review.undo() }
     reviewSetWritable(journal, true)
     review.beforeEdit = nil
-    #expect(!review.projection.speakers.contains { $0.profileID == "MARIA" }, "The link was taken back.")
+    #expect(review.projection.speakers.contains { $0.profileID == "MARIA" }, "The link is still there.")
     #expect(review.turn("T2")?.speakerID?.hasPrefix("user:") == true, "The new speaker is still saved.")
     #expect(review.canUndo)
     #expect(review.snapshot.projection == review.projection)
 
-    // Undo finishes the job.
+    // Undo again takes back both.
     try await review.undo()
     #expect(review.turn("T2")?.speakerID == "system:S2")
     #expect(!review.projection.speakers.contains { $0.id.hasPrefix("user:") })
@@ -1163,7 +1168,7 @@ func failedUndoOfATwoBatchChangeCanBeFinished() async throws {
 
 @Test(.timeLimit(.minutes(1))) @MainActor
 func failedUndoOfASavingChangeShowsItAgain() async throws {
-    let temp = try TemporaryDirectory("review")
+    let temp = try TemporaryDirectory("review", permissions: 0o700)
     defer { temp.remove() }
     let fixture = try await SessionFixtures.labelledSession(in: temp.url)
     let journal = SessionPaths.edits(fixture.session)
@@ -1197,7 +1202,7 @@ func failedUndoOfASavingChangeShowsItAgain() async throws {
 
 @Test(.timeLimit(.minutes(1))) @MainActor
 func savedChangeThatCannotBeRereadMakesTheReviewReadOnly() async throws {
-    let temp = try TemporaryDirectory("review")
+    let temp = try TemporaryDirectory("review", permissions: 0o700)
     defer { temp.remove() }
     let fixture = try await SessionFixtures.labelledSession(in: temp.url)
     let session = fixture.session
@@ -1242,7 +1247,7 @@ func savedChangeThatCannotBeRereadMakesTheReviewReadOnly() async throws {
 
 @Test(.timeLimit(.minutes(1))) @MainActor
 func reloadsRereadPeopleBeforeTheLabels() async throws {
-    let temp = try TemporaryDirectory("review")
+    let temp = try TemporaryDirectory("review", permissions: 0o700)
     defer { temp.remove() }
     let store = reviewStore(temp)
     // Automatic names are shown only with Remember voices on (`VoiceProfileService.recognitionAllowed`).
@@ -1282,7 +1287,7 @@ func reloadsRereadPeopleBeforeTheLabels() async throws {
 /// automatic name is shown, and the transcript files it renders name nobody recognition chose.
 @Test(.timeLimit(.minutes(1))) @MainActor
 func recognitionIsShownOnlyWhenRecognitionIsAllowed() async throws {
-    let temp = try TemporaryDirectory("review")
+    let temp = try TemporaryDirectory("review", permissions: 0o700)
     defer { temp.remove() }
     let store = reviewStore(temp)
     try store.update {
@@ -1318,7 +1323,7 @@ func recognitionIsShownOnlyWhenRecognitionIsAllowed() async throws {
 /// starts it checked, and a store saved off by an earlier build keeps it unchecked.
 @Test(.timeLimit(.minutes(1))) @MainActor
 func learnVoicesFollowsTheRememberSetting() async throws {
-    let temp = try TemporaryDirectory("review")
+    let temp = try TemporaryDirectory("review", permissions: 0o700)
     defer { temp.remove() }
     let store = reviewStore(temp)
     let fixture = try await SessionFixtures.labelledSession(in: temp.url)
@@ -1344,7 +1349,7 @@ private func reviewParagraphs(_ review: ReviewSession) -> [[String]] {
 
 @Test(.timeLimit(.minutes(1))) @MainActor
 func reviewAssigningAParagraphMovesEveryTurnOfItAndUndoRestoresIt() async throws {
-    let temp = try TemporaryDirectory("review")
+    let temp = try TemporaryDirectory("review", permissions: 0o700)
     defer { temp.remove() }
     let (session, _) = try await reviewCustomSession(in: temp, turns: [
         ReviewTurnSpec(speaker: "system:S1", start: 0, seconds: 2, words: reviewWords(2, prefix: "a")),
@@ -1368,7 +1373,7 @@ func reviewAssigningAParagraphMovesEveryTurnOfItAndUndoRestoresIt() async throws
 
 @Test(.timeLimit(.minutes(1))) @MainActor
 func reviewSplittingInsideAParagraphStartsOneThatUndoJoinsAgain() async throws {
-    let temp = try TemporaryDirectory("review")
+    let temp = try TemporaryDirectory("review", permissions: 0o700)
     defer { temp.remove() }
     let (session, _) = try await reviewCustomSession(in: temp, turns: [
         ReviewTurnSpec(speaker: "system:S1", start: 0, seconds: 4, words: reviewWords(4, prefix: "a")),

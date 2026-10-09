@@ -2,6 +2,7 @@ import AVFoundation
 import Foundation
 import HolosAudio
 import HolosCore
+import HolosEvaluation
 import HolosMeeting
 import HolosStorage
 import Testing

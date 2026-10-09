@@ -71,13 +71,17 @@ public enum VoiceProfileService {
     /// `deferSamples`: only the link is saved; the caller brings the samples in step afterwards with
     /// `syncSamples(session:extractor:store:enroll:)`, enrolling the person when `learnVoice` (the review window does
     /// this in the background, so a name is saved at once).
+    ///
+    /// `preceding`: actions saved first in the same batch, so one undo takes them back with the link (Review's
+    /// "Assign to <person>": the turns move to `speakerID`, or a new `speakerID` is created with them, then linked).
     public static func link(session: URL, speakerID: String, to target: ProfileTarget, view: SpeakerProjection,
                             learnVoice: Bool, extractor: (any VoiceSampleExtractor)?,
-                            store: SpeakerProfileStore, deferSamples: DeferredSamples? = nil) async throws -> SpeakerSessionSnapshot {
+                            store: SpeakerProfileStore, deferSamples: DeferredSamples? = nil,
+                            preceding: [SpeakerEditAction] = []) async throws -> SpeakerSessionSnapshot {
         let (profile, created) = try resolve(target, store: store)
         return try await linkPeople([(speakerID, profile)], created: created ? [profile.id] : [], session: session,
                                     view: view, enroll: learnVoice ? [profile.id] : [], extractor: extractor,
-                                    store: store, deferSamples: deferSamples)
+                                    store: store, deferSamples: deferSamples, preceding: preceding)
     }
 
     /// Links every current suggestion ("Maybe Jim") to its person in one batch, so one undo reverts it, and with
@@ -176,7 +180,7 @@ public enum VoiceProfileService {
         guard let database = try? store.load(), let sessionID = try? SessionArchive.readManifest(at: session).id,
               database.profiles.contains(where: { $0.samples.contains { $0.sessionID == sessionID } }),
               let snapshot = try? SpeakerSessionSnapshot.load(session: session), snapshot.journal.isComplete,
-              let run = snapshot.run, let projection = snapshot.projection,
+              let run = snapshot.run, let projection = snapshot.projection?.unjoined,
               let earlierRuns = try? earlierRunViews(database, snapshot: snapshot, headRunID: run.id) else {
             return false
         }
@@ -737,8 +741,9 @@ public enum VoiceProfileService {
                                    session: URL, view: SpeakerProjection, enroll: Set<String>,
                                    extractor: (any VoiceSampleExtractor)?, store: SpeakerProfileStore,
                                    requireCompleteJournal: Bool = false,
-                                   deferSamples: DeferredSamples? = nil) async throws -> SpeakerSessionSnapshot {
-        let actions = links.flatMap { link -> [SpeakerEditAction] in
+                                   deferSamples: DeferredSamples? = nil,
+                                   preceding: [SpeakerEditAction] = []) async throws -> SpeakerSessionSnapshot {
+        let actions = preceding + links.flatMap { link -> [SpeakerEditAction] in
             [.linkProfile(speakerID: link.speakerID, profileID: link.profile.id),
              .rename(speakerID: link.speakerID, name: link.profile.displayName)]
         }
@@ -945,7 +950,9 @@ public enum VoiceProfileService {
                 }
                 return
             }
-            guard let run = snapshot.run, let projection = snapshot.projection else {
+            // Voice belongs to each stored speaker's person: samples are learned per stored speaker, never through
+            // same-named speakers shown as one (`SpeakerProjection.unjoined`).
+            guard let run = snapshot.run, let projection = snapshot.projection?.unjoined else {
                 log.notice("Session \(sessionID, privacy: .public): no usable speaker labels; voice samples left as they are")
                 guard enroll.isEmpty else {
                     throw HolosError.unavailable(snapshot.runProblem
@@ -1214,7 +1221,8 @@ public enum VoiceProfileService {
                     let masks: [AcousticEchoMask?] = result.mask == nil ? [nil] : [result.mask, nil]
                     result.retargeted[runID] = masks.map { mask in
                         SpeakerProjection.make(run: run, transcript: transcript, edits: snapshot.journal.edits,
-                                               recognition: nil, profileNames: [:], acousticEcho: mask)
+                                               recognition: nil, profileNames: [:], acousticEcho: mask,
+                                               joiningSameNames: false)
                     }
                 } catch let error where SessionFiles.isDamage(error) {}
                 continue
@@ -1224,7 +1232,8 @@ public enum VoiceProfileService {
                 let transcript = try SessionFiles.transcript(id: run.transcriptID, session: snapshot.session)
                 result.views[runID] = SpeakerProjection.make(run: run, transcript: transcript,
                                                              edits: snapshot.journal.edits, recognition: nil,
-                                                             profileNames: [:], acousticEcho: result.mask)
+                                                             profileNames: [:], acousticEcho: result.mask,
+                                                             joiningSameNames: false)
             } catch let error where SessionFiles.isDamage(error) {
                 result.views[runID] = .some(nil)
             }
@@ -1328,6 +1337,9 @@ public enum VoiceProfileService {
             log.error("Cannot read people to check voice samples: \(ProcessSpawner.logCategory(error), privacy: .public)")
             return true
         }
+        // Per stored speaker, as samples are learned (`SpeakerProjection.unjoined`).
+        let before = before.unjoined
+        let after = after.unjoined
         for profile in database.profiles {
             guard let sample = profile.samples.first(where: { $0.sessionID == sessionID }) else { continue }
             let old = linkedSpeakers(profile.id, sample: sample, projection: before, database: database)
@@ -1682,14 +1694,17 @@ public enum VoiceProfileService {
                                           uniquingKeysWith: { first, _ in first })
             if let forgotten { profileNames[forgotten] = profileNames[forgotten] ?? "(forgotten)" }
             projection = SpeakerProjection.make(run: run, transcript: transcript, edits: journal.edits,
-                                                recognition: recognition, profileNames: profileNames)
+                                                recognition: recognition, profileNames: profileNames,
+                                                joiningSameNames: false)
         } catch let error where SessionFiles.isDamage(error) || Self.isFromANewerHolos(error) {
             log.error("Deleted a meeting's voice data whose speaker labels cannot be read")
             try SessionSpeakerStore.deleteVoiceData(session: session)
             return false
         }
         // The effective person, not just the link: a speaker this meeting names automatically is theirs too, and
-        // a rejection, a link to somebody else or an explicit name has already taken that back.
+        // a rejection, a link to somebody else or an explicit name has already taken that back. Per stored speaker
+        // (the projection is built unjoined): same-named speakers linked to two people each hold that person's voice,
+        // and forgetting one must take exactly theirs.
         let speakers = projection.speakers.filter { isThePerson($0.effectiveProfileID) }
         let speakerIDs = Set(speakers.map(\.id))
         let clusters = Set(speakers.flatMap(\.clusterIDs))
@@ -1731,7 +1746,7 @@ public enum VoiceProfileService {
         } catch {
             throw HolosError.io("Cannot list the meetings folder: \(error.localizedDescription)")
         }
-        return try names.filter { $0.hasSuffix(".holos") && !$0.hasPrefix(".") }.sorted().compactMap {
+        return try names.filter(SessionPaths.isListedSessionFolderName).sorted().compactMap {
             try sessionFolder(url: root.appendingPathComponent($0, isDirectory: true))
         }
     }
@@ -1739,7 +1754,7 @@ public enum VoiceProfileService {
     /// `<root>/<SESSION-ID>.holos` when it is a folder; nil when it does not exist (or is not a folder).
     private static func sessionFolder(_ sessionID: String, root: URL) throws -> URL? {
         guard SessionArchive.validToken(sessionID) else { return nil }
-        return try sessionFolder(url: root.appendingPathComponent("\(sessionID).holos", isDirectory: true))
+        return try sessionFolder(url: SessionPaths.folder(for: sessionID, in: root))
     }
 
     private static func sessionFolder(url: URL) throws -> URL? {

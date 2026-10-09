@@ -64,7 +64,7 @@ public struct LanguageDetectionDependencies: Sendable {
 /// `force` and languages asked for by name (names carry over when speakers are labelled again). Languages asked for
 /// by name that the current transcript already answers are journaled for it (`recordRequest`), so it is never
 /// replaced automatically afterwards.
-enum LanguageStage {
+public enum LanguageStage {
     private static let log = Logger(subsystem: "ca.orlenko.holos.app", category: "postprocess")
 
     struct Request {
@@ -465,15 +465,10 @@ enum LanguageStage {
         details["transcriptID"] = WordFixStage.unfixedID(details["transcriptID"] ?? current.id, events: events)
         details["requested"] = target.joined(separator: ",")
         do {
-            let archive = try SessionArchive.openForMaintenance(at: request.session, lease: request.lease)
-            do {
+            try await SessionArchive.withMaintenanceArchive(at: request.session, lease: request.lease) { archive in
                 try Task.checkCancellation()
                 try await archive.recordEvent(kind: MeetingEventKind.languagesDetected, details: details)
-            } catch {
-                await archive.releaseLock()
-                throw error
             }
-            await archive.releaseLock()
             return nil
         } catch {
             if error is CancellationError || Task.isCancelled { throw CancellationError() }
@@ -492,7 +487,7 @@ enum LanguageStage {
     private static func canonical(_ locales: [String]?) -> [String]? { locales.map { $0.map(canonical) } }
 
     /// Whether any segment holds a word.
-    static func hasWords(_ segments: [TranscriptSegment]) -> Bool {
+    public static func hasWords(_ segments: [TranscriptSegment]) -> Bool {
         segments.contains { !$0.words.isEmpty || !$0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
     }
 
@@ -698,19 +693,14 @@ enum LanguageStage {
     private static func savePass(_ pass: Transcript, tracks: [String], manifest: SessionManifest, session: URL,
                                  lease: ProcessingLease) async throws {
         let seconds = tracks.reduce(0.0) { $0 + manifest.audioSeconds(track: $1) }
-        let archive = try SessionArchive.openForMaintenance(at: session, lease: lease)
-        do {
+        try await SessionArchive.withMaintenanceArchive(at: session, lease: lease) { archive in
             try Task.checkCancellation()
             try await archive.saveTranscriptRevision(pass)
             try await archive.recordEvent(kind: MeetingEventKind.languagePass, details: [
                 "transcriptID": pass.id, "language": pass.locale, "tracks": tracks.joined(separator: ","),
                 "seconds": String(seconds),
             ])
-        } catch {
-            await archive.releaseLock()
-            throw error
         }
-        await archive.releaseLock()
     }
 
     /// Under the writer lock and then the speaker lock (the §1.7 order deletion uses), checks once more that the
@@ -727,21 +717,12 @@ enum LanguageStage {
     /// replacing the transcript.
     private static func publish(_ merged: Transcript, details: [String: String],
                                 request: Request) async throws -> String? {
-        let archive = try SessionArchive.openForMaintenance(at: request.session, lease: request.lease)
-        do {
-            let problem = try await SessionArchive.withSpeakerLockAsync(at: request.session) { () async throws -> String? in
-                if let problem = editedHeadProblem(request) { return problem }
-                whilePublishing?()
-                try Task.checkCancellation()
-                try await archive.recordEvent(kind: MeetingEventKind.languagesDetected, details: details)
-                try await archive.saveTranscript(merged, writeLegacyExports: false)
-                return nil
-            }
-            await archive.releaseLock()
-            return problem
-        } catch {
-            await archive.releaseLock()
-            throw error
+        try await TranscriptPublisher.publish(session: request.session, lease: request.lease) {
+            () throws -> TranscriptPublisher.Decision<String?> in
+            if let problem = editedHeadProblem(request) { return .keep(problem) }
+            whilePublishing?()
+            let event = TranscriptPublisher.Event(kind: MeetingEventKind.languagesDetected, details: details)
+            return .publish(.init(transcript: merged, event: event), nil)
         }
     }
 
@@ -778,12 +759,12 @@ enum LanguageStage {
     }
 
     /// "French (Canada)": language names in English, as the rest of the messages.
-    static func name(_ language: String) -> String {
+    public static func name(_ language: String) -> String {
         DictationLanguage.name(of: language, in: Locale(identifier: "en_US"))
     }
 
     /// "French (Canada) and English (Canada)"; "French (Canada), English (Canada), and Spanish (Spain)".
-    static func names(_ languages: [String]) -> String {
+    public static func names(_ languages: [String]) -> String {
         let spelled = languages.map(name)
         switch spelled.count {
         case 0: return ""

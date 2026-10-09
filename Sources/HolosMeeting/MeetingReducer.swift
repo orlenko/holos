@@ -15,12 +15,14 @@ public struct MeetingStartSettings: Codable, Sendable, Equatable {
     public var othersInRoom: Bool
     public var expectedSpeakers: Int?
     /// Which input the microphone track records; nil: the recorder's choice for `source` (the built-in microphone
-    /// for `mic`, the system default input otherwise). Meetings from the app say `.systemDefault`.
+    /// for `mic`, the system default input otherwise). Meetings from the app say `.systemDefault`. Ignored for
+    /// `.system`, which records no microphone.
     public var microphone: MicrophoneSelection? = nil
     /// The meeting's languages, as locale identifiers ("fr-CA"): the recorder transcribes live in the first
     /// (`locale`); after the recording, post-processing transcribes the audio again in each and keeps, passage
     /// by passage, the language that fits (docs/meeting-design.md §4.14). The start panel's Language pop-up chooses
-    /// the first, "Also detect" up to two more. Empty leaves the choice to the recorder's own default.
+    /// the first, "Also detect" up to two more. Empty: the recorder's default, the supported language closest to the
+    /// user's (`AppleSpeechEngine.defaultLocale`), in process or as a child (`RecordingOptions(settings:…)`).
     public var locales: [String]
     /// The start panel's "Capture screen" (docs/meeting-design.md §4.15); nil: no screen capture.
     public var screen: ScreenCaptureTarget?

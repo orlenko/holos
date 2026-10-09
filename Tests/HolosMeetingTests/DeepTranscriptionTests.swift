@@ -4,6 +4,7 @@ import HolosCore
 @testable import HolosMeeting
 import HolosSpeakers
 import HolosStorage
+import HolosTestSupport
 import Testing
 
 // The deep transcription pass (docs/meeting-design.md §4.16) with a scripted transcriber: no model is downloaded or
@@ -297,7 +298,7 @@ private func deepStage(_ record: PostProcessingRecord) -> StageOutcome? {
 
 @Test(.timeLimit(.minutes(1)))
 func theMeetingIsTranscribedAgainInANewRevisionAndRelabelled() async throws {
-    let temp = try TemporaryDirectory("deep")
+    let temp = try TemporaryDirectory("deep", permissions: 0o700)
     defer { temp.remove() }
     let (session, recorded) = try await deepSession(in: temp.url)
     let transcriber = ScriptedTranscriber(script: scriptedHearing)
@@ -342,7 +343,7 @@ func theMeetingIsTranscribedAgainInANewRevisionAndRelabelled() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func aSecondRunKeepsTheTranscriptAndForceTranscribesAgain() async throws {
-    let temp = try TemporaryDirectory("deep")
+    let temp = try TemporaryDirectory("deep", permissions: 0o700)
     defer { temp.remove() }
     let (session, recorded) = try await deepSession(in: temp.url)
     let transcriber = ScriptedTranscriber(script: scriptedHearing)
@@ -368,7 +369,7 @@ func aSecondRunKeepsTheTranscriptAndForceTranscribesAgain() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func deepEditedSpeakerLabelsAreKeptUnlessForced() async throws {
-    let temp = try TemporaryDirectory("deep")
+    let temp = try TemporaryDirectory("deep", permissions: 0o700)
     defer { temp.remove() }
     let (session, recorded) = try await deepSession(in: temp.url)
     _ = try await MeetingPostProcessor(voiceSamples: .none, diarizer: FakeDiarizer(outputs: ["mic": SessionFixtures.alternatingOutput()]),
@@ -395,7 +396,7 @@ func deepEditedSpeakerLabelsAreKeptUnlessForced() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func deepWordsEditedInReviewAreKeptUnlessForced() async throws {
-    let temp = try TemporaryDirectory("deep")
+    let temp = try TemporaryDirectory("deep", permissions: 0o700)
     defer { temp.remove() }
     let (session, recorded) = try await deepSession(in: temp.url)
     _ = try await MeetingPostProcessor(voiceSamples: .none, diarizer: FakeDiarizer(outputs: ["mic": SessionFixtures.alternatingOutput()]),
@@ -422,7 +423,7 @@ func deepWordsEditedInReviewAreKeptUnlessForced() async throws {
 /// An automatic fix reverted in Review (`reviewRevert`) is a change made in Review too: an unforced pass keeps it.
 @Test(.timeLimit(.minutes(1)))
 func deepWordsRevertedInReviewAreKeptUnlessForced() async throws {
-    let temp = try TemporaryDirectory("deep")
+    let temp = try TemporaryDirectory("deep", permissions: 0o700)
     defer { temp.remove() }
     let (session, recorded) = try await deepSession(in: temp.url)
     var reverted = recorded
@@ -443,7 +444,7 @@ func deepWordsRevertedInReviewAreKeptUnlessForced() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func deepLabelsEditedWhileTranscribingAreKept() async throws {
-    let temp = try TemporaryDirectory("deep")
+    let temp = try TemporaryDirectory("deep", permissions: 0o700)
     defer { temp.remove() }
     let (session, recorded) = try await deepSession(in: temp.url)
     _ = try await MeetingPostProcessor(voiceSamples: .none, diarizer: FakeDiarizer(outputs: ["mic": SessionFixtures.alternatingOutput()]),
@@ -463,7 +464,7 @@ func deepLabelsEditedWhileTranscribingAreKept() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func wordFixesRunOnTheNewTranscript() async throws {
-    let temp = try TemporaryDirectory("deep")
+    let temp = try TemporaryDirectory("deep", permissions: 0o700)
     defer { temp.remove() }
     let (session, _) = try await deepSession(in: temp.url)
     let transcriber = ScriptedTranscriber(script: scriptedHearing)
@@ -481,7 +482,7 @@ func wordFixesRunOnTheNewTranscript() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func liveCorrectionsApplyToTheNewTranscript() async throws {
-    let temp = try TemporaryDirectory("deep")
+    let temp = try TemporaryDirectory("deep", permissions: 0o700)
     defer { temp.remove() }
     let (session, recorded) = try await deepSession(in: temp.url)
     // While recording, the person changed "cloud" in the second passage (its seventh word) to "Azure".
@@ -502,7 +503,7 @@ func liveCorrectionsApplyToTheNewTranscript() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func microphoneEchoOfACallIsStillDropped() async throws {
-    let temp = try TemporaryDirectory("deep")
+    let temp = try TemporaryDirectory("deep", permissions: 0o700)
     defer { temp.remove() }
     let words = "the quarterly numbers look good to everyone here".split(separator: " ").map(String.init)
     let recorded = SessionFixtures.transcript([
@@ -534,7 +535,7 @@ func microphoneEchoOfACallIsStillDropped() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func deepFailedTranscriptionKeepsTheTranscript() async throws {
-    let temp = try TemporaryDirectory("deep")
+    let temp = try TemporaryDirectory("deep", permissions: 0o700)
     defer { temp.remove() }
     let (session, recorded) = try await deepSession(in: temp.url)
     let transcriber = ScriptedTranscriber { _ in throw HolosError.io("The Neural Engine is busy.") }
@@ -557,7 +558,7 @@ func deepFailedTranscriptionKeepsTheTranscript() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func deepCancelledPassPublishesNothing() async throws {
-    let temp = try TemporaryDirectory("deep")
+    let temp = try TemporaryDirectory("deep", permissions: 0o700)
     defer { temp.remove() }
     let (session, recorded) = try await deepSession(in: temp.url)
     let transcriber = ScriptedTranscriber { _ in throw CancellationError() }
@@ -571,7 +572,7 @@ func deepCancelledPassPublishesNothing() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func theCommandRefusesWhatItCannotDo() async throws {
-    let temp = try TemporaryDirectory("deep")
+    let temp = try TemporaryDirectory("deep", permissions: 0o700)
     defer { temp.remove() }
     let transcriber = ScriptedTranscriber(script: scriptedHearing)
 
@@ -605,7 +606,7 @@ func theCommandRefusesWhatItCannotDo() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func aSessionWithoutATranscriptGetsItsFirstOne() async throws {
-    let temp = try TemporaryDirectory("deep")
+    let temp = try TemporaryDirectory("deep", permissions: 0o700)
     defer { temp.remove() }
     // Recorded with --record-only (or imported with --no-transcribe): audio, no transcript. The quiet tone is above
     // the silence threshold, so with no recorded words to compare, the audio level alone decides.
@@ -624,7 +625,7 @@ func aSessionWithoutATranscriptGetsItsFirstOne() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func aSilentSessionWithoutATranscriptGetsNone() async throws {
-    let temp = try TemporaryDirectory("deep")
+    let temp = try TemporaryDirectory("deep", permissions: 0o700)
     defer { temp.remove() }
     let session = try await SessionFixtures.makeSession(in: temp.url, mode: .inPerson, transcript: nil, tone: 0)
     let outcome = try await deepRun(session, deepDependencies(ScriptedTranscriber(script: scriptedHearing)))
@@ -636,7 +637,7 @@ func aSilentSessionWithoutATranscriptGetsNone() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func aMeetingInAnotherLanguageKeepsItsTranscriptUnlessForced() async throws {
-    let temp = try TemporaryDirectory("deep")
+    let temp = try TemporaryDirectory("deep", permissions: 0o700)
     defer { temp.remove() }
     let (session, recorded) = try await deepSession(in: temp.url)
     // What `session languages --languages fr-CA` leaves: a merge of one language.
@@ -686,7 +687,7 @@ func aMeetingInAnotherLanguageKeepsItsTranscriptUnlessForced() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func anEnglishMeetingIsTranscribedWithoutForce() async throws {
-    let temp = try TemporaryDirectory("deep")
+    let temp = try TemporaryDirectory("deep", permissions: 0o700)
     defer { temp.remove() }
     // meeting.json names English alone; the recorded transcript is English.
     let (session, recorded) = try await deepSession(in: temp.url, languages: ["en-CA"])
@@ -699,233 +700,8 @@ func anEnglishMeetingIsTranscribedWithoutForce() async throws {
 }
 
 @Test(.timeLimit(.minutes(1)))
-func evalLocalWithWhisperUsesTheCurrentTranscriptsLanguage() async throws {
-    let temp = try TemporaryDirectory("deep")
-    defer { temp.remove() }
-    let (session, recorded) = try await deepSession(in: temp.url)
-    var french = recorded
-    french.id = UUID().uuidString
-    french.locale = "fr-CA"
-    french.languages = ["fr-CA"]
-    try await SessionFixtures.saveTranscript(french, in: session)
-    let transcriber = ScriptedTranscriber(script: scriptedHearing)
-    let lease = try SessionArchive.acquireProcessingLease(at: session)
-    defer { lease.release() }
-    let record = try await EvalLocal.run(session: session, options: EvalLocal.Options(wordFixes: false,
-                                                                                      backend: .whisper),
-                                         vocabulary: [], dependencies: noSpeech,
-                                         deepTranscription: deepDependencies(transcriber))
-    #expect(record.languages == ["fr-CA"], "As the deep transcription pass would transcribe it.")
-    #expect(transcriber.requests.value.first?.language == "fr")
-}
-
-@Test(.timeLimit(.minutes(1)))
-func aResumedWhisperEvalKeepsItsGuardReference() async throws {
-    let temp = try TemporaryDirectory("deep")
-    defer { temp.remove() }
-    let recorded = SessionFixtures.transcript([
-        SessionFixtures.segment(["hello", "there"], track: "mic", start: 1),
-        SessionFixtures.segment(["general", "kenobi"], track: "system", start: 3),
-    ])
-    let session = try await SessionFixtures.makeSession(in: temp.url, source: .microphoneAndSystem,
-                                                        audioSeconds: ["mic": 10, "system": 10], mode: .call,
-                                                        transcript: recorded)
-    let calls = SharedValue(0)
-    let failing = ScriptedTranscriber { _ in
-        calls.update { $0 += 1 }
-        // The microphone is transcribed, then the system track fails: the run stops with one part saved.
-        if calls.value > 1 { throw HolosError.io("Interrupted.") }
-        return [heard("Hello there.", at: 1)]
-    }
-    let options = EvalLocal.Options(wordFixes: false, backend: .whisper)
-    let first = try SessionArchive.acquireProcessingLease(at: session)
-    await #expect(throws: HolosError.self) {
-        _ = try await EvalLocal.run(session: session, options: options, vocabulary: [], dependencies: noSpeech,
-                                    deepTranscription: deepDependencies(failing))
-    }
-    first.release()
-    // The meeting's transcript changes before the run is resumed.
-    var changed = recorded
-    changed.id = UUID().uuidString
-    try await SessionFixtures.saveTranscript(changed, in: session)
-    let lease = try SessionArchive.acquireProcessingLease(at: session)
-    defer { lease.release() }
-    let record = try await EvalLocal.run(session: session, options: options, vocabulary: [], dependencies: noSpeech,
-                                         deepTranscription: deepDependencies(ScriptedTranscriber(script: scriptedHearing)))
-    #expect(record.referenceTranscriptID == recorded.id, "Both tracks are guarded against the transcript it began with.")
-    #expect(record.schemaVersion == 2)
-    // A run an older Voice is Local would read as Apple's: its backend is not one that version knows.
-    let raw = try JSONSerialization.jsonObject(with: Data(contentsOf: EvalPaths.localRecord(record.id, in: session)))
-        as? [String: Any]
-    #expect(raw?["backend"] as? String == "whisper")
-    let read = try #require(try EvalLocal.record(record.id, in: session))
-    #expect(read.engine == record.engine && read.backend == .speech && read.schemaVersion == 2
-        && read.referenceTranscriptID == recorded.id && read.prompt == record.prompt)
-}
-
-@Test(.timeLimit(.minutes(1)))
-func aResumedWhisperEvalKeepsItsLanguage() async throws {
-    let temp = try TemporaryDirectory("deep")
-    defer { temp.remove() }
-    let recorded = SessionFixtures.transcript([
-        SessionFixtures.segment(["hello", "there"], track: "mic", start: 1),
-        SessionFixtures.segment(["general", "kenobi"], track: "system", start: 3),
-    ])
-    let session = try await SessionFixtures.makeSession(in: temp.url, source: .microphoneAndSystem,
-                                                        audioSeconds: ["mic": 10, "system": 10], mode: .call,
-                                                        transcript: recorded)
-    let calls = SharedValue(0)
-    let failing = ScriptedTranscriber { _ in
-        calls.update { $0 += 1 }
-        if calls.value > 1 { throw HolosError.io("Interrupted.") }
-        return [heard("Hello there.", at: 1)]
-    }
-    let first = try SessionArchive.acquireProcessingLease(at: session)
-    await #expect(throws: HolosError.self) {
-        _ = try await EvalLocal.run(session: session, options: EvalLocal.Options(wordFixes: false, backend: .whisper),
-                                    vocabulary: [], dependencies: noSpeech, deepTranscription: deepDependencies(failing))
-    }
-    first.release()
-    let runID = try #require(EvalLocal.runIDs(in: session).last)
-    // `session languages` then makes the current transcript a merge of two languages.
-    var merged = recorded
-    merged.id = UUID().uuidString
-    merged.languages = ["en-CA", "fr-CA"]
-    try await SessionFixtures.saveTranscript(merged, in: session)
-    let lease = try SessionArchive.acquireProcessingLease(at: session)
-    defer { lease.release() }
-    let transcriber = ScriptedTranscriber(script: scriptedHearing)
-    let record = try await EvalLocal.run(
-        session: session, options: EvalLocal.Options(runID: runID, wordFixes: false, backend: .whisper),
-        vocabulary: [], dependencies: noSpeech, deepTranscription: deepDependencies(transcriber))
-    #expect(record.id == runID && record.completedAt != nil)
-    #expect(record.languages == ["en-CA"] && record.referenceTranscriptID == recorded.id)
-    #expect(transcriber.calls.value == 1, "Only the track still missing is transcribed.")
-}
-
-@Test(.timeLimit(.minutes(1)))
-func aWhisperEvalOfAMeetingInSeveralLanguagesNeedsALanguage() async throws {
-    let temp = try TemporaryDirectory("deep")
-    defer { temp.remove() }
-    // meeting.json lists two languages; the live transcript is still in one.
-    let (session, _) = try await deepSession(in: temp.url, languages: ["en-CA", "fr-CA"])
-    let transcriber = ScriptedTranscriber(script: scriptedHearing)
-    let lease = try SessionArchive.acquireProcessingLease(at: session)
-    defer { lease.release() }
-    let error = await #expect(throws: HolosError.self) {
-        _ = try await EvalLocal.run(session: session, options: EvalLocal.Options(wordFixes: false, backend: .whisper),
-                                    vocabulary: [], dependencies: noSpeech, deepTranscription: deepDependencies(transcriber))
-    }
-    #expect(error?.localizedDescription == EvalLocal.severalLanguages)
-    #expect(transcriber.calls.value == 0 && EvalLocal.runIDs(in: session).isEmpty)
-    // Named, one of them is evaluated.
-    let record = try await EvalLocal.run(
-        session: session, options: EvalLocal.Options(language: "fr-CA", wordFixes: false, backend: .whisper),
-        vocabulary: [], dependencies: noSpeech, deepTranscription: deepDependencies(transcriber))
-    #expect(record.languages == ["fr-CA"] && record.completedAt != nil)
-}
-
-@Test(.timeLimit(.minutes(1)))
-func aWhisperEvalChecksDiskSpaceBeforeRendering() async throws {
-    let temp = try TemporaryDirectory("deep")
-    defer { temp.remove() }
-    let (session, _) = try await deepSession(in: temp.url)
-    let transcriber = ScriptedTranscriber(script: scriptedHearing)
-    let lease = try SessionArchive.acquireProcessingLease(at: session)
-    defer { lease.release() }
-    let error = await #expect(throws: HolosError.self) {
-        _ = try await EvalLocal.run(session: session, options: EvalLocal.Options(wordFixes: false, backend: .whisper),
-                                    vocabulary: [], dependencies: noSpeech,
-                                    deepTranscription: deepDependencies(transcriber), freeSpace: FixedFreeSpace(1_000))
-    }
-    #expect(error?.localizedDescription == DeepTranscriptionStage.noDiskSpace)
-    #expect(transcriber.calls.value == 0)
-    let rendered = EvalLocal.runIDs(in: session).flatMap { id in
-        ((try? FileManager.default.contentsOfDirectory(atPath: EvalPaths.localRun(id, in: session).path)) ?? [])
-            .filter { $0.hasSuffix(".caf") }
-    }
-    #expect(rendered.isEmpty, "Nothing was rendered.")
-}
-
-@Test(.timeLimit(.minutes(1)))
-func aWhisperEvalRefusesAnUnreadableTranscript() async throws {
-    let temp = try TemporaryDirectory("deep")
-    defer { temp.remove() }
-    let (session, recorded) = try await deepSession(in: temp.url)
-    try Data("{ not a transcript".utf8).write(to: SessionPaths.transcript(recorded.id, in: session))
-    let transcriber = ScriptedTranscriber(script: scriptedHearing)
-    let lease = try SessionArchive.acquireProcessingLease(at: session)
-    defer { lease.release() }
-    await #expect(throws: (any Error).self) {
-        _ = try await EvalLocal.run(
-            session: session, options: EvalLocal.Options(language: "en-CA", wordFixes: false, backend: .whisper),
-            vocabulary: [], dependencies: noSpeech, deepTranscription: deepDependencies(transcriber))
-    }
-    #expect(transcriber.calls.value == 0, "Never run without the recorded-word guard it should have.")
-    for id in EvalLocal.runIDs(in: session) {
-        #expect(try EvalLocal.record(id, in: session)?.referenceTranscriptID != LocalRunRecord.noReference)
-    }
-}
-
-@Test(.timeLimit(.minutes(1)))
-func aWhisperEvalBegunWithoutATranscriptStaysUnguarded() async throws {
-    let temp = try TemporaryDirectory("deep")
-    defer { temp.remove() }
-    let session = try await SessionFixtures.makeSession(in: temp.url, source: .microphoneAndSystem,
-                                                        audioSeconds: ["mic": 10, "system": 10], mode: .call,
-                                                        transcript: nil)
-    let calls = SharedValue(0)
-    let failing = ScriptedTranscriber { _ in
-        calls.update { $0 += 1 }
-        if calls.value > 1 { throw HolosError.io("Interrupted.") }
-        return [heard("Hello there.", at: 1)]
-    }
-    let options = EvalLocal.Options(wordFixes: false, backend: .whisper)
-    let first = try SessionArchive.acquireProcessingLease(at: session)
-    await #expect(throws: HolosError.self) {
-        _ = try await EvalLocal.run(session: session, options: options, vocabulary: [], dependencies: noSpeech,
-                                    deepTranscription: deepDependencies(failing))
-    }
-    first.release()
-    // A transcript appears before the run is resumed: the run keeps having no reference.
-    try await SessionFixtures.saveTranscript(SessionFixtures.transcript(recordedPassages()), in: session)
-    let lease = try SessionArchive.acquireProcessingLease(at: session)
-    defer { lease.release() }
-    let record = try await EvalLocal.run(session: session, options: options, vocabulary: [], dependencies: noSpeech,
-                                         deepTranscription: deepDependencies(ScriptedTranscriber(script: scriptedHearing)))
-    #expect(record.referenceTranscriptID == LocalRunRecord.noReference)
-}
-
-@Test(.timeLimit(.minutes(1)))
-func aLanguageWhisperDoesNotKnowIsRefusedForAWhisperEval() async throws {
-    let temp = try TemporaryDirectory("deep")
-    defer { temp.remove() }
-    let (session, _) = try await deepSession(in: temp.url)
-    let transcriber = ScriptedTranscriber(script: scriptedHearing)
-    let lease = try SessionArchive.acquireProcessingLease(at: session)
-    defer { lease.release() }
-    let error = await #expect(throws: HolosError.self) {
-        _ = try await EvalLocal.run(session: session,
-                                    options: EvalLocal.Options(language: "ga-IE", wordFixes: false, backend: .whisper),
-                                    vocabulary: [], dependencies: noSpeech, deepTranscription: deepDependencies(transcriber))
-    }
-    #expect(error?.localizedDescription.contains("ga-IE") == true)
-    #expect(transcriber.calls.value == 0)
-}
-
-@Test func aWhisperRunKeepsTheMeetingsBackend() throws {
-    let run = LocalRunRecord(id: "local-20260101T000000Z", sessionID: "S", createdAt: SessionFixtures.date,
-                             languages: ["en-CA"], backend: .dictation, vocabulary: [], vocabularySource: "none",
-                             textSteps: [], tracks: [], engine: "whisper:test")
-    let data = try HolosJSON.encoder().encode(run)
-    let raw = try JSONSerialization.jsonObject(with: data) as? [String: Any]
-    #expect(raw?["backend"] as? String == "whisper" && raw?["meetingBackend"] as? String == "dictation")
-    #expect(try HolosJSON.decoder().decode(LocalRunRecord.self, from: data).backend == .dictation)
-}
-
-@Test(.timeLimit(.minutes(1)))
 func aRunWithNothingToDoNeedsNoModel() async throws {
-    let temp = try TemporaryDirectory("deep")
+    let temp = try TemporaryDirectory("deep", permissions: 0o700)
     defer { temp.remove() }
     let (session, _) = try await deepSession(in: temp.url)
     let transcriber = ScriptedTranscriber(script: scriptedHearing)
@@ -942,7 +718,7 @@ func aRunWithNothingToDoNeedsNoModel() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func aRunWithNothingToDoNeedsNoAudio() async throws {
-    let temp = try TemporaryDirectory("deep")
+    let temp = try TemporaryDirectory("deep", permissions: 0o700)
     defer { temp.remove() }
     let (session, _) = try await deepSession(in: temp.url)
     let transcriber = ScriptedTranscriber(script: scriptedHearing)
@@ -965,7 +741,7 @@ func aRunWithNothingToDoNeedsNoAudio() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func aSessionLeftProcessingMustBeRecoveredFirst() async throws {
-    let temp = try TemporaryDirectory("deep")
+    let temp = try TemporaryDirectory("deep", permissions: 0o700)
     defer { temp.remove() }
     let (session, _) = try await deepSession(in: temp.url)
     var manifest = try SessionArchive.readManifest(at: session)
@@ -979,7 +755,7 @@ func aSessionLeftProcessingMustBeRecoveredFirst() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func audibleStretchesTheModelLeftEmptyFailThePassWhereWordsWereHeard() async throws {
-    let temp = try TemporaryDirectory("deep")
+    let temp = try TemporaryDirectory("deep", permissions: 0o700)
     defer { temp.remove() }
     let (session, recorded) = try await deepSession(in: temp.url)
     // The model hears the first two passages, and nothing in an audible stretch where the recorder heard words.
@@ -1042,7 +818,7 @@ func audibleStretchesTheModelLeftEmptyFailThePassWhereWordsWereHeard() async thr
 
 @Test(.timeLimit(.minutes(1)))
 func ordinaryPostProcessingNeverRunsThePass() async throws {
-    let temp = try TemporaryDirectory("deep")
+    let temp = try TemporaryDirectory("deep", permissions: 0o700)
     defer { temp.remove() }
     let (session, recorded) = try await deepSession(in: temp.url)
     let transcriber = ScriptedTranscriber(script: scriptedHearing)
@@ -1076,7 +852,7 @@ private func archiveEvent(_ sequence: Int, _ kind: String, _ details: [String: S
 
 @Test(.timeLimit(.minutes(1)))
 func theTranscriberIsToldWhereTheRecordedTranscriptHeardWords() async throws {
-    let temp = try TemporaryDirectory("deep")
+    let temp = try TemporaryDirectory("deep", permissions: 0o700)
     defer { temp.remove() }
     let (session, recorded) = try await deepSession(in: temp.url)
     let transcriber = ScriptedTranscriber(script: scriptedHearing)
@@ -1151,34 +927,4 @@ func theTranscriberIsToldWhereTheRecordedTranscriptHeardWords() async throws {
     #expect(ended == "A" || ended == "B")
     #expect(TranscriptRebuilder.mergeHoldsAllAudio("F", events: events))
     #expect(!TranscriptRebuilder.mergeHoldsAllAudio("R", events: events))
-}
-
-// MARK: - eval local --backend whisper
-
-@Test(.timeLimit(.minutes(1)))
-func evalLocalMakesAWhisperCandidateWithoutChangingTheMeeting() async throws {
-    let temp = try TemporaryDirectory("deep")
-    defer { temp.remove() }
-    let (session, recorded) = try await deepSession(in: temp.url)
-    let transcriber = ScriptedTranscriber(script: scriptedHearing)
-    let lease = try SessionArchive.acquireProcessingLease(at: session)
-    defer { lease.release() }
-    let vocabulary = try EvalLocal.whisperVocabulary(session: session, wordList: ["Claude"], names: ["Davin"])
-    let record = try await EvalLocal.run(session: session, options: EvalLocal.Options(wordFixes: false,
-                                                                                      backend: .whisper),
-                                         vocabulary: vocabulary, dependencies: noSpeech,
-                                         deepTranscription: deepDependencies(transcriber))
-    #expect(record.engine == "whisper:test" && record.completedAt != nil)
-    #expect(record.prompt == "Weekly engineering sync. Claude, Davin.")
-    let candidate = try EvalLocal.transcript(of: record, in: session)
-    #expect(candidate.engine == "whisper:test" && candidate.segments.count == 4)
-    #expect(try currentTranscript(session).id == recorded.id, "The meeting's transcript is never changed.")
-    #expect(transcriber.calls.value == 1)
-    let resolved = try EvalLocal.resolve("latest", in: session)
-    #expect(resolved.id == record.id)
-    // Not the Apple candidate: a run with the other backend starts its own.
-    await #expect(throws: (any Error).self) {
-        _ = try await EvalLocal.run(session: session, options: EvalLocal.Options(runID: record.id, wordFixes: false),
-                                    vocabulary: nil, dependencies: noSpeech)
-    }
 }

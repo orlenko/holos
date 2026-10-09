@@ -46,33 +46,29 @@ enum SessionWordEdit {
     /// microphone words, which are never edited). Nil when the text would not change; nothing is written then.
     static func run(session: URL, request: TranscriptWordEdit.Request, expectedTranscriptID: String,
                     expectedRunID: String, now: Date = Date()) async throws -> Outcome? {
-        try await publishing(session: session) { archive in
+        try await publishing(session: session) { () throws -> TranscriptPublisher.Decision<Outcome?> in
             let (current, snapshot) = try expectedState(session: session, transcriptID: expectedTranscriptID,
                                                         runID: expectedRunID)
             let base = try current.fixedFrom.map { try SessionFiles.transcript(id: $0, session: session) }
             guard let made = try planned(request, in: current, base: base, snapshot: snapshot, session: session,
-                                         now: now) else { return nil }
+                                         now: now) else { return .keep(nil) }
             let (result, plan) = made
-            try Task.checkCancellation()
-            try SpeakerTranscriptRetarget.stage(plan, session: session)
-            if let newBase = result.base, let base {
-                try await archive.saveTranscriptRevision(newBase)
-                try await archive.recordEvent(kind: MeetingEventKind.transcriptEdited, details: [
-                    "transcriptID": newBase.id, "base": base.id, "segment": request.segmentID,
-                ])
-            }
-            try await archive.recordEvent(kind: MeetingEventKind.transcriptEdited, details: [
-                "transcriptID": result.transcript.id, "base": current.id, headFromKey: current.id,
-            ].merging(details(of: result.labelsMove), uniquingKeysWith: { first, _ in first }))
             let outcome = Outcome(transcriptID: result.transcript.id, runID: plan.run.id, heard: result.heard,
                                   meant: result.meant, deletion: result.deletion, before: result.before,
                                   after: result.after, move: result.move, labelsMove: result.labelsMove,
                                   holdsDeleted: result.holdsDeleted)
-            try await save(result.transcript, archive: archive, session: session,
-                           incomplete: IncompletePublication(message: "The words were edited", outcome: outcome))
-            try publishHead(plan, session: session, now: now,
-                            incomplete: IncompletePublication(message: "The words were edited", outcome: outcome))
-            return outcome
+            let edited = [
+                "transcriptID": result.transcript.id, "base": current.id, headFromKey: current.id,
+            ].merging(details(of: result.labelsMove), uniquingKeysWith: { first, _ in first })
+            var change = reviewChange(result.transcript, plan: plan, now: now, details: edited,
+                                      incomplete: IncompletePublication(message: "The words were edited",
+                                                                        outcome: outcome))
+            if let newBase = result.base, let base {
+                change.revision = (newBase, .init(kind: MeetingEventKind.transcriptEdited, details: [
+                    "transcriptID": newBase.id, "base": base.id, "segment": request.segmentID,
+                ]))
+            }
+            return .publish(change, outcome)
         }
     }
 
@@ -133,7 +129,7 @@ enum SessionWordEdit {
     /// maps the labels' words. Returns the restored transcript and its run.
     static func restore(session: URL, previousTranscriptID: String, expectedTranscriptID: String,
                         expectedRunID: String, move: ReviewWordMove, now: Date = Date()) async throws -> Restored {
-        try await publishing(session: session) { archive in
+        try await publishing(session: session) { () throws -> TranscriptPublisher.Decision<Restored> in
             let (current, snapshot) = try expectedState(session: session, transcriptID: expectedTranscriptID,
                                                         runID: expectedRunID)
             let previous = try SessionFiles.transcript(id: previousTranscriptID, session: session)
@@ -142,17 +138,13 @@ enum SessionWordEdit {
                                                                move: move, undo: true, now: now) else {
                 throw HolosError.invalidInput("The speaker labels cannot be kept on the words as they were.")
             }
-            try Task.checkCancellation()
-            try SpeakerTranscriptRetarget.stage(plan, session: session)
-            try await archive.recordEvent(kind: MeetingEventKind.transcriptEdited, details: [
+            let done = Restored(transcriptID: restored.id, runID: plan.run.id)
+            let undone = [
                 "transcriptID": restored.id, "base": current.id, headFromKey: current.id, "undo": "1",
-            ].merging(details(of: move), uniquingKeysWith: { first, _ in first }))
-            let published = Restored(transcriptID: restored.id, runID: plan.run.id)
-            try await save(restored, archive: archive, session: session,
-                           incomplete: IncompletePublication(message: "The edit was undone", restored: published))
-            try publishHead(plan, session: session, now: now,
-                            incomplete: IncompletePublication(message: "The edit was undone", restored: published))
-            return published
+            ].merging(details(of: move), uniquingKeysWith: { first, _ in first })
+            let change = reviewChange(restored, plan: plan, now: now, details: undone,
+                                      incomplete: IncompletePublication(message: "The edit was undone", restored: done))
+            return .publish(change, done)
         }
     }
 
@@ -163,7 +155,7 @@ enum SessionWordEdit {
     @discardableResult
     static func repairCurrentHead(session: URL, expectedTranscriptID: String, expectedRunID: String,
                                   now: Date = Date()) async throws -> String? {
-        try await publishing(session: session) { _ -> String? in
+        try await publishing(session: session) { () throws -> TranscriptPublisher.Decision<String?> in
             guard let current = try SessionFiles.currentTranscript(session: session), current.id != expectedTranscriptID,
                   let edited = try editedEvent(of: current.id, session: session),
                   edited.base == expectedTranscriptID else {
@@ -172,7 +164,7 @@ enum SessionWordEdit {
             guard let head = try SpeakerAnalysis.headState(session: session, transcript: current) else {
                 throw HolosError.invalidInput("The speaker head to repair is missing.")
             }
-            if head.sameTranscript { return nil }
+            if head.sameTranscript { return .keep(nil) }
             guard head.runID == expectedRunID else {
                 throw HolosError.invalidInput("The speaker labels changed while they were being repaired.")
             }
@@ -183,10 +175,7 @@ enum SessionWordEdit {
                                                                now: now) else {
                 throw HolosError.invalidInput("The speaker labels cannot be repaired on the edited words.")
             }
-            try Task.checkCancellation()
-            try SpeakerTranscriptRetarget.stage(plan, session: session)
-            try SpeakerTranscriptRetarget.publishHead(plan, session: session, now: now)
-            return plan.run.id
+            return .repairHead(plan, now: now, plan.run.id)
         }
     }
 
@@ -202,32 +191,22 @@ enum SessionWordEdit {
               !state.sameTranscript, let run = state.run,
               let edited = try editedEvent(of: transcript.id, session: session),
               edited.base == run.transcriptID else { return false }
-        let archive = try SessionArchive.openForMaintenance(at: session, lease: lease)
-        do {
-            let repaired = try await SessionArchive.withSpeakerLockAsync(at: session) { () async throws -> Bool in
-                guard try SessionFiles.currentTranscript(session: session)?.id == transcript.id,
-                      let head = try SpeakerAnalysis.headState(session: session, transcript: transcript),
-                      head.runID == run.id else {
-                    throw HolosError.invalidInput("The speaker labels changed while they were being repaired.")
-                }
-                if head.sameTranscript { return false }
-                let snapshot = try SpeakerSessionSnapshot.load(session: session)
-                guard snapshot.transcript.id == run.transcriptID,
-                      let plan = try SpeakerTranscriptRetarget.plan(session: session, from: snapshot, to: transcript,
-                                                                   move: edited.move, undo: edited.undo,
-                                                                   now: now) else {
-                    throw HolosError.invalidInput("The speaker labels cannot be kept on the words edited in Review.")
-                }
-                try Task.checkCancellation()
-                try SpeakerTranscriptRetarget.stage(plan, session: session)
-                try SpeakerTranscriptRetarget.publishHead(plan, session: session, now: now)
-                return true
+        return try await TranscriptPublisher.publish(session: session, lease: lease) {
+            () throws -> TranscriptPublisher.Decision<Bool> in
+            guard try SessionFiles.currentTranscript(session: session)?.id == transcript.id,
+                  let head = try SpeakerAnalysis.headState(session: session, transcript: transcript),
+                  head.runID == run.id else {
+                throw HolosError.invalidInput("The speaker labels changed while they were being repaired.")
             }
-            await archive.releaseLock()
-            return repaired
-        } catch {
-            await archive.releaseLock()
-            throw error
+            if head.sameTranscript { return .keep(false) }
+            let snapshot = try SpeakerSessionSnapshot.load(session: session)
+            guard snapshot.transcript.id == run.transcriptID,
+                  let plan = try SpeakerTranscriptRetarget.plan(session: session, from: snapshot, to: transcript,
+                                                               move: edited.move, undo: edited.undo,
+                                                               now: now) else {
+                throw HolosError.invalidInput("The speaker labels cannot be kept on the words edited in Review.")
+            }
+            return .repairHead(plan, now: now, true)
         }
     }
 
@@ -283,20 +262,13 @@ enum SessionWordEdit {
 
     // MARK: - Publication
 
-    /// `body` holding the processing lease, the writer lock, and the speaker lock, in that order.
-    private static func publishing<T>(session: URL, _ body: (SessionArchive) async throws -> T) async throws -> T {
+    /// `decide` holding the processing lease, then the writer lock and the speaker lock (`TranscriptPublisher`).
+    private static func publishing<T>(session: URL, _ decide: () throws -> TranscriptPublisher.Decision<T>)
+        async throws -> T {
         let lease = try SessionArchive.acquireProcessingLease(at: session)
         defer { lease.release() }
         return try await lease.withUse(for: session) {
-            let archive = try SessionArchive.openForMaintenance(at: session, lease: lease)
-            do {
-                let value = try await SessionArchive.withSpeakerLockAsync(at: session) { try await body(archive) }
-                await archive.releaseLock()
-                return value
-            } catch {
-                await archive.releaseLock()
-                throw error
-            }
+            try await TranscriptPublisher.publish(session: session, lease: lease, decide)
         }
     }
 
@@ -313,27 +285,24 @@ enum SessionWordEdit {
         return (current, snapshot)
     }
 
-    /// Makes `transcript` current (`TranscriptPointerSave`). A save that throws once the pointer already names it (the
-    /// rename was done, a later step failed) did publish it: that is `incomplete` (its head is still owed), never a
-    /// refusal.
-    private static func save(_ transcript: Transcript, archive: SessionArchive, session: URL,
-                             incomplete: IncompletePublication) async throws {
-        try await TranscriptPointerSave.save(transcript, archive: archive, session: session) { error in
-            var failure = incomplete
-            failure.message += ", but saving it failed afterwards: " + error.localizedDescription
-            return failure
+    /// A Review change that makes `transcript` current with the head carried over by `plan`, journaled
+    /// `transcriptEdited` with `details`. It is saved through `TranscriptPointerSave`: a save that throws once the
+    /// pointer already names it (the rename was done, a later step failed) did publish it, as does a head that cannot
+    /// be published after it. Both are `incomplete` (its head is still owed), its message extended by what failed,
+    /// never a refusal.
+    private static func reviewChange(_ transcript: Transcript, plan: SpeakerTranscriptRetarget.Plan, now: Date,
+                                     details: [String: String], incomplete: IncompletePublication)
+        -> TranscriptPublisher.Change {
+        func failed(_ what: String) -> (any Error) -> any Error {
+            { error in
+                var failure = incomplete
+                failure.message += what + error.localizedDescription
+                return failure
+            }
         }
-    }
-
-    /// Publishes the head; on failure throws `incomplete`, whose message is what was done.
-    private static func publishHead(_ plan: SpeakerTranscriptRetarget.Plan, session: URL, now: Date,
-                                    incomplete: IncompletePublication) throws {
-        do {
-            try SpeakerTranscriptRetarget.publishHead(plan, session: session, now: now)
-        } catch {
-            var failure = incomplete
-            failure.message += ", but the speaker head could not be published: " + error.localizedDescription
-            throw failure
-        }
+        return TranscriptPublisher.Change(
+            transcript: transcript, event: .init(kind: MeetingEventKind.transcriptEdited, details: details),
+            retarget: plan, now: now, committed: failed(", but saving it failed afterwards: "),
+            headFailed: failed(", but the speaker head could not be published: "))
     }
 }

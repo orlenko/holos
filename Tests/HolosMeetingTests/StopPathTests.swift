@@ -5,6 +5,7 @@ import HolosAudio
 import HolosCore
 @testable import HolosMeeting
 import HolosStorage
+import HolosTestSupport
 import Testing
 
 // The stop path: timeouts, coverage-based replay, and the hand-off to post-processing (docs/meeting-design.md §4.6).
@@ -17,7 +18,7 @@ private func stopRecord(_ session: URL, state: PostProcessingState, message: Str
 
 @Test(.timeLimit(.minutes(1))) @MainActor
 func hungCaptureStopTimesOut() async throws {
-    let temp = try TemporaryDirectory()
+    let temp = try TemporaryDirectory("meeting", permissions: 0o700)
     defer { temp.remove() }
     let captures = FakeCaptureFactory([FakeCaptureScript(frames: FakeFrame.run(count: 3), stopDelay: .seconds(30))])
     let stop = ManualStopSource()
@@ -43,7 +44,7 @@ func hungCaptureStopTimesOut() async throws {
 
 @Test(.timeLimit(.minutes(1))) @MainActor
 func hungSpeechFinishTimesOut() async throws {
-    let temp = try TemporaryDirectory()
+    let temp = try TemporaryDirectory("meeting", permissions: 0o700)
     defer { temp.remove() }
     // Live: "Opening" is final once its audio is fed; "Unfinished" never is, and finish() hangs.
     let speech = FakeSpeechFactory([
@@ -79,7 +80,7 @@ func hungSpeechFinishTimesOut() async throws {
 /// `finish()` hangs is cancelled, the segments of the replay session before it are kept, and the track is incomplete.
 @Test(.timeLimit(.minutes(1))) @MainActor
 func hungReplayFinishTimesOut() async throws {
-    let temp = try TemporaryDirectory()
+    let temp = try TemporaryDirectory("meeting", permissions: 0o700)
     defer { temp.remove() }
     let speech = FakeSpeechFactory([
         // Live speech is unavailable, so the whole track is replayed.
@@ -127,7 +128,7 @@ func hungReplayFinishTimesOut() async throws {
 /// keeps the text it already transcribed, like a timeout does.
 @Test(.timeLimit(.minutes(1))) @MainActor
 func failedReplayKeepsTextBeforeTheFailure() async throws {
-    let temp = try TemporaryDirectory()
+    let temp = try TemporaryDirectory("meeting", permissions: 0o700)
     defer { temp.remove() }
     let speech = FakeSpeechFactory([
         FakeSpeechScript(makeError: .unavailable("Live speech is unavailable.")),
@@ -154,7 +155,7 @@ func failedReplayKeepsTextBeforeTheFailure() async throws {
 
 @Test(.timeLimit(.minutes(1))) @MainActor
 func leaseTakenBeforeFinish() async throws {
-    let temp = try TemporaryDirectory()
+    let temp = try TemporaryDirectory("meeting", permissions: 0o700)
     defer { temp.remove() }
     let hookStarted = SharedValue(false)
     let probeSawHook = SharedValue(false)
@@ -235,7 +236,7 @@ private struct LocksAtExit: Sendable {
 /// `RecorderChannel.liveness` goes from capturing (or maintenance) to exited and never reads dead in between.
 @Test(.timeLimit(.minutes(2)), arguments: RecorderExitPath.allCases) @MainActor
 func exitIsPublishedBeforeTheLastLockIsReleased(_ path: RecorderExitPath) async throws {
-    let temp = try TemporaryDirectory()
+    let temp = try TemporaryDirectory("meeting", permissions: 0o700)
     defer { temp.remove() }
     let root = temp.url
     // The locks at the moment the exited status was written, seen from the status writer itself: deterministic.
@@ -329,7 +330,7 @@ func exitIsPublishedBeforeTheLastLockIsReleased(_ path: RecorderExitPath) async 
 
 @Test(.timeLimit(.minutes(1))) @MainActor
 func statusEndsExitedAfterFakePostProcessor() async throws {
-    let temp = try TemporaryDirectory()
+    let temp = try TemporaryDirectory("meeting", permissions: 0o700)
     defer { temp.remove() }
     let phaseDuringHook = SharedValue<RecorderPhase?>(nil)
     let hook: PostProcessHook = { session, _, _ in
@@ -358,7 +359,7 @@ func statusEndsExitedAfterFakePostProcessor() async throws {
 
 @Test(.timeLimit(.minutes(1))) @MainActor
 func startFailureEndsTheStatusExited() async throws {
-    let temp = try TemporaryDirectory()
+    let temp = try TemporaryDirectory("meeting", permissions: 0o700)
     defer { temp.remove() }
     let captures = FakeCaptureFactory([FakeCaptureScript(startError: .permissionDenied("Microphone access is required."))])
     await #expect(throws: HolosError.self) {
@@ -377,7 +378,7 @@ func startFailureEndsTheStatusExited() async throws {
 
 @Test(.timeLimit(.minutes(1))) @MainActor
 func setupFilesAreWrittenOnce() async throws {
-    let temp = try TemporaryDirectory()
+    let temp = try TemporaryDirectory("meeting", permissions: 0o700)
     defer { temp.remove() }
     let id = UUID().uuidString.lowercased()
     let options = RecordingOptions(name: "Council", source: .microphoneAndSystem, locale: "en-CA", backend: .speech,
@@ -421,7 +422,7 @@ func setupFilesAreWrittenOnce() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func float32ChunksStillReplay() async throws {
-    let temp = try TemporaryDirectory()
+    let temp = try TemporaryDirectory("meeting", permissions: 0o700)
     defer { temp.remove() }
     let archive = try SessionArchive.create(root: temp.url, name: "Before Int16", source: .microphone,
                                             locale: "en-CA", backend: .speech)
