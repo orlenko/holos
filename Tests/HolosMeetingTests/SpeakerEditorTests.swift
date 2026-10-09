@@ -824,7 +824,7 @@ func appendWithoutJoining(_ actions: [SpeakerEditAction], session: URL) throws {
     #expect(SpeakerEditor.changesNothing(link, on: try SessionFixtures.view(session)))
 }
 
-@Test func anEditMadeBeforeAnotherSpeakerJoinedTheGroupStillReachesAllOfIt() async throws {
+@Test func anEditMadeBeforeAnotherSpeakerJoinedTheGroupIsRefused() async throws {
     let temp = try TemporaryDirectory("editor")
     defer { temp.remove() }
     let (session, _, _) = try await SessionFixtures.labelledSession(in: temp.url, speakers: ["S1", "S2", "S3"],
@@ -834,15 +834,48 @@ func appendWithoutJoining(_ actions: [SpeakerEditAction], session: URL) throws {
     // A window shows S2 and S3 as one Alex (S2 shown).
     let older = try SessionFixtures.view(session)
     #expect(older.speakers.first { $0.name == "Alex" }?.memberIDs == ["system:S2", "system:S3"])
-    // Another window names S1 Alex too: S1, the lower ordinal, is now the one shown.
+    // Another window names S1 Alex too: S1 joins the group (and is the one shown now).
     try SpeakerEditor.apply([.rename(speakerID: "system:S1", name: "Alex")], view: try SessionFixtures.view(session),
                             session: session, source: "app", regenerateExports: false)
-    // The first window renames its Alex (S2): every stored Alex is renamed, S1 included.
-    let result = try SpeakerEditor.apply([.rename(speakerID: "system:S2", name: "Bob")], view: older,
-                                         session: session, source: "app", regenerateExports: false)
+    // The first window renames its Alex: it would reach S1, which it never showed in the group. Refused, nothing
+    // written; on the labels as they are, the same rename reaches all three.
+    let lines = try editorJournal(session).count
+    let message = editorRefusal("unavailable") {
+        try SpeakerEditor.apply([.rename(speakerID: "system:S2", name: "Bob")], view: older, session: session,
+                                source: "app", regenerateExports: false)
+    }
+    #expect(message == SpeakerEditor.changedMessage)
+    #expect(try editorJournal(session).count == lines)
+    let result = try SpeakerEditor.apply([.rename(speakerID: "system:S2", name: "Bob")],
+                                         view: try SessionFixtures.view(session), session: session, source: "app",
+                                         regenerateExports: false)
     let after = try #require(result.snapshot.projection)
-    #expect(after.speakers.map(\.name) == ["Bob"])
     #expect(after.unjoined.speakers.map(\.name) == ["Bob", "Bob", "Bob"])
+}
+
+@Test func aRenameThatJoinedAGroupSinceIsNotOverwrittenThroughIt() async throws {
+    // The live-name race: a plan made when the microphone's speaker stood alone renames it; meanwhile S2 was named
+    // "Me" by hand, joining it. The rename would now reach S2: refused, so S2 keeps its name.
+    let temp = try TemporaryDirectory("editor")
+    defer { temp.remove() }
+    let mic = SessionFixtures.segment(["hello", "there", "all"], track: "mic", start: 0.1, id: "M1")
+    let transcript = SessionFixtures.transcript([mic] + SessionFixtures.alternatingSegments(track: "system"))
+    let session = try await SessionFixtures.makeSession(in: temp.url, source: .microphoneAndSystem,
+                                                        audioSeconds: ["mic": 20, "system": 20], mode: .call,
+                                                        transcript: transcript)
+    _ = try SessionFixtures.writeHeadRun(
+        session: session, transcript: transcript,
+        outputs: ["system": FakeDiarizer.alternating(speakers: ["S1", "S2"], turnSeconds: 5, duration: 20)],
+        policies: ["mic": .channel(speakerID: "mic:me", displayName: "Me")])
+    let planned = try SessionFixtures.view(session)
+    try SpeakerEditor.apply([.rename(speakerID: "system:S2", name: "Me")], view: try SessionFixtures.view(session),
+                            session: session, source: "cli", regenerateExports: false)
+    let message = editorRefusal("unavailable") {
+        _ = try SpeakerEditor.applyUnlessUnchanged([.rename(speakerID: "mic:me", name: "Ada")], view: planned,
+                                                   session: session, source: "live", regenerateExports: false)
+    }
+    #expect(message == SpeakerEditor.changedMessage)
+    #expect(try SessionFixtures.view(session).unjoined.speakers.first { $0.id == "system:S2" }?.name == "Me")
 }
 
 @Test func aNewSpeakerNamedAsSomebodyNamedMeanwhileIsRefused() async throws {

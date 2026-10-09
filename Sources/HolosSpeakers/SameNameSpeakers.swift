@@ -2,7 +2,8 @@ import Foundation
 import HolosCore
 
 /// "Same name, same person" (docs/meeting-design.md §4.9, "Speakers with the same name"): within one meeting, two
-/// speakers whose names compare equal under `key(_:)` are shown as one speaker, always.
+/// speakers whose names compare equal under `key(_:)` are shown as one speaker, unless the journal links them to two
+/// or more different people (then they are those people, shown apart).
 ///
 /// It is display only. `SpeakerProjection` lists such speakers as one (`joins`), so every reader of the projection
 /// (the exports, Review, the CLI, summaries) shows one person, also for journals saved before this rule and for names
@@ -10,8 +11,8 @@ import HolosCore
 /// own link and its own voice (`SpeakerProjection.unjoined`, which voice data reads). An edit of a speaker shown joined
 /// reaches each stored speaker it shows (`SpeakerProjection.fanningOut`), so they stay alike.
 ///
-/// The joins read only the names in the journal (the names given, the channel's), never links or the people store,
-/// so every projection of a meeting joins the same speakers the same way whoever builds it.
+/// The joins read only the journal (the names given, the channel's, and whether the links differ), never the people
+/// store, so every projection of a meeting joins the same speakers the same way whoever builds it.
 public enum SameNameSpeakers {
     /// The form names are compared in: runs of whitespace (and control characters) become one space, the ends are
     /// trimmed, and case, diacritics and character width are ignored ("  Zoë  Smith" and "zoe smith" match). Nil when
@@ -70,8 +71,10 @@ public enum SameNameSpeakers {
     }
 
     /// The stored speakers with one name (`nameKey`), among those that hold a turn with words or were created by
-    /// `newSpeaker`. The one shown is the lowest (ordinal, ID): fixed by the journal (a newer speaker never takes over
-    /// an older one's place), whatever links, talk time or masks say.
+    /// `newSpeaker`, when they are linked to at most one person between them (in the journal; never the people
+    /// store): speakers of one name linked to two different people are two people, shown apart. The one shown is the
+    /// lowest (ordinal, ID): fixed by the journal (a newer speaker never takes over an older one's place), whatever
+    /// talk time or masks say; its person is the one link of the group, if any.
     static func joins(_ speakers: [String: SpeakerProjection.SpeakerState],
                       turns: [SpeakerProjection.TurnState]) -> Joins {
         var holding = Set<String>()
@@ -81,7 +84,9 @@ public enum SameNameSpeakers {
             if let key = nameKey(of: speaker) { byName[key, default: []].append(speaker) }
         }
         var joins = Joins()
-        for group in byName.values where group.count > 1 {
+        // Linked to two or more different people, speakers of one name are those people (the journal says so): they
+        // are shown apart, as linked, and nothing reaches from one to another.
+        for group in byName.values where group.count > 1 && Set(group.compactMap(\.profileID)).count <= 1 {
             let ordered = group.sorted(by: precedes)
             let shown = ordered[0]
             joins.members[shown.id] = ordered.map(\.id)

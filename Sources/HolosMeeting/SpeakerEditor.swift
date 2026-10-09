@@ -146,7 +146,14 @@ public enum SpeakerEditor {
             // (`fanningOut`). Worked out on the current labels, read under this lock, not on the caller's view, which
             // may not show a speaker another window has since named alike. The lines it adds carry the current
             // fingerprints; the caller's own lines must still match its view.
-            for (action, added) in base.projection.fanningOutMarked(actions.map(cleaned)) {
+            // The stored speakers it reaches must be those the caller's view would have reached: a same-name group that
+            // changed since (another window named a speaker into or out of it) would carry the change to speakers the
+            // caller never saw it reach, past every fingerprint check (lines added here are only checked against the
+            // current labels). Refused as made on outdated labels; the caller rereads and asks again.
+            let asked = actions.map(cleaned)
+            let reached = base.projection.fanningOutMarked(asked)
+            guard reached.map(\.action) == view.fanningOut(asked) else { throw refusedStaleView(base.run) }
+            for (action, added) in reached {
                 // A new speaker named as nobody in the caller's view is, but as somebody now (another window named a
                 // speaker so meanwhile): the caller would have given the turns to that speaker, so its choice is stale.
                 if !added, case .newSpeaker(_, let name?, _) = action, current.speaker(named: name) != nil,

@@ -300,18 +300,18 @@ private func turnSpeaker(_ projection: SpeakerProjection, _ id: String) -> Strin
     #expect(turnSpeaker(journal.view, "T6") == "system:S2")
 }
 
-@Test func joiningNeverReadsLinksOrThePeopleStore() {
-    // The same journal joins the same speakers whatever people a builder knows; links never join anyone.
-    var journal = Journal(names: ["P-ALEX1": "Alex", "P-ALEX2": "Alex"])
-    journal.append(.linkProfile(speakerID: "system:S1", profileID: "P-ALEX1"))
+@Test func joiningNeverReadsThePeopleStore() {
+    // The same journal joins the same speakers whatever people a builder knows.
+    var journal = Journal(names: ["P-ALEX": "Alex"])
+    journal.append(.linkProfile(speakerID: "system:S1", profileID: "P-ALEX"))
     journal.append(.rename(speakerID: "system:S1", name: "Alex"))
-    journal.append(.linkProfile(speakerID: "system:S3", profileID: "P-ALEX2"))
     journal.append(.rename(speakerID: "system:S3", name: "alex"))
     let withPeople = journal.view
     journal.names = [:]
     let withoutPeople = journal.view
     #expect(withPeople.speakers.map(\.memberIDs) == withoutPeople.speakers.map(\.memberIDs))
     #expect(withPeople.speakers.first?.memberIDs == ["system:S1", "system:S3"])
+    #expect(withPeople.speakers.first?.profileID == "P-ALEX")
     #expect(withPeople.turns.map(\.speakerID) == withoutPeople.turns.map(\.speakerID))
 }
 
@@ -325,20 +325,24 @@ private func turnSpeaker(_ projection: SpeakerProjection, _ id: String) -> Strin
     #expect(journal.view.speakers.allSatisfy { $0.memberIDs == [$0.id] })
 }
 
-@Test func speakersOfOneNameLinkedToTwoPeopleShowAsOneAndKeepTheirOwnVoices() throws {
-    // S1 linked to one Alex, S3 to another, both named Alex: shown as S1, with S1's person; each stored speaker keeps
-    // its own link, so each person's voice stays theirs.
+@Test func speakersOfOneNameLinkedToTwoPeopleAreShownApart() {
+    // S1 linked to one Alex, S3 to another, both named Alex: the journal says they are two people, so they are shown
+    // apart, each with its own person (and its own voice), and nothing reaches from one to the other.
     var journal = Journal(names: ["P-ALEX1": "Alex", "P-ALEX2": "Alex"])
     journal.append(.linkProfile(speakerID: "system:S1", profileID: "P-ALEX1"))
     journal.append(.rename(speakerID: "system:S1", name: "Alex"))
     journal.append(.linkProfile(speakerID: "system:S3", profileID: "P-ALEX2"))
     journal.append(.rename(speakerID: "system:S3", name: "Alex"))
-    let alex = try #require(speaker(journal.view, "system:S1"))
-    #expect(alex.memberIDs == ["system:S1", "system:S3"])
-    #expect(alex.profileID == "P-ALEX1")
-    let stored = journal.view.unjoined
-    #expect(stored.speakers.first { $0.id == "system:S3" }?.profileID == "P-ALEX2")
-    #expect(stored.turns.first { $0.id == "T3" }?.speakerID == "system:S3")
+    journal.append(.rename(speakerID: "system:S2", name: "alex"))
+    let view = journal.view
+    #expect(view.speakers.filter { $0.name.lowercased() == "alex" }.map(\.id) == ["system:S1", "system:S2", "system:S3"])
+    #expect(view.speakers.allSatisfy { $0.memberIDs == [$0.id] })
+    #expect(view.speakers.map(\.profileID) == ["P-ALEX1", nil, "P-ALEX2", nil])
+    #expect(view.turns.first { $0.id == "T3" }?.speakerID == "system:S3")
+    // "Alex" names none of them in particular.
+    #expect(view.speaker(named: "Alex") == nil)
+    #expect(view.fanningOut([.rename(speakerID: "system:S1", name: "Alexander")])
+        == [.rename(speakerID: "system:S1", name: "Alexander")])
 }
 
 // MARK: - Write side: edits of a speaker shown joined reach every stored one
@@ -357,38 +361,33 @@ private func turnSpeaker(_ projection: SpeakerProjection, _ id: String) -> Strin
 }
 
 @Test func renamingASpeakerShownJoinedRenamesEachStoredOneAndMergesNothing() {
-    // S1 (one Alex) and S3 (another Alex) shown as one: renaming him renames both, and each keeps its link.
-    var journal = Journal(names: ["P-ALEX1": "Alex", "P-ALEX2": "Alex"])
-    journal.append(.linkProfile(speakerID: "system:S1", profileID: "P-ALEX1"))
+    // S1 (linked to Alex) and S3 (only named Alex) are shown as one: renaming him renames both; each keeps its link.
+    var journal = Journal(names: ["P-ALEX": "Alex"])
+    journal.append(.linkProfile(speakerID: "system:S1", profileID: "P-ALEX"))
     journal.append(.rename(speakerID: "system:S1", name: "Alex"))
-    journal.append(.linkProfile(speakerID: "system:S3", profileID: "P-ALEX2"))
     journal.append(.rename(speakerID: "system:S3", name: "Alex"))
     let saved = journal.save([.rename(speakerID: "system:S1", name: "Alexander")])
     #expect(saved == [.rename(speakerID: "system:S1", name: "Alexander"),
                       .rename(speakerID: "system:S3", name: "Alexander")])
     let view = journal.view
     #expect(view.speakers.filter { $0.name == "Alexander" }.map(\.memberIDs) == [["system:S1", "system:S3"]])
-    #expect(view.unjoined.speakers.first { $0.id == "system:S3" }?.profileID == "P-ALEX2")
+    #expect(view.unjoined.speakers.first { $0.id == "system:S3" }?.profileID == nil)
     #expect(view.staleEdits.isEmpty)
 }
 
 @Test func linkingRejectingAndClearingASpeakerShownJoinedReachEachStoredOne() {
-    var journal = Journal(names: ["P-ALEX1": "Alex", "P-ALEX2": "Alex"])
-    journal.append(.linkProfile(speakerID: "system:S1", profileID: "P-ALEX1"))
+    var journal = Journal(names: ["P-ALEX": "Alex"])
+    journal.append(.linkProfile(speakerID: "system:S1", profileID: "P-ALEX"))
     journal.append(.rename(speakerID: "system:S1", name: "Alex"))
-    journal.append(.linkProfile(speakerID: "system:S3", profileID: "P-ALEX2"))
+    journal.append(.linkProfile(speakerID: "system:S3", profileID: "P-ALEX"))
     journal.append(.rename(speakerID: "system:S3", name: "Alex"))
-    // Clearing the name as Review's name field does: the shown person rejected for each, and S3 also unlinked from
-    // its own person, so no link names it again.
+    // Clearing the name as Review's name field does: the name cleared and the person rejected, for each.
     let saved = journal.save([.rename(speakerID: "system:S1", name: nil),
-                              .rejectProfile(speakerID: "system:S1", profileID: "P-ALEX1"),
-                              .rejectProfile(speakerID: "system:S3", profileID: "P-ALEX2")])
+                              .rejectProfile(speakerID: "system:S1", profileID: "P-ALEX")])
     #expect(saved == [.rename(speakerID: "system:S1", name: nil),
-                      .rejectProfile(speakerID: "system:S1", profileID: "P-ALEX1"),
-                      .rejectProfile(speakerID: "system:S3", profileID: "P-ALEX2"),
+                      .rejectProfile(speakerID: "system:S1", profileID: "P-ALEX"),
                       .rename(speakerID: "system:S3", name: nil),
-                      .rejectProfile(speakerID: "system:S3", profileID: "P-ALEX1"),
-                      .rejectProfile(speakerID: "system:S1", profileID: "P-ALEX2")])
+                      .rejectProfile(speakerID: "system:S3", profileID: "P-ALEX")])
     let view = journal.view
     #expect(view.speakers.map(\.name) == ["Speaker 1", "Speaker 2", "Speaker 3", "Me"])
     #expect(view.speakers.allSatisfy { $0.profileID == nil })
@@ -450,19 +449,49 @@ private func turnSpeaker(_ projection: SpeakerProjection, _ id: String) -> Strin
 
 // MARK: - Label Again
 
-@Test func eachStoredSpeakerCarriesItsOwnNameAndLinkThoughShownAsOne() {
-    // Two stored Alexes linked to two people, shown as one: Label Again carries each name and link to the new speaker
-    // its own speech lands in (here the same run), never one person onto the other's speech.
+@Test func speakersOfOneNameLinkedToTwoPeopleEachCarryTheirOwnNameAndLink() {
+    // Two Alexes linked to two people (shown apart): Label Again carries each name and link to the new speaker its
+    // own speech lands in (here the same run), never one person onto the other's speech.
     var journal = Journal(names: ["P-ALEX1": "Alex", "P-ALEX2": "Alex"])
     journal.append(.linkProfile(speakerID: "system:S1", profileID: "P-ALEX1"))
     journal.append(.rename(speakerID: "system:S1", name: "Alex"))
     journal.append(.linkProfile(speakerID: "system:S3", profileID: "P-ALEX2"))
     journal.append(.rename(speakerID: "system:S3", name: "Alex"))
-    #expect(journal.view.speakers.first?.memberIDs == ["system:S1", "system:S3"])
     let carried = SpeakerCarryOver.carry(from: journal.view, to: run)
     #expect(carried.actions == [.rename(speakerID: "system:S1", name: "Alex"),
                                 .linkProfile(speakerID: "system:S1", profileID: "P-ALEX1"),
                                 .rename(speakerID: "system:S3", name: "Alex"),
                                 .linkProfile(speakerID: "system:S3", profileID: "P-ALEX2")])
     #expect(carried.unmatchedSpeakers.isEmpty)
+}
+
+@Test func aJoinedGroupCarriesItsWholeIdentityToEveryNewSpeakerItsSpeechLandsIn() {
+    // S1 has the name, S3 the link (and is called alex too): one person, shown as one.
+    var journal = Journal(names: ["P-ALEX": "Alex"])
+    journal.append(.rename(speakerID: "system:S1", name: "Alex"))
+    journal.append(.linkProfile(speakerID: "system:S3", profileID: "P-ALEX"))
+    journal.append(.rename(speakerID: "system:S3", name: "alex"))
+    #expect(journal.view.speakers.first?.memberIDs == ["system:S1", "system:S3"])
+
+    // Labelled again into two speakers again: both get the name and the link.
+    let two = SpeakerCarryOver.carry(from: journal.view, to: run)
+    #expect(two.actions == [.rename(speakerID: "system:S1", name: "Alex"),
+                            .linkProfile(speakerID: "system:S1", profileID: "P-ALEX"),
+                            .rename(speakerID: "system:S3", name: "Alex"),
+                            .linkProfile(speakerID: "system:S3", profileID: "P-ALEX")])
+    #expect(two.unmatchedSpeakers.isEmpty)
+
+    // Labelled again into one speaker (S3's speech now S1's): it gets the name and the link, and S3, whose
+    // group-mate carried them, is not reported unmatched.
+    var one = run
+    one.turns = run.turns.map { turn in
+        var turn = turn
+        if turn.speakerID == "system:S3" { turn.speakerID = "system:S1"; turn.clusterID = "system:S1" }
+        return turn
+    }
+    one.speakers = run.speakers.filter { $0.id != "system:S3" }
+    let merged = SpeakerCarryOver.carry(from: journal.view, to: one)
+    #expect(merged.actions == [.rename(speakerID: "system:S1", name: "Alex"),
+                               .linkProfile(speakerID: "system:S1", profileID: "P-ALEX")])
+    #expect(merged.unmatchedSpeakers.isEmpty)
 }

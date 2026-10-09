@@ -152,6 +152,20 @@ enum LiveHintStage {
         guard hints.contains(where: { if case .nameSpeaker = $0.action { true } else { false } }) else {
             return SpeakerOutcome()
         }
+        // Planned on the labels as read, outside the speaker lock: when they changed before the save (another
+        // window renamed a speaker, joining or leaving a same-name group), the editor refuses the plan, and it is
+        // made again, with its protection, on the labels as they are then.
+        for attempt in 1...3 {
+            let outcome = applySpeakersOnce(hints, session: session, transcript: transcript, profiles: profiles,
+                                            retrying: attempt < 3)
+            if let outcome { return outcome }
+        }
+        return SpeakerOutcome(problem: "Live speaker names could not be saved: " + SpeakerEditor.changedMessage)
+    }
+
+    /// One plan and save of `applySpeakers`; nil when `retrying` and the editor refused it as made on changed labels.
+    private static func applySpeakersOnce(_ hints: [LiveHint], session: URL, transcript: Transcript,
+                                          profiles: SpeakerProfileStore?, retrying: Bool) -> SpeakerOutcome? {
         do {
             let names = profiles.map { VoiceProfileService.profileNames(store: $0) } ?? [:]
             let snapshot = try SpeakerSessionSnapshot.load(session: session, profileNames: names,
@@ -184,6 +198,8 @@ enum LiveHintStage {
             return SpeakerOutcome(note: count == 1 ? "Applied 1 live speaker name."
                                                    : "Applied \(count) live speaker names.",
                                   problem: unmatchedProblem)
+        } catch HolosError.unavailable(let message) where retrying && message == SpeakerEditor.changedMessage {
+            return nil
         } catch {
             return SpeakerOutcome(problem: "Live speaker names could not be saved: \(error.localizedDescription)")
         }

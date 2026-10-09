@@ -1070,7 +1070,8 @@ public struct ReviewDeletedWords: Sendable, Equatable {
             }
             try await apply([.newSpeaker(speakerID: Self.newSpeakerID(), name: name, turnIDs: ids)])
         case .person(let profileID):
-            if let speaker = projection.speakers.first(where: { $0.profileID == profileID }) {
+            // The stored speaker linked to that very person (it may be shown joined with same-named ones).
+            if let speaker = projection.unjoined.speakers.first(where: { $0.profileID == profileID }) {
                 try await apply([.reassignTurns(turnIDs: ids, to: speaker.id)])
                 return
             }
@@ -1078,12 +1079,14 @@ public struct ReviewDeletedWords: Sendable, Equatable {
             guard let person = people.first(where: { $0.id == profileID }) else {
                 throw HolosError.invalidInput("That person is not known to Voice is Local any more; reopen the window.")
             }
-            // A listed speaker already called this person's name is them (same name, same person): the turns go to
-            // it, and it is linked to the person in the same change when it is linked to nobody and never said
-            // "Not <person>" (a link it has stays; a rejection only keeps suggestions away).
-            if let speaker = projection.speaker(named: person.displayName) {
+            // A listed speaker already called this person's name and linked to nobody is them (same name, same
+            // person): the turns go to it, linked to the person in the same change unless it said "Not <person>" (the
+            // rejection keeps the link off; the name still makes it them). One linked to somebody else of that name
+            // is that other person: the person asked for gets a speaker of their own (shown apart, since the two are
+            // linked to different people).
+            if let speaker = projection.speaker(named: person.displayName), speaker.profileID == nil {
                 let move = SpeakerEditAction.reassignTurns(turnIDs: ids, to: speaker.id)
-                guard speaker.profileID == nil, !speaker.rejectedProfileIDs.contains(profileID) else {
+                guard !speaker.rejectedProfileIDs.contains(profileID) else {
                     try await apply([move])
                     return
                 }

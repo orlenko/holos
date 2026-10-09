@@ -3291,15 +3291,18 @@ Speakers listed: every speaker with at least one turn, plus user-created speaker
 Talk time = sum of turn durations.
 
 **Speakers with the same name.** Within a meeting, the same name is the same person, and
-is shown as one speaker, always (`SameNameSpeakers`, HolosSpeakers). Names compare by
+is shown as one speaker (`SameNameSpeakers`, HolosSpeakers). Names compare by
 `SameNameSpeakers.key`: runs of whitespace and control characters become one space, the
 ends are trimmed, and case, diacritics and character width are ignored ("Zoë  Smith" =
 "zoe smith"). Only names join: the name the user gave (`rename`, `newSpeaker`), or the
 channel speaker's own ("Me"), read from the journal's state alone. Links never join anyone
 (two speakers linked to one person under different names stay two, and a merge is
-suggested as before), nor keep one name apart (two remembered people called Alex linked in
-one meeting show as one speaker there), and neither does "Not <person>", which keeps that
-person's suggestions away and nothing else. A "Speaker N" fallback names nobody, and an
+suggested as before). One exception, also read from the journal alone: speakers of one
+name linked to two or more different people (two remembered people called Alex, each
+linked in the meeting) are those people, and are shown apart, each with its own link; an
+edit of one never reaches the other. A group with one link, or none (an unlinked Alex and
+an Alex linked to a person), is joined. "Not <person>" keeps that person's suggestions away
+and nothing else. A "Speaker N" fallback names nobody, and an
 automatic match ("Jim (auto)") or a suggestion is a guess nobody confirmed: neither joins
 anyone. Nothing here reads the people store, recognition, the echo mask or talk time, so
 every projection of a meeting (Review, the exports, the CLI, summaries,
@@ -3327,17 +3330,19 @@ speaker, with its own link and its own voice.
   holds words or was made by `newSpeaker`, also one whose words the echo mask all hides),
   and voice data reads it: samples are learned per stored speaker for the person it is
   linked to, and forgetting a person removes exactly the clusters and turns of the stored
-  speakers linked to them. Two same-named speakers linked to two people are shown as one,
-  yet each person's voice stays theirs (`VoiceProfileService`: `syncSamples`,
-  `samplesAffected`, earlier-run views, `removeVoiceEntries`).
+  speakers linked to them, never those of a same-named speaker shown with them but linked
+  to nobody (`VoiceProfileService`: `syncSamples`, `samplesAffected`, earlier-run views,
+  `removeVoiceEntries`).
 - *Editing (`SpeakerEditor`, Review, the CLI).* Giving a speaker a name another speaker has
   only renames it; the display joins them. An edit of any stored speaker of a same-name
   group reaches every other one of the group, in the same batch
   (`SpeakerProjection.fanningOut`, worked out by the editor under the speaker lock on the
   current labels, and by Review on the labels shown for its preview). The group is the
-  journal's (`SameNameSpeakers.joins`), not "the speaker shown": an edit made on a view
-  where another speaker has since joined the group (and is now the one shown) still
-  reaches all of it. A rename or clearing the name, a link, a rejection ("Not Jim"), "This
+  journal's (`SameNameSpeakers.joins`). An edit must reach the stored speakers the
+  caller's view showed in its group: when the group changed since (another window named a
+  speaker into or out of it), the editor refuses the batch as made on outdated labels
+  (`SpeakerEditor.changedMessage`), and the caller rereads and asks again (Review reloads;
+  the live speaker-name pass plans again with its protection worked out afresh). A rename or clearing the name, a link, a rejection ("Not Jim"), "This
   is me", a confirmed suggestion and Confirm All are made to each of them, one stored
   speaker after another; a merge of one into another speaker ("Merge into…") moves each
   of them into that speaker. Turns given to the speaker shown go to it. Review's name
@@ -3357,9 +3362,12 @@ speaker, with its own link and its own voice.
   sidebar, the CLI's listing and selectors (whose edits fan out), summaries, participant
   lists and Review's voice suggestions. Whatever maps identities, links or voice reads
   the stored speakers (`unjoined`): voice learning and forgetting, Label Again
-  (`SpeakerCarryOver` carries each stored speaker's name and link to the new speaker its
-  own speech lands in, so two Alexes linked to two people keep their links on the right
-  speech), the editor's refusal messages, and the CLI's link report. Live speaker names
+  (`SpeakerCarryOver` matches each stored speaker to the new speaker its own speech lands
+  in, and gives it the identity of the group it is shown as: the group's name, its one
+  link and its rejections, so whichever of them a new speaker's speech comes from gets
+  the whole identity, two new speakers both get it, and a member whose group-mate carried
+  it is not reported unmatched; two Alexes linked to two people, shown apart, each keep
+  their own link on their own speech), the editor's refusal messages, and the CLI's link report. Live speaker names
   (`LiveHintStage`) treat a same-name group as named by hand when any of its stored
   speakers is, since a name given to the one shown would reach them all.
 - *Choosing a name that exists.* Review's "New Speaker…" (and `voiceislocal speakers assign
@@ -3370,9 +3378,10 @@ speaker, with its own link and its own voice.
   Every name typed to choose a speaker or a person (the CLI's selectors, Review's name
   field) compares as `SameNameSpeakers.key` does.
   "Assign to <person>" gives the turns to the
-  speaker linked to that person, else to the speaker called their name (linked to them in
-  the same batch when it is linked to nobody and never said "Not <person>"), else to a new
-  speaker called their name and linked to them: the move (or the new speaker) and the link
+  stored speaker linked to that person, else to the speaker called their name when it is
+  linked to nobody (linked to them in the same batch unless it said "Not <person>"), else
+  to a new speaker called their name and linked to them (one called their name but linked
+  to somebody else is that other person, and the new speaker is shown apart from it): the move (or the new speaker) and the link
   are one batch (`VoiceProfileService.link(preceding:)`), shown and saved alike. Review's
   name field links the known person whose name matches by `key` (accents and spaces too,
   not only case) rather than creating a second person of that name.
