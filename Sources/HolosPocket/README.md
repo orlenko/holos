@@ -6,7 +6,8 @@ only `HolosCLI` links it; the app renders natural parts through `voiceislocal sa
 **Owns**
 - `PocketSpeechBackend`: the `NaturalSpeechBackend` implementation (protocol, catalog and pack values in
   HolosSynthesis). One `PocketTtsManager` per language pack, loaded from the pack's folder and kept for the
-  process; each paragraph is a fresh session with the given seed, so a paragraph and seed always give the same take.
+  process (`PackLoads`: one load per pack, shared by callers that come during it); each paragraph is a fresh
+  session with the given seed, so a paragraph and seed always give the same take.
 - The install steps `NaturalVoiceModels.setUp` takes (`download`, `verify`, warm-up, tidy-up): the listing of the
   pinned commit of `FluidInference/pocket-tts-coreml` (`NaturalVoiceModels.revision`), FluidAudio's resumable
   download pinned to that commit, the size and SHA-256 check of every file, and the removal of voices not offered.

@@ -9,7 +9,7 @@ import HolosSynthesis
 /// the same paragraph and seed give the same take (Pocket TTS draws its noise from a seeded generator).
 public actor PocketSpeechBackend: NaturalSpeechBackend {
     private let root: URL
-    private var managers: [NaturalVoicePack: PocketTtsManager] = [:]
+    private let managers = PackLoads<PocketTtsManager>()
 
     public init(root: URL = NaturalVoiceModels.root) {
         self.root = root
@@ -23,13 +23,14 @@ public actor PocketSpeechBackend: NaturalSpeechBackend {
     }
 
     private func manager(for pack: NaturalVoicePack) async throws -> PocketTtsManager {
-        if let manager = managers[pack] { return manager }
-        let manager = PocketTtsManager(defaultVoice: NaturalVoiceCatalog.defaultVoice(for: pack).name,
-                                       language: try Self.language(pack),
-                                       directory: NaturalVoiceModels.directory(root: root, pack: pack))
-        try await manager.initialize()
-        managers[pack] = manager
-        return manager
+        let voice = NaturalVoiceCatalog.defaultVoice(for: pack).name
+        let language = try Self.language(pack)
+        let directory = NaturalVoiceModels.directory(root: root, pack: pack)
+        return try await managers.value(for: pack) {
+            let manager = PocketTtsManager(defaultVoice: voice, language: language, directory: directory)
+            try await manager.initialize()
+            return manager
+        }
     }
 
     /// Loads the pack now (the first load of a process takes a few seconds once the models are compiled).
@@ -92,7 +93,8 @@ public actor PocketSpeechBackend: NaturalSpeechBackend {
         try Task.checkCancellation()
         let problems = NaturalVoicePackFiles.problems(expected, in: folder)
         guard problems.isEmpty else {
-            for path in problems { try? FileManager.default.removeItem(at: folder.appendingPathComponent(path)) }
+            // Removed so the next download fetches them again; one that cannot be removed is said, never retried.
+            try NaturalVoicePackFiles.remove(problems, in: folder)
             throw HolosError.incomplete("\(problems.count) of the natural voices' files did not download completely "
                 + "(\(problems.prefix(3).joined(separator: ", ")))")
         }
@@ -182,6 +184,28 @@ public actor PocketSpeechBackend: NaturalSpeechBackend {
         guard let names = try? FileManager.default.contentsOfDirectory(atPath: folder.path) else { return }
         for name in names where NaturalVoicePackFiles.isUnofferedVoice("constants_bin/\(name)", pack: pack) {
             try? FileManager.default.removeItem(at: folder.appendingPathComponent(name))
+        }
+    }
+}
+
+/// One load per pack, kept once it succeeds: a caller that comes during a load (the backend actor is reentrant at its
+/// awaits) waits for that load instead of starting another, so a pack's models are never loaded twice at once.
+///
+/// Invariants:
+/// 1. `loads` holds at most one task per pack; every caller for that pack awaits it.
+/// 2. A task that failed is removed by a caller that saw it fail (when it is still the stored one), so the next call
+///    loads again.
+actor PackLoads<Value: Sendable> {
+    private var loads: [NaturalVoicePack: Task<Value, Error>] = [:]
+
+    func value(for pack: NaturalVoicePack, load: @escaping @Sendable () async throws -> Value) async throws -> Value {
+        let task = loads[pack] ?? Task { try await load() }
+        loads[pack] = task
+        do {
+            return try await task.value
+        } catch {
+            if loads[pack] == task { loads[pack] = nil }
+            throw error
         }
     }
 }

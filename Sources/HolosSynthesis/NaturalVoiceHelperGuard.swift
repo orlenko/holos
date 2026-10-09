@@ -8,6 +8,14 @@ import Synchronization
 /// whether that process still runs: asked once the watch is registered, so a process that ended before (no exit event
 /// comes for it, and its pid may belong to another one by then) is seen too. `voiceislocal say` started by the app
 /// (`--parent-pid`) watches the app this way, with `getppid() == pid`: its parent is the app until the app ends.
+///
+/// Invariants:
+/// 1. `onExit` runs at most once: the exit event and the liveness check made after registering both go through
+///    `once`, and only the first to take it calls `onExit`.
+/// 2. Both run on the watch's own serial queue, never at the same time.
+/// 3. `fired` is true from the moment `onExit` is about to run, so a caller that sees its work cancelled can tell
+///    whether the process ended.
+/// 4. `cancel()` stops the exit event; a liveness check already queued may still call `onExit` (once).
 public final class ProcessExitWatch: @unchecked Sendable {
     private let source: any DispatchSourceProcess
     private final class Once: Sendable {

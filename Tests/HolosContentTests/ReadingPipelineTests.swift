@@ -2213,12 +2213,15 @@ extension ReadingPipelineTests {
         manifest.modelRevision = "0000000000000000000000000000000000000000"
         try JSONEncoder().encode(manifest).write(to: manifestURL)
         renderer.failOnCall = nil
+        // Its pack is not installed either: the commit is what is said, before the voice is checked.
+        renderer.voices = ["another voice"]
         let error = await #expect(throws: HolosError.self) {
             _ = try await ReadingPipeline(renderer: renderer, joiner: FakeJoiner())
                 .render(script: script(3), voiceIdentifier: natural, metadata: metadata, location: place, resume: true)
         }
         #expect(error?.localizedDescription.contains("another version of the natural voices") == true)
         // With the commit it was made with, it resumes.
+        renderer.voices = nil
         manifest.modelRevision = NaturalVoiceModels.revision
         try JSONEncoder().encode(manifest).write(to: manifestURL)
         let resumed = try await ReadingPipeline(renderer: renderer, joiner: FakeJoiner())

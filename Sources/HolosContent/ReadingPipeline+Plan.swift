@@ -17,4 +17,12 @@ extension ReadingPipeline {
                         chapter: part.chapter, startsSection: part.startsSegment, status: "pending")
         }
     }
+
+    /// Refuses to resume the reading in `directory` when it was made with another commit of the natural voices
+    /// (`ReadingResumeVoice.checkRevision`); its manifest is read off the main actor. Nothing to refuse without one.
+    static func refuseAnotherCommit(in directory: URL) async throws {
+        if let saved = try await offMain({ ReadingResumeVoice.manifest(in: directory) }) {
+            try ReadingResumeVoice.checkRevision(saved, again: "Delete it and make it again.")
+        }
+    }
 }
