@@ -71,8 +71,8 @@ Known exceptions today (not precedents; do not add to them):
   prints.
 - Anything that needs FluidAudio or WhisperKit: `HolosDiarization`/`HolosWhisper`, reached by the app only through
   a `voiceislocal` child process.
-- Evaluation and cloud comparison code: `HolosEvaluation` (only `HolosCLI` links it). App-only models stay in
-  `HolosApp` (no `HolosAppModel` target yet; [roadmap](docs/architecture-roadmap.md) step 13).
+- Evaluation and cloud comparison code: `HolosEvaluation` (of the products, only `HolosCLI` links it). App-only
+  models stay in `HolosApp` (no `HolosAppModel` target yet; [roadmap](docs/architecture-roadmap.md) step 13).
 
 ## Size caps
 
@@ -86,14 +86,15 @@ Known exceptions today (not precedents; do not add to them):
 
 `scripts/check-size.sh` enforces the file cap against `scripts/size-baseline.txt` (every source file over 600
 lines and its count). It fails when a file over 1,000 lines has grown past its entry or a file without an entry
-is over 1,000; it warns for a file without an entry over 600. A missing or unreadable baseline, one whose entries
+is over 1,000; it warns for a file without an entry over 600 and for a listed file that grew but stays within
+1,000. A missing or unreadable baseline, one whose entries
 do not match its `# entries: N` line, or a source file it cannot read, is an error. It takes well under a
 second and is not part of `scripts/test.sh`; run it before every PR. After shrinking a file, run
-`scripts/check-size.sh --update-baseline` to lower its entry. The update is refused while the check fails;
-growth of a file already in the baseline must be named (`--update-baseline --allow-growth <path>`) and
-explained in the PR description. A new file over 1,000 lines is never accepted; a file moved whole (`git mv`)
-keeps its entry, so rename the path in `scripts/size-baseline.txt` in the same PR. The type and function caps are
-review rules; nothing checks them yet.
+`scripts/check-size.sh --update-baseline` to lower its entry. The update is refused while the check fails or
+while any file in the baseline has grown, even under 1,000 lines: name each grown file
+(`--update-baseline --allow-growth <path>`) and explain it in the PR description. A new file over 1,000 lines is
+never accepted; a file moved whole (`git mv`) keeps its entry, so rename the path in `scripts/size-baseline.txt`
+in the same PR. The type and function caps are review rules; nothing checks them yet.
 
 ## Invariants at type level
 
@@ -164,8 +165,9 @@ commands), a lock-token type.
 
 ## Tests
 
-- Run tests only through `./scripts/test.sh` or `./scripts/test-target.sh <Target>Tests [--filter …]` (both point
-  `HOLOS_DATA_DIR` and `HOLOS_SUPPORT_DIR` at a temporary folder and load the Testing macro plugin;
+- Run tests only through `./scripts/test.sh` or `./scripts/test-target.sh <Target>Tests [--filter …]` (both always
+  point `HOLOS_DATA_DIR` and `HOLOS_SUPPORT_DIR` at a fresh temporary folder, replacing values set in the shell,
+  and load the Testing macro plugin;
   `test-target.sh` builds only that target and its dependencies). Gate run: `./scripts/test.sh --no-parallel`. A
   plain `swift test` can touch real data; never use it.
 - Shared helpers live in `Tests/HolosTestSupport` (`TemporaryDirectory`, `PollBudget`, `eventually`,
@@ -177,10 +179,10 @@ commands), a lock-token type.
 - Name new files `<Source>Tests.swift` or `<Source>+<Feature>Tests.swift` so the tests for a file can be found.
   Rename old ones when their source file is split, not in bulk.
 - Add no wall-clock upper bounds and no new wall-clock deadline loops. Existing ones: `PollBudgetTests`' 60 s
-  ceiling on a cancelled wait, lower bounds that a lock wait lasted its timeout (`SessionLocksTests`), and
-  `ContinuousClock` deadline loops in some meeting tests (`StatusWriterTests`, `StopPathTests`,
-  `RecordingCancellationTests`). Wait with `PollBudget` / `eventually` and bound tests with `.timeLimit`. Add no
-  sleep over 50 ms outside a poll helper.
+  ceiling on a cancelled wait, `SessionDeletionTests`' check that a deletion marker's date is within 60 s of now,
+  lower bounds that a lock wait lasted its timeout (`SessionLocksTests`), and `ContinuousClock` deadline loops in
+  `SessionArchiveTests`, `StatusWriterTests`, `StopPathTests` and `RecordingCancellationTests`. Wait with
+  `PollBudget` / `eventually` and bound tests with `.timeLimit`. Add no sleep over 50 ms outside a poll helper.
 - Mark a suite `.serialized` only with a comment naming the shared resource.
 - Keep the default suite off the microphone, permission prompts, the network, speech-recognition assets,
   downloaded models and the user's data. Use the seams (`MeetingCapture`, `LiveSpeechSession`, `SpeakerDiarizer`,
@@ -230,7 +232,8 @@ Do not log transcript text, names, vocabulary or embeddings (`docs/meeting-desig
 - Never write dictated text to the clipboard automatically. Only Copy actions the user chooses (Copy Result, Copy
   Original, History's Copy) write it; a failed insertion returns `needsCopy` and waits for the user.
 - Never read or write the user's data folder (`~/Library/Application Support/Holos`) from tests or scripts; use
-  `scripts/test.sh`, which redirects both roots.
+  `scripts/test.sh`, which redirects both roots. One opt-in test reads from it today: `FluidDiarizerFixtureTests`
+  loads the installed speaker models from there unless `HOLOS_FIXTURE_MODELS_DIR` is set.
 - Never launch, kill, or rebuild the user's running app, and do not run `scripts/build-app.sh`,
   `scripts/restart-app.sh` or `scripts/release-app.sh` unless the user asks. Do not record from the microphone or
   trigger permission prompts.

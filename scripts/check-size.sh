@@ -4,9 +4,11 @@
 #   scripts/check-size.sh
 #       Check the tree against scripts/size-baseline.txt.
 #   scripts/check-size.sh --update-baseline [--allow-growth FILE]...
-#       Rewrite the baseline from the tree. Refused while a check would fail, unless every failing file is
-#       already in the baseline and named with --allow-growth (a reason goes in the PR description). A new
-#       file over the hard cap is never accepted; for a file moved whole, rename its path in the baseline.
+#       Rewrite the baseline from the tree. Refused while a check would fail, and while any file in the
+#       baseline has grown (even under the hard cap), unless each such file is named with --allow-growth (a
+#       reason goes in the PR description). Shrunk, removed and new files under the hard cap are recorded
+#       freely. A new file over the hard cap is never accepted; for a file moved whole, rename its path in the
+#       baseline.
 #
 # The baseline lists every source file over the soft cap (600 lines) with its line count, one
 # "<count> <path>" per line, and declares how many there are ("# entries: N", which may be 0).
@@ -110,7 +112,9 @@ awk -v soft="$soft" -v hard="$hard" -v mode="$mode" -v base="$baseline" -v allow
             if (n > b && n > hard) {
                 fail(sprintf("%s: %d lines, baseline %d (files over %d lines may not grow)", f, n, b, hard))
             } else if (n > b) {
-                printf "warn  %s: grew from %d to %d lines (soft cap %d)\n", f, b, n, soft; warned++
+                # Under the hard cap growth only warns, but writing it into the baseline needs --allow-growth.
+                if (mode == "update") fail(sprintf("%s: grew from %d to %d lines (name it with --allow-growth)", f, b, n))
+                else { printf "warn  %s: grew from %d to %d lines (soft cap %d)\n", f, b, n, soft; warned++ }
             } else if (n < b) {
                 notes = notes sprintf("note  %s: %d lines, baseline %d\n", f, n, b)
             }
@@ -132,7 +136,7 @@ awk -v soft="$soft" -v hard="$hard" -v mode="$mode" -v base="$baseline" -v allow
         for (f in allow) if (!(f in seen)) { printf "FAIL  --allow-growth %s: no such file under Sources/\n", f; failed++ }
         if (mode == "update") {
             if (failed > 0) {
-                printf "check-size: %d failure(s); baseline not written (only files already in the baseline can be named with --allow-growth)\n", failed
+                printf "check-size: %d failure(s); baseline not written (name each grown baseline file with --allow-growth; a new file over the hard cap is never accepted)\n", failed
                 exit 1
             }
             print "# Line counts of Sources/ Swift files over " soft " lines; read by scripts/check-size.sh." > out

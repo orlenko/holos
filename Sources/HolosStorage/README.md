@@ -8,10 +8,11 @@ Durable files: the session folder (`<id>.holos`), its locks, and the global stor
 - Safe file operations: `AtomicFile` (`write`, `create`, `append`, `readJSON`, `readIfPresent`, `removeTree`, …) and
   `AtomicFile.openFolder` in `FolderChain.swift` (every folder opened with `O_NOFOLLOW` from the session folder
   down), `ChunkFile` (reading finalized audio chunks).
-- `SessionArchive`: the actor that is the one mutable owner of an active archive (manifest, event journal,
-  transcript revisions), with `openForMaintenance(at:lease:)` and `recover(at:lease:)`. `TranscriptPointer`
-  (`transcripts/current.json`). `SessionManifest.audioFingerprint(track:)`: a stable hash of a track's chunk list,
-  which echo analysis and evaluation runs store to tell whether the audio changed.
+- `SessionArchive` (an actor, plus static recovery functions): the only writer of an archive's `manifest.json`,
+  `events.jsonl` and transcript revisions, under the writer lock (the recorder's archive, or maintenance through
+  `openForMaintenance(at:lease:)` and `recover(at:lease:)`). `TranscriptPointer` (`transcripts/current.json`).
+  `SessionManifest.audioFingerprint(track:)`: a stable hash of a track's chunk list, which echo analysis and
+  evaluation runs store to tell whether the audio changed.
 - Locks (`SessionLocks.swift`): `.writer.lock`, `ProcessingLease` on `.processing.lock`, `withSpeakerLock` /
   `withSpeakerLockAsync` on `.speakers.lock`.
 - Stores: `SessionSpeakerStore` (runs, head, edit journal, voice data, recognition), `SpeakerProfileStore`
@@ -24,9 +25,13 @@ Durable files: the session folder (`<id>.holos`), its locks, and the global stor
 
 **Invariants** (`docs/meeting-design.md §1.6`, `docs/meeting-design.md §1.7`)
 - This target writes its data files through `AtomicFile`: a write is atomic (temporary file, fsync, rename, folder
-  fsync), and a failed append truncates back, so no partial journal line survives. Not covered: audio chunks,
-  which HolosAudio streams into files as it records (finalized and checked when closed), and `corrections.json`,
-  which HolosCore writes with `Data.write(options: .atomic)`.
+  fsync). A failed append tries to truncate back to the old size, but if that truncation fails too it only logs
+  and rethrows, and a crash mid-append can also leave a partial line, so every journal reader tolerates a torn
+  last line: `events.jsonl` and `speakers/edits.jsonl` skip it and report `tornTail` (and appenders cut it off,
+  keeping a backup, before the next append), the forget journal skips it and starts the next line after it, and
+  dictation history counts it as unreadable. Not covered by `AtomicFile`: audio chunks, which HolosAudio streams
+  into files as it records (finalized and checked when closed), and `corrections.json`, which HolosCore writes with
+  `Data.write(options: .atomic)`.
 - Locks are `flock`, one open file description per holder, **not re-entrant**. Waited-on locks are taken in the
   order speakers → profiles. `…Locked` functions document "caller holds the … lock".
 - HolosStorage opens folders inside a session through `AtomicFile.openFolder`, which follows no symbolic link
