@@ -954,3 +954,61 @@ private let falseLocalInWordSix = levelledMask(seconds: 30, local: [
     let silent = mask([AcousticEchoMask.FrameClass](repeating: .silence, count: 300))
     #expect(!EchoLabelStats.echoDominated(silent, start: middle - 0.1, end: middle + 0.1))
 }
+
+@Test func aQuietSoundSmoothedToOneLocalFrameWhileTheCallIsSilentStaysTheUsers() throws {
+    // Through the analysis's own frame rule: the system is silent (nothing predicted), and the microphone has a quiet
+    // sound 40 dB over its floor at frames 100, 102 and 104, nothing between. The 5-frame smoothing leaves only frame
+    // 102 local; 100 and 104 stay active, as echo. One local frame of three: the rule before kept the word, and with
+    // nothing for echo to explain, so does the rule now (no 3 frames of evidence needed).
+    let count = 3_000
+    var microphone = [Float](repeating: 1e-8, count: count)
+    for frame in [100, 102, 104] { microphone[frame] = 1e-4 }
+    let powers = EchoAnalysis.FramePowers(microphone: microphone, echo: [Float](repeating: 0, count: count),
+                                          residual: microphone, system: [Float](repeating: 0, count: count))
+    let mask = EchoAnalysis.classify(powers)
+    #expect((99...105).map(mask.frameClass) == [.silence, .echo, .silence, .local, .silence, .echo, .silence])
+    #expect(mask.localStretches() == [AcousticEchoMask.LocalStretch(frames: 102..<103, evidence: 1,
+                                                                     withoutPredictedEcho: true)])
+    #expect(isEcho(mask.countingEveryLocalFrame(), 100..<105) == false)
+    #expect(isEcho(mask, 100..<105) == false)
+    // Playback plays it too: there is no echo there to play.
+    #expect(mask.localSpeechIntervals().count == 1)
+    // The same single frame where the call predicts echo, even far below the microphone, needs its 3 frames.
+    var levels = mask.echoLevels
+    levels[102] = -40
+    let predicted = try #require(AcousticEchoMask(classes: mask.classes, echoLevels: levels))
+    #expect(isEcho(predicted, 100..<105) == true)
+    #expect(predicted.localSpeechIntervals().isEmpty)
+}
+
+@Test func aHiddenInterjectionWhoseWordsChangeIsNoChangedRow() throws {
+    // The microphone: an unknown speaker's "mm" (the user's, 20 dB over the prediction) and, 0.7 s later, "okay", the
+    // call's echo with false local frames; then the user's sentence. "mm okay" is a filler turn Review hides under
+    // both rules, though the new rule drops "okay" from it: no row changes. The sentence's row does not change either.
+    let filler = TranscriptSegment(id: "F", start: 10, end: 11.3, text: "mm okay", words: [
+        TimedWord(text: "mm", start: 10.0, end: 10.3, utf16Offset: 0, utf16Length: 2),
+        TimedWord(text: "okay", start: 11.0, end: 11.3, utf16Offset: 3, utf16Length: 4),
+    ], track: "mic")
+    let words = transcript([filler, segment("M", words: 5, track: "mic", start: 20)])
+    var run = SpeakerRunBuilder.build(
+        sessionID: session, transcript: words,
+        tracks: [SpeakerRunBuilder.TrackInput(track: "mic", policy: .channel(speakerID: "mic:me", displayName: "Me"))],
+        engine: nil, parameters: callParameters, id: "RUN").run
+    let fillerTurn = try #require(run.turns.firstIndex { $0.spans.first?.segmentID == "F" })
+    #expect(run.turns.count == 2)
+    run.turns[fillerTurn].speakerID = nil
+    let mask = levelledMask(seconds: 30, local: [
+        (10.0, 10.3, -40), (11.0, 11.05, 4), (11.2, 11.25, 4), (20, 22, -40),
+    ])
+    let before = view(run, words, mask: mask.countingEveryLocalFrame())
+    let after = view(run, words, mask: mask)
+    let id = run.turns[fillerTurn].id
+    #expect(shownWords(before.turns.first { $0.id == id }) == [0, 1])
+    #expect(shownWords(after.turns.first { $0.id == id }) == [0])
+    #expect(!before.shownTurns(includingHidden: false).contains { $0.id == id })
+    #expect(!after.shownTurns(includingHidden: false).contains { $0.id == id })
+    let stats = EchoLabelStats.compare(transcript: words, mask: mask, run: run)
+    #expect(stats.localToEcho == 1)
+    #expect(stats.turnsChanged == 0)
+    #expect((stats.microphoneRowsBefore, stats.microphoneRowsAfter) == (1, 1))
+}

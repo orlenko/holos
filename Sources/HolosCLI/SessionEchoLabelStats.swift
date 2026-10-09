@@ -12,7 +12,8 @@ extension Session {
                 For each call given, compares the microphone words the speaker labels count as the user's under \
                 the acoustic echo word rule before the evidence requirement and under the rule now, and prints one \
                 line per session and a total. Prints counts only: never transcript text, names or word times. Only \
-                reads; a meeting that is recording is not read. Exits 1 when no session could be measured.
+                reads; a meeting that is recording is not read, and an argument that names no session is listed by its \
+                place ("#3: not measured") without its path. Exits 1 when no session could be measured.
                 """,
             shouldDisplay: false)
 
@@ -20,7 +21,8 @@ extension Session {
         @Flag(help: "Print the counts as JSON.") var json = false
 
         mutating func run() throws {
-            let report = SessionEchoLabelStats.report(try paths.map { try SessionLocator.resolve($0) })
+            // Each argument on its own: one that names no session is listed as not measured, without its path.
+            let report = SessionEchoLabelStats.report(arguments: paths)
             if json {
                 try Console.json(report)
             } else {

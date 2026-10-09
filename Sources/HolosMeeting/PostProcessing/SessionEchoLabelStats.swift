@@ -54,8 +54,24 @@ public enum SessionEchoLabelStats {
         public var exitCode: Int32 { measured > 0 ? 0 : 1 }
     }
 
-    public static func report(_ sessions: [URL]) -> Report {
-        let results = sessions.map(measure)
+    /// The report for what was typed for each session (`SessionLocator.resolve`: a path to a .holos folder or a
+    /// session ID under `root`), each on its own: one that names no session (missing, a symbolic link, not a folder,
+    /// an unknown ID) is listed as unreadable and anonymous ("#3"), its reason only logged privately (it holds the
+    /// path), and the others are measured all the same.
+    public static func report(arguments: [String], root: URL = HolosPaths.sessions) -> Report {
+        report(arguments.map { argument -> URL? in
+            do {
+                return try SessionLocator.resolve(argument, root: root)
+            } catch {
+                log.error("Echo label stats: a session argument names no session: \(error.localizedDescription, privacy: .private)")
+                return nil
+            }
+        })
+    }
+
+    /// The report for `sessions` in order; nil stands for an argument that named no session (unreadable).
+    public static func report(_ sessions: [URL?]) -> Report {
+        let results = sessions.map { $0.map(measure) ?? SessionResult(sessionID: nil, status: .unreadable) }
         var total = EchoLabelStats()
         for result in results { if let stats = result.stats { total.add(stats) } }
         return Report(sessions: results, total: total, measured: results.filter { $0.stats != nil }.count)

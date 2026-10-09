@@ -1226,3 +1226,50 @@ func echoLabelStatsCountACallAndLeaveOtherMeetingsOut() async throws {
     #expect(SessionFixtures.text(SessionPaths.export("md", in: session)) == exports)
     #expect(SessionEchoLabelStats.report([headphones]).exitCode == 1)
 }
+
+@Test(.timeLimit(.minutes(2)))
+func echoLabelStatsReadEachArgumentOnItsOwnAndNameNoPath() async throws {
+    // A real call between a missing folder, an unknown session ID, and a symbolic link to the call: the call is
+    // measured, the others are listed by their place, and no path or reason is printed.
+    let temp = try TemporaryDirectory("echo")
+    defer { temp.remove() }
+    let call = CallTranscript()
+    let root = temp.url.appendingPathComponent("Sessions", isDirectory: true)
+    let session = try await callSession(in: root, audio: CallAudio.tracks(echo: true), transcript: call.transcript)
+    _ = try await MeetingPostProcessor(voiceSamples: .none, diarizer: systemDiarizer(), freeSpace: FixedFreeSpace(.max))
+        .run(session: session, lease: nil)
+    let id = try SessionArchive.readManifest(at: session).id
+    let link = temp.url.appendingPathComponent("link.holos")
+    try FileManager.default.createSymbolicLink(at: link, withDestinationURL: session)
+    let missing = temp.url.appendingPathComponent("missing.holos").path
+    let unknown = UUID().uuidString
+    let report = SessionEchoLabelStats.report(arguments: [missing, id, unknown, link.path], root: root)
+    #expect(report.sessions.map(\.status) == [.unreadable, .measured, .unreadable, .unreadable])
+    #expect(report.sessions.map(\.sessionID) == [nil, id, nil, nil])
+    #expect(report.measured == 1)
+    #expect(report.exitCode == 0)
+    #expect(report.lines.count == 5)
+    #expect(report.lines[0] == "#1: not measured (unreadable)")
+    #expect(report.lines[2] == "#3: not measured (unreadable)")
+    #expect(report.lines[4].hasPrefix("total (1 of 4 measured): "))
+    let lines = report.lines.joined(separator: "\n")
+    for text in [temp.url.path, "missing", unknown, "link"] { #expect(!lines.contains(text)) }
+    // The path to the call works as its ID does; nothing measured is exit 1.
+    #expect(SessionEchoLabelStats.report(arguments: [session.path], root: root).sessions.first?.status == .measured)
+    #expect(SessionEchoLabelStats.report(arguments: [missing, unknown], root: root).exitCode == 1)
+}
+
+@Test func onlyCommandsThatMayWriteResumePendingForgetsFirst() {
+    // Resuming a forget deletes files and rewrites people, speaker data and transcript files: the read-only stats
+    // command must not set it off.
+    #expect(!ForgetResumeScope.applies(to: ["session", "echo-label-stats", "SESSION-ID", "--json"]))
+    #expect(ForgetResumeScope.applies(to: ["session", "echo-analyze", "SESSION-ID"]))
+    #expect(ForgetResumeScope.applies(to: ["session"]))
+    #expect(ForgetResumeScope.applies(to: ["speakers", "list", "SESSION-ID"]))
+    #expect(ForgetResumeScope.applies(to: ["people", "list"]))
+    #expect(!ForgetResumeScope.applies(to: ["record", "start"]))
+    #expect(!ForgetResumeScope.applies(to: []))
+    // Only as the session subcommand: a session or argument of that name elsewhere is no exemption.
+    #expect(ForgetResumeScope.applies(to: ["speakers", "echo-label-stats"]))
+    #expect(ForgetResumeScope.applies(to: ["session", "export", "echo-label-stats"]))
+}

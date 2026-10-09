@@ -3607,7 +3607,8 @@ public struct SpeakerProfileDatabase: Codable, Sendable, Equatable {
   `RecognitionResult.removeProfiles`; removes any evaluation voice file entries;
   regenerates exports), then appends `{id, state: "done"}`.
   `VoiceProfileService.resumePendingForgets(store:sessionsRoot:)` runs at app launch and
-  at the start of every `holos people`, `speakers`, and `session` command and finishes any
+  at the start of every `holos people`, `speakers`, and `session` command (except the
+  read-only `session echo-label-stats`, `ForgetResumeScope`) and finishes any
   pending tombstone; each step is idempotent, so a crash at any point leaves nothing
   behind once the next run completes.
   - The `stored` line is what tells a resumed forget which phase it is in, rather than the
@@ -8805,7 +8806,10 @@ genuinely local (the user, or people in the room) stays even while the call play
      active frames are local frames of a local stretch with evidence (*Playback* below,
      `AcousticEchoMask.localStretches()`: runs of local frames joined across gaps under 300 ms,
      with at least 3 local frames whose predicted echo is more than 6 dB below the microphone;
-     no predicted echo at all counts, so speech while the call is quiet has it). A local frame
+     no predicted echo at all counts, so speech while the call is quiet has it, and a stretch
+     with no predicted echo in any of its local frames qualifies at any length: the 5-frame
+     smoothing can leave a single local frame of a quiet sound, and with nothing predicted
+     there is no echo for it to be). A local frame
      of a stretch without evidence is the call cancelled poorly and counts as echo. The
      stretch is judged whole, beyond the word: a word spoken quietly over the call is the
      user's when its stretch has louder frames elsewhere, and a word only partly in a stretch
@@ -8961,7 +8965,10 @@ genuinely local (the user, or people in the room) stays even while the call play
   speech: runs of local frames, joined into stretches across gaps under 300 ms
   (`localStretches()`, `stretchGapSeconds`, shared with the word rule); a stretch is
   kept only when at least 3 of its local frames (`evidenceFrames`) have the predicted
-  echo more than 6 dB below the microphone (`evidenceDB`); kept stretches are padded
+  echo more than 6 dB below the microphone (`evidenceDB`), or when none of its local frames
+  has any predicted echo (`withoutPredictedEcho`, any length; added with the word rule: only
+  stretches of 1–2 such frames are new, sounds while the call is silent, where there is no echo
+  to play); kept stretches are padded
   64 ms before and 200 ms after. The review window plays the microphone only there (§5.10,
   echo-free playback). The evidence rule (2026-10-08) answers echo heard in review on a call
   through laptop speakers: where the call's speech is cancelled poorly, the frame rule calls
@@ -8992,9 +8999,14 @@ genuinely local (the user, or people in the room) stays even while the call play
   edited in Review, timed); "user's" are judged words not echo; "in echo" are those whose
   ±0.5 s surroundings hold at least three times as many echo frames as local ones; rows are
   the microphone rows Review shows (short interjections applied), "unknown" those without a
-  speaker; "turns changed" the microphone turns whose shown words differ. A session that is
-  recording, has no usable mask, no transcript, or cannot be read is listed as not measured;
-  it exits 1 only when none was measured. It only reads, takes no lock, and changes nothing.
+  speaker; "turns changed" the microphone rows whose words or speaker differ (a short
+  interjection hidden under both rules is none). Each argument is resolved on its own: one that
+  names no session (missing, a symbolic link, an unknown ID) is listed by its place ("#3: not
+  measured (unreadable)") without its path or the reason. A session that is recording, has no
+  usable mask, no transcript, or cannot be read is listed as not measured; it exits 1 only when
+  none was measured. It only reads, takes no lock, and changes nothing: it is the one `session`
+  command that does not first resume a pending forget of voices (`ForgetResumeScope`), which
+  can delete and rewrite files.
 
 Validation. Synthetic tests (`Tests/HolosSpeakersTests/AcousticEchoTests.swift`,
 `Tests/HolosMeetingTests/AcousticEchoMeetingTests.swift`): the delay to within 1 ms (also an

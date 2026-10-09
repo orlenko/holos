@@ -28,11 +28,17 @@ public struct EchoLabelStats: Sendable, Equatable, Encodable {
     public var microphoneRowsAfter: Int?
     public var unknownRowsBefore: Int?
     public var unknownRowsAfter: Int?
-    /// Microphone turns whose words shown differ between the two rules (one shown only under one counts too); nil
-    /// without speaker labels.
+    /// Microphone rows (as `microphoneRowsBefore`) whose words or speaker differ between the two rules (one shown
+    /// only under one counts too); nil without speaker labels.
     public var turnsChanged: Int?
 
     public init() {}
+
+    /// What a row shows, for `turnsChanged`.
+    private struct ShownRow: Equatable {
+        var speakerID: String?
+        var spans: [WordSpan]
+    }
 
     /// Half the window around a word in which `echoDominated` counts frames.
     public static let surroundingSeconds = 0.5
@@ -97,11 +103,13 @@ public struct EchoLabelStats: Sendable, Equatable, Encodable {
             stats.microphoneRowsAfter = rows[1].count
             stats.unknownRowsBefore = rows[0].filter { $0.speakerID == nil }.count
             stats.unknownRowsAfter = rows[1].filter { $0.speakerID == nil }.count
-            let spans = views.map { view in
-                Dictionary(view.turns.filter { $0.track == EchoFilter.microphoneTrack }.map { ($0.id, $0.spans) },
+            // The rows as Review shows them: a short interjection hidden under both rules is no change, whatever its
+            // words; one attached to a neighbour shows with that speaker.
+            let shown = rows.map { rows in
+                Dictionary(rows.map { ($0.id, ShownRow(speakerID: $0.speakerID, spans: $0.spans)) },
                            uniquingKeysWith: { first, _ in first })
             }
-            stats.turnsChanged = Set(spans[0].keys).union(spans[1].keys).filter { spans[0][$0] != spans[1][$0] }.count
+            stats.turnsChanged = Set(shown[0].keys).union(shown[1].keys).filter { shown[0][$0] != shown[1][$0] }.count
         }
         return stats
     }

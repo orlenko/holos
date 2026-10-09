@@ -168,12 +168,20 @@ public struct AcousticEchoMask: Sendable, Equatable {
         public var frames: Range<Int>
         /// Its local frames with the predicted echo below `evidenceDB`.
         public var evidence: Int
+        /// None of its local frames has any predicted echo (the lowest stored level: none at all, or more than 64 dB
+        /// below the microphone): the call says nothing there, so there is no echo for the frames to be.
+        public var withoutPredictedEcho: Bool
 
-        public init(frames: Range<Int>, evidence: Int) { self.frames = frames; self.evidence = evidence }
+        public init(frames: Range<Int>, evidence: Int, withoutPredictedEcho: Bool = false) {
+            self.frames = frames; self.evidence = evidence; self.withoutPredictedEcho = withoutPredictedEcho
+        }
 
-        /// At least `evidenceFrames` frames of evidence: speech of the microphone's own (the user, or someone in the
-        /// room), whose every local frame counts, also the quieter ones over the call.
-        public var hasEvidence: Bool { evidence >= AcousticEchoMask.evidenceFrames }
+        /// At least `evidenceFrames` frames of evidence, or any length without predicted echo (the analysis's 5-frame
+        /// smoothing can leave a single local frame of a quiet sound whose alternate frames were local, while the call
+        /// is silent): speech of the microphone's own (the user, or someone in the room), whose every local frame
+        /// counts, also the quieter ones over the call. Review playback plays it too: where nothing is predicted there
+        /// is no echo to play.
+        public var hasEvidence: Bool { evidence >= AcousticEchoMask.evidenceFrames || withoutPredictedEcho }
         /// Session time from its first frame to its last, each frame covering one hop around its centre.
         public var start: Double {
             AcousticEchoMask.centre(ofFrame: frames.lowerBound) - AcousticEchoMask.hopSeconds / 2
@@ -198,14 +206,19 @@ public struct AcousticEchoMask: Sendable, Equatable {
             guard classes[frame] == local else { frame += 1; continue }
             let first = frame
             var evidence = 0
+            var withoutPredictedEcho = true
             while frame < classes.count, classes[frame] == local {
                 if Double(echoLevels[frame]) * levelStepDB < evidenceDB { evidence += 1 }
+                if echoLevels[frame] != .min { withoutPredictedEcho = false }
                 frame += 1
             }
-            let run = LocalStretch(frames: first..<frame, evidence: evidence)
+            let run = LocalStretch(frames: first..<frame, evidence: evidence,
+                                   withoutPredictedEcho: withoutPredictedEcho)
             if let last = stretches.last, run.start - last.end < stretchGapSeconds {
                 stretches[stretches.count - 1].frames = last.frames.lowerBound..<frame
                 stretches[stretches.count - 1].evidence += evidence
+                stretches[stretches.count - 1].withoutPredictedEcho = last.withoutPredictedEcho
+                    && withoutPredictedEcho
             } else {
                 stretches.append(run)
             }
