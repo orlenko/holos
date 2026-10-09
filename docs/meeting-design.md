@@ -8034,19 +8034,12 @@ public enum SessionAudioComposition {
   word for forward Delete, where that word is after word edits saved meanwhile, as a refused
   split's field does), so typing goes on there, unless the person went on typing
   elsewhere meanwhile; from the menu, the joined row is selected. While a join's speaker
-  change saves, the field is closed, and the keys typed meanwhile are the field's, never
-  the list's or playback's (Space, J, K, L): the window holds plain typing (characters,
-  Delete, forward Delete, the arrows) and writes it into that field when it opens again,
-  never into whatever window has the keyboard then. The field's ⌘ editing shortcuts (⌘A,
-  ⌘X, ⌘C, ⌘V, ⌘Z, ⇧⌘Z) beep and do nothing meanwhile, except ⌘Z with nothing typed, which
-  undoes the join at once; other shortcuts (⌘W, ⌘Q) work as always. When the field does not
-  open again (the join dropped by an undo, a failure
-  or a relabel, another field opened, another join started), what the keys typed at the
-  join becomes an edit not saved of the word there, the same text the field would have
-  shown: the footer offers Edit Again (the field opens there with it) or Dismiss, and a
-  close by hand waits for it. A close while typing is held saves it as an edit of that
-  word, as it saves an open field's typing. Each join's typing stays its own: a join
-  started while another one's is held never takes it. The banner, and VoiceOver,
+  change saves, the field is closed, and a key pressed meanwhile in edit mode outside a
+  text field (any key without ⌘, and ⌘← / ⌘→) beeps and does nothing: it never reaches the
+  list or playback (Space, J, K, L), and nothing is kept to type later. Other shortcuts work
+  as always: ⌘Z undoes the join at once, ⌘W closes. The field opens again when the save
+  ends; a join dropped meanwhile (an undo here or elsewhere, a failure, a relabel) lets keys
+  through at once, as it opens no field. The banner, and VoiceOver,
   say the rows were joined. After any
   change, a row stays selected only if every turn of it was selected: a turn that joins a
   selected row's paragraph clears that selection rather than widening it.
@@ -8760,8 +8753,8 @@ whose review is open or still opening):
 | `ReviewWordEditTests` | fixture sessions | edit, learn, speaker edits before and after, undo in order and exactly; edit and deletion inside a paragraph; refusals across turns, segments, hidden words; word fixes made again keep an edit |
 | `ReviewSegmentDeletionTests` | fixture sessions | a turn's first, middle, last, and only segment deleted whole: turn text, speakers, text/Markdown/JSON exports, the run's record and emptied turn; undo; Restore from the nearest turn and its undo; a reread plan keeps the emptied turn; an owed head repaired from the recorded move; nothing learned; a live correction refused; no "What you typed: “”"; every turn's times as they were after a deletion and its undo or Restore; every turn deleted, then restored from the full list |
 | `TurnListWordEditTests` (HolosAppTests) | the list laid out offscreen | word clicks play or edit by mode; Return, ⌥Return, Esc, Tab, ⇧Tab; selection kept in one turn; only Esc drops what was typed (mode off, a search filtering the row away, words gone, read-only: queued as an edit); VoiceOver "Edit"; Revert offered per segment (`revertRefusal`); the field follows its words |
-| `ReviewWindowJoinTests` (HolosAppTests) | a review window over a meeting written to a temporary folder (no audio), never shown | ⌘Z in the reopened field undoes the join's speaker; the field reopens where its word is after a word edit saved first; a join made while its split saves survives the saved ID; a named row of two tracks joined to the unknown speaker stays whole; joins in a row, and with another assignment queued first, read as one; any review Undo, a failed change (also at a close by hand), an undo saved elsewhere and a relabel drop every join; ⌘Z with typing to undo undoes the typing and keeps them; a join dropped by ⌘Z (queued or saving) opens no field; a join resolved before a relabel is refused; keys typed while the join saves go into the reopened field, or become an edit not saved when the join fails or is undone; a close (by hand or quitting) saves them; a second join never takes the first one's keys; joins dropped by a refresh end the hold; ⌘A and ⌘V meanwhile are refused and hold nothing; held typing goes into its own field whatever window has the keyboard |
-| `ReviewKeyWindowTests` (HolosAppTests) | pure, plus `TypingHold` alone | which keys a join holds (plain typing), refuses (the field's ⌘ editing shortcuts, but ⌘Z with nothing held) or passes on; held edits applied at the caret (`HeldTyping`); held edits handed back once, in order, with their place; a newer hold ends the open one with its own edits |
+| `ReviewWindowJoinTests` (HolosAppTests) | a review window over a meeting written to a temporary folder (no audio), never shown | ⌘Z in the reopened field undoes the join's speaker; the field reopens where its word is after a word edit saved first; a join made while its split saves survives the saved ID; a named row of two tracks joined to the unknown speaker stays whole; joins in a row, and with another assignment queued first, read as one; any review Undo, a failed change (also at a close by hand), an undo saved elsewhere and a relabel drop every join; ⌘Z with typing to undo undoes the typing and keeps them; a join dropped by ⌘Z (queued or saving) opens no field; a join resolved before a relabel is refused; keys pressed while the join saves are refused (never playback's or the list's) and the field opens again as it was; ⌘Z undoing the join, or joins dropped by a refresh, stop the refusal at once |
+| `ReviewKeyWindowTests` (HolosAppTests) | pure, plus a window never shown | which keys are refused while a join's field is closed (every key without ⌘, and ⌘-arrows); only the newest join reopens it |
 | `TurnListJoinTests` (HolosAppTests) | the list laid out offscreen | Backspace at a row's start and forward Delete at its end join rows (another speaker's row takes the speaker before); elsewhere, selected, or typed they edit text; nothing at the meeting's edges, read-only, or outside edit mode; rows found among all grouped; the caret where the rows met; split then joined reads as before and splits again; Join With Previous Turn in the menu and VoiceOver |
 | `ReviewEchoMuteTests` | local-speech intervals (edges, joins, from 0, past the end, none) | the volume schedule; a mix on the microphone track only, read back as scheduled |
 | `playbackKeepsTheMicrophoneOnlyWhereItHasLocalSpeechWhenThereIsEcho` | a call with an echo mask, then `noEcho`, then other audio | a mix on the microphone track only with an echo mask; none otherwise |

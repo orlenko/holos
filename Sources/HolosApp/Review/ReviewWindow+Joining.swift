@@ -46,9 +46,8 @@ extension ReviewWindow {
     /// of the earlier row's last word for forward Delete), where that word is after the word edits saved meanwhile
     /// (`joinBoundary`), so typing goes on there; asked from the menu, the joined row is selected. VoiceOver hears
     /// that the rows were joined. Nothing of that once the joins were dropped meanwhile (⌘Z pressed, say).
-    /// Keys typed while the speaker change saves, with the field closed, are the field's: the window holds them
-    /// (`TypingHold`) and replays them into the field once it opens again, or keeps them as an edit of the word at the
-    /// join when it does not (`ReviewWindow+JoinTyping`); never playback's.
+    /// While the speaker change saves, with the field closed, typing is refused with a beep (`ReviewKeyWindow`,
+    /// `closeFieldForJoin`): never taken as the list's or playback's keys, and never kept to send again.
     func applyJoin(_ join: ReviewParagraphJoin, request: ReviewJoinRequest) {
         let runID = review.projection.runID
         // The rows the join was asked on: labelled again since, a turn or speaker ID may name another now.
@@ -66,9 +65,6 @@ extension ReviewWindow {
         // A word's field opened since the join was asked (the speaker change took a while): it keeps the keyboard.
         let fieldsOpened = turnList.fieldsOpened
         let message = join.reassign.isEmpty ? TurnListView.joined : TurnListView.joinedSpeaker
-        // Asked from the field with a speaker change to save: the field is closed until it has, so what is typed
-        // meanwhile waits for it.
-        let hold = request.fromField && !join.reassign.isEmpty ? beginTypingHold(for: request) : nil
         let finish = { [weak self] in
             guard let self else { return }
             self.refresh()
@@ -77,16 +73,9 @@ extension ReviewWindow {
                     .announcement: message, .priority: NSAccessibilityPriorityLevel.medium.rawValue,
                 ])
             }
-            guard !self.turnList.typingElsewhere, self.turnList.fieldsOpened == fieldsOpened else {
-                self.handOverTyping(hold, reopened: false)
-                return
-            }
-            if request.fromField, self.turnList.editingWords, self.reopenJoinField(request, message: message) {
-                self.handOverTyping(hold, reopened: true)
-                return
-            }
+            guard !self.turnList.typingElsewhere, self.turnList.fieldsOpened == fieldsOpened else { return }
+            if request.fromField, self.turnList.editingWords, self.reopenJoinField(request, message: message) { return }
             self.turnList.select([self.review.resolvedTurnID(join.turnID)], scroll: true)
-            self.handOverTyping(hold, reopened: false)
         }
         // Made here, as a row break is: what the footer said of an earlier change goes.
         clearTransientMessages()
@@ -95,35 +84,40 @@ extension ReviewWindow {
             finish()
             return
         }
+        // Asked from the field: it is closed until the speaker change saves, and typing is refused meanwhile.
+        let keyWindow = window
+        let closed = request.fromField ? keyWindow.closeFieldForJoin() : nil
+        keyWindow.fieldClosedWhile = { [weak self] in self?.turnList.editingWords == true }
         refresh()
         let cleared = joinsCleared
         let target: ReviewAssignTarget = join.speakerID.map { .speaker($0) } ?? .unknown
         perform { [weak self] review in
-            do {
-                // Checked again as the assignment is queued: a reload may have adopted a relabel since.
-                guard sameLabels() else { throw HolosError.invalidInput(Self.joinRelabelled) }
-                try await review.assign(join.reassign, to: target)
-            } catch is CancellationError {
-                self?.handOverTyping(hold, reopened: false)
-                throw CancellationError()
-            }
-            // A failure drops every join (`perform`), which hands the held typing over (`clearJoins`). Dropped
-            // meanwhile (⌘Z pressed, a change failed) or relabelled since (its turn IDs may name other turns now): no
-            // field, no announcement.
-            guard let self, self.joinsCleared == cleared, sameLabels() else {
-                self?.handOverTyping(hold, reopened: false)
-                return
-            }
+            // However it ends: saved (the field opens again below), failed, dropped or cancelled.
+            defer { keyWindow.reopenFieldAfterJoin(closed) }
+            // Checked again as the assignment is queued: a reload may have adopted a relabel since.
+            guard sameLabels() else { throw HolosError.invalidInput(Self.joinRelabelled) }
+            try await review.assign(join.reassign, to: target)
+            // Dropped meanwhile (⌘Z pressed, a change failed) or relabelled since (its turn IDs may name other turns
+            // now): no field, no announcement.
+            guard let self, self.joinsCleared == cleared, sameLabels() else { return }
             finish()
         }
     }
 
-    /// Drops every join (Undo, a change that failed, a relabel): rows read as they group on their own again. A join
-    /// still saving opens no field now, so the keys held for it are handed over (`dropJoins`).
+    /// Drops every join (Undo, a change that failed, a relabel): rows read as they group on their own again
+    /// (`dropJoins`).
     func clearJoins() {
         let joined = !paragraphBreaks.joins.isEmpty
         dropJoins()
         if joined { refresh() }
+    }
+
+    /// Drops every join without refreshing (`clearJoins`, or `refresh` when an undo was saved): a join still saving
+    /// opens no field now, so its closed field stops refusing typing at once.
+    func dropJoins() {
+        joinsCleared += 1
+        window.reopenFieldAfterJoin(window.fieldClosedForJoin)
+        paragraphBreaks.clearJoins()
     }
 
     /// Opens the field again where a join from it met the rows: `request.word`, followed through the word moves saved
