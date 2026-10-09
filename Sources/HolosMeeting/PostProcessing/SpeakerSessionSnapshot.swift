@@ -218,7 +218,7 @@ extension SpeakerSessionSnapshot: CustomStringConvertible, CustomDebugStringConv
 }
 
 /// Session files the post-processing code reads besides the speaker store (docs/meeting-design.md §2.1).
-enum SessionFiles {
+public enum SessionFiles {
     private static let log = Logger(subsystem: "ca.orlenko.holos.app", category: "meeting")
     static let maxTranscriptBytes = 256 << 20
 
@@ -266,7 +266,7 @@ enum SessionFiles {
     }
 
     /// A transcript revision; its ID must match the file name.
-    static func transcript(id: String, session: URL) throws -> Transcript {
+    public static func transcript(id: String, session: URL) throws -> Transcript {
         guard SessionArchive.validToken(id) else { throw HolosError.invalidInput("Invalid transcript ID.") }
         let name = "transcripts/\(id).json"
         guard let data = try AtomicFile.readIfPresent(SessionPaths.transcript(id, in: session),
@@ -279,7 +279,7 @@ enum SessionFiles {
     }
 
     /// The current transcript, or nil when the session has none.
-    static func currentTranscript(session: URL) throws -> Transcript? {
+    public static func currentTranscript(session: URL) throws -> Transcript? {
         guard let id = try SessionArchive.currentTranscriptID(at: session) else { return nil }
         return try transcript(id: id, session: session)
     }
@@ -300,7 +300,7 @@ enum SessionFiles {
     /// postprocess.json; nil when it does not exist. One written by a newer Holos is refused (`unavailable`); a
     /// damaged one, or one that belongs to another session than the manifest's (read when `manifest` is nil), is
     /// `invalidInput`, so a record copied or restored into the wrong session is never trusted.
-    static func postProcessingRecord(session: URL, manifest: SessionManifest? = nil) throws -> PostProcessingRecord? {
+    public static func postProcessingRecord(session: URL, manifest: SessionManifest? = nil) throws -> PostProcessingRecord? {
         let name = "postprocess.json"
         guard let data = try AtomicFile.readIfPresent(SessionPaths.postprocess(session), maxBytes: 1 << 20) else {
             return nil
@@ -314,7 +314,7 @@ enum SessionFiles {
     }
 
     /// meeting.json, or `MeetingInfo.inferred` for archives from before it existed.
-    static func meetingInfo(session: URL, manifest: SessionManifest) throws -> MeetingInfo {
+    public static func meetingInfo(session: URL, manifest: SessionManifest) throws -> MeetingInfo {
         guard let data = try AtomicFile.readIfPresent(SessionPaths.meetingInfo(session), maxBytes: 1 << 20) else {
             return MeetingInfo.inferred(sessionID: manifest.id, source: manifest.source, createdAt: manifest.createdAt)
         }

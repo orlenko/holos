@@ -1,6 +1,7 @@
 import Foundation
 import Testing
 import HolosCore
+@testable import HolosEvaluation
 @testable import HolosMeeting
 
 // The normalized comparison of `voiceislocal eval compare` (docs/reference-evaluation.md, "Fair comparison"): number

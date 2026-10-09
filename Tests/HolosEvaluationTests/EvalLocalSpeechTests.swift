@@ -5,7 +5,9 @@ import HolosAudio
 import HolosCore
 import HolosStorage
 import HolosSynthesis
+@testable import HolosEvaluation
 @testable import HolosMeeting
+import HolosTestSupport
 
 // `voiceislocal eval local` with Apple's real speech recognition, on speech rendered to a file (never played).
 // Opt-in (HOLOS_SPEECH_FIXTURE=1), and skipped when no English speech model or voice is installed.

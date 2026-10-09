@@ -8813,7 +8813,7 @@ genuinely local (the user, or people in the room) stays even while the call play
   per hour). One limit sets the longest call: `EchoMaskStore.maximumSeconds` (12 hours, so
   `maximumFrames` is 2.7 million); the reader takes frames files up to it, and a longer call is not analysed
   but saved with verdict `tooLong`, which hides nothing and counts as done. The record is
-  keyed to the audio (`EvalStore.audioFingerprint` of the mic and system chunk lists, which
+  keyed to the audio (`SessionManifest.audioFingerprint` of the mic and system chunk lists, which
   include each chunk's SHA-256) and to `EchoAnalysis.version`; any other key is out of date
   and analysed again, but one of a newer schema or a newer analysis version (checked before
   the record is decoded) is refused and left alone, never overwritten. It is in the

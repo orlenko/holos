@@ -27,7 +27,7 @@ public struct StopTimeouts: Sendable, Equatable {
 }
 
 /// How an operation run with `awaitWithTimeout` ended.
-enum TimedOutcome<Value: Sendable>: Sendable {
+public enum TimedOutcome<Value: Sendable>: Sendable {
     case finished(Result<Value, Error>)
     /// The limit passed first; the operation's task was cancelled and abandoned.
     case timedOut
@@ -45,9 +45,10 @@ enum TimedOutcome<Value: Sendable>: Sendable {
 /// An operation that makes something the caller must release (a speech session, say) passes `discardingLate`: when
 /// the operation still succeeds after the wait gave up on it (a platform call that ignores cancellation), its value
 /// goes to `discardingLate` instead of being dropped, so it is cancelled or closed rather than left running.
-func awaitWithTimeout<Value: Sendable>(_ limit: Duration, cancellable: Bool = true, deadline: SharedDeadline? = nil,
-                                       discardingLate: (@Sendable (Value) async -> Void)? = nil,
-                                       _ operation: @escaping @Sendable () async throws -> Value) async
+public func awaitWithTimeout<Value: Sendable>(_ limit: Duration, cancellable: Bool = true,
+                                              deadline: SharedDeadline? = nil,
+                                              discardingLate: (@Sendable (Value) async -> Void)? = nil,
+                                              _ operation: @escaping @Sendable () async throws -> Value) async
     -> TimedOutcome<Value> {
     let gate = OutcomeGate<Value>()
     let work = Task {
@@ -87,7 +88,7 @@ public func waitAtMost(_ limit: Duration, for task: Task<Void, Never>) async -> 
 
 /// A deadline that may be set after the waits it limits have begun: the stop deadline of a live track's `finish()`,
 /// which also cuts short the session finishes already running (docs/meeting-design.md §4.6).
-final class SharedDeadline: Sendable {
+public final class SharedDeadline: Sendable {
     private struct State {
         var instant: ContinuousClock.Instant?
         var waiters: [Int: CheckedContinuation<ContinuousClock.Instant?, Never>] = [:]
