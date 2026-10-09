@@ -200,7 +200,25 @@ extension ReviewSession {
     }
 
     /// One queued change or task.
+    ///
+    /// Invariants:
+    /// 1. `lifecycle` only moves forward, through `start` and `finish`: queued, then running, then finished; or queued,
+    ///    then finished without running (dropped by an undo, refused as stale, held at close: `finished(ran: false)`).
+    /// 2. The states that combine stay separate fields, never folded into `lifecycle`: `undone` (an undo asked while
+    ///    it was queued or running; cleared when that undo fails), `superseded` and `overtaken` (set together by
+    ///    `adopted(headChanged:)`, only while it runs; both can be set), and `savedUnreloaded` (set while it runs when
+    ///    its saved lines cannot be reread; cleared by the reread that shows them).
+    /// 3. `finish` records the result and resumes whoever waits, once (the continuation is cleared).
     @MainActor final class Operation {
+        enum Lifecycle: Equatable {
+            /// Waiting in the queue.
+            case queued
+            /// The queue's first, running now.
+            case running
+            /// Out of the queue; `ran`: it had started.
+            case finished(ran: Bool)
+        }
+
         enum UndoTarget {
             /// An entry taken off the undo stack.
             case saved(UndoEntry)
@@ -234,17 +252,17 @@ extension ReviewSession {
         /// Actions shown at once (turn IDs as the window had them) and their optimistic edit IDs.
         let optimistic: [SpeakerEditAction]
         let optimisticIDs: [String]
-        var started = false
+        /// Where it is in its life (invariant 1).
+        private(set) var lifecycle = Lifecycle.queued
         /// Undone before it was saved: not shown, and an undo reverts what it saves.
         var undone = false
         /// Labels were adopted while it ran (its own result, or a reload after a refusal): the saved labels now
         /// show whatever it did, so its optimistic actions are no longer shown.
-        var superseded = false
+        private(set) var superseded = false
         /// The labels reread while it ran have a head made elsewhere (a relabel or a replacement landed between its
         /// save and the reread): the undo stack was emptied for it, and it gets no undo entry either, since its own
         /// head is no longer the current one.
-        var overtaken = false
-        var finished = false
+        private(set) var overtaken = false
         /// Batches it saved.
         var batches: [String] = []
         /// It saved lines that could not be reread: kept in `unreloaded` until labels read from disk show them.
@@ -289,8 +307,28 @@ extension ReviewSession {
             }
         }
 
+        var isQueued: Bool { lifecycle == .queued }
+        var isRunning: Bool { lifecycle == .running }
+        var isFinished: Bool { if case .finished = lifecycle { true } else { false } }
+        /// It has started: running now, or finished after running.
+        var ran: Bool { lifecycle == .running || lifecycle == .finished(ran: true) }
+
+        /// The queue runs it now (invariant 1).
+        func start() {
+            guard isQueued else { return }
+            lifecycle = .running
+        }
+
+        /// Labels were adopted while it runs (`ReviewSession.adopt`); `headChanged`: their head was made elsewhere
+        /// (invariant 2). Nothing once it is not running.
+        func adopted(headChanged: Bool) {
+            guard isRunning else { return }
+            superseded = true
+            if headChanged { overtaken = true }
+        }
+
         func finish(_ result: Result<Void, any Error>) {
-            finished = true
+            lifecycle = .finished(ran: ran)
             self.result = result
             onFinish?(self)
             continuation?.resume(with: result)

@@ -27,10 +27,11 @@ import os
 /// 1. Labels read from disk after the review opened replace `snapshot` only through `adopt`, which claims this
 ///    window's own new journal lines (`ReviewJournalClaim`); any other new line, or a head run made elsewhere, is a
 ///    change made elsewhere (`externalVersion`), and queued changes made on older labels are refused.
-/// 2. `queue.first` with `started` set is the change running now; changes run one at a time, in queue order.
+/// 2. Only `queue.first` can be running (`Operation.lifecycle`); changes run one at a time, in queue order.
 /// 3. `movesRead` never passes `wordMoves.count`, and `wordsEpoch` only grows: by one for each transcript read that
 ///    this window's own word changes did not make. `revision` hands out both, with the labels run shown, as one value.
 /// 4. `exportsPending` is true from a change saved until `exports/` is rewritten (`ReviewExportScheduler`).
+/// 5. Every change to `queue` goes through `mutateQueue`, which recomputes the projection and activity and notifies.
 @MainActor public final class ReviewSession {
     nonisolated static let log = Logger(subsystem: "ca.orlenko.holos.app", category: "review")
     /// `SpeakerEdit.source` of the window's edits.
@@ -138,7 +139,7 @@ import os
     /// all when it cannot wait any longer, so no edit is dropped without what was typed.
     public var unsavedWordEdits: [String] {
         queue.compactMap { op in
-            guard !op.finished, case .editWords(let request, _) = op.kind else { return nil }
+            guard !op.isFinished, case .editWords(let request, _) = op.kind else { return nil }
             return Self.typed(request)
         }
     }
@@ -153,7 +154,7 @@ import os
     /// none is dropped without what was typed. A Restore of deleted words is among them (`restoreDescription`).
     public var failedWordEditsAtClose: [(typed: String, reason: String)] {
         closingWordEdits.compactMap { op -> (typed: String, reason: String)? in
-            guard op.finished, op.wordEditResult == nil, case .failure(let error)? = op.result,
+            guard op.isFinished, op.wordEditResult == nil, case .failure(let error)? = op.result,
                   !(error is CancellationError), case .editWords(let request, _) = op.kind else { return nil }
             return (Self.typed(request), error.localizedDescription)
         } + (refusedAtClose.map { [$0] } ?? [])
@@ -808,11 +809,8 @@ import os
         try requireEditable()
         if let op = queue.last(where: { $0.isUndoable && !$0.undone }) {
             op.undone = true
-            if !op.started {
-                queue.removeAll { $0 === op }
-                op.finish(.success(()))
-                recomputeProjection()
-                notify()
+            if op.isQueued {
+                dropQueued([op]) { _ in .success(()) }
                 Self.log.info("Session \(self.sessionID, privacy: .public): dropped an unsaved change (undo)")
                 return
             }
@@ -1529,7 +1527,7 @@ import os
         guard let typed else { return nil }
         if case .failure(let error)? = typedEdit?.result { refusal = error }
         if let refusal { return TranscriptWordEdit.withTyped(refusal.localizedDescription, typed.text) }
-        if let typedEdit, !typedEdit.finished {
+        if let typedEdit, !typedEdit.isFinished {
             return "The edit waits until the speaker labels are reread." + TranscriptWordEdit.typedNote(typed.text)
         }
         return nil
@@ -1579,7 +1577,7 @@ import os
         }
         // Every word edit still to save, the field's with them: one that fails now is known with what was typed.
         closingWordEdits = queue.filter { op in
-            guard !op.finished, case .editWords = op.kind else { return false }
+            guard !op.isFinished, case .editWords = op.kind else { return false }
             return true
         }
         closed = true
@@ -1593,21 +1591,19 @@ import os
         }
         // Changes still waiting for labels that were never reread (`drain`) end here; a word edit says what it held.
         // (A relabel waiting behind them goes too: it runs only after them.)
-        let held = queue.filter { !$0.started && !runsAhead($0) }
-        queue.removeAll { op in held.contains { $0 === op } }
-        for op in held {
+        let held = queue.filter { $0.isQueued && !runsAhead($0) }
+        dropQueued(held) { op in
             var message = "The review closed before the speaker labels could be reread, so a change was not saved."
             if case .editWords(let request, _) = op.kind {
                 message = "The review closed before the speaker labels could be reread, so an edit was not saved"
                     + TranscriptWordEdit.typedAside(request.text) + "."
             }
-            op.finish(.failure(HolosError.unavailable(message)))
+            return .failure(HolosError.unavailable(message))
         }
         // Queued before the exports, it has run (or was held, above).
         if case .failure(let error)? = typedEdit?.result {
             Self.log.error("Session \(self.sessionID, privacy: .public): the edit open at close was not saved (\(ProcessSpawner.logCategory(error), privacy: .public))")
         }
-        recomputeProjection()
         await learnFromEdits()
         // A voice pass still running stops; a sample sync still owed runs now (from what the pass stored, or with a
         // pass of its own), and then the meeting's voices are dropped from memory.
@@ -1675,12 +1671,28 @@ import os
         op.onFinish = operationFinished
         // A newer change: voice samples wait for it (`holdSampleSync`); exports alone change no label.
         if case .exports = kind {} else { holdSampleSync() }
-        queue.append(op)
-        recomputeProjection()
-        updateActivity()
-        notify()
+        mutateQueue { queue.append(op) }
         startDraining()
         return op
+    }
+
+    /// The one way `queue` changes (invariant 5): `change`, then the projection worked out again with every queued
+    /// change shown, the activity (idle: nil; else what the first queued task is doing, though a running one may say
+    /// more, such as updating a voice sample), and the window notified.
+    private func mutateQueue(_ change: () -> Void) {
+        change()
+        recomputeProjection()
+        if queue.isEmpty { activity = nil }
+        if let first = queue.first, first.isQueued { activity = activityText(first) }
+        notify()
+    }
+
+    /// Takes `ops`, waiting and not started, out of the queue, each finished with `result(op)` (dropped or refused).
+    private func dropQueued(_ ops: [Operation], _ result: (Operation) -> Result<Void, any Error>) {
+        mutateQueue {
+            queue.removeAll { op in ops.contains { $0 === op } }
+            for op in ops { op.finish(result(op)) }
+        }
     }
 
     private func wait(for op: Operation) async throws {
@@ -1703,7 +1715,7 @@ import os
     /// reread that ends that state lets the rest run, a word edit on the words where the earlier edit moved them.
     private func drain() async {
         while let op = queue.first(where: { reloadProblem == nil || runsAhead($0) }) {
-            op.started = true
+            op.start()
             activity = activityText(op)
             notify()
             let result: Result<Void, any Error>
@@ -1713,18 +1725,17 @@ import os
             } catch {
                 result = .failure(error)
             }
-            queue.removeAll { $0 === op }
-            if op.savedUnreloaded {
-                // Still shown; its undo entry is made once labels read from disk show what it saved (`adopt`).
-                unreloaded.append(op)
-            } else if op.isUndoable, !op.undone, !op.overtaken, op.savedUndoable {
-                pushUndo(op.batches, wordEdit: op.wordEdit)
+            mutateQueue {
+                queue.removeAll { $0 === op }
+                if op.savedUnreloaded {
+                    // Still shown; its undo entry is made once labels read from disk show what it saved (`adopt`).
+                    unreloaded.append(op)
+                } else if op.isUndoable, !op.undone, !op.overtaken, op.savedUndoable {
+                    pushUndo(op.batches, wordEdit: op.wordEdit)
+                }
+                if case .failure(let error) = result { restoreUndo(after: op, error: error) }
+                op.finish(result)
             }
-            if case .failure(let error) = result { restoreUndo(after: op, error: error) }
-            op.finish(result)
-            recomputeProjection()
-            updateActivity()
-            notify()
         }
         draining = false
         updateVoiceAnalysis()
@@ -2337,17 +2348,14 @@ import os
     /// word index may name another word now, so they are refused.
     private func refuseQueuedSplits(in segmentID: String) {
         let stale = queue.filter { op in
-            guard !op.started, case .edit(let actions, _) = op.kind else { return false }
+            guard op.isQueued, case .edit(let actions, _) = op.kind else { return false }
             return actions.contains { action in
                 if case .splitTurn(_, let at) = action { return at.segmentID == segmentID }
                 return false
             }
         }
         guard !stale.isEmpty else { return }
-        queue.removeAll { op in stale.contains { $0 === op } }
-        for op in stale {
-            op.finish(.failure(HolosError.invalidInput("The words of that turn changed; split it again.")))
-        }
+        dropQueued(stale) { _ in .failure(HolosError.invalidInput("The words of that turn changed; split it again.")) }
     }
 
     /// Runs a `VoiceProfileService` change (it saves the journal and rewrites the exports itself, and leaves the voice
@@ -2467,7 +2475,7 @@ import os
     /// (`reloadProblem`) until labels are read from disk again. `matching`: the running change saved lines that
     /// batch finds; it stays shown (`unreloaded`) until then.
     private func holdUnreread(matching: (([SpeakerEdit]) -> Bool)?, problem: String) {
-        if let matching, let running = queue.first, running.started {
+        if let matching, let running = queue.first, running.isRunning {
             running.savedUnreloaded = true
             running.claims.append(matching)
         }
@@ -2952,15 +2960,14 @@ import os
             op.batches.append(first.batchID ?? first.id)
             recordSplits(of: op, lines: ours)
         }
-        if let running = queue.first, running.started { running.superseded = true }
         let previousRunID = snapshot.run?.id
         // Also a reread after one of this window's word edits whose labels could not be reread at once.
         let keptFrom = fresh.run.flatMap { turnKeepingRuns[$0.id] }
         let retargeted = keptFrom != nil && keptFrom == previousRunID
         let headChanged = fresh.run?.id != previousRunID && !retargeted
-        // A head made elsewhere: the change running (whose own head it replaced) gets no undo entry once it ends,
-        // as the entries before it go below.
-        if headChanged, let running = queue.first, running.started { running.overtaken = true }
+        // The change running is superseded (the saved labels now show whatever it did); with a head made elsewhere
+        // it is overtaken too (it gets no undo entry once it ends, as the entries before it go below).
+        queue.first?.adopted(headChanged: headChanged)
         let external = forced || headChanged || claim.unclaimed > 0
         let transcriptChanged = fresh.transcript.id != snapshot.transcript.id
         var voicesMoved = false
@@ -3033,10 +3040,9 @@ import os
 
     /// Queued changes not started yet and made on labels older than the last change from elsewhere: refused.
     private func refuseStaleQueuedChanges() {
-        let stale = queue.filter { !$0.started && $0.isUndoable && $0.basis < externalVersion }
+        let stale = queue.filter { $0.isQueued && $0.isUndoable && $0.basis < externalVersion }
         guard !stale.isEmpty else { return }
-        queue.removeAll { op in stale.contains { $0 === op } }
-        for op in stale { op.finish(.failure(staleRefusal(op))) }
+        dropQueued(stale) { .failure(staleRefusal($0)) }
     }
 
     /// A queued change refused because the labels changed elsewhere; a word edit's says what was typed, never lost
@@ -3218,7 +3224,7 @@ import os
             return reverts(of: entry.batches).map { ($0, UUID().uuidString) }
         case .undo(.operation(let earlier)):
             // Until the earlier change is saved its effect is simply not shown (it is `undone`).
-            guard earlier.finished || earlier.superseded else { return [] }
+            guard earlier.isFinished || earlier.superseded else { return [] }
             return reverts(of: earlier.batches).map { ($0, UUID().uuidString) }
         case .revertWordFix, .editWords, .relabel, .reload, .exports:
             return []
@@ -3339,16 +3345,6 @@ import os
 
     private func requirePeople() throws {
         guard profiles != nil else { throw Self.noPeople }
-    }
-
-    /// Idle: nil. Otherwise what the first queued task is doing (a running one may say more, such as updating a
-    /// voice sample).
-    private func updateActivity() {
-        guard let first = queue.first else {
-            activity = nil
-            return
-        }
-        if !first.started { activity = activityText(first) }
     }
 
     private func activityText(_ op: Operation) -> String? {

@@ -20,8 +20,8 @@ struct ReviewSessionOperationsTests {
         case .exports: kind = "exports"
         default: kind = "other"
         }
-        let flags = [(op.started, "ran"), (op.undone, "undone"), (op.superseded, "superseded"),
-                     (op.overtaken, "overtaken"), (op.finished, "finished"), (op.savedUnreloaded, "unreread")]
+        let flags = [(op.ran, "ran"), (op.undone, "undone"), (op.superseded, "superseded"),
+                     (op.overtaken, "overtaken"), (op.isFinished, "finished"), (op.savedUnreloaded, "unreread")]
         return ([kind] + flags.map { $0.0 ? $0.1 : "-" }).joined(separator: " ")
     }
 
