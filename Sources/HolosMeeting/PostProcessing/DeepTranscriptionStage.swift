@@ -481,9 +481,8 @@ public enum DeepTranscriptionStage {
     /// makes the new transcript current. A cancellation seen with both locks held publishes nothing.
     private static func publish(_ deep: Transcript, details: [String: String],
                                 request: Request) async throws -> String? {
-        let archive = try SessionArchive.openForMaintenance(at: request.session, lease: request.lease)
-        do {
-            let problem = try await SessionArchive.withSpeakerLockAsync(at: request.session) { () async throws -> String? in
+        return try await SessionArchive.withMaintenanceArchive(at: request.session, lease: request.lease) { archive in
+            try await SessionArchive.withSpeakerLockAsync(at: request.session) { () async throws -> String? in
                 if let problem = editedHeadProblem(request) { return problem }
                 whilePublishing?()
                 try Task.checkCancellation()
@@ -491,11 +490,6 @@ public enum DeepTranscriptionStage {
                 try await archive.saveTranscript(deep, writeLegacyExports: false)
                 return nil
             }
-            await archive.releaseLock()
-            return problem
-        } catch {
-            await archive.releaseLock()
-            throw error
         }
     }
 }
