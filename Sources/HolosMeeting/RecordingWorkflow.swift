@@ -353,7 +353,29 @@ public enum RecordingWorkflow {
 
 // MARK: - Recorder
 
-/// One recording from its first status write to `exited` (docs/meeting-design.md §4.2, §4.6).
+/// One recording from its first status write to `exited` (docs/meeting-design.md §4.2, §4.6). Its work is split by
+/// concern: `Recorder+Capture` (epochs), `+Power`, `+Status` (status.json and the journal), `+Stop` (the stop path)
+/// and `+Exit` (the exited status and the locks).
+///
+/// Invariants:
+/// 1. The session holds a lock from creation until status.json says `exited`: every exit path finishes the archive
+///    keeping the writer lock, except the stop path with a processing lease, which takes the lease while it still
+///    holds the writer lock.
+/// 2. `exitStatus` writes `exited` before it releases the writer lock, and a processing lease is released only after
+///    `exitStatus`. While `exited` cannot be written, neither lock is released: both go to `exitRetry`.
+/// 3. Audio is durable before anything depends on it: the stop path stops capture, drains the consumer, finishes the
+///    pump and the chunk writer before it reads the manifest, saves a transcript or takes the processing lease.
+/// 4. A capture is stopped at most once (`captureStopped`), and `stopCurrentCapture` waits for its frame consumer,
+///    or abandons it after the capture-stop limit, before it returns. The display assertion is released first.
+/// 5. Each stop source is applied once: the stop source, `stop.request` and the duration each set their `…Handled`
+///    flag when they first fire.
+/// 6. Once `cancelled` is set, the loop applies no more inputs and the run ends with `CancellationError`. The stop
+///    path checks for cancellation right before it saves the transcript, and saves none when it finds the run
+///    cancelled.
+/// 7. A willSleep the loop applies is always allowed right after (`allowSleep`), whatever the machine did with it.
+/// 8. Requests are answered until exit: by the machine while recording, `ignored` once capture has stopped
+///    (`answerRequestsWhileStopping`), and by one last poll after publication closes; leftovers are deleted only
+///    once status.json says exited.
 @MainActor
 final class Recorder {
     static let log = Logger(subsystem: "ca.orlenko.holos.app", category: "recorder")
