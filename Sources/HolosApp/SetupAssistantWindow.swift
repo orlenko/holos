@@ -1,4 +1,5 @@
 import AppKit
+import HolosAppModel
 import HolosCore
 
 /// What the Setup Assistant window shows.

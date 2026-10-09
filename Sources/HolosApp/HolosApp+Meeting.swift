@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import HolosAppModel
 import HolosAudio
 import HolosCore
 import HolosMeeting

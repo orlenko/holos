@@ -1,5 +1,5 @@
 import Testing
-@testable import HolosCore
+@testable import HolosAppModel
 
 @Test func theAppearanceFollowsMacOSUntilChosen() {
     #expect(AppearanceChoice(saved: nil) == .system)

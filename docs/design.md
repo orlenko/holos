@@ -975,7 +975,7 @@ turns dictation on when it ends. A speaker-model install the assistant started a
 that had not ended (`setupAssistantSpeakerModelsPending`) is resumed at launch too,
 after the detached earlier run, which still holds the install lock, exits.
 
-`SetupAssistantFlow` (HolosCore) holds these decisions and is unit-tested. UserDefaults
+`SetupAssistantFlow` (HolosAppModel) holds these decisions and is unit-tested. UserDefaults
 `setupAssistantDone` is absent before the assistant ever ran, false once it started,
 true once finished or skipped; `setupAssistantAwaitingReopenCheck` asks for the check
 page. An install from before the assistant (dictation on, or Microphone and

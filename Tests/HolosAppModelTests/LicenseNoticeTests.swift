@@ -1,5 +1,5 @@
 import Testing
-@testable import HolosCore
+@testable import HolosAppModel
 
 @Test func releaseTagAcceptsOnlyVersionTags() {
     #expect(LicenseNotice.releaseTag("v1.0.0") == "v1.0.0")

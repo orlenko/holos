@@ -1,4 +1,5 @@
 import AppKit
+import HolosAppModel
 import HolosCore
 import HolosDesktop
 import HolosSynthesis

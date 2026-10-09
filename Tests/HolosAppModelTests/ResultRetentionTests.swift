@@ -1,5 +1,5 @@
 import Testing
-@testable import HolosCore
+@testable import HolosAppModel
 
 private func retaining(_ text: String, original: String = "") -> ResultRetention {
     var retention = ResultRetention()

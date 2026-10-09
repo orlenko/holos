@@ -20,7 +20,7 @@
 611 Sources/HolosContent/ReadingOutput.swift
 1722 Sources/HolosContent/ReadingPipeline.swift
 1180 Sources/HolosContent/WebArticleExtractor.swift
-615 Sources/HolosCore/DictationRerun.swift
+615 Sources/HolosCore/DictationTextPipeline.swift
 634 Sources/HolosCore/SpeakerModels.swift
 925 Sources/HolosCore/SpokenCode.swift
 1035 Sources/HolosCore/TranscriptFixer.swift
