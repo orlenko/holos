@@ -613,20 +613,30 @@ public enum ReadingLanguage {
 /// The voice a reading resumed without `--voice` was started with (`voiceislocal read --resume`): the default voice
 /// can have changed since (natural voices installed after the reading was started), and a reading resumes only with
 /// its own voice. `--output` naming the reading's folder: the voice its manifest saved. An explicit output, whose
-/// cache is keyed by the voice among the other settings: the first of `candidates` (the voices the reading could
-/// have been started with by default) whose cache holds a reading made with it. Nil when none is found (the resume then
-/// says there is no reading to resume, as before).
+/// cache is keyed by the voice among the other settings: of `candidates` (the voices the reading could have been
+/// started with by default), the one whose cache holds a reading made with it; when several do (a natural reading
+/// stopped, its pack removed, the same text started again with the Apple voice now the default), the one written to
+/// last, so the latest reading resumes. Nil when none is found (the resume then says there is no reading to resume, as
+/// before).
 public enum ReadingResumeVoice {
     public static func saved(output: String?, name: String, readingsRoot: URL, candidates: [String],
                              identity: (String) -> String) -> String? {
+        var found: [(voice: String, changed: Date)] = []
         for candidate in candidates {
             guard let (location, destination) = try? ReadingOutput.resolve(
                       output: output, name: name, identity: identity(candidate), readingsRoot: readingsRoot),
                   let manifest = manifest(in: location.workDirectory) else { continue }
             if destination == .readingFolder { return manifest.voiceIdentifier }
-            if manifest.voiceIdentifier == candidate { return candidate }
+            guard manifest.voiceIdentifier == candidate else { continue }
+            let url = location.workDirectory.appendingPathComponent(ReadingManifest.fileName)
+            let changed = (try? FileManager.default.attributesOfItem(atPath: url.path)[.modificationDate]) as? Date
+            found.append((candidate, changed ?? .distantPast))
         }
-        return nil
+        // The latest reading (its manifest is saved after every part); on a tie, the earlier candidate.
+        return found.enumerated().max { lhs, rhs in
+            lhs.element.changed != rhs.element.changed ? lhs.element.changed < rhs.element.changed
+                : lhs.offset > rhs.offset
+        }?.element.voice
     }
 
     /// The voices a reading in `language` may have been started with without `--voice`: its pack's natural voice

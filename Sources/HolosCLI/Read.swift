@@ -22,9 +22,11 @@ struct Read: AsyncParsableCommand {
         the document's title, with a chapter at each heading. It plays on iPhone, Android, Windows, \
         and in browsers; share it with AirDrop, Messages, or Mail. Prints the file's path.
 
-        Without --output the file goes in Application Support/Holos/Readings/<UUID>/. The voice is \
-        the best installed one (Premium, then Enhanced) for the text's language unless --voice says \
-        otherwise; `voiceislocal voices list` shows each voice's quality.
+        Without --output the file goes in Application Support/Holos/Readings/<UUID>/. Unless --voice \
+        says otherwise, the voice is the natural voice for the text's language once its pack is \
+        installed (Alba in English, Estelle in French; voiceislocal setup --natural-voices), else the \
+        best installed Apple voice (Premium, then Enhanced); `voiceislocal voices list` shows each \
+        voice's quality. --resume keeps the voice the reading was started with.
 
         An interrupted reading continues where it stopped: run the same command with --resume. A \
         reading made without --output resumes with --output set to its Readings folder. A web page \
@@ -42,7 +44,7 @@ struct Read: AsyncParsableCommand {
     @Option(name: .shortAndLong, help: "A .m4a file path, or an existing directory to write <Title>.m4a in.")
     var output: String?
     @Option(name: .shortAndLong, help: ArgumentHelp(
-        "Voice name as `say -v '?'` or `voiceislocal voices list` prints it, such as \"Ava (Premium)\", or its identifier.",
+        "Voice name as `say -v '?'` or `voiceislocal voices list` prints it, such as \"Ava (Premium)\" or \"Alba (Natural)\", or its identifier (pocket:en:alba).",
         valueName: "name"))
     var voice: String?
     @Option(parsing: .unconditional, help: speechRateHelp, transform: parseSpeechRate)
