@@ -6,7 +6,7 @@ import HolosSpeech
 import HolosSynthesis
 import Synchronization
 
-/// The natural voices in the `voiceislocal` tool (docs/design.md "Natural voices"): Pocket TTS rendering with the
+/// The natural voices in the `voiceislocal` tool (Sources/HolosSynthesis/README.md): Pocket TTS rendering with the
 /// per-paragraph check through Apple's on-device recognizer, and the setup of the language packs.
 enum NaturalVoicesCLI {
     /// The renderer `say` and `read` use for natural voices. The check runs unless `HOLOS_NATURAL_CHECK=0`, or a reading

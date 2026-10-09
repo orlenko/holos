@@ -42,9 +42,8 @@ enum SessionWordFixRevert {
         let lease = try SessionArchive.acquireProcessingLease(at: session)
         defer { lease.release() }
         return try await lease.withUse(for: session) {
-            let archive = try SessionArchive.openForMaintenance(at: session, lease: lease)
-            do {
-                let published = try await SessionArchive.withSpeakerLockAsync(at: session) { () async throws -> String? in
+            return try await SessionArchive.withMaintenanceArchive(at: session, lease: lease) { _ in
+                try await SessionArchive.withSpeakerLockAsync(at: session) { () async throws -> String? in
                     // The current transcript is the one this revert published: the journal says it was reverted
                     // from `expectedTranscriptID` (`revertedFrom`), as the word-edit repair asks of an edit. Any other
                     // transcript, a Review revert mark or not, is never repaired onto.
@@ -71,11 +70,6 @@ enum SessionWordFixRevert {
                     try SpeakerTranscriptRetarget.publishHead(plan, session: session, now: now)
                     return plan.run.id
                 }
-                await archive.releaseLock()
-                return published
-            } catch {
-                await archive.releaseLock()
-                throw error
             }
         }
     }
@@ -133,9 +127,8 @@ enum SessionWordFixRevert {
 
     private static func publish(session: URL, word: WordRef, expectedTranscriptID: String, expectedRunID: String,
                                 lease: ProcessingLease, now: Date) async throws -> Outcome {
-        let archive = try SessionArchive.openForMaintenance(at: session, lease: lease)
-        do {
-            let outcome = try await SessionArchive.withSpeakerLockAsync(at: session) { () async throws -> Outcome in
+        return try await SessionArchive.withMaintenanceArchive(at: session, lease: lease) { archive in
+            try await SessionArchive.withSpeakerLockAsync(at: session) { () async throws -> Outcome in
                 let current = try SessionFiles.currentTranscript(session: session)
                 guard let current, current.id == expectedTranscriptID else {
                     throw HolosError.invalidInput("The transcript changed outside this window; reload and try again.")
@@ -176,11 +169,6 @@ enum SessionWordFixRevert {
                 }
                 return published
             }
-            await archive.releaseLock()
-            return outcome
-        } catch {
-            await archive.releaseLock()
-            throw error
         }
     }
 }

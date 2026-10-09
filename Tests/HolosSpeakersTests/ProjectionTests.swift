@@ -2,6 +2,7 @@ import CryptoKit
 import Foundation
 import Testing
 import HolosCore
+import HolosTestSupport
 @testable import HolosSpeakers
 
 // MARK: - Fixture
@@ -904,20 +905,6 @@ private func compacted(_ raw: String) -> String {
 }
 
 // MARK: - applying
-
-/// Deterministic pseudo-random numbers in [0, 1) (64-bit LCG), so the property test is reproducible.
-private struct SeededNumbers {
-    var state: UInt64
-
-    mutating func next() -> Double {
-        state = state &* 6_364_136_223_846_793_005 &+ 1_442_695_040_888_963_407
-        return Double(state >> 11) / Double(UInt64(1) << 53)
-    }
-
-    mutating func pick<T>(_ items: [T]) -> T {
-        items[min(Int(next() * Double(items.count)), items.count - 1)]
-    }
-}
 
 /// Mostly valid actions on `view`'s current speakers and turns, with some invalid ones and reverts.
 private func randomAction(on view: SpeakerProjection, step: Int, editIDs: [String], random: inout SeededNumbers,

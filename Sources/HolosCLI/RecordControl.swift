@@ -56,7 +56,7 @@ enum RecorderControl {
         }
         let id = uuid.uuidString
         let root = directory.map(fileURL) ?? HolosPaths.sessions
-        let session = root.appendingPathComponent("\(id).holos", isDirectory: true)
+        let session = SessionPaths.folder(for: id, in: root)
         guard FileManager.default.fileExists(atPath: session.path) else {
             throw HolosError.invalidInput("No session \(id) in \(root.path). List sessions with voiceislocal record status.")
         }

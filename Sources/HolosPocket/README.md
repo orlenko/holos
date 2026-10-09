@@ -1,6 +1,6 @@
 # HolosPocket
 
-Natural Reading voices: Kyutai Pocket TTS through FluidAudio (`docs/design.md "Natural voices"`). Of the products,
+Natural Reading voices: Kyutai Pocket TTS through FluidAudio. Of the products,
 only `HolosCLI` links it; the app renders natural parts through `voiceislocal say`.
 
 **Owns**

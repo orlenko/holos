@@ -15,7 +15,8 @@ Durable files: the session folder (`<id>.holos`), its locks, and the global stor
   down), `ChunkFile` (reading finalized audio chunks).
 - `SessionArchive` (an actor, plus static recovery functions): the only writer of an archive's `manifest.json`,
   `events.jsonl` and transcript revisions, under the writer lock (the recorder's archive, or maintenance through
-  `openForMaintenance(at:lease:)` and `recover(at:lease:)`). `TranscriptPointer` (`transcripts/current.json`).
+  `withMaintenanceArchive(at:lease:)`, which wraps `openForMaintenance(at:lease:)` and releases the lock however its
+  body ends, and `recover(at:lease:)`). `TranscriptPointer` (`transcripts/current.json`).
   `SessionManifest.audioFingerprint(track:)`: a stable hash of a track's chunk list, which echo analysis and
   evaluation runs store to tell whether the audio changed.
 - Locks (`SessionLocks.swift`): `.writer.lock`, `ProcessingLease` on `.processing.lock`, `withSpeakerLock` /
@@ -48,8 +49,7 @@ Durable files: the session folder (`<id>.holos`), its locks, and the global stor
   keeps them unshown. `events.jsonl` lines have no version. Details: docs/contracts.md "Persistence".
 - Directories are `0700` and files `0600` by default (`AtomicFile`'s `permissions:` parameter).
 
-**Known gaps:** `SessionDeletion` hard-codes `screen`, `eval/review` and `derived`; two CLI commands
-(`RecordControl`, `People`) still build `<id>.holos` by hand. Readers not yet on `VersionedFile`: the stores'
+**Known gaps:** `SessionDeletion` hard-codes `screen`, `eval/review` and `derived`. Readers not yet on `VersionedFile`: the stores'
 `SchemaVersion.decode` callers (`SessionSpeakerStore`, `SessionDeletion`, `ScreenContextStore`,
 `SpeakerProfileStore`), the other `SessionFiles.decode` callers in HolosMeeting, line files that skip newer lines,
 and hand-written checks with their own policies (`RecorderChannel`, `ControlInbox`, `SessionArchive.readManifest`,

@@ -2,7 +2,7 @@ import CryptoKit
 import Foundation
 
 /// The files of a natural voice pack as the Hugging Face repository lists them, and the check that a downloaded pack
-/// holds every one of them, complete (docs/design.md "Natural voices"). FluidAudio's own check of a pack only looks
+/// holds every one of them, complete (Sources/HolosSynthesis/README.md). FluidAudio's own check of a pack only looks
 /// for its top-level folders, so a download cancelled inside the last model's weights would pass it; this one is what
 /// lets a pack move into place.
 public enum NaturalVoicePackFiles {
