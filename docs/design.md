@@ -613,7 +613,9 @@ natural reading is rendered by the bundled tool, `voiceislocal say --voice pocke
 <part file> [--rate R]` (`HelperNaturalRenderer`, HolosApp), and the pipeline's renderer routes by identifier
 (`RoutingSpeechRenderer`, HolosContent: `pocket:` voices to the tool, the rest to `NativeSpeechRenderer` in the
 app). The model's memory (peak footprint 0.6 GB for English, 1.6 GB for French) stays out of the app and goes with
-the process; Stop sends it SIGTERM. The tool runs detached, so quitting Voice is Local stops every natural-voice
+the process; Stop sends it SIGTERM. One helper runs at a time in the app (`NaturalVoiceHelperGate`): a Preview
+asked for while a reading's part renders waits behind it, and a Preview started again waits until the helper it
+replaced has exited, so the model is never loaded twice at once. The tool runs detached, so quitting Voice is Local stops every natural-voice
 helper still running (a reading's part, a Preview) and removes their temporary folders (`NaturalVoiceHelpers`,
 from `applicationWillTerminate`); a part cut off so is rendered again on Resume. The tool's own temporary files (the
 recognizer's and the system voice's) go in the folder the app gives it (`--scratch-directory`), the one it deletes;
@@ -694,7 +696,8 @@ when the word edits exceed 15 % of the paragraph's words (at least 2), when the 
 (cut off or run on), or when nothing is heard. A failed paragraph is rendered again with the next seed; one that
 fails again (or that the model cannot make) is read by the best Apple voice for the language, converted to 24 kHz,
 and the tool says so on stderr ("Paragraph 3 is read by Ava…"; the app logs it). With no recognizer installed for the
-language the check is skipped (said once), and a recognizer error is said per paragraph and keeps the take;
+language the check is skipped (said once, and not looked for again by the same renderer: a book's parts in
+`voiceislocal read`; the app logs the note once per launch), and a recognizer error is said per paragraph and keeps the take;
 `HOLOS_NATURAL_CHECK=0` turns it off. The locale is the first of the language's whose assets are installed, the
 user's regions first (the inventory lists `fr_FR` while only `fr_CA`'s assets may be there). Measured cost: 1.4 s
 of checking for 53.5 s of English speech in 4 paragraphs (9 % of a 15.4 s render), 0.6 s for 24.7 s of French

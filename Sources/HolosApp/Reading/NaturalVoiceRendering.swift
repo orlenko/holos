@@ -19,17 +19,22 @@ import Synchronization
                                    _ onExit: @escaping @MainActor (Int32) -> Void) throws -> Int32
 
     private static let log = Logger(subsystem: "ca.orlenko.holos.app", category: "reading")
+    /// The tool's notes already logged.
+    private static var notesLogged: Set<String> = []
 
     private let launch: Launch
     private let installedPacks: () -> Set<NaturalVoicePack>
     private let signal: @Sendable (Int32) -> Void
+    private let gate: NaturalVoiceHelperGate
 
     init(launch: @escaping Launch, installedPacks: @escaping () -> Set<NaturalVoicePack> = {
              NaturalVoiceModels.installedPacks()
-         }, signal: @escaping @Sendable (Int32) -> Void = { _ = kill($0, SIGTERM) }) {
+         }, signal: @escaping @Sendable (Int32) -> Void = { _ = kill($0, SIGTERM) },
+         gate: NaturalVoiceHelperGate = .shared) {
         self.launch = launch
         self.installedPacks = installedPacks
         self.signal = signal
+        self.gate = gate
     }
 
     /// Through a `MaintenanceLauncher` of the bundled tool.
@@ -59,6 +64,10 @@ import Synchronization
     func render(text: String, voiceIdentifier: String?, rate: Float?, to output: URL) async throws -> RenderedAudio {
         guard let voiceIdentifier else { throw HolosError.invalidInput("A natural voice must be named.") }
         try checkVoice(voiceIdentifier)
+        // One helper at a time, app-wide: each loads the model (up to 1.6 GB for French). A Preview waits behind a
+        // reading's part, and a Preview started again waits for the one it replaced to have exited.
+        try await gate.acquire()
+        defer { gate.release() }
         let folder = FileManager.default.temporaryDirectory
             .appendingPathComponent("holos-natural-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: false,
@@ -93,6 +102,8 @@ import Synchronization
         }
         let said = (try? String(contentsOf: errors, encoding: .utf8)) ?? ""
         for line in said.split(separator: "\n") where line.hasPrefix("Paragraph") || line.hasPrefix("Note:") {
+            // A note (no recognizer for the language) is the same for every part: logged once per launch.
+            if line.hasPrefix("Note:"), !Self.notesLogged.insert(String(line)).inserted { continue }
             Self.log.notice("Natural voice: \(line, privacy: .public)")
         }
         try Task.checkCancellation()
@@ -214,3 +225,59 @@ enum NaturalVoiceHelpers {
             .first { $0.id == voice.id }?.name ?? voice.name
     }
 }
+
+/// Lets one natural-voice helper run at a time in this app (`HelperNaturalRenderer`): the next waits, in order, until
+/// the one before has exited. A wait cancelled (Stop) ends at once and starts nothing.
+@MainActor final class NaturalVoiceHelperGate {
+    static let shared = NaturalVoiceHelperGate()
+
+    private struct Waiter {
+        let id: UUID
+        let continuation: CheckedContinuation<Void, Error>
+    }
+
+    private var busy = false
+    private var waiting: [Waiter] = []
+
+    /// Whether a helper holds the gate now.
+    var isBusy: Bool { busy }
+
+    func acquire() async throws {
+        try Task.checkCancellation()
+        guard busy else {
+            busy = true
+            return
+        }
+        let id = UUID()
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                enqueue(Waiter(id: id, continuation: continuation))
+            }
+        } onCancel: {
+            Task { @MainActor [weak self] in self?.abandon(id) }
+        }
+    }
+
+    private func enqueue(_ waiter: Waiter) {
+        if Task.isCancelled {
+            waiter.continuation.resume(throwing: CancellationError())
+        } else {
+            waiting.append(waiter)
+        }
+    }
+
+    /// The helper has exited: the next waiting one goes (the gate stays held for it), else the gate is free.
+    func release() {
+        guard !waiting.isEmpty else {
+            busy = false
+            return
+        }
+        waiting.removeFirst().continuation.resume()
+    }
+
+    private func abandon(_ id: UUID) {
+        guard let index = waiting.firstIndex(where: { $0.id == id }) else { return }
+        waiting.remove(at: index).continuation.resume(throwing: CancellationError())
+    }
+}
+

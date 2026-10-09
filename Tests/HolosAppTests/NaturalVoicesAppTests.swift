@@ -229,6 +229,66 @@ import Testing
         #expect(idleChecks == 0)
     }
 
+    /// Fake helpers that run until told to exit; records the order they were launched in.
+    @MainActor private final class FakeHelpers {
+        var launched: [String] = []
+        var exits: [String: @MainActor (Int32) -> Void] = [:]
+
+        func renderer(_ name: String, gate: NaturalVoiceHelperGate) -> HelperNaturalRenderer {
+            HelperNaturalRenderer(launch: { [self] _, _, onExit in
+                launched.append(name)
+                exits[name] = onExit
+                return Int32(100 + launched.count)
+            }, installedPacks: { [.english] }, signal: { _ in }, gate: gate)
+        }
+
+        func exit(_ name: String, code: Int32 = 143) { exits.removeValue(forKey: name)?(code) }
+    }
+
+    private func render(_ renderer: HelperNaturalRenderer) throws -> Task<RenderedAudio, Error> {
+        let output = try folder().appendingPathComponent("p.caf")
+        return Task { try await renderer.render(text: "Hello.", voiceIdentifier: "pocket:en:alba", rate: nil, to: output) }
+    }
+
+    @Test func oneHelperRunsAtATimeAndTheNextWaitsForItToExit() async throws {
+        let gate = NaturalVoiceHelperGate()
+        let helpers = FakeHelpers()
+        // A reading's part is being rendered.
+        let part = try render(helpers.renderer("part", gate: gate))
+        for _ in 0..<10_000 where helpers.launched.isEmpty { await Task.yield() }
+        #expect(helpers.launched == ["part"])
+        // A Preview asked for meanwhile waits: no second helper (and no second model) while the first runs.
+        let preview = try render(helpers.renderer("preview", gate: gate))
+        for _ in 0..<1_000 { await Task.yield() }
+        #expect(helpers.launched == ["part"])
+        // Stopping the part signals its helper; the Preview still waits until that helper has exited.
+        part.cancel()
+        for _ in 0..<1_000 { await Task.yield() }
+        #expect(helpers.launched == ["part"])
+        helpers.exit("part")
+        for _ in 0..<10_000 where helpers.launched.count < 2 { await Task.yield() }
+        #expect(helpers.launched == ["part", "preview"])
+        helpers.exit("preview")
+        _ = try? await part.value
+        _ = try? await preview.value
+        #expect(!gate.isBusy)
+    }
+
+    @Test func aWaitingRenderThatIsStoppedStartsNothing() async throws {
+        let gate = NaturalVoiceHelperGate()
+        let helpers = FakeHelpers()
+        let first = try render(helpers.renderer("first", gate: gate))
+        for _ in 0..<10_000 where helpers.launched.isEmpty { await Task.yield() }
+        let second = try render(helpers.renderer("second", gate: gate))
+        for _ in 0..<1_000 { await Task.yield() }
+        second.cancel()
+        await #expect(throws: CancellationError.self) { _ = try await second.value }
+        helpers.exit("first", code: 1)
+        _ = try? await first.value
+        #expect(helpers.launched == ["first"])
+        #expect(!gate.isBusy)
+    }
+
     private final class FakePlayback: PreviewPlayback {
         var stopped = false
         func stop() { stopped = true }
