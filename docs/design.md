@@ -478,7 +478,8 @@ installed voices without the novelty ones (`ReadingVoiceMenu`, HolosSynthesis): 
 speak one of the user's languages first, each group Premium, Enhanced, then default, then
 by the user's language order, language, and name; Premium and Enhanced are marked in the
 title. Automatic resolves once the text is loaded, as `voiceislocal read` does (the
-declared or detected language, `NativeSpeechRenderer.bestVoice`). Preview speaks a
+declared or detected language, `NativeSpeechRenderer.bestVoice`). Natural voices, once downloaded, come first and
+are what Automatic picks for English and French (see "Natural voices"). Preview speaks a
 sentence in the voice's language (English for languages without one) with
 `AVSpeechSynthesizer.speak`; a second press stops it. Speed is 0.8×–1.4× in steps of 0.1
 (`ReadingSpeed`): 1× passes no rate (the renderer's default, as the CLI without
@@ -649,6 +650,129 @@ waiting or being made at launch without that mark (the app crashed or was killed
 stopped, with Resume. When the quit is cancelled after that question, at once (a meeting's
 question answered Cancel) or later (a meeting that could not be stopped,
 `waitBeforeQuitting`), the kept readings continue at once (`quitCancelled`).
+
+### Natural voices
+
+Reading can use natural (neural) voices besides Apple's: Kyutai's Pocket TTS (CC BY 4.0) in Fluid Inference's
+Core ML conversion, run with FluidAudio 0.17.1 (the version the app already pins). Voice identifiers are
+`pocket:<language>:<voice>` (`pocket:en:alba`, `pocket:fr:estelle`); `NaturalVoiceCatalog` (HolosSynthesis) lists
+them with the licence of the recording each voice prompt was made from (the Pocket TTS model card maps voices to
+recordings; https://huggingface.co/kyutai/tts-voices gives their licences). Only voices whose recording allows
+commercial use are offered: 19 English voices (Alba, CC BY 4.0; twelve VCTK voices, CC BY 4.0; six CC0 voices) and
+Estelle in French (Kyutai's own recording, CC0). `cosette` (Expresso) and `jean` (EARS) are CC BY-NC 4.0 and are
+listed but never offered; voices not offered are deleted from the downloaded packs. Menus title them "Natural —
+Alba (English)", the CLI "Alba (Natural)" with quality `natural`. Preview with a natural voice has the tool
+render the sample sentence (a few seconds), then plays it.
+
+**Where it runs.** The app does not link FluidAudio (as for speaker labels and deep transcription): a part of a
+natural reading is rendered by the bundled tool, `voiceislocal say --voice pocket:… --text-file <part text> --output
+<part file> [--rate R]` (`HelperNaturalRenderer`, HolosApp), and the pipeline's renderer routes by identifier
+(`RoutingSpeechRenderer`, HolosContent: `pocket:` voices to the tool, the rest to `NativeSpeechRenderer` in the
+app). The model's memory (peak footprint 0.6 GB for English, 1.6 GB for French) stays out of the app and goes with
+the process; Stop sends it SIGTERM. One helper runs at a time in the app (`NaturalVoiceHelperGate`): a Preview
+asked for while a reading's part renders waits behind it, and a Preview started again waits until the helper it
+replaced has exited, so the model is never loaded twice at once. The tool runs detached, so quitting Voice is Local stops every natural-voice
+helper still running (a reading's part, a Preview) and removes their temporary folders (`NaturalVoiceHelpers`,
+from `applicationWillTerminate`); a part cut off so is rendered again on Resume. The tool's own temporary files (the
+recognizer's and the system voice's) go in the folder the app gives it (`--scratch-directory`), the one it deletes;
+at launch the app removes `holos-natural-`, `holos-preview-`, `holos-check-`, and `holos-fallback-` folders a day
+old that a crash left in the temporary folder (`NaturalVoiceTemporaries`). Each part loads the compiled model again: about 3 s for English and 11 s for
+French, against about 3,000 characters (three minutes of speech, 40–90 s of rendering) per part. `voiceislocal read` and `say` render natural voices in their own process
+(`NaturalSpeechRenderer` with `PocketSpeechBackend`, HolosPocket), keeping the model loaded across parts.
+
+**Defaults.** Automatic picks the pack's default voice once that pack is installed: Alba for English, Estelle for
+French (`NaturalVoiceCatalog.defaultVoice(language:installed:)`); until then, and for other languages, the best
+Apple voice. A reading keeps the voice it started with, so a resume never switches voice: the app saves it in the
+reading's entry before rendering, and `voiceislocal read --resume` without `--voice` uses the voice in the reading's
+manifest (`ReadingResumeVoice`: for an explicit output, whose cache is keyed by the voice, the default voices of
+now and of before the packs were installed are tried in turn, the natural one whether its pack is installed or
+not; a reading found with a natural voice whose pack is gone says to install it again). A natural voice whose pack is gone fails with where to
+download it. Preview of Automatic speaks with the voice Make Audio would use for the user's first language
+(`ReadingVoices.automatic`); a sample that does not start playing is reported under the card, not left as Stop.
+`say --text-file` reads only a regular file, at most 16 MB, decoded strictly.
+
+**Models.** `voiceislocal setup --natural-voices [--language fr]` downloads a pack into
+`Application Support/Holos/Models/pocket-tts/<pack>/` (`$HOLOS_POCKET_MODELS_DIR` to use another folder; FluidAudio
+takes the base folder as `PocketTtsManager(directory:)`, so nothing goes to its default `~/.cache/fluidaudio`):
+English about 530 MB, French (24-layer pack) about 1.9 GB, as listed on Hugging Face on 2026-10-08 (491 MB on disk
+for English after the voices not offered are removed). Everything comes from one reviewed commit of the repository,
+`NaturalVoiceModels.revision` (91748676fe3c8b2eb3007b3125253bcd898202c3; models and voices alike, the voices being
+its `constants_bin/*.safetensors`), never the moving `main`: the listing, FluidAudio's downloads (through
+`ModelRegistry.revisionOverrides`), and, for the French pack, the root `encoder_recover_pinv.bin` that FluidAudio
+would otherwise fetch from `main` at every load. The marker records the commit; a pack from another commit counts as
+not installed, and the next setup downloads it again at the pinned one. A reading made with a natural voice records
+the commit in its cache key and manifest (`ReadingManifest.modelRevision`; none for an Apple voice, whose key is
+unchanged), so after the commit changes it is never resumed with parts of two versions: the resume says the voices
+changed and the reading must be made again. The app's Resume and Try Again reopen the reading's own saved cache
+(`ReadingLibrary.savedLocation`), not the one its settings would name now, so the refusal shows on its row and Delete
+removes the old parts (the constant is updated with the FluidAudio
+pin, after checking the new commit's card, licences, and listing). It downloads into `<pack>.download/`: the
+repository's listing is read first (each file's size, and SHA-256 for LFS files), every listed file is ensured with FluidAudio's
+`ModelHub.download(subdirectory:)` (a file already there is kept, a partial one resumed), and every file is then
+checked against the listing (`NaturalVoicePackFiles`); one that fails is removed and the download fails, keeping the
+rest for the next try. FluidAudio's own `ensureModels` is not used for this: it skips the download once the pack's
+top-level folders exist, so a download cancelled inside the last model's weights would pass. Only a complete pack is
+renamed into place, loaded, and made to speak a test sentence there (the first load compiles the models for this
+Mac; Core ML keys compiled models by path, so this happens where they are used); `installed.json` is written next,
+and only then are the voices not offered removed (a setup that finds the pack installed removes them again, in case
+one was cut off). A pack in place without the marker (an interrupted setup, maybe an older one) is first checked against the
+pinned commit's listing (sizes and SHA-256s); only then is it warmed up again without a download. One that does not
+match, cannot be checked (offline), or does not load there goes back to `<pack>.download/`, where the next download checks it and fetches only what is missing or
+damaged. A lock file keeps two installs apart. Settings › Reading has a row per pack: Download
+(with the size), the tool's progress line and Cancel while it runs (SIGTERM; what was downloaded is kept), and the
+failure's reason (offline, for instance) with Try Again; Apple's voices stay available throughout. The voice menus
+end with a disabled "Natural voices: download them in Settings › Reading" while a pack is missing; when a download
+ends, they are filled again with the new voices and keep the voice and speed chosen on the Reading card; a pack
+installed from Terminal meanwhile is noticed when the app becomes active (`NaturalVoicesWatch`), and while
+another process is installing one (its install lock held) the app looks again every 3 s until it ends
+(`NaturalVoicesInstallPoll`).
+
+**Rendering a part.** `NaturalSpeechPlan` splits the part into paragraphs (blank lines, spaces or tabs on them allowed; line breaks inside one read
+as spaces) and feeds Pocket TTS one paragraph at a time; it splits a paragraph into sentences itself. A paragraph
+over 1,000 characters (a text without blank lines is one paragraph) is fed in groups of whole sentences of at most
+1,000 characters (a longer sentence split after its clauses, then between words), with no pause between groups but
+the voice's own, so every block's samples stay small (about a minute of speech). Pauses: 0.6 s
+between paragraphs, 0.9 s after a heading (a first block followed by others that is at most 100 characters and ends
+without sentence punctuation), none after the last block (the pipeline's 0.5 s and 1 s gaps go between parts). No
+extra pause is put between sentences: measured on a made-up 4-paragraph text, Pocket TTS leaves 190–350 ms between
+its sentences. Each paragraph is a fresh session (`PocketTtsManager.makeSession(voice:seed:)`) with one fixed seed,
+so a resumed reading sounds as it would have: two renders of the same text were byte-identical (also across debug
+and release builds). The samples get FluidAudio's own post-processing (rumble removed, de-essed), as its one-shot
+synthesis does. Each paragraph is written to a temporary file beside the output as soon as it is made (the file is
+published once whole), so a long text never holds more than one paragraph's samples; a part is at most about 3,000
+characters anyway.
+
+**Speed.** Pocket TTS has no speed control. The slider's speed (the inverse of `ReadingSpeed.rate(for:)`, so 1.2× is
+1.2×; continued linearly for `--rate` outside the slider, within 0.5×–2×) time-stretches each paragraph's speech
+afterwards with `AVAudioUnitTimePitch` rendered offline (`TimeStretch`), pitch kept; the pauses are not stretched.
+
+**Per-paragraph check.** After a paragraph is rendered it is heard back with Apple's on-device recognizer
+(SpeechAnalyzer, `AppleSpeechChunkChecker` in the tool: no extra model, already installed for dictation) and compared
+with its text (`SpeechChunkCheck`): words case-, accent-, and punctuation-folded, and numbers left out on both
+sides, whichever way they are written: words with digits ("2015", "3,5", "2nd", "1er"), English and French number
+words ("twenty fifteen", "trois virgule cinq", "deuxième"), and "and", "point", "et", "pour" between two of them. The
+voice reads "2015" as words the recognizer may write as digits or spell out; leaving numbers out on both sides makes
+the check blind to a misread number but never fails a right one. It fails
+when the word edits exceed 15 % of the paragraph's words (at least 2), when the lengths differ by more than 8 words
+(cut off or run on), or when nothing is heard. A failed paragraph is rendered again with the next seed; one that
+fails again (or that the model cannot make) is read by the best Apple voice for the language, converted to 24 kHz,
+and the tool says so on stderr ("Paragraph 3 is read by Ava…"; the app logs it). With no recognizer installed for the
+language the check is skipped (said once, and not looked for again by the same renderer: a book's parts in
+`voiceislocal read`; the app logs the note once per launch), and a recognizer error is said per paragraph and keeps the take;
+`HOLOS_NATURAL_CHECK=0` turns it off. The locale is the first of the language's whose assets are installed, the
+user's regions first (the inventory lists `fr_FR` while only `fr_CA`'s assets may be there). Measured cost: 1.4 s
+of checking for 53.5 s of English speech in 4 paragraphs (9 % of a 15.4 s render), 0.6 s for 24.7 s of French
+(2.5 %).
+
+**Measured** (M4 Pro, macOS 27, release build, 2026-10-08): English Alba, 53.5 s of speech in 15.4 s with the check
+(3.5× real time overall, about 4.9× once the pack is loaded); 24–29 s while other builds kept the machine busy.
+French Estelle, 24.7 s in 24.1 s with the check (about 1×, of which 11 s is loading the 24-layer pack; about 2×
+after). The opt-in integration test rendered 13.3 s of English in 3.6 s. The warm-up after the download loaded the
+English pack in 3.5 s and spoke its test sentence in 4.2 s (the research had seen 1–7 minutes for a first load; not
+here). Installing took 99 s for English and 621 s for French (download included).
+`HOLOS_NATURAL_STATS=1 voiceislocal say …` prints a render's timings. The opt-in test
+`HOLOS_POCKET_INTEGRATION=1 ./scripts/test.sh --filter PocketIntegrationTests` renders a paragraph with the real
+model (skipped by default, so the suite stays offline).
 
 ### Dictation history
 

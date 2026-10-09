@@ -1,5 +1,6 @@
 import AppKit
 import HolosContent
+import HolosMeeting
 import UniformTypeIdentifiers
 import HolosSynthesis
 
@@ -15,9 +16,9 @@ final class ReadingPane: NSViewController, MainSectionContent, NSTableViewDataSo
     private let preview = VoicePreview()
     private let field = NSTextField()
     private let chooseButton = NSButton(title: "Choose File…", target: nil, action: nil)
-    private let voicePopup = NSPopUpButton(frame: .zero, pullsDown: false)
+    let voicePopup = NSPopUpButton(frame: .zero, pullsDown: false)
     private let previewButton = NSButton(title: "▶ Preview", target: nil, action: nil)
-    private let speedSlider = NSSlider(value: ReadingSpeed.standard, minValue: ReadingSpeed.range.lowerBound,
+    let speedSlider = NSSlider(value: ReadingSpeed.standard, minValue: ReadingSpeed.range.lowerBound,
                                        maxValue: ReadingSpeed.range.upperBound, target: nil, action: nil)
     private let speedLabel = NSTextField(labelWithString: "")
     private let makeButton = NSButton(title: "Make Audio", target: nil, action: nil)
@@ -29,6 +30,7 @@ final class ReadingPane: NSViewController, MainSectionContent, NSTableViewDataSo
     private var rows: [ReadingEntry] = []
     private var windowObserver: NSObjectProtocol?
     private var preferencesObserver: NSObjectProtocol?
+    private var voicesObserver: NSObjectProtocol?
 
     init(controller: ReadingController) {
         self.controller = controller
@@ -39,6 +41,16 @@ final class ReadingPane: NSViewController, MainSectionContent, NSTableViewDataSo
         player.onChange = { [weak self] in self?.playerChanged() }
         player.onError = { [weak self] problem in self?.showMessage(problem, problem: true) }
         preview.onChange = { [weak self] in self?.updatePreviewButton() }
+        preview.onError = { [weak self] problem in self?.showMessage(problem, problem: true) }
+        let natural = HelperNaturalRenderer(launcher: MaintenanceLauncher(executable: ChildProcessLauncher.bundledExecutable))
+        preview.renderNatural = { text, voice, rate, output in
+            _ = try await natural.render(text: text, voiceIdentifier: voice, rate: rate, to: output)
+        }
+        // Natural voices installed: the menu offers them, and the card keeps the voice and speed chosen in it.
+        voicesObserver = NotificationCenter.default.addObserver(
+            forName: ReadingVoices.installedChanged, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.refreshVoices() }
+        }
         preferencesObserver = NotificationCenter.default.addObserver(
             forName: ReadingPreferences.changed, object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated { self?.applyPreferences() }
@@ -690,12 +702,31 @@ final class ReadingPane: NSViewController, MainSectionContent, NSTableViewDataSo
 enum ReadingVoicePopup {
     static let automaticTitle = "Automatic — best voice for the text's language"
 
-    /// `selecting` nil: Automatic. A voice that is not installed falls back to Automatic.
-    static func fill(_ popup: NSPopUpButton, selecting id: String?) {
+    static let naturalHint = "Natural voices: download them in Settings › Reading"
+
+    /// `selecting` nil: Automatic. A voice that is not installed falls back to Automatic. The natural voices of the
+    /// installed packs come first (Automatic picks Alba or Estelle once they are), then Apple's voices; without any,
+    /// a disabled line says where to download them.
+    static func fill(_ popup: NSPopUpButton, selecting id: String?,
+                     installed: Set<NaturalVoicePack> = NaturalVoiceModels.installedPacks()) {
         let items = ReadingVoiceMenu.items(NativeSpeechRenderer.voices(), preferredLanguages: Locale.preferredLanguages)
         popup.removeAllItems()
+        popup.autoenablesItems = false
         let automatic = NSMenuItem(title: automaticTitle, action: nil, keyEquivalent: "")
         popup.menu?.addItem(automatic)
+        let natural = NaturalVoiceCatalog.voices(installed: installed)
+        if !natural.isEmpty { popup.menu?.addItem(.separator()) }
+        for voice in natural {
+            let entry = NSMenuItem(title: voice.title, action: nil, keyEquivalent: "")
+            entry.representedObject = voice.id
+            popup.menu?.addItem(entry)
+        }
+        if installed.count < NaturalVoicePack.allCases.count {
+            popup.menu?.addItem(.separator())
+            let hint = NSMenuItem(title: naturalHint, action: nil, keyEquivalent: "")
+            hint.isEnabled = false
+            popup.menu?.addItem(hint)
+        }
         var previousPreferred: Bool?
         for item in items {
             if previousPreferred != item.preferred { popup.menu?.addItem(.separator()) }

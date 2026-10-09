@@ -204,6 +204,19 @@ Markdown, RTF, OpenDocument or text file anywhere on the section, or use **Choos
 for the text's language; Premium voices are marked), hear it with **▶ Preview** (press again
 to stop), set **Speed** (0.8×–1.4×), and press **Make Audio** (Return).
 
+**Natural voices** sound much closer to a person reading than Apple's: Kyutai's Pocket TTS,
+running on this Mac. Download them in Settings › Reading (English about 530 MB, French about
+1.9 GB; the size is on the button, and Cancel stops a download, which resumes next time);
+Apple's voices keep working meanwhile and without them. Once a language is downloaded,
+Automatic reads English with **Alba** and French with **Estelle**, and the Voice menu lists
+"Natural — Alba (English)" and the other natural voices first. Each paragraph is heard back
+by Apple's on-device recognizer; one that comes out garbled is rendered again, and if it fails
+twice it is read by an Apple voice instead. From Terminal: `voiceislocal setup
+--natural-voices [--language fr]`, then `voiceislocal read <source> --voice pocket:en:alba`
+(without `--voice` the natural voice is the default once installed), and `voiceislocal voices
+list`. Only voices whose recordings allow commercial use are offered; credits are in About
+and THIRD_PARTY_NOTICES.md.
+
 Readings are made one at a time, in this process; the list shows each one's title and
 source, then "Rendering part N of M" with a progress bar and **Stop**, or, once made, its
 length, chapters, size and voice with **▶ Play** (Space; shows the position), **Share…**
