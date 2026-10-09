@@ -5,9 +5,9 @@ import HolosStorage
 import Testing
 
 // `TranscriptPublisher` failing at each step, for each kind of publication the stages and Review make. The expected
-// state after each failure is the one the per-stage publication code left before it moved here: it wrote the staged
-// run, the rebased revision and its event, the publication's event, the pointer and the head, in that order, and
-// stopped at the first step that threw. Transcripts are invented word lists.
+// state after each failure follows the write order those callers rely on (the staged run, the rebased revision and its
+// event, the publication's event, the pointer, the head), stopping at the first step that throws, and which failures
+// each caller reports as published. Transcripts are invented word lists.
 
 /// The publications that go through `TranscriptPublisher`, as each caller makes them.
 enum PublisherKind: String, CaseIterable, Sendable {
@@ -91,8 +91,8 @@ private struct InjectedFault: Error {}
 private struct CommittedFailure: Error { var underlying: any Error }
 private struct HeadFailure: Error { var underlying: any Error }
 
-/// What the per-stage code left after `fault` (see the comment at the top). A repair writes only the run and the
-/// head, and its errors are thrown as they are.
+/// The session after `fault` (see the comment at the top). A repair writes only the run and the head, and its errors
+/// are thrown as they are.
 private func expected(_ kind: PublisherKind, _ fault: PublisherFault, revision: String, published: String)
     -> PublisherState {
     // [staged, revision and its event, event, pointer, head]
@@ -117,7 +117,7 @@ private func expected(_ kind: PublisherKind, _ fault: PublisherFault, revision: 
 }
 
 @Test(.timeLimit(.minutes(1)), arguments: PublisherCase.all)
-func publicationFailingAtEachStepLeavesWhatTheStageCodeLeft(_ test: PublisherCase) async throws {
+func publicationFailingAtEachStepStopsThereAndReportsWhatWasPublished(_ test: PublisherCase) async throws {
     let temp = try TemporaryDirectory("publisher")
     defer { temp.remove() }
     let (session, old, run) = try await SessionFixtures.labelledSession(in: temp.url)

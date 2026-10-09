@@ -287,9 +287,9 @@ enum SessionWordEdit {
 
     /// A Review change that makes `transcript` current with the head carried over by `plan`, journaled
     /// `transcriptEdited` with `details`. It is saved through `TranscriptPointerSave`: a save that throws once the
-    /// pointer already names it (the rename was done, a later step failed) did publish it, as does a head that cannot be
-    /// published after it. Both are `incomplete` (its head is still owed), its message extended by what failed, never a
-    /// refusal.
+    /// pointer already names it (the rename was done, a later step failed) did publish it, as does a head that cannot
+    /// be published after it. Both are `incomplete` (its head is still owed), its message extended by what failed,
+    /// never a refusal.
     private static func reviewChange(_ transcript: Transcript, plan: SpeakerTranscriptRetarget.Plan, now: Date,
                                      details: [String: String], incomplete: IncompletePublication)
         -> TranscriptPublisher.Change {

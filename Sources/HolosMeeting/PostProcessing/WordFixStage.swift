@@ -770,7 +770,8 @@ public enum WordFixStage {
                 let snapshot = try SpeakerSessionSnapshot.load(session: request.session)
                 plan = try SpeakerTranscriptRetarget.plan(session: request.session, from: snapshot, to: fixed)
                 if edited, plan == nil {
-                    return .keep(Publication(problem: "The speaker labels could not be kept, so the transcript was not changed."))
+                    return .keep(Publication(problem: "The speaker labels could not be kept, so the transcript was not "
+                                             + "changed."))
                 }
             }
             whilePublishing?()
