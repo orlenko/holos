@@ -129,8 +129,7 @@ public struct RecordingDependencies: Sendable {
     }
 
     /// LiveMeetingCapture + AppleSpeechSession.make, `ContinuousSessionClock`, `VolumeFreeSpace`, `SystemPowerMonitor`,
-    /// `PowerAssertion`, `BuiltInMicrophone.devices`, `AudioEnvironmentEvents`, and
-    /// `AppleSpeechEngine.defaultLocale`.
+    /// `PowerAssertion`, `BuiltInMicrophone.devices`, `AudioEnvironmentEvents`, `AppleSpeechEngine.defaultLocale`.
     public static func live(stop: any RecorderStopSource, reporter: any RecordingReporter,
                             postProcess: PostProcessHook?) -> RecordingDependencies {
         var dependencies = RecordingDependencies(makeCapture: { IndependentMeetingCapture() }, makeSpeech: appleSpeechFactory,

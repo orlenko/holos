@@ -40,7 +40,8 @@ private func childOptions(_ arguments: [String], defaultLocale: String) -> Recor
         root: URL(fileURLWithPath: value("--directory") ?? "", isDirectory: true),
         applicationBundleID: value("--app"), sessionID: value("--session-id"),
         othersInRoom: arguments.contains("--others-in-room"),
-        expectedSpeakers: value("--expected-speakers").flatMap(Int.init), liveText: !arguments.contains("--no-live-text"),
+        expectedSpeakers: value("--expected-speakers").flatMap(Int.init),
+        liveText: !arguments.contains("--no-live-text"),
         microphone: microphone ?? RecordingOptions.microphone(for: source), languages: languages,
         screen: value("--screen").flatMap(ScreenCaptureTarget.init(rawValue:)),
         nameSource: arguments.contains("--default-name") ? .default : .user)
@@ -66,7 +67,8 @@ func childAndInProcessRecorderGetTheSameOptions(source: AudioSource) async throw
                                                            vocabularyFile: nil)
             let child = try #require(childOptions(arguments, defaultLocale: mappingDefault),
                                      "record start accepts \(arguments)")
-            #expect(child == (await inProcessOptions(settings)), "\(source) \(String(describing: microphone)) \(locales)")
+            let inProcess = await inProcessOptions(settings)
+            #expect(child == inProcess, "\(source) \(String(describing: microphone)) \(locales)")
         }
     }
 }
@@ -79,7 +81,8 @@ func childAndInProcessRecorderGetTheSameOptions(source: AudioSource) async throw
     let options = await inProcessOptions(unnamed)
     #expect(options.locale == mappingDefault)
     #expect(options.languages.isEmpty)
-    let arguments = ChildProcessLauncher.arguments(unnamed, sessionID: mappingID, root: mappingRoot, vocabularyFile: nil)
+    let arguments = ChildProcessLauncher.arguments(unnamed, sessionID: mappingID, root: mappingRoot,
+                                                   vocabularyFile: nil)
     #expect(!arguments.contains { $0.hasPrefix("--locale") || $0.hasPrefix("--languages") })
 
     let systemOnly = MeetingStartSettings(name: "Synthetic", source: .system, microphone: .builtIn, locales: ["fr-CA"])
@@ -92,7 +95,8 @@ func childAndInProcessRecorderGetTheSameOptions(source: AudioSource) async throw
 @Test func theDefaultLanguageIsAskedOnlyWithoutOne() async {
     let asked = SharedValue(0)
     let named = MeetingStartSettings(name: "Synthetic", source: .microphone, locales: ["fr-CA", "en-CA"])
-    let options = await RecordingOptions(settings: named, sessionID: mappingID, root: mappingRoot, vocabulary: ["Strata"],
+    let options = await RecordingOptions(settings: named, sessionID: mappingID, root: mappingRoot,
+                                         vocabulary: ["Strata"],
                                          defaultLocale: { asked.update { $0 += 1 }; return mappingDefault })
     #expect(asked.value == 0)
     #expect(options.locale == "fr-CA")

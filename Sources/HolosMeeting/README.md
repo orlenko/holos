@@ -13,7 +13,8 @@ recorder ↔ app protocol.
   (`status.json`), `LiveTrack` / `LiveTranscript` / `LiveText` / `LiveHints`, `DiskPolicy`, `TrackReplayer`,
   seams `MeetingCapture`, `LiveSpeechSession`, `SessionClock`, `RecorderStopSource`.
 - App-side control: `MeetingController` (`@MainActor`) with the pure `MeetingReducer`; `RecorderChannel` (reads
-  status, sends requests); `RecorderLauncher` (`ChildProcessLauncher`, `InProcessLauncher`), `MaintenanceLauncher`,
+  status, sends requests); `RecorderLauncher` (`ChildProcessLauncher`, `InProcessLauncher`; both take their options
+  from `RecordingOptions(settings:…)`), `MaintenanceLauncher`,
   and `ProcessSpawner` (the one `posix_spawn` helper). `CommandRunner` runs a `voiceislocal` command for the app
   through `MaintenanceLauncher`, with its output in `TemporaryArtifact`s, decoded off the main actor into a
   `CommandResult`; `CommandHandle` stops it with SIGTERM until it is reaped. `DoctorReport` is what `doctor --json`
