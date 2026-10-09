@@ -33,10 +33,10 @@
 637 Sources/HolosMeeting/LiveTrack.swift
 761 Sources/HolosMeeting/MeetingController.swift
 902 Sources/HolosMeeting/MeetingPostProcessor.swift
-834 Sources/HolosMeeting/PostProcessing/LanguageStage.swift
+818 Sources/HolosMeeting/PostProcessing/LanguageStage.swift
 748 Sources/HolosMeeting/PostProcessing/SpeakerTranscriptRetarget.swift
 776 Sources/HolosMeeting/PostProcessing/TranscriptWordEdit.swift
-857 Sources/HolosMeeting/PostProcessing/WordFixStage.swift
+845 Sources/HolosMeeting/PostProcessing/WordFixStage.swift
 669 Sources/HolosMeeting/RecorderLauncher.swift
 652 Sources/HolosMeeting/RecorderMachine.swift
 1935 Sources/HolosMeeting/RecordingWorkflow.swift

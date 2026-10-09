@@ -48,8 +48,7 @@ Known exceptions today (not precedents; do not add to them):
 
 - `HolosCore` holds `Lexicon` (AppKit), `Corrections` (file I/O, flock) and app-only flows (`SetupAssistantFlow`,
   `SettingsSearch`, `PermissionButtons`, …).
-- Session paths are also built outside HolosStorage: `<id>.holos` folder names in two CLI commands
-  (`RecordControl`, `People`); HolosEvaluation's `EvalPaths` (`eval/`, `derived/eval-cloud/`); and names inside a session in HolosMeeting:
+- Session paths are also built outside HolosStorage: HolosEvaluation's `EvalPaths` (`eval/`, `derived/eval-cloud/`); and names inside a session in HolosMeeting:
   `stop.request` (`RecordingWorkflow`), `control/<id>.json` (`RecorderChannel`), `derived/deep-<track>-16k.caf`
   (`DeepTranscriptionStage`), `echo/frames-<hash>.bin` (`EchoAnalysisStage`), `exports/edited-<stamp>.<ext>`
   (`SessionExports`).
@@ -124,8 +123,8 @@ apply. In short:
   the main actor.) Work that can exceed about 10 ms already must run off the main actor
   (`docs/meeting-design.md §1.3`).
 - Locks are `flock` files and are **not re-entrant**. Order for waits: speakers → profiles. Use the scoped APIs
-  (`SessionArchive.withSpeakerLock`, `withSpeakerLockAsync`, `SpeakerProfileStore.update`/`withLockedDatabase`,
-  `ProcessingLease`). A new function that must run under a lock is named `…Locked` and says "Caller holds the
+  (`SessionArchive.withSpeakerLock`, `withSpeakerLockAsync`, `withMaintenanceArchive`,
+  `SpeakerProfileStore.update`/`withLockedDatabase`, `ProcessingLease`). A new function that must run under a lock is named `…Locked` and says "Caller holds the
   … lock"; some existing ones say so only in their doc comment (`SessionSpeakerStore`). **Target state:** lock
   requirements become token parameters (`withSessionLock { tx in … }`), not comments.
 - Read data that a write depends on inside the same lock as the write (names for exports:
@@ -150,7 +149,9 @@ Exist today:
   `postprocess.json` readers use it; the other versioned readers are not yet migrated (they share
   `SchemaVersion.decode` or check the version by hand; `Sources/HolosStorage/README.md`).
 - Locks: `SessionArchive.acquireProcessingLease` / `ProcessingLease`, `withSpeakerLock`, `isProcessing`,
-  `SpeakerProfileStore.update`/`withLockedDatabase`.
+  `SpeakerProfileStore.update`/`withLockedDatabase`. Maintenance writes go through
+  `SessionArchive.withMaintenanceArchive(at:lease:)`, which releases the writer lock however its body ends, not
+  through `openForMaintenance` and a manual `releaseLock()`.
 - JSON and errors: `HolosJSON` (session files and the HolosStorage stores; new persisted files use it too; the
   exceptions today are listed in `docs/contracts.md` "Persistence"), `OpenStringCode` (growable codes),
   `HolosError` (do not add cases; reasons travel in data).
@@ -170,7 +171,7 @@ Exist today:
 
 Planned, see the [architecture roadmap](docs/architecture-roadmap.md) (`docs/architecture-roadmap.md §3` and
 `docs/architecture-roadmap.md §6`; none of these exist yet, so do not reference them as if they did):
-`TranscriptPublisher` and `withMaintenanceArchive` (one publish path for transcripts), `SessionGeneration`
+`TranscriptPublisher` (one publish path for transcripts), `SessionGeneration`
 (derived-data stamps), `Drainable` (pending work at close and quit), `ReviewRevision` (revision-stamped Review
 commands), a lock-token type.
 

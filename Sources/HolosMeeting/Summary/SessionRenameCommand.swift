@@ -355,21 +355,18 @@ public enum SessionRenameCommand {
                     return refused(.busy, moved + "; nothing was changed. Try again.")
                 }
                 do {
-                    let archive = try SessionArchive.openForMaintenance(at: session, lease: lease)
-                    // Checked again once the archive is open, right before the copy is written.
-                    do {
-                        try await checkpoint("manifest")
-                    } catch {
-                        await archive.releaseLock()
-                        return refused(.busy, moved + "; nothing was changed. Try again.")
-                    }
-                    do {
+                    let stopped = try await SessionArchive.withMaintenanceArchive(at: session, lease: lease) {
+                        archive -> Outcome? in
+                        // Checked again once the archive is open, right before the copy is written.
+                        do {
+                            try await checkpoint("manifest")
+                        } catch {
+                            return refused(.busy, moved + "; nothing was changed. Try again.")
+                        }
                         try await archive.setName(target.name)
-                    } catch {
-                        await archive.releaseLock()
-                        throw error
+                        return nil
                     }
-                    await archive.releaseLock()
+                    if let stopped { return stopped }
                 } catch {
                     return done(.unchanged, message + " The manifest's copy of its name could not be written: "
                         + error.localizedDescription + " Choose \(repair) to try again.", code: 3)
@@ -445,63 +442,66 @@ public enum SessionRenameCommand {
         // The commit: meeting.json's name and `nameSource`, in one atomic write. From then on the meeting has the new
         // name; what follows (the manifest's copy, the event, the files) only catches up, and when it does not, the
         // files read as out of date and Update Transcript Files (Finish Rename) does it.
-        let archive: SessionArchive
-        do {
-            archive = try SessionArchive.openForMaintenance(at: session, lease: lease)
-        } catch {
-            return failed(.failed, "Cannot rename the meeting: \(error.localizedDescription)")
-        }
-        // The folder is checked again right before the commit: opening the archive took time.
-        do {
-            try await checkpoint("commit")
-        } catch {
-            await archive.releaseLock()
-            return failed(.busy, moved + "; its name was not changed. Try again.")
-        }
         var unfinished: [String] = []
-        do {
-            try (request.namingWriter ?? { try writeNaming(name: $0, source: $1, session: $2, meeting: $3) })(
-                target.name, target.source, session, meeting)
-        } catch {
-            // A write that failed after its file was in place (its folder not synced) is committed all the same.
-            let written = try? SessionFiles.meetingInfo(session: session, manifest: manifest)
-            guard written?.name == target.name, written?.nameSource == target.source else {
-                await archive.releaseLock()
-                return failed(.failed, "Cannot rename the meeting: \(error.localizedDescription)")
-            }
-            unfinished.append("The name is saved, but saving it could not be confirmed (\(error.localizedDescription)).")
-        }
         func partial(_ message: String) -> Outcome {
             done(.renamed, message + " Choose \(repair) to finish it.", code: 3)
         }
-        // The manifest's copy of the name; a failure leaves the copy stale, not the rename undone.
+        // The body throws nothing itself: an error here is the archive's open.
+        let stopped: Outcome?
         do {
-            try await checkpoint("manifest")
+            stopped = try await SessionArchive.withMaintenanceArchive(at: session, lease: lease) {
+                archive -> Outcome? in
+                // The folder is checked again right before the commit: opening the archive took time.
+                do {
+                    try await checkpoint("commit")
+                } catch {
+                    return failed(.busy, moved + "; its name was not changed. Try again.")
+                }
+                do {
+                    try (request.namingWriter ?? { try writeNaming(name: $0, source: $1, session: $2, meeting: $3) })(
+                        target.name, target.source, session, meeting)
+                } catch {
+                    // A write that failed after its file was in place (folder not synced) is committed all the same.
+                    let written = try? SessionFiles.meetingInfo(session: session, manifest: manifest)
+                    guard written?.name == target.name, written?.nameSource == target.source else {
+                        return failed(.failed, "Cannot rename the meeting: \(error.localizedDescription)")
+                    }
+                    unfinished.append("The name is saved, but saving it could not be confirmed "
+                        + "(\(error.localizedDescription)).")
+                }
+                // The manifest's copy of the name; a failure leaves the copy stale, not the rename undone.
+                do {
+                    try await checkpoint("manifest")
+                } catch {
+                    return partial("The meeting was renamed, but its folder was moved or replaced, so the rest was not "
+                        + "written.")
+                }
+                do {
+                    try await archive.setName(target.name)
+                    if request.failAfterNameWrite { throw HolosError.io("Cannot sync the session folder.") }
+                } catch {
+                    unfinished.append("The manifest's copy of the name could not be written "
+                        + "(\(error.localizedDescription)).")
+                }
+                // The folder is checked once more before the journal is written: a replaced one gets no event.
+                do {
+                    try await checkpoint("event")
+                } catch {
+                    return partial("The meeting was renamed, but its folder was moved or replaced, so the rest was not "
+                        + "written.")
+                }
+                do {
+                    try await archive.recordEvent(kind: MeetingEventKind.renamed,
+                                                  details: ["nameSource": target.source.rawValue])
+                } catch {
+                    log.error("Session \(id, privacy: .public): rename not journaled: \(error.localizedDescription, privacy: .private)")
+                }
+                return nil
+            }
         } catch {
-            await archive.releaseLock()
-            return partial("The meeting was renamed, but its folder was moved or replaced, so the rest was not "
-                + "written.")
+            return failed(.failed, "Cannot rename the meeting: \(error.localizedDescription)")
         }
-        do {
-            try await archive.setName(target.name)
-            if request.failAfterNameWrite { throw HolosError.io("Cannot sync the session folder.") }
-        } catch {
-            unfinished.append("The manifest's copy of the name could not be written (\(error.localizedDescription)).")
-        }
-        // The folder is checked once more before the journal is written: a replaced one gets no event.
-        do {
-            try await checkpoint("event")
-        } catch {
-            await archive.releaseLock()
-            return partial("The meeting was renamed, but its folder was moved or replaced, so the rest was not "
-                + "written.")
-        }
-        do {
-            try await archive.recordEvent(kind: MeetingEventKind.renamed, details: ["nameSource": target.source.rawValue])
-        } catch {
-            log.error("Session \(id, privacy: .public): rename not journaled: \(error.localizedDescription, privacy: .private)")
-        }
-        await archive.releaseLock()
+        if let stopped { return stopped }
         log.notice("Session \(id, privacy: .public): renamed (\(target.source.rawValue, privacy: .public))")
         let message = target.source.isUser ? "Renamed the meeting."
             : generated == nil ? "The meeting shows its default name until Apple Intelligence writes its title."
