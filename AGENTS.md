@@ -1,7 +1,8 @@
 # Working on Voice is Local
 
 Voice is Local is a macOS menu bar app (`HolosApp`) and a command-line tool (`voiceislocal`, `HolosCLI`) in one
-Swift package (Swift 6 language mode, macOS 27). All speech work runs on the Mac. These rules apply to every change,
+Swift package (Swift 6 language mode, macOS 27). The app's speech work runs on the Mac; only the developer
+command `voiceislocal eval` can send audio to a cloud service. These rules apply to every change,
 by agents and humans. Where this file and older docs disagree, this file wins; fix the doc in the same PR.
 
 Read first: the `README.md` of each module you touch, then the doc sections its code cites.
@@ -66,10 +67,11 @@ CLI-only code in the app's link graph; the dictation session and the background-
 
 `scripts/check-size.sh` enforces the file cap against `scripts/size-baseline.txt` (every source file over 600
 lines and its count). It fails when a file over 1,000 lines has grown past its entry or a file without an entry
-is over 1,000; it warns for a file without an entry over 600. It takes well under a second and is not part of
-`scripts/test.sh`; run it before every PR. After shrinking a file, run
-`scripts/check-size.sh --update-baseline` to lower its entry. Raising an entry needs a reason in the PR description.
-The type and function caps are review rules; nothing checks them yet.
+is over 1,000; it warns for a file without an entry over 600. A missing or empty baseline, or a file it cannot
+read, is an error. It takes well under a second and is not part of `scripts/test.sh`; run it before every PR.
+After shrinking a file, run `scripts/check-size.sh --update-baseline` to lower its entry. The update is refused
+while the check fails; growth past the cap must be named (`--update-baseline --allow-growth <path>`) and
+explained in the PR description. The type and function caps are review rules; nothing checks them yet.
 
 ## Invariants at type level
 
@@ -84,8 +86,11 @@ The type and function caps are review rules; nothing checks them yet.
 The concurrency rules in `docs/meeting-design.md` §1.3 and the lock rules in §1.7 apply. In short:
 
 - Swift 6 strict concurrency. Values crossing a boundary are `Sendable` structs or enums. Small shared state uses
-  `Mutex` (Synchronization). `@unchecked Sendable` and `nonisolated(unsafe)` only around a C handle or an mmap
-  region, with a comment stating the invariant.
+  `Mutex` (Synchronization). `@unchecked Sendable` and `nonisolated(unsafe)` are allowed only for a narrow
+  wrapper whose safety the code states in a comment next to it: a C handle or mmap region, an immutable value, or
+  a non-`Sendable` framework object confined to one task, one actor, or a lock (for example
+  `WhisperKitTranscriber`, `SingleBufferFeed`, `OpenedPlayback`). Never use them to silence a warning on shared
+  mutable state.
 - **Target state:** `@MainActor` types do no file system work; readers are `nonisolated` and return snapshots.
   Today `MeetingController` polls status files on the main actor and the app's job schedulers read output files
   there; do not add more. Work that can exceed about 10 ms already must run off the main actor (§1.3).
@@ -109,7 +114,8 @@ Exist today:
   `recover(at:lease:)`), `TranscriptPointer`.
 - Locks: `SessionArchive.acquireProcessingLease` / `ProcessingLease`, `withSpeakerLock`, `isProcessing`,
   `SpeakerProfileStore.update`/`withLockedDatabase`.
-- JSON and errors: `HolosJSON` (every persisted file), `OpenStringCode` (growable codes), `HolosError` (do not add
+- JSON and errors: `HolosJSON` (session files and the HolosStorage stores; new persisted files use it too; the
+  exceptions today are listed in `docs/contracts.md` "Persistence"), `OpenStringCode` (growable codes), `HolosError` (do not add
   cases; reasons travel in data).
 - Roots: `HolosPaths.sessions` (honours `HOLOS_DATA_DIR`), `HolosPaths.supportRoot` (honours `HOLOS_SUPPORT_DIR`).
 - Sessions: `SessionLocator.resolve` (ID or prefix to folder), `SessionCatalog.list`.

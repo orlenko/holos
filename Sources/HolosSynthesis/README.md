@@ -17,8 +17,10 @@ Text-to-speech with the voices installed on the Mac: rendering to files, playbac
 **Depends on:** HolosCore. AVFoundation / AVFAudio, AudioToolbox.
 
 **Invariants**
-- A published file is complete: rendering writes elsewhere and publishes by an exclusive rename; no partly
-  written file is ever at the final path.
+- Publishing never replaces an existing file. With an exclusive rename (`RENAME_EXCL`) the file appears whole;
+  on volumes without one, `ExclusivePublisher` creates the destination with `O_EXCL` and copies into it, so the
+  partly written file is visible until the copy ends. A failed copy is removed; if that removal cannot be
+  confirmed, `CleanupFailed` names the file so the caller can finish later.
 - Voice lookup fails explicitly (`HolosError.unavailable`) when a voice is missing; nothing substitutes another.
 
 **Tests:** `Tests/HolosSynthesisTests`. `NativeSpeechRendererTests` renders real speech to files and

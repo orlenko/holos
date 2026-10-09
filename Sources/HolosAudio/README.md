@@ -22,7 +22,9 @@ staying awake while recording.
 **Invariants** (docs/meeting-design.md §1.3, §2.3, §4.3)
 - Real-time callbacks only copy samples into bounded queues: no `await`, file I/O, or blocking locks in them.
 - A gap is recorded as a discontinuity event, never filled with fabricated audio; audio is never written twice.
-- Frames are consumed off the main actor, so a main-thread stall cannot overflow capture.
+- In a meeting recording, frames are consumed off the main actor, so a main-thread stall cannot overflow capture.
+  Dictation is the exception: `DictationController` reads its frames in a `@MainActor` task, and its capture
+  ends with an error on overflow (`CaptureOverflow.fail`) instead of dropping audio.
 
 **Tests:** `Tests/HolosAudioTests` (synthetic frames, generated chunk files, fake displays).
 `MeetingScreenCaptureTests` has opt-in benchmarks (`HOLOS_SCREEN_BENCHMARK`).
