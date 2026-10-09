@@ -55,10 +55,17 @@ let package = Package(
         ], linkerSettings: [.unsafeFlags([
             "-Xlinker", "-sectcreate", "-Xlinker", "__TEXT", "-Xlinker", "__info_plist", "-Xlinker", cliInfoPlist,
         ])]),
+        // Helpers only test targets depend on (Tests/HolosTestSupport/README.md).
+        .target(name: "HolosTestSupport", dependencies: ["HolosCore"], path: "Tests/HolosTestSupport",
+                exclude: ["README.md"]),
+        .target(name: "HolosSessionTestSupport", dependencies: ["HolosCore", "HolosStorage"],
+                path: "Tests/HolosSessionTestSupport"),
         .testTarget(name: "HolosCoreTests", dependencies: ["HolosCore"]),
         .testTarget(name: "HolosAppTests", dependencies: ["HolosApp", "HolosContent", "HolosCore", "HolosMeeting",
                                                          "HolosStorage"]),
-        .testTarget(name: "HolosStorageTests", dependencies: ["HolosStorage", "HolosCore"]),
+        .testTarget(name: "HolosStorageTests", dependencies: [
+            "HolosStorage", "HolosCore", "HolosTestSupport", "HolosSessionTestSupport",
+        ]),
         .testTarget(name: "HolosSpeechTests", dependencies: ["HolosSpeech", "HolosCore"]),
         .testTarget(name: "HolosSynthesisTests", dependencies: ["HolosSynthesis", "HolosCore"]),
         .testTarget(name: "HolosAudioTests", dependencies: ["HolosAudio", "HolosCore", "HolosStorage"]),

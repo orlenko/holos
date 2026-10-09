@@ -3,29 +3,18 @@ import Darwin
 import Testing
 import HolosCore
 @testable import HolosStorage
+import HolosTestSupport
+import HolosSessionTestSupport
 
 /// A temporary folder holding an empty `<UUID>.holos` session folder and an `outside` folder.
 private func chainFixture() throws -> (folder: URL, session: URL, outside: URL) {
     let fm = FileManager.default
-    let folder = fm.temporaryDirectory.appendingPathComponent("holos-chain-\(UUID().uuidString)", isDirectory: true)
+    let folder = try TemporaryDirectory("chain").url
     let session = folder.appendingPathComponent("\(UUID().uuidString).holos", isDirectory: true)
     let outside = folder.appendingPathComponent("outside", isDirectory: true)
     try fm.createDirectory(at: session, withIntermediateDirectories: true)
     try fm.createDirectory(at: outside, withIntermediateDirectories: true)
     return (folder, session, outside)
-}
-
-private func chainContents(_ folder: URL) throws -> [String] {
-    try FileManager.default.contentsOfDirectory(atPath: folder.path).sorted()
-}
-
-private func chainMode(_ url: URL) throws -> Int {
-    try #require(FileManager.default.attributesOfItem(atPath: url.path)[.posixPermissions] as? NSNumber).intValue
-}
-
-private func isInvalid(_ error: HolosError?) -> Bool {
-    if case .invalidInput? = error { return true }
-    return false
 }
 
 /// Replaces `folder` by a symbolic link to `target`, keeping the real folder at `moved`.
@@ -42,21 +31,21 @@ private func swapForLink(_ folder: URL, movedTo moved: URL, target: URL) {
     defer { try? FileManager.default.removeItem(at: folder) }
     let fm = FileManager.default
     try fm.createSymbolicLink(at: session.appendingPathComponent("speakers"), withDestinationURL: outside)
-    #expect(isInvalid(#expect(throws: HolosError.self) {
+    #expect(isInvalidInput(#expect(throws: HolosError.self) {
         try AtomicFile.ensurePrivateDirectory(SessionPaths.voiceDirectory(session))
     }))
-    #expect(isInvalid(#expect(throws: HolosError.self) {
+    #expect(isInvalidInput(#expect(throws: HolosError.self) {
         try AtomicFile.ensurePrivateDirectory(session.appendingPathComponent("speakers/voice/deeper", isDirectory: true))
     }))
-    #expect(try chainContents(outside).isEmpty)
+    #expect(try FileInspection.entries(outside).isEmpty)
 
     // The session folder itself is a link.
     let sessionLink = folder.appendingPathComponent("\(UUID().uuidString).holos")
     try fm.createSymbolicLink(at: sessionLink, withDestinationURL: outside)
-    #expect(isInvalid(#expect(throws: HolosError.self) {
+    #expect(isInvalidInput(#expect(throws: HolosError.self) {
         try AtomicFile.ensurePrivateDirectory(sessionLink.appendingPathComponent("speakers", isDirectory: true))
     }))
-    #expect(try chainContents(outside).isEmpty)
+    #expect(try FileInspection.entries(outside).isEmpty)
 
     // A missing session folder is not made on the way to a folder inside it.
     let missing = folder.appendingPathComponent("\(UUID().uuidString).holos", isDirectory: true)
@@ -82,10 +71,10 @@ private func swapForLink(_ folder: URL, movedTo moved: URL, target: URL) {
             try AtomicFile.ensurePrivateDirectory(SessionPaths.voiceDirectory(session))
         }
     }
-    #expect(try chainContents(outside).isEmpty)
-    #expect(try chainContents(moved) == ["voice"])
-    #expect(try chainMode(moved) == 0o700)
-    #expect(try chainMode(moved.appendingPathComponent("voice")) == 0o700)
+    #expect(try FileInspection.entries(outside).isEmpty)
+    #expect(try FileInspection.entries(moved) == ["voice"])
+    #expect(try FileInspection.permissions(moved) == 0o700)
+    #expect(try FileInspection.permissions(moved.appendingPathComponent("voice")) == 0o700)
     // Each new folder's parent was fsync'd once.
     #expect(counter.count(session.lastPathComponent + "/") == 1)
     #expect(counter.count("speakers/") == 1)
@@ -93,10 +82,9 @@ private func swapForLink(_ folder: URL, movedTo moved: URL, target: URL) {
 
 @Test func speakerFoldersAreMadeInOneChainFromTheSession() async throws {
     let fm = FileManager.default
-    let root = fm.temporaryDirectory.appendingPathComponent("holos-chain-\(UUID().uuidString)", isDirectory: true)
+    let root = try TemporaryDirectory("chain").url
     defer { try? fm.removeItem(at: root) }
-    let archive = try SessionArchive.create(root: root, name: "Chain", source: .microphoneAndSystem,
-                                            locale: "en-CA", backend: .speech)
+    let archive = try SessionFixtureBuilder(name: "Chain", source: .microphoneAndSystem).create(in: root)
     try await archive.finish(status: ArchiveStatus.complete)
     let session = archive.directory
     let outside = root.appendingPathComponent("outside", isDirectory: true)
@@ -119,9 +107,9 @@ private func swapForLink(_ folder: URL, movedTo moved: URL, target: URL) {
             try SessionSpeakerStore.writeRecognition(result, session: session)
         }
     }
-    #expect(isInvalid(error))
-    #expect(try chainContents(outside).isEmpty)
-    #expect(try chainContents(moved) == ["recognition"])
+    #expect(isInvalidInput(error))
+    #expect(try FileInspection.entries(outside).isEmpty)
+    #expect(try FileInspection.entries(moved) == ["recognition"])
 }
 
 @Test func sessionReadsNeverFollowALinkedSessionFolder() throws {
@@ -134,20 +122,20 @@ private func swapForLink(_ folder: URL, movedTo moved: URL, target: URL) {
     // The session folder is a link: reads through it are refused, not redirected.
     let sessionLink = folder.appendingPathComponent("\(UUID().uuidString).holos")
     try fm.createSymbolicLink(at: sessionLink, withDestinationURL: outside)
-    #expect(isInvalid(#expect(throws: HolosError.self) {
+    #expect(isInvalidInput(#expect(throws: HolosError.self) {
         try AtomicFile.readJSON([String: String].self, from: sessionLink.appendingPathComponent("manifest.json"))
     }))
-    #expect(isInvalid(#expect(throws: HolosError.self) {
+    #expect(isInvalidInput(#expect(throws: HolosError.self) {
         try AtomicFile.readIfPresent(sessionLink.appendingPathComponent("manifest.json"), maxBytes: 1 << 20)
     }))
 
     // A folder inside the session is a link.
     try fm.createSymbolicLink(at: session.appendingPathComponent("speakers"), withDestinationURL: outside)
-    #expect(isInvalid(#expect(throws: HolosError.self) {
+    #expect(isInvalidInput(#expect(throws: HolosError.self) {
         try AtomicFile.readIfPresent(SessionPaths.head(session), maxBytes: 1 << 20)
     }))
-    #expect(isInvalid(#expect(throws: HolosError.self) { try SessionSpeakerStore.readHead(session: session) }))
-    #expect(isInvalid(#expect(throws: HolosError.self) { try AtomicFile.sync(SessionPaths.head(session)) }))
+    #expect(isInvalidInput(#expect(throws: HolosError.self) { try SessionSpeakerStore.readHead(session: session) }))
+    #expect(isInvalidInput(#expect(throws: HolosError.self) { try AtomicFile.sync(SessionPaths.head(session)) }))
     #expect(throws: HolosError.self) { try AtomicFile.listFolder(SessionPaths.speakers(session)) }
     #expect(throws: HolosError.self) { try AtomicFile.entryType(at: SessionPaths.head(session)) }
 
@@ -166,13 +154,13 @@ private func swapForLink(_ folder: URL, movedTo moved: URL, target: URL) {
     // A session folder that is a link: no lock is taken or probed through it, and no lock file appears outside.
     let sessionLink = folder.appendingPathComponent("\(UUID().uuidString).holos")
     try fm.createSymbolicLink(at: sessionLink, withDestinationURL: outside)
-    #expect(isInvalid(#expect(throws: HolosError.self) {
+    #expect(isInvalidInput(#expect(throws: HolosError.self) {
         try SessionLockFile.acquire(SessionLockFile.speakers, in: sessionLink, timeout: .zero)
     }))
-    #expect(isInvalid(#expect(throws: HolosError.self) {
+    #expect(isInvalidInput(#expect(throws: HolosError.self) {
         try SessionLockFile.isHeld(SessionLockFile.writer, in: sessionLink)
     }))
-    #expect(try chainContents(outside).isEmpty)
+    #expect(try FileInspection.entries(outside).isEmpty)
 
     // A lock file that is a link is refused; its target is untouched.
     let target = outside.appendingPathComponent("target")
@@ -184,12 +172,12 @@ private func swapForLink(_ folder: URL, movedTo moved: URL, target: URL) {
 
     // A lock "file" that is a folder is not a lock, so the probe does not report it as free.
     try fm.createDirectory(at: session.appendingPathComponent(SessionLockFile.writer), withIntermediateDirectories: false)
-    #expect(isInvalid(#expect(throws: HolosError.self) { try SessionLockFile.isHeld(SessionLockFile.writer, in: session) }))
+    #expect(isInvalidInput(#expect(throws: HolosError.self) { try SessionLockFile.isHeld(SessionLockFile.writer, in: session) }))
 
     // A real session folder still works.
     let fd = try #require(try SessionLockFile.acquire(SessionLockFile.speakers, in: session, timeout: .zero))
     #expect(try SessionLockFile.isHeld(SessionLockFile.speakers, in: session))
     SessionLockFile.unlockAndClose(fd)
     #expect(try !SessionLockFile.isHeld(SessionLockFile.speakers, in: session))
-    #expect(try chainMode(session.appendingPathComponent(SessionLockFile.speakers)) == 0o600)
+    #expect(try FileInspection.permissions(session.appendingPathComponent(SessionLockFile.speakers)) == 0o600)
 }

@@ -4,17 +4,12 @@ import HolosCore
 @testable import HolosStorage
 import Synchronization
 import Testing
+import HolosTestSupport
 
 // Delete Audio and Delete Meeting (docs/meeting-design.md §4.13, §5.6 PR3). The catalog side of Delete Audio
 // (`SessionSummary.audioDeleted`) is checked in HolosMeetingTests/SessionCatalogTests, where the catalog lives.
 
 private let deletionDate = Date(timeIntervalSince1970: 1_790_000_000)
-
-private func deletionRoot() throws -> URL {
-    let root = FileManager.default.temporaryDirectory.appendingPathComponent("holos-deletion-\(UUID().uuidString)")
-    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-    return root
-}
 
 private struct DeletionFixture {
     var session: URL
@@ -63,35 +58,8 @@ private func deletionSession(in root: URL) async throws -> DeletionFixture {
     return DeletionFixture(session: session, id: archive.id, transcriptID: transcript.id, runID: run.id)
 }
 
-private func exists(_ url: URL) -> Bool {
-    var info = stat()
-    return lstat(url.path, &info) == 0
-}
-
-private func isInvalidInput(_ error: HolosError?) -> Bool {
-    if case .invalidInput? = error { return true }
-    return false
-}
-
-private func isUnavailable(_ error: HolosError?) -> Bool {
-    if case .unavailable? = error { return true }
-    return false
-}
-
-/// Every regular file under `folder` by relative path, with its bytes.
-private func deletionFiles(in folder: URL) -> [String: Data] {
-    let prefix = folder.standardizedFileURL.path + "/"
-    var result: [String: Data] = [:]
-    let enumerator = FileManager.default.enumerator(at: folder, includingPropertiesForKeys: [.isRegularFileKey])
-    while let url = enumerator?.nextObject() as? URL {
-        guard (try? url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true else { continue }
-        result[String(url.standardizedFileURL.path.dropFirst(prefix.count))] = try? Data(contentsOf: url)
-    }
-    return result
-}
-
 @Test func deleteAudioKeepsTranscript() async throws {
-    let root = try deletionRoot()
+    let root = try TemporaryDirectory("deletion").url
     defer { try? FileManager.default.removeItem(at: root) }
     let fixture = try await deletionSession(in: root)
     let session = fixture.session
@@ -103,9 +71,9 @@ private func deletionFiles(in folder: URL) -> [String: Data] {
     #expect(lease.isHeld, "The caller's lease is not released by the deletion.")
     lease.release()
 
-    #expect(!exists(session.appendingPathComponent("audio")))
-    #expect(!exists(SessionPaths.derived(session)))
-    #expect(!exists(SessionPaths.voiceDirectory(session)))
+    #expect(!FileInspection.exists(session.appendingPathComponent("audio")))
+    #expect(!FileInspection.exists(SessionPaths.derived(session)))
+    #expect(!FileInspection.exists(SessionPaths.voiceDirectory(session)))
     // Kept: the transcript, the speaker labels, the exports, the manifest, and the journal.
     #expect(try SessionArchive.currentTranscriptID(at: session) == fixture.transcriptID)
     #expect(try SessionSpeakerStore.readRun(id: fixture.runID, session: session).id == fixture.runID)
@@ -133,7 +101,7 @@ private func deletionFiles(in folder: URL) -> [String: Data] {
 }
 
 @Test func deleteAudioCanBeRepeatedAndKeepsTheFirstRecord() async throws {
-    let root = try deletionRoot()
+    let root = try TemporaryDirectory("deletion").url
     defer { try? FileManager.default.removeItem(at: root) }
     let session = try await deletionSession(in: root).session
     let lease = try SessionArchive.acquireProcessingLease(at: session)
@@ -144,13 +112,13 @@ private func deletionFiles(in folder: URL) -> [String: Data] {
     try AtomicFile.ensurePrivateDirectory(SessionPaths.derived(session))
     try Data([1, 2, 3]).write(to: SessionPaths.render(track: "mic", in: session))
     try SessionDeletion.deleteAudio(session: session, lease: lease)
-    #expect(!exists(SessionPaths.derived(session)))
+    #expect(!FileInspection.exists(SessionPaths.derived(session)))
     #expect(try Data(contentsOf: SessionPaths.audioDeleted(session)) == first)
     #expect(!(try SessionArchive.inspectRecovery(at: session).needsAttention))
 }
 
 @Test func deleteAudioReadsAnExistingMarker() async throws {
-    let root = try deletionRoot()
+    let root = try TemporaryDirectory("deletion").url
     defer { try? FileManager.default.removeItem(at: root) }
     let fixture = try await deletionSession(in: root)
     let session = fixture.session
@@ -164,11 +132,11 @@ private func deletionFiles(in folder: URL) -> [String: Data] {
     object["schemaVersion"] = 2
     let newer = try JSONSerialization.data(withJSONObject: object)
     try newer.write(to: marker)
-    let before = deletionFiles(in: session)
+    let before = FileInspection.files(in: session)
     #expect(isUnavailable(#expect(throws: HolosError.self) {
         try SessionDeletion.deleteAudio(session: session, lease: lease)
     }))
-    #expect(deletionFiles(in: session) == before, "Nothing was removed or written.")
+    #expect(FileInspection.files(in: session) == before, "Nothing was removed or written.")
     #expect(isUnavailable(#expect(throws: HolosError.self) { try SessionArchive.inspectRecovery(at: session) }))
 
     // A damaged marker, or one of another session, is replaced by this session's record.
@@ -185,7 +153,7 @@ private func deletionFiles(in folder: URL) -> [String: Data] {
 }
 
 @Test func deleteRefusedWhileRecording() async throws {
-    let root = try deletionRoot()
+    let root = try TemporaryDirectory("deletion").url
     defer { try? FileManager.default.removeItem(at: root) }
     // A recorder holds the writer lock of a session that has audio and voice data.
     let recorder = try SessionArchive.create(root: root, name: "Live", source: .microphone, locale: "en-CA",
@@ -196,7 +164,7 @@ private func deletionFiles(in folder: URL) -> [String: Data] {
     try Data([1]).write(to: SessionPaths.render(track: "mic", in: session))
     let lease = try SessionArchive.acquireProcessingLease(at: session)
     defer { lease.release() }
-    let before = deletionFiles(in: session)
+    let before = FileInspection.files(in: session)
     #expect(isUnavailable(#expect(throws: HolosError.self) {
         try SessionDeletion.deleteAudio(session: session, lease: lease)
     }))
@@ -206,8 +174,8 @@ private func deletionFiles(in folder: URL) -> [String: Data] {
         try SessionDeletion.moveToTrash(session: session, lease: lease, logDirectory: logs) { trashed.append($0) }
     }))
     #expect(trashed.urls.isEmpty)
-    #expect(deletionFiles(in: session) == before, "Nothing was removed or written.")
-    #expect(!exists(SessionPaths.audioDeleted(session)))
+    #expect(FileInspection.files(in: session) == before, "Nothing was removed or written.")
+    #expect(!FileInspection.exists(SessionPaths.audioDeleted(session)))
     try await recorder.finish(status: ArchiveStatus.complete)
 }
 
@@ -219,7 +187,7 @@ private final class SharedURLs: Sendable {
 }
 
 @Test func moveToTrashRemovesRecorderLog() async throws {
-    let root = try deletionRoot()
+    let root = try TemporaryDirectory("deletion").url
     defer { try? FileManager.default.removeItem(at: root) }
     let fixture = try await deletionSession(in: root)
     let session = fixture.session
@@ -237,23 +205,23 @@ private final class SharedURLs: Sendable {
     let lease = try SessionArchive.acquireProcessingLease(at: session)
     try SessionDeletion.moveToTrash(session: session, lease: lease, logDirectory: logs) { url in
         trashed.append(url)
-        voiceAtTrashTime = exists(SessionPaths.voiceDirectory(url))
+        voiceAtTrashTime = FileInspection.exists(SessionPaths.voiceDirectory(url))
         try FileManager.default.moveItem(at: url, to: trashFolder.appendingPathComponent(url.lastPathComponent))
     }
     lease.release()
 
     #expect(trashed.urls == [session])
     #expect(voiceAtTrashTime == false, "Voice data is deleted before the folder goes to the Trash.")
-    #expect(!exists(session))
+    #expect(!FileInspection.exists(session))
     let inTrash = trashFolder.appendingPathComponent(session.lastPathComponent)
     #expect(try SessionArchive.currentTranscriptID(at: inTrash) == fixture.transcriptID, "The rest can be restored.")
-    #expect(exists(inTrash.appendingPathComponent("audio/mic/000001.caf")))
-    #expect(!exists(log), "The meeting's recorder log is deleted.")
-    #expect(exists(otherLog), "Other meetings' logs stay.")
+    #expect(FileInspection.exists(inTrash.appendingPathComponent("audio/mic/000001.caf")))
+    #expect(!FileInspection.exists(log), "The meeting's recorder log is deleted.")
+    #expect(FileInspection.exists(otherLog), "Other meetings' logs stay.")
 }
 
 @Test func moveToTrashWithoutALogFolderOrManifest() async throws {
-    let root = try deletionRoot()
+    let root = try TemporaryDirectory("deletion").url
     defer { try? FileManager.default.removeItem(at: root) }
     let fixture = try await deletionSession(in: root)
     let session = fixture.session
@@ -268,7 +236,7 @@ private final class SharedURLs: Sendable {
     let trashed = SharedURLs()
     try SessionDeletion.moveToTrash(session: session, lease: lease, logDirectory: logs) { trashed.append($0) }
     #expect(trashed.urls == [session])
-    #expect(!exists(log))
+    #expect(!FileInspection.exists(log))
 
     // No log folder at all is not an error.
     let second = try await deletionSession(in: root).session
@@ -280,7 +248,7 @@ private final class SharedURLs: Sendable {
 }
 
 @Test func moveToTrashWithoutManifestDeletesAFolderThatCannotTakeALease() async throws {
-    let root = try deletionRoot()
+    let root = try TemporaryDirectory("deletion").url
     defer { try? FileManager.default.removeItem(at: root) }
     // A crash between SessionArchive.create's mkdir and its manifest write: a <UUID>.holos with only audio/mic.
     let id = UUID().uuidString
@@ -299,13 +267,13 @@ private final class SharedURLs: Sendable {
     let trashed = SharedURLs()
     try SessionDeletion.moveToTrashWithoutManifest(session: session, logDirectory: logs) { trashed.append($0) }
     #expect(trashed.urls == [session])
-    #expect(!exists(log))
+    #expect(!FileInspection.exists(log))
     #expect(try !SessionArchive.isProcessing(at: session), "Its locks are released.")
     #expect(try !SessionArchive.isActive(at: session))
 }
 
 @Test func moveToTrashWithoutManifestRefusesASessionOrABusyFolder() async throws {
-    let root = try deletionRoot()
+    let root = try TemporaryDirectory("deletion").url
     defer { try? FileManager.default.removeItem(at: root) }
     let logs = root.appendingPathComponent("Logs", isDirectory: true)
     let trashed = SharedURLs()
@@ -325,7 +293,7 @@ private final class SharedURLs: Sendable {
         }
     }))
     #expect(trashed.urls.isEmpty)
-    #expect(exists(recorder.directory))
+    #expect(FileInspection.exists(recorder.directory))
     #expect(try !SessionArchive.isProcessing(at: recorder.directory), "The lease it took is released.")
     withExtendedLifetime(recorder) {}
 }
@@ -362,7 +330,7 @@ private final class DeletionProbes: Sendable {
 }
 
 @Test func moveToTrashHoldsTheSpeakerLockThroughTheTrash() async throws {
-    let root = try deletionRoot()
+    let root = try TemporaryDirectory("deletion").url
     defer { try? FileManager.default.removeItem(at: root) }
     let session = try await deletionSession(in: root).session
     let lease = try SessionArchive.acquireProcessingLease(at: session)
@@ -394,7 +362,7 @@ private final class DeletionProbes: Sendable {
 }
 
 @Test func moveToTrashWithoutManifestWaitsForTheSpeakerLock() async throws {
-    let root = try deletionRoot()
+    let root = try TemporaryDirectory("deletion").url
     defer { try? FileManager.default.removeItem(at: root) }
     let bare = root.appendingPathComponent("\(UUID().uuidString).holos", isDirectory: true)
     try FileManager.default.createDirectory(at: bare, withIntermediateDirectories: true)
@@ -408,7 +376,7 @@ private final class DeletionProbes: Sendable {
 }
 
 @Test func deletionKeepsARecorderFromReopeningTheSession() async throws {
-    let root = try deletionRoot()
+    let root = try TemporaryDirectory("deletion").url
     defer { try? FileManager.default.removeItem(at: root) }
     // A `recording` archive whose recorder is gone: its writer lock is free, so `SessionArchive.open` could reopen it.
     func staleSession() throws -> URL {
@@ -449,7 +417,7 @@ private final class DeletionProbes: Sendable {
 }
 
 @Test func moveToTrashKeepsTheFolderWhenTrashFails() async throws {
-    let root = try deletionRoot()
+    let root = try TemporaryDirectory("deletion").url
     defer { try? FileManager.default.removeItem(at: root) }
     let fixture = try await deletionSession(in: root)
     let logs = root.appendingPathComponent("Logs", isDirectory: true)
@@ -463,12 +431,12 @@ private final class DeletionProbes: Sendable {
             throw HolosError.io("The volume has no Trash.")
         }
     }
-    #expect(exists(fixture.session.appendingPathComponent("audio/mic/000001.caf")))
-    #expect(exists(log), "The log stays with a meeting that was not deleted.")
+    #expect(FileInspection.exists(fixture.session.appendingPathComponent("audio/mic/000001.caf")))
+    #expect(FileInspection.exists(log), "The log stays with a meeting that was not deleted.")
 }
 
 @Test func deletionNeedsThisSessionsLease() async throws {
-    let root = try deletionRoot()
+    let root = try TemporaryDirectory("deletion").url
     defer { try? FileManager.default.removeItem(at: root) }
     let session = try await deletionSession(in: root).session
     let other = try await deletionSession(in: root).session
@@ -487,12 +455,12 @@ private final class DeletionProbes: Sendable {
     #expect(isInvalidInput(#expect(throws: HolosError.self) {
         try SessionDeletion.deleteAudio(session: session, lease: released)
     }))
-    #expect(exists(session.appendingPathComponent("audio/mic/000001.caf")))
-    #expect(!exists(SessionPaths.audioDeleted(session)))
+    #expect(FileInspection.exists(session.appendingPathComponent("audio/mic/000001.caf")))
+    #expect(!FileInspection.exists(SessionPaths.audioDeleted(session)))
 }
 
 @Test func deleteAudioNeverFollowsSymbolicLinks() async throws {
-    let root = try deletionRoot()
+    let root = try TemporaryDirectory("deletion").url
     defer { try? FileManager.default.removeItem(at: root) }
     let fm = FileManager.default
     let outside = root.appendingPathComponent("outside", isDirectory: true)
@@ -509,8 +477,8 @@ private final class DeletionProbes: Sendable {
     try fm.removeItem(at: SessionPaths.derived(session))
     try fm.createSymbolicLink(at: SessionPaths.derived(session), withDestinationURL: outside)
     try SessionDeletion.deleteAudio(session: session, lease: lease)
-    #expect(!exists(session.appendingPathComponent("audio")))
-    #expect(!exists(SessionPaths.derived(session)))
+    #expect(!FileInspection.exists(session.appendingPathComponent("audio")))
+    #expect(!FileInspection.exists(SessionPaths.derived(session)))
     #expect(try Data(contentsOf: precious) == Data("keep".utf8))
 
     // A link inside audio/ is removed, not followed.
@@ -518,7 +486,7 @@ private final class DeletionProbes: Sendable {
     try fm.createSymbolicLink(at: session.appendingPathComponent("audio/mic/000009.caf"), withDestinationURL: precious)
     try fm.createSymbolicLink(at: session.appendingPathComponent("audio/elsewhere"), withDestinationURL: outside)
     try SessionDeletion.deleteAudio(session: session, lease: lease)
-    #expect(!exists(session.appendingPathComponent("audio")))
+    #expect(!FileInspection.exists(session.appendingPathComponent("audio")))
     #expect(try Data(contentsOf: precious) == Data("keep".utf8))
 
     // speakers/ replaced by a link: refused before anything is removed, the target untouched.
@@ -535,8 +503,8 @@ private final class DeletionProbes: Sendable {
     #expect(isInvalidInput(#expect(throws: HolosError.self) {
         try SessionDeletion.deleteAudio(session: session, lease: lease)
     }))
-    #expect(exists(outsideVoice))
-    #expect(exists(chunk), "Audio is not deleted when the voice data cannot be.")
+    #expect(FileInspection.exists(outsideVoice))
+    #expect(FileInspection.exists(chunk), "Audio is not deleted when the voice data cannot be.")
 }
 
 @Test func savedSecondsIsTheLongestTrack() {
