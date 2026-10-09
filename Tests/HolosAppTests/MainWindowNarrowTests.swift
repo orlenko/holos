@@ -545,7 +545,7 @@ struct MainWindowNarrowTests {
         defer { defaults.removePersistentDomain(forName: suite) }
         // No split autosave name: AppKit would keep the divider in the standard defaults.
         let autosave = MainWindowController.Autosave(split: nil, sidebarHidden: "mainWindowSidebarHidden",
-                                                     defaults: defaults)
+                                                     suite: suite)
         func make() -> MainWindowController {
             let controller = MainWindowController(autosave: autosave) { _ in FocusSection() }
             SettingsEmbeddingTests.retained.append(controller)

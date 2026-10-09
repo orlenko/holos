@@ -106,8 +106,9 @@ final class MainWindowController: NSObject, NSWindowDelegate, NSToolbarDelegate 
         /// The split view's autosave name (AppKit keeps it in the standard defaults); nil saves no divider position.
         var split: String?
         var sidebarHidden: String
-        /// Where `sidebarHidden` is kept; tests pass a suite of their own.
-        var defaults: UserDefaults = .standard
+        /// The defaults suite `sidebarHidden` is kept in (nil: the standard defaults); tests pass one of their own.
+        var suite: String?
+        var defaults: UserDefaults { suite.flatMap(UserDefaults.init(suiteName:)) ?? .standard }
         static let standard = Autosave(split: "VoiceIsLocalMainSplit", sidebarHidden: "mainWindowSidebarHidden")
     }
 
