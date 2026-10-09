@@ -23,8 +23,11 @@ app and tests can use it.
 - Stdout carries content and `--json` output; progress and messages go to stderr.
 - Exit codes: `0` success; `1` failure; `3` the command did its main job but with a warning (for `record`: audio
   saved, but an automatic stop or post-processing partial or failed; `session` commands such as `import`,
-  `recover`, `rename`, `summarize`, `echo-analyze` use it the same way); `64` usage errors (ArgumentParser);
-  `128 + signal` when a command is stopped by a signal (`InterruptLatch`).
+  `recover`, `rename`, `summarize`, `echo-analyze` use it the same way); `64` usage errors (ArgumentParser).
+- Ctrl-C and SIGTERM differ by command. `read`, `eval`, `session deep-transcribe` and `session echo-analyze` exit
+  with `128 + signal` (`InterruptLatch`, `EvalInterrupt`). `record` stops gracefully, saves the audio and exits
+  with its outcome's code. `session import` and `session summarize` cancel the work and exit 1 or 3 (their
+  outcome's code). Commands that print "press Ctrl-C again" end at once on a second signal.
 - Without `--locale`, recognition commands use the supported locale closest to the user's preferred languages
   (`RecognitionOptions`); `session retranscribe` uses the locale the session was recorded with.
 
