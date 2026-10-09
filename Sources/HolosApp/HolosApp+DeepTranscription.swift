@@ -321,7 +321,7 @@ extension HolosAppDelegate {
                                             running: meeting.deep.running?.sessionID) {
             updateDeepStates()
         }
-        guard let controller = meeting.controller, let maintenance = meeting.maintenance else { return }
+        guard let controller = meeting.controller, let commands = meeting.commands else { return }
         // Another process's pass holds the lock: wait for it (checked again every 30 s). One at a time on this Mac.
         // A meeting summary and an echo analysis share the lock (§4.17, §5.11), this app's own while it starts too
         // (before the command takes it): wait for them, without saying another final transcript runs.
@@ -375,14 +375,13 @@ extension HolosAppDelegate {
             meeting.deep.running = nil
             return
         }
-        let output = Self.temporaryFile("deep")
-        let errors = Self.temporaryFile("deep-err")
         // Asked for from the meeting's menu: made again even when made before, and over edited labels.
         let arguments = ["session", "deep-transcribe", item.path, "--json"]
             + (DeepTranscriptionSchedule.forces(item) ? ["--force"] : [])
         do {
-            let pid = try maintenance.run(arguments, standardOutput: output, standardError: errors) { [weak self] code in
-                self?.deepTranscriptionEnded(sessionID, code: code, output: output, errors: errors)
+            let pid = try commands.start(arguments, output: "deep", errors: "deep-err", maxOutputBytes: 16 << 20,
+                                         as: PostProcessingRecord.self) { [weak self] result in
+                self?.deepTranscriptionEnded(sessionID, result)
             }
             meeting.deep.running = (sessionID, pid)
             Self.deepLog.notice("Deep transcription of \(sessionID, privacy: .public) started")
@@ -391,22 +390,15 @@ extension HolosAppDelegate {
             meeting.deep.running = nil
             meeting.deep.retryAfter = Date().addingTimeInterval(60)
             controller.endUsing(sessionID)
-            Self.removeFile(output)
-            Self.removeFile(errors)
             Self.deepLog.error("Cannot start deep transcription: \(error.localizedDescription, privacy: .private)")
         }
         updateDeepStates()
     }
 
-    private func deepTranscriptionEnded(_ sessionID: String, code: Int32, output: URL, errors: URL) {
-        let errorText = (try? AtomicFile.readIfPresent(errors, maxBytes: 1 << 16)).flatMap {
-            $0.map { String(decoding: $0, as: UTF8.self) }
-        } ?? ""
-        let record = (try? AtomicFile.readIfPresent(output, maxBytes: 16 << 20)).flatMap {
-            $0.flatMap { try? HolosJSON.decoder().decode(PostProcessingRecord.self, from: $0) }
-        }
-        Self.removeFile(output)
-        Self.removeFile(errors)
+    private func deepTranscriptionEnded(_ sessionID: String, _ result: CommandResult<PostProcessingRecord>) {
+        let code = result.code
+        let errorText = result.errors
+        let record = result.outcome
         let item = meeting.deep.queue.items.first { $0.sessionID == sessionID }
         var failure: String?
         let lateCancel = errorText.split(separator: "\n").first { $0.hasPrefix("Cancelled after the new transcript") }

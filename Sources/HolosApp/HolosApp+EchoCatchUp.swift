@@ -180,24 +180,21 @@ extension HolosAppDelegate {
     /// Runs `voiceislocal session echo-analyze <path> --json` as a maintenance command: the analysis, the transcript
     /// files and the voice samples learned from the meeting, exactly as the command does them.
     private func runEchoAnalyze(_ sessionID: String, path: String) {
-        guard let maintenance = meeting.maintenance else {
+        guard let commands = meeting.commands else {
             echoCatchUpEnded(sessionID, end: nil)
             return
         }
-        let output = Self.temporaryFile("echo")
-        let errors = Self.temporaryFile("echo-err")
         do {
-            let pid = try maintenance.run(["session", "echo-analyze", path, "--json"], standardOutput: output,
-                                          standardError: errors) { [weak self] code in
-                self?.echoAnalyzeExited(sessionID, code: code, output: output, errors: errors)
+            let pid = try commands.start(["session", "echo-analyze", path, "--json"], output: "echo",
+                                         errors: "echo-err", maxOutputBytes: 1 << 20,
+                                         as: SessionEchoAnalyzeCommand.Outcome.self) { [weak self] result in
+                self?.echoAnalyzeExited(sessionID, result)
             }
             meeting.echo.pid = pid
             Self.echoLog.notice("Echo analysis of \(sessionID, privacy: .public) started")
         } catch {
             // Kept queued: the scheduler tries again in a minute.
             meeting.echo.retryAfter = Date().addingTimeInterval(60)
-            Self.removeFile(output)
-            Self.removeFile(errors)
             Self.echoLog.error("Cannot start the echo analysis: \(error.localizedDescription, privacy: .private)")
             echoCatchUpEnded(sessionID, end: nil)
         }
@@ -216,24 +213,13 @@ extension HolosAppDelegate {
         Self.echoLog.notice("Echo analysis of \(running, privacy: .public) stopped for a meeting")
     }
 
-    /// The part of `voiceislocal session echo-analyze --json` the app reads.
-    private struct EchoOutcome: Decodable {
-        var summary: String
-    }
-
-    private func echoAnalyzeExited(_ sessionID: String, code: Int32, output: URL, errors: URL) {
-        let errorText = (try? AtomicFile.readIfPresent(errors, maxBytes: 1 << 16)).flatMap {
-            $0.map { String(decoding: $0, as: UTF8.self) }
-        } ?? ""
-        let outcome = (try? AtomicFile.readIfPresent(output, maxBytes: 1 << 20)).flatMap {
-            $0.flatMap { try? HolosJSON.decoder().decode(EchoOutcome.self, from: $0) }
-        }
-        Self.removeFile(output)
-        Self.removeFile(errors)
+    private func echoAnalyzeExited(_ sessionID: String, _ result: CommandResult<SessionEchoAnalyzeCommand.Outcome>) {
+        let code = result.code
         let preempted = meeting.echo.preempted == sessionID
         Self.echoLog.notice("Echo analysis of \(sessionID, privacy: .public) ended with \(code, privacy: .public)")
         echoCatchUpEnded(sessionID, end: EchoCatchUpSchedule.runEnded(code: code, preempted: preempted,
-                                                                      summary: outcome?.summary, errors: errorText))
+                                                                      summary: result.outcome?.summary,
+                                                                      errors: result.errors))
     }
 
     /// The run on the meeting ended (`end`), or did not start (nil: it stays queued as it was, as does one stopped for
