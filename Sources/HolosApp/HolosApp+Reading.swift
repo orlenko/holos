@@ -34,12 +34,25 @@ final class NaturalVoicesAppState {
         Dictionary(uniqueKeysWithValues: NaturalVoicePack.allCases.map { ($0, NaturalVoiceModels.status(pack: $0)) })
     }
     private var looking: Task<Void, Never>?
+    /// Called when the look in progress ends.
     private var afterLook: [@MainActor () -> Void] = []
+    /// Called when a look that starts after the one in progress ends (`fresh`).
+    private var afterNextLook: [@MainActor () -> Void] = []
 
     /// Looks at the packs off the main actor, one look at a time, records what it found (and each download row's
-    /// status), then calls `done`; a call during a look gets that look's result.
-    func refresh(then done: @escaping @MainActor () -> Void = {}) {
+    /// status), then calls `done`. A call during a look gets that look's result, unless `fresh`: then it waits for a look
+    /// that starts after the call (an install that just ended may have been read as still running by the one in
+    /// progress).
+    func refresh(fresh: Bool = false, then done: @escaping @MainActor () -> Void = {}) {
+        if fresh, looking != nil {
+            afterNextLook.append(done)
+            return
+        }
         afterLook.append(done)
+        look()
+    }
+
+    private func look() {
         guard looking == nil else { return }
         let scan = scan
         looking = Task { [weak self] in
@@ -50,7 +63,9 @@ final class NaturalVoicesAppState {
             for (pack, status) in found { downloads[pack]?.checked(status) }
             looking = nil
             let waiting = afterLook
-            afterLook = []
+            afterLook = afterNextLook
+            afterNextLook = []
+            if !afterLook.isEmpty { look() }
             waiting.forEach { $0() }
         }
     }
@@ -146,7 +161,8 @@ extension HolosAppDelegate {
         output.map(Self.removeFile)
         state.pids[pack] = nil
         Self.readingLog.notice("Natural voices download (\(pack.rawValue, privacy: .public)) ended with \(code, privacy: .public)")
-        state.refresh { [weak self] in
+        // A look that starts now, after the tool exited: one already running may have read the pack as installing.
+        state.refresh(fresh: true) { [weak self] in
             let installed = state.statuses[pack] == .installed
             state.downloads[pack]?.ended(code: code, lastLine: last, installed: installed)
             // The voice menus offer the new voices (Automatic now picks them); what the Reading card shows stays.

@@ -39,4 +39,31 @@ import Testing
         // Its own row may still act (Cancel).
         #expect(state.mayStart(.english))
     }
+
+    @Test func anInstallThatEndsDuringALookWaitsForTheNextOne() async {
+        let state = NaturalVoicesAppState()
+        let looks = Mutex(0)
+        let firstMayEnd = DispatchSemaphore(value: 0)
+        state.scan = {
+            let look = looks.withLock { value -> Int in
+                value += 1
+                return value
+            }
+            // The first look reads the pack while its install still runs, and ends only after the tool exited.
+            if look == 1 {
+                firstMayEnd.wait()
+                return [.english: .downloading, .french: .notInstalled]
+            }
+            return [.english: .installed, .french: .notInstalled]
+        }
+        state.refresh()
+        #expect(await eventually { looks.withLock { $0 } == 1 })
+        // The tool exits now: what is asked for after that comes from a look that starts after it.
+        let seen = Mutex<DeepModelStatus?>(nil)
+        state.refresh(fresh: true) { seen.withLock { $0 = state.statuses[.english] } }
+        firstMayEnd.signal()
+        #expect(await eventually { seen.withLock { $0 } != nil })
+        #expect(seen.withLock { $0 } == .installed)
+        #expect(looks.withLock { $0 } == 2)
+    }
 }
