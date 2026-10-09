@@ -15,6 +15,8 @@ Read first: the `README.md` of each module you touch, then the doc sections its 
   the cited subsection, not the whole plan.
 - `docs/design.md` describes the user-facing tools, one heading per feature. `docs/contracts.md` lists the
   cross-module contracts. `docs/status.md` says what is verified and what is pending.
+- `docs/architecture-roadmap.md` lists the planned structural changes and their status. Check it before
+  starting structural work, and update its Status column in your PR.
 
 ## Module map
 
@@ -72,7 +74,7 @@ Known exceptions today (not precedents; do not add to them):
 - Anything that needs FluidAudio or WhisperKit: `HolosDiarization`/`HolosWhisper`, reached by the app only through
   a `voiceislocal` child process.
 - Evaluation and cloud comparison code: `HolosEvaluation` (of the products, only `HolosCLI` links it). App-only
-  models stay in `HolosApp` (no `HolosAppModel` target yet).
+  models stay in `HolosApp` (no `HolosAppModel` target yet; planned in `docs/architecture-roadmap.md §6`).
 
 ## Size caps
 
@@ -115,10 +117,12 @@ apply. In short:
   a non-`Sendable` framework object confined to one task, one actor, or a lock (for example
   `WhisperKitTranscriber`, `SingleBufferFeed`, `OpenedPlayback`). Never use them to silence a warning on shared
   mutable state.
-- **Target state:** `@MainActor` types do no file system work; readers are `nonisolated` and return snapshots.
-  Today, for example, `MeetingController` reads `status.json` and probes locks on the main actor while it follows
-  a meeting; do not add more. (`CommandRunner` already reads command output off the main actor.) Work that can
-  exceed about 10 ms already must run off the main actor (`docs/meeting-design.md §1.3`).
+- **Target state:** `@MainActor` types do no file system work; readers run off the main actor (a
+  `nonisolated async` function or a detached task; a synchronous `nonisolated` call still runs on the main
+  thread) and return snapshots. Today, for example, `MeetingController` reads `status.json` and probes locks on
+  the main actor while it follows a meeting; do not add more. (`CommandRunner` already reads command output off
+  the main actor.) Work that can exceed about 10 ms already must run off the main actor
+  (`docs/meeting-design.md §1.3`).
 - Locks are `flock` files and are **not re-entrant**. Order for waits: speakers → profiles. Use the scoped APIs
   (`SessionArchive.withSpeakerLock`, `withSpeakerLockAsync`, `SpeakerProfileStore.update`/`withLockedDatabase`,
   `ProcessingLease`). A new function that must run under a lock is named `…Locked` and says "Caller holds the
@@ -164,7 +168,8 @@ Exist today:
 - Logging: `Logger(subsystem: "ca.orlenko.holos.app", category: …)`; categories and privacy rules in
   `docs/meeting-design.md §1.5`.
 
-Planned, see the architecture roadmap (none of these exist yet; do not reference them as if they did):
+Planned, see the [architecture roadmap](docs/architecture-roadmap.md) (`docs/architecture-roadmap.md §3` and
+`docs/architecture-roadmap.md §6`; none of these exist yet, so do not reference them as if they did):
 `TranscriptPublisher` and `withMaintenanceArchive` (one publish path for transcripts), `SessionGeneration`
 (derived-data stamps), `Drainable` (pending work at close and quit), `ReviewRevision` (revision-stamped Review
 commands), a lock-token type.
@@ -204,7 +209,9 @@ commands), a lock-token type.
 ## Docs and comments
 
 - State current behaviour in the present tense. No PR numbers, waves, dates, "used to", "now", or "the user
-  asked" in docs or code comments. History belongs in git and PR descriptions.
+  asked" in docs or code comments. History belongs in git and PR descriptions. The one exception is
+  `docs/architecture-roadmap.md`: a dated audit snapshot whose findings cite PRs and review rounds as evidence,
+  and whose §6 Status column tracks steps by PR. Its guidance (what to do next, how to verify) stays current.
 - Cite specs as `docs/<file>.md §N.M`, or `docs/design.md "<Heading>"` for docs without numbers. A citation must
   resolve to an existing heading.
 - A PR that changes behaviour updates the cited section in the same PR.
