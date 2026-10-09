@@ -684,9 +684,10 @@ French, against about 3,000 characters (three minutes of speech, 40–90 s of re
 French (`NaturalVoiceCatalog.defaultVoice(language:installed:)`); until then, and for other languages, the best
 Apple voice. A reading keeps the voice it started with, so a resume never switches voice: the app saves it in the
 reading's entry before rendering, and `voiceislocal read --resume` without `--voice` uses the voice in the reading's
-manifest (`ReadingResumeVoice`: for an explicit output, whose cache is keyed by the voice, the default voices of
-now and of before the packs were installed are tried in turn, the natural one whether its pack is installed or
-not; a reading found with a natural voice whose pack is gone says to install it again). A natural voice whose pack is gone fails with where to
+manifest (`ReadingResumeVoice`: for an explicit output, whose cache is keyed by every setting, the saved manifests
+for the same file, text, rate, and metadata are read and the one written to last continues, whatever voice it used;
+a natural reading from another commit of the voices is refused as such, and one whose pack is gone says to install
+it again). A natural voice whose pack is gone fails with where to
 download it. Preview of Automatic speaks with the voice Make Audio would use for the user's first language
 (`ReadingVoices.automatic`); a sample that does not start playing is reported under the card, not left as Stop.
 `say --text-file` reads only a regular file, at most 16 MB, decoded strictly.
@@ -699,15 +700,18 @@ for English after the voices not offered are removed). Everything comes from one
 `NaturalVoiceModels.revision` (91748676fe3c8b2eb3007b3125253bcd898202c3; models and voices alike, the voices being
 its `constants_bin/*.safetensors`), never the moving `main`: the listing, FluidAudio's downloads (through
 `ModelRegistry.revisionOverrides`), and, for the French pack, the root `encoder_recover_pinv.bin` that FluidAudio
-would otherwise fetch from `main` at every load. The marker records the commit; a pack from another commit counts as
-not installed, and the next setup downloads it again at the pinned one. A reading made with a natural voice records
+would otherwise fetch from `main` at every load. The marker records the commit; a pack counts as installed only when no install
+holds its lock and its files are there (each model's files and each offered voice, not empty; a cheap look, so one
+damaged since is repaired by the next setup); a pack from another commit counts as not installed, and the next setup downloads it again at the pinned one. A reading made with a natural voice records
 the commit in its cache key and manifest (`ReadingManifest.modelRevision`; none for an Apple voice, whose key is
 unchanged), so after the commit changes it is never resumed with parts of two versions: the resume says the voices
 changed and the reading must be made again. The app's Resume and Try Again reopen the reading's own saved cache
 (`ReadingLibrary.savedLocation`), not the one its settings would name now, so the refusal shows on its row and Delete
 removes the old parts (the constant is updated with the FluidAudio
 pin, after checking the new commit's card, licences, and listing). It downloads into `<pack>.download/`: the
-repository's listing is read first (each file's size, and SHA-256 for LFS files), every listed file is ensured with FluidAudio's
+repository's listing is read first through FluidAudio's `ModelRegistry` (its host and mirrors), at the pinned commit
+(each file's size and digest: SHA-256 for LFS files, the Git blob SHA-1 for the others), every listed file is ensured
+with FluidAudio's
 `ModelHub.download(subdirectory:)` (a file already there is kept, a partial one resumed), and every file is then
 checked against the listing (`NaturalVoicePackFiles`); one that fails is removed and the download fails, keeping the
 rest for the next try. FluidAudio's own `ensureModels` is not used for this: it skips the download once the pack's
