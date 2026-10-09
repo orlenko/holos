@@ -14,10 +14,11 @@ struct JoinTypingPlace {
     var seen: ReviewRevision
 }
 
-/// Keys typed while a join's speaker change saves (`applyJoin`, `TypingHold`): replayed into the field when it opens
-/// again at the join; otherwise kept as an edit of the word at the join, so what was typed is never lost. Kept in
-/// `unsavedEdits` (the footer offers Edit Again or Dismiss, and a close by hand waits) when the join is dropped or the
-/// field does not open, or queued as an edit when the window closes (`queueHeldTyping`).
+/// Typing done while a join's speaker change saves (`applyJoin`, `TypingHold`): written into the field when it opens
+/// again at the join; otherwise kept as an edit of the word at the join, so what was typed is never lost. Both apply
+/// the same edits the same way (`HeldTyping.apply`). Kept in `unsavedEdits` (the footer offers Edit Again or Dismiss,
+/// and a close by hand waits) when the join is dropped or the field does not open, or queued as an edit when the
+/// window closes (`queueHeldTyping`).
 extension ReviewWindow {
     static let typingNotPlaced = "The field did not open again after the join, so this waits here."
 
@@ -32,16 +33,32 @@ extension ReviewWindow {
         return opened.id
     }
 
-    /// Ends hold `hold` (nil: none) and hands its keys over: replayed into the field just opened at the join
-    /// (`reopened`), as typed there; else kept as an edit of the word at the join (`keepHeldTyping`).
+    /// Ends hold `hold` (nil: none) and hands its edits over: written into this window's field just opened at the join
+    /// (`reopened`), never sent through the key window; else, or when that field is not open in this window any more,
+    /// kept as an edit of the word at the join (`keepHeldTyping`).
     func handOverTyping(_ hold: Int?, reopened: Bool) {
         guard let hold, let held = window.typingHold.end(hold) else { return }
-        guard reopened else {
+        let field = turnList.editField
+        guard reopened, turnList.wordEdit != nil, field.window === window,
+              let editor = field.currentEditor() as? NSTextView else {
             keepHeldTyping(held)
             return
         }
-        // One by one, as typed: a key that joins again (Backspace) opens a new hold, which takes the keys after it.
-        for key in held.keys { window.replay(key) }
+        Self.write(held.edits, into: editor)
+    }
+
+    /// Writes `edits` into `editor` as `HeldTyping.apply` makes them of its text and caret: one change of its text
+    /// (undoable as typing), then the caret.
+    static func write(_ edits: [HeldTyping.Edit], into editor: NSTextView) {
+        let text = editor.string
+        let location = min(editor.selectedRange().location, (text as NSString).length)
+        let caret = text.distance(from: text.startIndex, to: String.Index(utf16Offset: location, in: text))
+        let result = HeldTyping.apply(edits, to: text, caret: caret)
+        if result.text != text {
+            editor.insertText(result.text, replacementRange: NSRange(location: 0, length: (text as NSString).length))
+        }
+        let end = result.text.index(result.text.startIndex, offsetBy: result.caret).utf16Offset(in: result.text)
+        editor.setSelectedRange(NSRange(location: end, length: 0))
     }
 
     /// Drops every join without refreshing (`clearJoins`, or `refresh` when an undo was saved): a join still saving
@@ -64,8 +81,7 @@ extension ReviewWindow {
     /// What `held` typed into its word's text, nil when that leaves the word as it was.
     static func heldEdit(_ held: TypingHold<JoinTypingPlace>.Held) -> String? {
         let place = held.place
-        let text = HeldTyping.apply(held.keys.map { ($0.characters, $0.modifierFlags) }, to: place.text,
-                                    caret: place.atEnd ? place.text.count : 0)
+        let text = HeldTyping.apply(held.edits, to: place.text, caret: place.atEnd ? place.text.count : 0).text
         return TranscriptWordEdit.cleaned(text) == TranscriptWordEdit.cleaned(place.text) ? nil : text
     }
 

@@ -240,6 +240,67 @@ struct ReviewWindowJoinTests {
         await closeAndRemove(window, session)
     }
 
+    /// "x", ⌘A, "oak" while the join saves, then ⌘W: ⌘A is refused (a beep), never held, so the close saves "xoak" at
+    /// the start of "cedar", exactly what the field would have shown.
+    @Test(.timeLimit(.minutes(1))) func aRefusedShortcutLeavesTheHeldTypingAsTheFieldWouldShowIt() async throws {
+        let (window, session) = try await open([Spec(speaker: "S1", start: 0, words: ["amber", "birch"]),
+                                                Spec(speaker: "S2", start: 2, words: ["cedar", "dune"])])
+        var refused = 0
+        window.window.typingHold.refuse = { refused += 1 }
+        let (release, _) = await joinWithHeldSave(window)
+        try type(window, "x")
+        window.window.sendEvent(try key(window, "a", code: 0, flags: .command))
+        try type(window, "oak")
+        #expect(refused == 1)
+        #expect(!window.windowShouldClose(window.window), "It saves the held typing first.")
+        release.finish()
+        #expect(await until {
+            window.review.turn("T2").map { window.review.text(of: $0).hasPrefix("xoakcedar") } ?? false
+        })
+        await closeAndRemove(window, session)
+    }
+
+    /// ⌘V as the first key while the join saves: refused (a beep), nothing held, nothing pasted; the field opens again
+    /// as it was.
+    @Test(.timeLimit(.minutes(1))) func aPasteWhileTheJoinSavesIsRefused() async throws {
+        let (window, session) = try await open([Spec(speaker: "S1", start: 0, words: ["amber", "birch"]),
+                                                Spec(speaker: "S2", start: 2, words: ["cedar", "dune"])])
+        var refused = 0
+        window.window.typingHold.refuse = { refused += 1 }
+        let (release, _) = await joinWithHeldSave(window)
+        window.window.sendEvent(try key(window, "v", code: 9, flags: .command))
+        #expect(refused == 1)
+        release.finish()
+        #expect(await until { journal(session).count == 1 && window.turnList.wordEdit != nil })
+        #expect(window.turnList.editField.stringValue == "cedar")
+        #expect(window.unsavedEditTexts.isEmpty)
+        window.turnList.cancelWordEdit()
+        await closeAndRemove(window, session)
+    }
+
+    /// Another window has the keyboard (its own text field being edited) when the join's field opens again: the held
+    /// typing goes into the review's field, never into the other window's.
+    @Test(.timeLimit(.minutes(1))) func heldTypingGoesIntoItsOwnFieldWhateverWindowIsKey() async throws {
+        let (window, session) = try await open([Spec(speaker: "S1", start: 0, words: ["amber", "birch"]),
+                                                Spec(speaker: "S2", start: 2, words: ["cedar", "dune"])])
+        let (release, _) = await joinWithHeldSave(window)
+        try type(window, "ko")
+        let other = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 300, height: 100), styleMask: [.titled],
+                             backing: .buffered, defer: true)
+        other.isReleasedWhenClosed = false
+        let elsewhere = NSTextField(string: "")
+        other.contentView?.addSubview(elsewhere)
+        other.makeFirstResponder(elsewhere)
+        other.makeKey()
+        release.finish()
+        #expect(await until { journal(session).count == 1 && window.turnList.wordEdit != nil })
+        #expect(window.turnList.editField.stringValue == "kocedar")
+        #expect(elsewhere.stringValue.isEmpty && (elsewhere.currentEditor() as? NSTextView)?.string ?? "" == "")
+        other.close()
+        window.turnList.cancelWordEdit()
+        await closeAndRemove(window, session)
+    }
+
     /// Keys held while the join saves, then the window closes without asking (quitting): the close saves them.
     @Test(.timeLimit(.minutes(1))) func closingWhileTypingIsHeldSavesIt() async throws {
         let (window, session) = try await open([Spec(speaker: "S1", start: 0, words: ["amber", "birch"]),
