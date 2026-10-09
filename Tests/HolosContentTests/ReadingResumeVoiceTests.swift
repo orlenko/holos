@@ -40,6 +40,30 @@ import Testing
                                          candidates: [natural], identity: identity) == nil)
     }
 
+    @Test func theLatestOfSeveralReadingsOfTheSameOutputResumes() throws {
+        let readings = root.appendingPathComponent("Readings", isDirectory: true)
+        let output = root.appendingPathComponent("Garden.m4a")
+        try FileManager.default.createDirectory(at: readings, withIntermediateDirectories: true)
+        func start(_ voice: String, changed: Date) throws {
+            let (location, _) = try ReadingOutput.resolve(output: output.path, name: "Garden.m4a",
+                                                          identity: identity(voice), readingsRoot: readings)
+            try save(manifest(voice: voice, output: output), in: location.workDirectory)
+            try FileManager.default.setAttributes(
+                [.modificationDate: changed],
+                ofItemAtPath: location.workDirectory.appendingPathComponent(ReadingManifest.fileName).path)
+        }
+        // Started with Alba, stopped; Alba's pack removed; the same text started again with the Apple voice.
+        try start(natural, changed: Date(timeIntervalSinceNow: -3_600))
+        try start(apple, changed: Date())
+        // The natural voice is tried first, but the later reading, the Apple one, resumes.
+        #expect(ReadingResumeVoice.saved(output: output.path, name: "Garden.m4a", readingsRoot: readings,
+                                         candidates: [natural, apple], identity: identity) == apple)
+        // Had the natural reading been the later one, it would resume (and ask for its pack).
+        try start(natural, changed: Date(timeIntervalSinceNow: 60))
+        #expect(ReadingResumeVoice.saved(output: output.path, name: "Garden.m4a", readingsRoot: readings,
+                                         candidates: [natural, apple], identity: identity) == natural)
+    }
+
     @Test func aReadingsFolderResumesWithTheVoiceItsManifestSaved() throws {
         let folder = root.appendingPathComponent("Readings/1234", isDirectory: true)
         try save(manifest(voice: apple, output: folder.appendingPathComponent("Garden.m4a")), in: folder)
