@@ -15,6 +15,8 @@ final class NaturalVoicesAppState {
     var pids: [NaturalVoicePack: Int32] = [:]
     /// The download's output, followed for its progress.
     var outputs: [NaturalVoicePack: URL] = [:]
+    /// The packs installed as the voice menus last showed them.
+    var watch = NaturalVoicesWatch()
     /// The launcher of the bundled tool, made on first use.
     lazy var launcher = MaintenanceLauncher(executable: ChildProcessLauncher.bundledExecutable)
 }
@@ -72,8 +74,21 @@ extension HolosAppDelegate {
         state.downloads[pack]?.ended(code: code, lastLine: last, installed: installed)
         Self.readingLog.notice("Natural voices download (\(pack.rawValue, privacy: .public)) ended with \(code, privacy: .public)")
         // The voice menus offer the new voices (Automatic now picks them); what the Reading card shows stays.
-        if installed { ReadingVoices.announceInstalled() }
+        if installed { checkNaturalVoicesInstalled(force: true) }
         updateSettings()
+    }
+
+    /// When the app becomes active: a pack installed (or removed) meanwhile from Terminal (`voiceislocal setup
+    /// --natural-voices`) is offered by the voice menus, as after a download from Settings. A check of two small files.
+    func applicationDidBecomeActive(_ notification: Notification) {
+        checkNaturalVoicesInstalled()
+    }
+
+    /// Tells the voice menus when the installed packs changed since they were last told (`force`: tell them anyway).
+    func checkNaturalVoicesInstalled(force: Bool = false) {
+        if naturalVoices.watch.observe(NaturalVoiceModels.installedPacks()) || force {
+            ReadingVoices.announceInstalled()
+        }
     }
 
     /// Checks the packs' files (a download in Terminal, or one finished while the app was closed).

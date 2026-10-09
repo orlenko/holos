@@ -256,6 +256,8 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
         readings.start()
         // Natural voice temporaries a crash or a SIGKILL left behind (a day old, so none in use).
         DispatchQueue.global(qos: .utility).async { NaturalVoiceTemporaries.sweep() }
+        // The natural voice packs the menus start with; a change later (Terminal) is noticed at activation.
+        checkNaturalVoicesInstalled()
         PeopleLaunch.resumePendingForgetsOnce()
         Task { await loadLanguages() }
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)

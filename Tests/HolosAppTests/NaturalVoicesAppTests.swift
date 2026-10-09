@@ -190,6 +190,65 @@ import Testing
         #expect(NaturalVoiceHelpers.stopAll { _ in }.isEmpty)
     }
 
+    @Test func theMenusAreToldWhenPacksAreInstalledElsewhere() {
+        var watch = NaturalVoicesWatch()
+        let first = watch.observe([])
+        #expect(!first)
+        let same = watch.observe([])
+        #expect(!same)
+        // Installed from Terminal while the app was in the background.
+        let installed = watch.observe([.english])
+        #expect(installed)
+        let again = watch.observe([.english])
+        #expect(!again)
+        let removed = watch.observe([])
+        #expect(removed)
+    }
+
+    private final class FakePlayback: PreviewPlayback {
+        var stopped = false
+        func stop() { stopped = true }
+    }
+
+    private func previewWithMadeSample() -> VoicePreview {
+        let preview = VoicePreview()
+        preview.installedPacks = { [.english] }
+        preview.preferredLanguage = { "en-CA" }
+        // The sample is written as the tool would; nothing is played (the playback is replaced below).
+        preview.renderNatural = { _, _, _, output in
+            try NaturalSpeechFile.write([Float](repeating: 0, count: 2_400), sampleRate: 24_000, to: output)
+        }
+        return preview
+    }
+
+    @Test func aSampleThatDoesNotStartPlayingIsAFailureNotAStop() async throws {
+        let preview = previewWithMadeSample()
+        preview.startPlayback = { _, _ in throw HolosError.io("The voice sample could not be played.") }
+        let problem = Mutex<String?>(nil)
+        preview.onError = { message in problem.withLock { $0 = message } }
+        preview.speak(voiceIdentifier: "pocket:en:alba", speed: 1)
+        #expect(preview.isSpeaking)
+        for _ in 0..<10_000 where problem.withLock({ $0 == nil }) { await Task.yield() }
+        #expect(problem.withLock { $0 }?.contains("could not be played") == true)
+        #expect(!preview.isSpeaking)
+    }
+
+    @Test func aSampleThatStartsPlayingCanBeStopped() async throws {
+        let preview = previewWithMadeSample()
+        let playback = FakePlayback()
+        let started = Mutex(false)
+        preview.startPlayback = { _, _ in
+            started.withLock { $0 = true }
+            return playback
+        }
+        preview.speak(voiceIdentifier: "pocket:en:alba", speed: 1)
+        for _ in 0..<10_000 where !started.withLock({ $0 }) { await Task.yield() }
+        #expect(preview.isSpeaking)
+        preview.stop()
+        #expect(playback.stopped)
+        #expect(!preview.isSpeaking)
+    }
+
     // MARK: Rendering through the tool
 
     private final class Launches: Sendable {

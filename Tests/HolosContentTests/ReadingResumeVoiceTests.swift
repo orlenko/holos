@@ -113,3 +113,27 @@ import Testing
     }
 }
 
+@Suite struct TextFileReadingTests {
+    @Test func onlyARegularFileIsReadAndOnlyUpToTheLimit() throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("holos-textfile-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let text = folder.appendingPathComponent("part.txt")
+        try (Data([0xEF, 0xBB, 0xBF]) + Data("Hello there.\r\n".utf8)).write(to: text)
+        #expect(try DocumentText.readTextFile(text, maximumBytes: 1_000) == "Hello there.\n")
+        // A device that never ends and a FIFO with no writer are refused at once, never read.
+        #expect(throws: HolosError.self) { try DocumentText.readTextFile(URL(fileURLWithPath: "/dev/zero"), maximumBytes: 1_000) }
+        let fifo = folder.appendingPathComponent("pipe")
+        #expect(mkfifo(fifo.path, 0o600) == 0)
+        #expect(throws: HolosError.self) { try DocumentText.readTextFile(fifo, maximumBytes: 1_000) }
+        // Larger than the limit, malformed, or empty.
+        let large = folder.appendingPathComponent("large.txt")
+        try Data(repeating: 0x41, count: 1_001).write(to: large)
+        #expect(throws: HolosError.self) { try DocumentText.readTextFile(large, maximumBytes: 1_000) }
+        try Data([0x41, 0xFF]).write(to: large)
+        #expect(throws: HolosError.self) { try DocumentText.readTextFile(large, maximumBytes: 1_000) }
+        try Data("  \n".utf8).write(to: large)
+        #expect(throws: HolosError.self) { try DocumentText.readTextFile(large, maximumBytes: 1_000) }
+    }
+}
+

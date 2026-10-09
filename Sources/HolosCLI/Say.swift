@@ -69,14 +69,7 @@ struct Say: AsyncParsableCommand {
     @MainActor mutating func run() async throws {
         let input: String
         if let textFile {
-            let url = fileURL(textFile)
-            let size = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
-            guard size <= 16 << 20 else { throw HolosError.invalidInput("\(textFile) is larger than 16 MB.") }
-            guard let text = DocumentText.decodeStrictly(try Data(contentsOf: url)),
-                  !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-                throw HolosError.invalidInput("\(textFile) is empty or is not UTF-8 text.")
-            }
-            input = text
+            input = try DocumentText.readTextFile(fileURL(textFile), maximumBytes: 16 << 20)
         } else {
             input = try readText(arguments: text)
         }

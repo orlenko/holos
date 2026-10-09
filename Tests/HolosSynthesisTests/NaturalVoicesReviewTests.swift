@@ -315,3 +315,53 @@ private actor CountingBackend: NaturalSpeechBackend {
     }
 }
 
+@Suite struct NaturalVoiceRevisionTests {
+    private let root = FileManager.default.temporaryDirectory.appendingPathComponent("holos-revision-\(UUID().uuidString)")
+
+    @Test func everyAddressNamesThePinnedCommit() throws {
+        #expect(NaturalVoiceModels.revision.count == 40)
+        let hex = NaturalVoiceModels.revision.allSatisfy { $0.isHexDigit }
+        #expect(hex)
+        let listing = try #require(NaturalVoicePackFiles.listingURL(path: "v2.1/english"))
+        #expect(listing.absoluteString == "https://huggingface.co/api/models/FluidInference/pocket-tts-coreml/tree/"
+            + NaturalVoiceModels.revision + "/v2.1/english?recursive=1")
+        let rootListing = try #require(NaturalVoicePackFiles.listingURL(path: "", recursive: false))
+        #expect(rootListing.absoluteString.hasSuffix("/tree/" + NaturalVoiceModels.revision))
+        let file = try #require(NaturalVoicePackFiles.fileURL(path: "encoder_recover_pinv.bin"))
+        #expect(file.absoluteString.contains("/resolve/" + NaturalVoiceModels.revision + "/"))
+        #expect(![listing, rootListing, file].contains { $0.absoluteString.contains("/main") })
+        #expect(NaturalVoicePackFiles.rootFiles(for: .french) == ["encoder_recover_pinv.bin"])
+        #expect(NaturalVoicePackFiles.rootFiles(for: .english).isEmpty)
+    }
+
+    @Test func aPackFromAnotherCommitIsCheckedAndUpdatedNotKept() async throws {
+        let calls = Mutex<[String]>([])
+        let download: NaturalVoiceModels.Download = { _, base, _ in
+            let names = (try? FileManager.default.contentsOfDirectory(atPath: base.path))?.sorted() ?? []
+            calls.withLock { $0.append("download sees \(names)") }
+        }
+        let warmUp: NaturalVoiceModels.WarmUp = { _, _ in calls.withLock { $0.append("warm up") } }
+        // A pack installed from an older commit.
+        let directory = NaturalVoiceModels.directory(root: root, pack: .english)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try Data("weights".utf8).write(to: directory.appendingPathComponent("Models"))
+        let old = NaturalVoiceModels.Marker(pack: .english, repository: NaturalVoiceModels.repository,
+                                            revision: "0000000000000000000000000000000000000000", installedAt: Date())
+        try HolosJSON.encoder().encode(old).write(to: directory.appendingPathComponent("installed.json"))
+        #expect(NaturalVoiceModels.status(root: root, pack: .english) == .notInstalled)
+        // One whose marker names no commit (written before it was recorded) is not installed either.
+        let unrecorded = NaturalVoiceModels.Marker(pack: .english, repository: NaturalVoiceModels.repository,
+                                                   revision: nil, installedAt: Date())
+        try HolosJSON.encoder().encode(unrecorded).write(to: directory.appendingPathComponent("installed.json"))
+        #expect(NaturalVoiceModels.status(root: root, pack: .english) == .notInstalled)
+        try HolosJSON.encoder().encode(old).write(to: directory.appendingPathComponent("installed.json"))
+        // The setup checks its files against the pinned commit (the download sees them), then installs it.
+        try await NaturalVoiceModels.setUp(root: root, pack: .english, force: false, download: download,
+                                           warmUp: warmUp, notice: { _ in }, progress: { _ in })
+        #expect(calls.withLock { $0 } == ["download sees [\"Models\"]", "warm up"])
+        let marker = try #require(NaturalVoiceModels.marker(root: root, pack: .english))
+        #expect(marker.revision == NaturalVoiceModels.revision)
+        #expect(NaturalVoiceModels.status(root: root, pack: .english) == .installed)
+    }
+}
+

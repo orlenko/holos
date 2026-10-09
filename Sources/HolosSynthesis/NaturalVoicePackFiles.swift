@@ -31,6 +31,26 @@ public enum NaturalVoicePackFiles {
         }
     }
 
+    /// The listing of `path` in `repository` at `revision`, recursive: Hugging Face's tree API.
+    public static func listingURL(repository: String = NaturalVoiceModels.repository,
+                                  revision: String = NaturalVoiceModels.revision, path: String,
+                                  recursive: Bool = true) -> URL? {
+        URL(string: "https://huggingface.co/api/models/\(repository)/tree/\(revision)"
+            + (path.isEmpty ? "" : "/\(path)") + (recursive ? "?recursive=1" : ""))
+    }
+
+    /// The address of one file of `repository` at `revision`.
+    public static func fileURL(repository: String = NaturalVoiceModels.repository,
+                               revision: String = NaturalVoiceModels.revision, path: String) -> URL? {
+        URL(string: "https://huggingface.co/\(repository)/resolve/\(revision)/\(path)")
+    }
+
+    /// Files at the repository's root a pack also needs: the 24-layer packs' voice-clone reprojection, which
+    /// FluidAudio otherwise fetches from the moving `main` each time it loads such a pack without it.
+    public static func rootFiles(for pack: NaturalVoicePack) -> [String] {
+        pack == .french ? ["encoder_recover_pinv.bin"] : []
+    }
+
     /// One entry of the repository's tree listing (`/api/models/<repo>/tree/<revision>/<path>?recursive=1`).
     struct Entry: Decodable { let type: String }
 

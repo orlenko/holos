@@ -630,14 +630,21 @@ manifest (`ReadingResumeVoice`: for an explicit output, whose cache is keyed by 
 now and of before the packs were installed are tried in turn, the natural one whether its pack is installed or
 not; a reading found with a natural voice whose pack is gone says to install it again). A natural voice whose pack is gone fails with where to
 download it. Preview of Automatic speaks with the voice Make Audio would use for the user's first language
-(`ReadingVoices.automatic`).
+(`ReadingVoices.automatic`); a sample that does not start playing is reported under the card, not left as Stop.
+`say --text-file` reads only a regular file, at most 16 MB, decoded strictly.
 
 **Models.** `voiceislocal setup --natural-voices [--language fr]` downloads a pack into
 `Application Support/Holos/Models/pocket-tts/<pack>/` (`$HOLOS_POCKET_MODELS_DIR` to use another folder; FluidAudio
 takes the base folder as `PocketTtsManager(directory:)`, so nothing goes to its default `~/.cache/fluidaudio`):
 English about 530 MB, French (24-layer pack) about 1.9 GB, as listed on Hugging Face on 2026-10-08 (491 MB on disk
-for English after the voices not offered are removed). It downloads into `<pack>.download/`: the repository's
-listing is read first (each file's size, and SHA-256 for LFS files), every listed file is ensured with FluidAudio's
+for English after the voices not offered are removed). Everything comes from one reviewed commit of the repository,
+`NaturalVoiceModels.revision` (91748676fe3c8b2eb3007b3125253bcd898202c3; models and voices alike, the voices being
+its `constants_bin/*.safetensors`), never the moving `main`: the listing, FluidAudio's downloads (through
+`ModelRegistry.revisionOverrides`), and, for the French pack, the root `encoder_recover_pinv.bin` that FluidAudio
+would otherwise fetch from `main` at every load. The marker records the commit; a pack from another commit counts as
+not installed, and the next setup downloads it again at the pinned one (the constant is updated with the FluidAudio
+pin, after checking the new commit's card, licences, and listing). It downloads into `<pack>.download/`: the
+repository's listing is read first (each file's size, and SHA-256 for LFS files), every listed file is ensured with FluidAudio's
 `ModelHub.download(subdirectory:)` (a file already there is kept, a partial one resumed), and every file is then
 checked against the listing (`NaturalVoicePackFiles`); one that fails is removed and the download fails, keeping the
 rest for the next try. FluidAudio's own `ensureModels` is not used for this: it skips the download once the pack's
@@ -651,7 +658,8 @@ damaged. A lock file keeps two installs apart. Settings › Reading has a row pe
 (with the size), the tool's progress line and Cancel while it runs (SIGTERM; what was downloaded is kept), and the
 failure's reason (offline, for instance) with Try Again; Apple's voices stay available throughout. The voice menus
 end with a disabled "Natural voices: download them in Settings › Reading" while a pack is missing; when a download
-ends, they are filled again with the new voices and keep the voice and speed chosen on the Reading card.
+ends, they are filled again with the new voices and keep the voice and speed chosen on the Reading card; a pack
+installed from Terminal meanwhile is noticed when the app becomes active (`NaturalVoicesWatch`).
 
 **Rendering a part.** `NaturalSpeechPlan` splits the part into paragraphs (blank lines, spaces or tabs on them allowed; line breaks inside one read
 as spaces) and feeds Pocket TTS one paragraph at a time; it splits a paragraph into sentences itself. A paragraph

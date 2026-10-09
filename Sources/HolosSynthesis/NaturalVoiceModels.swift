@@ -23,10 +23,19 @@ public enum NaturalVoiceModels {
         public var schemaVersion = 1
         public var pack: NaturalVoicePack
         public var repository: String
+        /// The repository's commit the pack was downloaded from; nil in a marker written before it was recorded.
+        public var revision: String?
         public var installedAt: Date
     }
 
     public static let repository = "FluidInference/pocket-tts-coreml"
+    /// The commit of `repository` the packs are downloaded from (models and voices alike; the voices are its
+    /// `constants_bin/*.safetensors`): the one reviewed, never the moving `main`. Update it together with the
+    /// FluidAudio pin (Package.swift), after checking the new commit's model card, licences, and file listing. A
+    /// pack installed from another commit counts as not installed: the next setup downloads it again at this commit
+    /// (FluidAudio clears a pack folder it downloaded at another commit; an interrupted download at this commit
+    /// resumes).
+    public static let revision = "91748676fe3c8b2eb3007b3125253bcd898202c3"
     static let markerName = "installed.json"
 
     /// `<supportRoot>/Models/pocket-tts`, or `$HOLOS_POCKET_MODELS_DIR` when it is set and not empty.
@@ -69,10 +78,15 @@ public enum NaturalVoiceModels {
     }
 
     static func isInstalled(root: URL, pack: NaturalVoicePack) -> Bool {
-        let marker = directory(root: root, pack: pack).appendingPathComponent(markerName)
-        guard let data = try? Data(contentsOf: marker),
-              let decoded = try? HolosJSON.decoder().decode(Marker.self, from: data) else { return false }
-        return decoded.pack == pack
+        guard let marker = marker(root: root, pack: pack) else { return false }
+        return marker.pack == pack && marker.revision == revision
+    }
+
+    /// The pack's marker, whatever commit it names.
+    static func marker(root: URL, pack: NaturalVoicePack) -> Marker? {
+        let url = directory(root: root, pack: pack).appendingPathComponent(markerName)
+        guard let data = try? Data(contentsOf: url) else { return nil }
+        return try? HolosJSON.decoder().decode(Marker.self, from: data)
     }
 
     static func lockIsHeld(root: URL, pack: NaturalVoicePack) -> Bool {
@@ -139,13 +153,18 @@ public enum NaturalVoiceModels {
             progress(1)
             return
         }
-        let marker = directory.appendingPathComponent(markerName)
-        try? FileManager.default.removeItem(at: marker)
+        // A pack installed from another commit: back to staging (below), where the download at this commit replaces it.
+        let outdated = marker(root: root, pack: pack).map { $0.revision != revision } ?? false
+        try? FileManager.default.removeItem(at: directory.appendingPathComponent(markerName))
         let staging = stagingFolder(root: root, pack: pack)
         if force {
             for folder in [staging, directory] where FileManager.default.fileExists(atPath: folder.path) {
                 try FileManager.default.removeItem(at: folder)
             }
+        }
+        if outdated, FileManager.default.fileExists(atPath: directory.path) {
+            log.notice("Natural voices are from another commit; checking their files against \(revision, privacy: .public)")
+            try moveBack(directory, to: staging)
         }
         // A pack moved into place by an earlier setup whose warm-up was cut off: warmed up again where it is.
         if FileManager.default.fileExists(atPath: directory.path) {
@@ -162,14 +181,7 @@ public enum NaturalVoiceModels {
                 // Moved back to the staging folder, not deleted: the download checks every file against the
                 // repository's listing and fetches only what is missing or damaged.
                 log.error("Natural voices did not load in place; checking their files again")
-                if FileManager.default.fileExists(atPath: staging.path) {
-                    try FileManager.default.removeItem(at: directory)
-                } else {
-                    guard renamex_np(directory.path, staging.path, UInt32(RENAME_EXCL)) == 0 else {
-                        throw HolosError.io("Cannot move the natural voices back to \(staging.path): "
-                            + String(cString: strerror(errno)) + ".")
-                    }
-                }
+                try moveBack(directory, to: staging)
             }
         }
         notice(downloadingLine(pack, resuming: FileManager.default.fileExists(atPath: staging.path)))
@@ -214,9 +226,22 @@ public enum NaturalVoiceModels {
     }
 
     private static func writeMarker(_ pack: NaturalVoicePack, in directory: URL) throws {
-        let marker = Marker(pack: pack, repository: repository, installedAt: Date())
+        let marker = Marker(pack: pack, repository: repository, revision: revision, installedAt: Date())
         try HolosJSON.encoder().encode(marker).write(to: directory.appendingPathComponent(markerName),
                                                      options: .atomic)
+    }
+
+    /// A pack in place goes back to the staging folder (where the download checks every file); when an unfinished
+    /// download is already there, that one is kept and the pack in place removed.
+    private static func moveBack(_ directory: URL, to staging: URL) throws {
+        if FileManager.default.fileExists(atPath: staging.path) {
+            try FileManager.default.removeItem(at: directory)
+        } else {
+            guard renamex_np(directory.path, staging.path, UInt32(RENAME_EXCL)) == 0 else {
+                throw HolosError.io("Cannot move the natural voices back to \(staging.path): "
+                    + String(cString: strerror(errno)) + ".")
+            }
+        }
     }
 
     private static func clamp(_ value: Double) -> Double { value.isFinite ? min(1, max(0, value)) : 0 }

@@ -9,7 +9,14 @@ final class VoicePreview: NSObject, AVSpeechSynthesizerDelegate, AVAudioPlayerDe
     private var synthesizer: AVSpeechSynthesizer?
     /// A natural voice's sample: made by the bundled tool (a few seconds), then played.
     private var natural: Task<Void, Never>?
-    private var player: AVAudioPlayer?
+    private var player: (any PreviewPlayback)?
+    /// Starts playing a made sample; throws when it does not start. Tests pass one that plays nothing.
+    var startPlayback: (URL, VoicePreview) throws -> any PreviewPlayback = { file, preview in
+        let player = try AVAudioPlayer(contentsOf: file)
+        player.delegate = preview
+        guard player.play() else { throw HolosError.io("The voice sample could not be played.") }
+        return player
+    }
     /// Renders a natural voice's sample to a file (`HelperNaturalRenderer`).
     var renderNatural: ((_ text: String, _ voice: String, _ rate: Float?, _ output: URL) async throws -> Void)?
     /// Called when speaking starts or ends.
@@ -66,11 +73,10 @@ final class VoicePreview: NSObject, AVSpeechSynthesizerDelegate, AVAudioPlayerDe
                 try await renderNatural(text, voice.id, rate, file)
                 try Task.checkCancellation()
                 guard let self else { return }
-                let player = try AVAudioPlayer(contentsOf: file)
-                player.delegate = self
+                // One that does not start playing is a failure (said under the card), never a Stop left showing.
+                let player = try self.startPlayback(file, self)
                 self.natural = nil
                 self.player = player
-                player.play()
             } catch {
                 guard let self, !Task.isCancelled else { return }
                 self.natural = nil
@@ -84,7 +90,7 @@ final class VoicePreview: NSObject, AVSpeechSynthesizerDelegate, AVAudioPlayerDe
     nonisolated func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) {
         let finished = ObjectIdentifier(player)
         Task { @MainActor in
-            guard let current = self.player, ObjectIdentifier(current) == finished else { return }
+            guard let current = self.player, ObjectIdentifier(current as AnyObject) == finished else { return }
             self.player = nil
             self.onChange?()
         }
@@ -141,3 +147,11 @@ final class VoicePreview: NSObject, AVSpeechSynthesizerDelegate, AVAudioPlayerDe
         return samples[code] ?? samples["en"]!
     }
 }
+
+/// A natural voice sample playing (`AVAudioPlayer`).
+@MainActor protocol PreviewPlayback: AnyObject {
+    func stop()
+}
+
+extension AVAudioPlayer: PreviewPlayback {}
+

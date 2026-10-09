@@ -125,6 +125,27 @@ public enum DocumentText {
         return text.map(withLFLineEndings)
     }
 
+    /// The text of the file at `url` (`voiceislocal say --text-file`): opened only as a regular file (a FIFO or a
+    /// device such as /dev/zero is refused at once, never read), read up to `maximumBytes`, and decoded strictly
+    /// (`decodeStrictly`). Fails for a larger file, one that is not text, or one with nothing to read.
+    public static func readTextFile(_ url: URL, maximumBytes: Int) throws -> String {
+        let handle: FileHandle
+        do {
+            handle = try openRegularFile(url)
+        } catch let error as ReadingFileError {
+            throw HolosError.invalidInput(error.message)
+        }
+        defer { try? handle.close() }
+        let data = try handle.read(upToCount: maximumBytes + 1) ?? Data()
+        guard data.count <= maximumBytes else {
+            throw HolosError.invalidInput("\(url.path) is larger than \(maximumBytes / (1 << 20)) MB.")
+        }
+        guard let text = decodeStrictly(data), !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw HolosError.invalidInput("\(url.path) is empty or is not UTF-8 text.")
+        }
+        return text
+    }
+
     /// `bytes` as code units of `width` bytes in the given byte order, decoded with `codec`; nil for a leftover byte or
     /// any malformed sequence.
     private static func strict<Codec: Unicode.Encoding>(

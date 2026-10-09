@@ -113,3 +113,16 @@ struct NaturalVoiceDownload: Equatable {
         }
     }
 }
+
+/// The natural voice packs the voice menus were last filled with: whether the installed ones changed since.
+struct NaturalVoicesWatch: Equatable {
+    private(set) var known: Set<NaturalVoicePack>?
+
+    /// Records `installed`; true when it differs from what was known (never on the first look: the menus were just
+    /// filled with it).
+    mutating func observe(_ installed: Set<NaturalVoicePack>) -> Bool {
+        defer { known = installed }
+        return known.map { $0 != installed } ?? false
+    }
+}
+
