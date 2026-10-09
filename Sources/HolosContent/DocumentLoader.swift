@@ -104,18 +104,46 @@ public enum DocumentText {
         return String(decoding: units, as: codec) + (whole < bytes.count ? "\u{FFFD}" : "")
     }
 
+    /// `data` as text, refusing anything malformed: UTF-8 (a leading UTF-8 byte order mark dropped), or UTF-16 or
+    /// UTF-32 after their byte order mark, each decoded strictly (an invalid byte, a truncated code unit, an unpaired
+    /// surrogate, or a value that is no Unicode scalar gives nil). Line endings become LF. Unlike `decode`, which
+    /// repairs a marked file with U+FFFD, for text that must be read exactly as written (`voiceislocal say
+    /// --text-file`).
+    public static func decodeStrictly(_ data: Data) -> String? {
+        guard let (length, encoding) = byteOrderMark(data), encoding != .utf8 else {
+            let body = data.starts(with: [0xEF, 0xBB, 0xBF]) ? data.dropFirst(3) : data[...]
+            return String(validating: body, as: UTF8.self).map(withLFLineEndings)
+        }
+        let bytes = [UInt8](data.dropFirst(length))
+        let text: String?
+        switch encoding {
+        case .utf16LittleEndian, .utf16BigEndian:
+            text = strict(bytes, width: 2, bigEndian: encoding == .utf16BigEndian, as: UTF16.self)
+        default:
+            text = strict(bytes, width: 4, bigEndian: encoding == .utf32BigEndian, as: UTF32.self)
+        }
+        return text.map(withLFLineEndings)
+    }
+
+    /// `bytes` as code units of `width` bytes in the given byte order, decoded with `codec`; nil for a leftover byte or
+    /// any malformed sequence.
+    private static func strict<Codec: Unicode.Encoding>(
+        _ bytes: [UInt8], width: Int, bigEndian: Bool, as codec: Codec.Type
+    ) -> String? where Codec.CodeUnit: FixedWidthInteger {
+        guard bytes.count % width == 0 else { return nil }
+        let units = stride(from: 0, to: bytes.count, by: width).map { start in
+            bytes[start..<(start + width)].enumerated().reduce(Codec.CodeUnit(0)) { unit, pair in
+                let shift = (bigEndian ? width - 1 - pair.offset : pair.offset) * 8
+                return unit | (Codec.CodeUnit(pair.element) << shift)
+            }
+        }
+        return String(validating: units, as: codec)
+    }
+
     /// `text` with Windows (CRLF) and classic Mac (CR) line endings made LF, so front matter,
     /// Markdown, and paragraph breaks are found whichever system saved the file. The one place
     /// line endings are normalized: the decoders (this one and `HTMLReader.decode`) apply it
     /// before any parsing, and so do the readers that take a string (see `normalized`).
-    /// `data` as text, refusing malformed bytes: UTF-8 (a leading UTF-8 byte order mark dropped) decoded strictly, or
-    /// UTF-16 or UTF-32 with their byte order mark (as `decode`); nil when it is not text. Line endings become LF.
-    public static func decodeStrictly(_ data: Data) -> String? {
-        if let (_, encoding) = byteOrderMark(data), encoding != .utf8 { return decode(data) }
-        let body = data.starts(with: [0xEF, 0xBB, 0xBF]) ? data.dropFirst(3) : data[...]
-        return String(data: Data(body), encoding: .utf8).map(withLFLineEndings)
-    }
-
     public static func withLFLineEndings(_ text: String) -> String {
         guard text.utf8.contains(0x0D) else { return text }
         return text.replacingOccurrences(of: "\r\n", with: "\n").replacingOccurrences(of: "\r", with: "\n")
