@@ -9,12 +9,22 @@ import Synchronization
 /// The natural voices in the `voiceislocal` tool (Sources/HolosSynthesis/README.md): Pocket TTS rendering with the
 /// per-paragraph check through Apple's on-device recognizer, and the setup of the language packs.
 enum NaturalVoicesCLI {
+    /// Installed on stderr the first time a natural renderer is made, for the rest of the process: the lines left are
+    /// copied out before it exits.
+    private static let logFilter: FluidAudioLogFilter? = {
+        let filter = FluidAudioLogFilter.install(on: STDERR_FILENO)
+        if filter != nil { atexit { NaturalVoicesCLI.logFilter?.finish() } }
+        return filter
+    }()
+
     /// The renderer `say` and `read` use for natural voices. The check runs unless `HOLOS_NATURAL_CHECK=0`, or a reading
     /// saved its policy when it started (its resume follows that policy either way: the checker is always made). What it
     /// finds (a re-render, a paragraph read by a system voice) is said on stderr.
     /// `scratch`: the folder its temporary files go in (the app gives each part one, and deletes it when it stops the
     /// tool); nil for the system's temporary folder.
     @MainActor static func renderer(log: Bool = true, scratch: URL? = nil) -> NaturalSpeechRenderer {
+        // FluidAudio's own log of the text it speaks stays off stderr from now on (`FluidAudioLogFilter`).
+        _ = logFilter
         let root = scratch ?? FileManager.default.temporaryDirectory
         // Folders a killed run of the tool left behind, a day old (never one in use), go off the main actor.
         Task.detached(priority: .utility) { _ = NaturalVoiceTemporaries.sweep() }
@@ -64,6 +74,13 @@ enum NaturalVoicesCLI {
 /// Hears a rendered paragraph with Apple's on-device speech recognizer (SpeechAnalyzer): already on the Mac for
 /// dictation, no model to download, and quick on a paragraph. Nil (no check) when no recognizer for the language is
 /// installed.
+///
+/// Invariants:
+/// 1. `locales` holds, per language, the recognizer locale found the first time the language is checked, or nil when
+///    none has its assets installed; it is kept for the checker's life, which is its renderer's.
+/// 2. A language found without a recognizer is not asked about again by this checker (the renderer stops checking it
+///    too, `uncheckable`); installing one takes effect in the next run of the tool.
+/// 3. Each paragraph's audio goes in a folder of its own under `temporaryRoot`, removed before the call returns.
 actor AppleSpeechChunkChecker: SpeechChunkChecker {
     private var locales: [String: String?] = [:]
     private let temporaryRoot: URL

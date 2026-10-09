@@ -11,6 +11,8 @@ only `HolosCLI` links it; the app renders natural parts through `voiceislocal sa
 - The install steps `NaturalVoiceModels.setUp` takes (`download`, `verify`, warm-up, tidy-up): the listing of the
   pinned commit of `FluidInference/pocket-tts-coreml` (`NaturalVoiceModels.revision`), FluidAudio's resumable
   download pinned to that commit, the size and SHA-256 check of every file, and the removal of voices not offered.
+- `FluidAudioLogFilter`: keeps FluidAudio's debug, info and notice log lines, which carry the text Pocket TTS speaks,
+  off stderr while `voiceislocal` renders natural voices.
 
 **Must not own:** which voices are offered and their licences (`NaturalVoiceCatalog`), the install folder, marker
 and lock (`NaturalVoiceModels`), paragraphs, checks and files (`NaturalSpeechRenderer`), anything the app links.
