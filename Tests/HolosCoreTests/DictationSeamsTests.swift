@@ -1,14 +1,28 @@
 import Foundation
+import NaturalLanguage
 import Synchronization
 import Testing
 @testable import HolosCore
 
 // Pauses inside a sentence (docs/design.md "Pauses inside a sentence"): the recognizer writes each stretch of speech
 // between pauses as a sentence, so a capital lands where the speaker only paused. Made-up sentences throughout.
+//
+// The rules are tested with `scripted` seams, whose spell checker and name tagger answer as each test says: the
+// system's answers depend on the language data a Mac has (a Mac without French name tagging finds no name in
+// "on se voit avec Marie demain", and its French spell checker knows "marie", a form of "marier"). The system lookups
+// are tested last, each language only on a Mac that has them.
 
 /// Seams with the system spell checker and name tagger, as dictation uses them.
 private func system(_ language: String = "en-US", terms: [String] = []) -> DictationSeams {
     DictationSeams(language: language, terms: terms)
+}
+
+/// Whether this Mac has the system lookups seams use in `language`: the language tagger's names and a spell checker
+/// dictionary (without one, the spell checker knows every word).
+private func systemLookups(_ language: String) -> Bool {
+    let code = DictationLanguage.languageCode(of: language)
+    return NLTagger.availableTagSchemes(for: .word, language: NLLanguage(rawValue: code)).contains(.nameType)
+        && SystemSpelling.queue.sync { SystemSpelling.dictionaries(for: language) } != nil
 }
 
 /// `seams.join(pieces)` once the spell checker has answered about the pauses' words, as live dictation has them by
@@ -26,18 +40,17 @@ private func scripted(_ language: String = "en-US", terms: [String] = [],
                    isName: { text, range in names.contains(String(text[range])) })
 }
 
-@Test func aPauseInsideASentenceLowersTheNextWord() async {
-    let seams = system()
-    #expect(await joined(seams, ["We are cleaning up our big", "Pull request splitting it into parts"])
+@Test func aPauseInsideASentenceLowersTheNextWord() {
+    let seams = scripted()
+    #expect(seams.join(["We are cleaning up our big", "Pull request splitting it into parts"])
         == "We are cleaning up our big pull request splitting it into parts")
-    #expect(await joined(seams, ["I am putting together the", "Simple web app for the team"])
+    #expect(seams.join(["I am putting together the", "Simple web app for the team"])
         == "I am putting together the simple web app for the team")
-    #expect(await joined(seams, ["You're saying that", "It will not have a menu"])
+    #expect(seams.join(["You're saying that", "It will not have a menu"])
         == "You're saying that it will not have a menu")
     // A comma or a colon at the pause does not end the sentence.
-    #expect(await joined(seams, ["When it loads,", "Maybe we can check the log"])
-        == "When it loads, maybe we can check the log")
-    #expect(await joined(seams, ["There are two steps:", "First we build"]) == "There are two steps: first we build")
+    #expect(seams.join(["When it loads,", "Maybe we can check the log"]) == "When it loads, maybe we can check the log")
+    #expect(seams.join(["There are two steps:", "First we build"]) == "There are two steps: first we build")
 }
 
 @Test func theEndOfASentenceKeepsTheCapital() {
@@ -115,14 +128,23 @@ private func scripted(_ language: String = "en-US", terms: [String] = [],
     #expect(seams.join(["our big", "Pull request"]) == "our big pull request")
 }
 
-@Test func namesKeepTheirCapitals() async {
-    let seams = system()
-    #expect(await joined(seams, ["I have a meeting with", "Alice tomorrow"]) == "I have a meeting with Alice tomorrow")
-    #expect(await joined(seams, ["we flew to", "London last week"]) == "we flew to London last week")
-    #expect(await joined(seams, ["it ships on", "Monday morning"]) == "it ships on Monday morning")
-    // The tagger alone, and the spell checker alone.
+@Test func namesKeepTheirCapitals() {
+    // A name the tagger finds, though the spell checker knows its lowercase form ("rose").
     #expect(scripted(names: ["Rose"]).join(["we asked", "Rose to review"]) == "we asked Rose to review")
-    #expect(scripted(knows: { $0 != "keystone" }).join(["deploy it with", "Keystone"]) == "deploy it with Keystone")
+    #expect(scripted().join(["we asked", "Rose to review"]) == "we asked rose to review")
+    // A word the spell checker does not know in lowercase, though the tagger finds no name.
+    let seams = scripted(knows: { !["keystone", "monday"].contains($0) })
+    #expect(seams.join(["deploy it with", "Keystone"]) == "deploy it with Keystone")
+    #expect(seams.join(["it ships on", "Monday morning"]) == "it ships on Monday morning")
+    // The tagger is asked about the word where the pause left it, with the two results around it.
+    let asked = Mutex<[String]>([])
+    let reading = DictationSeams(language: "en-US", terms: [], spelling: SeamSpelling(queue: nil) { _ in true },
+                                 isName: { text, range in
+                                     asked.withLock { $0.append("\(text) [\(text[range])]") }
+                                     return text[range] == "Alice"
+                                 })
+    #expect(reading.join(["I have a meeting with", "Alice tomorrow"]) == "I have a meeting with Alice tomorrow")
+    #expect(asked.withLock { $0 } == ["I have a meeting with Alice tomorrow [Alice]"])
 }
 
 @Test func joiningNeverWaitsForTheSpellCheckerAndAsksOncePerWord() async {
@@ -164,21 +186,22 @@ private func scripted(_ language: String = "en-US", terms: [String] = [],
 
     let pieces = ["We are cleaning up our big", "Pull request splitting it", "Into parts.", "Maybe we can",
                   "Then merge it"]
-    let live = system()
-    let whole = await joined(live, pieces)
+    let fresh = scripted()
+    let whole = fresh.join(pieces)
     #expect(whole == "We are cleaning up our big pull request splitting it into parts. Maybe we can then merge it")
     for count in 1...pieces.count {
-        #expect(whole.hasPrefix(live.join(Array(pieces.prefix(count)))))
+        #expect(whole.hasPrefix(fresh.join(Array(pieces.prefix(count)))))
     }
 }
 
-@Test func frenchLowersAfterAPauseAndKeepsNames() async {
-    let seams = system("fr-CA")
-    #expect(await joined(seams, ["je pense que", "On peut le faire demain"]) == "je pense que on peut le faire demain")
-    #expect(await joined(seams, ["on a parlé de la", "Nouvelle version"]) == "on a parlé de la nouvelle version")
-    #expect(await joined(seams, ["on se voit avec", "Marie demain"]) == "on se voit avec Marie demain")
-    #expect(await joined(seams, ["C'est fini.", "Ensuite on part"]) == "C'est fini. Ensuite on part")
-    #expect(await joined(seams, ["et elle", "A fini hier"]) == "et elle a fini hier")
+@Test func frenchLowersAfterAPauseAndKeepsNames() {
+    // The French spell checker knows "marie" (a form of "marier"): the tagger's name keeps the capital.
+    let seams = scripted("fr-CA", names: ["Marie"])
+    #expect(seams.join(["je pense que", "On peut le faire demain"]) == "je pense que on peut le faire demain")
+    #expect(seams.join(["on a parlé de la", "Nouvelle version"]) == "on a parlé de la nouvelle version")
+    #expect(seams.join(["on se voit avec", "Marie demain"]) == "on se voit avec Marie demain")
+    #expect(seams.join(["C'est fini.", "Ensuite on part"]) == "C'est fini. Ensuite on part")
+    #expect(seams.join(["et elle", "A fini hier"]) == "et elle a fini hier")
     #expect(scripted("fr-FR").join(["on va", "À la gare"]) == "on va à la gare")
     // French has no capital pronoun "I": "I'm" is lowered as any word the language knows.
     #expect(scripted("fr-FR").join(["et puis", "I'm"]) == "et puis i'm")
@@ -208,6 +231,27 @@ private func scripted(_ language: String = "en-US", terms: [String] = [],
     #expect(seams.join(["it is", "A test"]) == "it is a test")
     #expect(seams.join(["we go with plan", "B instead"]) == "we go with plan B instead")
     #expect(seams.join(["run it with dash", "P"]) == "run it with dash P")
+}
+
+// The system lookups, as dictation uses them. Each language runs only on a Mac with its name tagging and spell
+// checker dictionary (`systemLookups`): without French name tagging, "Marie" is no name and is lowered.
+
+@Test(.enabled(if: systemLookups("en-US"), "needs English name tagging and an English spell checker dictionary"))
+func englishWithTheSystemLookups() async {
+    let seams = system()
+    #expect(await joined(seams, ["We are cleaning up our big", "Pull request splitting it into parts"])
+        == "We are cleaning up our big pull request splitting it into parts")
+    #expect(await joined(seams, ["I have a meeting with", "Alice tomorrow"]) == "I have a meeting with Alice tomorrow")
+    #expect(await joined(seams, ["we flew to", "London last week"]) == "we flew to London last week")
+    #expect(await joined(seams, ["it ships on", "Monday morning"]) == "it ships on Monday morning")
+}
+
+@Test(.enabled(if: systemLookups("fr-CA"), "needs French name tagging and a French spell checker dictionary"))
+func frenchWithTheSystemLookups() async {
+    let seams = system("fr-CA")
+    #expect(await joined(seams, ["je pense que", "On peut le faire demain"]) == "je pense que on peut le faire demain")
+    #expect(await joined(seams, ["on a parlé de la", "Nouvelle version"]) == "on a parlé de la nouvelle version")
+    #expect(await joined(seams, ["on se voit avec", "Marie demain"]) == "on se voit avec Marie demain")
 }
 
 @Test func thePipelineJoinsBeforeFillersAndCorrections() async {
