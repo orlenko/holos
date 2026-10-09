@@ -226,7 +226,8 @@ entry point (`ReviewSession.submit(_:seen:)`), a lock-token type.
   and whose §6 Status column tracks steps by PR. Its guidance (what to do next, how to verify) stays current.
 - Cite specs as `docs/<file>.md §N.M`, or `docs/design.md "<Heading>"` for docs without numbers. A citation must
   resolve to an existing heading: `scripts/check-doc-citations.py` checks every `<path>.md §N.M` citation in the
-  repository in under a second. Run it before every PR that moves a section or adds a citation.
+  repository in under a second (`--self-test` runs its own cases). Run it before every PR that moves a section or
+  adds a citation.
 - A PR that changes behaviour updates the cited section in the same PR.
 - Comments explain why and state rules; they do not narrate review rounds.
 
