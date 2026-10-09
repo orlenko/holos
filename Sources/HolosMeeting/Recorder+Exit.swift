@@ -123,8 +123,8 @@ extension Recorder {
 ///    what was kept: the writer lock, then the leases.
 /// 3. Each attempt writes the exit stored when the attempt began; `use` changes the exit for later attempts only.
 ///    Leftover requests and the closed marker are removed only after a write succeeded.
-/// 4. `finished()` returns `written` once `done` is set: at once if it already is, otherwise when `releaseHeld`
-///    resumes it, after the held locks are released.
+/// 4. `finished()` returns `written` once `done` is set. A caller already waiting is resumed by `releaseHeld` after
+///    the held locks are released; a caller arriving once `done` is set returns at once, possibly before they are.
 final class ExitRetry: Sendable {
     private static let log = Logger(subsystem: "ca.orlenko.holos.app", category: "recorder")
 
