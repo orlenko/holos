@@ -29,12 +29,12 @@ Files are found like this:
 - a path whose first folder is a top-level folder of the repository (`docs/...`, `Sources/...`): from the root;
 - any other path: from the citing file's folder.
 
-A `§<N.M>` with no file named before it in its paragraph is bare and is not checked: it names a section of the
-file it appears in, or, in older code comments, of the meeting design, whose section numbers are unique. Between
-the lines `<!-- citations: <file>.md -->` and `<!-- /citations -->` of a Markdown file, a bare `§<N.M>` cites that
-file (from the repository root). It resolves to a heading of that file or, when that file is an index, to a
-heading of the file its table maps the number to (a row naming `§<N.M>`, or a range `§<N.M>–<N.K>` that holds it,
-and a link; a number not listed is looked up by its parents: `§0.2` by `§0`).
+A `§<N.M>` with no file named before it in its paragraph is bare and is not checked: it names a section of the file
+it appears in, or, in older code comments, of the meeting design, whose section numbers are unique. Between the
+lines `<!-- citations: <file>.md -->` and `<!-- /citations -->` of a Markdown file (outside fenced code), a bare
+`§<N.M>` cites that file (from the repository root). It resolves to a heading of that file or, when that file is an
+index, to a heading of the file its table maps the number to (a row naming `§<N.M>`, or a range `§<N.M>–<N.K>` that
+holds it, and a link; a number not listed is looked up by its parents: `§0.2` by `§0`).
 
 Prints each problem as `file:line: ...` and a summary; exits 1 when there is any.
 """
@@ -55,7 +55,7 @@ PATH = re.compile(r"(?<![\w./:<>-])(?P<path>(?:\.{1,2}/)*[A-Za-z0-9_][A-Za-z0-9_
 HEADING = re.compile(r"^ {0,3}#{1,6}[ \t]+(.*?)[ \t#]*$")
 # A fence's container: up to 3 spaces, then block quote markers and list markers, each with the spaces after it.
 FENCE_OPEN = re.compile(
-    r"^(?P<prefix> {0,3}(?:(?:>|[-*+]|\d+[.)])[ \t]+)*>?[ \t]{0,3})(?P<fence>`{3,}|~{3,})(?P<info>.*)$")
+    r"^(?P<prefix> {0,3}(?:>[ \t]*|(?:[-*+]|\d+[.)])[ \t]+)*[ \t]{0,3})(?P<fence>`{3,}|~{3,})(?P<info>.*)$")
 FENCE_CLOSE = re.compile(r"^(?P<lead>[ \t>]*)(?P<marks>`{3,}|~{3,})[ \t]*$")
 REGION_OPEN = re.compile(r"^[ \t]*<!--[ \t]*citations:[ \t]*(?P<path>\S+\.md)[ \t]*-->[ \t]*$")
 REGION_CLOSE = re.compile(r"^[ \t]*<!--[ \t]*/citations[ \t]*-->[ \t]*$")
@@ -258,8 +258,8 @@ def index_map(tree, rel, cache):
         for line in tree.read(rel).split("\n"):
             if not line.lstrip().startswith("|"):
                 continue
-            dests = [link.group("angle") or link.group("plain") for link in LINK.finditer(line)]
-            dests = [dest for dest in dests if dest.endswith(".md")]
+            dests = [(link.group("angle") or link.group("plain")).split("#", 1)[0] for link in LINK.finditer(line)]
+            dests = [dest for dest in dests if dest.endswith(".md") and "://" not in dest]
             if not dests:
                 continue
             target = os.path.normpath(os.path.join(os.path.dirname(rel), dests[-1]))
@@ -283,15 +283,21 @@ def region_resolves(tree, rel, number, cache):
 
 
 def regions(lines):
-    """The file each line's bare sections cite through a `<!-- citations: ... -->` region: {line number: path}."""
-    found, current = {}, None
+    """The file each line's bare sections cite through a `<!-- citations: ... -->` region: {line number: path}.
+    Markers inside fenced code are examples and open or close nothing."""
+    found, current, fence = {}, None, None
     for number, line in enumerate(lines, 1):
-        opening = REGION_OPEN.match(line)
-        if opening:
-            current = opening.group("path")
+        marker = False
+        if fence:
+            if closes(line, fence):
+                fence = None
+        elif opens(line):
+            fence = opens(line)
+        elif REGION_OPEN.match(line):
+            current, marker = REGION_OPEN.match(line).group("path"), True
         elif REGION_CLOSE.match(line):
-            current = None
-        elif current:
+            current, marker = None, True
+        if current and not marker:
             found[number] = current
     return found
 
@@ -367,16 +373,18 @@ SELF_TEST_FILES = {
     "docs/sub/relative.md": "./b.md §1.1, ../a.md §1.3 and docs/a.md §1.3 resolve; ./a.md §1.3 does not.\n",
     "fence.md": "docs/a.md §9.9\n",
     "docs/fenced.md": "# F\n\n- ```\n  ## 8.1 Fake\n  ```\n\n1. ```\n   ## 8.2 Fake\n   ```\n\n> ```\n## 8.3 Fake\n> ```\n\n"
-                      "- > ```\n## 8.4 Fake\n  > ```\n\n## 8.5 Real: the fence above closed\n\n```\n> ```\n## 8.6 Fake\n```\n",
-    "fence-containers.md": "docs/fenced.md §8.1, §8.2, §8.3, §8.4, §8.5 and §8.6\n",
+                      "- > ```\n## 8.4 Fake\n  > ```\n\n## 8.5 Real: the fence above closed\n\n```\n> ```\n## 8.6 Fake\n```\n\n"
+                      ">>> ```\n## 8.7 Fake\n>>> ```\n",
+    "fence-containers.md": "docs/fenced.md §8.1, §8.2, §8.3, §8.4, §8.5, §8.6 and §8.7\n",
     "docs/r.md": "# R\n\n## 0.2 A\n\n## 0.4 C\n\n## 8 E\n\n## 10 G\n",
     "ranges.md": "docs/r.md §0.2–0.4 and §8–§10\nand §0.2-0.4, §0.2–§0.4\n",
     "block.swift": "/* docs/spec.md\nSee §99.9\n*/\n/* docs/spec.md §1.2\n and §9.9\n*/\nlet x = 1 // §9.8\n",
     "docs/sub/deep.md": "../../docs/spec.md §99.9\n",
     "docs/folder.md": "missing/status.md §1.1, and sub/b.md §1.1 resolves.\n",
     "nested-label.md": "[§99.9 [draft]](missing.md)\n",
-    "docs/index.md": "# Index\n\n| §1.1 One | [sub/b.md](sub/b.md) |\n| §1.2–1.3 Two | [spec.md](spec.md) |\n",
-    "docs/region.md": "<!-- citations: docs/index.md -->\n| §1.1 | §1.2 | §1.3 | §7.7 |\n<!-- /citations -->\n§7.7\n",
+    "docs/index.md": "# Index\n\n| §1.1 One | [sub/b.md](sub/b.md#11-one) |\n| §1.2–1.3 Two | [spec.md](spec.md) |\n",
+    "docs/region.md": "<!-- citations: docs/index.md -->\n| §1.1 | §1.2 | §1.3 | §7.7 |\n<!-- /citations -->\n§7.7\n\n"
+                      "```\n<!-- citations: docs/index.md -->\n```\n| §7.6 | outside any region: the marker above is in a fence |\n",
     "fence-indent.md": "docs/c.md §7.1\n",
     "prefix.md": "docs/a.md §4.1 is not docs/a.md §4.10.\n",
     "docs/bare.md": "# Bare\n\n## 2.1 Here\n\nSee §2.1 and §2.2; docs/a.md §1.3, §2.1 is a citation.\n\n- §2.3 is bare\n",
@@ -406,6 +414,7 @@ SELF_TEST_PROBLEMS = [
     "fence-containers.md:1: docs/fenced.md §8.3: no heading 8.3 in docs/fenced.md",
     "fence-containers.md:1: docs/fenced.md §8.4: no heading 8.4 in docs/fenced.md",
     "fence-containers.md:1: docs/fenced.md §8.6: no heading 8.6 in docs/fenced.md",
+    "fence-containers.md:1: docs/fenced.md §8.7: no heading 8.7 in docs/fenced.md",
     "ranges.md:1: docs/r.md §0.3: no heading 0.3 in docs/r.md",
     "ranges.md:1: docs/r.md §9: no heading 9 in docs/r.md",
     "ranges.md:2: docs/r.md §0.3: no heading 0.3 in docs/r.md",
