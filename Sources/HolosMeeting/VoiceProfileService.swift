@@ -1746,7 +1746,7 @@ public enum VoiceProfileService {
         } catch {
             throw HolosError.io("Cannot list the meetings folder: \(error.localizedDescription)")
         }
-        return try names.filter { $0.hasSuffix(".holos") && !$0.hasPrefix(".") }.sorted().compactMap {
+        return try names.filter(SessionPaths.isListedSessionFolderName).sorted().compactMap {
             try sessionFolder(url: root.appendingPathComponent($0, isDirectory: true))
         }
     }
@@ -1754,7 +1754,7 @@ public enum VoiceProfileService {
     /// `<root>/<SESSION-ID>.holos` when it is a folder; nil when it does not exist (or is not a folder).
     private static func sessionFolder(_ sessionID: String, root: URL) throws -> URL? {
         guard SessionArchive.validToken(sessionID) else { return nil }
-        return try sessionFolder(url: root.appendingPathComponent("\(sessionID).holos", isDirectory: true))
+        return try sessionFolder(url: SessionPaths.folder(for: sessionID, in: root))
     }
 
     private static func sessionFolder(url: URL) throws -> URL? {

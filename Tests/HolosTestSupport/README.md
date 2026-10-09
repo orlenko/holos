@@ -6,6 +6,7 @@ Helpers shared by the test targets. Both are ordinary library targets that only 
   private), `PollBudget` and `eventually` (poll a condition on a budget of polling time, never a wall-clock assert),
   `FileInspection` (modes, entries, file contents; `entryExists` does not follow a symbolic link, `exists` does),
   `isInvalidInput`/`isUnavailable`, `SeededNumbers` and `SplitMix64`, `TranscriptFixtures` (evenly timed words),
+  `VersionedFileCorpus` (damaged, newer, and unversioned copies of a versioned JSON file, and what a read made of each),
   and `AudioFixtures` (a constant CAF; any audio file, such as rendered speech, read back as 16 kHz mono).
   Rendering speech itself stays `NativeSpeechRenderer` in HolosSynthesis.
 - **HolosSessionTestSupport** (adds HolosStorage): `SessionFixtureBuilder`, an on-disk `.holos` session written

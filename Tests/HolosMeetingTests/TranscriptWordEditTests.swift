@@ -629,14 +629,15 @@ private func editCall() -> (transcript: Transcript, run: DiarizationRun) {
     return (transcript, run)
 }
 
-/// Frames centred in 10.8–11.5 s (words 2 and 3 of M) are echo, the rest local.
+/// Frames centred in 10.8–11.5 s (words 2 and 3 of M) are echo, the rest local, the predicted echo 20 dB below the
+/// microphone (the user's own speech, so the word rule trusts it).
 private let editEchoMask: AcousticEchoMask = {
     let count = Int(30 / AcousticEchoMask.hopSeconds)
     let classes = (0..<count).map { frame -> UInt8 in
         let centre = AcousticEchoMask.centre(ofFrame: frame)
         return (centre >= 10.8 && centre < 11.5 ? AcousticEchoMask.FrameClass.echo : .local).rawValue
     }
-    return AcousticEchoMask(classes: classes, echoLevels: Array(repeating: 0, count: count))!
+    return AcousticEchoMask(classes: classes, echoLevels: Array(repeating: -40, count: count))!
 }()
 
 @Test func shownWordsMapToStoredIndicesAndHiddenEchoIsNeverEdited() throws {

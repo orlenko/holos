@@ -5,6 +5,11 @@ Durable files: the session folder (`<id>.holos`), its locks, and the global stor
 **Owns**
 - Paths inside a session: `SessionPaths` (one function per file; `docs/meeting-design.md §2.1`), plus
   `ScreenContextStore`'s `screen/` paths.
+- Session folder names (`SessionFolderNames.swift`): `SessionPaths.folder(for:in:)` / `folderName(for:)` build
+  `<id>.holos`; `parse(folderName:)` reads the ID back only from an `<uppercase UUID>.holos` name, the only form
+  Holos creates; `isSessionFolderName` and `isListedSessionFolderName` also accept folders a user renamed, so they
+  are still listed, found, deletable and reached through `AtomicFile.openFolder`.
+- Versioned JSON reads (`VersionedFile.swift`): `VersionedFile<T: ValidatedDecodable>` and `SchemaVersion`.
 - Safe file operations: `AtomicFile` (`write`, `create`, `append`, `readJSON`, `readIfPresent`, `removeTree`, …) and
   `AtomicFile.openFolder` in `FolderChain.swift` (every folder opened with `O_NOFOLLOW` from the session folder
   down), `ChunkFile` (reading finalized audio chunks).
@@ -38,13 +43,17 @@ Durable files: the session folder (`<id>.holos`), its locks, and the global stor
   (threat model: `docs/meeting-design.md §1.7`). One listing by path remains: `SessionDeletion` lists
   `eval/review` with `FileManager`, then removes through `removeTree`. Code outside this target that opens session
   files by path (such as `AVAudioFile` readers) does not get this guarantee.
-- Whole-file readers refuse a `schemaVersion` newer than they know (`TranscriptPointer.swift`, the people store,
-  `audio-deleted.json`); line files keep going instead: the forget journal skips newer lines, and dictation history
+- Whole-file readers refuse a `schemaVersion` newer than they know (`VersionedFile`, `SchemaVersion.decode`, the
+  people store, `audio-deleted.json`); line files keep going instead: the forget journal skips newer lines, and dictation history
   keeps them unshown. `events.jsonl` lines have no version. Details: docs/contracts.md "Persistence".
 - Directories are `0700` and files `0600` by default (`AtomicFile`'s `permissions:` parameter).
 
-**Known gaps:** `SessionDeletion` hard-codes `screen`, `eval/review` and `derived`; `<id>.holos` folder names are
-built and parsed outside this target with different rules (one `SessionPaths.folder`/`parse` is planned).
+**Known gaps:** `SessionDeletion` hard-codes `screen`, `eval/review` and `derived`; two CLI commands
+(`RecordControl`, `People`) still build `<id>.holos` by hand. Readers not yet on `VersionedFile`: the stores'
+`SchemaVersion.decode` callers (`SessionSpeakerStore`, `SessionDeletion`, `ScreenContextStore`,
+`SpeakerProfileStore`), the other `SessionFiles.decode` callers in HolosMeeting, line files that skip newer lines,
+and hand-written checks with their own policies (`RecorderChannel`, `ControlInbox`, `SessionArchive.readManifest`,
+`LiveHints`, `VocabularyFile`, `DeepTranscriptionQueue`, HolosEvaluation's files).
 
 **Tests:** `Tests/HolosStorageTests` (`AtomicFileTests`, `SessionLocksTests`, `LeaseHandOffTests`, `FolderChainTests`,
 `DescriptorSwapTests`, …), built on `HolosTestSupport` and `HolosSessionTestSupport`;

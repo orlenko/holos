@@ -1147,3 +1147,246 @@ func recognitionDoesNotCompareAMicrophoneClusterThatIsEcho() async throws {
     #expect(!SessionFixtures.exists(EchoMaskStore.directory(session)))
     #expect(try SessionSpeakerStore.readHead(session: session)?.runID == run.id)
 }
+
+// MARK: - Word rule version
+
+@Test(.timeLimit(.minutes(2)))
+func transcriptFilesWrittenUnderTheEarlierWordRuleAreOutOfDateAndEchoAnalyzeRewritesThem() async throws {
+    // Files written before the word rule asked for evidence recorded the mask by the SHA-256 of its frames alone.
+    let temp = try TemporaryDirectory("echo")
+    defer { temp.remove() }
+    let call = CallTranscript()
+    let session = try await callSession(in: temp.url, audio: CallAudio.tracks(echo: true), transcript: call.transcript)
+    _ = try await MeetingPostProcessor(voiceSamples: .none, diarizer: systemDiarizer(), freeSpace: FixedFreeSpace(.max))
+        .run(session: session, lease: nil)
+    #expect(SessionExports.echoMaskIsCurrent(session: session))
+    let manifest = try SessionArchive.readManifest(at: session)
+    let sha256 = try #require(try EchoMaskStore.current(session: session, manifest: manifest)?.record.frames?.sha256)
+    #expect(EchoMaskStore.identity(session: session, manifest: manifest)
+        == "\(sha256)+words\(AcousticEchoMask.wordRuleVersion)")
+    let url = SessionPaths.generatedExports(session)
+    var record = try #require(try JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any])
+    record["echoMask"] = sha256
+    try JSONSerialization.data(withJSONObject: record).write(to: url)
+    let title = { SessionCatalog.summary(session: session, jobState: .free).displayTitle }
+    #expect(SessionExports.filesState(session: session, title: title()) == .stale, "The app offers the update.")
+    #expect(!SessionExports.echoMaskIsCurrent(session: session))
+    #expect(!EchoAnalysisStage.needed(session: session), "The saved analysis is kept.")
+    #expect(EchoCatchUpSchedule.needsAnalysis(session: session), "The app's catch-up rewrites the files.")
+
+    let outcome = try await SessionEchoAnalyzeCommand.run(.init(session: session), voiceSamples: .none,
+                                                          freeSpace: FixedFreeSpace(.max))
+    #expect(!outcome.analysed)
+    #expect(outcome.exitCode == 0)
+    #expect(SessionExports.echoMaskIsCurrent(session: session))
+    #expect(SessionExports.filesState(session: session, title: title()) == .current)
+    #expect(!EchoCatchUpSchedule.needsAnalysis(session: session))
+}
+
+// MARK: - Echo label stats
+
+@Test(.timeLimit(.minutes(2)))
+func echoLabelStatsCountACallAndLeaveOtherMeetingsOut() async throws {
+    let temp = try TemporaryDirectory("echo")
+    defer { temp.remove() }
+    let call = CallTranscript()
+    let session = try await callSession(in: temp.url.appendingPathComponent("call"),
+                                        audio: CallAudio.tracks(echo: true), transcript: call.transcript)
+    _ = try await MeetingPostProcessor(voiceSamples: .none, diarizer: systemDiarizer(), freeSpace: FixedFreeSpace(.max))
+        .run(session: session, lease: nil)
+    let headphones = try await callSession(in: temp.url.appendingPathComponent("headphones"),
+                                           audio: CallAudio.tracks(echo: false), transcript: call.transcript)
+    _ = try await MeetingPostProcessor(voiceSamples: .none, diarizer: systemDiarizer(), freeSpace: FixedFreeSpace(.max))
+        .run(session: headphones, lease: nil)
+    let files = speakerFiles(session)
+    let exports = SessionFixtures.text(SessionPaths.export("md", in: session))
+
+    let report = SessionEchoLabelStats.report([session, headphones, temp.url.appendingPathComponent("none.holos")])
+    #expect(report.sessions.map(\.status) == [.measured, .noMask, .unreadable])
+    #expect(report.measured == 1)
+    #expect(report.exitCode == 0)
+    let stats = try #require(report.sessions.first?.stats)
+    let micWords = call.transcript.segments.filter { $0.track == "mic" }
+        .reduce(0) { $0 + WordTiming.effectiveWords(of: $1).count }
+    #expect(stats.microphoneWords == micWords)
+    #expect(stats.judgedWords == micWords)
+    #expect(stats.localAfter <= stats.localBefore)
+    #expect(stats.echoToLocal == 0)
+    #expect(stats.localBefore - stats.localAfter == stats.localToEcho)
+    #expect(stats.microphoneRowsAfter != nil)
+    #expect(report.total == stats)
+    // Counts only: no word of the transcript, and no folder path.
+    let lines = report.lines.joined(separator: "\n")
+    #expect(report.lines.count == 4)
+    for word in ["heard0w", "own0w", "far0w", temp.url.path] { #expect(!lines.contains(word)) }
+    #expect(lines.contains(try SessionArchive.readManifest(at: session).id))
+    #expect(report.lines.last?.hasPrefix("total (1 of 3 measured): ") == true)
+    // It only reads.
+    #expect(speakerFiles(session) == files)
+    #expect(SessionFixtures.text(SessionPaths.export("md", in: session)) == exports)
+    #expect(SessionEchoLabelStats.report([headphones]).exitCode == 1)
+}
+
+@Test(.timeLimit(.minutes(2)))
+func echoLabelStatsReadEachArgumentOnItsOwnAndNameNoPath() async throws {
+    // A real call between a missing folder, an unknown session ID, and a symbolic link to the call: the call is
+    // measured, the others are listed by their place, and no path or reason is printed.
+    let temp = try TemporaryDirectory("echo")
+    defer { temp.remove() }
+    let call = CallTranscript()
+    let root = temp.url.appendingPathComponent("Sessions", isDirectory: true)
+    let session = try await callSession(in: root, audio: CallAudio.tracks(echo: true), transcript: call.transcript)
+    _ = try await MeetingPostProcessor(voiceSamples: .none, diarizer: systemDiarizer(), freeSpace: FixedFreeSpace(.max))
+        .run(session: session, lease: nil)
+    let id = try SessionArchive.readManifest(at: session).id
+    let link = temp.url.appendingPathComponent("link.holos")
+    try FileManager.default.createSymbolicLink(at: link, withDestinationURL: session)
+    let missing = temp.url.appendingPathComponent("missing.holos").path
+    let unknown = UUID().uuidString
+    let report = SessionEchoLabelStats.report(arguments: [missing, id, unknown, link.path], root: root)
+    #expect(report.sessions.map(\.status) == [.unreadable, .measured, .unreadable, .unreadable])
+    #expect(report.sessions.map(\.sessionID) == [nil, id, nil, nil])
+    #expect(report.measured == 1)
+    #expect(report.exitCode == 0)
+    #expect(report.lines.count == 5)
+    #expect(report.lines[0] == "#1: not measured (unreadable)")
+    #expect(report.lines[2] == "#3: not measured (unreadable)")
+    #expect(report.lines[4].hasPrefix("total (1 of 4 measured): "))
+    let lines = report.lines.joined(separator: "\n")
+    for text in [temp.url.path, "missing", unknown, "link"] { #expect(!lines.contains(text)) }
+    // The path to the call works as its ID does; nothing measured is exit 1.
+    #expect(SessionEchoLabelStats.report(arguments: [session.path], root: root).sessions.first?.status == .measured)
+    #expect(SessionEchoLabelStats.report(arguments: [missing, unknown], root: root).exitCode == 1)
+}
+
+@Test func onlyCommandsThatMayWriteResumePendingForgetsFirst() {
+    // Resuming a forget deletes files and rewrites people, speaker data and transcript files: the read-only stats
+    // command must not set it off.
+    #expect(!ForgetResumeScope.applies(to: ["session", "echo-label-stats", "SESSION-ID", "--json"]))
+    #expect(ForgetResumeScope.applies(to: ["session", "echo-analyze", "SESSION-ID"]))
+    #expect(ForgetResumeScope.applies(to: ["session"]))
+    #expect(ForgetResumeScope.applies(to: ["speakers", "list", "SESSION-ID"]))
+    #expect(ForgetResumeScope.applies(to: ["people", "list"]))
+    #expect(!ForgetResumeScope.applies(to: ["record", "start"]))
+    #expect(!ForgetResumeScope.applies(to: []))
+    // Only as the session subcommand: a session or argument of that name elsewhere is no exemption.
+    #expect(ForgetResumeScope.applies(to: ["speakers", "echo-label-stats"]))
+    #expect(ForgetResumeScope.applies(to: ["session", "export", "echo-label-stats"]))
+}
+
+@Test func echoLabelStatsCountRowsAsReviewGroupsThem() throws {
+    // Two microphone turns of "Me" 2.5 s apart: Review shows them as one row. The second is the call's echo with
+    // false local frames (+2 dB), the user's under the rule before only.
+    let first = SessionFixtures.segment(["a1", "a2", "a3"], track: "mic", start: 10, id: "A")
+    let second = SessionFixtures.segment(["b1", "b2", "b3"], track: "mic", start: 13.9, id: "B")
+    let transcript = SessionFixtures.transcript([first, second])
+    let run = SpeakerRunBuilder.build(
+        sessionID: "SESSION", transcript: transcript,
+        tracks: [SpeakerRunBuilder.TrackInput(track: "mic", policy: .channel(speakerID: "mic:me", displayName: "Me"))],
+        engine: nil, parameters: .v1, id: "RUN").run
+    #expect(run.turns.count == 2)
+    /// The user's words in `user` (20 dB over the prediction), false local frames (+2 dB) over `echo`'s words.
+    func makeMask(user: TranscriptSegment, echo: TranscriptSegment) throws -> AcousticEchoMask {
+        let count = Int(30 / AcousticEchoMask.hopSeconds)
+        var classes = [UInt8](repeating: AcousticEchoMask.FrameClass.echo.rawValue, count: count)
+        var levels = [Int8](repeating: 0, count: count)
+        var local: [(Double, Double, Int8)] = [(user.start, user.end, -40)]
+        for word in echo.words {
+            local += [(word.start, word.start + 0.08, 4), (word.start + 0.2, word.start + 0.28, 4)]
+        }
+        for frame in 0..<count {
+            let centre = AcousticEchoMask.centre(ofFrame: frame)
+            for (start, end, level) in local where centre >= start && centre < end {
+                classes[frame] = AcousticEchoMask.FrameClass.local.rawValue
+                levels[frame] = level
+            }
+        }
+        return try #require(AcousticEchoMask(classes: classes, echoLevels: levels))
+    }
+    let mask = try makeMask(user: first, echo: second)
+
+    let stats = SessionEchoLabelStats.compare(transcript: transcript, mask: mask, run: run, edits: [])
+    #expect(stats.localToEcho == 3)
+    #expect((stats.microphoneRowsBefore, stats.microphoneRowsAfter) == (1, 1))
+    #expect(stats.rowsChanged == 1, "The row lost its second turn.")
+    // Turn by turn, it would have been two rows before.
+    let ungrouped = EchoLabelStats.compare(transcript: transcript, mask: mask, run: run)
+    #expect((ungrouped.microphoneRowsBefore, ungrouped.microphoneRowsAfter) == (2, 1))
+    // The first turn the echo instead: the row now starts with the second, and is still one row changed.
+    let swapped = try makeMask(user: second, echo: first)
+    let firstHidden = SessionEchoLabelStats.compare(transcript: transcript, mask: swapped, run: run, edits: [])
+    #expect(firstHidden.localToEcho == 3)
+    #expect((firstHidden.microphoneRowsBefore, firstHidden.microphoneRowsAfter) == (1, 1))
+    #expect(firstHidden.rowsChanged == 1)
+}
+
+@Test(.timeLimit(.minutes(2)))
+func aMeetingWithoutAudioHasItsTranscriptFilesRewrittenForItsSavedAnalysis() async throws {
+    // A call analysed and labelled, its audio then deleted (echo/ stays), and its transcript files written under the
+    // earlier word rule: the catch-up finds it, and echo-analyze rewrites the files from the saved analysis.
+    let temp = try TemporaryDirectory("echo")
+    defer { temp.remove() }
+    let call = CallTranscript()
+    let session = try await callSession(in: temp.url, audio: CallAudio.tracks(echo: true), transcript: call.transcript)
+    _ = try await MeetingPostProcessor(voiceSamples: .none, diarizer: systemDiarizer(), freeSpace: FixedFreeSpace(.max))
+        .run(session: session, lease: nil)
+    let deleting = try SessionArchive.acquireProcessingLease(at: session)
+    try SessionDeletion.deleteAudio(session: session, lease: deleting)
+    deleting.release()
+    let manifest = try SessionArchive.readManifest(at: session)
+    let store = SpeakerProfileStore(directory: temp.url.appendingPathComponent("Support/Speakers", isDirectory: true))
+    let sha256 = try #require(try EchoMaskStore.current(session: session, manifest: manifest)?.record.frames?.sha256)
+    #expect(EchoMaskStore.usable(session: session, manifest: manifest) != nil, "Review still hides the echo.")
+    #expect(SessionExports.echoMaskIsCurrent(session: session))
+    #expect(!EchoCatchUpSchedule.needsAnalysis(session: session))
+    #expect(EchoCatchUpSchedule.scan(root: temp.url).isEmpty)
+
+    let url = SessionPaths.generatedExports(session)
+    var record = try #require(try JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any])
+    record["echoMask"] = sha256
+    try JSONSerialization.data(withJSONObject: record).write(to: url)
+    #expect(!EchoAnalysisStage.needed(session: session), "No audio to analyse.")
+    #expect(EchoCatchUpSchedule.needsAnalysis(session: session, profiles: store))
+    #expect(EchoCatchUpSchedule.scan(root: temp.url).map(\.sessionID) == [manifest.id])
+
+    let outcome = try await SessionEchoAnalyzeCommand.run(.init(session: session), voiceSamples: fixedVoice,
+                                                          profiles: store,
+                                                          freeSpace: FixedFreeSpace(.max))
+    #expect(!outcome.analysed)
+    #expect(outcome.verdict == .echo)
+    #expect(outcome.exitCode == 0)
+    #expect(SessionExports.echoMaskIsCurrent(session: session))
+    #expect(!EchoCatchUpSchedule.needsAnalysis(session: session, profiles: store))
+    #expect(EchoCatchUpSchedule.scan(root: temp.url).isEmpty)
+    // A new analysis needs the audio.
+    await #expect(throws: HolosError.self) {
+        _ = try await SessionEchoAnalyzeCommand.run(.init(session: session, force: true), voiceSamples: .none,
+                                                    freeSpace: FixedFreeSpace(.max))
+    }
+}
+
+@Test(.timeLimit(.minutes(2)))
+func aMeetingWithoutAudioStillDropsASampleTheEchoChanged() async throws {
+    // A sample learned before the echo was found; the analysis is then saved and the transcript files rewritten for it,
+    // and the audio deleted. The sample still covers the echo: the catch-up is not done with the meeting, and
+    // echo-analyze removes the sample (it cannot be computed again without audio).
+    let temp = try TemporaryDirectory("echo")
+    defer { temp.remove() }
+    let (session, store) = try await learnedBeforeTheEcho(in: temp)
+    let manifest = try SessionArchive.readManifest(at: session)
+    _ = try EchoAnalysisStage.analyzeSession(session: session, manifest: manifest, freeSpace: FixedFreeSpace(.max))
+    _ = try SessionExports.regenerate(session: session, people: store)
+    let deleting = try SessionArchive.acquireProcessingLease(at: session)
+    try SessionDeletion.deleteAudio(session: session, lease: deleting)
+    deleting.release()
+    #expect(SessionExports.echoMaskIsCurrent(session: session))
+    #expect(VoiceProfileService.samplesOutOfStep(session: session, store: store))
+    #expect(EchoCatchUpSchedule.needsAnalysis(session: session, profiles: store))
+
+    let outcome = try await SessionEchoAnalyzeCommand.run(.init(session: session), voiceSamples: fixedVoice,
+                                                          profiles: store, freeSpace: FixedFreeSpace(.max))
+    #expect(!outcome.analysed)
+    #expect(outcome.exitCode == 0)
+    try expectSampleDropped(store)
+    #expect(!EchoCatchUpSchedule.needsAnalysis(session: session, profiles: store))
+}
