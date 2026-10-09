@@ -2,7 +2,7 @@ import Foundation
 import HolosCore
 
 /// Where a job stands against the others (docs/meeting/titles-summaries.md §4.17, "Work the user asked for goes before automatic
-/// work"; §5.11, "Catching up in the app"): lower goes first.
+/// work"; docs/meeting/online-calls-echo.md §5.11, "Catching up in the app"): lower goes first.
 public enum BackgroundJobPriority: Int, Comparable, Sendable {
     /// Asked for from a meeting's menu (Make Final Transcript Now, Summarize Again).
     case askedFor
