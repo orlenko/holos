@@ -112,8 +112,8 @@ extension ReviewWindow {
         if joined { refresh() }
     }
 
-    /// Drops every join without refreshing (`clearJoins`, or `refresh` when an undo was saved): a join still saving
-    /// opens no field now, so its closed field stops refusing typing at once.
+    /// Drops every join without refreshing (`clearJoins`, or `refresh` when an undo was saved): a dropped join still
+    /// saving opens no field, so its closed field stops refusing typing at once.
     func dropJoins() {
         joinsCleared += 1
         window.reopenFieldAfterJoin(window.fieldClosedForJoin)
