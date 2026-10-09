@@ -16,7 +16,7 @@ Status: implementation-ready design for PR1–PR11 of
 [meeting-recording-plan.md](../meeting-recording-plan.md) (PR12, minutes, is out of scope).
 Written 2026-09-23 from the code on branch `meeting-plan`, FluidAudio 0.17.1 sources
 (`5c51c5c9`), and the user's decisions in plan §8. Revised 2026-09-24 after a three-lens
-design review (80 findings, §10) and spike S1 ([speaker-evaluation.md](../speaker-evaluation.md)).
+design review (80 findings, meeting-plan-2026-09.md §10) and spike S1 ([speaker-evaluation.md](../speaker-evaluation.md)).
 No product code exists for it yet.
 
 Several engineers build this in parallel, one PR each, without talking to each other.
@@ -104,7 +104,7 @@ existing file. Signatures are the contract; bodies are the implementer's. When t
 compiler demands a small annotation change (for example `Sendable` on a protocol),
 make it without changing names or shapes and say so in the PR description. Every PR
 description ends with a "Docs note" paragraph for the PR that writes the wave's
-`README.md` and `docs/status.md` updates (§6).
+`README.md` and `docs/status.md` updates (meeting-plan-2026-09.md §6).
 
 ### 5.1 PR6: Contracts and storage foundations (wave 0)
 

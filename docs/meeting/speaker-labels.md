@@ -604,7 +604,7 @@ reader, and `holos session diarize`, all tested with `FakeDiarizer`. PR7c (after
   `Sources/HolosCLI/Doctor.swift` (model status line; `"speakerModels": "verified" |
   "notInstalled" | "damaged"` in `--json`; `setup --speakers`), `Package.swift` (§1.2
   wave 2).
-- Add `THIRD_PARTY_NOTICES.md` (§4.8).
+- Add `THIRD_PARTY_NOTICES.md` (post-processing.md §4.8).
 - Tests: `Tests/HolosDiarizationTests/{ModelVerificationTests, SampleSourceTests, FluidDiarizerFixtureTests}.swift`.
 
 **API:** §4.8.
@@ -860,7 +860,7 @@ holos session score <path> --otter <transcript.txt> [--collar 0.25] [--json]    
 above and the calibration run; numbers recorded in `speaker-evaluation.md` and the PR
 description (counts and metrics only): runtime, peak RSS (`/usr/bin/time -l`),
 agreement confusion per configuration, speaker counts, track offsets, and calibration
-percentiles. The `exclusiveSegments` default follows §4.8. Temporary sessions and audio
+percentiles. The `exclusiveSegments` default follows post-processing.md §4.8. Temporary sessions and audio
 are deleted.
 
 **Does not touch.** HolosDiarization, `MeetingPostProcessor.swift`, HolosAudio,

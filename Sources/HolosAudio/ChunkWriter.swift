@@ -9,7 +9,7 @@ import Synchronization
 ///
 /// Chunks are 16-bit little-endian integer PCM (the file converts Float32 on write, docs/meeting/recorder.md §5.4
 /// PR2a); older Float32 chunks stay readable because readers use the file's processing format. Frame times follow
-/// `FrameContinuity` (§2.3): jitter under 50 ms is written contiguously, a later frame closes the chunk and records
+/// `FrameContinuity` (docs/meeting/session-format.md §2.3): jitter under 50 ms is written contiguously, a later frame closes the chunk and records
 /// `audioDiscontinuity`, and samples that would overlap the previous chunk are dropped and recorded as
 /// `timestampOverlap`, so audio is never written twice and no chunk starts before the previous one ends.
 public actor AudioChunkWriter {
