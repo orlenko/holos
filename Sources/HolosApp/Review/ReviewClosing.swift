@@ -72,10 +72,10 @@ struct FailedWordEdit {
     var restoring: String? = nil
 }
 
-/// After a close by hand stopped because edits were not saved (`ReviewWindow.keepAfterFailedClose`): fields could not
-/// open while the close waited, so the first failed edit's field opens now, with what was typed and why (`reopen`,
-/// false when its words are no longer there). Returns the others (all of them when the field could not open), for the
-/// footer (`UnsavedWordEdits`).
+/// After a close by hand stopped because edits were not saved (`ReviewWordEditCoordinator.keepAfterFailedClose`):
+/// fields could not open while the close waited, so the first failed edit's field opens now, with what was typed and
+/// why (`reopen`, false when its words are no longer there). Returns the others (all of them when the field could not
+/// open), for the footer (`UnsavedWordEdits`).
 enum ReviewCloseRecovery {
     @MainActor
     static func recover(_ failures: [FailedWordEdit], reopen: (FailedWordEdit) -> Bool) -> [FailedWordEdit] {
