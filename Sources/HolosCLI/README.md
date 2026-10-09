@@ -1,7 +1,7 @@
 # HolosCLI
 
-The `voiceislocal` command-line tool (ArgumentParser). It is also the child process the app starts for recording
-and for every job that needs FluidAudio or WhisperKit.
+The `voiceislocal` command-line tool (ArgumentParser). It is also the child process the app starts for every job
+that needs FluidAudio or WhisperKit, and for recording (unless the app's in-process recorder mode is turned on).
 
 **Owns**
 - `Holos.swift`: the root command and its subcommands (`doctor`, `setup`, `transcribe`, `record`, `session`,
@@ -10,19 +10,23 @@ and for every job that needs FluidAudio or WhisperKit.
 - One file per command (`Record.swift`, `Session*.swift`, `Speakers.swift`, …): parse arguments, call the library,
   print. `Console` writes content to stdout and messages to stderr.
 
-**Must not own:** workflow logic. A command builds a `Request`, calls the library's `*Command.run` (mostly in
-`HolosMeeting`, e.g. `SessionSummarizeCommand`, `SessionDiarizeCommand`; `WordListCommand` in `HolosStorage`), and
-prints the `Outcome`. New logic goes in the library so the app and tests can use it.
+**Must not own:** workflow logic. Most `session` subcommands build a `Request`, call the library's `*Command.run`
+(`SessionSummarizeCommand`, `SessionDiarizeCommand`, … in `HolosMeeting`) and print the `Outcome`; `words` calls
+`WordListCommand` in `HolosStorage`. The other commands call library types directly, and
+`Speakers.swift` and `Eval.swift` still hold more than parsing and printing. New logic goes in the library so the
+app and tests can use it.
 
 **Depends on:** every library except HolosDesktop, including HolosDiarization and HolosWhisper (only this target
 links them). ArgumentParser, FoundationModels (`doctor`, `session summarize`).
 
-**Conventions** (docs/meeting-design.md §1.4)
+**Conventions** (`docs/meeting-design.md §1.4`)
 - Stdout carries content and `--json` output; progress and messages go to stderr.
-- Exit codes: `0` success, `1` failure, `3` audio saved but with a warning (an automatic stop, or post-processing
-  partial or failed), `64` usage errors (ArgumentParser).
-- Without `--locale`, commands use the supported locale closest to the user's preferred languages
-  (`RecognitionOptions`).
+- Exit codes: `0` success; `1` failure; `3` the command did its main job but with a warning (for `record`: audio
+  saved, but an automatic stop or post-processing partial or failed; `session` commands such as `import`,
+  `recover`, `rename`, `summarize`, `echo-analyze` use it the same way); `64` usage errors (ArgumentParser);
+  `128 + signal` when a command is stopped by a signal (`InterruptLatch`).
+- Without `--locale`, recognition commands use the supported locale closest to the user's preferred languages
+  (`RecognitionOptions`); `session retranscribe` uses the locale the session was recorded with.
 
 **Known size debt:** `Speakers.swift` (1,004 lines).
 

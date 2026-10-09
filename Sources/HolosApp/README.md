@@ -18,7 +18,9 @@ wiring between them and the library controllers (docs/design.md "Main window").
 **Must not own:** business logic, session-file layout or locks, decoding `voiceislocal` output by hand. Put
 controllers in `HolosMeeting`/`HolosDictation` and paths in `HolosStorage`. Today it still holds the dictation
 session and three background-job schedulers (`+DeepTranscription`, `+MeetingSummary`, `+EchoCatchUp`, none with
-tests), and 13 files import `HolosStorage`; shrink these, do not copy them.
+tests), 13 files import `HolosStorage`, and it decodes `voiceislocal` output by hand (`doctor --json` and
+maintenance output with `JSONSerialization` in `HolosApp+Meeting.swift`, its own `SummaryOutcome` and
+`EchoOutcome`; the command-runner refactor removes this). Shrink these, do not copy them.
 
 **Depends on:** HolosCore, HolosAudio, HolosSpeech, HolosDesktop, HolosDictation, HolosStorage, HolosSpeakers,
 HolosMeeting, HolosSynthesis, HolosContent. Never HolosDiarization or HolosWhisper (they run in a `voiceislocal`

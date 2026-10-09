@@ -1,6 +1,6 @@
 # HolosDiarization
 
-Speaker diarization with FluidAudio's offline Core ML models (docs/meeting-design.md §4.8). Only `HolosCLI` links
+Speaker diarization with FluidAudio's offline Core ML models (`docs/meeting-design.md §4.8`). Only `HolosCLI` links
 it; the app runs diarization in a `voiceislocal` process.
 
 **Owns**
@@ -18,10 +18,10 @@ it; the app runs diarization in a `voiceislocal` process.
 **Invariants**
 - FluidAudio is imported only in `FluidDiarizer.swift`, `FluidModels.swift` and `Int16CAFSampleSource.swift`.
   This target never imports HolosSpeakers: FluidAudio's `WordTiming` and `AudioSource` clash with Holos types, so
-  write `HolosCore.AudioSource` where both are visible (§1.1).
+  write `HolosCore.AudioSource` where both are visible (`docs/meeting-design.md §1.1`).
 - Models that are missing or fail verification make `diarize` throw; nothing downloads during a diarization.
 - FluidAudio's `OfflineDiarizerManager` is not `Sendable`: create, use and drop it inside one function; cache only
-  the models (§1.3).
+  the models (`docs/meeting-design.md §1.3`).
 
 **Tests:** `Tests/HolosDiarizationTests` (`ModelVerificationTests`, `SampleSourceTests`). Real-model tests are
 opt-in: `HOLOS_DIARIZATION_FIXTURE=1` (`FluidDiarizerFixtureTests`).

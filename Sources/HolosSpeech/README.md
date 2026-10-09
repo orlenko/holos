@@ -10,7 +10,7 @@ The adapter over Apple's on-device speech recognition (`SpeechAnalyzer` with `Sp
 - `AppleSpeechSession` (actor): one recognition session. `make(locale:backend:contextualStrings:accurate:onUpdate:)`
   starts it; frames go in with backpressure (a bounded input), results come out as `TranscriptUpdate` values.
 
-**Must not own:** recording lifetime, capture, files, focus or insertion, transcript editing. Callers
+**Must not own:** recording lifetime, capture, session or output files, focus or insertion, transcript editing. Callers
 (`HolosDictation`, `HolosMeeting`, `HolosCLI`) decide when a session starts and ends.
 
 **Depends on:** HolosCore. Speech, AVFoundation, CoreMedia.

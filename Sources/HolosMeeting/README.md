@@ -1,7 +1,8 @@
 # HolosMeeting
 
 Meetings end to end, without AppKit: recording, the app's controllers, everything after the stop, Review, people
-and voice profiles. docs/meeting-design.md §4 is the spec; §4.1 is the recorder ↔ app protocol.
+and voice profiles. `docs/meeting-design.md` section 4 is the spec; `docs/meeting-design.md §4.1` is the
+recorder ↔ app protocol.
 
 **Owns** (by folder)
 - Recorder (top level): `RecordingWorkflow.run` (the recorder loop the `voiceislocal record start` child runs),
@@ -18,7 +19,9 @@ and voice profiles. docs/meeting-design.md §4 is the spec; §4.1 is the recorde
 - `Summary/`: titles and summaries (`MeetingSummarizer`, `SessionSummarizeCommand`, `SessionRenameCommand`).
 - People and sessions: `VoiceProfileService`, `SpeakerEditor`, `SessionCatalog`, `SessionLocator`,
   `SessionImporter`, `SessionRecoveryCommand`, `DeepTranscriptionQueue`, `EchoCatchUp`.
-- `Evaluation/`: local and cloud transcription comparison for `voiceislocal eval` (CLI only; the only network code in this target).
+- `Evaluation/`: local and cloud transcription comparison for `voiceislocal eval`, the only network code in this
+  target. The app never calls it; the one production use is `EchoAnalysisStage` calling
+  `EvalStore.audioFingerprint`.
 
 **Must not own:** AppKit or windows, FluidAudio or WhisperKit (diarization and deep transcription run in a
 `voiceislocal` child), file-name literals inside a session (use `SessionPaths`).
@@ -27,9 +30,11 @@ and voice profiles. docs/meeting-design.md §4 is the spec; §4.1 is the recorde
 NaturalLanguage, CryptoKit.
 
 **Invariants**
-- One recorder per session; it owns the writer lock and hands the processing lease to post-processing (§4.6).
-  `status.json` says `exited` before the recorder lets go of its last lock.
-- Post-processing publishes by atomic rename; cancelled work leaves nothing partial. Lock rules: §1.7.
+- The recorder holds the session's writer lock while it records and hands the processing lease to
+  post-processing (`docs/meeting-design.md §4.6`). `status.json` says `exited` before the recorder lets go of its
+  last lock.
+- Post-processing writes its files through `AtomicFile` (atomic rename). The rule that cancelled work publishes
+  nothing partial is `docs/meeting-design.md §1.3`; lock rules are `docs/meeting-design.md §1.7`.
 - `ReviewSession` and `MeetingController` are `@MainActor` and testable without a window.
 
 **Known size debt:** `ReviewSession` (3,872 lines), `RecordingWorkflow`, `VoiceProfileService`. Do not grow them;

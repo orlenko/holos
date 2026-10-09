@@ -7,9 +7,12 @@ by agents and humans. Where this file and older docs disagree, this file wins; f
 
 Read first: the `README.md` of each module you touch, then the doc sections its code cites.
 
-- `docs/meeting-design.md` §1 (conventions), §2 (session folder), §4 (integration seams) describe current
-  behaviour. §0 and §5–§10 are the build plan and review log; §5.10 (Review window) and §5.11 (online calls)
-  still hold behaviour the code cites, so read the cited subsection, not the whole plan.
+- In `docs/meeting-design.md`, sections 1 (conventions), 2 (session folder) and 4 (integration seams) mostly
+  describe current behaviour (`docs/meeting-design.md §1.2` is a build plan, and some subsections still name the
+  PR that built them). `docs/meeting-design.md §3.1` to `docs/meeting-design.md §3.3` are code copies that have drifted from the
+  code; sections 0 and 5–10 are the build plan and review log, but `docs/meeting-design.md §5.10`
+  (Review window) and `docs/meeting-design.md §5.11` (online calls) still hold behaviour the code cites, so read
+  the cited subsection, not the whole plan.
 - `docs/design.md` describes the user-facing tools, one heading per feature. `docs/contracts.md` lists the
   cross-module contracts. `docs/status.md` says what is verified and what is pending.
 
@@ -22,7 +25,7 @@ lists Holos targets, then notable system or package frameworks.
 |---|---|---|---|
 | [HolosCore](Sources/HolosCore/README.md) | Shared value types, `HolosJSON`, `HolosError`, `HolosPaths`, text processing (fixer, spoken code, seams, fillers, word list) | File I/O, locks, UI, engines | (none); Foundation, NaturalLanguage |
 | [HolosStorage](Sources/HolosStorage/README.md) | Every path and lock inside a `<id>.holos` folder, `AtomicFile`, `SessionArchive`, the speaker, profile, history, word-list and screen-context stores, deletion | Transcript interpretation, capture, UI | Core |
-| [HolosSpeech](Sources/HolosSpeech/README.md) | Apple `SpeechTranscriber`/`DictationTranscriber` adapter | Recording lifetime, files, focus | Core; Speech, AVFoundation |
+| [HolosSpeech](Sources/HolosSpeech/README.md) | Apple `SpeechTranscriber`/`DictationTranscriber` adapter | Recording lifetime, session files, focus | Core; Speech, AVFoundation |
 | [HolosSynthesis](Sources/HolosSynthesis/README.md) | Voice inventory and selection, rendering, playback, audiobook writing, `ExclusivePublisher` | Document loading, meetings | Core; AVFoundation |
 | [HolosContent](Sources/HolosContent/README.md) | Document and web extraction, the reading pipeline, the reading library and its files | Speech recognition, meetings | Core, Synthesis; AppKit, PDFKit, WebKit |
 | [HolosAudio](Sources/HolosAudio/README.md) | Microphone/system capture, chunk writing, track rendering, screen capture, power | Transcripts, speaker names, UI | Core, Storage; AVFoundation, CoreAudio, ScreenCaptureKit, IOKit |
@@ -35,11 +38,22 @@ lists Holos targets, then notable system or package frameworks.
 | [HolosApp](Sources/HolosApp/README.md) | AppKit views, windows, menus, wiring of controllers | Business logic, session-file layout, decoding CLI output by hand | All libraries except Diarization and Whisper |
 | [HolosCLI](Sources/HolosCLI/README.md) | Argument parsing and printing over library `*Command` types | A second copy of workflow logic | All libraries except Desktop; ArgumentParser |
 
-Known exceptions, not precedents: `HolosCore` holds `Lexicon` (AppKit), `Corrections` (file I/O, flock) and
-app-only flows (`SetupAssistantFlow`, `SettingsSearch`, `PermissionButtons`, …); `HolosMeeting/Evaluation` is
-CLI-only code in the app's link graph; the dictation session and the background-job schedulers
-(`HolosApp+DeepTranscription`, `+MeetingSummary`, `+EchoCatchUp`) live in `HolosApp`; 13 `HolosApp` files import
-`HolosStorage`. Do not add to these.
+Known exceptions today (not precedents; do not add to them):
+
+- `HolosCore` holds `Lexicon` (AppKit), `Corrections` (file I/O, flock) and app-only flows (`SetupAssistantFlow`,
+  `SettingsSearch`, `PermissionButtons`, …).
+- `HolosMeeting/Evaluation` is evaluation code the app links but never calls; outside it only
+  `EvalStore.audioFingerprint` is used (by `EchoAnalysisStage`).
+- Session paths are also built outside HolosStorage: `<id>.holos` folder names in `SessionLocator`,
+  `SessionCatalog`, `SessionImporter`, `VoiceProfileService`, `MeetingController` and two CLI commands;
+  `EvalStore`'s `eval/` and `derived/eval-cloud/` folders.
+- `HolosApp` holds the dictation session and the background-job schedulers (`HolosApp+DeepTranscription`,
+  `+MeetingSummary`, `+EchoCatchUp`), and 13 of its files import `HolosStorage`.
+- `HolosApp` decodes `voiceislocal` output by hand: `doctor --json` and maintenance-command output as
+  `[String: Any]` with `JSONSerialization` (`HolosApp+Meeting.swift`; `DoctorReport` is private to HolosCLI), and
+  its own copies of command outcomes (`SummaryOutcome`, `EchoOutcome`). The command-runner refactor removes this.
+- `HolosCLI/Speakers.swift` and `Eval.swift` hold more than parsing and printing.
+- `WebArticleExtractor` embeds several hundred lines of JavaScript in Swift strings (over the 50-line cap below).
 
 ## Where new code goes
 
@@ -63,15 +77,17 @@ CLI-only code in the app's link graph; the dictation session and the background-
 | Test file | 1,000 lines for new files (not checked yet) |
 | Type | 25 stored properties, 60 methods |
 | Function | 80 lines |
-| Embedded script (JavaScript in a Swift string) | 50 lines; longer goes to `Resources/` with `.embedInCode`, like `Readability.js` |
+| Embedded script (JavaScript in a Swift string) | 50 lines; longer goes to `Resources/` with `.embedInCode` |
 
 `scripts/check-size.sh` enforces the file cap against `scripts/size-baseline.txt` (every source file over 600
 lines and its count). It fails when a file over 1,000 lines has grown past its entry or a file without an entry
-is over 1,000; it warns for a file without an entry over 600. A missing or empty baseline, or a file it cannot
-read, is an error. It takes well under a second and is not part of `scripts/test.sh`; run it before every PR.
-After shrinking a file, run `scripts/check-size.sh --update-baseline` to lower its entry. The update is refused
-while the check fails; growth past the cap must be named (`--update-baseline --allow-growth <path>`) and
-explained in the PR description. The type and function caps are review rules; nothing checks them yet.
+is over 1,000; it warns for a file without an entry over 600. A missing or unreadable baseline, one whose entries
+do not match its `# entries: N` line, or a source file it cannot read, is an error. It takes well under a
+second and is not part of `scripts/test.sh`; run it before every PR. After shrinking a file, run
+`scripts/check-size.sh --update-baseline` to lower its entry. The update is refused while the check fails;
+growth of a file already in the baseline must be named (`--update-baseline --allow-growth <path>`) and
+explained in the PR description. A new file over 1,000 lines is never accepted. The type and function caps are
+review rules; nothing checks them yet.
 
 ## Invariants at type level
 
@@ -83,7 +99,8 @@ explained in the PR description. The type and function caps are review rules; no
 
 ## Threading and locks
 
-The concurrency rules in `docs/meeting-design.md` §1.3 and the lock rules in §1.7 apply. In short:
+The concurrency rules in `docs/meeting-design.md §1.3` and the lock rules in `docs/meeting-design.md §1.7`
+apply. In short:
 
 - Swift 6 strict concurrency. Values crossing a boundary are `Sendable` structs or enums. Small shared state uses
   `Mutex` (Synchronization). `@unchecked Sendable` and `nonisolated(unsafe)` are allowed only for a narrow
@@ -93,40 +110,43 @@ The concurrency rules in `docs/meeting-design.md` §1.3 and the lock rules in §
   mutable state.
 - **Target state:** `@MainActor` types do no file system work; readers are `nonisolated` and return snapshots.
   Today `MeetingController` polls status files on the main actor and the app's job schedulers read output files
-  there; do not add more. Work that can exceed about 10 ms already must run off the main actor (§1.3).
+  there; do not add more. Work that can exceed about 10 ms already must run off the main actor
+  (`docs/meeting-design.md §1.3`).
 - Locks are `flock` files and are **not re-entrant**. Order for waits: speakers → profiles. Use the scoped APIs
   (`SessionArchive.withSpeakerLock`, `withSpeakerLockAsync`, `SpeakerProfileStore.update`/`withLockedDatabase`,
-  `ProcessingLease`). A function that must run under a lock is named `…Locked` and says "Caller holds the speaker
-  lock". **Target state:** lock requirements become token parameters (`withSessionLock { tx in … }`), not
-  comments.
+  `ProcessingLease`). A new function that must run under a lock is named `…Locked` and says "Caller holds the
+  … lock"; some existing ones say so only in their doc comment (`SessionSpeakerStore`). **Target state:** lock
+  requirements become token parameters (`withSessionLock { tx in … }`), not comments.
 - Read data that a write depends on inside the same lock as the write (names for exports:
   `SessionExports.regenerate(session:people:)`, not names read earlier).
 - No new `try?` on writes or removals. Throw, or log and report the leftover.
-- Every await on a platform API that can hang has a timeout. Long loops call `Task.checkCancellation()`.
-  Cancelled work publishes nothing partial.
+- Give every await on a platform API that can hang a timeout, call `Task.checkCancellation()` in long loops, and
+  publish nothing partial from cancelled work (`docs/meeting-design.md §1.3`).
 
 ## Shared primitives (use these; do not write another)
 
 Exist today:
 
 - Session files: `SessionPaths`, `AtomicFile` (`write`, `create`, `append`, `readJSON`, `readIfPresent`,
-  `removeTree`), `AtomicFile.openFolder` (no symlink following), `SessionArchive` (`openForMaintenance(at:lease:)`,
-  `recover(at:lease:)`), `TranscriptPointer`.
+  `removeTree`), `AtomicFile.openFolder` (no symlink following; internal to HolosStorage), `SessionArchive`
+  (`openForMaintenance(at:lease:)`, `recover(at:lease:)`), `TranscriptPointer`.
 - Locks: `SessionArchive.acquireProcessingLease` / `ProcessingLease`, `withSpeakerLock`, `isProcessing`,
   `SpeakerProfileStore.update`/`withLockedDatabase`.
 - JSON and errors: `HolosJSON` (session files and the HolosStorage stores; new persisted files use it too; the
-  exceptions today are listed in `docs/contracts.md` "Persistence"), `OpenStringCode` (growable codes), `HolosError` (do not add
-  cases; reasons travel in data).
+  exceptions today are listed in `docs/contracts.md` "Persistence"), `OpenStringCode` (growable codes),
+  `HolosError` (do not add cases; reasons travel in data).
 - Roots: `HolosPaths.sessions` (honours `HOLOS_DATA_DIR`), `HolosPaths.supportRoot` (honours `HOLOS_SUPPORT_DIR`).
 - Sessions: `SessionLocator.resolve` (ID or prefix to folder), `SessionCatalog.list`.
-- Child processes: `ProcessSpawner` (the one `posix_spawn` helper; close-on-exec default, own session).
+- Child processes: `ProcessSpawner` (the `posix_spawn` helper every child of the app and libraries goes through;
+  close-on-exec default, own session). The one other spawn is `voiceislocal eval` running `/usr/bin/open`.
 - Exports: `SessionExports.regenerate(session:people:)`. Reading files: `ExclusivePublisher.publish`.
-- Logging: `Logger(subsystem: "ca.orlenko.holos.app", category: …)`; categories and privacy rules in §1.5.
+- Logging: `Logger(subsystem: "ca.orlenko.holos.app", category: …)`; categories and privacy rules in
+  `docs/meeting-design.md §1.5`.
 
 Planned, see the architecture roadmap (none of these exist yet; do not reference them as if they did):
-`TranscriptPublisher` and `withMaintenanceArchive` (one publish path for transcripts), `CommandRunner` and `TemporaryArtifact` (spawn, decode,
-clean up), `VersionedFile<T>` (one schema-checked decoder), `SessionPaths.folder`/`parse` (one `<id>.holos` naming
-rule), `SessionGeneration` (derived-data stamps), `Drainable` (pending work at close and quit), `ReviewRevision`
+`TranscriptPublisher` and `withMaintenanceArchive` (one publish path for transcripts), `CommandRunner` and
+`TemporaryArtifact` (spawn, decode, clean up), `VersionedFile<T>` (one schema-checked decoder),
+`SessionPaths.folder`/`parse` (one `<id>.holos` naming rule), `SessionGeneration` (derived-data stamps), `Drainable` (pending work at close and quit), `ReviewRevision`
 (revision-stamped Review commands), a lock-token type, `HolosTestSupport`, `scripts/test-target.sh`.
 
 ## Tests
@@ -137,14 +157,18 @@ rule), `SessionGeneration` (derived-data stamps), `Drainable` (pending work at c
 - Swift Testing only (`@Test`, `#expect`, `#require`). Test names describe behaviour.
 - Name new files `<Source>Tests.swift` or `<Source>+<Feature>Tests.swift` so the tests for a file can be found.
   Rename old ones when their source file is split, not in bulk.
-- No wall-clock assertions and no elapsed-time bounds. Wait with poll budgets (`PollBudget`, `eventually` in
-  `Tests/HolosMeetingTests/Fakes.swift`) and bound tests with `.timeLimit`. No sleep over 50 ms outside a poll
-  helper.
+- Add no wall-clock assertions or elapsed-time bounds (the one today is `PollBudgetTests`' 60 s ceiling on a
+  cancelled wait). Wait with poll budgets (`PollBudget`, `eventually` in `Tests/HolosMeetingTests/Fakes.swift`)
+  and bound tests with `.timeLimit`. Add no sleep over 50 ms outside a poll helper.
 - Mark a suite `.serialized` only with a comment naming the shared resource.
-- The default suite uses no microphone, permissions, network, installed speech assets, models, or user data. Use
-  the seams (`MeetingCapture`, `LiveSpeechSession`, `SpeakerDiarizer`, `SessionClock`, `FreeSpaceProvider`,
-  `RecorderLauncher`, `SystemPowerEvents`, `SpeakerProfileStore(directory:)`, an injected `UserDefaults` suite).
-  Real-model tests are opt-in with `.enabled(if:)` on a `HOLOS_*` environment variable.
+- Keep the default suite off the microphone, permission prompts, the network, speech-recognition assets,
+  downloaded models and the user's data. Use the seams (`MeetingCapture`, `LiveSpeechSession`, `SpeakerDiarizer`,
+  `SessionClock`, `FreeSpaceProvider`, `RecorderLauncher`, `SystemPowerEvents`, `SpeakerProfileStore(directory:)`,
+  an injected `UserDefaults` suite). Gate real-model and real-asset tests on a `HOLOS_*` environment variable
+  with `.enabled(if:)`, so they report as skipped (a few older ones return early instead). What the default suite
+  does touch today: the Mac's installed text-to-speech voices (`NativeSpeechRendererTests`), child processes
+  (`LeaseHandOffTests`, `LauncherTests`, `ReadingPipelineTests`), an offline `WKWebView` (`WebArticleTests`), and
+  the test runner's own standard `UserDefaults` (`MainWindowNarrowTests` removes split-view keys there).
 - Temporary folders go under `FileManager.default.temporaryDirectory` and are removed with `defer`.
 
 ## Docs and comments
@@ -172,8 +196,10 @@ rule), `SessionGeneration` (derived-data stamps), `Drainable` (pending work at c
 ## Privacy
 
 The repository is public. Never copy meeting text, transcript lines, speaker or people names, vocabulary, or other
-user data into code, tests, fixtures, docs, commit messages, or PRs. Tests generate their own text and audio.
-Logs never contain transcript text, names, vocabulary or embeddings (§1.5).
+user data into code, tests, fixtures, docs, commit messages, or PRs. Tests generate their own text and audio;
+opt-in tests that read private recordings get them from paths in `HOLOS_*` environment variables, never from
+files committed to the repository.
+Do not log transcript text, names, vocabulary or embeddings (`docs/meeting-design.md §1.5`).
 
 ## Hard don'ts
 
