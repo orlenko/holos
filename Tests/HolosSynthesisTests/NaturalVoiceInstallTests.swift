@@ -100,8 +100,10 @@ func fillPack(_ base: URL, _ pack: NaturalVoicePack) throws {
 
 // MARK: - Install
 
-@Suite struct NaturalVoiceModelsTests {
+@Suite final class NaturalVoiceModelsTests {
     private let root = FileManager.default.temporaryDirectory.appendingPathComponent("holos-pocket-\(UUID().uuidString)")
+
+    deinit { try? FileManager.default.removeItem(at: root) }
 
     private final class Calls: Sendable {
         let downloads = Mutex(0)
@@ -205,8 +207,10 @@ func fillPack(_ base: URL, _ pack: NaturalVoicePack) throws {
     }
 }
 
-@Suite struct NaturalVoicePackFilesTests {
+@Suite final class NaturalVoicePackFilesTests {
     private let folder = FileManager.default.temporaryDirectory.appendingPathComponent("holos-pack-\(UUID().uuidString)")
+
+    deinit { try? FileManager.default.removeItem(at: folder) }
 
     @Test func theFilterMatchesFluidAudiosForAPack() {
         for kept in ["v2.1/english/cond_prefill.mlmodelc", "v2.1/english/cond_prefill.mlmodelc/weights/weight.bin",
@@ -281,8 +285,10 @@ func fillPack(_ base: URL, _ pack: NaturalVoicePack) throws {
     }
 }
 
-@Suite struct NaturalVoiceInstallLockTests {
+@Suite final class NaturalVoiceInstallLockTests {
     private let root = FileManager.default.temporaryDirectory.appendingPathComponent("holos-lock-\(UUID().uuidString)")
+
+    deinit { try? FileManager.default.removeItem(at: root) }
 
     @Test func anInstalledPackIsNotReportedWhileAnotherInstallHoldsTheLock() async throws {
         // Installed.
@@ -376,8 +382,10 @@ func fillPack(_ base: URL, _ pack: NaturalVoicePack) throws {
     }
 }
 
-@Suite struct NaturalVoiceInstallReviewTests {
+@Suite final class NaturalVoiceInstallReviewTests {
     private let root = FileManager.default.temporaryDirectory.appendingPathComponent("holos-pocket-\(UUID().uuidString)")
+
+    deinit { try? FileManager.default.removeItem(at: root) }
 
     private final class Log: Sendable {
         let events = Mutex<[String]>([])
@@ -432,8 +440,10 @@ func fillPack(_ base: URL, _ pack: NaturalVoicePack) throws {
     }
 }
 
-@Suite struct NaturalVoiceRevisionTests {
+@Suite final class NaturalVoiceRevisionTests {
     private let root = FileManager.default.temporaryDirectory.appendingPathComponent("holos-revision-\(UUID().uuidString)")
+
+    deinit { try? FileManager.default.removeItem(at: root) }
 
     @Test func everyAddressNamesThePinnedCommit() throws {
         #expect(NaturalVoiceModels.revision.count == 40)
@@ -476,8 +486,11 @@ func fillPack(_ base: URL, _ pack: NaturalVoicePack) throws {
     }
 }
 
-@Suite struct NaturalVoiceUnmarkedPackTests {
+@Suite final class NaturalVoiceUnmarkedPackTests {
     private let root = FileManager.default.temporaryDirectory.appendingPathComponent("holos-unmarked-\(UUID().uuidString)")
+
+    deinit { try? FileManager.default.removeItem(at: root) }
+
     private let weights = "Models/pocket-tts/v2.1/english/flowlm_step.mlmodelc/weights/weight.bin"
 
     /// A pack left in place, without a marker, by an interrupted (maybe older) setup.
