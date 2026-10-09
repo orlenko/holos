@@ -8802,7 +8802,18 @@ genuinely local (the user, or people in the room) stays even while the call play
      is poorly cancelled (90th percentile of the residual ratio of echo-dominated frames + 1
      dB); 5-frame (80 ms) majority smoothing. Echo: every other active frame.
   5. *Words* (`AcousticEchoMask.isEcho`). A microphone word is echo when under 30 % of its
-     active frames are local; a word with no active frame is echo only when the predicted
+     active frames are local frames of a local stretch with evidence (*Playback* below,
+     `AcousticEchoMask.localStretches()`: runs of local frames joined across gaps under 300 ms,
+     with at least 3 local frames whose predicted echo is more than 6 dB below the microphone;
+     no predicted echo at all counts, so speech while the call is quiet has it). A local frame
+     of a stretch without evidence is the call cancelled poorly and counts as echo. The
+     stretch is judged whole, beyond the word: a word spoken quietly over the call is the
+     user's when its stretch has louder frames elsewhere, and a word only partly in a stretch
+     with evidence counts its local frames there and no others. Review playback keeps exactly
+     the same stretches, so the labels and what review plays agree (2026-10-08; before, every
+     local frame counted, and the scattered false-local frames of poorly cancelled echo,
+     predicted 0 to +3.5 dB against the microphone, made echo words microphone turns and
+     "Unknown" rows). A word with no active frame is echo only when the predicted
      echo explains its energy (median echo − microphone ≥ −5 dB; a frame with no microphone
      sound or no predicted echo, such as a gap in the recording, explains nothing). A word past
      the last frame, without times, or with estimated times (a segment without word timing) is
@@ -8845,9 +8856,15 @@ genuinely local (the user, or people in the room) stays even while the call play
   of an echo cluster shown as unknown, or one the mask cut down to "Yeah.", is a candidate
   like any other, and the exports leave hidden ones out as they leave out echo.
 - *Out of date when the mask changes.* The transcript files record the mask they were written
-  with (`.generated.json` `echoMask`: the SHA-256 of the frames, none without a mask), and
+  with (`.generated.json` `echoMask`: `EchoMaskStore.identity`, the SHA-256 of the frames and the
+  word rule's version, "<sha256>+words2"; none without a mask), and
   `SessionExports.filesState` calls them out of date when it is not the one the labels show now,
-  so the app offers Update Transcript Files. Recover rewrites them whenever they are, whatever
+  so the app offers Update Transcript Files. A new word rule (`AcousticEchoMask.wordRuleVersion`)
+  is a new identity for the same frames: files written under an earlier rule (which recorded
+  the SHA-256 alone) are out of date, and the echo catch-up (`needsAnalysis`, through
+  `echoMaskIsCurrent`) runs `echo-analyze` on them, which keeps the saved analysis and rewrites
+  the files and the voice samples the new view changed; summaries already made are not
+  remade. Recover rewrites them whenever they are, whatever
   else it did (`echoMaskIsCurrent`; a rewrite left pending counts as out of date). The people
   cache and the summary schedule key on the echo files' stamps. The mask is saved under the
   speaker lock (lease, then speakers, then profiles), and a voice sample is published only if
@@ -8941,9 +8958,10 @@ genuinely local (the user, or people in the room) stays even while the call play
   window takes the new mask (`ReviewEchoMaskFollow`) and its microphone volume follows; one that
   finished opening after the run ended rereads the meeting too (`maintenanceEnded`).
 - *Playback.* `AcousticEchoMask.localSpeechIntervals()` gives the microphone's own
-  speech: runs of local frames, joined into stretches across gaps under 300 ms; a stretch is
-  kept only when at least 3 of its local frames (`playbackEvidenceFrames`) have the predicted
-  echo more than 6 dB below the microphone (`playbackEvidenceDB`); kept stretches are padded
+  speech: runs of local frames, joined into stretches across gaps under 300 ms
+  (`localStretches()`, `stretchGapSeconds`, shared with the word rule); a stretch is
+  kept only when at least 3 of its local frames (`evidenceFrames`) have the predicted
+  echo more than 6 dB below the microphone (`evidenceDB`); kept stretches are padded
   64 ms before and 200 ms after. The review window plays the microphone only there (§5.10,
   echo-free playback). The evidence rule (2026-10-08) answers echo heard in review on a call
   through laptop speakers: where the call's speech is cancelled poorly, the frame rule calls
@@ -8963,6 +8981,20 @@ genuinely local (the user, or people in the room) stays even while the call play
   (13 frames cut the echo further but dropped 7 % of the clearly local frames, short sounds
   over a quiet call) and a partial volume for doubtful stretches (it still plays the echo,
   only quieter).
+- *Measuring the word rule.* `voiceislocal session echo-label-stats <session>… [--json]`
+  (hidden; `SessionEchoLabelStats`, `EchoLabelStats`) compares, for each call given, the
+  labels under the word rule before the evidence requirement
+  (`AcousticEchoMask.countingEveryLocalFrame()`) and now, and prints one line per session (by
+  session ID) and a total; counts only, never text, names, word times or paths. Example
+  (synthetic numbers): `<ID>: mic words 1200, judged 1150; user's 420 -> 350 (local->echo 70,
+  echo->local 0); in echo 95 -> 30; mic rows 140 -> 118, unknown 41 -> 22; turns changed 35`.
+  Judged words are those the mask judges as the labels do (not dropped by the text filter, not
+  edited in Review, timed); "user's" are judged words not echo; "in echo" are those whose
+  ±0.5 s surroundings hold at least three times as many echo frames as local ones; rows are
+  the microphone rows Review shows (short interjections applied), "unknown" those without a
+  speaker; "turns changed" the microphone turns whose shown words differ. A session that is
+  recording, has no usable mask, no transcript, or cannot be read is listed as not measured;
+  it exits 1 only when none was measured. It only reads, takes no lock, and changes nothing.
 
 Validation. Synthetic tests (`Tests/HolosSpeakersTests/AcousticEchoTests.swift`,
 `Tests/HolosMeetingTests/AcousticEchoMeetingTests.swift`): the delay to within 1 ms (also an
@@ -8970,7 +9002,12 @@ inverted microphone, a 30 s call, outlying windows); echo-only frames echo, loca
 local, local speech over the call at echo level kept, gaps in the recording kept;
 headphones, missing or silent system audio, and one signal on both tracks are no-ops;
 playback keeps sustained local speech with its lead and double-talk from its weak first run,
-and leaves scattered local runs the call explains muted; the projection hides echo words from turns that keep their IDs, a split chosen among the words
+and leaves scattered local runs the call explains muted; the word rule makes words with
+scattered false-local frames echo, keeps double-talk and quiet speech without predicted echo
+the user's, counts only the frames inside a stretch with evidence for a word partly in it,
+and reads the very stretches playback keeps; files written under the earlier word rule are out
+of date and `echo-analyze` rewrites them; the stats count words, rows and unknown rows and
+print no text; the projection hides echo words from turns that keep their IDs, a split chosen among the words
 shown lands at that stored word (assign and undo too, through the review), hides echo
 clusters, keeps a named speaker whose turns are all echo with its name and assignments, and
 changes with the mask alone; a word fix across an echo boundary is judged once; stale,

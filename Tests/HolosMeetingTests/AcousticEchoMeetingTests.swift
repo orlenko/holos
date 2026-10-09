@@ -1147,3 +1147,82 @@ func recognitionDoesNotCompareAMicrophoneClusterThatIsEcho() async throws {
     #expect(!SessionFixtures.exists(EchoMaskStore.directory(session)))
     #expect(try SessionSpeakerStore.readHead(session: session)?.runID == run.id)
 }
+
+// MARK: - Word rule version
+
+@Test(.timeLimit(.minutes(2)))
+func transcriptFilesWrittenUnderTheEarlierWordRuleAreOutOfDateAndEchoAnalyzeRewritesThem() async throws {
+    // Files written before the word rule asked for evidence recorded the mask by the SHA-256 of its frames alone.
+    let temp = try TemporaryDirectory("echo")
+    defer { temp.remove() }
+    let call = CallTranscript()
+    let session = try await callSession(in: temp.url, audio: CallAudio.tracks(echo: true), transcript: call.transcript)
+    _ = try await MeetingPostProcessor(voiceSamples: .none, diarizer: systemDiarizer(), freeSpace: FixedFreeSpace(.max))
+        .run(session: session, lease: nil)
+    #expect(SessionExports.echoMaskIsCurrent(session: session))
+    let manifest = try SessionArchive.readManifest(at: session)
+    let sha256 = try #require(try EchoMaskStore.current(session: session, manifest: manifest)?.record.frames?.sha256)
+    #expect(EchoMaskStore.identity(session: session, manifest: manifest)
+        == "\(sha256)+words\(AcousticEchoMask.wordRuleVersion)")
+    let url = SessionPaths.generatedExports(session)
+    var record = try #require(try JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any])
+    record["echoMask"] = sha256
+    try JSONSerialization.data(withJSONObject: record).write(to: url)
+    let title = { SessionCatalog.summary(session: session, jobState: .free).displayTitle }
+    #expect(SessionExports.filesState(session: session, title: title()) == .stale, "The app offers the update.")
+    #expect(!SessionExports.echoMaskIsCurrent(session: session))
+    #expect(!EchoAnalysisStage.needed(session: session), "The saved analysis is kept.")
+    #expect(EchoCatchUpSchedule.needsAnalysis(session: session), "The app's catch-up rewrites the files.")
+
+    let outcome = try await SessionEchoAnalyzeCommand.run(.init(session: session), voiceSamples: .none,
+                                                          freeSpace: FixedFreeSpace(.max))
+    #expect(!outcome.analysed)
+    #expect(outcome.exitCode == 0)
+    #expect(SessionExports.echoMaskIsCurrent(session: session))
+    #expect(SessionExports.filesState(session: session, title: title()) == .current)
+    #expect(!EchoCatchUpSchedule.needsAnalysis(session: session))
+}
+
+// MARK: - Echo label stats
+
+@Test(.timeLimit(.minutes(2)))
+func echoLabelStatsCountACallAndLeaveOtherMeetingsOut() async throws {
+    let temp = try TemporaryDirectory("echo")
+    defer { temp.remove() }
+    let call = CallTranscript()
+    let session = try await callSession(in: temp.url.appendingPathComponent("call"),
+                                        audio: CallAudio.tracks(echo: true), transcript: call.transcript)
+    _ = try await MeetingPostProcessor(voiceSamples: .none, diarizer: systemDiarizer(), freeSpace: FixedFreeSpace(.max))
+        .run(session: session, lease: nil)
+    let headphones = try await callSession(in: temp.url.appendingPathComponent("headphones"),
+                                           audio: CallAudio.tracks(echo: false), transcript: call.transcript)
+    _ = try await MeetingPostProcessor(voiceSamples: .none, diarizer: systemDiarizer(), freeSpace: FixedFreeSpace(.max))
+        .run(session: headphones, lease: nil)
+    let files = speakerFiles(session)
+    let exports = SessionFixtures.text(SessionPaths.export("md", in: session))
+
+    let report = SessionEchoLabelStats.report([session, headphones, temp.url.appendingPathComponent("none.holos")])
+    #expect(report.sessions.map(\.status) == [.measured, .noMask, .unreadable])
+    #expect(report.measured == 1)
+    #expect(report.exitCode == 0)
+    let stats = try #require(report.sessions.first?.stats)
+    let micWords = call.transcript.segments.filter { $0.track == "mic" }
+        .reduce(0) { $0 + WordTiming.effectiveWords(of: $1).count }
+    #expect(stats.microphoneWords == micWords)
+    #expect(stats.judgedWords == micWords)
+    #expect(stats.localAfter <= stats.localBefore)
+    #expect(stats.echoToLocal == 0)
+    #expect(stats.localBefore - stats.localAfter == stats.localToEcho)
+    #expect(stats.microphoneRowsAfter != nil)
+    #expect(report.total == stats)
+    // Counts only: no word of the transcript, and no folder path.
+    let lines = report.lines.joined(separator: "\n")
+    #expect(report.lines.count == 4)
+    for word in ["heard0w", "own0w", "far0w", temp.url.path] { #expect(!lines.contains(word)) }
+    #expect(lines.contains(try SessionArchive.readManifest(at: session).id))
+    #expect(report.lines.last?.hasPrefix("total (1 of 3 measured): ") == true)
+    // It only reads.
+    #expect(speakerFiles(session) == files)
+    #expect(SessionFixtures.text(SessionPaths.export("md", in: session)) == exports)
+    #expect(SessionEchoLabelStats.report([headphones]).exitCode == 1)
+}
