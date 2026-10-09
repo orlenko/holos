@@ -51,9 +51,10 @@ public enum SessionEchoAnalyzeCommand {
     /// changed, when another job holds the lock (`DeepTranscriptionLock.busyMessage`), the meeting is still recording,
     /// another process holds the lease, the audio was deleted and there is no saved analysis of it to use (or `force`
     /// asks for a new one), a saved analysis was written by a newer Voice is Local, or the audio cannot be prepared
-    /// (the next run tries again). With the audio deleted and a saved analysis of it, only the transcript files are
-    /// written again. `profiles` gives people's names to the exports, and with `voiceSamples` (and the audio kept) the
-    /// voice samples people have from this meeting are brought in step with what the labels now show
+    /// (the next run tries again). With the audio deleted and a saved analysis of it, nothing is analysed: the
+    /// transcript files are written again, and samples the labels now show differently are removed (none can be
+    /// computed again). `profiles` gives people's names to the exports, and with `voiceSamples` the voice samples
+    /// people have from this meeting are brought in step with what the labels now show
     /// (`VoiceProfileService.refreshSamples`, as after an edit): worked out from the files, so a mask an earlier pass
     /// saved without doing so is caught up too, and up-to-date samples cost nothing.
     ///
@@ -90,9 +91,9 @@ public enum SessionEchoAnalyzeCommand {
             try analyze(request, profiles: profiles, freeSpace: freeSpace, progress: progress)
         }
         var outcome = result.outcome
-        let audioDeleted = result.audioDeleted
-        // Without audio a sample cannot be computed again: the samples are left as they are.
-        if outcome.verdict != nil, !audioDeleted, let profiles, let makeExtractor = voiceSamples.extractor {
+        if outcome.verdict != nil, let profiles, var makeExtractor = voiceSamples.extractor {
+            // Without audio no sample can be computed again: one the labels now show differently is removed.
+            if result.audioDeleted { makeExtractor = { _ in nil } }
             // Stopped now, the samples are still out of step with the saved mask: the next run brings them in step.
             try Task.checkCancellation()
             do {

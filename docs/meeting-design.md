@@ -8804,17 +8804,18 @@ genuinely local (the user, or people in the room) stays even while the call play
      dB); 5-frame (80 ms) majority smoothing. Echo: every other active frame.
   5. *Words* (`AcousticEchoMask.isEcho`). A microphone word is echo when under 30 % of its
      active frames are local frames the word rule trusts (`trustedWordFrames`, worked out once
-     per mask): (a) every local frame of a stretch with evidence (*Playback* below: local runs
-     joined across gaps under 300 ms with at least 3 frames whose predicted echo is more than
-     6 dB below the microphone), judged whole, so a quiet word over the call counts when its
-     stretch has louder frames; (b) every frame covered by a window of 13 consecutive local
-     frames (208 ms, a held syllable; `sustainedRunFrames`) whose median predicted echo is
-     below −1 dB (`sustainedLevelDB`): double-talk at the echo's loudness (−3 dB) has no frame
-     6 dB clear, while poorly cancelled echo predicts 0 to +3.5 dB in runs of 3–5 frames, and
-     only the qualifying windows count, not the rest of their run; (c) any local frame whose
-     predicted echo is 20 dB or more below the microphone, or absent (`negligibleEchoDB`), on
-     its own (smoothing can leave one local frame of a quiet sound). Any other local frame is
-     the call cancelled poorly and counts as echo. Playback uses (a) only (2026-10-08; before,
+     per mask, each local frame judged by a bounded window around it, never through runs or
+     stretches that can grow): (a) its predicted echo is 20 dB or more below the microphone, or
+     absent (`negligibleEchoDB`: smoothing can leave one local frame of a quiet sound); (b) at
+     least 3 local frames within 18 frames (288 ms) of it have the predicted echo more than 6 dB
+     below the microphone (`supportFrames`; support comes only from those frames, so it cannot
+     chain along later runs); (c) in the 31 frames (496 ms) centred on it at least half are
+     local and most local ones have the predicted echo below −1 dB (`sustainedWindowFrames`,
+     `sustainedDensity`, `sustainedLevelDB`): speech in the room makes the microphone louder
+     than the echo alone (−3 dB at equal loudness), syllables leave brief gaps, while poorly
+     cancelled echo predicts 0 to +3.5 dB in runs of 3–5 frames. Any other local frame is
+     the call cancelled poorly and counts as echo. Playback keeps #108's stretches only
+     (2026-10-08; before,
      every local frame counted, and the scattered false-local frames of poorly cancelled echo
      made echo words microphone turns and
      "Unknown" rows). A word with no active frame is echo only when the predicted
@@ -8870,7 +8871,8 @@ genuinely local (the user, or people in the room) stays even while the call play
   the files and the voice samples the new view changed; summaries already made are not
   remade. A meeting whose audio was deleted keeps its analysis (Review uses it): the catch-up
   looks at it too, and `echo-analyze` rewrites its transcript files from the saved analysis
-  (only a new analysis needs the audio, and the voice samples are left as they are). Recover rewrites them whenever they are, whatever
+  and removes a voice sample the new view changed (only a new analysis needs the audio; no
+  sample can be computed again without it). Recover rewrites them whenever they are, whatever
   else it did (`echoMaskIsCurrent`; a rewrite left pending counts as out of date). The people
   cache and the summary schedule key on the echo files' stamps. The mask is saved under the
   speaker lock (lease, then speakers, then profiles), and a voice sample is published only if

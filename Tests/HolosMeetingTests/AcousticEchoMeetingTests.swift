@@ -1364,3 +1364,29 @@ func aMeetingWithoutAudioHasItsTranscriptFilesRewrittenForItsSavedAnalysis() asy
                                                     freeSpace: FixedFreeSpace(.max))
     }
 }
+
+@Test(.timeLimit(.minutes(2)))
+func aMeetingWithoutAudioStillDropsASampleTheEchoChanged() async throws {
+    // A sample learned before the echo was found; the analysis is then saved and the transcript files rewritten for it,
+    // and the audio deleted. The sample still covers the echo: the catch-up is not done with the meeting, and
+    // echo-analyze removes the sample (it cannot be computed again without audio).
+    let temp = try TemporaryDirectory("echo")
+    defer { temp.remove() }
+    let (session, store) = try await learnedBeforeTheEcho(in: temp)
+    let manifest = try SessionArchive.readManifest(at: session)
+    _ = try EchoAnalysisStage.analyzeSession(session: session, manifest: manifest, freeSpace: FixedFreeSpace(.max))
+    _ = try SessionExports.regenerate(session: session, people: store)
+    let deleting = try SessionArchive.acquireProcessingLease(at: session)
+    try SessionDeletion.deleteAudio(session: session, lease: deleting)
+    deleting.release()
+    #expect(SessionExports.echoMaskIsCurrent(session: session))
+    #expect(VoiceProfileService.samplesOutOfStep(session: session, store: store))
+    #expect(EchoCatchUpSchedule.needsAnalysis(session: session, profiles: store))
+
+    let outcome = try await SessionEchoAnalyzeCommand.run(.init(session: session), voiceSamples: fixedVoice,
+                                                          profiles: store, freeSpace: FixedFreeSpace(.max))
+    #expect(!outcome.analysed)
+    #expect(outcome.exitCode == 0)
+    try expectSampleDropped(store)
+    #expect(!EchoCatchUpSchedule.needsAnalysis(session: session, profiles: store))
+}

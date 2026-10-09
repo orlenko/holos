@@ -9,7 +9,7 @@ import HolosCore
 /// Speaker labelling asks it about words (`isEcho(start:end:)`); review playback can ask it where the microphone has
 /// speech of its own (`localSpeechIntervals()`). Neither trusts every local frame: the call cancelled poorly also
 /// leaves frames the frame rule calls local. Playback keeps the local stretches with evidence (`localStretches()`);
-/// the word rule trusts those and a little more (`trustedWordFrames`).
+/// the word rule judges each local frame by the frames around it (`trustedWordFrames`).
 public struct AcousticEchoMask: Sendable, Equatable {
     public enum FrameClass: UInt8, Sendable {
         /// The microphone is within `EchoAnalysis` `activeAboveFloorDB` of its noise floor.
@@ -109,12 +109,11 @@ public struct AcousticEchoMask: Sendable, Equatable {
     ///
     /// The word's frames are those whose centre lies in [start, end), at least the first frame centred at or after
     /// `start`. With active frames, it is echo when fewer than `localWordShare` of them are local frames the word rule
-    /// trusts (`trustedWordFrames`: a stretch with evidence whole, sustained speech over the call, frames with
-    /// negligible predicted echo): any other local frame (the call cancelled poorly) counts as echo. A stretch is
-    /// judged whole, beyond the word, so a word spoken quietly over the call is the microphone's when the stretch it is
-    /// in has louder frames elsewhere, and a word only partly on trusted frames counts just those. Without
-    /// active frames, it is echo only when the predicted echo explains its energy: the median stored level is at least
-    /// `explainedEchoDB`.
+    /// trusts (`trustedWordFrames`: negligible predicted echo, evidence close by, or sustained speech over the call):
+    /// any other local frame (the call cancelled poorly) counts as echo. The frames around the word count, so a word
+    /// spoken quietly over the call is the microphone's when louder frames are close, and a word only partly on
+    /// trusted frames counts just those. Without active frames, it is echo only when the predicted echo explains its
+    /// energy: the median stored level is at least `explainedEchoDB`.
     public func isEcho(start: Double, end: Double) -> Bool? {
         guard start.isFinite, end.isFinite else { return nil }
         let first = firstFrame(centredAtOrAfter: start)
@@ -173,7 +172,7 @@ public struct AcousticEchoMask: Sendable, Equatable {
 
         /// At least `evidenceFrames` frames of evidence: speech of the microphone's own (the user, or someone in the
         /// room), whose every local frame counts, also the quieter ones over the call. Review playback plays it whole
-        /// (#108), and the word rule trusts it.
+        /// (#108).
         public var hasEvidence: Bool { evidence >= AcousticEchoMask.evidenceFrames }
         /// Session time from its first frame to its last, each frame covering one hop around its centre.
         public var start: Double {
@@ -185,12 +184,12 @@ public struct AcousticEchoMask: Sendable, Equatable {
     }
 
     /// Every local stretch, with evidence or not, in frame order: what review playback (`localSpeechIntervals`)
-    /// plays, and the first thing the word rule trusts (`trustedWordFrames`).
+    /// plays.
     public func localStretches() -> [LocalStretch] {
         Self.localStretches(classes: classes, echoLevels: echoLevels)
     }
 
-    static func localStretches(classes: [UInt8], echoLevels: [Int8]) -> [LocalStretch] {
+    private static func localStretches(classes: [UInt8], echoLevels: [Int8]) -> [LocalStretch] {
         let local = FrameClass.local.rawValue
         var stretches: [LocalStretch] = []
         var frame = 0

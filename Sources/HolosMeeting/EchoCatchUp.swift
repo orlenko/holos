@@ -70,18 +70,18 @@ public enum EchoCatchUpSchedule {
     /// (`SessionExports.echoMaskIsCurrent`) or a voice sample learned from the meeting was not brought in step with it
     /// (`VoiceProfileService.samplesOutOfStep`, with `profiles`): a run cut short after saving the mask, or one whose
     /// rewrite or refresh failed. Run again, the command keeps the saved analysis and finishes the rest. With the
-    /// audio deleted only the transcript files count (written under an earlier word rule, say): the command rewrites
-    /// them from the saved analysis, and a sample cannot be computed again without audio.
+    /// audio deleted the same holds (written under an earlier word rule, say): the command rewrites the files from the
+    /// saved analysis and removes a sample the labels now show differently (none can be computed again).
     public static func needsAnalysis(session: URL, profiles: SpeakerProfileStore? = nil) -> Bool {
         if EchoAnalysisStage.needed(session: session) { return true }
         guard let manifest = try? SessionArchive.readManifest(at: session),
               let meeting = try? SessionFiles.meetingInfo(session: session, manifest: manifest),
               EchoAnalysisStage.applies(meeting: meeting, manifest: manifest),
               !EchoAnalysisStage.renderTracks(manifest: manifest).isEmpty,
-              let audioDeleted = try? SessionFiles.audioDeleted(session: session, sessionID: manifest.id),
+              (try? SessionFiles.audioDeleted(session: session, sessionID: manifest.id)) != nil,
               case .current = EchoAnalysisStage.saved(session: session, manifest: manifest) else { return false }
         if !SessionExports.echoMaskIsCurrent(session: session) { return true }
-        guard !audioDeleted, let profiles else { return false }
+        guard let profiles else { return false }
         return VoiceProfileService.samplesOutOfStep(session: session, store: profiles)
     }
 

@@ -1,62 +1,68 @@
 import Foundation
 
 /// Which local frames the word rule (`AcousticEchoMask.isEcho`, docs/meeting-design.md §5.11) counts as the
-/// microphone's own speech. Review playback keeps only the stretches with evidence (#108); words also keep sustained
-/// speech over the call and sounds the call predicts nothing for, which playback leaves muted (the echo is as loud as
-/// the user there, or lies beside them within the playback padding).
+/// microphone's own speech: each local frame is judged by the frames within a fixed reach of it, never through runs or
+/// stretches that can grow without bound. Review playback keeps #108's local stretches with evidence
+/// (`localSpeechIntervals`) and none of this.
 extension AcousticEchoMask {
-    /// A window of this many consecutive local frames (208 ms: a held syllable; over four times the 48 ms the 5-frame
-    /// smoothing can leave, and over twice the 3–5-frame runs the call cancelled poorly leaves scattered through its
-    /// speech)
-    public static let sustainedRunFrames = 13
-    /// whose median predicted echo is below this many decibels relative to the microphone is sustained speech of the
-    /// microphone's own over the call. Speech in the room adds to the echo, so the microphone is louder than the echo
-    /// alone: by 3 dB at equal loudness (−3 dB here), by 1 dB for speech about 6 dB quieter than the echo; the echo
-    /// cancelled poorly predicts 0 to +3.5 dB.
-    public static let sustainedLevelDB = -1.0
-    /// A local frame whose predicted echo is at least this many decibels below the microphone (1 % of its power, or no
-    /// prediction at all) has no echo to explain: the word rule trusts it on its own, at any length. The 5-frame
-    /// smoothing can leave a single local frame of a quiet sound, too short for `evidenceFrames`; the echo cancelled
-    /// poorly predicts within a few decibels of the microphone, and even evidence (`evidenceDB`) is a quarter of it.
+    /// (a) A local frame whose predicted echo is at least this many decibels below the microphone (1 % of its power),
+    /// or absent, has no echo to explain: trusted on its own. The 5-frame smoothing can leave a single local frame of a
+    /// quiet sound; the echo cancelled poorly predicts within a few decibels of the microphone.
     public static let negligibleEchoDB = -20.0
+    /// (b) A local frame with at least `evidenceFrames` local frames 6 dB clear of the echo (`evidenceDB`) within this
+    /// many frames either side (288 ms, under the 300 ms across which #108 joins runs) is trusted: speech over the call
+    /// keeps its quieter syllables. Only evidence frames give support, so it reaches no further from them.
+    public static let supportFrames = 18
+    /// (c) A local frame is trusted when, in the window of this many frames centred on it (496 ms, a few syllables),
+    public static let sustainedWindowFrames = 31
+    /// at least this share of the frames are local (sustained speech with brief gaps between syllables; the echo
+    /// cancelled poorly leaves runs of 3–5 frames scattered through the call's speech)
+    public static let sustainedDensity = 0.5
+    /// and most of those local frames have the predicted echo below this many decibels relative to the microphone.
+    /// Speech in the room adds to the echo, so the microphone is louder than the echo alone: by 3 dB at equal
+    /// loudness (−3 dB here), by 1 dB for speech about 6 dB quieter than the echo; the echo cancelled poorly predicts
+    /// 0 to +3.5 dB.
+    public static let sustainedLevelDB = -1.0
 
-    /// The frames whose local frames the word rule trusts, in order, joined where they touch: every local stretch with
-    /// evidence (`localStretches()`, whole); every frame of a run of local frames covered by a window of
-    /// `sustainedRunFrames` of them whose median predicted echo is below `sustainedLevelDB` (only the windows that
-    /// qualify, so a run's poorly cancelled part before or after the speech is not trusted with it); and every local
-    /// frame whose predicted echo is at most `negligibleEchoDB` (each on its own, never its neighbours).
+    /// The frames whose local frames the word rule trusts (rules (a)–(c) above), in order, consecutive frames joined.
+    /// One pass with running counts: linear in the frames.
     static func trustedWordFrames(classes: [UInt8], echoLevels: [Int8]) -> [Range<Int>] {
-        var trusted = localStretches(classes: classes, echoLevels: echoLevels).filter(\.hasEvidence).map(\.frames)
+        let count = classes.count
         let local = FrameClass.local.rawValue
-        let window = sustainedRunFrames
-        var frame = 0
-        while frame < classes.count {
-            guard classes[frame] == local else { frame += 1; continue }
-            let first = frame
-            while frame < classes.count, classes[frame] == local {
-                if Double(echoLevels[frame]) * levelStepDB <= negligibleEchoDB { trusted.append(frame..<(frame + 1)) }
-                frame += 1
-            }
-            guard frame - first >= window else { continue }
-            for start in first...(frame - window) {
-                // The median of an odd count is its middle value.
-                let median = Double(echoLevels[start..<(start + window)].sorted()[window / 2]) * levelStepDB
-                if median < sustainedLevelDB { trusted.append(start..<(start + window)) }
-            }
+        // Running counts: local frames, local frames of evidence, local frames below `sustainedLevelDB`.
+        var locals = [Int32](repeating: 0, count: count + 1)
+        var evidence = [Int32](repeating: 0, count: count + 1)
+        var below = [Int32](repeating: 0, count: count + 1)
+        for frame in 0..<count {
+            let isLocal = classes[frame] == local
+            let level = Double(echoLevels[frame]) * levelStepDB
+            locals[frame + 1] = locals[frame] + (isLocal ? 1 : 0)
+            evidence[frame + 1] = evidence[frame] + (isLocal && level < evidenceDB ? 1 : 0)
+            below[frame + 1] = below[frame] + (isLocal && level < sustainedLevelDB ? 1 : 0)
         }
-        return joined(trusted)
-    }
-
-    /// `ranges` in order, with ranges that overlap or touch joined.
-    static func joined(_ ranges: [Range<Int>]) -> [Range<Int>] {
-        var joined: [Range<Int>] = []
-        for range in ranges.sorted(by: { $0.lowerBound < $1.lowerBound }) where !range.isEmpty {
-            if let last = joined.last, range.lowerBound <= last.upperBound {
-                joined[joined.count - 1] = last.lowerBound..<max(last.upperBound, range.upperBound)
+        func sum(_ counts: [Int32], _ first: Int, _ end: Int) -> Int {
+            Int(counts[min(count, max(0, end))] - counts[min(count, max(0, first))])
+        }
+        let reach = sustainedWindowFrames / 2
+        var trusted: [Range<Int>] = []
+        for frame in 0..<count where classes[frame] == local {
+            let negligible = Double(echoLevels[frame]) * levelStepDB <= negligibleEchoDB
+            let supported = sum(evidence, frame - supportFrames, frame + supportFrames + 1) >= evidenceFrames
+            var sustained = false
+            if !negligible && !supported {
+                let first = max(0, frame - reach)
+                let end = min(count, frame + reach + 1)
+                let windowLocals = sum(locals, first, end)
+                sustained = Double(windowLocals) >= sustainedDensity * Double(end - first)
+                    && 2 * sum(below, first, end) > windowLocals
+            }
+            guard negligible || supported || sustained else { continue }
+            if let last = trusted.last, last.upperBound == frame {
+                trusted[trusted.count - 1] = last.lowerBound..<(frame + 1)
             } else {
-                joined.append(range)
+                trusted.append(frame..<(frame + 1))
             }
         }
-        return joined
+        return trusted
     }
 }
