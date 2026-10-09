@@ -360,9 +360,12 @@ public enum RecordingWorkflow {
 /// Invariants:
 /// 1. The session holds a lock from creation until status.json says `exited`: every exit path finishes the archive
 ///    keeping the writer lock, except the stop path with a processing lease, which takes the lease while it still
-///    holds the writer lock.
-/// 2. `exitStatus` writes `exited` before it releases the writer lock, and a processing lease is released only after
-///    `exitStatus`. While `exited` cannot be written, neither lock is released: both go to `exitRetry`.
+///    holds the writer lock. Two exceptions end it without `exited`: `exitRetry` lets the locks go when the session
+///    folder is gone, and the process exiting releases them.
+/// 2. The session's last held lock is released only after `exitStatus` has written `exited`: the writer lock, or the
+///    processing lease once the archive is finished under it (the writer lock goes first then). An earlier lock can
+///    go before: when finishing the archive throws, the stop path's `defer` releases the lease while the writer lock,
+///    still held, goes last. While `exited` cannot be written, the locks handed over go to `exitRetry` (invariant 1).
 /// 3. Audio is durable before anything depends on it: the stop path stops capture, drains the consumer, finishes the
 ///    pump and the chunk writer before it reads the manifest, saves a transcript or takes the processing lease.
 /// 4. A capture is stopped at most once (`captureStopped`), and `stopCurrentCapture` waits for its frame consumer,
@@ -373,9 +376,10 @@ public enum RecordingWorkflow {
 ///    path checks for cancellation right before it saves the transcript, and saves none when it finds the run
 ///    cancelled.
 /// 7. A willSleep the loop applies is always allowed right after (`allowSleep`), whatever the machine did with it.
-/// 8. Requests are answered until exit: by the machine while recording, `ignored` once capture has stopped
+/// 8. Requests the recorder takes are answered: by the machine while recording, `ignored` once capture has stopped
 ///    (`answerRequestsWhileStopping`), and by one last poll after publication closes; leftovers are deleted only
-///    once status.json says exited.
+///    once status.json says exited. Exception: `ControlInbox.poll` deletes the files it returns, so when the run is
+///    cancelled while the loop applies a batch, `apply` drops the rest of that batch unanswered.
 @MainActor
 final class Recorder {
     static let log = Logger(subsystem: "ca.orlenko.holos.app", category: "recorder")

@@ -2,6 +2,18 @@ import HolosAudio
 import Synchronization
 
 /// What the frame consumer tells the loop, shared off the main actor.
+///
+/// Invariants:
+/// 1. All state is behind one `Mutex`, and each method is one critical section.
+/// 2. `captureRunning` is queued at most once per `begin(epoch:)`, for the first frame of that epoch; later frames
+///    and frames of another epoch only update the track accounting.
+/// 3. Each `ended(epoch:)` queues one `captureEnded`: `.requested` when a stop of that epoch was requested (the
+///    request is consumed), otherwise an end derived from its error (a failure when there is none).
+/// 4. `requestStop` records nothing for an epoch whose stream has ended, and says so; `begin(epoch:)` drops the stop
+///    requests and ends of earlier epochs.
+/// 5. `drain` returns the queued events in the order they were queued and empties the queue.
+/// 6. Track accounting is never reset: per track, `lastFrameEnd` never decreases and `seconds` adds every frame.
+/// 7. `takeDropped` reports a drop once: true after `noteDrop` until it is taken.
 final class EpochMonitor: Sendable {
     struct TrackInfo: Sendable, Equatable {
         /// Session time at which the consumer last received a frame (watchdog time).

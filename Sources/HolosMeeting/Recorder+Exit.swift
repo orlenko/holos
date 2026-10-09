@@ -114,6 +114,16 @@ extension Recorder {
 /// long after each failure up to `limit`; once it is written, leftover requests are deleted and the writer lock,
 /// then the lease, are released, as `exitStatus` does when the first write succeeds. A session folder that no longer
 /// exists has nothing left to protect: the retry stops and the locks go. The process exiting first releases them too.
+///
+/// Invariants:
+/// 1. `done` is set once, by `releaseHeld`, after the retry wrote `exited` (`written`) or found the session folder
+///    gone, and never cleared.
+/// 2. Before `done`, `hold` keeps every lock it is given; from `done` on, it releases the lock at once. The held
+///    locks are released once, in `releaseHeld`: the writer lock, then the leases.
+/// 3. The retry writes the exit last given to `init` or `use`, and removes leftover requests and the closed marker
+///    only after that write succeeded.
+/// 4. `finished()` returns `written`: at once when `done`, otherwise when `releaseHeld` resumes it, after the locks
+///    are released.
 final class ExitRetry: Sendable {
     private static let log = Logger(subsystem: "ca.orlenko.holos.app", category: "recorder")
 
@@ -225,6 +235,11 @@ final class ExitRetry: Sendable {
 /// Lets a recorder running inside the app (`InProcessLauncher`) wait, after `RecordingWorkflow.run` returns, for an
 /// exited status the recording could not write at once (`RecordingDependencies.exitStatusWait`): until then the
 /// recording has not ended, its locks are still held, and the app keeps following it and waits for it before quitting.
+///
+/// Invariants:
+/// 1. It refers to at most one `ExitRetry`, the last one `track` was given (the recorder tracks the retry it starts).
+/// 2. `retrying` is true from `track` on, and stays true after the retry has ended; `finished()` says when it has.
+/// 3. `finished()` returns true at once when nothing was tracked, otherwise the tracked retry's `finished()`.
 public final class ExitStatusWait: Sendable {
     private let retry = Mutex<ExitRetry?>(nil)
 
