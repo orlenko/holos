@@ -488,3 +488,53 @@ private actor CountingBackend: NaturalSpeechBackend {
         #expect(events == [.checkUnavailable(language: "en")])
     }
 }
+
+@MainActor @Suite struct NaturalSpeechPublicationTests {
+    private func folder() throws -> URL {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("holos-publish-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        return folder
+    }
+
+    @Test func aStopDuringTheCopyIntoPlaceLeavesNoOutput() async throws {
+        let folder = try folder()
+        let render = Mutex<Task<RenderedAudio, Error>?>(nil)
+        // A volume that cannot rename exclusively (the file is copied into place), and a Stop as the copy begins.
+        let renderer = NaturalSpeechRenderer(backend: CountingBackend(), checker: nil, fallback: NoFallback(),
+                                             installedPacks: { [.english] }, exclusiveRename: { _, _ in
+            render.withLock { $0 }?.cancel()
+            errno = ENOTSUP
+            return -1
+        })
+        let output = folder.appendingPathComponent("part.caf")
+        let task = Task {
+            try await renderer.render(text: "One two three.", voiceIdentifier: "pocket:en:alba", rate: nil, to: output)
+        }
+        render.withLock { $0 = task }
+        await #expect(throws: CancellationError.self) { _ = try await task.value }
+        #expect(!FileManager.default.fileExists(atPath: output.path))
+        #expect(try FileManager.default.contentsOfDirectory(atPath: folder.path).isEmpty)
+    }
+
+    @Test func theGroupsOfALongParagraphAreNamedByItsNumber() async throws {
+        let folder = try folder()
+        let sentence = "The keeper carried rainwater up the rocky path every single morning, counting his steps."
+        let long = Array(repeating: sentence, count: 60).joined(separator: " ")
+        let groups = NaturalSpeechPlan.blocks(long).count
+        #expect(groups > 1)
+        // Every take is heard wrong, so every block is read by the system voice and named in an event.
+        let fallback = FakeFallback()
+        let renderer = NaturalSpeechRenderer(backend: CountingBackend(), checker: FakeChecker { _ in "nothing alike" },
+                                             fallback: fallback, installedPacks: { [.english] })
+        var named: [Int] = []
+        renderer.onEvent = { event in
+            if case .fellBack(let paragraph, _, _) = event { named.append(paragraph) }
+        }
+        _ = try await renderer.render(text: "This opening paragraph has several plain words in it.\n\n" + long
+                                          + "\n\nThis closing paragraph ends the part quite plainly.",
+                                      voiceIdentifier: "pocket:en:alba", rate: nil,
+                                      to: folder.appendingPathComponent("part.caf"))
+        #expect(named == [1] + Array(repeating: 2, count: groups) + [3], "\(named) groups \(groups)")
+        #expect(renderer.lastStats.paragraphs == 3)
+    }
+}

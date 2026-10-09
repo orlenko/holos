@@ -6,21 +6,24 @@ import Foundation
 /// for its top-level folders, so a download cancelled inside the last model's weights would pass it; this one is what
 /// lets a pack move into place.
 public enum NaturalVoicePackFiles {
-    /// One file of the listing: its path from the repository's root, its size, and, for a file stored with Git LFS,
-    /// the SHA-256 of its content.
+    /// One file of the listing: its path from the repository's root, its size, and its content's digest: the SHA-256
+    /// of a file stored with Git LFS, else the Git blob SHA-1 the listing gives (`sha1("blob <size>\0" + content)`).
+    /// The listing is read at the pinned commit, so both digests are the commit's.
     public struct Expected: Sendable, Equatable, Decodable {
         public let path: String
         public let size: Int64
         public let sha256: String?
+        public let gitBlobSHA1: String?
 
-        public init(path: String, size: Int64, sha256: String? = nil) {
+        public init(path: String, size: Int64, sha256: String? = nil, gitBlobSHA1: String? = nil) {
             self.path = path
             self.size = size
             self.sha256 = sha256
+            self.gitBlobSHA1 = gitBlobSHA1
         }
 
         private struct LFS: Decodable { let oid: String?; let size: Int64? }
-        private enum CodingKeys: String, CodingKey { case path, size, type, lfs }
+        private enum CodingKeys: String, CodingKey { case path, size, type, lfs, oid }
 
         public init(from decoder: any Decoder) throws {
             let container = try decoder.container(keyedBy: CodingKeys.self)
@@ -28,6 +31,8 @@ public enum NaturalVoicePackFiles {
             let lfs = try container.decodeIfPresent(LFS.self, forKey: .lfs)
             size = try lfs?.size ?? container.decodeIfPresent(Int64.self, forKey: .size) ?? 0
             sha256 = lfs?.oid
+            // An LFS entry's `oid` is the pointer file's; its content is checked by the SHA-256 above.
+            gitBlobSHA1 = lfs == nil ? try container.decodeIfPresent(String.self, forKey: .oid) : nil
         }
     }
 
@@ -81,17 +86,36 @@ public enum NaturalVoicePackFiles {
         return true
     }
 
-    /// The listed files that are missing under `repositoryFolder`, of another size, or (for LFS files) of other
-    /// content: their paths, empty when the pack is complete. A file being resumed (`<file>.partial`) is missing.
+    /// The listed files that are missing under `repositoryFolder`, of another size, or of other content (their SHA-256,
+    /// or their Git blob SHA-1, differs from the listing's), or listed without a digest: their paths, empty when the
+    /// pack is complete. A file being resumed (`<file>.partial`) is missing.
     public static func problems(_ expected: [Expected], in repositoryFolder: URL) -> [String] {
         expected.compactMap { file in
             let url = repositoryFolder.appendingPathComponent(file.path)
             guard let attributes = try? FileManager.default.attributesOfItem(atPath: url.path),
                   (attributes[.type] as? FileAttributeType) == .typeRegular,
                   (attributes[.size] as? NSNumber)?.int64Value == file.size else { return file.path }
-            if let sha256 = file.sha256, (try? Self.sha256(of: url)) != sha256.lowercased() { return file.path }
-            return nil
+            if let sha256 = file.sha256 {
+                return (try? Self.sha256(of: url)) == sha256.lowercased() ? nil : file.path
+            }
+            if let blob = file.gitBlobSHA1 {
+                return (try? Self.gitBlobSHA1(of: url, size: file.size)) == blob.lowercased() ? nil : file.path
+            }
+            // Nothing to check its content against: not taken as verified.
+            return file.path
         }
+    }
+
+    /// Git's object name of the file's content: SHA-1 of "blob <size>\0" followed by the bytes.
+    static func gitBlobSHA1(of url: URL, size: Int64) throws -> String {
+        let handle = try FileHandle(forReadingFrom: url)
+        defer { try? handle.close() }
+        var hasher = Insecure.SHA1()
+        hasher.update(data: Data("blob \(size)\u{0}".utf8))
+        while let chunk = try handle.read(upToCount: 4 << 20), !chunk.isEmpty {
+            hasher.update(data: chunk)
+        }
+        return hasher.finalize().map { String(format: "%02x", $0) }.joined()
     }
 
     static func sha256(of url: URL) throws -> String {

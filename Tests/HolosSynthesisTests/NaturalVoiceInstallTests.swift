@@ -217,7 +217,8 @@ import Testing
             """.utf8)
         #expect(try NaturalVoicePackFiles.files(fromListing: listing) == [
             .init(path: "v2.1/english/cond_prefill.mlmodelc/coremldata.bin", size: 243, sha256: "ABC"),
-            .init(path: "v2.1/english/cond_prefill.mlmodelc/model.mil", size: 228_662),
+            // Not in LFS: its Git blob SHA-1, the listing's `oid`.
+            .init(path: "v2.1/english/cond_prefill.mlmodelc/model.mil", size: 228_662, gitBlobSHA1: "b"),
         ])
     }
 
@@ -232,8 +233,11 @@ import Testing
         let weights = NaturalVoicePackFiles.Expected(
             path: "v2.1/english/flowlm_step.mlmodelc/weights/weight.bin", size: 8,
             sha256: "c5a1ff1da1a1aab6b26f0a2d5fb73e66e4e3cc1a7e4fe5b4eca1c5c2a4d6c8fa")
-        let mil = NaturalVoicePackFiles.Expected(path: "v2.1/english/flowlm_step.mlmodelc/model.mil", size: 4)
-        let voice = NaturalVoicePackFiles.Expected(path: "v2.1/english/constants_bin/alba.safetensors", size: 3)
+        // Files outside LFS, checked by their Git blob SHA-1 (of "mil!" and "alb").
+        let mil = NaturalVoicePackFiles.Expected(path: "v2.1/english/flowlm_step.mlmodelc/model.mil", size: 4,
+                                                 gitBlobSHA1: "93a183fb2d02058ba563d6df6a48719377599bce")
+        let voice = NaturalVoicePackFiles.Expected(path: "v2.1/english/constants_bin/alba.safetensors", size: 3,
+                                                   gitBlobSHA1: "44db1c1bcac6aef83c0c654e8c1572f1f5184d7a")
         try write(mil.path, "mil!")
         // The weights were cut off: only a partial file is there. The voice has the wrong size.
         try write(weights.path + ".partial", "weig")
@@ -246,6 +250,46 @@ import Testing
         let right = NaturalVoicePackFiles.Expected(path: weights.path, size: 8, sha256: real.uppercased())
         try write(voice.path, "alb")
         #expect(NaturalVoicePackFiles.problems([right, mil, voice], in: folder).isEmpty)
+    }
+
+    @Test func aFileOutsideLFSIsCheckedByContentNotJustSize() throws {
+        let mil = NaturalVoicePackFiles.Expected(path: "v2.1/english/mimi_decoder.mlmodelc/model.mil", size: 4,
+                                                 gitBlobSHA1: "93a183fb2d02058ba563d6df6a48719377599bce")
+        // The same size, other bytes.
+        try write(mil.path, "mil?")
+        #expect(NaturalVoicePackFiles.problems([mil], in: folder) == [mil.path])
+        try write(mil.path, "mil!")
+        #expect(NaturalVoicePackFiles.problems([mil], in: folder).isEmpty)
+        // Listed without any digest: nothing proves its content, so it is not taken as verified.
+        let unknown = NaturalVoicePackFiles.Expected(path: mil.path, size: 4)
+        #expect(NaturalVoicePackFiles.problems([unknown], in: folder) == [mil.path])
+    }
+}
+
+@Suite struct NaturalVoiceInstallLockTests {
+    private let root = FileManager.default.temporaryDirectory.appendingPathComponent("holos-lock-\(UUID().uuidString)")
+
+    @Test func anInstalledPackIsNotReportedWhileAnotherInstallHoldsTheLock() async throws {
+        // Installed.
+        try await NaturalVoiceModels.setUp(root: root, pack: .english, force: false, download: { _, _, _ in },
+                                           warmUp: { _, _ in }, notice: { _ in }, progress: { _ in })
+        #expect(NaturalVoiceModels.status(root: root, pack: .english) == .installed)
+        // Another process starts a forced reinstall (it holds the lock and may remove the pack).
+        let fd = open(NaturalVoiceModels.lockPath(root: root, pack: .english), O_RDWR | O_CREAT, 0o600)
+        #expect(fd >= 0)
+        defer { close(fd) }
+        #expect(flock(fd, LOCK_EX | LOCK_NB) == 0)
+        let finished = Mutex(false)
+        await #expect(throws: HolosError.self) {
+            try await NaturalVoiceModels.setUp(root: root, pack: .english, force: false, download: { _, _, _ in },
+                                               warmUp: { _, _ in }, finish: { _, _ in finished.withLock { $0 = true } },
+                                               notice: { _ in }, progress: { _ in })
+        }
+        #expect(!finished.withLock { $0 })
+        flock(fd, LOCK_UN)
+        // Once it is done, the pack is reported installed again.
+        try await NaturalVoiceModels.setUp(root: root, pack: .english, force: false, download: { _, _, _ in },
+                                           warmUp: { _, _ in }, notice: { _ in }, progress: { _ in })
     }
 }
 

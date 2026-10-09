@@ -3,6 +3,7 @@ import AudioToolbox
 import Foundation
 import HolosCore
 import os
+import Synchronization
 
 /// Hears a rendered paragraph back, for the per-paragraph check (see `SpeechChunkCheck`).
 public protocol SpeechChunkChecker: Sendable {
@@ -28,6 +29,8 @@ public enum NaturalSpeechPlan {
         /// Silence after this block, in seconds (none after the last block of a part).
         public let pauseAfter: Double
         public let isHeading: Bool
+        /// The paragraph of the part it comes from, counted from 0: the groups of a long paragraph share it.
+        public let paragraph: Int
     }
 
     public static let paragraphPause = 0.6
@@ -52,7 +55,8 @@ public enum NaturalSpeechPlan {
             let pause = last ? 0 : heading ? headingPause : paragraphPause
             let groups = split(paragraph, maximumLength: maximumBlockLength)
             return groups.enumerated().map { groupIndex, group in
-                Block(text: group, pauseAfter: groupIndex == groups.count - 1 ? pause : 0, isHeading: heading)
+                Block(text: group, pauseAfter: groupIndex == groups.count - 1 ? pause : 0, isHeading: heading,
+                      paragraph: index)
             }
         }
     }
@@ -373,9 +377,10 @@ public struct NaturalSpeechStats: Sendable, Equatable {
             .appendingPathComponent(".holos-\(UUID().uuidString).\(ext)")
         defer { _ = unlink(temporary.path) }
         let writer = try NaturalSpeechFileWriter(url: temporary, sampleRate: Self.sampleRate)
-        for (index, block) in blocks.enumerated() {
+        for block in blocks {
             try Task.checkCancellation()
-            var speech = try await paragraph(block.text, index: index, voice: voice, checking: &checking,
+            // Events and the log name the part's paragraph (a long one's groups share its number).
+            var speech = try await paragraph(block.text, index: block.paragraph, voice: voice, checking: &checking,
                                              stats: &stats)
             speech = try TimeStretch.apply(speech, sampleRate: Self.sampleRate, rate: speed)
             try writer.append(speech)
@@ -383,17 +388,24 @@ public struct NaturalSpeechStats: Sendable, Equatable {
         }
         writer.close()
         let frames = writer.frames
-        stats.paragraphs = blocks.count
+        stats.paragraphs = Set(blocks.map(\.paragraph)).count
         stats.audioSeconds = Double(frames) / Self.sampleRate
         lastStats = stats
         guard frames > 0 else { throw HolosError.incomplete("The natural voice produced no audio.") }
         try Task.checkCancellation()
         let rename = exclusiveRename
-        // Off the main actor: on a volume that cannot rename exclusively the file is copied.
-        try await Task.detached(priority: .userInitiated) {
-            try ExclusivePublisher.publish(temporary, to: output, exclusiveRename: rename,
-                                           existing: "Speech output already exists")
-        }.value
+        // Off the main actor: on a volume that cannot rename exclusively the file is copied. A Stop meanwhile reaches
+        // the copy (between its chunks), which then leaves nothing at the output.
+        let stop = PublicationStop()
+        try await withTaskCancellationHandler {
+            try await Task.detached(priority: .userInitiated) {
+                try ExclusivePublisher.publish(temporary, to: output, exclusiveRename: rename,
+                                               existing: "Speech output already exists",
+                                               isCancelled: { stop.requested })
+            }.value
+        } onCancel: {
+            stop.request()
+        }
         return RenderedAudio(url: output, duration: Double(frames) / Self.sampleRate, frameCount: frames,
                              sampleRate: Self.sampleRate)
     }
@@ -458,6 +470,13 @@ public struct NaturalSpeechStats: Sendable, Equatable {
         Self.log.notice("Paragraph \(index + 1, privacy: .public) read by \(fallen.voice, privacy: .public) instead")
         return fallen.samples
     }
+}
+
+/// Whether the render publishing a file was cancelled: set by its cancellation handler, read by the copy.
+private final class PublicationStop: Sendable {
+    private let flag = Mutex(false)
+    var requested: Bool { flag.withLock { $0 } }
+    func request() { flag.withLock { $0 = true } }
 }
 
 /// Mono float samples written as an audio file, a piece at a time: 16-bit PCM in .wav and .caf, AAC (64 kbit/s) in
