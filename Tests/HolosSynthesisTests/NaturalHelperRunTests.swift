@@ -1,6 +1,7 @@
 import Darwin
 import Foundation
 import HolosCore
+import HolosTestSupport
 import Synchronization
 import Testing
 @testable import HolosSynthesis
@@ -20,12 +21,6 @@ import Testing
         let url = FileManager.default.temporaryDirectory.appendingPathComponent("holos-helper-run-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
         return url
-    }
-
-    /// Waits until `condition` holds, for at most `polls` short sleeps (never a wall-clock bound); whether it held.
-    private func eventually(polls: Int = 3_000, _ condition: () -> Bool) async throws -> Bool {
-        for _ in 0..<polls where !condition() { try await Task.sleep(for: .milliseconds(10)) }
-        return condition()
     }
 
     /// A render that runs until it is cancelled, then cleans up.
@@ -55,9 +50,9 @@ import Testing
                 lockFolder: place.appendingPathComponent("locks"),
                 parentEnded: { flags.parentEnded.withLock { $0 = true } }, endless(flags))
         }
-        #expect(try await eventually { flags.started.withLock { $0 } })
+        #expect(await eventually { flags.started.withLock { $0 } })
         kill(pid, SIGKILL)
-        let stopped = try await eventually { flags.cleanedUp.withLock { $0 } }
+        let stopped = await eventually { flags.cleanedUp.withLock { $0 } }
         #expect(stopped)
         if !stopped { task.cancel() }
         let error = await #expect(throws: HolosError.self) { _ = try await task.value }
@@ -76,7 +71,7 @@ import Testing
                 getpid(), isAlive: { false }, output: place.appendingPathComponent("p.caf"),
                 lockFolder: place.appendingPathComponent("locks"), endless(flags))
         }
-        let stopped = try await eventually { flags.cleanedUp.withLock { $0 } }
+        let stopped = await eventually { flags.cleanedUp.withLock { $0 } }
         #expect(stopped)
         if !stopped { task.cancel() }
         await #expect(throws: HolosError.self) { _ = try await task.value }
@@ -98,7 +93,7 @@ import Testing
                 return 7
             }
         }
-        #expect(try await eventually { flags.waiting.withLock { $0 } })
+        #expect(await eventually { flags.waiting.withLock { $0 } })
         #expect(!flags.started.withLock { $0 })
         NaturalOutputLock.release(earlier)
         #expect(try await task.value == 7)
@@ -121,7 +116,7 @@ import Testing
         let task = Task { try await NaturalOutputLock.acquire(for: output, in: locks, interval: .milliseconds(10)) {
             waiting.withLock { $0 = true }
         } }
-        #expect(try await eventually { waiting.withLock { $0 } })
+        #expect(await eventually { waiting.withLock { $0 } })
         task.cancel()
         await #expect(throws: CancellationError.self) { _ = try await task.value }
     }
@@ -191,9 +186,9 @@ import Testing
                     }
                 }, endless(flags))
         }
-        #expect(try await eventually { flags.started.withLock { $0 } })
+        #expect(await eventually { flags.started.withLock { $0 } })
         kill(pid, SIGKILL)
-        #expect(try await eventually { !manager.fileExists(atPath: mine.path) })
+        #expect(await eventually { !manager.fileExists(atPath: mine.path) })
         if manager.fileExists(atPath: mine.path) { task.cancel() }
         await #expect(throws: HolosError.self) { _ = try await task.value }
         #expect(manager.fileExists(atPath: documents.appendingPathComponent("file.txt").path))

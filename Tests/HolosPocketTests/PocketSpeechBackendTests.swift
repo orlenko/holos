@@ -1,6 +1,7 @@
 import Foundation
 import HolosCore
 import HolosSynthesis
+import HolosTestSupport
 import Synchronization
 import Testing
 @testable import HolosPocket
@@ -21,12 +22,13 @@ import Testing
                 value += 1
                 return value
             }
+            // Held until the test opens it (once the load has started; the suite's time limit bounds it).
             while !gate.open.withLock({ $0 }) { try await Task.sleep(for: .milliseconds(5)) }
             return count
         }
         async let first = loads.value(for: .english, load: load)
         async let second = loads.value(for: .english, load: load)
-        for _ in 0..<1_000 where gate.loads.withLock({ $0 }) == 0 { try await Task.sleep(for: .milliseconds(5)) }
+        #expect(await eventually { gate.loads.withLock { $0 } == 1 })
         gate.open.withLock { $0 = true }
         let values = try await [first, second]
         #expect(values == [1, 1])
