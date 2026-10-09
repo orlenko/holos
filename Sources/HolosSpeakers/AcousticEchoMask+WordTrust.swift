@@ -25,15 +25,19 @@ extension AcousticEchoMask {
     public static let sustainedLevelDB = -1.0
     /// (d) A short utterance on its own: local frames following each other with at most this many other frames
     /// between them (48 ms; the 5-frame smoothing fills shorter gaps, so a gap this short is within one sound, and
-    /// any longer one ends the utterance: it never chains along a call's scattered runs),
+    /// any longer one ends the utterance),
     public static let utteranceGapFrames = 3
-    /// at least this many of them (48 ms, the shortest local run the smoothing leaves), whose median predicted echo is
-    /// below `sustainedLevelDB`, are trusted together, however short and however far from other speech. The echo
-    /// cancelled poorly predicts 0 to +3.5 dB, so its runs fail this whatever their length.
+    /// judged frame by frame over its local frames within this many frames either side (240 ms, about a syllable and
+    /// its gap): a frame is trusted when at least `utteranceFrames` of them lie there and most have the predicted echo
+    /// below `sustainedLevelDB`, however far from other speech. Support reaches no further than this from the
+    /// qualifying frames, so poorly cancelled echo (0 to +3.5 dB) right after the user's speech, or between its runs
+    /// in a long utterance, turns back into echo within 240 ms.
+    public static let utteranceReachFrames = 15
+    /// The fewest local frames that make an utterance (48 ms, the shortest local run the smoothing leaves).
     public static let utteranceFrames = 3
 
     /// The frames whose local frames the word rule trusts (rules (a)–(d) above), in order, consecutive frames joined.
-    /// Running counts for (a)–(c), and one sort per utterance for (d).
+    /// Running counts: linear in the frames.
     static func trustedWordFrames(classes: [UInt8], echoLevels: [Int8]) -> [Range<Int>] {
         let count = classes.count
         let local = FrameClass.local.rawValue
@@ -58,10 +62,20 @@ extension AcousticEchoMask {
         func closeUtterance() {
             defer { utterance.removeAll(keepingCapacity: true) }
             guard utterance.count >= utteranceFrames else { return }
-            let levels = utterance.map { Double(echoLevels[$0]) * levelStepDB }.sorted()
-            let middle = levels.count / 2
-            let median = levels.count % 2 == 1 ? levels[middle] : (levels[middle - 1] + levels[middle]) / 2
-            if median < sustainedLevelDB { for frame in utterance { trusted[frame] = true } }
+            // Running count of the utterance's local frames below `sustainedLevelDB`, by position.
+            var lower = [0]
+            for frame in utterance {
+                let below = Double(echoLevels[frame]) * levelStepDB < sustainedLevelDB
+                lower.append(lower[lower.count - 1] + (below ? 1 : 0))
+            }
+            var first = 0
+            var end = 0
+            for frame in utterance {
+                while utterance[first] < frame - utteranceReachFrames { first += 1 }
+                while end < utterance.count, utterance[end] <= frame + utteranceReachFrames { end += 1 }
+                let near = end - first
+                if near >= utteranceFrames, 2 * (lower[end] - lower[first]) > near { trusted[frame] = true }
+            }
         }
         for frame in 0..<count where classes[frame] == local {
             if let last = utterance.last, frame - last - 1 > utteranceGapFrames { closeUtterance() }

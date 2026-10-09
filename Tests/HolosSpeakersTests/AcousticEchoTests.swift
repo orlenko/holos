@@ -1276,3 +1276,27 @@ private func playback108(_ mask: AcousticEchoMask) -> [AcousticEchoMask.Interval
     #expect(measured?.share == 0.6)
     #expect(EchoLabelStats.localFrames(mask, start: word(200..<210).start, end: word(200..<210).end) == nil)
 }
+
+@Test func anUtteranceLendsItsLevelOnlyToFramesNearIt() {
+    // 100 frames of the user 3 dB under the echo, then 30 runs of the call cancelled poorly (+2 dB), 3 frames each
+    // with 3 echo frames between: all one utterance, its gaps never over 3 frames. Only frames within 240 ms of the
+    // user's speech are trusted with it; the words after are echo.
+    var local: [(frames: Range<Int>, level: Int8)] = [(100..<200, -6)]
+    for run in 0..<30 { local.append(((203 + 6 * run)..<(206 + 6 * run), 4)) }
+    let mask = echoMask(count: 500, local: local)
+    #expect(isEcho(mask, 150..<190) == false)
+    #expect(isEcho(mask, 260..<280) == true)
+    #expect(isEcho(mask, 340..<360) == true)
+    #expect(isEcho(mask.countingEveryLocalFrame(), 260..<280) == false)
+    #expect(mask.wordStretches.allSatisfy { $0.upperBound <= 200 + AcousticEchoMask.utteranceReachFrames })
+}
+
+@Test func doubleTalkRunningStraightIntoPoorlyCancelledEchoTurnsBackToEcho() {
+    // The user over the call at its loudness (−3 dB) for 60 frames, then, with no gap, 40 frames the call cancels
+    // poorly (+2 dB): one run. The double-talk is the user's; the echo after it is echo again.
+    let mask = echoMask(count: 400, local: [(100..<160, -6), (160..<200, 4)])
+    #expect(isEcho(mask, 110..<150) == false)
+    #expect(isEcho(mask, 170..<195) == true)
+    #expect(isEcho(mask.countingEveryLocalFrame(), 170..<195) == false)
+    #expect(mask.wordStretches == [100..<160])
+}

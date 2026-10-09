@@ -8813,10 +8813,11 @@ genuinely local (the user, or people in the room) stays even while the call play
      local and most local ones have the predicted echo below −1 dB (`sustainedWindowFrames`,
      `sustainedDensity`, `sustainedLevelDB`): speech in the room makes the microphone louder
      than the echo alone (−3 dB at equal loudness), syllables leave brief gaps, while poorly
-     cancelled echo predicts 0 to +3.5 dB in runs of 3–5 frames; (d) it is one of at least 3
-     local frames at most 3 frames apart (an utterance: the smoothing fills shorter gaps, and a
-     longer one ends it) whose median predicted echo is below −1 dB (`utteranceGapFrames`,
-     `utteranceFrames`), however short or far from other speech. Any other local frame is
+     cancelled echo predicts 0 to +3.5 dB in runs of 3–5 frames; (d) in its utterance (local
+     frames at most 3 frames apart: smoothing fills shorter gaps), at least 3 local frames lie
+     within 15 frames (240 ms) of it and most of them are below −1 dB (`utteranceReachFrames`),
+     however far from other speech; the reach bounds it, so echo running on after speech turns
+     back within 240 ms. Any other local frame is
      the call cancelled poorly and counts as echo. Playback keeps #108's stretches only
      (2026-10-08; before,
      every local frame counted, and the scattered false-local frames of poorly cancelled echo
