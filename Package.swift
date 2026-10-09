@@ -83,7 +83,7 @@ let package = Package(
         .testTarget(name: "HolosDictationTests", dependencies: [
             "HolosDictation", "HolosCore", "HolosAudio", "HolosStorage", "HolosSpeech", "HolosSynthesis",
         ]),
-        .testTarget(name: "HolosSpeakersTests", dependencies: ["HolosSpeakers", "HolosCore"]),
+        .testTarget(name: "HolosSpeakersTests", dependencies: ["HolosSpeakers", "HolosCore", "HolosTestSupport"]),
         .testTarget(name: "HolosMeetingTests", dependencies: [
             "HolosMeeting", "HolosCore", "HolosStorage", "HolosAudio", "HolosSpeakers", "HolosSynthesis",
         ]),

@@ -1,6 +1,7 @@
 import Foundation
 import Testing
 import HolosCore
+import HolosTestSupport
 @testable import HolosSpeakers
 
 // Same name, same person (docs/meeting-design.md §4.9, "Speakers with the same name"). Names are made up.
@@ -29,18 +30,10 @@ private let specs = [
     TurnSpec(id: "T6", start: 50, speaker: "mic:me", words: 2, track: "mic"),
 ]
 
+/// Words "w0", "w1", … of one second each from the turn's start.
 private func segment(_ spec: TurnSpec) -> TranscriptSegment {
-    var text = ""
-    var words: [TimedWord] = []
-    for index in 0..<spec.words {
-        if index > 0 { text += " " }
-        let token = "w\(index)"
-        words.append(TimedWord(text: token, start: spec.start + Double(index), end: spec.start + Double(index) + 1,
-                               utf16Offset: text.utf16.count, utf16Length: token.utf16.count))
-        text += token
-    }
-    return TranscriptSegment(id: "seg-\(spec.id)", start: spec.start, end: spec.start + Double(spec.words), text: text,
-                             words: words, track: spec.track)
+    TranscriptFixtures.segment(TranscriptFixtures.numberedWords("", count: spec.words), id: "seg-\(spec.id)",
+                               track: spec.track, start: spec.start, every: 1, lasting: 1)
 }
 
 private let transcript = Transcript(id: "TRANSCRIPT", createdAt: fixedDate, source: "mic+system", locale: "en-US",
