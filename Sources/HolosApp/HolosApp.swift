@@ -330,6 +330,8 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         if reopenAfterQuit { reopenOnceExited() }
+        // Natural voice helpers (a reading's part, a Preview) run detached: stopped now, their folders removed.
+        NaturalVoiceHelpers.stopAll()
         enableTask?.cancel(); assetTask?.cancel(); overlayHideTask?.cancel(); resultExpiryTask?.cancel()
         setupRefreshTask?.cancel(); assistantRefreshTask?.cancel()
         history.stop()

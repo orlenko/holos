@@ -62,7 +62,11 @@ import Synchronization
             .appendingPathComponent("holos-natural-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: false,
                                                 attributes: [.posixPermissions: 0o700])
-        defer { try? FileManager.default.removeItem(at: folder) }
+        NaturalVoiceHelpers.using(folder)
+        defer {
+            try? FileManager.default.removeItem(at: folder)
+            NaturalVoiceHelpers.done(folder)
+        }
         let textFile = folder.appendingPathComponent("part.txt")
         let errors = folder.appendingPathComponent("stderr.txt")
         try Data(text.utf8).write(to: textFile, options: .atomic)
@@ -72,7 +76,11 @@ import Synchronization
             try await withCheckedThrowingContinuation { continuation in
                 do {
                     try Task.checkCancellation()
-                    let pid = try launch(arguments, errors) { code in continuation.resume(returning: code) }
+                    let pid = try launch(arguments, errors) { code in
+                        if let pid = child.pid { NaturalVoiceHelpers.ended(pid) }
+                        continuation.resume(returning: code)
+                    }
+                    NaturalVoiceHelpers.started(pid)
                     if child.started(pid) { signal(pid) }
                 } catch {
                     continuation.resume(throwing: error)
@@ -109,6 +117,8 @@ import Synchronization
             }
         }
 
+        var pid: Int32? { state.withLock { $0.pid } }
+
         /// Marks the render cancelled; the pid to stop when the child is running.
         func cancel() -> Int32? {
             state.withLock { value in
@@ -116,6 +126,32 @@ import Synchronization
                 return value.pid
             }
         }
+    }
+}
+
+/// The `voiceislocal` helpers rendering natural voices for this app (a reading's part, a Preview) and the temporary
+/// folders they use. They run detached, so a quit stops them here (`stopAll`), from `applicationWillTerminate`:
+/// the cancellations that would stop them (a reading's Stop, Preview's stop) end only after the app has exited.
+enum NaturalVoiceHelpers {
+    private static let state = Mutex<(pids: Set<Int32>, folders: Set<String>)>(([], []))
+
+    static func started(_ pid: Int32) { _ = state.withLock { $0.pids.insert(pid) } }
+    static func ended(_ pid: Int32) { _ = state.withLock { $0.pids.remove(pid) } }
+    static func using(_ folder: URL) { _ = state.withLock { $0.folders.insert(folder.path) } }
+    static func done(_ folder: URL) { _ = state.withLock { $0.folders.remove(folder.path) } }
+
+    /// Sends every helper still running SIGTERM (the tool stops at once; a reading's part is rendered again on
+    /// Resume) and removes the temporary folders in use. Returns the helpers signalled.
+    @discardableResult
+    static func stopAll(signal: (Int32) -> Void = { _ = kill($0, SIGTERM) }) -> [Int32] {
+        let (pids, folders) = state.withLock { value in
+            let taken = value
+            value = ([], [])
+            return (taken.pids, taken.folders)
+        }
+        for pid in pids where pid > 0 { signal(pid) }
+        for folder in folders { try? FileManager.default.removeItem(atPath: folder) }
+        return pids.sorted()
     }
 }
 
@@ -159,6 +195,14 @@ import Synchronization
     static func automatic(language: String, installed: Set<NaturalVoicePack>,
                           bestApple: (String) -> VoiceDescriptor?) -> VoiceDescriptor? {
         NaturalVoiceCatalog.defaultVoice(language: language, installed: installed)?.descriptor ?? bestApple(language)
+    }
+
+    /// Posted when natural voices were installed: the voice menus are filled again, keeping their choice. Not
+    /// `ReadingPreferences.changed`, which would put the Reading card back to the saved defaults.
+    static let installedChanged = Notification.Name("VoiceIsLocalNaturalVoicesInstalled")
+
+    static func announceInstalled() {
+        NotificationCenter.default.post(name: installedChanged, object: nil)
     }
 
     /// How a reading's row names its voice.

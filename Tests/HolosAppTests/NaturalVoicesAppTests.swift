@@ -10,7 +10,7 @@ import Testing
 /// Settings › Reading's natural voice download (`NaturalVoiceDownload`), the voice a reading gets
 /// (`ReadingVoices.choose`), and the renderer that runs `voiceislocal say` for a natural voice's part
 /// (`HelperNaturalRenderer`), with a fake launcher: nothing is downloaded or spoken.
-@MainActor @Suite struct NaturalVoicesAppTests {
+@MainActor @Suite(.serialized) struct NaturalVoicesAppTests {
     // MARK: Download
 
     @Test func aDownloadRunsSaysItsProgressAndEndsInstalled() {
@@ -145,6 +145,49 @@ import Testing
         #expect(ReadingVoices.automatic(language: "fr-CA", installed: [.english], bestApple: { _ in nil }) == nil)
         #expect(ReadingVoices.automatic(language: "fr-CA", installed: [.english, .french], bestApple: { _ in nil })?.id
             == "pocket:fr:estelle")
+    }
+
+    @Test func installingNaturalVoicesKeepsTheCardsVoiceAndSpeed() async throws {
+        let pane = ReadingPane(controller: ReadingController())
+        let popup = pane.voicePopup
+        // A voice and a speed other than Settings' defaults, as if just chosen on the card.
+        let chosen = try #require(popup.itemArray.last { item in
+            item.isEnabled && (item.representedObject as? String).map { $0 != ReadingPreferences.voice } == true
+        })
+        popup.select(chosen)
+        let speed = ReadingPreferences.speed == 1.3 ? 0.9 : 1.3
+        pane.speedSlider.doubleValue = speed
+        let before = popup.itemArray.first
+        ReadingVoices.announceInstalled()
+        // The menu is filled again (new items), on the main queue.
+        for _ in 0..<10_000 where popup.itemArray.first === before { await Task.yield() }
+        #expect(popup.itemArray.first !== before)
+        #expect(popup.selectedItem?.representedObject as? String == chosen.representedObject as? String)
+        #expect(abs(pane.speedSlider.doubleValue - speed) < 0.001, "\(pane.speedSlider.doubleValue) vs \(speed)")
+    }
+
+    @Test func quittingStopsTheToolAndRemovesItsFolder() async throws {
+        let exit = Mutex<(@MainActor (Int32) -> Void)?>(nil)
+        let textFile = Mutex<String?>(nil)
+        let renderer = HelperNaturalRenderer(launch: { arguments, _, onExit in
+            textFile.withLock { $0 = arguments[4] }
+            exit.withLock { $0 = onExit }
+            return 31_337
+        }, installedPacks: { [.english] }, signal: { _ in })
+        let output = try folder().appendingPathComponent("p.caf")
+        let task = Task { try await renderer.render(text: "Hello.", voiceIdentifier: "pocket:en:alba", rate: nil, to: output) }
+        while exit.withLock({ $0 == nil }) { await Task.yield() }
+        let working = try #require(textFile.withLock { $0 }.map { URL(fileURLWithPath: $0).deletingLastPathComponent() })
+        #expect(FileManager.default.fileExists(atPath: working.path))
+        // The quit: the tool is signalled and its folder removed at once, before the render has seen it end.
+        var signalled: [Int32] = []
+        let stopped = NaturalVoiceHelpers.stopAll { signalled.append($0) }
+        #expect(stopped == [31_337])
+        #expect(signalled == [31_337])
+        #expect(!FileManager.default.fileExists(atPath: working.path))
+        exit.withLock { $0 }?(143)
+        await #expect(throws: HolosError.self) { _ = try await task.value }
+        #expect(NaturalVoiceHelpers.stopAll { _ in }.isEmpty)
     }
 
     // MARK: Rendering through the tool

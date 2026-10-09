@@ -71,8 +71,8 @@ extension HolosAppDelegate {
         let installed = NaturalVoiceModels.status(pack: pack) == .installed
         state.downloads[pack]?.ended(code: code, lastLine: last, installed: installed)
         Self.readingLog.notice("Natural voices download (\(pack.rawValue, privacy: .public)) ended with \(code, privacy: .public)")
-        // The voice menus offer the new voices, and Automatic now picks them.
-        if installed { NotificationCenter.default.post(name: ReadingPreferences.changed, object: nil) }
+        // The voice menus offer the new voices (Automatic now picks them); what the Reading card shows stays.
+        if installed { ReadingVoices.announceInstalled() }
         updateSettings()
     }
 

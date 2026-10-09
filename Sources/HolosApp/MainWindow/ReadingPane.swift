@@ -16,9 +16,9 @@ final class ReadingPane: NSViewController, MainSectionContent, NSTableViewDataSo
     private let preview = VoicePreview()
     private let field = NSTextField()
     private let chooseButton = NSButton(title: "Choose File…", target: nil, action: nil)
-    private let voicePopup = NSPopUpButton(frame: .zero, pullsDown: false)
+    let voicePopup = NSPopUpButton(frame: .zero, pullsDown: false)
     private let previewButton = NSButton(title: "▶ Preview", target: nil, action: nil)
-    private let speedSlider = NSSlider(value: ReadingSpeed.standard, minValue: ReadingSpeed.range.lowerBound,
+    let speedSlider = NSSlider(value: ReadingSpeed.standard, minValue: ReadingSpeed.range.lowerBound,
                                        maxValue: ReadingSpeed.range.upperBound, target: nil, action: nil)
     private let speedLabel = NSTextField(labelWithString: "")
     private let makeButton = NSButton(title: "Make Audio", target: nil, action: nil)
@@ -30,6 +30,7 @@ final class ReadingPane: NSViewController, MainSectionContent, NSTableViewDataSo
     private var rows: [ReadingEntry] = []
     private var windowObserver: NSObjectProtocol?
     private var preferencesObserver: NSObjectProtocol?
+    private var voicesObserver: NSObjectProtocol?
 
     init(controller: ReadingController) {
         self.controller = controller
@@ -44,6 +45,11 @@ final class ReadingPane: NSViewController, MainSectionContent, NSTableViewDataSo
         let natural = HelperNaturalRenderer(launcher: MaintenanceLauncher(executable: ChildProcessLauncher.bundledExecutable))
         preview.renderNatural = { text, voice, rate, output in
             _ = try await natural.render(text: text, voiceIdentifier: voice, rate: rate, to: output)
+        }
+        // Natural voices installed: the menu offers them, and the card keeps the voice and speed chosen in it.
+        voicesObserver = NotificationCenter.default.addObserver(
+            forName: ReadingVoices.installedChanged, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.refreshVoices() }
         }
         preferencesObserver = NotificationCenter.default.addObserver(
             forName: ReadingPreferences.changed, object: nil, queue: .main) { [weak self] _ in

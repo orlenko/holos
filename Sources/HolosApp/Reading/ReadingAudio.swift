@@ -54,10 +54,14 @@ final class VoicePreview: NSObject, AVSpeechSynthesizerDelegate, AVAudioPlayerDe
         natural = Task { [weak self] in
             let folder = FileManager.default.temporaryDirectory
                 .appendingPathComponent("holos-preview-\(UUID().uuidString)", isDirectory: true)
-            defer { try? FileManager.default.removeItem(at: folder) }
+            defer {
+                try? FileManager.default.removeItem(at: folder)
+                NaturalVoiceHelpers.done(folder)
+            }
             do {
                 try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: false,
                                                         attributes: [.posixPermissions: 0o700])
+                NaturalVoiceHelpers.using(folder)
                 let file = folder.appendingPathComponent("preview.caf")
                 try await renderNatural(text, voice.id, rate, file)
                 try Task.checkCancellation()

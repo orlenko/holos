@@ -613,7 +613,9 @@ natural reading is rendered by the bundled tool, `voiceislocal say --voice pocke
 <part file> [--rate R]` (`HelperNaturalRenderer`, HolosApp), and the pipeline's renderer routes by identifier
 (`RoutingSpeechRenderer`, HolosContent: `pocket:` voices to the tool, the rest to `NativeSpeechRenderer` in the
 app). The model's memory (peak footprint 0.6 GB for English, 1.6 GB for French) stays out of the app and goes with
-the process; Stop sends it SIGTERM. Each part loads the compiled model again: about 3 s for English and 11 s for
+the process; Stop sends it SIGTERM. The tool runs detached, so quitting Voice is Local stops every natural-voice
+helper still running (a reading's part, a Preview) and removes their temporary folders (`NaturalVoiceHelpers`,
+from `applicationWillTerminate`); a part cut off so is rendered again on Resume. Each part loads the compiled model again: about 3 s for English and 11 s for
 French, against about 3,000 characters (three minutes of speech, 40–90 s of rendering) per part. `voiceislocal read` and `say` render natural voices in their own process
 (`NaturalSpeechRenderer` with `PocketSpeechBackend`, HolosPocket), keeping the model loaded across parts.
 
@@ -644,7 +646,8 @@ there goes back to `<pack>.download/`, where the next download checks it and fet
 damaged. A lock file keeps two installs apart. Settings › Reading has a row per pack: Download
 (with the size), the tool's progress line and Cancel while it runs (SIGTERM; what was downloaded is kept), and the
 failure's reason (offline, for instance) with Try Again; Apple's voices stay available throughout. The voice menus
-end with a disabled "Natural voices: download them in Settings › Reading" while a pack is missing.
+end with a disabled "Natural voices: download them in Settings › Reading" while a pack is missing; when a download
+ends, they are filled again with the new voices and keep the voice and speed chosen on the Reading card.
 
 **Rendering a part.** `NaturalSpeechPlan` splits the part into paragraphs (blank lines; line breaks inside one read
 as spaces) and feeds Pocket TTS one paragraph at a time; it splits a paragraph into sentences itself. A paragraph
