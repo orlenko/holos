@@ -193,6 +193,62 @@ continue is held back, from the spelled letters or content word before its first
 symbol word, until it ends or the key is released; so is a last content word or run
 of spelled letters, which a symbol word may still follow.
 
+#### Pauses inside a sentence
+
+Apple's speech transcriber gives one result per stretch of speech between pauses and
+formats each as a sentence: a capital first word, sometimes a closing period. A pause in
+the middle of a sentence therefore left a capital there ("we are cleaning up our big
+Pull request", "you're saying that It will"). Dictation joins the results in one place,
+`DictationSeams` (HolosCore), which the preview, the committed text that streams into the
+field, the final text, History's "heard" and written text, and Run Again all go
+through (`DictationStatus.transcript`, `DictationTextPipeline.transcript`). It runs first,
+before filler removal, learned corrections, spoken code and Apple Intelligence's fix, so
+each of them sees the sentence starts the speaker meant: a correction that copies the
+capital of the words it replaces does not carry the pause's capital over, filler removal
+capitalizes after a filler only where a sentence began, and the fix, which counts a
+capitalized word inside a sentence as a name it may not change, no longer protects a word
+that is only capitalized because of a pause.
+
+Where the text before a pause does not end a sentence (no `.`, `!`, `?` or `…` at its
+end, past closing quotes, brackets and spaces in any order, so French `« C’est fini. »`
+ends one; and no line break in the spaces around the pause or in a result of spaces alone
+between), the first letter of the next result is lowered, unless:
+
+- the result opens with a quote or bracket (a quoted sentence), or not with a capital;
+- the word is "I" or one of its contractions (English);
+- the word has another capital, a digit or a symbol ("PR", "NASA", "GPT-4", "McDonald's");
+- it is one letter ("plan B", "dash P"), but for the one-letter words "A" (and French "À", "Y");
+- a term of the word list, a learned correction's meant phrase, or a person's name in People
+  has the word with a capital (asked as each dictation starts; People's names are the ones last
+  read: `PeopleNames` reads them in the background at launch and whenever a dictation starts
+  after the store's file changed, decoding the names alone, never the voice samples, and
+  never on the main thread; Run Again uses the same names);
+- `NLTagger` (name type, in the dictation language) tags it as a person, place or
+  organization, reading the result before the pause and the one after it as one text;
+- the spell checker of the dictation language does not know its lowercase form ("alice",
+  "london", "monday" in English), or has not answered yet. Hesitations ("Um", "Euh") are
+  lowered without asking.
+
+The spell checker is a service another process runs and may stall, so joining, which runs on
+the main actor with each recognizer update, never waits for it (`SeamSpelling`): the answers
+are kept per word and language for the process, a word not answered yet is asked once on the
+spell checker's queue, and meanwhile keeps its capital. A result still being recognized is
+decided again at each revision, so it is lowered once the answer comes (usually within the
+same result: a lookup takes about 0.3 ms); a final result is decided once, with what is known
+then, and keeps that decision for the utterance, so the committed text stays a prefix of what
+follows and a late answer never changes a word already written. Run Again, which has its results
+at once, asks about them first and waits at most 2 s. The tagger runs in the process (about 1
+ms at the 95th percentile; its model is loaded in the background when the first dictation in a
+language starts).
+
+Only English and French dictation is changed; other languages (German capitalizes its
+nouns) are joined as before, one space between trimmed results.
+
+A word that is both a product name and a dictionary word ("Slack", "Outlook") is not
+recognized as a name and is lowered after a pause; adding it to the word list keeps its
+capital. The periods a pause puts inside a sentence ("…the second step. which runs
+later") are left as the recognizer wrote them.
+
 ### Main window
 
 The app's windows other than the transient ones are one main window, "Voice is Local"
@@ -713,7 +769,8 @@ Run Again (History detail, ⌘R; `voiceislocal history rerun`) reads the file ba
 frames and feeds them to the recognizer live dictation uses (`AppleSpeechSession`, the
 speech backend's progressive preset, the current dictation language, the word list and the
 learned corrections' words as contextual strings), then runs the text steps of live dictation
-(`DictationTextPipeline`, HolosCore): filler removal and corrections as on the final text,
+(`DictationTextPipeline`, HolosCore): the results joined as dictation joins them ("Pauses
+inside a sentence"), filler removal and corrections as on the final text,
 and, when Apple Intelligence's fix is on and available, the fix as dictation streams it:
 each recognizer result is taken as committed in turn (the last one too: the recognizer
 commits it when it finishes, before the result) and each new part, cleaned as streaming

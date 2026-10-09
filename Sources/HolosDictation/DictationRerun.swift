@@ -144,8 +144,8 @@ public enum DictationRerun {
     /// `spokenCode` writes spoken paths and commands as code, in backticks when `backticks` (never for a dictation
     /// typed into a terminal: `run`).
     public static func pipeline(language: String, removeFillers: Bool, corrections: CorrectionList,
-                                wordList: [String] = [], heardAs: [Correction] = [], aiFix: Bool,
-                                spokenCode: Bool = false, backticks: Bool = true)
+                                wordList: [String] = [], heardAs: [Correction] = [], names: [String] = [],
+                                aiFix: Bool, spokenCode: Bool = false, backticks: Bool = true)
         -> (pipeline: DictationTextPipeline, aiNote: String?) {
         var note: String?
         var fixer: TranscriptFixer?
@@ -161,7 +161,7 @@ public enum DictationRerun {
         let coder = spokenCode
             ? OnDeviceFix.spokenCode(corrections: corrections, language: language, backticks: backticks) : nil
         return (DictationTextPipeline(language: language, removeFillers: removeFillers, corrections: corrections,
-                                      wordList: wordList, fixer: fixer, coder: coder), note)
+                                      wordList: wordList, names: names, fixer: fixer, coder: coder), note)
     }
 
     /// The recognizer's results for the audio at `url`, in order: the speech transcriber live dictation uses, with

@@ -300,6 +300,53 @@ private final class DictationSleeper {
     #expect(controller.status.text.hasPrefix("Hello there."))
 }
 
+@Test @MainActor func aPauseInsideASentenceLeavesNoCapitalInPreviewCommittedOrResult() async {
+    // The spell checker has answered about the word by the time the result is final, as it has live: it is asked
+    // while the result is still being recognized, and the answers last for the process.
+    await DictationSeams(language: "en-US").prepare(["a", "Pull"], within: .seconds(30))
+    let harness = Harness()
+    await harness.speech.setSegments([.init(start: 0, end: 1, text: "We are cleaning up our big"),
+                                      .init(start: 1, end: 2, text: "Pull request splitting it.")])
+    let controller = DictationController(locale: "en-US", dependencies: harness.dependencies) { _ in }
+    #expect(controller.begin())
+    #expect(await eventually { controller.status.phase == .listening })
+    harness.emit(.init(segment: .init(start: 0, end: 1, text: "We are cleaning up our big"), isFinal: true))
+    harness.emit(.init(segment: .init(start: 1, end: 2, text: "Pull request"), isFinal: false))
+    #expect(await eventually { controller.status.text == "We are cleaning up our big pull request" })
+    harness.emit(.init(segment: .init(start: 1, end: 2, text: "Pull request splitting it."), isFinal: true))
+    #expect(await eventually { controller.status.committedText == "We are cleaning up our big pull request splitting it." })
+    controller.end()
+    #expect(await eventually { controller.status.phase == .result })
+    #expect(controller.status.text == "We are cleaning up our big pull request splitting it.")
+}
+
+@Test @MainActor func theWordsWhoseCapitalsStayAreAskedAtEachUtterance() async {
+    await DictationSeams(language: "en-US").prepare(["a", "Will"], within: .seconds(30))
+    let harness = Harness()
+    await harness.speech.setSegments([.init(start: 0, end: 1, text: "ask"),
+                                      .init(start: 1, end: 2, text: "Will about it")])
+    var names: [String] = []
+    var asked = 0
+    let controller = DictationController(locale: "en-US", dependencies: harness.dependencies) { _ in }
+    controller.seamTerms = {
+        asked += 1
+        return names
+    }
+    #expect(controller.begin())
+    #expect(await eventually { controller.status.phase == .listening })
+    controller.end()
+    #expect(await eventually { controller.status.phase == .result })
+    #expect(controller.status.text == "ask will about it")
+    // A person added in People since counts from the next utterance, without anything else changing.
+    names = ["Will Archer"]
+    #expect(await eventually { controller.begin() })
+    #expect(await eventually { controller.status.phase == .listening })
+    controller.end()
+    #expect(await eventually { controller.status.phase == .result })
+    #expect(controller.status.text == "ask Will about it")
+    #expect(asked == 2)
+}
+
 @Test @MainActor func captureAndRecognizerFailuresBecomeFailedStatuses() async {
     let captureHarness = Harness()
     captureHarness.capture.startError = HolosError.unavailable("Microphone unavailable")
