@@ -178,6 +178,17 @@ private let leaseMessage = "Error: Another Voice is Local process is processing 
     #expect(world.runner.started == ["deep A"])
 }
 
+@Test @MainActor func theEndOfASummarizeAgainScanThatStartedNothingStartsTheHeldPass() {
+    let world = World(deep: ["A"])
+    world.summaryRequestScan = true
+    world.jobs.schedule()
+    #expect(world.runner.started.isEmpty)
+    // The scan ends without starting a summary (the meeting asked for was not ready): the pass goes on by itself.
+    world.summaryRequestScan = false
+    world.jobs.summaryScanEnded()
+    #expect(world.runner.started == ["deep A"])
+}
+
 @Test @MainActor func aMakeFinalTranscriptNowDoesNotWaitForASummarizeAgainScan() {
     let world = World(deep: ["A"], runNow: ["A"])
     world.summaryRequestScan = true
@@ -357,7 +368,7 @@ private let leaseMessage = "Error: Another Voice is Local process is processing 
     world.jobs.schedule()
     #expect(world.runner.started.isEmpty)
     #expect(world.deep.queue.contains("A") && world.taken.isEmpty, "Kept queued, the meeting let go of.")
-    #expect(world.events.contains("released deep A"))
+    #expect(world.events == ["released deep A", "others"], "The other schedulers look for their next jobs.")
     world.now = base.addingTimeInterval(59)
     world.jobs.schedule()
     #expect(world.runner.started.isEmpty)
