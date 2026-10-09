@@ -134,7 +134,7 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, NSM
     /// The field's edit a close by hand took and has not queued yet (it waits for the edits before it).
     private var heldOpenEdit: OpenWordEdit?
     /// Word edits not saved whose field could not open again: in the footer until reopened or dismissed.
-    private var unsavedEdits = UnsavedWordEdits()
+    var unsavedEdits = UnsavedWordEdits()
 
     /// Words can be edited in the window now: the review allows it, and no close by hand is saving the edits before
     /// it closes (no field opens meanwhile, so nothing typed then can be left behind by the close).
@@ -453,10 +453,7 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, NSM
         let runID = projection.runID
         // An undo saved here or elsewhere (a command) since the last refresh: every join goes.
         let reverts = projection.revertedEditIDs.count
-        if reverts > revertsSeen {
-            joinsCleared += 1
-            paragraphBreaks.clearJoins()
-        }
+        if reverts > revertsSeen { dropJoins() }
         revertsSeen = reverts
         // A break or join made on a split's second part while the split saved names its temporary ID: resolved.
         let breaks = paragraphBreaks.active(in: projection.turns, runID: runID, keepsTurnsOf: { [review] old in
@@ -1306,8 +1303,8 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, NSM
     /// closing the window by hand waits for it, and stays open when it is not saved.
     /// `seen`: the revision the field opened under over `words`; the save is refused when words were changed
     /// elsewhere since, even when the list has not shown that yet.
-    private func editWords(_ words: [ReviewWord], to text: String, addTerm: Bool, seen: ReviewRevision,
-                           whileUnread: Bool = false) {
+    func editWords(_ words: [ReviewWord], to text: String, addTerm: Bool, seen: ReviewRevision,
+                   whileUnread: Bool = false) {
         offeredTerm = nil
         problem = nil
         notice = nil
@@ -1834,6 +1831,8 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, NSM
             refreshFooter()
             return false
         }
+        // Keys still held for a join's field: queued as an edit, so the close waits for it as for any.
+        queueHeldTyping()
         let open: OpenWordEdit? = closeGate.saving ? nil : turnList.takeOpenWordEdit()
         // Held until it is queued, with the revision its field opened under: a quit meanwhile closes the review with it
         // (`beginClosing`); words changed elsewhere since the field opened refuse it.
@@ -1936,11 +1935,11 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, NSM
         review.onChange = nil
         let review = self.review
         // AppKit ends no editing when a window closes: an open edit field's text is saved (and learned) by the close,
-        // as is one a close by hand took from the field and has not queued yet (quitting came first).
+        // as is one a close by hand took and has not queued yet (quitting came first), and keys held for a join's field.
+        queueHeldTyping()
         let fromField = turnList.takeOpenWordEdit()
         let held = heldOpenEdit
         heldOpenEdit = nil
-        // Checked against the revision its field opened under.
         let typed = (fromField ?? held).map(ReviewSession.TypedEdit.init)
         closeTask = Task { [weak self] in
             await review.close(typed: typed)

@@ -2,7 +2,8 @@ import AppKit
 import Testing
 @testable import HolosApp
 
-/// `TypingHold`: the keys the review window holds for a word's field about to open again after a join.
+/// `TypingHold` and `HeldTyping`: the keys the review window holds for a word's field about to open again after a
+/// join, and what they make of the word's text when no field opens.
 @MainActor
 struct ReviewKeyWindowTests {
     private func key(_ characters: String, _ flags: NSEvent.ModifierFlags = []) throws -> NSEvent {
@@ -22,41 +23,59 @@ struct ReviewKeyWindowTests {
             ([.command, .option], "z", true, false), ([.command, .numericPad, .function], "\u{F702}", true, false),
         ]
         for (flags, key, anythingHeld, held) in cases {
-            #expect(TypingHold.holds(flags: flags, key: key, anythingHeld: anythingHeld) == held, "\(flags) \(key)")
+            #expect(TypingHold<String>.holds(flags: flags, key: key, anythingHeld: anythingHeld) == held,
+                    "\(flags) \(key)")
         }
     }
 
-    /// What held keys typed, for the footer: characters only, never Delete, arrows or ⌘ shortcuts.
-    @Test func typedTextKeepsOnlyCharacters() {
-        #expect(TypingHold.typedText([("a", []), ("\u{7F}", []), ("\u{F702}", [.function]), ("z", [.command]),
-                                      (" ", []), ("B", [.shift])]) == "a B")
+    /// Held keys applied to a word's text as the field would: characters at the caret, Delete and forward Delete,
+    /// arrows; ⌘ shortcuts, Return, Tab and Escape left out.
+    @Test func heldKeysEditTheWordAsTheFieldWould() {
+        let plain: [(String?, NSEvent.ModifierFlags)] = [("k", []), ("o", [])]
+        #expect(HeldTyping.apply(plain.map { ($0.0, $0.1) }, to: "cedar", caret: 0) == "kocedar")
+        #expect(HeldTyping.apply(plain.map { ($0.0, $0.1) }, to: "cedar", caret: 5) == "cedarko")
+        let edits: [(String?, NSEvent.ModifierFlags)] = [
+            ("x", []), ("\u{7F}", []), ("\u{F703}", [.function]), ("\u{F728}", [.function]), ("E", [.shift]),
+            ("z", [.command]), ("\r", []), ("\t", []), ("\u{1B}", []), ("\u{F701}", [.function]), ("!", []),
+            ("\u{7F}", []), ("\u{7F}", []), ("\u{7F}", []), ("\u{7F}", []), ("\u{7F}", []), ("\u{7F}", []),
+            ("\u{7F}", []),
+        ]
+        // x typed and deleted; → past "c"; forward Delete takes "e"; "E" in its place; ⌘Z, Return, Tab, Escape left
+        // out; ↓ to the end; "!" typed; seven Deletes empty it and go no further.
+        #expect(HeldTyping.apply(Array(edits.prefix(11)).map { ($0.0, $0.1) }, to: "cedar", caret: 0) == "cEdar!")
+        #expect(HeldTyping.apply(edits.map { ($0.0, $0.1) }, to: "cedar", caret: 0) == "")
     }
 
     /// Keys are held only while a hold is open, the keyboard is in no text field and the hold accepts them; its `end`
-    /// hands them back once, in order.
+    /// hands them back once, in order, with its place.
     @Test func holdsKeysOnlyWhileOpenAndHandsThemBackOnce() throws {
-        let hold = TypingHold()
+        let hold = TypingHold<String>()
         #expect(!hold.hold(try key("a"), keyboardInText: false), "No hold open.")
         var accepting = true
-        let id = hold.begin { accepting }
+        let opened = hold.begin("cedar") { accepting }
+        #expect(opened.ended == nil)
         #expect(hold.hold(try key("a"), keyboardInText: false))
         #expect(!hold.hold(try key("b"), keyboardInText: true), "Typed into a text field: its own.")
         #expect(hold.hold(try key("z", .command), keyboardInText: false), "Undo of the typing held with it.")
         accepting = false
         #expect(!hold.hold(try key("c"), keyboardInText: false), "Edit mode turned off.")
-        #expect(hold.end(id).map(\.characters) == ["a", "z"])
-        #expect(hold.end(id).isEmpty)
+        let held = hold.end(opened.id)
+        #expect(held?.place == "cedar" && held?.keys.map(\.characters) == ["a", "z"])
+        #expect(hold.end(opened.id) == nil)
         #expect(hold.current == nil)
     }
 
-    /// A hold begun while another is open takes over its keys: the older hold's `end` hands back nothing.
-    @Test func aNewerHoldTakesOverTheKeys() throws {
-        let hold = TypingHold()
-        let first = hold.begin { true }
+    /// A hold begun while another is open ends the open one first: its keys come back with its own place, never moved
+    /// to the newer hold's.
+    @Test func aNewerHoldEndsTheOpenOneWithItsOwnKeys() throws {
+        let hold = TypingHold<String>()
+        let first = hold.begin("cedar") { true }
         #expect(hold.hold(try key("a"), keyboardInText: false))
-        let second = hold.begin { true }
+        let second = hold.begin("elm") { true }
+        #expect(second.ended?.place == "cedar" && second.ended?.keys.map(\.characters) == ["a"])
+        #expect(hold.end(first.id) == nil)
         #expect(hold.hold(try key("b"), keyboardInText: false))
-        #expect(hold.end(first).isEmpty)
-        #expect(hold.end(second).map(\.characters) == ["a", "b"])
+        let held = hold.end(second.id)
+        #expect(held?.place == "elm" && held?.keys.map(\.characters) == ["b"])
     }
 }

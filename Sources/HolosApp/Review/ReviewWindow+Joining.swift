@@ -47,8 +47,8 @@ extension ReviewWindow {
     /// (`joinBoundary`), so typing goes on there; asked from the menu, the joined row is selected. VoiceOver hears
     /// that the rows were joined. Nothing of that once the joins were dropped meanwhile (⌘Z pressed, say).
     /// Keys typed while the speaker change saves, with the field closed, are the field's: the window holds them
-    /// (`TypingHold`) and replays them into the field once it opens again, or says what was typed when it does not
-    /// (`handOverTyping`); never playback's.
+    /// (`TypingHold`) and replays them into the field once it opens again, or keeps them as an edit of the word at the
+    /// join when it does not (`ReviewWindow+JoinTyping`); never playback's.
     func applyJoin(_ join: ReviewParagraphJoin, request: ReviewJoinRequest) {
         let runID = review.projection.runID
         // The rows the join was asked on: labelled again since, a turn or speaker ID may name another now.
@@ -68,8 +68,7 @@ extension ReviewWindow {
         let message = join.reassign.isEmpty ? TurnListView.joined : TurnListView.joinedSpeaker
         // Asked from the field with a speaker change to save: the field is closed until it has, so what is typed
         // meanwhile waits for it.
-        let hold = request.fromField && !join.reassign.isEmpty
-            ? window.typingHold.begin { [weak self] in self?.turnList.editingWords == true } : nil
+        let hold = request.fromField && !join.reassign.isEmpty ? beginTypingHold(for: request) : nil
         let finish = { [weak self] in
             guard let self else { return }
             self.refresh()
@@ -108,9 +107,9 @@ extension ReviewWindow {
                 self?.handOverTyping(hold, reopened: false)
                 throw CancellationError()
             }
-            // A failure drops every join (`perform`), which hands the held typing over after the failure is shown
-            // (`clearJoins`). Dropped meanwhile (⌘Z pressed, a change failed) or relabelled since (its turn IDs may
-            // name other turns now): no field, no announcement.
+            // A failure drops every join (`perform`), which hands the held typing over (`clearJoins`). Dropped
+            // meanwhile (⌘Z pressed, a change failed) or relabelled since (its turn IDs may name other turns now): no
+            // field, no announcement.
             guard let self, self.joinsCleared == cleared, sameLabels() else {
                 self?.handOverTyping(hold, reopened: false)
                 return
@@ -120,32 +119,11 @@ extension ReviewWindow {
     }
 
     /// Drops every join (Undo, a change that failed, a relabel): rows read as they group on their own again. A join
-    /// still saving opens no field now, so the keys held for it are handed over.
+    /// still saving opens no field now, so the keys held for it are handed over (`dropJoins`).
     func clearJoins() {
-        joinsCleared += 1
-        handOverTyping(window.typingHold.current, reopened: false)
-        guard !paragraphBreaks.joins.isEmpty else { return }
-        paragraphBreaks.clearJoins()
-        refresh()
-    }
-
-    static let typingNotPlaced = "The field did not open again after the join."
-
-    /// Ends hold `hold` (nil: none) and hands its keys over: replayed into the field just opened at the join
-    /// (`reopened`), as typed there; else what they typed goes in the footer, after the problem it shows, if any.
-    func handOverTyping(_ hold: Int?, reopened: Bool) {
-        guard let hold else { return }
-        let keys = window.typingHold.end(hold)
-        guard !keys.isEmpty else { return }
-        if reopened {
-            // One by one, as typed: a key that joins again (Backspace) opens a new hold, which takes the keys after it.
-            for key in keys { window.replay(key) }
-            return
-        }
-        let typed = TypingHold.typedText(keys.map { ($0.characters, $0.modifierFlags) })
-        guard !typed.isEmpty else { return }
-        problem = (problem ?? Self.typingNotPlaced) + TranscriptWordEdit.typedNote(typed)
-        refreshFooter()
+        let joined = !paragraphBreaks.joins.isEmpty
+        dropJoins()
+        if joined { refresh() }
     }
 
     /// Opens the field again where a join from it met the rows: `request.word`, followed through the word moves saved
