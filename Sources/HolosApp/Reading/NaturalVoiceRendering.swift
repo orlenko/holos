@@ -49,10 +49,11 @@ import Synchronization
         }
     }
 
-    /// The tool's arguments for one part.
-    static func arguments(voice: String, rate: Float?, textFile: URL, output: URL) -> [String] {
-        ["say", "--voice", voice, "--text-file", textFile.path, "--output", output.path]
-            + (rate.map { ["--rate", "\($0)"] } ?? [])
+    /// The tool's arguments for one part. Its temporary files (the recognizer's and the system voice's) go in
+    /// `scratch`, the folder this app tracks and deletes, so stopping the tool leaves nothing behind.
+    static func arguments(voice: String, rate: Float?, textFile: URL, scratch: URL, output: URL) -> [String] {
+        ["say", "--voice", voice, "--text-file", textFile.path, "--scratch-directory", scratch.path,
+         "--output", output.path] + (rate.map { ["--rate", "\($0)"] } ?? [])
     }
 
     func render(text: String, voiceIdentifier: String?, rate: Float?, to output: URL) async throws -> RenderedAudio {
@@ -70,7 +71,8 @@ import Synchronization
         let textFile = folder.appendingPathComponent("part.txt")
         let errors = folder.appendingPathComponent("stderr.txt")
         try Data(text.utf8).write(to: textFile, options: .atomic)
-        let arguments = Self.arguments(voice: voiceIdentifier, rate: rate, textFile: textFile, output: output)
+        let arguments = Self.arguments(voice: voiceIdentifier, rate: rate, textFile: textFile, scratch: folder,
+                                       output: output)
         let child = ChildState()
         let code: Int32 = try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { continuation in

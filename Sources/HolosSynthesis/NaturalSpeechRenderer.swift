@@ -538,7 +538,13 @@ extension Duration {
 
 /// Reads a paragraph with the best system voice for its language, converted to the natural voice's format.
 @MainActor public final class NativeParagraphFallback: ParagraphFallback {
-    public init() {}
+    /// Where its temporary folders go: the scratch folder the app gives `voiceislocal say`, so stopping the tool and
+    /// deleting that folder leaves nothing behind.
+    private let temporaryRoot: URL
+
+    public init(temporaryRoot: URL = FileManager.default.temporaryDirectory) {
+        self.temporaryRoot = temporaryRoot
+    }
 
     public func samples(for text: String, language: String, sampleRate: Double) async throws
         -> (samples: [Float], voice: String) {
@@ -546,8 +552,7 @@ extension Duration {
             throw HolosError.unavailable("No system voice speaks \(language) to read a paragraph the natural voice "
                 + "could not.")
         }
-        let folder = FileManager.default.temporaryDirectory
-            .appendingPathComponent("holos-fallback-\(UUID().uuidString)", isDirectory: true)
+        let folder = temporaryRoot.appendingPathComponent("holos-fallback-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: false,
                                                 attributes: [.posixPermissions: 0o700])
         defer { try? FileManager.default.removeItem(at: folder) }
@@ -606,5 +611,31 @@ public enum AudioSamples {
                 || (output.frameLength == 0 && finished) { break }
         }
         return result
+    }
+}
+
+/// Temporary folders a natural voice's work leaves behind when its process is killed before its cleanup runs (a crash,
+/// a SIGKILL): swept at the app's launch once they are a day old, so a folder in use is never removed.
+public enum NaturalVoiceTemporaries {
+    /// The prefixes of the folders the app and the `voiceislocal` tool make for natural voices.
+    public static let prefixes = ["holos-natural-", "holos-preview-", "holos-check-", "holos-fallback-"]
+    public static let maximumAge: TimeInterval = 24 * 60 * 60
+
+    /// Removes the folders in `folder` whose names start with one of `prefixes` and that have not changed for
+    /// `maximumAge`; returns their names. Links and files are left alone.
+    @discardableResult
+    public static func sweep(in folder: URL = FileManager.default.temporaryDirectory, now: Date = Date())
+        -> [String] {
+        guard let names = try? FileManager.default.contentsOfDirectory(atPath: folder.path) else { return [] }
+        var removed: [String] = []
+        for name in names.sorted() where prefixes.contains(where: name.hasPrefix) {
+            let url = folder.appendingPathComponent(name)
+            guard let attributes = try? FileManager.default.attributesOfItem(atPath: url.path),
+                  (attributes[.type] as? FileAttributeType) == .typeDirectory,
+                  let changed = attributes[.modificationDate] as? Date,
+                  now.timeIntervalSince(changed) > maximumAge else { continue }
+            if (try? FileManager.default.removeItem(at: url)) != nil { removed.append(name) }
+        }
+        return removed
     }
 }

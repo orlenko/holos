@@ -9,6 +9,7 @@ import HolosDictation
 import HolosMeeting
 import HolosSpeech
 import HolosStorage
+import HolosSynthesis
 import os
 import Security
 
@@ -253,6 +254,8 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
         history.start()
         // Readings the user kept rendering over the last quit continue.
         readings.start()
+        // Natural voice temporaries a crash or a SIGKILL left behind (a day old, so none in use).
+        DispatchQueue.global(qos: .utility).async { NaturalVoiceTemporaries.sweep() }
         PeopleLaunch.resumePendingForgetsOnce()
         Task { await loadLanguages() }
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)

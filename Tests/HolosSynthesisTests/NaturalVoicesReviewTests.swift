@@ -266,3 +266,34 @@ private actor CountingBackend: NaturalSpeechBackend {
     }
 }
 
+@Suite struct NaturalVoiceTemporariesTests {
+    @Test func staleFoldersOfNaturalVoicesAreSweptAndNothingElse() throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("holos-sweep-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let now = Date()
+        let old = now.addingTimeInterval(-2 * 24 * 60 * 60)
+        func make(_ name: String, changed: Date, file: Bool = false) throws {
+            let url = folder.appendingPathComponent(name)
+            if file {
+                try Data("x".utf8).write(to: url)
+            } else {
+                try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+                try Data("x".utf8).write(to: url.appendingPathComponent("paragraph.caf"))
+            }
+            try FileManager.default.setAttributes([.modificationDate: changed], ofItemAtPath: url.path)
+        }
+        try make("holos-check-A", changed: old)
+        try make("holos-fallback-B", changed: old)
+        try make("holos-natural-C", changed: old)
+        try make("holos-preview-D", changed: old)
+        try make("holos-check-recent", changed: now)
+        try make("holos-say-E", changed: old)
+        try make("holos-check-file", changed: old, file: true)
+        let removed = NaturalVoiceTemporaries.sweep(in: folder, now: now)
+        #expect(removed == ["holos-check-A", "holos-fallback-B", "holos-natural-C", "holos-preview-D"])
+        let left = try FileManager.default.contentsOfDirectory(atPath: folder.path).sorted()
+        #expect(left == ["holos-check-file", "holos-check-recent", "holos-say-E"])
+    }
+}
+

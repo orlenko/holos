@@ -210,7 +210,7 @@ import Testing
             // What the tool would do: read the text file, write the part.
             let text = try String(contentsOfFile: arguments[4], encoding: .utf8)
             #expect(text == "First.\n\nSecond.")
-            let output = URL(fileURLWithPath: arguments[6])
+            let output = URL(fileURLWithPath: arguments[8])
             try NaturalSpeechFile.write([Float](repeating: 0.1, count: 12_000), sampleRate: 24_000, to: output)
             DispatchQueue.main.async { onExit(0) }
             return 4242
@@ -224,10 +224,14 @@ import Testing
         let arguments = launches.arguments.withLock { $0 }.first ?? []
         #expect(Array(arguments.prefix(3)) == ["say", "--voice", "pocket:en:alba"])
         #expect(arguments[3] == "--text-file")
+        // The tool's temporary files go in the folder this app tracks (and deletes on Stop or Quit): the text file's.
+        #expect(arguments[5] == "--scratch-directory")
+        #expect(arguments[6] == URL(fileURLWithPath: arguments[4]).deletingLastPathComponent().path)
         #expect(Array(arguments.suffix(4)) == ["--output", output.path, "--rate", "\(rate!)"])
         #expect(launches.signals.withLock { $0 }.isEmpty)
         // The text file is gone with its folder.
         #expect(!FileManager.default.fileExists(atPath: arguments[4]))
+        #expect(!FileManager.default.fileExists(atPath: arguments[6]))
     }
 
     @Test func aFailedRenderSaysWhatTheToolSaid() async throws {

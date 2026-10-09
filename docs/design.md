@@ -615,7 +615,10 @@ natural reading is rendered by the bundled tool, `voiceislocal say --voice pocke
 app). The model's memory (peak footprint 0.6 GB for English, 1.6 GB for French) stays out of the app and goes with
 the process; Stop sends it SIGTERM. The tool runs detached, so quitting Voice is Local stops every natural-voice
 helper still running (a reading's part, a Preview) and removes their temporary folders (`NaturalVoiceHelpers`,
-from `applicationWillTerminate`); a part cut off so is rendered again on Resume. Each part loads the compiled model again: about 3 s for English and 11 s for
+from `applicationWillTerminate`); a part cut off so is rendered again on Resume. The tool's own temporary files (the
+recognizer's and the system voice's) go in the folder the app gives it (`--scratch-directory`), the one it deletes;
+at launch the app removes `holos-natural-`, `holos-preview-`, `holos-check-`, and `holos-fallback-` folders a day
+old that a crash left in the temporary folder (`NaturalVoiceTemporaries`). Each part loads the compiled model again: about 3 s for English and 11 s for
 French, against about 3,000 characters (three minutes of speech, 40–90 s of rendering) per part. `voiceislocal read` and `say` render natural voices in their own process
 (`NaturalSpeechRenderer` with `PocketSpeechBackend`, HolosPocket), keeping the model loaded across parts.
 

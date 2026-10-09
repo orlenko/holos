@@ -11,11 +11,14 @@ import Synchronization
 enum NaturalVoicesCLI {
     /// The renderer `say` and `read` use for natural voices. The check runs unless `HOLOS_NATURAL_CHECK=0`. What it
     /// finds (a re-render, a paragraph read by a system voice) is said on stderr.
-    @MainActor static func renderer(log: Bool = true) -> NaturalSpeechRenderer {
+    /// `scratch`: the folder its temporary files go in (the app gives each part one, and deletes it when it stops the
+    /// tool); nil for the system's temporary folder.
+    @MainActor static func renderer(log: Bool = true, scratch: URL? = nil) -> NaturalSpeechRenderer {
         let checking = ProcessInfo.processInfo.environment["HOLOS_NATURAL_CHECK"] != "0"
+        let root = scratch ?? FileManager.default.temporaryDirectory
         let renderer = NaturalSpeechRenderer(backend: PocketSpeechBackend(),
-                                             checker: checking ? AppleSpeechChunkChecker() : nil,
-                                             fallback: NativeParagraphFallback())
+                                             checker: checking ? AppleSpeechChunkChecker(temporaryRoot: root) : nil,
+                                             fallback: NativeParagraphFallback(temporaryRoot: root))
         renderer.onEvent = { event in
             guard log else { return }
             switch event {
@@ -60,11 +63,15 @@ enum NaturalVoicesCLI {
 /// installed.
 actor AppleSpeechChunkChecker: SpeechChunkChecker {
     private var locales: [String: String?] = [:]
+    private let temporaryRoot: URL
+
+    init(temporaryRoot: URL = FileManager.default.temporaryDirectory) {
+        self.temporaryRoot = temporaryRoot
+    }
 
     func transcript(of samples: [Float], sampleRate: Double, language: String) async throws -> String? {
         guard let locale = await locale(for: language) else { return nil }
-        let folder = FileManager.default.temporaryDirectory
-            .appendingPathComponent("holos-check-\(UUID().uuidString)", isDirectory: true)
+        let folder = temporaryRoot.appendingPathComponent("holos-check-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: false,
                                                 attributes: [.posixPermissions: 0o700])
         defer { try? FileManager.default.removeItem(at: folder) }

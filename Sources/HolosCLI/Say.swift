@@ -56,6 +56,9 @@ struct Say: AsyncParsableCommand {
         valueName: "name")) var voice: String?
     @Option(parsing: .unconditional, help: speechRateHelp, transform: parseSpeechRate) var rate: Float?
     @Option(help: "Read the text from this UTF-8 file instead of the arguments or stdin.") var textFile: String?
+    @Option(help: ArgumentHelp("An existing folder for a natural voice's temporary files (the app passes one).",
+                               visibility: .hidden))
+    var scratchDirectory: String?
     @Option(help: "Maximum seconds to wait for another Voice is Local playback.") var maxWait: Double = 10
 
     func validate() throws {
@@ -75,7 +78,15 @@ struct Say: AsyncParsableCommand {
         let voice = try self.voice.map { try resolveVoice($0, language: nil, explainDefault: false).id }
         let render: (URL) async throws -> RenderedAudio
         if let voice, NaturalVoiceCatalog.isNatural(voice) {
-            let renderer = NaturalVoicesCLI.renderer()
+            let scratch = try scratchDirectory.map { path -> URL in
+                let url = fileURL(path)
+                var isFolder: ObjCBool = false
+                guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isFolder), isFolder.boolValue else {
+                    throw HolosError.invalidInput("--scratch-directory must be an existing folder: \(path)")
+                }
+                return url
+            }
+            let renderer = NaturalVoicesCLI.renderer(scratch: scratch)
             let rate = self.rate
             render = {
                 let result = try await renderer.render(text: input, voiceIdentifier: voice, rate: rate, to: $0)
