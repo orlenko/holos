@@ -833,6 +833,71 @@ func forgetPersonRemovesSamplesAndVoiceEntries() async throws {
     #expect(try store.pendingForgets().isEmpty)
 }
 
+/// A processed session whose two speakers are two people both called Alex: mic:S1 (T1, T3) linked to ALEX-1, mic:S2
+/// (T2, T4) to ALEX-2.
+private func profileTwoAlexes(_ temp: TemporaryDirectory,
+                              store: SpeakerProfileStore) async throws -> (session: URL, runID: String) {
+    try store.update {
+        $0.rememberVoices = true
+        $0.profiles = [SpeakerProfile(id: "ALEX-1", displayName: "Alex"),
+                       SpeakerProfile(id: "ALEX-2", displayName: "Alex")]
+    }
+    let (session, record) = try await profileProcessedSession(in: temp, store: nil, forceVoiceData: true)
+    let runID = try #require(record.runID)
+    try appendWithoutJoining([.linkProfile(speakerID: "mic:S1", profileID: "ALEX-1"),
+                              .rename(speakerID: "mic:S1", name: "Alex"),
+                              .linkProfile(speakerID: "mic:S2", profileID: "ALEX-2"),
+                              .rename(speakerID: "mic:S2", name: "Alex")], session: session)
+    // Linked to two different people, they are shown apart.
+    #expect(try SessionFixtures.view(session).speakers.map(\.memberIDs) == [["mic:S1"], ["mic:S2"]])
+    return (session, runID)
+}
+
+@Test(.timeLimit(.minutes(1)))
+func forgettingOneOfTwoPeopleOfOneNameRemovesOnlyTheirVoiceData() async throws {
+    for (forgotten, kept, keptTurns) in [("ALEX-2", "mic:S1", ["T1", "T3"]), ("ALEX-1", "mic:S2", ["T2", "T4"])] {
+        let temp = try TemporaryDirectory("profiles")
+        defer { temp.remove() }
+        let store = profileStore(temp)
+        let (session, runID) = try await profileTwoAlexes(temp, store: store)
+        let before = try #require(try SessionSpeakerStore.readVoiceData(runID: runID, session: session))
+        #expect(Set(before.centroids.keys) == ["mic:S1", "mic:S2"])
+
+        try VoiceProfileService.forget(profileID: forgotten, store: store, sessionsRoot: temp.url)
+
+        let voice = try #require(try SessionSpeakerStore.readVoiceData(runID: runID, session: session))
+        #expect(Array(voice.centroids.keys) == [kept], "Forgetting \(forgotten)")
+        #expect(voice.turnEmbeddings.map(\.turnID).sorted() == keptTurns, "Forgetting \(forgotten)")
+    }
+}
+
+@Test(.timeLimit(.minutes(1)))
+func forgettingThePersonOfASpeakerShownJoinedRemovesOnlyTheLinkedStoredOnesVoice() async throws {
+    // mic:S1 is linked to Alex; mic:S2 is only called Alex. Shown as one speaker with Alex's link, but only mic:S1's
+    // voice is Alex's: forgetting Alex removes mic:S1's voice data and keeps mic:S2's.
+    let temp = try TemporaryDirectory("profiles")
+    defer { temp.remove() }
+    let store = profileStore(temp)
+    try store.update {
+        $0.rememberVoices = true
+        $0.profiles = [SpeakerProfile(id: "ALEX", displayName: "Alex")]
+    }
+    let (session, record) = try await profileProcessedSession(in: temp, store: nil, forceVoiceData: true)
+    let runID = try #require(record.runID)
+    try appendWithoutJoining([.linkProfile(speakerID: "mic:S1", profileID: "ALEX"),
+                              .rename(speakerID: "mic:S1", name: "Alex"),
+                              .rename(speakerID: "mic:S2", name: "alex")], session: session)
+    let view = try SessionFixtures.view(session)
+    #expect(view.speakers.map(\.memberIDs) == [["mic:S1", "mic:S2"]])
+    #expect(view.speakers.first?.profileID == "ALEX")
+
+    try VoiceProfileService.forget(profileID: "ALEX", store: store, sessionsRoot: temp.url)
+
+    let voice = try #require(try SessionSpeakerStore.readVoiceData(runID: runID, session: session))
+    #expect(Array(voice.centroids.keys) == ["mic:S2"])
+    #expect(voice.turnEmbeddings.map(\.turnID).sorted() == ["T2", "T4"])
+}
+
 @Test(.timeLimit(.minutes(1)))
 func forgetAllRemovesVoiceFilesKeepsNames() async throws {
     let temp = try TemporaryDirectory("profiles")

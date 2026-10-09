@@ -53,6 +53,12 @@ public enum SpeakerEditor {
     ///   the newer changes first).
     /// - Names in `rename` and `newSpeaker` are saved as `cleanName` returns them (one line, no control
     ///   characters), so every name can be typed back as the exports show it.
+    /// - Same name, same person (docs/meeting-design.md §4.9): same-named speakers are only shown as one; nothing is
+    ///   merged automatically. The batch saved is `fanningOut(actions)` worked out under the lock on the current
+    ///   labels (not on `view`, which may not show another window's speaker of the same name): an edit of a speaker
+    ///   shown joined also made to each stored speaker it shows. The lines it adds carry the current fingerprints; the
+    ///   caller's own must match `view` as always. They follow the caller's lines in the batch, so one undo takes them
+    ///   back with the change. `saved(_:asAsked:)` tells a caller's batch apart in what was saved.
     /// - An action the projection would refuse on the current state (a speaker or turn that does not exist, a split
     ///   at a turn's first word, a merge of a speaker into itself, a `newSpeaker` ID that exists or does not start
     ///   with "user:", …) refuses the whole batch with `HolosError.invalidInput`, so no line is ever written stale.
@@ -136,9 +142,26 @@ public enum SpeakerEditor {
             let at = Date()
             var edits: [SpeakerEdit] = []
             edits.reserveCapacity(actions.count)
-            for action in actions.map(cleaned) {
-                let expected = viewState.fingerprint(for: action)
-                guard expected == current.fingerprint(for: action) else { throw refusedStaleView(base.run) }
+            // Same name, same person: an edit of a speaker shown joined by name reaches each stored speaker it shows
+            // (`fanningOut`). Worked out on the current labels, read under this lock, not on the caller's view, which
+            // may not show a speaker another window has since named alike. The lines it adds carry the current
+            // fingerprints; the caller's own lines must still match its view.
+            // The stored speakers it reaches must be those the caller's view would have reached: a same-name group that
+            // changed since (another window named a speaker into or out of it) would carry the change to speakers the
+            // caller never saw it reach, past every fingerprint check (lines added here are only checked against the
+            // current labels). Refused as made on outdated labels; the caller rereads and asks again.
+            let asked = actions.map(cleaned)
+            let reached = base.projection.fanningOutMarked(asked)
+            guard reached.map(\.action) == view.fanningOut(asked) else { throw refusedStaleView(base.run) }
+            for (action, added) in reached {
+                // A new speaker named as nobody in the caller's view is, but as somebody now (another window named a
+                // speaker so meanwhile): the caller would have given the turns to that speaker, so its choice is stale.
+                if !added, case .newSpeaker(_, let name?, _) = action, current.speaker(named: name) != nil,
+                   viewState.speaker(named: name) == nil {
+                    throw refusedStaleView(base.run)
+                }
+                let expected = current.fingerprint(for: action)
+                guard added || viewState.fingerprint(for: action) == expected else { throw refusedStaleView(base.run) }
                 if case .revert(let target) = action,
                    EditStatus(target, in: viewState) != EditStatus(target, in: current) {
                     throw refusedStaleView(base.run)
@@ -159,8 +182,7 @@ public enum SpeakerEditor {
                 viewState = viewState.applying(action, editID: id)
             }
             if skipIfUnchanged, !edits.contains(where: { if case .revert = $0.action { true } else { false } }),
-               current.speakers == base.projection.speakers, current.turns == base.projection.turns,
-               current.shownTurns == base.projection.shownTurns {
+               sameLabels(current, base.projection) {
                 log.info("Session \(base.run.sessionID, privacy: .public): a speaker change of \(edits.count, privacy: .public) edits changes nothing; not saved")
                 return nil
             }
@@ -283,16 +305,42 @@ public enum SpeakerEditor {
     /// the session may have changed since `view` was loaded, so to decide whether to save, or to tell the user there
     /// is nothing to change, call `applyUnlessUnchanged`, which decides on the current state under the speaker lock.
     public static func changesNothing(_ actions: [SpeakerEditAction], on view: SpeakerProjection) -> Bool {
+        // With what the editor adds for the stored speakers a joined speaker shows (`fanningOut`).
+        if actions.contains(where: { if case .revert = $0 { true } else { false } }) { return false }
         var next = view
-        for action in actions.map(cleaned) {
-            if case .revert = action { return false }
+        for action in view.fanningOut(actions.map(cleaned)) {
             let id = UUID().uuidString
             next = next.applying(action, editID: id)
             if next.staleEdits.contains(where: { $0.editID == id }) { return false }
         }
-        // Shown turns too: choosing Unknown for a turn shown with a neighbour's speaker (a short interjection, §5.10)
-        // changes no stored speaker but keeps it unknown from then on.
-        return next.speakers == view.speakers && next.turns == view.turns && next.shownTurns == view.shownTurns
+        return sameLabels(next, view)
+    }
+
+    /// Whether two projections hold the same labels: every stored speaker and turn as it is (`unjoined`, so a change
+    /// to one a joined speaker shows counts though the joined speaker looks the same), and the turns as shown (choosing
+    /// Unknown for a turn shown with a neighbour's speaker, a short interjection, §5.10, changes no stored speaker but
+    /// keeps it unknown from then on).
+    static func sameLabels(_ left: SpeakerProjection, _ right: SpeakerProjection) -> Bool {
+        let a = left.unjoined
+        let b = right.unjoined
+        return a.speakers == b.speakers && a.turns == b.turns && a.shownTurns == b.shownTurns
+            && left.shownTurns == right.shownTurns
+    }
+
+    /// Whether `saved` (a batch's actions in journal order) is `asked` as `apply` saves it: the same actions first,
+    /// then at most what `SpeakerProjection.fanningOut` adds for the stored speakers a joined speaker shows (renames,
+    /// links, rejections, merges). For a caller that recognizes its own batch among the lines it reads back.
+    public static func saved(_ saved: [SpeakerEditAction], asAsked asked: [SpeakerEditAction]) -> Bool {
+        saved.count >= asked.count && Array(saved.prefix(asked.count)) == asked
+            && saved.dropFirst(asked.count).allSatisfy(isFannedOut)
+    }
+
+    /// Whether `action` is of a kind `SpeakerProjection.fanningOut` adds.
+    public static func isFannedOut(_ action: SpeakerEditAction) -> Bool {
+        switch action {
+        case .rename, .linkProfile, .rejectProfile, .merge: true
+        case .reassignTurns, .splitTurn, .newSpeaker, .excludeFromEnrollment, .revert: false
+        }
     }
 
     // MARK: - Private
@@ -494,7 +542,8 @@ public enum SpeakerEditor {
     static func refusal(_ action: SpeakerEditAction, reason: String, on projection: SpeakerProjection) -> HolosError {
         switch reason {
         case "speaker not found":
-            let listed = Set(projection.speakers.map(\.id))
+            // Every stored speaker: one shown joined with a same-named speaker is there, though not listed itself.
+            let listed = Set(projection.unjoined.speakers.map(\.id))
             let missing = referencedSpeakers(action).filter { !listed.contains($0) }
             if !missing.isEmpty {
                 return HolosError.invalidInput("There is no speaker \(missing.joined(separator: ", ")) in this "

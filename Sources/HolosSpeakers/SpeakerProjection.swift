@@ -35,16 +35,21 @@ public struct ProjectedSpeaker: Sendable, Equatable, Identifiable {
     /// Sum of the speaker's turn durations.
     public let talkSeconds: Double
     public let turnCount: Int
+    /// The stored speakers shown as this one: `id` first, then speakers with the same name joined into it (same
+    /// name, same person: `SameNameSpeakers`, docs/meeting-design.md §4.9), whose turns `turns` gives to `id` and
+    /// whose talk time, turns and clusters this speaker counts. Just `[id]` for a speaker nobody shares a name with.
+    public let memberIDs: [String]
 
     public init(id: String, ordinal: Int, name: String, label: String, explicitName: String?, profileID: String?,
                 provenance: LabelProvenance, isAutomatic: Bool, suggestion: SpeakerMatch?,
                 rejectedProfileIDs: [String], clusterIDs: [String], talkSeconds: Double, turnCount: Int,
-                effectiveProfileID: String? = nil) {
+                effectiveProfileID: String? = nil, memberIDs: [String]? = nil) {
         self.id = id; self.ordinal = ordinal; self.name = name; self.label = label
         self.explicitName = explicitName; self.profileID = profileID; self.provenance = provenance
         self.isAutomatic = isAutomatic; self.suggestion = suggestion; self.rejectedProfileIDs = rejectedProfileIDs
         self.clusterIDs = clusterIDs; self.talkSeconds = talkSeconds; self.turnCount = turnCount
         self.effectiveProfileID = effectiveProfileID ?? profileID
+        self.memberIDs = memberIDs ?? [id]
     }
 }
 
@@ -159,6 +164,22 @@ public struct SpeakerProjection: Sendable, Equatable {
     public let shownTurns: [ProjectedTurn]
     /// `shownTurns` with the hidden interjections too (Review's "Show Short Interjections").
     public let shownTurnsWithHidden: [ProjectedTurn]
+    /// Whether same-named speakers are listed as one (`SameNameSpeakers`); false in `unjoined`.
+    public var joinsSameNames: Bool { context.joinsSameNames }
+
+    /// This projection with every stored speaker listed as itself, with its own link, clusters and turns: same-named
+    /// speakers are not joined. Voice data reads it (learning a person's sample, forgetting a person's entries),
+    /// since a meeting's voice belongs to the person each stored speaker is linked to, not to whom a joined speaker
+    /// shows. Its `speakers` are every stored speaker that holds words (or was made by `newSpeaker`), also one whose
+    /// words the echo mask all hides (listed with no turn shown); `turns` are the turns shown, as here. `self` when it
+    /// is already unjoined.
+    public var unjoined: SpeakerProjection {
+        guard context.joinsSameNames else { return self }
+        var separate = context
+        separate.joinsSameNames = false
+        return SpeakerProjection(context: separate, journal: journal, outcomes: outcomes, state: state,
+                                 otherRunEditCount: otherRunEditCount)
+    }
 
     /// `shownTurns`, or `shownTurnsWithHidden` when `includingHidden`.
     public func shownTurns(includingHidden: Bool) -> [ProjectedTurn] {
@@ -202,13 +223,19 @@ public struct SpeakerProjection: Sendable, Equatable {
     /// 7. Short interjections (`ShortInterjections`, docs/meeting-design.md §5.10) are decided on the turns of step 6:
     ///    `shownTurns` shows them with a neighbour's speaker or leaves them out. `turns` and `speakers` are unchanged.
     ///
-    /// Listed speakers: every speaker with at least one turn shown, plus speakers created by `newSpeaker`.
+    /// Listed speakers: every speaker with at least one turn shown, plus speakers created by `newSpeaker`. Speakers
+    /// whose names match (`SameNameSpeakers`: the names the user gave and the channel's, read from the journal alone,
+    /// never links or `profileNames`; never "Speaker N" or an automatic name) are listed as one, which
+    /// `turns` gives their turns to (`ProjectedSpeaker.memberIDs`); edits and fingerprints still see each stored
+    /// speaker. Display only: the journal keeps them separate (`unjoined`, or `joiningSameNames: false`).
     /// `recognition` matches whose profileID is not in `profileNames` (forgotten people) are ignored.
     public static func make(run: DiarizationRun, transcript: Transcript, edits: [SpeakerEdit],
                             recognition: RecognitionResult?, profileNames: [String: String],
-                            acousticEcho: AcousticEchoMask? = nil) -> SpeakerProjection {
-        let context = Context(run: run, transcript: transcript, recognition: recognition, profileNames: profileNames,
+                            acousticEcho: AcousticEchoMask? = nil,
+                            joiningSameNames: Bool = true) -> SpeakerProjection {
+        var context = Context(run: run, transcript: transcript, recognition: recognition, profileNames: profileNames,
                               acousticEcho: acousticEcho)
+        context.joinsSameNames = joiningSameNames
         var journal: [JournalEntry] = []
         var otherRunEditCount = 0
         for edit in edits {
@@ -466,6 +493,8 @@ extension SpeakerProjection {
         let transcript: Transcript
         /// Profile ID → current name, for names that are not blank.
         let profileNames: [String: String]
+        /// Same-named speakers are listed as one (`SameNameSpeakers`); false for `SpeakerProjection.unjoined`.
+        var joinsSameNames = true
         /// Matches of known profiles by machine speaker, in file order, with current profile names. Empty when the
         /// recognition belongs to another run.
         let matches: [String: [SpeakerMatch]]
@@ -929,52 +958,90 @@ extension SpeakerProjection {
                 }.map(\.element)
             }
 
-            let listed = speakers.values
-                .filter { turnCounts[$0.id] != nil || $0.isUserCreated }
-                .sorted { ($0.ordinal, $0.id) < ($1.ordinal, $1.id) }
-            var projectedSpeakers: [ProjectedSpeaker] = []
-            projectedSpeakers.reserveCapacity(listed.count)
-            var effectiveProfiles: [String: String] = [:]
-            for speaker in listed {
-                let usable = (context.matches[speaker.id] ?? []).filter {
-                    !speaker.rejectedProfileIDs.contains($0.profileID)
-                }
-                // A name or link is the user's decision: no automatic name and no suggestion on top of it.
-                let confirmed = speaker.explicitName != nil || speaker.profileID != nil
-                let automatic = confirmed ? nil : usable.first { $0.tier == .likely }
-                let suggestion = confirmed || automatic != nil ? nil : usable.first { $0.tier == .possible }
-
-                let name: String
-                let provenance: LabelProvenance
-                if let explicitName = speaker.explicitName {
-                    name = explicitName
-                    provenance = .userRenamed
-                } else if let profileID = speaker.profileID {
-                    name = context.profileNames[profileID] ?? Self.fallbackName(speaker)
-                    provenance = .userConfirmed
-                } else if let automatic {
-                    name = automatic.profileName
-                    provenance = .recognized(distance: automatic.distance, tier: .likely)
-                } else {
-                    name = Self.fallbackName(speaker)
-                    provenance = speaker.isChannel ? .channelAssumption : .diarizer
-                }
-                if let profileID = speaker.profileID ?? automatic?.profileID {
-                    effectiveProfiles[speaker.id] = profileID
-                }
-                projectedSpeakers.append(ProjectedSpeaker(
-                    id: speaker.id, ordinal: speaker.ordinal, name: name,
-                    label: automatic == nil ? name : "\(name) (auto)", explicitName: speaker.explicitName,
-                    profileID: speaker.profileID, provenance: provenance, isAutomatic: automatic != nil,
-                    suggestion: suggestion, rejectedProfileIDs: speaker.rejectedProfileIDs,
-                    clusterIDs: speaker.clusterIDs, talkSeconds: talk[speaker.id] ?? 0,
-                    turnCount: turnCounts[speaker.id] ?? 0,
-                    effectiveProfileID: effectiveProfiles[speaker.id]))
+            let byOrdinal = { (a: SpeakerState, b: SpeakerState) in (a.ordinal, a.id) < (b.ordinal, b.id) }
+            // Unjoined (every stored speaker as itself, for voice data and edits that reach each one), a speaker whose
+            // words the echo mask all hides is listed too, with no turn shown: it still holds its words and its link.
+            var holding = Set<String>()
+            if !context.joinsSameNames {
+                for turn in turns where !turn.spans.isEmpty { if let id = turn.speakerID { holding.insert(id) } }
             }
-            let merges = mergeSuggestions(listed: projectedSpeakers, effectiveProfiles: effectiveProfiles,
-                                          context: context)
-            return (projectedSpeakers, projectedTurns, merges)
+            let listed = speakers.values
+                .filter { turnCounts[$0.id] != nil || $0.isUserCreated || holding.contains($0.id) }
+                .sorted(by: byOrdinal)
+            let unjoined = listed.map {
+                describe($0, talk: talk[$0.id] ?? 0, turns: turnCounts[$0.id] ?? 0, memberIDs: nil, context: context)
+            }
+
+            // Same name, same person (`SameNameSpeakers.joins`): stored speakers whose names match are listed as the
+            // lowest-ordinal one, with all their turns. From the journal's state alone; display only.
+            let joins = context.joinsSameNames ? SameNameSpeakers.joins(speakers, turns: turns) : .init()
+            guard !joins.isEmpty else {
+                return (unjoined, projectedTurns, mergeSuggestions(listed: unjoined, context: context))
+            }
+            let joinedTurns = projectedTurns.map { turn in
+                guard let speakerID = turn.speakerID, let target = joins.into[speakerID] else { return turn }
+                return turn.given(to: target)
+            }
+            let shownIDs = Set(listed.map(\.id))
+            var joined: [ProjectedSpeaker] = []
+            var unjoinedByID: [String: ProjectedSpeaker] = [:]
+            for speaker in unjoined { unjoinedByID[speaker.id] = speaker }
+            for speaker in speakers.values.sorted(by: byOrdinal) where joins.into[speaker.id] == nil {
+                guard let members = joins.members[speaker.id] else {
+                    if let shown = unjoinedByID[speaker.id] { joined.append(shown) }
+                    continue
+                }
+                guard members.contains(where: shownIDs.contains) else { continue }
+                // Shown with the group's person, clusters, talk time and turns.
+                var merged = speaker
+                merged.profileID = joins.person[speaker.id]
+                for member in members.dropFirst() {
+                    for cluster in speakers[member]?.clusterIDs ?? [] where !merged.clusterIDs.contains(cluster) {
+                        merged.clusterIDs.append(cluster)
+                    }
+                }
+                joined.append(describe(merged, talk: members.reduce(0) { $0 + (talk[$1] ?? 0) },
+                                       turns: members.reduce(0) { $0 + (turnCounts[$1] ?? 0) },
+                                       memberIDs: members, context: context))
+            }
+            return (joined, joinedTurns, mergeSuggestions(listed: joined, context: context))
         }
+
+        /// A listed speaker as shown: step 5's name and provenance, with its talk time and turn count.
+        private func describe(_ speaker: SpeakerState, talk: Double, turns: Int, memberIDs: [String]?,
+                              context: Context) -> ProjectedSpeaker {
+            let usable = (context.matches[speaker.id] ?? []).filter {
+                !speaker.rejectedProfileIDs.contains($0.profileID)
+            }
+            // A name or link is the user's decision: no automatic name and no suggestion on top of it.
+            let confirmed = speaker.explicitName != nil || speaker.profileID != nil
+            let automatic = confirmed ? nil : usable.first { $0.tier == .likely }
+            let suggestion = confirmed || automatic != nil ? nil : usable.first { $0.tier == .possible }
+
+            let name: String
+            let provenance: LabelProvenance
+            if let explicitName = speaker.explicitName {
+                name = explicitName
+                provenance = .userRenamed
+            } else if let profileID = speaker.profileID {
+                name = context.profileNames[profileID] ?? Self.fallbackName(speaker)
+                provenance = .userConfirmed
+            } else if let automatic {
+                name = automatic.profileName
+                provenance = .recognized(distance: automatic.distance, tier: .likely)
+            } else {
+                name = Self.fallbackName(speaker)
+                provenance = speaker.isChannel ? .channelAssumption : .diarizer
+            }
+            return ProjectedSpeaker(
+                id: speaker.id, ordinal: speaker.ordinal, name: name,
+                label: automatic == nil ? name : "\(name) (auto)", explicitName: speaker.explicitName,
+                profileID: speaker.profileID, provenance: provenance, isAutomatic: automatic != nil,
+                suggestion: suggestion, rejectedProfileIDs: speaker.rejectedProfileIDs,
+                clusterIDs: speaker.clusterIDs, talkSeconds: talk, turnCount: turns,
+                effectiveProfileID: speaker.profileID ?? automatic?.profileID, memberIDs: memberIDs)
+        }
+
 
         /// The talk time of a turn some of whose words are hidden: the sum of each shown span's time (a span is one run
         /// of consecutive words), so hidden echo between them does not count. Nil when a span's word times cannot be
@@ -1059,8 +1126,9 @@ extension SpeakerProjection {
 
         /// Linked (or automatic) speakers grouped by profile, plus recognition's suggestions for listed speakers that
         /// did not reject the profile and are not linked to another one; groups of two or more.
-        private func mergeSuggestions(listed: [ProjectedSpeaker], effectiveProfiles: [String: String],
-                                      context: Context) -> [MergeSuggestion] {
+        private func mergeSuggestions(listed: [ProjectedSpeaker], context: Context) -> [MergeSuggestion] {
+            var effectiveProfiles: [String: String] = [:]
+            for speaker in listed { effectiveProfiles[speaker.id] = speaker.effectiveProfileID }
             var position: [String: Int] = [:]
             for (index, speaker) in listed.enumerated() { position[speaker.id] = index }
             var members: [String: [String]] = [:]

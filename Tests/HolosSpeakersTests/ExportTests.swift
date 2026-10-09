@@ -669,6 +669,40 @@ private func unescapedLiteral(_ markdown: String) -> String? {
     #expect(try rendered(exported, .md).contains("- Participants: Me (00:05), Speaker 1 (00:02), Speaker 2 (00:01)\n"))
 }
 
+@Test func sameNamedSpeakersExportAsOnePersonWithTheirTalkTimeSummed() throws {
+    let meeting = fixture([
+        spec("T1", 5, "system:S1", "one two three"),
+        spec("T2", 10, "system:S2", "four five"),
+        spec("T3", 20, nil, "six seven eight nine"),
+        spec("T4", 30, "mic:me", "ten", track: "mic"),
+        spec("T5", 40, "system:S3", "eleven"),
+    ])
+    // Saved before same name meant same person: "Alice" picked for the unknown turn (a new speaker), then the cluster
+    // renamed Alice too; likewise Bob.
+    let view = projection(meeting, actions: [
+        .newSpeaker(speakerID: "user:A", name: "ALICE", turnIDs: ["T3"]),
+        .rename(speakerID: "system:S2", name: "Alice"),
+        .newSpeaker(speakerID: "user:B", name: " bob ", turnIDs: ["T4"]),
+        .rename(speakerID: "system:S3", name: "Bob"),
+    ])
+    let exported = document(meeting, projection: view)
+    let markdown = try rendered(exported, .md)
+    // Alice: 2 s + 4 s, shown as S2 (the lower ordinal) with its spelling; Bob: 1 s + 1 s, shown as S3.
+    #expect(markdown.contains("- Participants: Alice (00:06), Speaker 1 (00:03), Bob (00:02)\n"))
+    // One person's turns read as one block, as one speaker's do.
+    let text = try rendered(exported, .txt)
+    #expect(text.hasPrefix("Speaker 1  00:05\none two three\n\nAlice  00:10\n"))
+    #expect(text.components(separatedBy: "Alice  ").count == 2)
+    #expect(text.components(separatedBy: "Bob  ").count == 2)
+    let speakers = try #require(try json(exported)["speakers"] as? [[String: Any]])
+    #expect(speakers.count == 3)
+    for format in ExportFormat.allCases {
+        let text = try rendered(exported, format)
+        #expect(!text.contains("ALICE"), "\(format)")
+        #expect(!text.contains("user:B"), "\(format)")
+    }
+}
+
 @Test func speakerlessExportUsesTrackNames() throws {
     let transcript = Transcript(
         id: "TRANSCRIPT", createdAt: fixedDate, source: "mic+system", locale: "en-CA", backend: .speech,

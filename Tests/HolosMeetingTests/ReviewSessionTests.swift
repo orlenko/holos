@@ -648,11 +648,16 @@ func nameFieldLinksOrCreatesPeople() async throws {
     #expect(review.speaker("system:S1")?.profileID == jim.id)
     #expect(review.knownPeople().map(\.id) == [jim.id])
 
-    // A known name, typed in another case, links the same person.
+    // A known name, typed in another case, links the same person; S2 is then called Jim as S1 is, so the two are
+    // shown as one (S1, the lower ordinal). Nothing is merged.
     try await review.setName("jim", speakerID: "system:S2")
     #expect(try store.load().profiles.count == 1)
-    #expect(review.speaker("system:S2")?.profileID == jim.id)
-    #expect(review.projection.mergeSuggestions.map(\.speakerIDs) == [["system:S1", "system:S2"]])
+    #expect(try reviewJournal(fixture.session).last?.action == .rename(speakerID: "system:S2", name: "Jim"))
+    #expect(review.speaker("system:S1")?.memberIDs == ["system:S1", "system:S2"])
+    #expect(review.speaker("system:S2") == nil)
+    #expect(review.speaker("system:S1")?.profileID == jim.id)
+    #expect(review.projection.turns.first { $0.id == "T2" }?.speakerID == "system:S1")
+    #expect(review.projection.mergeSuggestions.isEmpty)
 
     // The same name again changes nothing.
     let lines = try reviewJournal(fixture.session).count
@@ -688,7 +693,8 @@ func sameNewNameWhileTheFirstIsSavingMakesOnePerson() async throws {
     let first = Task { @MainActor in try await review.setName("Jim", speakerID: "system:S1") }
     #expect(await eventually { gate.entered.value == 1 })
     let second = Task { @MainActor in try await review.setName("jim", speakerID: "system:S2") }
-    #expect(await eventually { reviewName(review, "system:S2") == "jim" })
+    // Called as S1 is, S2 shows as S1 at once (same name, same person).
+    #expect(await eventually { reviewName(review, "system:S2") == nil })
     try await review.setName("Jim", speakerID: "system:S1")
     gate.release.finish()
     try await first.value
@@ -699,10 +705,11 @@ func sameNewNameWhileTheFirstIsSavingMakesOnePerson() async throws {
     let jim = try #require(people.first)
     #expect(jim.displayName == "Jim")
     #expect(review.speaker("system:S1")?.profileID == jim.id)
-    #expect(review.speaker("system:S2")?.profileID == jim.id)
-    #expect(review.speaker("system:S2")?.name == "Jim")
-    #expect(review.projection.mergeSuggestions.map(\.speakerIDs) == [["system:S1", "system:S2"]])
-    #expect(try reviewJournal(fixture.session).count == 4, "Two links of two lines each; Return again saved nothing.")
+    #expect(review.speaker("system:S2") == nil)
+    #expect(review.projection.mergeSuggestions.isEmpty)
+    let lines = try reviewJournal(fixture.session)
+    #expect(lines.count == 4, "Two links of two lines each; Return again saved nothing.")
+    #expect(!lines.contains { if case .merge = $0.action { true } else { false } })
     #expect(review.snapshot.projection == review.projection)
 }
 
@@ -1129,7 +1136,7 @@ func failedUndoKeepsTheChangeUndoable() async throws {
 }
 
 @Test(.timeLimit(.minutes(1))) @MainActor
-func failedUndoOfATwoBatchChangeCanBeFinished() async throws {
+func failedUndoOfAnAssignmentToAPersonCanBeDoneAgain() async throws {
     let temp = try TemporaryDirectory("review")
     defer { temp.remove() }
     let store = reviewStore(temp)
@@ -1137,24 +1144,21 @@ func failedUndoOfATwoBatchChangeCanBeFinished() async throws {
     let fixture = try await SessionFixtures.labelledSession(in: temp.url)
     let journal = SessionPaths.edits(fixture.session)
     let review = try await reviewOpen(fixture.session, store: store)
-    // One change, two batches: a new speaker for T2, then its link to Maria.
+    // One change, one batch: a new speaker for T2 and its link to Maria.
     try await review.assign(["T2"], to: .person(profileID: "MARIA"))
-    #expect(Set(try reviewJournal(fixture.session).compactMap(\.batchID)).count == 2)
+    #expect(Set(try reviewJournal(fixture.session).compactMap(\.batchID)).count == 1)
 
-    // The first revert is saved; the journal then refuses the second.
-    let saves = SharedValue(0)
-    review.beforeEdit = {
-        if saves.update({ $0 += 1; return $0 }) == 2 { reviewSetWritable(journal, false) }
-    }
+    // The journal refuses the undo: nothing is taken back, and the change can still be undone.
+    review.beforeEdit = { reviewSetWritable(journal, false) }
     await #expect(throws: HolosError.self) { try await review.undo() }
     reviewSetWritable(journal, true)
     review.beforeEdit = nil
-    #expect(!review.projection.speakers.contains { $0.profileID == "MARIA" }, "The link was taken back.")
+    #expect(review.projection.speakers.contains { $0.profileID == "MARIA" }, "The link is still there.")
     #expect(review.turn("T2")?.speakerID?.hasPrefix("user:") == true, "The new speaker is still saved.")
     #expect(review.canUndo)
     #expect(review.snapshot.projection == review.projection)
 
-    // Undo finishes the job.
+    // Undo again takes back both.
     try await review.undo()
     #expect(review.turn("T2")?.speakerID == "system:S2")
     #expect(!review.projection.speakers.contains { $0.id.hasPrefix("user:") })

@@ -384,7 +384,16 @@ func notJimOnAVoiceSuggestionIsSavedAndConfirmAllTakesTheRest() async throws {
     try await review.undo()
     #expect(review.suggestion(for: s3)?.profileID == jim.id)
     try await review.confirmAllSuggestions()
-    #expect(review.speaker(s3)?.profileID == jim.id, "Confirm All links the voice suggestion.")
+    // Confirm All links the voice suggestion; S3 is then called Jim as S1 is, so the two are shown as one (S1, the
+    // lower ordinal). Nothing is merged.
+    let merged = try SessionSpeakerStore.readEdits(session: fixture.session).edits.contains {
+        if case .merge = $0.action { true } else { false }
+    }
+    #expect(!merged)
+    #expect(review.speaker(s1)?.memberIDs == [s1, s3])
+    #expect(review.speaker(s3) == nil)
+    #expect(review.speaker(s1)?.profileID == jim.id)
+    #expect(review.projection.turns.first { $0.id == "T3" }?.speakerID == s1)
     #expect(review.suggestionCount == 0)
     await review.close()
 }

@@ -528,6 +528,8 @@ private func compacted(_ raw: String) -> String {
 }
 
 @Test func speakersLinkedToOneProfileSuggestAMerge() {
+    // Links alone never join speakers (same name, same person is about the names the user gave): two speakers
+    // linked to one person with no name of their own stay two, and a merge is suggested.
     var journal = Journal(names: people)
     journal.append(.linkProfile(speakerID: "system:S3", profileID: "P-JIM"), id: "E1")
     journal.append(.linkProfile(speakerID: "system:S1", profileID: "P-JIM"), id: "E2")

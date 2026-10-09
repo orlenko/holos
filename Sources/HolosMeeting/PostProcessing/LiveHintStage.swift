@@ -1,5 +1,6 @@
 import Foundation
 import HolosCore
+import HolosSpeakers
 import HolosStorage
 
 /// Reconciles corrections saved while recording with the final transcript and speaker run. Text runs after language
@@ -43,10 +44,7 @@ enum LiveHintStage {
             let snapshot = try SpeakerSessionSnapshot.load(session: session)
             guard snapshot.transcript.id == transcript.id, let projection = snapshot.projection else { return true }
             let applied = Set(projection.appliedEditIDs)
-            let protected = Set(snapshot.journal.edits.compactMap { edit -> String? in
-                guard applied.contains(edit.id), case .rename(let speakerID, _) = edit.action else { return nil }
-                return speakerID
-            })
+            let protected = protectedSpeakers(snapshot.journal.edits, applied: applied, projection: projection)
             let plan = LiveHints.speakerActionPlan(hints, projection: projection, transcript: transcript)
             if plan.unmatched > 0 { return true }
             let proposed = plan.actions
@@ -59,6 +57,21 @@ enum LiveHintStage {
         } catch {
             return true
         }
+    }
+
+    /// Speakers a live speaker name must not rename: those an applied `rename` named, and with them every speaker of
+    /// their same-name group (`ProjectedSpeaker.memberIDs`), since a rename of any of them reaches all of them
+    /// (`SpeakerProjection.fanningOut`) and the one shown may be another than the one renamed.
+    static func protectedSpeakers(_ edits: [SpeakerEdit], applied: Set<String>,
+                                  projection: SpeakerProjection) -> Set<String> {
+        var protected = Set(edits.compactMap { edit -> String? in
+            guard applied.contains(edit.id), case .rename(let speakerID, _) = edit.action else { return nil }
+            return speakerID
+        })
+        for speaker in projection.speakers where speaker.memberIDs.contains(where: protected.contains) {
+            protected.formUnion(speaker.memberIDs)
+        }
+        return protected
     }
 
     static func applyText(session: URL, transcript: Transcript, lease: ProcessingLease) async throws -> TextOutcome {
@@ -139,6 +152,20 @@ enum LiveHintStage {
         guard hints.contains(where: { if case .nameSpeaker = $0.action { true } else { false } }) else {
             return SpeakerOutcome()
         }
+        // Planned on the labels as read, outside the speaker lock: when they changed before the save (another
+        // window renamed a speaker, joining or leaving a same-name group), the editor refuses the plan, and it is
+        // made again, with its protection, on the labels as they are then.
+        for attempt in 1...3 {
+            let outcome = applySpeakersOnce(hints, session: session, transcript: transcript, profiles: profiles,
+                                            retrying: attempt < 3)
+            if let outcome { return outcome }
+        }
+        return SpeakerOutcome(problem: "Live speaker names could not be saved: " + SpeakerEditor.changedMessage)
+    }
+
+    /// One plan and save of `applySpeakers`; nil when `retrying` and the editor refused it as made on changed labels.
+    private static func applySpeakersOnce(_ hints: [LiveHint], session: URL, transcript: Transcript,
+                                          profiles: SpeakerProfileStore?, retrying: Bool) -> SpeakerOutcome? {
         do {
             let names = profiles.map { VoiceProfileService.profileNames(store: $0) } ?? [:]
             let snapshot = try SpeakerSessionSnapshot.load(session: session, profileNames: names,
@@ -149,10 +176,7 @@ enum LiveHintStage {
                 return SpeakerOutcome(problem: "Live speaker names could not be applied because this transcript has no speaker labels.")
             }
             let applied = Set(projection.appliedEditIDs)
-            let protected = Set(snapshot.journal.edits.compactMap { edit -> String? in
-                guard applied.contains(edit.id), case .rename(let speakerID, _) = edit.action else { return nil }
-                return speakerID
-            })
+            let protected = protectedSpeakers(snapshot.journal.edits, applied: applied, projection: projection)
             let plan = LiveHints.speakerActionPlan(hints, projection: projection, transcript: transcript)
             let proposed = plan.actions
             let actions = proposed.filter { action in
@@ -174,6 +198,8 @@ enum LiveHintStage {
             return SpeakerOutcome(note: count == 1 ? "Applied 1 live speaker name."
                                                    : "Applied \(count) live speaker names.",
                                   problem: unmatchedProblem)
+        } catch HolosError.unavailable(let message) where retrying && message == SpeakerEditor.changedMessage {
+            return nil
         } catch {
             return SpeakerOutcome(problem: "Live speaker names could not be saved: \(error.localizedDescription)")
         }
