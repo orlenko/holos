@@ -96,3 +96,36 @@ public enum NaturalSpeechFile {
         writer.close()
     }
 }
+
+/// A render's file, written off the main actor: each paragraph is time-stretched to the reading's speed
+/// (`TimeStretch`) and appended here, then the pause after it.
+///
+/// Invariants:
+/// 1. One writer per sink, used only on this actor; `add` calls run one at a time, in the order they are awaited.
+/// 2. `close` finishes the file and returns the frames written; after it every `add` throws (the writer's invariant 2).
+actor NaturalSpeechSink {
+    private let writer: NaturalSpeechFileWriter
+    private let sampleRate: Double
+
+    private init(writer: NaturalSpeechFileWriter, sampleRate: Double) {
+        self.writer = writer
+        self.sampleRate = sampleRate
+    }
+
+    /// Creates the file at `url`, off the main actor.
+    static func open(_ url: URL, sampleRate: Double) async throws -> NaturalSpeechSink {
+        try await Task.detached(priority: .userInitiated) {
+            NaturalSpeechSink(writer: try NaturalSpeechFileWriter(url: url, sampleRate: sampleRate), sampleRate: sampleRate)
+        }.value
+    }
+
+    func add(_ samples: [Float], rate: Double, pauseAfter: Double) throws {
+        try writer.append(TimeStretch.apply(samples, sampleRate: sampleRate, rate: rate))
+        try writer.appendSilence(seconds: pauseAfter)
+    }
+
+    func close() -> Int64 {
+        writer.close()
+        return writer.frames
+    }
+}

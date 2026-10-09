@@ -292,19 +292,17 @@ public struct NaturalSpeechStats: Sendable, Equatable {
         let temporary = output.deletingLastPathComponent()
             .appendingPathComponent(".holos-\(UUID().uuidString).\(ext)")
         defer { _ = unlink(temporary.path) }
-        let writer = try NaturalSpeechFileWriter(url: temporary, sampleRate: Self.sampleRate)
+        // The file is written, and each paragraph time-stretched, off the main actor (`NaturalSpeechSink`).
+        let sink = try await NaturalSpeechSink.open(temporary, sampleRate: Self.sampleRate)
         for block in blocks {
             try Task.checkCancellation()
             // Events and the log name the part's paragraph (a long one's groups share its number).
-            var speech = try await paragraph(block.text, index: block.paragraph, voice: voice,
+            let speech = try await paragraph(block.text, index: block.paragraph, voice: voice,
                                              fallbackVoice: settings?.fallbackVoice, checking: &checking,
                                              stats: &stats)
-            speech = try TimeStretch.apply(speech, sampleRate: Self.sampleRate, rate: speed)
-            try writer.append(speech)
-            try writer.appendSilence(seconds: block.pauseAfter)
+            try await sink.add(speech, rate: speed, pauseAfter: block.pauseAfter)
         }
-        writer.close()
-        let frames = writer.frames
+        let frames = await sink.close()
         stats.paragraphs = Set(blocks.map(\.paragraph)).count
         stats.audioSeconds = Double(frames) / Self.sampleRate
         guard frames > 0 else { throw HolosError.incomplete("The natural voice produced no audio.") }
