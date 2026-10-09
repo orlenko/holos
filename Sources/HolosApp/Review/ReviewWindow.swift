@@ -5,113 +5,6 @@ import HolosSpeakers
 import HolosStorage
 import UniformTypeIdentifiers
 
-/// A review window as quitting closes it (`ReviewQuit`).
-@MainActor
-protocol ClosingReview: AnyObject {
-    /// Closes it without waiting; the edit its open field holds is queued to be saved at once.
-    func startClosing()
-    /// Waits until it is closed and its changes are saved.
-    func closeAndWait() async
-}
-
-/// Quitting with review windows open (docs/meeting-design.md §5.10, "Editing words").
-enum ReviewQuit {
-    /// Every review starts closing at once, so each queues the edit its open field holds before any slow close (a
-    /// voice sync of another review) is waited for; then they are awaited together, at most `limit`. True when all
-    /// closed in time.
-    @MainActor
-    static func closeAll(_ reviews: [any ClosingReview], limit: Duration) async -> Bool {
-        for review in reviews { review.startClosing() }
-        let closing = Task { @MainActor in
-            for review in reviews { await review.closeAndWait() }
-        }
-        return await waitAtMost(limit, for: closing)
-    }
-}
-
-/// Closing a review window by hand (its close button, ⌘W) with an edit typed in its field: the window stays open until
-/// the edit is saved, and stays open when it is not, so a save that fails (a full disk) never loses what was typed.
-/// Quitting, and closing before a meeting is deleted, never come here (`ClosingReview.startClosing` closes the window
-/// directly): they keep their bounded wait, and log what was typed when it could not be saved.
-@MainActor
-final class ReviewCloseGate {
-    /// The edit typed when the close was asked for is being saved: another close waits for it.
-    private(set) var saving = false
-
-    /// Whether the window may close now. With an edit typed (`typed`), no: `save` saves it (nil when saved, else why,
-    /// with what was typed); then `close` closes the window, or `keep` opens the field again with what was typed and
-    /// shows why, and the window stays.
-    func shouldClose(typed: Bool, save: @escaping () async -> String?, close: @escaping () -> Void,
-                     keep: @escaping (String) -> Void) -> Bool {
-        if saving { return false }
-        guard typed else { return true }
-        saving = true
-        Task { @MainActor in
-            let refusal = await save()
-            saving = false
-            if let refusal { keep(refusal) } else { close() }
-        }
-        return false
-    }
-}
-
-/// A word edit the field handed over that was not saved: its words as the field showed them, what was typed, the word
-/// moves and `wordsEpoch` they follow, and why (`message`, with what was typed).
-struct FailedWordEdit {
-    var words: [ReviewWord]
-    var text: String
-    var movesSeen: Int
-    var wordsEpoch: Int
-    var message: String
-    /// A Restore of deleted words (this segment's), not typed words: no field opens again for it, and it is never kept
-    /// as an edit to type again (`UnsavedWordEdits`); its message stays in the footer.
-    var restoring: String? = nil
-}
-
-/// After a close by hand stopped because edits were not saved (`ReviewWindow.keepAfterFailedClose`): fields could not
-/// open while the close waited, so the first failed edit's field opens now, with what was typed and why (`reopen`,
-/// false when its words are no longer there). Returns the others (all of them when the field could not open), for the
-/// footer (`UnsavedWordEdits`).
-enum ReviewCloseRecovery {
-    @MainActor
-    static func recover(_ failures: [FailedWordEdit], reopen: (FailedWordEdit) -> Bool) -> [FailedWordEdit] {
-        guard let first = failures.first else { return [] }
-        return reopen(first) ? Array(failures.dropFirst()) : failures
-    }
-}
-
-/// Word edits not saved whose field could not open again (their words were not shown, another field was open, a close
-/// was waiting): the footer lists each with what was typed until its field opens again (`reopenNext`; it is then the
-/// field's, saved, queued, or cancelled with Esc as any field's) or the person dismisses it (`dismissNext`). The next
-/// edit never clears them.
-struct UnsavedWordEdits {
-    private(set) var edits: [FailedWordEdit] = []
-
-    mutating func add(_ failed: [FailedWordEdit]) { edits += failed }
-
-    /// Opens the first one's field again (`reopen`); true when it opened, and it leaves the list.
-    @MainActor
-    mutating func reopenNext(_ reopen: (FailedWordEdit) -> Bool) -> Bool {
-        guard let first = edits.first, reopen(first) else { return false }
-        edits.removeFirst()
-        return true
-    }
-
-    mutating func dismissNext() {
-        if !edits.isEmpty { edits.removeFirst() }
-    }
-
-    /// The footer's lines: each edit's message (it says what was typed).
-    var lines: [String] { edits.map { "⚠ Not saved: " + $0.message } }
-
-    /// A close by hand waits: the window stays open until each one is edited again or dismissed (quitting does not
-    /// wait; it logs them, `typedTexts`).
-    var holdsClose: Bool { !edits.isEmpty }
-
-    /// What was typed in each, for the quit's log.
-    var typedTexts: [String] { edits.map(\.text) }
-}
-
 /// The transcript review window (docs/meeting-design.md §5.10): name the speakers of a meeting, play their audio,
 /// reassign, merge, split, confirm suggestions in bulk, find more speakers, undo, and export. The model is
 /// `ReviewSession` (HolosMeeting); this file only arranges views and routes actions to it. Every change shows at once
@@ -128,6 +21,24 @@ struct UnsavedWordEdits {
 /// Playing goes on through the meeting until paused; a click on a timestamp or on a word plays from there. While a
 /// meeting plays, the turn list tints the turn and word playing and keeps them in view, except for a few seconds after
 /// the reader scrolls it (`ReviewFollow`).
+///
+/// Invariants:
+/// 1. `closeTask` is set once, by `beginClosing`, and never cleared (`isClosing`). Setting it invalidates playback and
+///    detaches `review.onChange`, so no model change refreshes a closing window, and hands the open field's edit (or
+///    the one `heldOpenEdit` holds) to `ReviewSession.close`.
+/// 2. Every word edit and Restore goes through `trackWordChange`: it is queued in the review before anything awaits,
+///    and listed in `pendingWordEdits` until its save ends.
+/// 3. A close by hand (`windowShouldClose`) is refused while `unsavedEdits` holds an edit, and otherwise waits for
+///    `pendingWordEdits` and the open field's edit through `closeGate`. While that close saves, no field opens and
+///    no word change starts (`canEditWordsNow`).
+/// 4. What was typed is never dropped: an edit that is not saved opens its field again with it, or is kept in
+///    `unsavedEdits` (or in the close's outcome while a close by hand saves).
+/// 5. Joins and paragraph breaks are the window's view only, never saved. Every join goes when a change fails, on
+///    Undo, and when the labels show more reverts than at the last refresh (`clearJoins`, `refresh`).
+/// 6. `problem`, `notice` and `offeredTerm` describe the last action only: a new action clears them first
+///    (`clearTransientMessages`, `editWords`).
+/// 7. Model changes reported in one turn of the main queue make one `refresh` (`scheduleRefresh`).
+/// 8. While the scrubber is dragged (`scrubbing`), the play head does not move it.
 @MainActor
 final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, NSMenuItemValidation, ClosingReview {
     let sessionID: String
@@ -148,36 +59,36 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, NSM
     private let sidebar = SpeakerSidebarView()
     let turnList = TurnListView()
     /// The speakers pane and the turn list; the speakers pane can be hidden (⌥⌘S).
-    private lazy var panes = ReviewPanes(speakers: sidebar, list: turnList)
+    lazy var panes = ReviewPanes(speakers: sidebar, list: turnList)
     /// Hides or shows the speakers pane (also View ▸ Hide Speakers, ⌥⌘S).
-    private let speakersButton = NSButton(title: "Hide Speakers", target: nil, action: nil)
+    let speakersButton = NSButton(title: "Hide Speakers", target: nil, action: nil)
     /// "Show Short Interjections" (off unless the user turned it on), kept across windows.
     static let showInterjectionsKey = "reviewShowsShortInterjections"
-    private let playButton = NSButton(title: "Play", target: nil, action: nil)
-    private let timeLabel = NSTextField(labelWithString: "")
-    private let scrubber = NSSlider(value: 0, minValue: 0, maxValue: 1, target: nil, action: nil)
-    private let speedPopUp = NSPopUpButton(frame: .zero, pullsDown: false)
-    private let speakingLabel = NSTextField(labelWithString: "")
+    let playButton = NSButton(title: "Play", target: nil, action: nil)
+    let timeLabel = NSTextField(labelWithString: "")
+    let scrubber = NSSlider(value: 0, minValue: 0, maxValue: 1, target: nil, action: nil)
+    let speedPopUp = NSPopUpButton(frame: .zero, pullsDown: false)
+    let speakingLabel = NSTextField(labelWithString: "")
     /// The scrubber is being dragged: the play head does not move it meanwhile.
     private var scrubbing = false
     /// Playback started at least once (the turn list tints what plays only from then on, paused included).
     private var played = false
     private var follow = ReviewFollow()
     private var announcer = ReviewSpeakerAnnouncer()
-    private let nextUncertainButton = NSButton(title: "Next Uncertain", target: nil, action: nil)
-    private let assignPopUp = NSPopUpButton(frame: .zero, pullsDown: true)
-    private let splitButton = NSButton(title: "Split Turn", target: nil, action: nil)
-    private let speakersPopUp = NSPopUpButton(frame: .zero, pullsDown: true)
-    private let searchField = NSSearchField()
-    private let exportPopUp = NSPopUpButton(frame: .zero, pullsDown: true)
-    private let screenTextButton = NSButton(title: "Screen Text…", target: nil, action: nil)
+    let nextUncertainButton = NSButton(title: "Next Uncertain", target: nil, action: nil)
+    let assignPopUp = NSPopUpButton(frame: .zero, pullsDown: true)
+    let splitButton = NSButton(title: "Split Turn", target: nil, action: nil)
+    let speakersPopUp = NSPopUpButton(frame: .zero, pullsDown: true)
+    let searchField = NSSearchField()
+    let exportPopUp = NSPopUpButton(frame: .zero, pullsDown: true)
+    let screenTextButton = NSButton(title: "Screen Text…", target: nil, action: nil)
     /// Edit mode (⌘E): word clicks edit the words instead of playing from them (docs/meeting-design.md §5.10,
     /// "Editing words").
-    private let editButton = NSButton(title: "Edit Words", target: nil, action: nil)
-    private let editBanner = EditModeBanner()
+    let editButton = NSButton(title: "Edit Words", target: nil, action: nil)
+    let editBanner = EditModeBanner()
     /// The window's column of bars and panes, and the banner's width in it (made again each time the banner shows: a
     /// hidden arranged view leaves the stack, and its constraints with it).
-    private weak var contentStack: NSStackView?
+    weak var contentStack: NSStackView?
     private var bannerWidth: NSLayoutConstraint?
     /// A name or term the last word edit may have taught, offered for the word list until the next action.
     private var offeredTerm: (term: String, heardAs: String?)?
@@ -187,10 +98,10 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, NSM
     var addWordListTerm: ((_ term: String, _ heardAs: String?) -> String)?
     private var screenTextPanel: ScreenTextPanel?
     private var screenOCRTask: Task<Void, Never>?
-    private let learnBox = NSButton(checkboxWithTitle: "Learn voices of people I name in this meeting", target: nil,
+    let learnBox = NSButton(checkboxWithTitle: "Learn voices of people I name in this meeting", target: nil,
                                     action: nil)
-    private let statusLabel = NSTextField(labelWithString: "")
-    private let notices = NSStackView()
+    let statusLabel = NSTextField(labelWithString: "")
+    let notices = NSStackView()
     /// The last action's error, until the next action. Internal (as the join state below) for `ReviewWindow+Joining`.
     var problem: String?
     /// What the last action did, when it says so (a term added to the word list), until the next action.
@@ -391,139 +302,6 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, NSM
     }
 
     // MARK: - Layout
-
-    private func makeContent() -> NSView {
-        nextUncertainButton.bezelStyle = .push
-        nextUncertainButton.toolTip = "Select and play the next uncertain turn (⌘')"
-        assignPopUp.toolTip = "Give the selected turns to a speaker (or press 1–9 in the turn list)"
-        splitButton.bezelStyle = .push
-        splitButton.toolTip = "Split the selected text in two where a new speaker starts"
-        searchField.placeholderString = "Search"
-        searchField.sendsSearchStringImmediately = true
-        searchField.delegate = self
-        searchField.widthAnchor.constraint(equalToConstant: 160).isActive = true
-        exportPopUp.toolTip = "Save or copy the transcript (⇧⌘E)"
-        screenTextButton.target = self; screenTextButton.action = #selector(showScreenText)
-        screenTextButton.bezelStyle = .push
-        screenTextButton.toolTip = "Read saved screen OCR and unverified vocabulary candidates; never adds words automatically"
-        editButton.bezelStyle = .push
-        editButton.setButtonType(.pushOnPushOff)
-        editButton.image = NSImage(systemSymbolName: "pencil", accessibilityDescription: nil)
-        editButton.imagePosition = .imageLeading
-        editButton.toolTip = Self.editWordsHelp
-        editButton.target = self
-        editButton.action = #selector(toggleEditMode)
-        speakersButton.bezelStyle = .push
-        speakersButton.image = NSImage(systemSymbolName: "sidebar.left", accessibilityDescription: nil)
-        speakersButton.imagePosition = .imageLeading
-        speakersButton.target = self
-        speakersButton.action = #selector(toggleSpeakers(_:))
-        let toolbar = NSStackView(views: [speakersButton, nextUncertainButton, assignPopUp, splitButton, speakersPopUp,
-                                          editButton, NSView(), screenTextButton, searchField, exportPopUp])
-        toolbar.spacing = 8
-        toolbar.alignment = .centerY
-
-        // A meeting opens with the speakers pane as it was left (`ReviewSpeakersPaneMemory`).
-        panes.setSpeakersHidden(ReviewSpeakersPaneMemory().isHidden(sessionID: sessionID), animated: false)
-        panes.onSpeakersHiddenChange = { [weak self] hidden in self?.speakersHiddenChanged(hidden) }
-        refreshSpeakersButton()
-        let split = panes.view
-
-        learnBox.toolTip = "When on, naming a person here also learns their voice for suggestions in later meetings. "
-            + "Only for people who agreed; voiceprints are biometric data."
-        statusLabel.textColor = .secondaryLabelColor
-        statusLabel.font = .systemFont(ofSize: 12)
-        statusLabel.alignment = .right
-        statusLabel.lineBreakMode = .byTruncatingHead
-        let footer = NSStackView(views: [learnBox, NSView(), statusLabel])
-        footer.alignment = .centerY
-        notices.orientation = .vertical
-        notices.alignment = .leading
-        notices.spacing = 4
-
-        let playbackBar = makePlaybackBar()
-        editBanner.isHidden = true
-        let stack = NSStackView(views: [toolbar, editBanner, split, playbackBar, footer, notices])
-        stack.orientation = .vertical
-        stack.alignment = .leading
-        stack.distribution = .fill
-        stack.spacing = 8
-        stack.translatesAutoresizingMaskIntoConstraints = false
-        // The panes take the height; the bars keep theirs.
-        for bar in [toolbar, footer, notices] { bar.setHuggingPriority(.defaultHigh, for: .vertical) }
-        editBanner.setContentHuggingPriority(.defaultHigh, for: .vertical)
-        playbackBar.setContentHuggingPriority(.defaultHigh, for: .vertical)
-        split.heightAnchor.constraint(greaterThanOrEqualToConstant: 300).isActive = true
-        let content = NSView()
-        content.addSubview(stack)
-        NSLayoutConstraint.activate([
-            stack.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 12),
-            stack.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -12),
-            stack.topAnchor.constraint(equalTo: content.topAnchor, constant: 10),
-            stack.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -10),
-            toolbar.widthAnchor.constraint(equalTo: stack.widthAnchor),
-            split.widthAnchor.constraint(equalTo: stack.widthAnchor),
-            playbackBar.widthAnchor.constraint(equalTo: stack.widthAnchor),
-            footer.widthAnchor.constraint(equalTo: stack.widthAnchor),
-            notices.widthAnchor.constraint(equalTo: stack.widthAnchor),
-        ])
-        split.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .vertical)
-        split.setContentCompressionResistancePriority(.defaultLow, for: .vertical)
-        contentStack = stack
-        return content
-    }
-
-    /// Play/Pause, "12:04 / 1:28:30", the scrubber, the speed, and who is speaking, in a band across the window.
-    private func makePlaybackBar() -> NSView {
-        playButton.bezelStyle = .push
-        playButton.controlSize = .large
-        playButton.imagePosition = .imageLeading
-        playButton.image = NSImage(systemSymbolName: "play.fill", accessibilityDescription: nil)
-        playButton.toolTip = "Play or pause (Space)"
-        playButton.widthAnchor.constraint(greaterThanOrEqualToConstant: 96).isActive = true
-        timeLabel.font = .monospacedDigitSystemFont(ofSize: 13, weight: .regular)
-        timeLabel.setContentHuggingPriority(.defaultHigh, for: .horizontal)
-        timeLabel.setContentCompressionResistancePriority(.required, for: .horizontal)
-        scrubber.isContinuous = true
-        scrubber.controlSize = .regular
-        scrubber.toolTip = "Drag to move through the meeting (← and → move 5 seconds, ⌘← and ⌘→ a turn)"
-        scrubber.setAccessibilityLabel("Playback position")
-        scrubber.setContentHuggingPriority(.defaultLow, for: .horizontal)
-        scrubber.widthAnchor.constraint(greaterThanOrEqualToConstant: 160).isActive = true
-        for rate in ReviewPlaybackSpeed.rates {
-            speedPopUp.addItem(withTitle: ReviewPlaybackSpeed.title(rate))
-            speedPopUp.lastItem?.representedObject = rate
-        }
-        speedPopUp.toolTip = "Playback speed"
-        speedPopUp.setAccessibilityLabel("Playback speed")
-        speakingLabel.font = .systemFont(ofSize: 13, weight: .medium)
-        speakingLabel.lineBreakMode = .byTruncatingTail
-        speakingLabel.setAccessibilityLabel("Speaking")
-        speakingLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        speakingLabel.widthAnchor.constraint(greaterThanOrEqualToConstant: 140).isActive = true
-        let speakingWidth = speakingLabel.widthAnchor.constraint(equalToConstant: 220)
-        speakingWidth.priority = .defaultLow
-        speakingWidth.isActive = true
-
-        let row = NSStackView(views: [playButton, timeLabel, scrubber, speedPopUp, speakingLabel])
-        row.spacing = 12
-        row.alignment = .centerY
-        row.edgeInsets = NSEdgeInsets(top: 6, left: 8, bottom: 6, right: 10)
-        row.translatesAutoresizingMaskIntoConstraints = false
-        let bar = PlaybackBarView()
-        bar.setAccessibilityElement(true)
-        bar.setAccessibilityRole(.group)
-        bar.setAccessibilityLabel("Playback")
-        bar.addSubview(row)
-        // The controls give the bar its height.
-        NSLayoutConstraint.activate([
-            row.leadingAnchor.constraint(equalTo: bar.leadingAnchor),
-            row.trailingAnchor.constraint(equalTo: bar.trailingAnchor),
-            row.topAnchor.constraint(equalTo: bar.topAnchor),
-            row.bottomAnchor.constraint(equalTo: bar.bottomAnchor),
-        ])
-        return bar
-    }
 
     private func wire() {
         playButton.target = self
@@ -1033,7 +811,7 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, NSM
         player.seek(to: seconds)
     }
 
-    @objc private func showScreenText() {
+    @objc func showScreenText() {
         guard screenTextButton.isEnabled, window.attachedSheet == nil else { return }
         screenTextButton.isEnabled = false
         let session = review.session, id = sessionID
@@ -1485,7 +1263,7 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, NSM
 
     /// Edit Words (the toolbar toggle, ⌘E): on only while the review is editable (not while a command holds it
     /// read-only); off always.
-    @objc private func toggleEditMode() {
+    @objc func toggleEditMode() {
         let next = Self.editModeAfterToggle(on: turnList.editingWords, editable: canEditWordsNow)
         if next == turnList.editingWords {
             NSSound.beep()
@@ -1823,7 +1601,7 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, NSM
 
     /// The pane was hidden or shown (also by dragging the divider): remembered for this meeting. Hidden by a drag with a
     /// name being typed there, the field ends now, so nothing typed goes to a field out of sight.
-    private func speakersHiddenChanged(_ hidden: Bool) {
+    func speakersHiddenChanged(_ hidden: Bool) {
         if hidden, Self.isEditing(in: sidebar, responder: window.firstResponder) {
             window.makeFirstResponder(turnList.table)
         }
@@ -1831,7 +1609,7 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, NSM
         refreshSpeakersButton()
     }
 
-    private func refreshSpeakersButton() {
+    func refreshSpeakersButton() {
         let title = Self.speakersTitle(hidden: panes.speakersHidden)
         if speakersButton.title != title { speakersButton.title = title }
         speakersButton.toolTip = (panes.speakersHidden ? "Show the speakers pane" : "Hide the speakers pane; name "
@@ -2203,113 +1981,5 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, NSM
         let cleaned = name.map { "/:\\\n\r\t".contains($0) ? "-" : $0 }
         let text = String(cleaned).trimmingCharacters(in: .whitespacesAndNewlines)
         return text.isEmpty ? "Transcript" : String(text.prefix(100))
-    }
-}
-
-/// The band under the toolbar while edit mode is on: a tint of the accent color and what to do, or a passing message.
-final class EditModeBanner: NSView {
-    static let usual = "Editing — click a word to change it. ⇧-click or drag for more words of the same turn. Return "
-        + "saves, ⌥Return saves and adds it to the word list, Tab saves and edits the next word, Esc cancels. "
-        + "Return at the start of a word (← first) splits the turn before it; at its end (→ first), after it. Space "
-        + "still plays and pauses."
-    let label = NSTextField(wrappingLabelWithString: EditModeBanner.usual)
-
-    override init(frame: NSRect) {
-        super.init(frame: frame)
-        label.font = .systemFont(ofSize: 12, weight: .medium)
-        label.textColor = .labelColor
-        label.translatesAutoresizingMaskIntoConstraints = false
-        addSubview(label)
-        NSLayoutConstraint.activate([
-            label.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 10),
-            label.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -10),
-            label.topAnchor.constraint(equalTo: topAnchor, constant: 6),
-            label.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -6),
-        ])
-        setAccessibilityElement(true)
-        setAccessibilityRole(.group)
-        setAccessibilityLabel("Edit mode")
-    }
-
-    convenience init() { self.init(frame: .zero) }
-
-    required init?(coder: NSCoder) { nil }
-
-    /// `message` for now, or the usual text.
-    func show(message: String?) {
-        let text = message ?? Self.usual
-        if label.stringValue != text { label.stringValue = text }
-        label.textColor = message == nil ? .labelColor : .systemOrange
-    }
-
-    override func draw(_ dirtyRect: NSRect) {
-        let path = NSBezierPath(roundedRect: bounds.insetBy(dx: 0.5, dy: 0.5), xRadius: 6, yRadius: 6)
-        NSColor.controlAccentColor.withAlphaComponent(0.14).setFill()
-        path.fill()
-        NSColor.controlAccentColor.withAlphaComponent(0.5).setStroke()
-        path.lineWidth = 1
-        path.stroke()
-    }
-}
-
-/// The playback bar's band: a rounded background with a hairline border, in the window's colors.
-private final class PlaybackBarView: NSView {
-    override func draw(_ dirtyRect: NSRect) {
-        let path = NSBezierPath(roundedRect: bounds.insetBy(dx: 0.5, dy: 0.5), xRadius: 6, yRadius: 6)
-        NSColor.controlBackgroundColor.setFill()
-        path.fill()
-        NSColor.separatorColor.setStroke()
-        path.lineWidth = 1
-        path.stroke()
-    }
-}
-
-/// The review window; it handles its own shortcuts first, and the playback keys before any view sees them.
-final class ReviewKeyWindow: NSWindow {
-    var keyHandler: ((NSEvent) -> Bool)?
-    /// Key presses on their way to the first responder; true when handled.
-    var playbackKeyHandler: ((NSEvent) -> Bool)?
-
-    override func performKeyEquivalent(with event: NSEvent) -> Bool {
-        if keyHandler?(event) == true { return true }
-        return super.performKeyEquivalent(with: event)
-    }
-
-    override func sendEvent(_ event: NSEvent) {
-        if event.type == .keyDown, playbackKeyHandler?(event) == true { return }
-        super.sendEvent(event)
-    }
-}
-
-/// Keeps the save panel's extension in step with the chosen export format.
-@MainActor
-private final class ExportFormatChooser: NSObject {
-    private weak var panel: NSSavePanel?
-    private weak var popup: NSPopUpButton?
-
-    init(panel: NSSavePanel, popup: NSPopUpButton) {
-        self.panel = panel
-        self.popup = popup
-    }
-
-    static func format(at index: Int) -> ExportFormat {
-        switch index {
-        case 1: .txt
-        case 2: .json
-        default: .md
-        }
-    }
-
-    @objc func changed() {
-        guard let panel, let popup else { return }
-        let format = Self.format(at: popup.indexOfSelectedItem)
-        let type: UTType = switch format {
-        case .txt: .plainText
-        case .json: .json
-        case .md: UTType(filenameExtension: "md") ?? .plainText
-        }
-        panel.allowedContentTypes = [type]
-        let base = (panel.nameFieldStringValue as NSString).deletingPathExtension
-        panel.nameFieldStringValue = base + "." + format.rawValue
     }
 }
