@@ -25,7 +25,10 @@ public protocol SpeechChunkChecker: Sendable {
 }
 
 /// How a part is fed to the natural voice: one paragraph at a time (Pocket TTS splits a paragraph into sentences
-/// itself), with explicit pauses between paragraphs and after a heading. The pipeline's own gaps go between parts.
+/// itself), with explicit pauses between paragraphs and after a heading. The pipeline's own gaps go between parts. A
+/// paragraph longer than `maximumBlockLength` (a text without blank lines is one paragraph) is fed in groups of whole
+/// sentences of at most that length, with no pause between them but the voice's own, so no block's speech is long:
+/// each block's samples are held, checked, and written before the next one is made.
 public enum NaturalSpeechPlan {
     public struct Block: Sendable, Equatable {
         public let text: String
@@ -38,6 +41,8 @@ public enum NaturalSpeechPlan {
     public static let headingPause = 0.9
     /// The longest first block taken for a heading.
     static let headingMaximumLength = 100
+    /// The longest block, in characters (about a minute of speech).
+    public static let maximumBlockLength = 1_000
 
     /// The part's paragraphs (blocks between blank lines; line breaks inside one read as spaces). A first block
     /// followed by others that is short, one line, and ends without sentence punctuation is a heading (a part that
@@ -47,12 +52,66 @@ public enum NaturalSpeechPlan {
             .components(separatedBy: "\n\n")
             .map { $0.split(whereSeparator: \.isWhitespace).joined(separator: " ") }
             .filter { !$0.isEmpty }
-        return paragraphs.enumerated().map { index, paragraph in
+        return paragraphs.enumerated().flatMap { index, paragraph -> [Block] in
             let last = index == paragraphs.count - 1
             let heading = index == 0 && !last && looksLikeHeading(paragraph)
-            return Block(text: paragraph, pauseAfter: last ? 0 : heading ? headingPause : paragraphPause,
-                         isHeading: heading)
+            let pause = last ? 0 : heading ? headingPause : paragraphPause
+            let groups = split(paragraph, maximumLength: maximumBlockLength)
+            return groups.enumerated().map { groupIndex, group in
+                Block(text: group, pauseAfter: groupIndex == groups.count - 1 ? pause : 0, isHeading: heading)
+            }
         }
+    }
+
+    /// `text` in pieces of at most `maximumLength` characters: whole sentences grouped, a longer sentence split after
+    /// its clauses (, ; :), and a longer clause between words (a word longer than that alone is cut).
+    static func split(_ text: String, maximumLength: Int) -> [String] {
+        guard text.count > maximumLength else { return [text] }
+        let sentences = pieces(of: text, after: ".!?…")
+            .flatMap { $0.count > maximumLength ? pieces(of: $0, after: ",;:") : [$0] }
+            .flatMap { $0.count > maximumLength ? $0.split(separator: " ").map(String.init) : [$0] }
+            .flatMap { piece -> [String] in
+                guard piece.count > maximumLength else { return [piece] }
+                return stride(from: 0, to: piece.count, by: maximumLength).map { start in
+                    let from = piece.index(piece.startIndex, offsetBy: start)
+                    let to = piece.index(from, offsetBy: min(maximumLength, piece.count - start))
+                    return String(piece[from..<to])
+                }
+            }
+        var groups: [String] = []
+        var current = ""
+        for sentence in sentences {
+            let joined = current.isEmpty ? sentence : current + " " + sentence
+            if joined.count <= maximumLength {
+                current = joined
+            } else {
+                if !current.isEmpty { groups.append(current) }
+                current = sentence
+            }
+        }
+        if !current.isEmpty { groups.append(current) }
+        return groups
+    }
+
+    /// `text` cut after each run of `marks` that a space follows (or the end), trimmed.
+    private static func pieces(of text: String, after marks: String) -> [String] {
+        var result: [String] = []
+        var current = ""
+        var index = text.startIndex
+        while index < text.endIndex {
+            let character = text[index]
+            current.append(character)
+            let next = text.index(after: index)
+            if marks.contains(character), next == text.endIndex || text[next] == " " {
+                let piece = current.trimmingCharacters(in: .whitespaces)
+                if !piece.isEmpty { result.append(piece) }
+                current = ""
+            }
+            index = next
+        }
+        let rest = current.trimmingCharacters(in: .whitespaces)
+        if !rest.isEmpty { result.append(rest) }
+        return result
     }
 
     static func looksLikeHeading(_ text: String) -> Bool {

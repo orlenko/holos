@@ -198,3 +198,71 @@ private actor WatchedBackend: NaturalSpeechBackend {
         #expect(!((try? FileManager.default.contentsOfDirectory(atPath: folder.path)) ?? []).contains { $0.hasPrefix(".holos-") })
     }
 }
+
+@Suite struct NaturalSpeechPlanLongParagraphTests {
+    private let sentence = "The keeper carried rainwater up the rocky path every single morning, counting his steps."
+
+    @Test func aLongParagraphIsFedInBoundedGroupsOfWholeSentences() {
+        let paragraph = Array(repeating: sentence, count: 60).joined(separator: " ")
+        let blocks = NaturalSpeechPlan.blocks("Heading\n\n" + paragraph + "\n\nLast one.")
+        let groups = blocks.dropFirst().dropLast()
+        #expect(groups.count >= 5)
+        #expect(groups.allSatisfy { $0.text.count <= NaturalSpeechPlan.maximumBlockLength })
+        #expect(groups.allSatisfy { $0.text.hasSuffix("steps.") && $0.text.hasPrefix("The keeper") })
+        #expect(groups.map(\.text).joined(separator: " ") == paragraph)
+        // The voice's own pauses between the groups; the paragraph's after the last.
+        #expect(groups.dropLast().allSatisfy { $0.pauseAfter == 0 })
+        #expect(groups.last?.pauseAfter == NaturalSpeechPlan.paragraphPause)
+        #expect(blocks.first?.isHeading == true)
+        #expect(blocks.dropFirst().allSatisfy { !$0.isHeading })
+    }
+
+    @Test func aLongSentenceIsSplitAtClausesThenWords() {
+        let clauses = Array(repeating: "and then the gulls came back over the grey stone wall", count: 40)
+            .joined(separator: ", ") + "."
+        let byClause = NaturalSpeechPlan.split(clauses, maximumLength: 1_000)
+        #expect(byClause.count > 1)
+        #expect(byClause.allSatisfy { $0.count <= 1_000 && ($0.hasSuffix(",") || $0.hasSuffix(".")) })
+        #expect(byClause.joined(separator: " ") == clauses)
+        let words = Array(repeating: "marigold", count: 400).joined(separator: " ")
+        let byWord = NaturalSpeechPlan.split(words, maximumLength: 1_000)
+        #expect(byWord.allSatisfy { $0.count <= 1_000 })
+        #expect(byWord.joined(separator: " ") == words)
+        let unbroken = String(repeating: "x", count: 2_500)
+        #expect(NaturalSpeechPlan.split(unbroken, maximumLength: 1_000).map(\.count) == [1_000, 1_000, 500])
+    }
+}
+
+/// Counts the samples each take holds (0.1 s per word, as the renderer tests' fake).
+private actor CountingBackend: NaturalSpeechBackend {
+    private(set) var largest = 0
+    private(set) var calls = 0
+
+    func synthesize(_ text: String, voice: NaturalVoice, seed: UInt64) async throws -> [Float] {
+        calls += 1
+        let samples = [Float](repeating: 0.25, count: text.split(separator: " ").count * 2_400)
+        largest = max(largest, samples.count)
+        return samples
+    }
+}
+
+@MainActor @Suite struct NaturalSpeechLongTextTests {
+    @Test func aTextWithoutBlankLinesNeverHoldsMoreThanABlocksSamples() async throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("holos-long-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let sentence = "The keeper carried rainwater up the rocky path every single morning, counting his steps."
+        // About 20,000 characters, 3,000 words, in one paragraph.
+        let text = Array(repeating: sentence, count: 220).joined(separator: " ")
+        let backend = CountingBackend()
+        let renderer = NaturalSpeechRenderer(backend: backend, checker: nil, fallback: NoFallback(),
+                                             installedPacks: { [.english] })
+        let result = try await renderer.render(text: text, voiceIdentifier: "pocket:en:alba", rate: nil,
+                                               to: folder.appendingPathComponent("long.caf"))
+        let words = text.split(separator: " ").count
+        #expect(abs(result.duration - Double(words) * 0.1) < 0.01)
+        #expect(await backend.calls >= 20)
+        // No take holds more than one block: at most 1,000 characters, under 200 words.
+        #expect(await backend.largest <= 200 * 2_400)
+    }
+}
+

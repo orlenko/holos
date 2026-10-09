@@ -647,7 +647,10 @@ failure's reason (offline, for instance) with Try Again; Apple's voices stay ava
 end with a disabled "Natural voices: download them in Settings › Reading" while a pack is missing.
 
 **Rendering a part.** `NaturalSpeechPlan` splits the part into paragraphs (blank lines; line breaks inside one read
-as spaces) and feeds Pocket TTS one paragraph at a time; it splits a paragraph into sentences itself. Pauses: 0.6 s
+as spaces) and feeds Pocket TTS one paragraph at a time; it splits a paragraph into sentences itself. A paragraph
+over 1,000 characters (a text without blank lines is one paragraph) is fed in groups of whole sentences of at most
+1,000 characters (a longer sentence split after its clauses, then between words), with no pause between groups but
+the voice's own, so every block's samples stay small (about a minute of speech). Pauses: 0.6 s
 between paragraphs, 0.9 s after a heading (a first block followed by others that is at most 100 characters and ends
 without sentence punctuation), none after the last block (the pipeline's 0.5 s and 1 s gaps go between parts). No
 extra pause is put between sentences: measured on a made-up 4-paragraph text, Pocket TTS leaves 190–350 ms between
