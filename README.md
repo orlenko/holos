@@ -630,6 +630,7 @@ transcripts. It is gitignored; keep originals out of commits.
 
 ## Project notes
 
+- [Working on the code: module map and rules for contributors and agents](AGENTS.md)
 - [Future mobile apps (notes, not started)](docs/mobile-apps.md)
 - [Implementation status and validation gaps](docs/status.md)
 - [Design and feasibility](docs/design.md)

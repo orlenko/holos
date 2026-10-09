@@ -1,223 +1,90 @@
 # Component and data contracts
 
-Design draft; the signatures below describe the intended architecture, not the
-exact current API. The first milestone's compilable contracts live in
-`Sources/HolosCore/Models.swift` and the concrete library entry points. They use
-string IDs and session-relative `Double` seconds; typed IDs, rational persisted
-times, and edit/correction contracts below are still planned. See
-[status](status.md) before delegating against these proposed interfaces.
-Prefer concrete Swift structs/actors and introduce protocols at actual external
-boundaries. Do not build a general plugin framework.
+The contracts between targets and processes as the code implements them. Ownership (what each target owns, must
+not own, and may import) is the module map in [AGENTS.md](../AGENTS.md#module-map), with details in each
+`Sources/<Module>/README.md`. The full meeting design is [meeting-design.md](meeting-design.md) §1–§4.
 
-The second milestone adds concrete desktop boundaries in `HolosDesktop`
-(`GlobalHotkeyMonitor`, `TextInsertion`, `InsertionTarget`, `InsertionOutcome`)
-and `HolosDictation` (`DictationController`, `DictationStatus`). The AppKit shell in
-`HolosApp` owns permission/setup actions, non-activating presentation, result
-retention, and insertion decisions. Desktop interaction is main-actor-owned;
-the dictation controller's injectable capture/speech boundaries allow lifecycle
-tests without permissions, microphone use, or cross-app writes. Live permission
-ownership and the supported insertion-app matrix remain acceptance gates.
+Prefer concrete structs, enums and actors; add a protocol only at a real seam (an engine, the hardware, a child
+process, a clock). Do not build a plugin framework.
 
-## Ownership boundaries
+## Seams
 
-| Target/component | Owns | Must not own |
-| --- | --- | --- |
-| `HolosCore` | IDs, clocks, transcript/edit/document values, errors, configuration | Apple engine sessions, UI, permission prompts |
-| `HolosStorage` | Session writer, recovery, snapshots, correction SQLite store | Capture callbacks, transcript interpretation |
-| `HolosAudio` | Capture adapters, clock mapping, bounded queues, resampling | Corrections, speaker names, UI |
-| `HolosSpeech` | Apple transcribers, asset inventory, result normalization | Recording lifetime, focus, transcript editing |
-| `HolosCorrections` | Rule matching, candidate retrieval, validated local-model decisions | Unrestricted rewriting, application monitoring |
-| `HolosSynthesis` | Voice inventory, buffer rendering, encoding, playback queue | Web fetching, meeting recording |
-| `HolosContent` | Input extraction and document chunking | Speech or language-model generation |
-| `HolosSpeakers` | Pure speaker algorithms over values: word-to-speaker alignment, run building, edit projection and label carry-over, transcript exporters, reference parsing and scoring | File IO, diarization engines, inferring personal names from text |
-| `HolosDiarization` | The FluidAudio adapter behind `SpeakerDiarizer`, speaker-model install and verification (planned) | Being linked by the app: only `HolosCLI` links it |
-| `HolosMeeting` | Meeting recording lifecycle and cancellation: capture and speech seams, stop sources, replay of saved audio, the post-processing hand-off; later the recorder state machine, control inbox, status, and the app's meeting controllers | AppKit views, FluidAudio, paths and locks inside a session folder (for now it still writes the legacy `control.json` and reads `stop.request`, which PR2a removes, and replay opens chunk files by path until it reads them through HolosStorage) |
-| `HolosCLI`, `HolosApp` | Arguments, presentation, app/focus integration | A second copy of workflow business logic |
+The protocols that exist, and what implements them:
 
-The app's hotkey/focus adapters can stay in app-owned files. They do not warrant
-another package. Dictation orchestration lives in `HolosDictation` and reading in
-`HolosContent`. Diarization engines sit behind the `SpeakerDiarizer` protocol in
-`HolosCore`: `HolosMeeting` receives `any SpeakerDiarizer`, and the app never links
-FluidAudio; it runs diarization in a `holos` process. Target graph and rules:
-[meeting-design §1.1](meeting-design.md#11-targets-and-dependency-graph).
+| Protocol | Target | Live implementation | Used for |
+|---|---|---|---|
+| `SpeakerDiarizer` | HolosCore | `FluidDiarizer` (HolosDiarization) | Diarization; tests use `FakeDiarizer` |
+| `DeepTranscriber` | HolosCore | `WhisperKitTranscriber` (HolosWhisper) | Deep transcription after a meeting |
+| `MeetingCapture` | HolosMeeting | `LiveMeetingCapture`, `IndependentMeetingCapture` | Recording without hardware in tests |
+| `LiveSpeechSession` | HolosMeeting | `AppleSpeechSession` (HolosSpeech) | Live recognition during a recording |
+| `RecorderLauncher` | HolosMeeting | `ChildProcessLauncher`, `InProcessLauncher` | How the app starts a recorder |
+| `SessionClock` | HolosMeeting | `ContinuousSessionClock` (`ManualSessionClock` in tests) | Session time |
+| `RecorderStopSource` | HolosMeeting | `SignalStopController`, `ManualStopSource` | Stop requests |
+| `RecordingReporter` | HolosMeeting | `ConsoleReporter` (HolosCLI) | Recording progress |
+| `SystemPowerEvents`, `PowerAssertionHandle` | HolosAudio | `SystemPowerMonitor`, `PowerAssertion` | Sleep and wake |
+| `FreeSpaceProvider` | HolosStorage | `VolumeFreeSpace` (`FixedFreeSpace` in tests) | Disk policy |
+| `ReadingAudioRenderer`, `ReadingAudioJoiner`, `ReadingPlayback` | HolosContent | `NativeSpeechRenderer`, `AudioBookJoiner`, `AVAudioPlayer` | Reading pipeline and player |
+| `EchoAudioSource` | HolosSpeakers | `RenderedEchoAudio` (HolosMeeting), `InMemoryEchoAudio` | Acoustic echo analysis over values |
 
-## Shared values
+## Processes
 
-All persistent values have a schema version. Use Codable/Sendable values across
-boundaries; do not pass SwiftUI state or AX objects into background workers.
+- The app never links FluidAudio or WhisperKit. It runs `voiceislocal` children through `ProcessSpawner`
+  (close-on-exec by default, own session): the recorder (`record start --session-id …`) and maintenance commands
+  (`session diarize`, `deep-transcribe`, `summarize`, `echo-analyze`, `recover`, `delete`, `rename`;
+  `setup --speakers`, `setup --whisper`, `doctor --json`).
+- App ↔ recorder talk through files in the private session folder, not sockets or XPC (meeting-design.md §4.1):
+  the app or CLI writes one allowlisted, versioned request (`stop`, `pause`, `resume`, `marker`) for an exact
+  session ID as `control/<UUID>.json`; the recorder applies it at most once and acknowledges it in `status.json`,
+  which it rewrites as a heartbeat. SIGINT and SIGTERM stop gracefully.
+- The recorder owns the archive's writer lock and hands the processing lease to post-processing; a child it starts
+  can inherit the lease (`--lease-fd`). `InProcessLauncher` runs the same workflow inside the app, and still runs
+  diarization in a child.
 
-- `SessionID`, `TrackID`, `ChunkID`, `TranscriptRevisionID`, `SpanID`, `SpeakerID`,
-  `RuleID`, `UtteranceID`: distinct typed IDs. Speaker IDs are local to a session.
-- `MediaTime`: integer value plus positive timescale; ordered/rational comparisons.
-  Persist a session-relative monotonic timeline, not wall-clock `Date` arithmetic.
-  Keep a separate start date for display. Intervals are half-open `[start, end)`.
-- `TrackDescriptor`: source (`microphone`, `system`, `imported`), device/app metadata,
-  channel layout, sample format epochs, mapping to session time. Source is not speaker.
-- `AudioChunk`: track/epoch, sequence, session interval, native format, frame count,
-  relative path, completion state, content hash after finalization. A gap is its own
-  event and is never represented by fabricated speech.
-- `TimedText`: exact string with timed runs and optional confidence/alternatives.
-  Persist text ranges in UTF-16 units because AX/NSRange uses them; convert explicitly
-  to Swift string indices and reject invalid boundaries. Test composed characters.
-  Word alignment can be absent or coarse; retain that fact.
-- `TranscriptSpan`: revision, stable span ID within that revision, source track,
-  audio interval, TimedText, optional speaker assignment. Store raw recognition
-  separately from the human-corrected presentation.
-- `SpeakerTurn`: one or more speaker IDs, audio interval, optional confidence and
-  provenance (`manual`, `channelAssumption`, `diarizer`). Unknown is supported.
-- `TranscriptEdit`: unique operation ID, base revision, target IDs/intervals, expected
-  original text/hash, action, timestamp. Actions include replace text, rename speaker,
-  assign speaker, split, and merge. Human edits are retained on reprocessing, with
-  conflicts reported when they cannot be mapped safely.
-- `CorrectionRule`: source phrase, replacement, locale, app/domain scope, kind,
-  priority, confirmation status, evidence references, created/updated timestamps.
-- `SourceDocument`: title, source URL/path, retrieval date, language, ordered blocks
-  with IDs and source ranges. Heading/paragraph/code/list distinctions remain explicit.
-- `SynthesisPart`: document block/range references, text hash, voice identifier,
-  synthesis settings, output path, duration, checksum, status. Source coverage must
-  be complete even if some parts fail to render.
+## Capture and recognition
 
-## Service boundaries
+- `PCMFrame` owns its samples and timing. Capture callbacks copy borrowed buffers before returning and only enqueue
+  into bounded queues: no `await`, file I/O, resampling or model work in them.
+- Queues are bounded with explicit overflow handling: dictation's capture fails on overflow
+  (`CaptureOverflow.fail`); a meeting drops, counts, and records the gap as a discontinuity (`.dropAndCount`,
+  `ChunkWriterPump`). Missing audio is never filled with fabricated samples.
+- Recognition results are `TranscriptUpdate` values (a segment plus `isFinal`). `TranscriptReducer` replaces
+  provisional segments over the same interval, never duplicates them, and refuses to replace finalized audio. Empty
+  final results add no text.
+- One task feeds a recognition session; `AppleSpeechSession` applies backpressure outside the audio callback.
 
-These are semantic contracts. Swift signatures below illustrate the shape and are
-not a ready-to-compile API file; the first contract task supplies referenced types.
+## Persistence
 
-```swift
-protocol TranscriptionEngine: Sendable {
-    func capabilities(for locale: Locale) async -> TranscriptionCapabilities
-    func makeSession(_ config: TranscriptionConfiguration) async throws
-        -> any TranscriptionSession
-}
+- `SessionArchive` is the only mutable owner of an active archive. Writes go through `AtomicFile` (write, fsync,
+  rename, folder fsync). The event journal has increasing sequence numbers; a failed append is truncated back, and a
+  damaged line is skipped and counted. Details and lock rules: meeting-design.md §1.6, §1.7.
+- Every persisted JSON file is encoded with `HolosJSON` and carries `schemaVersion`. Readers refuse a newer version;
+  growable code sets are `OpenStringCode`s.
+- Speaker edits go to an append-only journal; `SpeakerProjection` applies it to a run. An edit that no longer
+  applies is reported as stale, never applied blindly.
 
-protocol TranscriptionSession: Sendable {
-    var events: AsyncThrowingStream<TranscriptEvent, Error> { get }
-    func append(_ frame: AudioFrame) async throws
-    func finishInput() async throws
-    func cancel() async
-}
+## Dictation and insertion
 
-protocol SpeakerDiarizer: Sendable {
-    func analyze(_ recording: RecordingSnapshot) async throws -> DiarizationResult
-}
+- `DictationController` runs one utterance at a time: `idle → preparing → listening → finalizing → result` (or
+  `failed`). Listening has no duration limit; startup and finalization time out.
+- `InsertionTarget` snapshots the focused app, element and selection at key-down; insertion rechecks it. A changed
+  target gives `targetChanged`; text that cannot be inserted gives `needsCopy` and waits for the user's Copy. There
+  is no second automatic paste, and nothing writes to the clipboard on its own.
+- The language-model fix (`TranscriptFixer`) keeps a reply only when `AIFixGuard` accepts it as a small word-level
+  edit; anything else keeps the chunk as recognized.
 
-protocol CorrectionEngine: Sendable {
-    func propose(_ input: CorrectionInput) async throws -> CorrectionPlan
-}
+## Synthesis and documents
 
-protocol SpeechRenderer: Sendable {
-    func voices() async -> [VoiceDescriptor]
-    func render(_ request: SynthesisRequest, to output: URL) async throws
-        -> RenderedAudio
-}
+- Each render names one voice and exact text. A missing voice fails explicitly; nothing substitutes another.
+- Finished files are published with `ExclusivePublisher` (exclusive rename), so no partial file sits at a final
+  path. A reading resumes from its cache of rendered parts.
+- Extraction failures are explicit; no extractor substitutes a summary for the text.
 
-protocol ContentExtractor: Sendable {
-    func extract(_ source: ContentSource) async throws -> SourceDocument
-}
-```
+## Errors and output
 
-### Capture and transcription lifecycle
-
-`AudioFrame` owns its audio samples and timing. An adapter must copy borrowed audio
-buffers before their callback lifetime ends, or use a verified immutable ownership
-mechanism. Do not hide mutable AVAudioPCMBuffer sharing behind unchecked Sendable.
-Raw real-time capture callbacks enqueue quickly; they do not await actors, write
-files, resample, or execute model work.
-
-Use a bounded producer/consumer queue with explicit overflow reporting. The writer
-has priority over live analysis. The live analyzer may fall back to disk replay;
-capture overflow or writer failure must mark lost intervals. An unbounded
-AsyncStream is not an acceptable recording buffer.
-
-Only one task appends to a transcription session. Create one independent events
-consumer immediately, before feeding input, and keep it alive while finalizing.
-`append` provides backpressure outside the audio callback. Cancellation finishes
-both sides and releases model/device resources. `finishInput` closes input, drains
-pending final results, and completes the events stream; define it as idempotent.
-
-`TranscriptEvent` represents **replacement over an audio interval**, not simply
-appended text. It carries engine-run ID, source track, increasing event sequence,
-covered range, replacement spans, and finalization boundary. Volatile results can
-change segmentation. Normalize them by replacing the affected provisional interval;
-never duplicate earlier hypotheses. Finalized spans are immutable within a run.
-Reanalysis produces a separate revision. Empty/silence results must not create text.
-
-An engine restart records its input offset and overlap interval. Deduplicate the
-overlap by interval/word alignment before committing a revised transcript. Do not
-restart at file-chunk boundaries just because the recorder rotates output files.
-
-### Persistence and recovery
-
-The session writer is the only mutable owner of an active archive. Finalized audio
-and transcript snapshots are immutable; manifest updates use write/rename. Events
-use monotonic sequence IDs, allowing recovery to reject duplicates and a truncated
-last line. Batch durability explicitly; measure the maximum possible tail loss.
-
-Store a processing watermark per track and engine run. Recovery validates chunk
-metadata/checksums, discovers completed unindexed chunks, marks damaged tails, and
-replays transcription with a small context overlap. Never claim finalized text
-beyond durable audio. Edits are applied against a named revision and expected text;
-a stale edit is a conflict, not an unconditional replacement.
-
-Same-host start/stop/status uses versioned files in the private session folder, with
-request IDs and bounded messages (see local app/session control below). Commands are
-an allowlist; a stop request targets an exact session ID and is idempotent. No network
-listener or shell command execution is required.
-
-### Corrections and insertion
-
-`CorrectionInput` contains the raw utterance, explicitly allowed short context,
-locale/app identity, and retrieved confirmed rules. Never send the whole focused
-document by default. The model chooses a supplied candidate ID or `leaveUnchanged`;
-it does not return arbitrary executable actions or authoritative confidence.
-
-`CorrectionPlan` contains non-overlapping text edits with expected original text,
-replacement selected from candidates, and rule/evidence provenance. Validate ranges,
-scope, source hash, candidate membership, and unchanged protected spans before use.
-Deterministic precedence: explicit app/domain scope before global rules, then
-longest phrase, then priority; unresolved ties leave text unchanged.
-
-An app-owned `InsertionTarget` snapshots PID, focused AX element, selection, and a
-small change fingerprint on hotkey down. Keep these objects on their owning actor.
-Recheck the live destination after recognition. Insertion produces a receipt with
-method and verification state, suitable for undo/correction learning; do not report
-success if the adapter could not verify the effect. A timeout returns the text to
-the overlay, not a second automatic paste attempt that could duplicate content.
-
-State machine: idle -> capturing -> finalizing -> correcting -> inserting -> idle.
-Cancellation is permitted before insertion. A focus mismatch produces
-`awaitingExplicitPaste`; device/permission failures produce an actionable status.
-Queue or reject a second dictation explicitly while finalizing; never mix utterances.
-
-Local app/session control is specified in
-[meeting-design §4.1](meeting-design.md#41-recorder--app-protocol): files, not sockets
-or XPC. The session folder is private (0700); the app or CLI publishes one
-allowlisted, versioned request (`stop`, `pause`, `resume`, `marker`) for an exact
-session ID as `control/<UUID>.json`, and the recorder applies it at most once and
-acknowledges it in `status.json`. The recorder owns its archive writer lock and hands
-the processing lease to post-processing. SIGINT and SIGTERM stop gracefully; once
-audio is saved, a second signal may end processing but preserves the recording.
-
-### Synthesis and documents
-
-Each render request names one voice and exact text/settings. Retain the synthesizer
-and its delegate for the entire operation, handle cancellation/completion exactly
-once, and validate the emitted format before writing. Publish the completed file
-atomically after finalization. No partially written file is a completed part.
-
-Use deterministic semantic chunking and source-range accounting. Resuming compares
-manifest hashes/settings rather than trusting a filename. Playback is serialized
-across processes independently of rendering. Text extraction and voice selection
-fail explicitly when unavailable; neither may silently substitute a summary.
-
-## Errors and observable behavior
-
-Use structured errors for permission denied, unsupported locale, missing assets,
-device unavailable, capture gap, disk full, focus changed, unsupported insertion,
-model unavailable, generation rejected, invalid correction, extraction failed, and
-partial output. Transcription failure after a successful recording must preserve
-and identify the saved audio. Show capability degradation at the feature boundary.
-
-CLIs put content or JSON results on stdout and progress on stderr. Cancellation and
-partial output have documented exit statuses. Logs expose session IDs, processing
-times, queue depth, and failures; logging audio/text requires an explicit diagnostic
-mode. Import paths and output directories are handled as paths, never shell source.
+- Throw `HolosError` (`invalidInput`, `unavailable`, `permissionDenied`, `incomplete`, `io`) with a message that
+  says what to do next. Do not add cases; machine-readable reasons travel in data (`StopReason`, `ControlResult`,
+  `PostProcessingState`). `CancellationError` passes through unchanged.
+- Transcription failure after a successful recording keeps and names the saved audio.
+- CLIs put content and JSON on stdout and progress on stderr; exit codes are in meeting-design.md §1.4.
+- Logs use `Logger(subsystem: "ca.orlenko.holos.app", …)`. Never log transcript text, names, vocabulary or
+  embeddings; user paths only as `.private` (§1.5).

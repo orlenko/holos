@@ -22,37 +22,39 @@ let package = Package(
         .package(url: "https://github.com/argmaxinc/WhisperKit.git", exact: "1.1.0"),
     ],
     targets: [
-        .target(name: "HolosCore"),
-        .target(name: "HolosSpeech", dependencies: ["HolosCore"]),
-        .target(name: "HolosSynthesis", dependencies: ["HolosCore"]),
+        // Every source target excludes its README.md (module notes for contributors, AGENTS.md).
+        .target(name: "HolosCore", exclude: ["README.md"]),
+        .target(name: "HolosSpeech", dependencies: ["HolosCore"], exclude: ["README.md"]),
+        .target(name: "HolosSynthesis", dependencies: ["HolosCore"], exclude: ["README.md"]),
         // Readability.js is compiled into the binary (no resource bundle), so the voiceislocal tool stays one file.
-        .target(name: "HolosContent", dependencies: ["HolosCore", "HolosSynthesis"],
+        .target(name: "HolosContent", dependencies: ["HolosCore", "HolosSynthesis"], exclude: ["README.md"],
                 resources: [.embedInCode("Resources/Readability.js")]),
-        .target(name: "HolosStorage", dependencies: ["HolosCore"]),
-        .target(name: "HolosAudio", dependencies: ["HolosCore", "HolosStorage"]),
-        .target(name: "HolosDesktop", dependencies: ["HolosCore"]),
-        .target(name: "HolosDictation", dependencies: ["HolosCore", "HolosAudio", "HolosSpeech"]),
-        .target(name: "HolosSpeakers", dependencies: ["HolosCore"]),
+        .target(name: "HolosStorage", dependencies: ["HolosCore"], exclude: ["README.md"]),
+        .target(name: "HolosAudio", dependencies: ["HolosCore", "HolosStorage"], exclude: ["README.md"]),
+        .target(name: "HolosDesktop", dependencies: ["HolosCore"], exclude: ["README.md"]),
+        .target(name: "HolosDictation", dependencies: ["HolosCore", "HolosAudio", "HolosSpeech"],
+                exclude: ["README.md"]),
+        .target(name: "HolosSpeakers", dependencies: ["HolosCore"], exclude: ["README.md"]),
         .target(name: "HolosMeeting", dependencies: [
             "HolosCore", "HolosStorage", "HolosAudio", "HolosSpeech", "HolosSpeakers",
-        ]),
+        ], exclude: ["README.md"]),
         .target(name: "HolosDiarization", dependencies: [
             "HolosCore", .product(name: "FluidAudio", package: "FluidAudio"),
-        ]),
+        ], exclude: ["README.md"]),
         // Deep transcription after a meeting (docs/meeting-design.md §4.16): WhisperKit's Core ML Whisper models. Only
         // the command-line tool links it; the app runs the pass through voiceislocal.
         .target(name: "HolosWhisper", dependencies: [
             "HolosCore", .product(name: "WhisperKit", package: "WhisperKit"),
-        ]),
+        ], exclude: ["README.md"]),
         .executableTarget(name: "HolosApp", dependencies: [
             "HolosCore", "HolosAudio", "HolosSpeech", "HolosDesktop", "HolosDictation",
             "HolosStorage", "HolosSpeakers", "HolosMeeting", "HolosSynthesis", "HolosContent",
-        ]),
+        ], exclude: ["README.md"]),
         .executableTarget(name: "HolosCLI", dependencies: [
             "HolosCore", "HolosSpeech", "HolosSynthesis", "HolosStorage", "HolosAudio", "HolosContent",
             "HolosMeeting", "HolosSpeakers", "HolosDiarization", "HolosDictation", "HolosWhisper",
             .product(name: "ArgumentParser", package: "swift-argument-parser"),
-        ], linkerSettings: [.unsafeFlags([
+        ], exclude: ["README.md"], linkerSettings: [.unsafeFlags([
             "-Xlinker", "-sectcreate", "-Xlinker", "__TEXT", "-Xlinker", "__info_plist", "-Xlinker", cliInfoPlist,
         ])]),
         .testTarget(name: "HolosCoreTests", dependencies: ["HolosCore"]),
