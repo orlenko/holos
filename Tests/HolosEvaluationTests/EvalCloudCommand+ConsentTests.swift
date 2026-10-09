@@ -65,8 +65,13 @@ final class EvalCommandStopping: EvalInterruption {
             count += 1
             return count
         }
-        let task = Task { try await operation() }
-        cancelCurrent.withLock { $0 = { task.cancel() } }
+        // Created and registered under one lock: a step that calls `stop()` at once waits for the lock, so it
+        // always finds its own task to cancel.
+        let task = cancelCurrent.withLock { current -> Task<T, any Error> in
+            let task = Task { try await operation() }
+            current = { task.cancel() }
+            return task
+        }
         defer { cancelCurrent.withLock { $0 = nil } }
         let value = try await task.value
         afterStep?(call)
