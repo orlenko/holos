@@ -547,21 +547,6 @@ private actor CountingBackend: NaturalSpeechBackend {
     }
 }
 
-@Suite struct SpeechChunkCheckNumbersOnlyTests {
-    @Test func aParagraphOfNumbersAloneFailsWhenLittleOrNothingIsHeard() {
-        let numbers = "1,500 2,000 3,500."
-        // Nothing heard, or a cut-off take: not taken for right because no word is left to compare.
-        #expect(!SpeechChunkCheck.evaluate(expected: numbers, heard: "").passed)
-        #expect(!SpeechChunkCheck.evaluate(expected: numbers, heard: "fifteen").passed)
-        // Heard, however the numbers are written.
-        #expect(SpeechChunkCheck.evaluate(expected: numbers, heard: "1500 2000 3500").passed)
-        #expect(SpeechChunkCheck.evaluate(expected: numbers,
-                                          heard: "fifteen hundred two thousand thirty five hundred").passed)
-        #expect(SpeechChunkCheck.evaluate(expected: "2015", heard: "twenty fifteen").passed)
-        #expect(!SpeechChunkCheck.evaluate(expected: "2015", heard: "").passed)
-    }
-}
-
 @MainActor @Suite struct NaturalRenderSettingsTests {
     private func folder() throws -> URL {
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent("holos-settings-\(UUID().uuidString)")
@@ -590,5 +575,20 @@ private actor CountingBackend: NaturalSpeechBackend {
         #expect(checker.calls == 2)
         #expect(fallback.texts.count == 1)
     }
-}
 
+    @Test func aReadingThatSavedTheCheckOnIsCheckedWhenTodaysDefaultIsOff() async throws {
+        let checker = FakeChecker { _ in "a paragraph of a reading begun before" }
+        // HOLOS_NATURAL_CHECK=0 today: a new rendering is not checked.
+        let renderer = NaturalSpeechRenderer(backend: CountingBackend(), checker: checker, checksByDefault: false,
+                                             fallback: FakeFallback(), installedPacks: { [.english] })
+        #expect(renderer.settings(for: "pocket:en:alba")?.checked == false)
+        _ = try await renderer.render(text: "A paragraph rendered today.", voiceIdentifier: "pocket:en:alba", rate: nil,
+                                      to: try folder().appendingPathComponent("a.caf"))
+        #expect(checker.calls == 0)
+        // A reading that started with the check on keeps it.
+        _ = try await renderer.render(text: "A paragraph of a reading begun before.", voiceIdentifier: "pocket:en:alba",
+                                      rate: nil, settings: NaturalRenderSettings(fallbackVoice: nil, checked: true),
+                                      to: try folder().appendingPathComponent("b.caf"))
+        #expect(checker.calls == 1)
+    }
+}

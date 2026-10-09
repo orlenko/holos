@@ -9,16 +9,17 @@ import Synchronization
 /// The natural voices in the `voiceislocal` tool (docs/design.md "Natural voices"): Pocket TTS rendering with the
 /// per-paragraph check through Apple's on-device recognizer, and the setup of the language packs.
 enum NaturalVoicesCLI {
-    /// The renderer `say` and `read` use for natural voices. The check runs unless `HOLOS_NATURAL_CHECK=0`. What it
+    /// The renderer `say` and `read` use for natural voices. The check runs unless `HOLOS_NATURAL_CHECK=0`, or a reading
+    /// saved its policy when it started (its resume follows that policy either way: the checker is always made). What it
     /// finds (a re-render, a paragraph read by a system voice) is said on stderr.
     /// `scratch`: the folder its temporary files go in (the app gives each part one, and deletes it when it stops the
     /// tool); nil for the system's temporary folder.
     @MainActor static func renderer(log: Bool = true, scratch: URL? = nil) -> NaturalSpeechRenderer {
-        let checking = ProcessInfo.processInfo.environment["HOLOS_NATURAL_CHECK"] != "0"
         let root = scratch ?? FileManager.default.temporaryDirectory
-        let renderer = NaturalSpeechRenderer(backend: PocketSpeechBackend(),
-                                             checker: checking ? AppleSpeechChunkChecker(temporaryRoot: root) : nil,
-                                             fallback: NativeParagraphFallback(temporaryRoot: root))
+        let renderer = NaturalSpeechRenderer(
+            backend: PocketSpeechBackend(), checker: AppleSpeechChunkChecker(temporaryRoot: root),
+            checksByDefault: ProcessInfo.processInfo.environment["HOLOS_NATURAL_CHECK"] != "0",
+            fallback: NativeParagraphFallback(temporaryRoot: root))
         renderer.onEvent = { event in
             guard log else { return }
             switch event {
