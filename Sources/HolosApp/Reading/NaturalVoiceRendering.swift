@@ -84,7 +84,8 @@ import Synchronization
                          "--output", output.path, "--parent-pid", "\(parent)"]
         if let settings {
             arguments += ["--check", settings.checked ? "on" : "off"]
-            if let fallback = settings.fallbackVoice { arguments += ["--fallback-voice", fallback] }
+            // An empty one: the reading saved no fallback voice (not "use today's").
+            arguments += ["--fallback-voice", settings.fallbackVoice ?? ""]
         }
         if let rate { arguments += ["--rate", "\(rate)"] }
         return arguments
@@ -241,15 +242,27 @@ enum NaturalVoiceHelpers {
     static func ended(_ pid: Int32) { _ = state.withLock { $0.pids.remove(pid) } }
     static func using(_ folder: URL) { _ = state.withLock { $0.folders.insert(folder.path) } }
 
-    /// Makes a helper's folder with `make` and registers it in one step, under the lock `stopAll` takes: a folder is
-    /// made and registered before a quit's `stopAll` (which removes it), or not made at all once the quit has begun.
+    /// Makes a helper's folder with `make` and registers it. Refused once a quit has begun (`stopAll`); made outside the
+    /// lock, so a quit never waits on file work; then registered, or removed at once when a quit came meanwhile. Either
+    /// the quit removes the folder or the folder is removed here: the reading's text is not left behind.
     static func makeFolder(_ make: () throws -> URL) throws -> URL {
-        try state.withLock { value in
-            guard !value.stopped else { throw CancellationError() }
-            let folder = try make()
+        try state.withLock { value throws in if value.stopped { throw CancellationError() } }
+        let folder = try make()
+        let registered = state.withLock { value -> Bool in
+            guard !value.stopped else { return false }
             value.folders.insert(folder.path)
-            return folder
+            return true
         }
+        guard registered else {
+            do {
+                try FileManager.default.removeItem(at: folder)
+            } catch {
+                Logger(subsystem: "ca.orlenko.holos.app", category: "reading")
+                    .error("Could not remove a natural voice folder: \(error.localizedDescription, privacy: .public)")
+            }
+            throw CancellationError()
+        }
+        return folder
     }
     static func done(_ folder: URL) { _ = state.withLock { $0.folders.remove(folder.path) } }
 

@@ -233,6 +233,37 @@ import Testing
         #expect(!made.withLock { $0 })
     }
 
+    @Test func aQuitDuringTheFolderWorkLeavesNoFolder() throws {
+        defer { NaturalVoiceHelpers.stopAll(ending: false) { _ in } }
+        let made = Mutex<URL?>(nil)
+        // The quit comes while the folder is being made (it does not wait for it): the folder removes itself.
+        #expect(throws: CancellationError.self) {
+            _ = try NaturalVoiceHelpers.makeFolder {
+                let folder = try NaturalHelperScratch.create()
+                made.withLock { $0 = folder }
+                NaturalVoiceHelpers.stopAll { _ in }
+                return folder
+            }
+        }
+        let folder = try #require(made.withLock { $0 })
+        #expect(!FileManager.default.fileExists(atPath: folder.path))
+    }
+
+    @Test func aReadingThatSavedNoFallbackVoicePassesNone() async throws {
+        let launches = Launches()
+        let renderer = HelperNaturalRenderer(launch: { arguments, _, onExit in
+            launches.arguments.withLock { $0.append(arguments) }
+            try NaturalSpeechFile.write([Float](repeating: 0.1, count: 2_400), sampleRate: 24_000,
+                                        to: URL(fileURLWithPath: arguments[8]))
+            DispatchQueue.main.async { onExit(0) }
+            return 4243
+        }, installedPacks: { [.english] }, forceKill: { _ in }, gate: NaturalVoiceHelperGate())
+        _ = try await renderer.render(text: "Hello.", voiceIdentifier: "pocket:en:alba", rate: nil,
+                                      savedSettings: ["check": "on"], to: try folder().appendingPathComponent("n.caf"))
+        let arguments = launches.arguments.withLock { $0 }.first ?? []
+        #expect(Array(arguments.suffix(4)) == ["--check", "on", "--fallback-voice", ""])
+    }
+
     @Test func aNewPreviewClearsTheLastOnesFailure() async throws {
         let pane = ReadingPane(controller: ReadingController())
         pane.installedPacks = { [.english] }
