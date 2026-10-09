@@ -65,11 +65,11 @@ public enum NaturalVoiceModels {
 
     // MARK: - Status
 
-    /// Files only, no network: `installed` once the pack's marker is there, `downloading` while another process holds
-    /// its install lock, else `notInstalled`.
+    /// Files only, no network: `downloading` while a process holds the pack's install lock (it may be replacing the
+    /// files), else `installed` once the pack is ready (`isReady`), else `notInstalled`.
     public static func status(root: URL = root, pack: NaturalVoicePack) -> DeepModelStatus {
-        if isInstalled(root: root, pack: pack) { return .installed }
-        return lockIsHeld(root: root, pack: pack) ? .downloading : .notInstalled
+        if lockIsHeld(root: root, pack: pack) { return .downloading }
+        return isReady(root: root, pack: pack) ? .installed : .notInstalled
     }
 
     /// The packs installed now.
@@ -77,9 +77,19 @@ public enum NaturalVoiceModels {
         Set(NaturalVoicePack.allCases.filter { isInstalled(root: root, pack: $0) })
     }
 
+    /// Ready and no install running: what the voice lists and the renderers take for installed.
     static func isInstalled(root: URL, pack: NaturalVoicePack) -> Bool {
-        guard let marker = marker(root: root, pack: pack) else { return false }
-        return marker.pack == pack && marker.revision == revision
+        isReady(root: root, pack: pack) && !lockIsHeld(root: root, pack: pack)
+    }
+
+    /// The pack's marker names this pack and the pinned commit, and its files are there
+    /// (`NaturalVoicePackFiles.looksComplete`: the models and the offered voices, not empty; not hashed). Whether an
+    /// install runs is not asked (`setUp` holds the lock when it asks).
+    static func isReady(root: URL, pack: NaturalVoicePack) -> Bool {
+        guard let marker = marker(root: root, pack: pack), marker.pack == pack, marker.revision == revision else {
+            return false
+        }
+        return NaturalVoicePackFiles.looksComplete(base: directory(root: root, pack: pack), pack: pack)
     }
 
     /// The pack's marker, whatever commit it names.
@@ -148,7 +158,9 @@ public enum NaturalVoiceModels {
         try ensurePrivateDirectory(root)
         let lock = try InstallLock(path: lockPath(root: root, pack: pack), pack: pack)
         defer { lock.release() }
-        if !force, isInstalled(root: root, pack: pack) {
+        // Marked and its files there; a pack marked but with files missing goes on below, where it is checked against
+        // the listing and repaired.
+        if !force, isReady(root: root, pack: pack) {
             finish(pack, directory)
             notice("The \(pack.languageName) natural voices are already installed.")
             progress(1)
