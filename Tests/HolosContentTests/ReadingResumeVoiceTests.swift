@@ -37,7 +37,8 @@ import Testing
 
     private func saved(rate: Float? = nil, plan: [ReadingPart] = [], voice: String? = nil) -> ReadingManifest? {
         try? ReadingResumeVoice.saved(output: output.path, name: "Garden.m4a", readingsRoot: readings,
-                                      sourceSHA256: "s", plan: plan, rate: rate, metadata: metadata, voice: voice)
+                                      sourceSHA256: "s", plan: plan, rate: rate, metadata: metadata,
+                                      voices: voice.map { [$0] })
     }
 
     @Test func aReadingStartedWithAnyVoiceIsFound() throws {
@@ -67,6 +68,28 @@ import Testing
         try start(manifest(voice: natural, output: output, modelRevision: NaturalVoiceModels.revision),
                   changed: Date(timeIntervalSinceNow: 60))
         #expect(saved()?.voiceIdentifier == natural)
+    }
+
+    @Test func aReadingFromAnotherCommitNeverHidesOneThatCanBeResumed() throws {
+        try FileManager.default.createDirectory(at: readings, withIntermediateDirectories: true)
+        let george = "pocket:en:george"
+        // Made with an older commit of the voices, and written to later than the current reading.
+        try start(manifest(voice: george, output: output, modelRevision: "0000000000000000000000000000000000000000"),
+                  changed: Date(timeIntervalSinceNow: 60))
+        // Alone, it is the one found (and refused, saying why).
+        #expect(saved()?.voiceIdentifier == george)
+        try start(manifest(voice: natural, output: output, modelRevision: NaturalVoiceModels.revision))
+        #expect(saved()?.voiceIdentifier == natural)
+    }
+
+    @Test func aVoiceNameThatBothCatalogsHaveFindsTheReadingMadeWithEither() throws {
+        try FileManager.default.createDirectory(at: readings, withIntermediateDirectories: true)
+        try start(manifest(voice: natural, output: output, modelRevision: NaturalVoiceModels.revision))
+        // "Alba" names an Apple voice installed since, and the natural one the reading was made with.
+        let found = try ReadingResumeVoice.saved(output: output.path, name: "Garden.m4a", readingsRoot: readings,
+                                                 sourceSHA256: "s", plan: [], rate: nil, metadata: metadata,
+                                                 voices: ["com.apple.voice.compact.en-US.Alba", natural])
+        #expect(found?.voiceIdentifier == natural)
     }
 
     @Test func aManifestOfAnotherSchemaIsNeverTheOneResumed() throws {

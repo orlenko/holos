@@ -6,6 +6,7 @@ import HolosCore
 @testable import HolosMeeting
 import HolosSpeakers
 @testable import HolosStorage
+import HolosTestSupport
 import Testing
 
 // `voiceislocal session import` and `voiceislocal session score` (docs/meeting-design.md §5.5 PR7c), with generated audio and
@@ -147,7 +148,7 @@ private func sessionImporterCommand(_ file: URL, root: URL, speech: FakeSpeechFa
 
 @Test(.timeLimit(.minutes(1)))
 func importCreatesCompleteSession() async throws {
-    let temp = try TemporaryDirectory("import")
+    let temp = try TemporaryDirectory("import", permissions: 0o700)
     defer { temp.remove() }
     let wav = try sessionImporterStereoWAV(in: temp.url)
     let root = temp.url.appendingPathComponent("Sessions", isDirectory: true)
@@ -208,7 +209,7 @@ func importCreatesCompleteSession() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func importPassesVocabulary() async throws {
-    let temp = try TemporaryDirectory("import")
+    let temp = try TemporaryDirectory("import", permissions: 0o700)
     defer { temp.remove() }
     let wav = try sessionImporterStereoWAV(in: temp.url)
     let speech = FakeSpeechFactory([FakeSpeechScript(segments: [sessionImporterSegment()])])
@@ -223,15 +224,15 @@ func importPassesVocabulary() async throws {
 
 @Test func importCleansVocabularyAsARecordingDoes() {
     let long = String(repeating: "x", count: 101)
-    #expect(SessionImporter.cleaned(["  Maria Chen ", "", "   ", long, "Strata"]) == ["Maria Chen", "Strata"])
-    #expect(SessionImporter.cleaned((0..<1_200).map { "term \($0)" }).count == 1_000)
+    #expect(MeetingVocabulary.cleaned(["  Maria Chen ", "", "   ", long, "Strata"]) == ["Maria Chen", "Strata"])
+    #expect(MeetingVocabulary.cleaned((0..<1_200).map { "term \($0)" }).count == 1_000)
 }
 
 /// The session is built in `.import-<UUID>/` and then moved, so nothing it persists may name the staging folder:
 /// `Transcript.source` and every other file name the published `<root>/<id>.holos`.
 @Test(.timeLimit(.minutes(1)))
 func importPersistsNoStagingPath() async throws {
-    let temp = try TemporaryDirectory("import")
+    let temp = try TemporaryDirectory("import", permissions: 0o700)
     defer { temp.remove() }
     let wav = try sessionImporterStereoWAV(in: temp.url)
     let root = temp.url.appendingPathComponent("Sessions", isDirectory: true)
@@ -257,7 +258,7 @@ func importPersistsNoStagingPath() async throws {
 /// it. Before, the tree was removed in directory order, and a failure after the marker went left partial audio that
 /// no sweep would ever touch.
 @Test func discardThatFailsPartWayLeavesTheMarkerForTheNextSweep() throws {
-    let temp = try TemporaryDirectory("import")
+    let temp = try TemporaryDirectory("import", permissions: 0o700)
     defer { temp.remove() }
     let root = temp.url.appendingPathComponent("Sessions", isDirectory: true)
     func staged() throws -> ImportStaging {
@@ -322,7 +323,7 @@ func importPersistsNoStagingPath() async throws {
 /// even one that looks like a staging folder, is left whole. Before, the removal reopened the name and deleted the
 /// replacement.
 @Test func sweepNeverEmptiesAFolderRenamedInAfterItsCheck() throws {
-    let temp = try TemporaryDirectory("import")
+    let temp = try TemporaryDirectory("import", permissions: 0o700)
     defer { temp.remove() }
     let root = temp.url.appendingPathComponent("Sessions", isDirectory: true)
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
@@ -348,7 +349,7 @@ func importPersistsNoStagingPath() async throws {
 /// `discard` and `publish` work through the folder `create` made and opened, so a folder renamed in at the staging
 /// name meanwhile is neither emptied nor published from, and its marker and lock file stay.
 @Test func discardAndPublishNeverTouchAFolderRenamedInAtTheStagingName() throws {
-    let temp = try TemporaryDirectory("import")
+    let temp = try TemporaryDirectory("import", permissions: 0o700)
     defer { temp.remove() }
     let root = temp.url.appendingPathComponent("Sessions", isDirectory: true)
     let fm = FileManager.default
@@ -391,7 +392,7 @@ func importPersistsNoStagingPath() async throws {
 /// A folder renamed in at the new staging name before `create` opens it is refused and left exactly as it was:
 /// `create` neither writes its lock file and marker into it nor removes anything from it.
 @Test func createRefusesAFolderRenamedInBeforeItIsOpened() throws {
-    let temp = try TemporaryDirectory("import")
+    let temp = try TemporaryDirectory("import", permissions: 0o700)
     defer { temp.remove() }
     let root = temp.url.appendingPathComponent("Sessions", isDirectory: true)
     var swapped: String?
@@ -424,7 +425,7 @@ func importPersistsNoStagingPath() async throws {
 /// imported.
 @Test(.timeLimit(.minutes(1)))
 func importNeverWritesIntoAFolderRenamedInAtTheStagingName() async throws {
-    let temp = try TemporaryDirectory("import")
+    let temp = try TemporaryDirectory("import", permissions: 0o700)
     defer { temp.remove() }
     let wav = try sessionImporterStereoWAV(in: temp.url)
     let root = temp.url.appendingPathComponent("Sessions", isDirectory: true)
@@ -458,7 +459,7 @@ func importNeverWritesIntoAFolderRenamedInAtTheStagingName() async throws {
 /// fails and removes what it made. Either way the replacement is left exactly as the other program made it.
 @Test(.timeLimit(.minutes(1)), arguments: [false, true])
 func importWritesNothingIntoAStagingFolderSwappedInAfterTheSessionIsMade(transcribe: Bool) async throws {
-    let temp = try TemporaryDirectory("import")
+    let temp = try TemporaryDirectory("import", permissions: 0o700)
     defer { temp.remove() }
     let wav = try sessionImporterStereoWAV(in: temp.url)
     let root = temp.url.appendingPathComponent("Sessions", isDirectory: true)
@@ -512,7 +513,7 @@ func importWritesNothingIntoAStagingFolderSwappedInAfterTheSessionIsMade(transcr
 /// moved it out of the staging folder: a folder moved in at its name is not published, and the error does not claim
 /// that nothing was imported while the moved session holds the audio.
 @Test func publishAndDiscardFollowTheSessionFolderCreateSessionMade() async throws {
-    let temp = try TemporaryDirectory("import")
+    let temp = try TemporaryDirectory("import", permissions: 0o700)
     defer { temp.remove() }
     let root = temp.url.appendingPathComponent("Sessions", isDirectory: true)
     let fm = FileManager.default
@@ -554,7 +555,7 @@ private func sessionImporterFinishedStaging(in root: URL) async throws -> (Impor
 /// is moved back into the staging folder, `publish` throws, nothing stays published, and `discard` says where the
 /// session went. Before, `publish` returned the swapped-in folder as the imported session.
 @Test func publishRollsBackAFolderSwappedInBetweenTheCheckAndTheRename() async throws {
-    let temp = try TemporaryDirectory("import")
+    let temp = try TemporaryDirectory("import", permissions: 0o700)
     defer { temp.remove() }
     let root = temp.url.appendingPathComponent("Sessions", isDirectory: true)
     let fm = FileManager.default
@@ -587,7 +588,7 @@ private func sessionImporterFinishedStaging(in root: URL) async throws -> (Impor
 /// alone. Before, it returned the root's current path from `F_GETPATH` while the transcript named the old one.
 @Test(arguments: [false, true])
 func publishFailsClearlyWhenTheOpenedRootMoved(throughLink: Bool) async throws {
-    let temp = try TemporaryDirectory("import")
+    let temp = try TemporaryDirectory("import", permissions: 0o700)
     defer { temp.remove() }
     let fm = FileManager.default
     let real = temp.url.appendingPathComponent("Sessions", isDirectory: true)
@@ -631,7 +632,7 @@ func publishFailsClearlyWhenTheOpenedRootMoved(throughLink: Bool) async throws {
 
 /// While the root stays put, `publish` returns exactly `publishedURL`, the location the import persists.
 @Test func publishReturnsThePublishedURL() async throws {
-    let temp = try TemporaryDirectory("import")
+    let temp = try TemporaryDirectory("import", permissions: 0o700)
     defer { temp.remove() }
     let root = temp.url.appendingPathComponent("Sessions", isDirectory: true)
     let (staging, _, sessionName) = try await sessionImporterFinishedStaging(in: root)
@@ -666,7 +667,7 @@ func cancellableStartKeepsACancelMadeBeforeTheWorkStarts() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func importWithoutTranscriptionIsAudioOnly() async throws {
-    let temp = try TemporaryDirectory("import")
+    let temp = try TemporaryDirectory("import", permissions: 0o700)
     defer { temp.remove() }
     let wav = try sessionImporterStereoWAV(in: temp.url)
     let speech = FakeSpeechFactory()
@@ -687,7 +688,7 @@ func importWithoutTranscriptionIsAudioOnly() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func importOfAFileThatIsNotAudioCreatesNothing() async throws {
-    let temp = try TemporaryDirectory("import")
+    let temp = try TemporaryDirectory("import", permissions: 0o700)
     defer { temp.remove() }
     let fake = temp.url.appendingPathComponent("notes.wav")
     try Data("not audio".utf8).write(to: fake)
@@ -706,7 +707,7 @@ func importOfAFileThatIsNotAudioCreatesNothing() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func importWhoseTranscriptionFailsLeavesNoSession() async throws {
-    let temp = try TemporaryDirectory("import")
+    let temp = try TemporaryDirectory("import", permissions: 0o700)
     defer { temp.remove() }
     let wav = try sessionImporterStereoWAV(in: temp.url)
     let root = temp.url.appendingPathComponent("Sessions", isDirectory: true)
@@ -730,7 +731,7 @@ func importWhoseTranscriptionFailsLeavesNoSession() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func cancelledImportLeavesNoSession() async throws {
-    let temp = try TemporaryDirectory("import")
+    let temp = try TemporaryDirectory("import", permissions: 0o700)
     defer { temp.remove() }
     let wav = try sessionImporterStereoWAV(in: temp.url)
     let root = temp.url.appendingPathComponent("Sessions", isDirectory: true)
@@ -756,7 +757,7 @@ func cancelledImportLeavesNoSession() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func importGivesUpOnSpeechThatStopsAnswering() async throws {
-    let temp = try TemporaryDirectory("import")
+    let temp = try TemporaryDirectory("import", permissions: 0o700)
     defer { temp.remove() }
     let wav = try sessionImporterStereoWAV(in: temp.url)
     let root = temp.url.appendingPathComponent("Sessions", isDirectory: true)
@@ -781,7 +782,7 @@ func importGivesUpOnSpeechThatStopsAnswering() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func importRemovesAbandonedImportsButNotRunningOnes() async throws {
-    let temp = try TemporaryDirectory("import")
+    let temp = try TemporaryDirectory("import", permissions: 0o700)
     defer { temp.remove() }
     let wav = try sessionImporterStereoWAV(in: temp.url)
     let root = temp.url.appendingPathComponent("Sessions", isDirectory: true)
@@ -813,7 +814,7 @@ func importRemovesAbandonedImportsButNotRunningOnes() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func importSweepLeavesFoldersHolosDidNotMake() async throws {
-    let temp = try TemporaryDirectory("import")
+    let temp = try TemporaryDirectory("import", permissions: 0o700)
     defer { temp.remove() }
     let wav = try sessionImporterStereoWAV(in: temp.url)
     let root = temp.url.appendingPathComponent("Sessions", isDirectory: true)
@@ -875,7 +876,7 @@ func importSweepLeavesFoldersHolosDidNotMake() async throws {
 /// a sweep, even one whose clock is far past `unlockedGrace` (so only the lock and the marker order protect the
 /// folder), leaves the staging folder and its session alone.
 @Test func sweepAtEveryStepOfCreateAndPublishLeavesTheImportAlone() throws {
-    let temp = try TemporaryDirectory("import")
+    let temp = try TemporaryDirectory("import", permissions: 0o700)
     defer { temp.remove() }
     let root = temp.url.appendingPathComponent("Sessions", isDirectory: true)
     let sessionName = "\(UUID().uuidString).holos"
@@ -910,7 +911,7 @@ func importSweepLeavesFoldersHolosDidNotMake() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func importCommandLabelsUnderTheImportsLease() async throws {
-    let temp = try TemporaryDirectory("import")
+    let temp = try TemporaryDirectory("import", permissions: 0o700)
     defer { temp.remove() }
     let wav = try sessionImporterStereoWAV(in: temp.url)
     let root = temp.url.appendingPathComponent("Sessions", isDirectory: true)
@@ -936,7 +937,7 @@ func importCommandLabelsUnderTheImportsLease() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func importCommandExitCodes() async throws {
-    let temp = try TemporaryDirectory("import")
+    let temp = try TemporaryDirectory("import", permissions: 0o700)
     defer { temp.remove() }
     let wav = try sessionImporterStereoWAV(in: temp.url)
     let root = temp.url.appendingPathComponent("Sessions", isDirectory: true)
@@ -979,7 +980,7 @@ func importCommandExitCodes() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func importCommandCancellation() async throws {
-    let temp = try TemporaryDirectory("import")
+    let temp = try TemporaryDirectory("import", permissions: 0o700)
     defer { temp.remove() }
     let wav = try sessionImporterStereoWAV(in: temp.url)
     let root = temp.url.appendingPathComponent("Sessions", isDirectory: true)
@@ -1037,7 +1038,7 @@ private func sessionScorerSession(in root: URL) async throws -> URL {
 
 @Test(.timeLimit(.minutes(1)))
 func scoreJSONHasNoNames() async throws {
-    let temp = try TemporaryDirectory("score")
+    let temp = try TemporaryDirectory("score", permissions: 0o700)
     defer { temp.remove() }
     let session = try await sessionScorerSession(in: temp.url)
     let report = try SessionScorer.score(session: session, otterTranscript: sessionScorerOtterText)
@@ -1077,7 +1078,7 @@ func scoreJSONHasNoNames() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func scoreCountsConfusionAndMarksGenericLabels() async throws {
-    let temp = try TemporaryDirectory("score")
+    let temp = try TemporaryDirectory("score", permissions: 0o700)
     defer { temp.remove() }
     let session = try await sessionScorerSession(in: temp.url)
     // Otter hears one speaker for the first 10 s and gives the second half to an unnamed speaker.
@@ -1104,7 +1105,7 @@ func scoreCountsConfusionAndMarksGenericLabels() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func scoreNeedsSpeakerLabelsAndTurns() async throws {
-    let temp = try TemporaryDirectory("score")
+    let temp = try TemporaryDirectory("score", permissions: 0o700)
     defer { temp.remove() }
     let transcript = SessionFixtures.transcript(SessionFixtures.alternatingSegments(track: "mic"))
     let unlabelled = try await SessionFixtures.makeSession(in: temp.url, mode: .inPerson, transcript: transcript)
@@ -1136,7 +1137,7 @@ private func sessionScorerRefusal(_ body: () throws -> Void) -> (invalid: Bool, 
 
 @Test(.timeLimit(.minutes(1)))
 func scoreRejectsTranscriptsWithNoTurnInsideTheAudio() async throws {
-    let temp = try TemporaryDirectory("score")
+    let temp = try TemporaryDirectory("score", permissions: 0o700)
     defer { temp.remove() }
     let session = try await sessionScorerSession(in: temp.url)
     // The fixture's audio is 20 s. A transcript that starts at 30 s is another recording's; one whose only turn
@@ -1153,7 +1154,7 @@ func scoreRejectsTranscriptsWithNoTurnInsideTheAudio() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func scoreRejectsTimesThatGoBackwards() async throws {
-    let temp = try TemporaryDirectory("score")
+    let temp = try TemporaryDirectory("score", permissions: 0o700)
     defer { temp.remove() }
     let session = try await sessionScorerSession(in: temp.url)
     let otter = "Maria Chen  0:10\nHello.\n\nJim Park  0:05\nHi.\n"
@@ -1164,7 +1165,7 @@ func scoreRejectsTimesThatGoBackwards() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func scoreRejectsLabelsWithoutSpeakerSegments() async throws {
-    let temp = try TemporaryDirectory("score")
+    let temp = try TemporaryDirectory("score", permissions: 0o700)
     defer { temp.remove() }
     let transcript = SessionFixtures.transcript(SessionFixtures.alternatingSegments(track: "mic"))
     let session = try await SessionFixtures.makeSession(in: temp.url, mode: .inPerson, transcript: transcript)
@@ -1178,7 +1179,7 @@ func scoreRejectsLabelsWithoutSpeakerSegments() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func scoreRejectsReferenceAndLabelsThatDoNotOverlap() async throws {
-    let temp = try TemporaryDirectory("score")
+    let temp = try TemporaryDirectory("score", permissions: 0o700)
     defer { temp.remove() }
     let transcript = SessionFixtures.transcript(SessionFixtures.alternatingSegments(track: "mic"))
     let session = try await SessionFixtures.makeSession(in: temp.url, mode: .inPerson, transcript: transcript)
@@ -1195,7 +1196,7 @@ func scoreRejectsReferenceAndLabelsThatDoNotOverlap() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func scoreRejectsACollarThatCoversEveryTurn() async throws {
-    let temp = try TemporaryDirectory("score")
+    let temp = try TemporaryDirectory("score", permissions: 0o700)
     defer { temp.remove() }
     let session = try await sessionScorerSession(in: temp.url)
     // The fixture's Otter turns are 5 s long; a 3 s collar around each boundary leaves nothing to score.
@@ -1208,7 +1209,7 @@ func scoreRejectsACollarThatCoversEveryTurn() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func scoreReportsTurnAgreementAsNotComparableWithoutLabelledTurns() async throws {
-    let temp = try TemporaryDirectory("score")
+    let temp = try TemporaryDirectory("score", permissions: 0o700)
     defer { temp.remove() }
     // No words, so the run has speaker segments but no labelled turns.
     let transcript = SessionFixtures.transcript([])

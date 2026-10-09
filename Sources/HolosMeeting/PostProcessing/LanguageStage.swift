@@ -717,15 +717,12 @@ public enum LanguageStage {
     /// replacing the transcript.
     private static func publish(_ merged: Transcript, details: [String: String],
                                 request: Request) async throws -> String? {
-        return try await SessionArchive.withMaintenanceArchive(at: request.session, lease: request.lease) { archive in
-            try await SessionArchive.withSpeakerLockAsync(at: request.session) { () async throws -> String? in
-                if let problem = editedHeadProblem(request) { return problem }
-                whilePublishing?()
-                try Task.checkCancellation()
-                try await archive.recordEvent(kind: MeetingEventKind.languagesDetected, details: details)
-                try await archive.saveTranscript(merged, writeLegacyExports: false)
-                return nil
-            }
+        try await TranscriptPublisher.publish(session: request.session, lease: request.lease) {
+            () throws -> TranscriptPublisher.Decision<String?> in
+            if let problem = editedHeadProblem(request) { return .keep(problem) }
+            whilePublishing?()
+            let event = TranscriptPublisher.Event(kind: MeetingEventKind.languagesDetected, details: details)
+            return .publish(.init(transcript: merged, event: event), nil)
         }
     }
 

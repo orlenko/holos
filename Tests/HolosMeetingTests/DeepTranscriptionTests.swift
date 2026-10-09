@@ -4,6 +4,7 @@ import HolosCore
 @testable import HolosMeeting
 import HolosSpeakers
 import HolosStorage
+import HolosTestSupport
 import Testing
 
 // The deep transcription pass (docs/meeting-design.md §4.16) with a scripted transcriber: no model is downloaded or
@@ -297,7 +298,7 @@ private func deepStage(_ record: PostProcessingRecord) -> StageOutcome? {
 
 @Test(.timeLimit(.minutes(1)))
 func theMeetingIsTranscribedAgainInANewRevisionAndRelabelled() async throws {
-    let temp = try TemporaryDirectory("deep")
+    let temp = try TemporaryDirectory("deep", permissions: 0o700)
     defer { temp.remove() }
     let (session, recorded) = try await deepSession(in: temp.url)
     let transcriber = ScriptedTranscriber(script: scriptedHearing)
@@ -342,7 +343,7 @@ func theMeetingIsTranscribedAgainInANewRevisionAndRelabelled() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func aSecondRunKeepsTheTranscriptAndForceTranscribesAgain() async throws {
-    let temp = try TemporaryDirectory("deep")
+    let temp = try TemporaryDirectory("deep", permissions: 0o700)
     defer { temp.remove() }
     let (session, recorded) = try await deepSession(in: temp.url)
     let transcriber = ScriptedTranscriber(script: scriptedHearing)
@@ -368,7 +369,7 @@ func aSecondRunKeepsTheTranscriptAndForceTranscribesAgain() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func deepEditedSpeakerLabelsAreKeptUnlessForced() async throws {
-    let temp = try TemporaryDirectory("deep")
+    let temp = try TemporaryDirectory("deep", permissions: 0o700)
     defer { temp.remove() }
     let (session, recorded) = try await deepSession(in: temp.url)
     _ = try await MeetingPostProcessor(voiceSamples: .none, diarizer: FakeDiarizer(outputs: ["mic": SessionFixtures.alternatingOutput()]),
@@ -395,7 +396,7 @@ func deepEditedSpeakerLabelsAreKeptUnlessForced() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func deepWordsEditedInReviewAreKeptUnlessForced() async throws {
-    let temp = try TemporaryDirectory("deep")
+    let temp = try TemporaryDirectory("deep", permissions: 0o700)
     defer { temp.remove() }
     let (session, recorded) = try await deepSession(in: temp.url)
     _ = try await MeetingPostProcessor(voiceSamples: .none, diarizer: FakeDiarizer(outputs: ["mic": SessionFixtures.alternatingOutput()]),
@@ -422,7 +423,7 @@ func deepWordsEditedInReviewAreKeptUnlessForced() async throws {
 /// An automatic fix reverted in Review (`reviewRevert`) is a change made in Review too: an unforced pass keeps it.
 @Test(.timeLimit(.minutes(1)))
 func deepWordsRevertedInReviewAreKeptUnlessForced() async throws {
-    let temp = try TemporaryDirectory("deep")
+    let temp = try TemporaryDirectory("deep", permissions: 0o700)
     defer { temp.remove() }
     let (session, recorded) = try await deepSession(in: temp.url)
     var reverted = recorded
@@ -443,7 +444,7 @@ func deepWordsRevertedInReviewAreKeptUnlessForced() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func deepLabelsEditedWhileTranscribingAreKept() async throws {
-    let temp = try TemporaryDirectory("deep")
+    let temp = try TemporaryDirectory("deep", permissions: 0o700)
     defer { temp.remove() }
     let (session, recorded) = try await deepSession(in: temp.url)
     _ = try await MeetingPostProcessor(voiceSamples: .none, diarizer: FakeDiarizer(outputs: ["mic": SessionFixtures.alternatingOutput()]),
@@ -463,7 +464,7 @@ func deepLabelsEditedWhileTranscribingAreKept() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func wordFixesRunOnTheNewTranscript() async throws {
-    let temp = try TemporaryDirectory("deep")
+    let temp = try TemporaryDirectory("deep", permissions: 0o700)
     defer { temp.remove() }
     let (session, _) = try await deepSession(in: temp.url)
     let transcriber = ScriptedTranscriber(script: scriptedHearing)
@@ -481,7 +482,7 @@ func wordFixesRunOnTheNewTranscript() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func liveCorrectionsApplyToTheNewTranscript() async throws {
-    let temp = try TemporaryDirectory("deep")
+    let temp = try TemporaryDirectory("deep", permissions: 0o700)
     defer { temp.remove() }
     let (session, recorded) = try await deepSession(in: temp.url)
     // While recording, the person changed "cloud" in the second passage (its seventh word) to "Azure".
@@ -502,7 +503,7 @@ func liveCorrectionsApplyToTheNewTranscript() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func microphoneEchoOfACallIsStillDropped() async throws {
-    let temp = try TemporaryDirectory("deep")
+    let temp = try TemporaryDirectory("deep", permissions: 0o700)
     defer { temp.remove() }
     let words = "the quarterly numbers look good to everyone here".split(separator: " ").map(String.init)
     let recorded = SessionFixtures.transcript([
@@ -534,7 +535,7 @@ func microphoneEchoOfACallIsStillDropped() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func deepFailedTranscriptionKeepsTheTranscript() async throws {
-    let temp = try TemporaryDirectory("deep")
+    let temp = try TemporaryDirectory("deep", permissions: 0o700)
     defer { temp.remove() }
     let (session, recorded) = try await deepSession(in: temp.url)
     let transcriber = ScriptedTranscriber { _ in throw HolosError.io("The Neural Engine is busy.") }
@@ -557,7 +558,7 @@ func deepFailedTranscriptionKeepsTheTranscript() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func deepCancelledPassPublishesNothing() async throws {
-    let temp = try TemporaryDirectory("deep")
+    let temp = try TemporaryDirectory("deep", permissions: 0o700)
     defer { temp.remove() }
     let (session, recorded) = try await deepSession(in: temp.url)
     let transcriber = ScriptedTranscriber { _ in throw CancellationError() }
@@ -571,7 +572,7 @@ func deepCancelledPassPublishesNothing() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func theCommandRefusesWhatItCannotDo() async throws {
-    let temp = try TemporaryDirectory("deep")
+    let temp = try TemporaryDirectory("deep", permissions: 0o700)
     defer { temp.remove() }
     let transcriber = ScriptedTranscriber(script: scriptedHearing)
 
@@ -605,7 +606,7 @@ func theCommandRefusesWhatItCannotDo() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func aSessionWithoutATranscriptGetsItsFirstOne() async throws {
-    let temp = try TemporaryDirectory("deep")
+    let temp = try TemporaryDirectory("deep", permissions: 0o700)
     defer { temp.remove() }
     // Recorded with --record-only (or imported with --no-transcribe): audio, no transcript. The quiet tone is above
     // the silence threshold, so with no recorded words to compare, the audio level alone decides.
@@ -624,7 +625,7 @@ func aSessionWithoutATranscriptGetsItsFirstOne() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func aSilentSessionWithoutATranscriptGetsNone() async throws {
-    let temp = try TemporaryDirectory("deep")
+    let temp = try TemporaryDirectory("deep", permissions: 0o700)
     defer { temp.remove() }
     let session = try await SessionFixtures.makeSession(in: temp.url, mode: .inPerson, transcript: nil, tone: 0)
     let outcome = try await deepRun(session, deepDependencies(ScriptedTranscriber(script: scriptedHearing)))
@@ -636,7 +637,7 @@ func aSilentSessionWithoutATranscriptGetsNone() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func aMeetingInAnotherLanguageKeepsItsTranscriptUnlessForced() async throws {
-    let temp = try TemporaryDirectory("deep")
+    let temp = try TemporaryDirectory("deep", permissions: 0o700)
     defer { temp.remove() }
     let (session, recorded) = try await deepSession(in: temp.url)
     // What `session languages --languages fr-CA` leaves: a merge of one language.
@@ -686,7 +687,7 @@ func aMeetingInAnotherLanguageKeepsItsTranscriptUnlessForced() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func anEnglishMeetingIsTranscribedWithoutForce() async throws {
-    let temp = try TemporaryDirectory("deep")
+    let temp = try TemporaryDirectory("deep", permissions: 0o700)
     defer { temp.remove() }
     // meeting.json names English alone; the recorded transcript is English.
     let (session, recorded) = try await deepSession(in: temp.url, languages: ["en-CA"])
@@ -700,7 +701,7 @@ func anEnglishMeetingIsTranscribedWithoutForce() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func aRunWithNothingToDoNeedsNoModel() async throws {
-    let temp = try TemporaryDirectory("deep")
+    let temp = try TemporaryDirectory("deep", permissions: 0o700)
     defer { temp.remove() }
     let (session, _) = try await deepSession(in: temp.url)
     let transcriber = ScriptedTranscriber(script: scriptedHearing)
@@ -717,7 +718,7 @@ func aRunWithNothingToDoNeedsNoModel() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func aRunWithNothingToDoNeedsNoAudio() async throws {
-    let temp = try TemporaryDirectory("deep")
+    let temp = try TemporaryDirectory("deep", permissions: 0o700)
     defer { temp.remove() }
     let (session, _) = try await deepSession(in: temp.url)
     let transcriber = ScriptedTranscriber(script: scriptedHearing)
@@ -740,7 +741,7 @@ func aRunWithNothingToDoNeedsNoAudio() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func aSessionLeftProcessingMustBeRecoveredFirst() async throws {
-    let temp = try TemporaryDirectory("deep")
+    let temp = try TemporaryDirectory("deep", permissions: 0o700)
     defer { temp.remove() }
     let (session, _) = try await deepSession(in: temp.url)
     var manifest = try SessionArchive.readManifest(at: session)
@@ -754,7 +755,7 @@ func aSessionLeftProcessingMustBeRecoveredFirst() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func audibleStretchesTheModelLeftEmptyFailThePassWhereWordsWereHeard() async throws {
-    let temp = try TemporaryDirectory("deep")
+    let temp = try TemporaryDirectory("deep", permissions: 0o700)
     defer { temp.remove() }
     let (session, recorded) = try await deepSession(in: temp.url)
     // The model hears the first two passages, and nothing in an audible stretch where the recorder heard words.
@@ -817,7 +818,7 @@ func audibleStretchesTheModelLeftEmptyFailThePassWhereWordsWereHeard() async thr
 
 @Test(.timeLimit(.minutes(1)))
 func ordinaryPostProcessingNeverRunsThePass() async throws {
-    let temp = try TemporaryDirectory("deep")
+    let temp = try TemporaryDirectory("deep", permissions: 0o700)
     defer { temp.remove() }
     let (session, recorded) = try await deepSession(in: temp.url)
     let transcriber = ScriptedTranscriber(script: scriptedHearing)
@@ -851,7 +852,7 @@ private func archiveEvent(_ sequence: Int, _ kind: String, _ details: [String: S
 
 @Test(.timeLimit(.minutes(1)))
 func theTranscriberIsToldWhereTheRecordedTranscriptHeardWords() async throws {
-    let temp = try TemporaryDirectory("deep")
+    let temp = try TemporaryDirectory("deep", permissions: 0o700)
     defer { temp.remove() }
     let (session, recorded) = try await deepSession(in: temp.url)
     let transcriber = ScriptedTranscriber(script: scriptedHearing)

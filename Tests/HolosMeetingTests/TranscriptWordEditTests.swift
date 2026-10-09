@@ -3,6 +3,7 @@ import HolosCore
 @testable import HolosMeeting
 import HolosSpeakers
 import HolosStorage
+import HolosTestSupport
 import Testing
 
 // Editing words in Review, the pure part (docs/meeting-design.md §5.10, "Editing words"): `TranscriptWordEdit` on
@@ -932,7 +933,7 @@ private let editEchoMask: AcousticEchoMask = {
 func aDamagedSegmentIsNeverMappedByTime() async throws {
     // Labels mapped from a transcript whose second language piece has a mark ending at Int.max (combining pieces would
     // offset it past Int.max): refused, never trapped.
-    let temp = try TemporaryDirectory("review")
+    let temp = try TemporaryDirectory("review", permissions: 0o700)
     defer { temp.remove() }
     let segment = editSegment(["ask", "cloud", "now"])
     let transcript = editTranscript([segment])

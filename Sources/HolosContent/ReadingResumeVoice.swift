@@ -10,23 +10,26 @@ import HolosSynthesis
 /// part), whatever voice it used. Nil when none is found (the resume then says there is no reading to resume).
 public enum ReadingResumeVoice {
     /// The saved reading for `script` read into `output` (see above), found off the main actor (a Readings folder
-    /// can hold many readings, on a slow drive); a Stop ends the search. `voice`: only a reading made with it (a
-    /// `--voice` given with `--resume`).
+    /// can hold many readings, on a slow drive); a Stop ends the search. `voices`: only a reading made with one of them
+    /// (the voices a `--voice` given with `--resume` can name).
     public static func saved(output: String?, name: String, readingsRoot: URL, script: ReadingScript, rate: Float?,
-                             metadata: AudioBookMetadata, voice: String? = nil) async throws -> ReadingManifest? {
+                             metadata: AudioBookMetadata, voices: Set<String>? = nil) async throws
+        -> ReadingManifest? {
         let plan = ReadingPipeline.plan(script.parts(maxUTF16Units: ReadingPipeline.defaultMaxPartUTF16Units))
         let source = sha256(Data(script.text.utf8))
         return try await offMain {
             try saved(output: output, name: name, readingsRoot: readingsRoot, sourceSHA256: source, plan: plan,
-                      rate: rate, metadata: metadata, voice: voice)
+                      rate: rate, metadata: metadata, voices: voices)
         }
     }
 
     /// The search itself: each manifest read once; the part plan compared too, since documents with the same text can
     /// be split into other parts and chapters (another reading). Only a manifest of this schema and audio format is a
-    /// candidate: another one cannot be resumed here, so it never wins by being newer.
+    /// candidate: another one cannot be resumed here, so it never wins by being newer. A natural reading made with
+    /// another commit of the voices is taken only when no other candidate is left (so its refusal can be said): it
+    /// never hides a reading that can be resumed.
     static func saved(output: String?, name: String, readingsRoot: URL, sourceSHA256: String, plan: [ReadingPart],
-                      rate: Float?, metadata: AudioBookMetadata, voice: String? = nil,
+                      rate: Float?, metadata: AudioBookMetadata, voices: Set<String>? = nil,
                       volume: ReadingPathIdentity.VolumeQuery = ReadingPathIdentity.volumeRules) throws
         -> ReadingManifest? {
         guard let (location, destination) = try? ReadingOutput.resolve(
@@ -36,22 +39,27 @@ public enum ReadingResumeVoice {
               let names = try? FileManager.default.contentsOfDirectory(atPath: readingsRoot.path) else { return nil }
         let file = ReadingPathIdentity.key(location.output, .exact, volume: volume)
         var latest: (manifest: ReadingManifest, changed: Date)?
+        var latestStale: (manifest: ReadingManifest, changed: Date)?
         for name in names where name.hasPrefix("Output-") {
             try Task.checkCancellation()
             let folder = readingsRoot.appendingPathComponent(name, isDirectory: true)
             guard let (manifest, changed) = manifestAndDate(in: folder),
                   manifest.schemaVersion == ReadingManifest.currentSchemaVersion, manifest.format == .current,
                   manifest.sourceSHA256 == sourceSHA256,
-                  voice.map({ $0 == manifest.voiceIdentifier }) ?? true,
+                  voices.map({ $0.contains(manifest.voiceIdentifier) }) ?? true,
                   manifest.rate == rate, manifest.title == metadata.title, manifest.author == metadata.author,
                   manifest.language == metadata.language, manifest.comment == metadata.comment,
                   ReadingPipeline.samePlan(manifest.parts, plan),
                   manifest.output.utf8.elementsEqual(location.output.path.utf8)
                       || ReadingPathIdentity.key(path: manifest.output, .exact, volume: volume).utf8
                           .elementsEqual(file.utf8) else { continue }
-            if latest.map({ changed > $0.changed }) ?? true { latest = (manifest, changed) }
+            if manifest.modelRevision != ReadingPipeline.modelRevision(for: manifest.voiceIdentifier) {
+                if latestStale.map({ changed > $0.changed }) ?? true { latestStale = (manifest, changed) }
+            } else if latest.map({ changed > $0.changed }) ?? true {
+                latest = (manifest, changed)
+            }
         }
-        return latest?.manifest
+        return (latest ?? latestStale)?.manifest
     }
 
     /// Refuses a reading made with a natural voice from another commit of the voices: its parts cannot be joined

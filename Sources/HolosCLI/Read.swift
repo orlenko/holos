@@ -160,20 +160,20 @@ struct Read: AsyncParsableCommand {
         func cacheIdentity(_ voice: String) -> String {
             ReadingPipeline.identity(script: script, voiceIdentifier: voice, rate: request.rate, metadata: metadata)
         }
-        // A resume finds the saved reading first (with --voice, one made with that voice) and refuses one made with
-        // another version of the natural voices before anything else; without --voice it keeps the voice the reading
-        // was started with, which the default may no longer be (natural voices installed since).
+        // A resume finds the saved reading first (with --voice, one made with a voice that name can mean, Apple's or
+        // natural, whichever is installed today) and refuses one made with another version of the natural voices
+        // before anything else; it keeps the voice the reading was started with, which the default may no longer be
+        // (natural voices installed since). Without a saved reading, the voice is resolved as for a new one.
         var saved: ReadingManifest?
         if request.resume {
             saved = try await ReadingResumeVoice.saved(
                 output: request.output, name: name, readingsRoot: readings, script: script, rate: request.rate,
-                metadata: metadata, voice: request.voice.map { voiceIdentifier(forQuery: $0, language: language) })
+                metadata: metadata, voices: request.voice.map { voiceIdentifiers(forQuery: $0, language: language) })
             if let saved { try ReadingResumeVoice.checkRevision(saved) }
         }
-        let selected = try request.voice == nil ? saved.map {
+        let selected = try saved.map {
             try savedVoice(ReadingResumeVoice.voice(of: $0, installed: NaturalVoiceModels.installedPacks()))
-        } ?? resolveVoice(nil, language: language, explainDefault: true)
-            : resolveVoice(request.voice, language: language, explainDefault: true)
+        } ?? resolveVoice(request.voice, language: language, explainDefault: true)
         let identity = cacheIdentity(selected.id)
         if request.printText {
             let voiceName = NaturalVoiceCatalog.voice(id: selected.id)?.title
@@ -260,15 +260,15 @@ let speechRateHelp = ArgumentHelp(
     }
 }
 
-/// The identifier `--voice` names, without asking whether the voice is installed (a natural voice's pack, an Apple
-/// voice): what a saved reading is looked up by before any availability is checked.
-@MainActor func voiceIdentifier(forQuery query: String, language: String?) -> String {
-    // The order `resolveVoice` takes them in: an Apple voice of that name first, then a natural one.
-    let apple = VoiceSelection.match(query, in: NativeSpeechRenderer.voices(), language: language)?.id
-    if NaturalVoiceCatalog.isNatural(query) || apple == nil, let natural = NaturalVoiceCatalog.match(query) {
-        return natural.id
+/// Every identifier `--voice` can name, without asking whether the voice is installed (a natural voice's pack, an
+/// Apple voice): what a saved reading is looked up by, so a name both catalogs have finds the reading made with either.
+@MainActor func voiceIdentifiers(forQuery query: String, language: String?) -> Set<String> {
+    var ids: Set<String> = [query]
+    if let apple = VoiceSelection.match(query, in: NativeSpeechRenderer.voices(), language: language) {
+        ids.insert(apple.id)
     }
-    return apple ?? query
+    if let natural = NaturalVoiceCatalog.match(query) { ids.insert(natural.id) }
+    return ids
 }
 
 /// The voice a reading being resumed was started with, by identifier (checked by `ReadingResumeVoice.voice(of:)`);

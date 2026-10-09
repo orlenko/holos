@@ -30,8 +30,7 @@ public enum SessionImporter {
     /// - The file is anything `AVAudioFile` reads (WAV, CAF, AIFF, M4A, MP3, …). Its samples keep their sample rate
     ///   and their times from the start of the file; session time 0 is the file's first frame.
     /// - `vocabulary` becomes the speech sessions' contextual strings and `vocabulary.json`, cleaned as a recording's
-    ///   is: entries trimmed, empty and over-100-character entries dropped, at most 1,000 kept. No vocabulary, no
-    ///   file.
+    ///   is (`MeetingVocabulary.cleaned`). No vocabulary, no file.
     /// - `meeting.json` records the file's name (`importedFileName`), not its folder.
     /// - The transcript becomes the current revision (`transcripts/current.json`) without the legacy speaker-less
     ///   exports; speaker labels and exports come from post-processing, which the caller runs.
@@ -89,7 +88,7 @@ public enum SessionImporter {
         }
         let audio = try openAudio(file)
         try Task.checkCancellation()
-        let vocabulary = cleaned(vocabulary)
+        let vocabulary = MeetingVocabulary.cleaned(vocabulary)
         let staging = try ImportStaging.create(in: root)
         let archive: SessionArchive
         do {
@@ -300,18 +299,6 @@ public enum SessionImporter {
                 message: "The imported audio could not be transcribed (\(error.localizedDescription)).")
         }
     }
-
-    // MARK: - Helpers
-
-    /// The recording rules for `vocabulary.json` (§4.12): trimmed, non-empty entries of at most 100 characters,
-    /// at most 1,000 of them.
-    static func cleaned(_ vocabulary: [String]) -> [String] {
-        Array(vocabulary
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty && $0.count <= RecordingWorkflow.maxVocabularyLength }
-            .prefix(RecordingWorkflow.maxVocabularyEntries))
-    }
-
 }
 
 /// Speech could not transcribe the imported audio (an error, or a call that did not return in time).
