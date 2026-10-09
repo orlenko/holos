@@ -92,6 +92,22 @@ import Testing
         #expect(found?.voiceIdentifier == natural)
     }
 
+    @Test func aReadingFolderResumedWithAnotherVoiceIsRefused() throws {
+        let folder = readings.appendingPathComponent("5678", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        try JSONEncoder().encode(manifest(voice: natural, output: folder.appendingPathComponent("Garden.m4a"),
+                                          modelRevision: NaturalVoiceModels.revision))
+            .write(to: folder.appendingPathComponent(ReadingManifest.fileName))
+        func saved(_ voices: Set<String>?) throws -> ReadingManifest? {
+            try ReadingResumeVoice.saved(output: folder.path, name: "Garden.m4a", readingsRoot: readings,
+                                         sourceSHA256: "s", plan: [], rate: nil, metadata: metadata, voices: voices)
+        }
+        let error = #expect(throws: HolosError.self) { try saved([apple]) }
+        #expect(error?.localizedDescription.contains("Alba") == true)
+        #expect(try saved([natural])?.voiceIdentifier == natural)
+        #expect(try saved(nil)?.voiceIdentifier == natural)
+    }
+
     @Test func aManifestOfAnotherSchemaIsNeverTheOneResumed() throws {
         try FileManager.default.createDirectory(at: readings, withIntermediateDirectories: true)
         try start(manifest(voice: apple, output: output))

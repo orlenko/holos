@@ -34,7 +34,16 @@ public enum ReadingResumeVoice {
         -> ReadingManifest? {
         guard let (location, destination) = try? ReadingOutput.resolve(
                   output: output, name: name, identity: "", readingsRoot: readingsRoot) else { return nil }
-        if destination == .readingFolder { return manifest(in: location.workDirectory) }
+        if destination == .readingFolder {
+            // The folder names one reading: a --voice that is not its voice is refused, never ignored.
+            guard let found = manifest(in: location.workDirectory) else { return nil }
+            if let voices, !voices.contains(found.voiceIdentifier) {
+                let started = NaturalVoiceCatalog.voice(id: found.voiceIdentifier)?.title ?? found.voiceIdentifier
+                throw HolosError.invalidInput("This reading was started with \(started); resume it with that voice, or "
+                    + "without --voice.")
+            }
+            return found
+        }
         guard destination == .explicit,
               let names = try? FileManager.default.contentsOfDirectory(atPath: readingsRoot.path) else { return nil }
         let file = ReadingPathIdentity.key(location.output, .exact, volume: volume)
