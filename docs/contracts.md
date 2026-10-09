@@ -9,7 +9,7 @@ process, a clock). Do not build a plugin framework.
 
 ## Seams
 
-The protocols that exist, and what implements them:
+The main protocols that exist, and what implements them (not exhaustive; search for `protocol` before adding a new seam):
 
 | Protocol | Target | Live implementation | Used for |
 |---|---|---|---|
@@ -23,6 +23,7 @@ The protocols that exist, and what implements them:
 | `RecordingReporter` | HolosMeeting | `ConsoleReporter` (HolosCLI) | Recording progress |
 | `SystemPowerEvents`, `PowerAssertionHandle` | HolosAudio | `SystemPowerMonitor`, `PowerAssertion` | Sleep and wake |
 | `FreeSpaceProvider` | HolosStorage | `VolumeFreeSpace` (`FixedFreeSpace` in tests) | Disk policy |
+| `DictationAudioRecording` | HolosStorage | `DictationAudioWriter` (HolosAudio) | Lets the dictation history finish or discard a dictation's audio without depending on HolosAudio |
 | `ReadingAudioRenderer`, `ReadingAudioJoiner`, `ReadingPlayback` | HolosContent | `NativeSpeechRenderer`, `AudioBookJoiner`, `AVAudioPlayer` | Reading pipeline and player |
 | `EchoAudioSource` | HolosSpeakers | `RenderedEchoAudio` (HolosMeeting), `InMemoryEchoAudio` | Acoustic echo analysis over values |
 
@@ -101,7 +102,8 @@ The protocols that exist, and what implements them:
   Accessibility insertion makes exactly one write attempt (never a retry), and nothing writes to the clipboard
   on its own.
 - The language-model fix (`TranscriptFixer`) keeps a reply only when `AIFixGuard` accepts it as a small word-level
-  edit; anything else keeps the chunk as recognized.
+  edit. A separate "often heard as" term pass (`choosingTerms`) then runs on the accepted fix, or on the chunk as
+  recognized when the fix was rejected, so a rejected fix can still return changed text through that pass.
 
 ## Synthesis and documents
 
