@@ -138,4 +138,63 @@ import Testing
         #expect(NaturalOutputLock.file(for: real.appendingPathComponent("a.caf"), in: locks)
             != NaturalOutputLock.file(for: real.appendingPathComponent("b.caf"), in: locks))
     }
+
+    @Test func onlyAFolderTheAppMadeForTheHelperIsRemovedWhenTheAppEnds() async throws {
+        let root = try folder()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let manager = FileManager.default
+        let made = try NaturalHelperScratch.create(in: root, owner: 4_242)
+        #expect(NaturalHelperScratch.isMade(made, for: 4_242, in: root))
+        // Folders a helper may be given with --scratch-directory that the app did not make for it: left alone.
+        let documents = root.appendingPathComponent("Documents", isDirectory: true)
+        let unmarked = root.appendingPathComponent("holos-natural-\(UUID().uuidString)", isDirectory: true)
+        let linkedMarker = root.appendingPathComponent("holos-natural-\(UUID().uuidString)", isDirectory: true)
+        for untouched in [documents, unmarked, linkedMarker] {
+            try manager.createDirectory(at: untouched, withIntermediateDirectories: false)
+            try Data("keep".utf8).write(to: untouched.appendingPathComponent("file.txt"))
+        }
+        try manager.createSymbolicLink(at: linkedMarker.appendingPathComponent(NaturalHelperScratch.marker),
+                                       withDestinationURL: made.appendingPathComponent(NaturalHelperScratch.marker))
+        let link = root.appendingPathComponent("holos-natural-\(UUID().uuidString)")
+        try manager.createSymbolicLink(at: link, withDestinationURL: made)
+        let elsewhere = try folder()
+        defer { try? manager.removeItem(at: elsewhere) }
+        let away = try NaturalHelperScratch.create(in: elsewhere, owner: 4_242)
+        for folder in [documents, unmarked, linkedMarker, link, away] {
+            #expect(!(try NaturalHelperScratch.removeIfMade(folder, for: 4_242, in: root)), "\(folder.lastPathComponent)")
+        }
+        // Made for another app.
+        #expect(!(try NaturalHelperScratch.removeIfMade(made, for: 4_243, in: root)))
+        for folder in [documents, unmarked, linkedMarker] {
+            #expect(manager.fileExists(atPath: folder.appendingPathComponent("file.txt").path))
+        }
+        #expect(manager.fileExists(atPath: away.path))
+        #expect(manager.fileExists(atPath: made.path))
+
+        // The helper of an app that ends removes the folder made for it, and only that one.
+        let app = Process()
+        app.executableURL = URL(fileURLWithPath: "/bin/sleep")
+        app.arguments = ["600"]
+        try app.run()
+        defer { if app.isRunning { app.terminate() } }
+        let pid = app.processIdentifier
+        let mine = try NaturalHelperScratch.create(in: root, owner: pid)
+        let flags = Flags()
+        let task = Task { @MainActor in
+            try await NaturalHelperRun.whileParentRuns(
+                pid, isAlive: { kill(pid, 0) == 0 }, output: root.appendingPathComponent("part0001.caf"),
+                lockFolder: root.appendingPathComponent("locks"),
+                parentEnded: {
+                    for folder in [mine, documents] {
+                        _ = try? NaturalHelperScratch.removeIfMade(folder, for: pid, in: root)
+                    }
+                }, endless(flags))
+        }
+        #expect(try await eventually { flags.started.withLock { $0 } })
+        kill(pid, SIGKILL)
+        #expect(try await eventually { !manager.fileExists(atPath: mine.path) })
+        if manager.fileExists(atPath: mine.path) { task.cancel() }
+        await #expect(throws: HolosError.self) { _ = try await task.value }
+        #expect(manager.fileExists(atPath: documents.appendingPathComponent("file.txt").path))
+    }
 }

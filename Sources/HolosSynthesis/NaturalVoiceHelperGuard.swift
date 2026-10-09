@@ -115,3 +115,63 @@ public enum NaturalHelperRun {
         }
     }
 }
+
+/// The folder the app makes for one `voiceislocal say` helper (`--scratch-directory`): `holos-natural-<UUID>` in the
+/// temporary folder, 0700, holding a marker file that names the app's pid. A helper whose app ended removes the folder
+/// only when it can tell it is that folder (`isMade`): `--scratch-directory` is a command-line option anyone can give,
+/// so any other folder is left alone.
+public enum NaturalHelperScratch {
+    public static let prefix = "holos-natural-"
+    public static let marker = ".holos-helper-owner"
+
+    /// Makes the folder for a helper of the app `owner` in `parent`.
+    public static func create(in parent: URL = FileManager.default.temporaryDirectory,
+                              owner: Int32 = getpid()) throws -> URL {
+        let folder = parent.appendingPathComponent(prefix + UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: false,
+                                                attributes: [.posixPermissions: 0o700])
+        let path = folder.appendingPathComponent(marker).path
+        let descriptor = open(path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o600)
+        guard descriptor >= 0 else { throw HolosError.io("Could not create \(path): \(String(cString: strerror(errno)))") }
+        defer { close(descriptor) }
+        let bytes = Array("\(owner)".utf8)
+        guard write(descriptor, bytes, bytes.count) == bytes.count else {
+            throw HolosError.io("Could not write \(path): \(String(cString: strerror(errno)))")
+        }
+        return folder
+    }
+
+    /// Whether `folder` is one `create` made in `temporaryRoot` for the app `owner`: named so, directly in that folder,
+    /// a real folder (not a link) of this user, holding the marker as a regular file (not a link) of this user that
+    /// names `owner`.
+    public static func isMade(_ folder: URL, for owner: Int32,
+                              in temporaryRoot: URL = FileManager.default.temporaryDirectory) -> Bool {
+        let name = folder.lastPathComponent
+        guard name.hasPrefix(prefix), UUID(uuidString: String(name.dropFirst(prefix.count))) != nil,
+              folder.deletingLastPathComponent().resolvingSymlinksInPath().standardizedFileURL.path
+                == temporaryRoot.resolvingSymlinksInPath().standardizedFileURL.path else { return false }
+        var info = stat()
+        guard lstat(folder.path, &info) == 0, info.st_mode & S_IFMT == S_IFDIR, info.st_uid == getuid() else {
+            return false
+        }
+        let descriptor = open(folder.appendingPathComponent(marker).path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
+        guard descriptor >= 0 else { return false }
+        defer { close(descriptor) }
+        guard fstat(descriptor, &info) == 0, info.st_mode & S_IFMT == S_IFREG, info.st_uid == getuid(),
+              info.st_size <= 16 else { return false }
+        var buffer = [UInt8](repeating: 0, count: 16)
+        let count = read(descriptor, &buffer, buffer.count)
+        return count > 0 && String(decoding: buffer.prefix(count), as: UTF8.self) == "\(owner)"
+    }
+
+    /// Removes `folder` with `remove` when it `isMade` for `owner`; leaves anything else untouched. Whether it removed it.
+    @discardableResult
+    public static func removeIfMade(_ folder: URL, for owner: Int32,
+                                    in temporaryRoot: URL = FileManager.default.temporaryDirectory,
+                                    remove: (URL) throws -> Void = { try FileManager.default.removeItem(at: $0) })
+        throws -> Bool {
+        guard isMade(folder, for: owner, in: temporaryRoot) else { return false }
+        try remove(folder)
+        return true
+    }
+}

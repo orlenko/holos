@@ -123,15 +123,22 @@ struct Say: AsyncParsableCommand {
             let result: RenderedAudio
             if let parentPid {
                 // The app's helper: it waits for an earlier one still writing this part (left by an app that
-                // ended), and stops when the app ends, removing the app's folder for it.
+                // ended), and stops when the app ends, removing the app's folder for it: only a folder the app made
+                // for it (NaturalHelperScratch), never another one named with --scratch-directory.
                 let scratch = scratchDirectory.map(fileURL)
                 result = try await NaturalHelperRun.whileParentRuns(
                     parentPid, isAlive: { getppid() == parentPid }, output: url,
                     waiting: { Console.error("Waiting for an earlier render of \(url.lastPathComponent) to stop.") },
                     parentEnded: {
                         guard let scratch else { return }
-                        _ = try? AtomicFile.removeTree([scratch.lastPathComponent],
-                                                       in: scratch.deletingLastPathComponent())
+                        do {
+                            try NaturalHelperScratch.removeIfMade(scratch, for: parentPid) { folder in
+                                _ = try AtomicFile.removeTree([folder.lastPathComponent],
+                                                              in: folder.deletingLastPathComponent())
+                            }
+                        } catch {
+                            Console.error("Could not remove \(scratch.path): \(error.localizedDescription)")
+                        }
                     }) { try await render(url) }
             } else {
                 result = try await render(url)
