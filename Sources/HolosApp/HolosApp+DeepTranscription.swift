@@ -41,9 +41,9 @@ final class DeepTranscriptionAppState {
     var considered: [String] = UserDefaults.standard.stringArray(forKey: consideredKey) ?? [] {
         didSet { UserDefaults.standard.set(considered, forKey: Self.consideredKey) }
     }
-    /// The pass this app is running now (its own child; the app manages no other): its meeting and the child's pid
-    /// (0 while it starts), which no other process can have until the app reaps it.
-    var running: (sessionID: String, pid: Int32)?
+    /// The pass this app is running now (its own child; the app manages no other): its meeting and the child's handle
+    /// (nil while it starts), which signals it only until the app reaps it.
+    var running: (sessionID: String, child: CommandHandle?)?
     /// Another process holds `DeepTranscriptionLock` (a pass started in Terminal, or one left running from before a
     /// relaunch): nothing starts until it is free, checked every 30 s. The app never signals or adopts it.
     var otherPassRunning = false
@@ -151,8 +151,8 @@ extension HolosAppDelegate {
     /// afterwards. A pass another process runs is left alone: it is the user's own explicit run.
     func deepTranscriptionMeetingStateChanged() {
         guard let controller = meeting.controller, meetingIsBusy(controller.state),
-              let running = meeting.deep.running, running.pid > 0, meeting.deep.preempted == nil,
-              kill(running.pid, SIGTERM) == 0 else { return }
+              let running = meeting.deep.running, meeting.deep.preempted == nil,
+              running.child?.terminate() == true else { return }
         meeting.deep.preempted = running.sessionID
         Self.deepLog.notice("Deep transcription of \(running.sessionID, privacy: .public) stopped for a meeting")
         updateDeepStates()
@@ -304,8 +304,8 @@ extension HolosAppDelegate {
     /// cancels and says whether the new transcript was already published).
     func cancelDeepTranscription(_ sessionID: String) {
         // Only this app's own pass is signalled.
-        if let running = meeting.deep.running, running.sessionID == sessionID, running.pid > 0 {
-            kill(running.pid, SIGTERM)
+        if let running = meeting.deep.running, running.sessionID == sessionID {
+            running.child?.terminate()
         }
         if meeting.deep.preempted == sessionID { meeting.deep.preempted = nil }
         meeting.deep.delayed[sessionID] = nil
@@ -370,7 +370,7 @@ extension HolosAppDelegate {
         }
         // Marked running before the meeting is taken: taking it schedules again (`onSessionsInUseChanged`), which must
         // then see one pass running and start no other.
-        meeting.deep.running = (sessionID, 0)
+        meeting.deep.running = (sessionID, nil)
         guard controller.beginUsing(sessionID, for: Self.deepRunningText) else {
             meeting.deep.running = nil
             return
@@ -379,11 +379,11 @@ extension HolosAppDelegate {
         let arguments = ["session", "deep-transcribe", item.path, "--json"]
             + (DeepTranscriptionSchedule.forces(item) ? ["--force"] : [])
         do {
-            let pid = try commands.start(arguments, output: "deep", errors: "deep-err", maxOutputBytes: 16 << 20,
-                                         as: PostProcessingRecord.self) { [weak self] result in
+            let child = try commands.start(arguments, output: "deep", errors: "deep-err", maxOutputBytes: 16 << 20,
+                                           as: PostProcessingRecord.self) { [weak self] result in
                 self?.deepTranscriptionEnded(sessionID, result)
             }
-            meeting.deep.running = (sessionID, pid)
+            meeting.deep.running = (sessionID, child)
             Self.deepLog.notice("Deep transcription of \(sessionID, privacy: .public) started")
         } catch {
             // Kept queued: the scheduler tries again in a minute.

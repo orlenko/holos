@@ -63,16 +63,63 @@ private func echoOutcome() -> SessionEchoAnalyzeCommand.Outcome {
         """, in: temp.url)
     let (runner, folder) = try commandRunner(script, in: temp)
     let ended = SharedValue<CommandResult<SessionEchoAnalyzeCommand.Outcome>?>(nil)
-    let pid = try runner.start(["session", "echo-analyze", "x"], output: "echo", errors: "echo-err",
-                               maxOutputBytes: 1 << 20, as: SessionEchoAnalyzeCommand.Outcome.self) {
+    let child = try runner.start(["session", "echo-analyze", "x"], output: "echo", errors: "echo-err",
+                                 maxOutputBytes: 1 << 20, as: SessionEchoAnalyzeCommand.Outcome.self) {
         ended.set($0)
     }
-    #expect(pid > 0)
+    #expect(child.pid > 0)
     #expect(await eventually { ended.value != nil })
     #expect(ended.value?.code == 3)
     #expect(ended.value?.outcome == nil, "Nothing was printed on stdout.")
     #expect(ended.value?.errors == "Working…\nError: The meeting is still recording.\n")
     #expect(ended.value?.lastErrorLine == "The meeting is still recording.")
+    #expect(contents(of: folder).isEmpty)
+    #expect(child.hasExited)
+}
+
+@Test(.timeLimit(.minutes(1))) @MainActor func theHandleSignalsNothingOnceTheChildIsReaped() async throws {
+    let temp = try TemporaryDirectory("command")
+    defer { temp.remove() }
+    let script = try commandScript(#"echo '{"lines": []}'"#, in: temp.url)
+    let (runner, _) = try commandRunner(script, in: temp)
+    let decoding = SharedValue(false)
+    let release = SharedValue(false)
+    let ended = SharedValue<CommandResult<Int>?>(nil)
+    let child = try runner.start(["session", "summarize", "x", "--json"], output: "summary", errors: "summary-err",
+                                 maxOutputBytes: 1 << 20, decode: { data in
+        // Held until the test has tried to stop the command: the window between the reap and the completion.
+        decoding.set(true)
+        while !release.value { usleep(1_000) }
+        return data.count
+    }) { ended.set($0) }
+    #expect(child.pid > 0)
+    #expect(await eventually { decoding.value })
+    #expect(child.hasExited, "The child is reaped before its output is decoded.")
+    #expect(!child.terminate(), "No signal goes to a pid the system may already have reused.")
+    #expect(ended.value == nil)
+    release.set(true)
+    #expect(await eventually { ended.value != nil })
+    #expect(ended.value?.code == 0)
+    #expect(ended.value?.outcome == 14)
+}
+
+@Test(.timeLimit(.minutes(1))) @MainActor func theHandleStopsARunningCommand() async throws {
+    let temp = try TemporaryDirectory("command")
+    defer { temp.remove() }
+    let ready = temp.url.appendingPathComponent("ready")
+    let script = try commandScript("""
+        touch '\(ready.path)'
+        while :; do sleep 0.05; done
+        """, in: temp.url)
+    let (runner, folder) = try commandRunner(script, in: temp)
+    let ended = SharedValue<CommandResult<DoctorReport>?>(nil)
+    let child = try runner.start(["doctor", "--json"], output: "doctor", errors: nil, maxOutputBytes: 1 << 20,
+                                 as: DoctorReport.self) { ended.set($0) }
+    #expect(await eventually { FileManager.default.fileExists(atPath: ready.path) })
+    #expect(!child.hasExited)
+    #expect(child.terminate())
+    #expect(await eventually { ended.value != nil })
+    #expect(ended.value?.code == 128 + SIGTERM)
     #expect(contents(of: folder).isEmpty)
 }
 

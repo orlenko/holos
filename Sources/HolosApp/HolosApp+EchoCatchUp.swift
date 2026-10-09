@@ -16,9 +16,9 @@ final class EchoCatchUpAppState {
     var queue: [EchoCatchUpSchedule.Candidate] = []
     /// The meeting analysed now (this app's own child).
     var running: String?
-    /// The running child's pid (0 while it starts), which no other process can have until the app reaps it: signalled
-    /// only when a meeting starts.
-    var pid: Int32 = 0
+    /// The running child's handle (nil while it starts), which signals it only until the app reaps it: used only when
+    /// a meeting starts.
+    var child: CommandHandle?
     /// The run was stopped because a meeting started: it stays queued and runs again once the meeting is saved.
     var preempted: String?
     var scanning = false
@@ -185,12 +185,11 @@ extension HolosAppDelegate {
             return
         }
         do {
-            let pid = try commands.start(["session", "echo-analyze", path, "--json"], output: "echo",
-                                         errors: "echo-err", maxOutputBytes: 1 << 20,
-                                         as: SessionEchoAnalyzeCommand.Outcome.self) { [weak self] result in
+            meeting.echo.child = try commands.start(["session", "echo-analyze", path, "--json"], output: "echo",
+                                                    errors: "echo-err", maxOutputBytes: 1 << 20,
+                                                    as: SessionEchoAnalyzeCommand.Outcome.self) { [weak self] result in
                 self?.echoAnalyzeExited(sessionID, result)
             }
-            meeting.echo.pid = pid
             Self.echoLog.notice("Echo analysis of \(sessionID, privacy: .public) started")
         } catch {
             // Kept queued: the scheduler tries again in a minute.
@@ -207,8 +206,8 @@ extension HolosAppDelegate {
     /// relaunch).
     func echoCatchUpMeetingStateChanged() {
         guard let controller = meeting.controller, meetingIsBusy(controller.state),
-              let running = meeting.echo.running, meeting.echo.pid > 0, meeting.echo.preempted == nil,
-              kill(meeting.echo.pid, SIGTERM) == 0 else { return }
+              let running = meeting.echo.running, meeting.echo.preempted == nil,
+              meeting.echo.child?.terminate() == true else { return }
         meeting.echo.preempted = running
         Self.echoLog.notice("Echo analysis of \(running, privacy: .public) stopped for a meeting")
     }
@@ -244,7 +243,7 @@ extension HolosAppDelegate {
             Self.echoLog.error("Echo analysis of \(sessionID, privacy: .public) failed; tried again at the next launch")
         }
         meeting.echo.running = nil
-        meeting.echo.pid = 0
+        meeting.echo.child = nil
         meeting.echo.preempted = nil
         maintenanceFinished(sessionID)
         meeting.meetingsPane?.refresh()

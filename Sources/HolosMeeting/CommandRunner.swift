@@ -39,8 +39,8 @@ public struct CommandResult<Outcome: Sendable>: Sendable {
 /// Runs the app's `voiceislocal` commands (deep-transcribe, summarize, echo-analyze, recover, diarize, delete, rename,
 /// doctor) through `MaintenanceLauncher`, so each is detached in its own session and a quit app never cuts one short.
 /// Its stdout (and stderr, when kept) go to `TemporaryArtifact`s; once it exits they are read and decoded off the main
-/// actor and removed, however it ended. A command is stopped with SIGTERM: by the caller with the pid `start` returns,
-/// or by cancelling the task awaiting `run`.
+/// actor and removed, however it ended. A command is stopped with SIGTERM: by the caller through the `CommandHandle`
+/// `start` returns, or by cancelling the task awaiting `run`.
 @MainActor public struct CommandRunner {
     /// How much of a command's stderr is read.
     public nonisolated static let maxErrorBytes = 1 << 16
@@ -55,25 +55,27 @@ public struct CommandResult<Outcome: Sendable>: Sendable {
     }
 
     /// Starts `voiceislocal <arguments>` with stdout in a temporary file named `output` and stderr in one named
-    /// `errors` (nil discards it), and returns its pid. When it exits, its stdout (at most `maxOutputBytes`) is given
-    /// to `decode` and its stderr read, both off the main actor, the files are removed, and `completion` gets the
-    /// result on the main actor. When it cannot start, the files are removed and the error is thrown. The child is
-    /// reaped before its files are read, so between the exit and `completion` a signal to the pid reaches no child of
-    /// this app.
+    /// `errors` (nil discards it), and returns its handle. When it exits, its stdout (at most `maxOutputBytes`) is
+    /// given to `decode` and its stderr read, both off the main actor, the files are removed, and `completion` gets
+    /// the result on the main actor. When it cannot start, the files are removed and the error is thrown. The handle
+    /// stops signalling as soon as the child is reaped, before its files are read: a pid the system reuses while they
+    /// are is never signalled.
     @discardableResult
     public func start<Outcome: Sendable>(
         _ arguments: [String], output: String, errors: String?, maxOutputBytes: Int,
         decode: @escaping @Sendable (Data) throws -> Outcome,
-        completion: @escaping @MainActor (CommandResult<Outcome>) -> Void) throws -> Int32 {
-        try start(arguments, output: output, errors: errors, maxOutputBytes: maxOutputBytes, decode: decode,
-                  exited: {}, completion: completion)
+        completion: @escaping @MainActor (CommandResult<Outcome>) -> Void) throws -> CommandHandle {
+        let handle = CommandHandle()
+        try launch(arguments, output: output, errors: errors, maxOutputBytes: maxOutputBytes, decode: decode,
+                   handle: handle, completion: completion)
+        return handle
     }
 
     /// `start` for a command that prints `Outcome` as JSON (`HolosJSON`).
     @discardableResult
     public func start<Outcome: Decodable & Sendable>(
         _ arguments: [String], output: String, errors: String?, maxOutputBytes: Int, as type: Outcome.Type,
-        completion: @escaping @MainActor (CommandResult<Outcome>) -> Void) throws -> Int32 {
+        completion: @escaping @MainActor (CommandResult<Outcome>) -> Void) throws -> CommandHandle {
         try start(arguments, output: output, errors: errors, maxOutputBytes: maxOutputBytes,
                   decode: Self.json(type), completion: completion)
     }
@@ -84,21 +86,20 @@ public struct CommandResult<Outcome: Sendable>: Sendable {
         _ arguments: [String], output: String, errors: String?, maxOutputBytes: Int,
         decode: @escaping @Sendable (Data) throws -> Outcome) async throws -> CommandResult<Outcome> {
         try Task.checkCancellation()
-        let child = RunningChild()
+        let handle = CommandHandle()
         return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { continuation in
                 do {
-                    let pid = try start(arguments, output: output, errors: errors, maxOutputBytes: maxOutputBytes,
-                                        decode: decode, exited: { child.exited() }) {
+                    try launch(arguments, output: output, errors: errors, maxOutputBytes: maxOutputBytes,
+                               decode: decode, handle: handle) {
                         continuation.resume(returning: $0)
                     }
-                    child.started(pid)
                 } catch {
                     continuation.resume(throwing: error)
                 }
             }
         } onCancel: {
-            child.terminate()
+            handle.terminate()
         }
     }
 
@@ -110,17 +111,18 @@ public struct CommandResult<Outcome: Sendable>: Sendable {
                       decode: Self.json(type))
     }
 
-    /// `exited` is called on the main actor as soon as the child is reaped, before its output is read.
-    private func start<Outcome: Sendable>(
+    /// Spawns the command for `handle`, which is told its pid at once and that it was reaped before its output is read.
+    private func launch<Outcome: Sendable>(
         _ arguments: [String], output: String, errors: String?, maxOutputBytes: Int,
-        decode: @escaping @Sendable (Data) throws -> Outcome, exited: @escaping @MainActor () -> Void,
-        completion: @escaping @MainActor (CommandResult<Outcome>) -> Void) throws -> Int32 {
+        decode: @escaping @Sendable (Data) throws -> Outcome, handle: CommandHandle,
+        completion: @escaping @MainActor (CommandResult<Outcome>) -> Void) throws {
         let outputFile = TemporaryArtifact(kind: output, in: folder)
         let errorFile = errors.map { TemporaryArtifact(kind: $0, in: folder) }
         do {
-            return try launcher.run(arguments, standardOutput: outputFile.url,
-                                    standardError: errorFile?.url) { code in
-                exited()
+            // The exit is reported on the main queue, never before `started` below.
+            let pid = try launcher.run(arguments, standardOutput: outputFile.url,
+                                       standardError: errorFile?.url) { code in
+                handle.reaped()
                 Task {
                     let result = await Task.detached {
                         Self.collect(code: code, output: outputFile, errors: errorFile,
@@ -129,6 +131,7 @@ public struct CommandResult<Outcome: Sendable>: Sendable {
                     completion(result)
                 }
             }
+            handle.started(pid)
         } catch {
             outputFile.remove()
             errorFile?.remove()
@@ -156,37 +159,51 @@ public struct CommandResult<Outcome: Sendable>: Sendable {
         return CommandResult(code: code, outcome: outcome, errors: errorText, lastErrorLine: lastErrorLine)
     }
 
-    private static func json<Outcome: Decodable & Sendable>(_ type: Outcome.Type) -> @Sendable (Data) throws -> Outcome {
+    private static func json<Outcome: Decodable & Sendable>(
+        _ type: Outcome.Type) -> @Sendable (Data) throws -> Outcome {
         { try HolosJSON.decoder().decode(Outcome.self, from: $0) }
     }
 }
 
-/// The pid of a command `CommandRunner.run` started, for its cancellation: SIGTERM once it has started and only until
-/// it is reaped, so a pid the system reuses afterwards is never signalled.
-private final class RunningChild: Sendable {
+/// A command `CommandRunner` started, to stop it with SIGTERM: only once it has started and until it is reaped, so a
+/// pid the system reuses after the exit, while the command's output is still being read, is never signalled.
+public final class CommandHandle: Sendable {
     private struct State {
         var pid: Int32 = 0
         var cancelled = false
-        var exited = false
+        var reaped = false
     }
 
     private let state = Mutex(State())
 
+    init() {}
+
+    /// The command's pid; 0 before it started.
+    public var pid: Int32 { state.withLock { $0.pid } }
+
+    /// Whether the command has ended and been reaped (its output may still be being read).
+    public var hasExited: Bool { state.withLock { $0.reaped } }
+
+    /// Sends the command SIGTERM, or, before it has started, makes it get SIGTERM as it starts. Returns whether a
+    /// signal was sent now; false once it has been reaped.
+    @discardableResult
+    public func terminate() -> Bool {
+        state.withLock { state in
+            state.cancelled = true
+            guard state.pid > 0, !state.reaped else { return false }
+            return kill(state.pid, SIGTERM) == 0
+        }
+    }
+
     func started(_ pid: Int32) {
         state.withLock { state in
             state.pid = pid
-            if state.cancelled, !state.exited { kill(pid, SIGTERM) }
+            if state.cancelled, !state.reaped { kill(pid, SIGTERM) }
         }
     }
 
-    func exited() {
-        state.withLock { $0.exited = true }
-    }
-
-    func terminate() {
-        state.withLock { state in
-            state.cancelled = true
-            if state.pid > 0, !state.exited { kill(state.pid, SIGTERM) }
-        }
+    func reaped() {
+        state.withLock { $0.reaped = true }
     }
 }
+
