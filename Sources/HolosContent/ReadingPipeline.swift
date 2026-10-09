@@ -130,95 +130,6 @@ public struct ReadingResult: Sendable, Equatable {
     public var outputIdentity: ReadingFileIdentity? = nil
 }
 
-@MainActor public protocol ReadingAudioRenderer {
-    func render(text: String, voiceIdentifier: String?, rate: Float?, to output: URL)
-        async throws -> RenderedAudio
-    /// Fails unless the renderer can speak with the voice `identifier`. Checked before a reading
-    /// creates anything.
-    func checkVoice(_ identifier: String) throws
-    /// The settings a reading with `voiceIdentifier` saves when it starts (`ReadingManifest.rendererSettings`).
-    func renderSettings(for voiceIdentifier: String) -> [String: String]?
-    /// `render` with the settings the reading saved (nil: the renderer's current ones).
-    func render(text: String, voiceIdentifier: String?, rate: Float?, savedSettings: [String: String]?,
-                to output: URL) async throws -> RenderedAudio
-}
-
-extension ReadingAudioRenderer {
-    /// A renderer that cannot tell which voices it has accepts every one here; `render` fails
-    /// for one it lacks.
-    public func checkVoice(_ identifier: String) throws {}
-
-    /// A renderer with nothing to save.
-    public func renderSettings(for voiceIdentifier: String) -> [String: String]? { nil }
-
-    public func render(text: String, voiceIdentifier: String?, rate: Float?, savedSettings: [String: String]?,
-                       to output: URL) async throws -> RenderedAudio {
-        try await render(text: text, voiceIdentifier: voiceIdentifier, rate: rate, to: output)
-    }
-}
-
-extension NativeSpeechRenderer: ReadingAudioRenderer {}
-
-extension NaturalSpeechRenderer: ReadingAudioRenderer {
-    public func renderSettings(for voiceIdentifier: String) -> [String: String]? {
-        settings(for: voiceIdentifier)?.values
-    }
-
-    public func render(text: String, voiceIdentifier: String?, rate: Float?, savedSettings: [String: String]?,
-                       to output: URL) async throws -> RenderedAudio {
-        try await render(text: text, voiceIdentifier: voiceIdentifier, rate: rate,
-                         settings: savedSettings.map(NaturalRenderSettings.init(values:)), to: output)
-    }
-}
-
-/// Reads with a natural voice ("pocket:…", see `NaturalVoiceCatalog`) through `natural`, and with any other voice
-/// through `system` (Apple's voices).
-@MainActor public final class RoutingSpeechRenderer: ReadingAudioRenderer {
-    private let system: any ReadingAudioRenderer
-    private let natural: any ReadingAudioRenderer
-
-    public init(system: any ReadingAudioRenderer = NativeSpeechRenderer(), natural: any ReadingAudioRenderer) {
-        self.system = system
-        self.natural = natural
-    }
-
-    private func renderer(for identifier: String?) -> any ReadingAudioRenderer {
-        identifier.map(NaturalVoiceCatalog.isNatural) == true ? natural : system
-    }
-
-    public func render(text: String, voiceIdentifier: String?, rate: Float?, to output: URL)
-        async throws -> RenderedAudio {
-        try await renderer(for: voiceIdentifier).render(text: text, voiceIdentifier: voiceIdentifier, rate: rate,
-                                                        to: output)
-    }
-
-    public func checkVoice(_ identifier: String) throws {
-        try renderer(for: identifier).checkVoice(identifier)
-    }
-
-    public func renderSettings(for voiceIdentifier: String) -> [String: String]? {
-        renderer(for: voiceIdentifier).renderSettings(for: voiceIdentifier)
-    }
-
-    public func render(text: String, voiceIdentifier: String?, rate: Float?, savedSettings: [String: String]?,
-                       to output: URL) async throws -> RenderedAudio {
-        try await renderer(for: voiceIdentifier).render(text: text, voiceIdentifier: voiceIdentifier, rate: rate,
-                                                        savedSettings: savedSettings, to: output)
-    }
-}
-
-@MainActor public protocol ReadingAudioJoiner {
-    func join(parts: [AudioBookPart], metadata: AudioBookMetadata, to output: URL) async throws -> AudioBookSummary
-}
-
-public struct AudioBookJoiner: ReadingAudioJoiner {
-    public init() {}
-    public func join(parts: [AudioBookPart], metadata: AudioBookMetadata,
-                     to output: URL) async throws -> AudioBookSummary {
-        try await AudioBookWriter.write(parts: parts, metadata: metadata, to: output)
-    }
-}
-
 /// Renders a script part by part into a cache of PCM files (so an interrupted reading resumes
 /// where it stopped), then joins the parts into one AAC `.m4a` with chapters.
 @MainActor public final class ReadingPipeline {
@@ -297,12 +208,6 @@ public struct AudioBookJoiner: ReadingAudioJoiner {
             try container.encode(segments, forKey: .segments)
             if let modelRevision { try container.encode(modelRevision, forKey: .modelRevision) }
         }
-    }
-
-    /// The model commit a reading with `voiceIdentifier` is rendered with: `NaturalVoiceModels.revision` for a natural
-    /// voice, nil for an Apple voice.
-    nonisolated public static func modelRevision(for voiceIdentifier: String) -> String? {
-        NaturalVoiceCatalog.isNatural(voiceIdentifier) ? NaturalVoiceModels.revision : nil
     }
 
     /// The cache key for a reading with an explicit output: the text and every setting that
@@ -783,15 +688,6 @@ public struct AudioBookJoiner: ReadingAudioJoiner {
 
     nonisolated static func partPath(_ index: Int) -> String {
         String(format: "parts/part%04d.%@", index + 1, partExtension)
-    }
-
-    /// The parts of a reading as its manifest plans them.
-    nonisolated static func plan(_ parts: [ReadingScript.Part]) -> [ReadingPart] {
-        parts.map { part in
-            ReadingPart(index: part.index, sourceUTF16Offset: part.offset, sourceUTF16Length: part.length,
-                        textSHA256: sha256(Data(part.text.utf8)), relativeAudioPath: partPath(part.index),
-                        chapter: part.chapter, startsSection: part.startsSegment, status: "pending")
-        }
     }
 
     /// Whether a saved part plan is the one `planned` gives (its parts' places, texts, chapters, and sections).

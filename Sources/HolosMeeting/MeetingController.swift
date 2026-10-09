@@ -24,6 +24,20 @@ struct MeetingControllerTuning: Sendable {
 /// Effects the app acts on (`announce`, `finished`, `offerNaming`, `clearNamingOffer`) go to
 /// `onEffect`; `launch`, `send`, and `terminateChild` are carried out here. `onChange` follows every state change,
 /// including each new status of the followed meeting.
+///
+/// Invariants:
+/// 1. The meeting state changes only through `reducer` (`dispatch`, `start`), and each change is reported to
+///    `onChange`.
+/// 2. At most one control request waits for its acknowledgement: queued requests are sent in order, each once the
+///    previous one was acknowledged, could not be sent, or waited `ackTimeout` (`sendNext`).
+/// 3. `start` launches no recorder while another may still record: a followed or starting meeting, a recorder whose
+///    session is still live, or one this app launched whose exit was not seen (`recorderMayStillRun`).
+/// 4. A meeting is in `sessionsInUse` at most once (`beginUsing` refuses one already in use), and every change to it
+///    is reported to `onSessionsInUseChanged`.
+/// 5. `namingOffer` changes only in `setNamingOffer`, which reports each change once (`offerNaming`,
+///    `clearNamingOffer`).
+/// 6. A live meeting found in the sessions folder is followed only when its folder is named after the session its
+///    `status.json` names (`findLiveMeeting`).
 @MainActor public final class MeetingController {
     private static let log = Logger(subsystem: "ca.orlenko.holos.app", category: "meeting")
     /// Files older than this in the temporary folder are left over from a crash (§4.12).
@@ -277,7 +291,7 @@ struct MeetingControllerTuning: Sendable {
 
     /// The session folder of `sessionID` under the root.
     public func sessionURL(_ sessionID: String) -> URL {
-        root.appendingPathComponent("\(sessionID).holos", isDirectory: true)
+        SessionPaths.folder(for: sessionID, in: root)
     }
 
     // MARK: - Start checks
@@ -382,7 +396,9 @@ struct MeetingControllerTuning: Sendable {
             // meeting cannot start meanwhile.
             guard let status = try? RecorderChannel.readStatus(session: session),
                   status.phase.isMeetingActive || status.phase == .transcribing || status.phase == .postprocessing,
-                  session.deletingPathExtension().lastPathComponent == status.sessionID else { continue }
+                  session.lastPathComponent == SessionPaths.folderName(for: status.sessionID) else {
+                continue  // invariant 6
+            }
             let liveness = RecorderChannel.liveness(session: session, now: now)
             guard MeetingReducer.isFresh(status, liveness: liveness, at: now) else { continue }
             if status.phase.isMeetingActive { return status }
@@ -406,7 +422,7 @@ struct MeetingControllerTuning: Sendable {
             break
         case .send(let command, let label, let sessionID):
             pendingSends.append((command, label, sessionID))
-            if awaitingAck == nil { sendNext() }
+            if awaitingAck == nil { sendNext() }  // invariant 2
         case .terminateChild(let sessionID):
             launcher.terminate(sessionID: sessionID)
         case .finished(let sessionID, let summary, let ready):

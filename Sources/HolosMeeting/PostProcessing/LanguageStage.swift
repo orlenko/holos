@@ -64,7 +64,7 @@ public struct LanguageDetectionDependencies: Sendable {
 /// `force` and languages asked for by name (names carry over when speakers are labelled again). Languages asked for
 /// by name that the current transcript already answers are journaled for it (`recordRequest`), so it is never
 /// replaced automatically afterwards.
-enum LanguageStage {
+public enum LanguageStage {
     private static let log = Logger(subsystem: "ca.orlenko.holos.app", category: "postprocess")
 
     struct Request {
@@ -492,7 +492,7 @@ enum LanguageStage {
     private static func canonical(_ locales: [String]?) -> [String]? { locales.map { $0.map(canonical) } }
 
     /// Whether any segment holds a word.
-    static func hasWords(_ segments: [TranscriptSegment]) -> Bool {
+    public static func hasWords(_ segments: [TranscriptSegment]) -> Bool {
         segments.contains { !$0.words.isEmpty || !$0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
     }
 
@@ -778,12 +778,12 @@ enum LanguageStage {
     }
 
     /// "French (Canada)": language names in English, as the rest of the messages.
-    static func name(_ language: String) -> String {
+    public static func name(_ language: String) -> String {
         DictationLanguage.name(of: language, in: Locale(identifier: "en_US"))
     }
 
     /// "French (Canada) and English (Canada)"; "French (Canada), English (Canada), and Spanish (Spain)".
-    static func names(_ languages: [String]) -> String {
+    public static func names(_ languages: [String]) -> String {
         let spelled = languages.map(name)
         switch spelled.count {
         case 0: return ""

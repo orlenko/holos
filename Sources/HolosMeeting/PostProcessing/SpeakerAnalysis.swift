@@ -7,7 +7,7 @@ import os
 /// Stages 2–6 of the post-processor (docs/meeting-design.md §4.7): track policies, the head decision, the disk
 /// check, and building and publishing the run. `MeetingPostProcessor` runs them in order; rendering and diarization
 /// are driven from there because they report progress.
-enum SpeakerAnalysis {
+public enum SpeakerAnalysis {
     private static let log = Logger(subsystem: "ca.orlenko.holos.app", category: "postprocess")
 
     // MARK: - Messages (user-facing; never transcript text)
@@ -81,7 +81,7 @@ enum SpeakerAnalysis {
 
     /// Alignment settings for the meeting: `AlignmentParameters.v1`, and for a call the echo filter (PR11) with a
     /// window of `callEchoWindowSeconds`. In person there is no system audio to echo, so nothing is filtered.
-    static func alignmentParameters(meeting: MeetingInfo) -> AlignmentParameters {
+    public static func alignmentParameters(meeting: MeetingInfo) -> AlignmentParameters {
         var parameters = AlignmentParameters.v1
         if meeting.mode == .call { parameters.echoWindowSeconds = callEchoWindowSeconds }
         return parameters
@@ -96,7 +96,7 @@ enum SpeakerAnalysis {
     /// Rendering is allowed only if free ≥ render bytes + 1 GB (§4.5 `DiskPolicy.renderCheck`, which PR2a adds to
     /// the recorder; the post-processor merges before it and keeps this rule here). `renderSeconds` is the total
     /// length of every render.
-    static func renderAllowed(freeBytes: Int64, renderSeconds: Double) -> Bool {
+    public static func renderAllowed(freeBytes: Int64, renderSeconds: Double) -> Bool {
         guard renderSeconds.isFinite, renderSeconds >= 0 else { return false }
         let needed = renderSeconds * renderBytesPerSecond + Double(renderHeadroomBytes)
         return Double(freeBytes) >= needed

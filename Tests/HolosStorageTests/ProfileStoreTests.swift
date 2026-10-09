@@ -3,24 +3,12 @@ import Foundation
 import Testing
 import HolosCore
 @testable import HolosStorage
+import HolosTestSupport
 
 // SpeakerProfileStore (docs/meeting-design.md §2.2, §4.10): the people store and its forget journal.
 
 private let profileDate = Date(timeIntervalSince1970: 1_790_000_000)
 private let profileModel = EmbeddingModelID(id: "fake", revision: "1")
-
-/// A fresh temporary root; the store folder inside it does not exist yet.
-private func profileRoot() throws -> URL {
-    let root = FileManager.default.temporaryDirectory.appendingPathComponent("holos-profiles-\(UUID().uuidString)")
-    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-    return root
-}
-
-private func profileMode(_ url: URL) -> mode_t? {
-    var info = stat()
-    guard lstat(url.path, &info) == 0 else { return nil }
-    return info.st_mode & 0o777
-}
 
 private func profileSample(session: String = UUID().uuidString) -> VoiceprintSample {
     VoiceprintSample(sessionID: session, sessionName: "Council meeting", speakerIDs: ["system:S1"], speechSeconds: 30,
@@ -28,7 +16,7 @@ private func profileSample(session: String = UUID().uuidString) -> VoiceprintSam
 }
 
 @Test func missingStoreLoadsEmptyWithRememberOn() throws {
-    let root = try profileRoot()
+    let root = try TemporaryDirectory("profiles").url
     defer { try? FileManager.default.removeItem(at: root) }
     let store = SpeakerProfileStore(directory: root.appendingPathComponent("Speakers"))
     let database = try store.load()
@@ -45,7 +33,7 @@ private func profileSample(session: String = UUID().uuidString) -> VoiceprintSam
 /// A store an earlier build saved (when the default was off) keeps the setting it has, through reads and writes.
 @Test(arguments: [false, true])
 func existingStoreKeepsItsRememberSetting(_ remember: Bool) throws {
-    let root = try profileRoot()
+    let root = try TemporaryDirectory("profiles").url
     defer { try? FileManager.default.removeItem(at: root) }
     let store = SpeakerProfileStore(directory: root.appendingPathComponent("Speakers"))
     try store.update { _ in }  // creates the private folder
@@ -60,7 +48,7 @@ func existingStoreKeepsItsRememberSetting(_ remember: Bool) throws {
 
 @Test(.timeLimit(.minutes(1)))
 func profileStoreIsPrivateLockedAndNotBackedUp() async throws {
-    let root = try profileRoot()
+    let root = try TemporaryDirectory("profiles").url
     defer { try? FileManager.default.removeItem(at: root) }
     let store = SpeakerProfileStore(directory: root.appendingPathComponent("Speakers"))
 
@@ -79,27 +67,27 @@ func profileStoreIsPrivateLockedAndNotBackedUp() async throws {
     #expect(database.profiles.count == 20)
     #expect(Set(database.profiles.map(\.id)).count == 20)
 
-    #expect(profileMode(store.directory) == 0o700)
-    #expect(profileMode(store.databaseURL) == 0o600)
-    #expect(profileMode(store.directory.appendingPathComponent("profiles.lock")) == 0o600)
+    #expect(FileInspection.mode(store.directory) == 0o700)
+    #expect(FileInspection.mode(store.databaseURL) == 0o600)
+    #expect(FileInspection.mode(store.directory.appendingPathComponent("profiles.lock")) == 0o600)
     let values = try URL(fileURLWithPath: store.directory.path).resourceValues(forKeys: [.isExcludedFromBackupKey])
     #expect(values.isExcludedFromBackup == true)
 }
 
 @Test func existingFolderIsMadePrivate() throws {
-    let root = try profileRoot()
+    let root = try TemporaryDirectory("profiles").url
     defer { try? FileManager.default.removeItem(at: root) }
     let folder = root.appendingPathComponent("Speakers")
     try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true,
                                             attributes: [.posixPermissions: 0o755])
     let store = SpeakerProfileStore(directory: folder)
     try store.update { $0.rememberVoices = true }
-    #expect(profileMode(folder) == 0o700)
+    #expect(FileInspection.mode(folder) == 0o700)
     #expect(try store.load().rememberVoices)
 }
 
 @Test func linkInPlaceOfTheFolderIsRefused() throws {
-    let root = try profileRoot()
+    let root = try TemporaryDirectory("profiles").url
     defer { try? FileManager.default.removeItem(at: root) }
     let elsewhere = root.appendingPathComponent("elsewhere")
     try FileManager.default.createDirectory(at: elsewhere, withIntermediateDirectories: true)
@@ -111,7 +99,7 @@ func profileStoreIsPrivateLockedAndNotBackedUp() async throws {
 }
 
 @Test func updateValidatesBeforeWriting() throws {
-    let root = try profileRoot()
+    let root = try TemporaryDirectory("profiles").url
     defer { try? FileManager.default.removeItem(at: root) }
     let store = SpeakerProfileStore(directory: root.appendingPathComponent("Speakers"))
     try store.update { $0.profiles.append(SpeakerProfile(id: "ME", displayName: "Me", isSelf: true)) }
@@ -142,7 +130,7 @@ func profileStoreIsPrivateLockedAndNotBackedUp() async throws {
 }
 
 @Test func damagedStoreIsRefusedOnLoad() throws {
-    let root = try profileRoot()
+    let root = try TemporaryDirectory("profiles").url
     defer { try? FileManager.default.removeItem(at: root) }
     let store = SpeakerProfileStore(directory: root.appendingPathComponent("Speakers"))
     try store.update { $0.rememberVoices = true }
@@ -192,7 +180,7 @@ func profileStoreIsPrivateLockedAndNotBackedUp() async throws {
 }
 
 @Test func damagedCalibrationIsRefusedOnLoad() throws {
-    let root = try profileRoot()
+    let root = try TemporaryDirectory("profiles").url
     defer { try? FileManager.default.removeItem(at: root) }
     let store = SpeakerProfileStore(directory: root.appendingPathComponent("Speakers"))
     func thresholds(likely: Double = 0.2, margin: Double = 0.1, possible: Double = 0.4,
@@ -248,7 +236,7 @@ func profileStoreIsPrivateLockedAndNotBackedUp() async throws {
 }
 
 @Test func calibrationIsResetInTheWriteThatChangesTheSamples() throws {
-    let root = try profileRoot()
+    let root = try TemporaryDirectory("profiles").url
     defer { try? FileManager.default.removeItem(at: root) }
     let store = SpeakerProfileStore(directory: root.appendingPathComponent("Speakers"))
     let thresholds = RecognitionThresholds(likelyMaxDistance: 0.2, likelyMinMargin: 0.1, possibleMaxDistance: 0.4,
@@ -300,7 +288,7 @@ func profileStoreIsPrivateLockedAndNotBackedUp() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func lockedReadHoldsTheLockUntilItsWriteIsDone() throws {
-    let root = try profileRoot()
+    let root = try TemporaryDirectory("profiles").url
     defer { try? FileManager.default.removeItem(at: root) }
     let store = SpeakerProfileStore(directory: root.appendingPathComponent("Speakers"))
     try store.update { $0.rememberVoices = true }
@@ -314,7 +302,7 @@ func lockedReadHoldsTheLockUntilItsWriteIsDone() throws {
 }
 
 @Test func newerStoreIsRefusedAndNeverOverwritten() throws {
-    let root = try profileRoot()
+    let root = try TemporaryDirectory("profiles").url
     defer { try? FileManager.default.removeItem(at: root) }
     let store = SpeakerProfileStore(directory: root.appendingPathComponent("Speakers"))
     try store.update { $0.rememberVoices = true }
@@ -326,7 +314,7 @@ func lockedReadHoldsTheLockUntilItsWriteIsDone() throws {
 }
 
 @Test func storeRoundTripsSamples() throws {
-    let root = try profileRoot()
+    let root = try TemporaryDirectory("profiles").url
     defer { try? FileManager.default.removeItem(at: root) }
     let store = SpeakerProfileStore(directory: root.appendingPathComponent("Speakers"))
     let sample = profileSample()
@@ -343,7 +331,7 @@ func lockedReadHoldsTheLockUntilItsWriteIsDone() throws {
 }
 
 @Test func forgetJournalTracksPendingAndCompacts() throws {
-    let root = try profileRoot()
+    let root = try TemporaryDirectory("profiles").url
     defer { try? FileManager.default.removeItem(at: root) }
     let store = SpeakerProfileStore(directory: root.appendingPathComponent("Speakers"))
     let first = ForgetRecord(kind: .profile, profileID: "JIM", sampleIDs: ["A"], sessionIDs: ["S"])
@@ -352,7 +340,7 @@ func lockedReadHoldsTheLockUntilItsWriteIsDone() throws {
     try store.appendForgetRecord(second)
     try store.appendForgetRecord(.done(first.id))
     #expect(try store.pendingForgets() == [second])
-    #expect(profileMode(store.forgetJournalURL) == 0o600)
+    #expect(FileInspection.mode(store.forgetJournalURL) == 0o600)
 
     // A torn tail is skipped.
     try AtomicFile.append(Data(#"{"schemaVersion":1,"id":"TORN""#.utf8), to: store.forgetJournalURL)
@@ -367,7 +355,7 @@ func lockedReadHoldsTheLockUntilItsWriteIsDone() throws {
 }
 
 @Test func compactionKeepsLinesFromANewerHolos() throws {
-    let root = try profileRoot()
+    let root = try TemporaryDirectory("profiles").url
     defer { try? FileManager.default.removeItem(at: root) }
     let store = SpeakerProfileStore(directory: root.appendingPathComponent("Speakers"))
     let finished = ForgetRecord(kind: .sample, profileID: "JIM", sampleIDs: ["A"], sessionIDs: ["S"])
@@ -404,7 +392,7 @@ func lockedReadHoldsTheLockUntilItsWriteIsDone() throws {
 
 
 @Test func leftoverTemporaryFilesArePurgedFromTheStore() throws {
-    let root = try profileRoot()
+    let root = try TemporaryDirectory("profiles").url
     defer { try? FileManager.default.removeItem(at: root) }
     let store = SpeakerProfileStore(directory: root.appendingPathComponent("Speakers"))
     try store.update { $0.profiles = [SpeakerProfile(id: "JIM", displayName: "Jim")] }
@@ -424,7 +412,7 @@ func lockedReadHoldsTheLockUntilItsWriteIsDone() throws {
 }
 
 @Test func storedLinesSayWhichForgetsHaveHadTheirStoreWrite() throws {
-    let root = try profileRoot()
+    let root = try TemporaryDirectory("profiles").url
     defer { try? FileManager.default.removeItem(at: root) }
     let store = SpeakerProfileStore(directory: root.appendingPathComponent("Speakers"))
     let crashed = ForgetRecord(kind: .all, sampleIDs: ["S1"], turnRememberOff: true)
@@ -449,7 +437,7 @@ func lockedReadHoldsTheLockUntilItsWriteIsDone() throws {
 }
 
 @Test func compactionKeepsAStoredLineWhoseTombstoneThisBuildCannotRead() throws {
-    let root = try profileRoot()
+    let root = try TemporaryDirectory("profiles").url
     defer { try? FileManager.default.removeItem(at: root) }
     let store = SpeakerProfileStore(directory: root.appendingPathComponent("Speakers"))
     let mine = ForgetRecord(kind: .all, sampleIDs: ["S1"])
@@ -473,7 +461,7 @@ func lockedReadHoldsTheLockUntilItsWriteIsDone() throws {
 }
 
 @Test func aTornForgetLineIsNotAnUnfinishedForget() throws {
-    let root = try profileRoot()
+    let root = try TemporaryDirectory("profiles").url
     defer { try? FileManager.default.removeItem(at: root) }
     let store = SpeakerProfileStore(directory: root.appendingPathComponent("Speakers"))
     // One ordinary record first, so the folder and the journal exist.

@@ -5,28 +5,14 @@ import Synchronization
 import Testing
 import HolosCore
 @testable import HolosStorage
+import HolosTestSupport
+import HolosSessionTestSupport
+
+private let swapSession = SessionFixtureBuilder(name: "Swap", source: .microphoneAndSystem)
 
 // Session operations that used to go through a path after the folder chain had been checked: backup exclusion
 // of speakers/voice, the processing lease's folder check, and recovery's audio reads. Each test swaps a file or
 // folder for another (or for a symbolic link) at the moment the old path-based step ran.
-
-private func swapTemporaryRoot() throws -> URL {
-    let root = FileManager.default.temporaryDirectory.appendingPathComponent("holos-swap-\(UUID().uuidString)")
-    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-    return root
-}
-
-private func swapFinishedSession(in root: URL) async throws -> (session: URL, id: String) {
-    let archive = try SessionArchive.create(root: root, name: "Swap", source: .microphoneAndSystem,
-                                            locale: "en-CA", backend: .speech)
-    try await archive.finish(status: ArchiveStatus.complete)
-    return (archive.directory, archive.id)
-}
-
-private func swapIsInvalidInput(_ error: HolosError?) -> Bool {
-    if case .invalidInput? = error { return true }
-    return false
-}
 
 private func isExcludedFromBackup(_ url: URL) throws -> Bool {
     try URL(fileURLWithPath: url.path).resourceValues(forKeys: [.isExcludedFromBackupKey]).isExcludedFromBackup
@@ -47,18 +33,6 @@ private func swapFolderForLink(_ folder: URL, movedTo moved: URL, target: URL) {
     try? fm.createSymbolicLink(at: folder, withDestinationURL: target)
 }
 
-private func swapWriteCAF(at url: URL, frames: Int) throws {
-    guard let format = AVAudioFormat(standardFormatWithSampleRate: 48_000, channels: 1),
-          let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(frames)),
-          let samples = buffer.floatChannelData else { throw HolosError.invalidInput("Test audio allocation failed.") }
-    buffer.frameLength = AVAudioFrameCount(frames)
-    for index in 0..<frames { samples[0][index] = 0.1 }
-    var file: AVAudioFile? = try AVAudioFile(forWriting: url, settings: format.settings,
-                                            commonFormat: .pcmFormatFloat32, interleaved: false)
-    try file?.write(from: buffer)
-    file = nil
-}
-
 /// True the first time only.
 private final class Once: Sendable {
     private let fired = Mutex(false)
@@ -68,7 +42,7 @@ private final class Once: Sendable {
 // MARK: - Backup exclusion
 
 @Test func backupExclusionWritesTheAttributeFoundationWrites() throws {
-    let root = try swapTemporaryRoot()
+    let root = try TemporaryDirectory("swap").url
     defer { try? FileManager.default.removeItem(at: root) }
     let byFoundation = root.appendingPathComponent("foundation", isDirectory: true)
     let byDescriptor = root.appendingPathComponent("descriptor", isDirectory: true)
@@ -91,9 +65,9 @@ private final class Once: Sendable {
 // The review case: speakers/voice is swapped for a link after the chain opened it and before the exclusion was
 // set. The path-based `setResourceValues` followed the link and marked the target outside the session.
 @Test func backupExclusionIsSetOnTheOpenedFolderNeverOnASwappedLink() async throws {
-    let root = try swapTemporaryRoot()
+    let root = try TemporaryDirectory("swap").url
     defer { try? FileManager.default.removeItem(at: root) }
-    let (session, sessionID) = try await swapFinishedSession(in: root)
+    let (session, sessionID) = try await swapSession.finished(in: root)
     let outside = root.appendingPathComponent("outside", isDirectory: true)
     try FileManager.default.createDirectory(at: outside, withIntermediateDirectories: false)
     let voice = SessionPaths.voiceDirectory(session)
@@ -111,7 +85,7 @@ private final class Once: Sendable {
         }
     }
     // The voice file write that follows refuses the link; the target outside was never changed.
-    #expect(swapIsInvalidInput(error))
+    #expect(isInvalidInput(error))
     #expect(try !isExcludedFromBackup(outside))
     #expect(backupAttribute(outside) == nil)
     #expect(try FileManager.default.contentsOfDirectory(atPath: outside.path).isEmpty)
@@ -122,9 +96,9 @@ private final class Once: Sendable {
 // MARK: - Processing lease
 
 @Test func leaseComparesTheFolderItOpensWithoutFollowingALink() async throws {
-    let root = try swapTemporaryRoot()
+    let root = try TemporaryDirectory("swap").url
     defer { try? FileManager.default.removeItem(at: root) }
-    let (session, _) = try await swapFinishedSession(in: root)
+    let (session, _) = try await swapSession.finished(in: root)
     let lease = try SessionArchive.acquireProcessingLease(at: session)
     defer { lease.release() }
     try lease.require(for: session)
@@ -133,17 +107,17 @@ private final class Once: Sendable {
     // A link to the session folder is the same folder by `stat`, but it is refused.
     let link = root.appendingPathComponent("\(UUID().uuidString).holos", isDirectory: true)
     try FileManager.default.createSymbolicLink(at: link, withDestinationURL: session)
-    #expect(swapIsInvalidInput(#expect(throws: HolosError.self) { try lease.require(for: link) }))
+    #expect(isInvalidInput(#expect(throws: HolosError.self) { try lease.require(for: link) }))
 
     // The session folder is swapped for a link to itself (moved away), then for another real folder.
     let moved = root.appendingPathComponent("moved.holos", isDirectory: true)
     swapFolderForLink(session, movedTo: moved, target: moved)
-    #expect(swapIsInvalidInput(#expect(throws: HolosError.self) { try lease.require(for: session) }))
+    #expect(isInvalidInput(#expect(throws: HolosError.self) { try lease.require(for: session) }))
     try lease.require(for: moved)
     try FileManager.default.removeItem(at: session)
     try FileManager.default.createDirectory(at: session, withIntermediateDirectories: false)
     let error = #expect(throws: HolosError.self) { try lease.require(for: session) }
-    #expect(swapIsInvalidInput(error))
+    #expect(isInvalidInput(error))
     if case .invalidInput(let message)? = error { #expect(message.contains("another session")) }
 }
 
@@ -157,13 +131,13 @@ private func swapStaleArchive(in root: URL) async throws -> URL {
         "track": "mic", "relativePath": "audio/mic/000001.caf", "start": "0",
         "sampleRate": "48000", "channels": "1",
     ])
-    try swapWriteCAF(at: writer.directory.appendingPathComponent("audio/mic/000001.caf"), frames: 64)
+    try AudioFixtures.writeCAF(at: writer.directory.appendingPathComponent("audio/mic/000001.caf"), frames: 64)
     try await writer.setStatus(ArchiveStatus.processing)
     return writer.directory
 }
 
 @Test func recoveryReadsChunkAudioThroughItsDescriptor() async throws {
-    let root = try swapTemporaryRoot()
+    let root = try TemporaryDirectory("swap").url
     defer { try? FileManager.default.removeItem(at: root) }
     let directory = try await swapStaleArchive(in: root)
     let report = try await SessionArchive.recover(at: directory)
@@ -179,12 +153,12 @@ private func swapStaleArchive(in root: URL) async throws -> URL {
 
 // audio/mic is swapped for a link just before the chunk is opened: the path-based AVAudioFile read followed it.
 @Test func recoveryNeverReadsAChunkThroughASwappedFolder() async throws {
-    let root = try swapTemporaryRoot()
+    let root = try TemporaryDirectory("swap").url
     defer { try? FileManager.default.removeItem(at: root) }
     let directory = try await swapStaleArchive(in: root)
     let outside = root.appendingPathComponent("outside", isDirectory: true)
     try FileManager.default.createDirectory(at: outside, withIntermediateDirectories: false)
-    try swapWriteCAF(at: outside.appendingPathComponent("000001.caf"), frames: 128)
+    try AudioFixtures.writeCAF(at: outside.appendingPathComponent("000001.caf"), frames: 128)
     let mic = directory.appendingPathComponent("audio/mic", isDirectory: true)
     let moved = directory.appendingPathComponent("audio/mic-real", isDirectory: true)
     let once = Once()
@@ -203,11 +177,11 @@ private func swapStaleArchive(in root: URL) async throws -> URL {
 // The chunk is replaced by another file after it was opened: its format and hash describe the file that was
 // opened, which is no longer at the path, so it is refused rather than indexed under that path.
 @Test func recoveryRefusesAChunkReplacedWhileItIsRead() async throws {
-    let root = try swapTemporaryRoot()
+    let root = try TemporaryDirectory("swap").url
     defer { try? FileManager.default.removeItem(at: root) }
     let directory = try await swapStaleArchive(in: root)
     let replacement = root.appendingPathComponent("replacement.caf")
-    try swapWriteCAF(at: replacement, frames: 128)
+    try AudioFixtures.writeCAF(at: replacement, frames: 128)
     let chunkURL = directory.appendingPathComponent("audio/mic/000001.caf")
     let once = Once()
 
@@ -224,12 +198,12 @@ private func swapStaleArchive(in root: URL) async throws -> URL {
 
 // audio/mic is swapped for a link to a folder holding a same-named chunk after the chunk was opened.
 @Test func recoveryRefusesAChunkWhoseFolderIsSwappedWhileItIsRead() async throws {
-    let root = try swapTemporaryRoot()
+    let root = try TemporaryDirectory("swap").url
     defer { try? FileManager.default.removeItem(at: root) }
     let directory = try await swapStaleArchive(in: root)
     let outside = root.appendingPathComponent("outside", isDirectory: true)
     try FileManager.default.createDirectory(at: outside, withIntermediateDirectories: false)
-    try swapWriteCAF(at: outside.appendingPathComponent("000001.caf"), frames: 64)
+    try AudioFixtures.writeCAF(at: outside.appendingPathComponent("000001.caf"), frames: 64)
     let mic = directory.appendingPathComponent("audio/mic", isDirectory: true)
     let moved = directory.appendingPathComponent("audio/mic-real", isDirectory: true)
     let once = Once()
@@ -250,7 +224,7 @@ private func swapStaleArchive(in root: URL) async throws -> URL {
 /// either, and the call throws. Otherwise the session is made in the open folder, and its processing lease can be
 /// taken through that folder's descriptor.
 @Test func createInEmptyFolderRefusesAPathThatNoLongerReachesTheFolder() async throws {
-    let root = try swapTemporaryRoot()
+    let root = try TemporaryDirectory("swap").url
     defer { try? FileManager.default.removeItem(at: root) }
     let fm = FileManager.default
     let rootFD = open(root.path, O_RDONLY | O_DIRECTORY | O_CLOEXEC)
@@ -310,7 +284,7 @@ private func swapMadeSessionFolder(in parent: URL, parentFD: Int32) throws -> (U
 /// exports, removals, and folder fsyncs. Nothing lands in the replacement; after the pin is released, the path
 /// reaches the replacement again.
 @Test func pinnedSessionFolderTakesEveryWriteWhateverThePathLeadsTo() async throws {
-    let root = try swapTemporaryRoot()
+    let root = try TemporaryDirectory("swap").url
     defer { try? FileManager.default.removeItem(at: root) }
     let fm = FileManager.default
     let staging = root.appendingPathComponent("staging", isDirectory: true)
@@ -390,7 +364,7 @@ private func swapMadeSessionFolder(in parent: URL, parentFD: Int32) throws -> (U
 /// a file the replacement also had, or any write named the other way, went into the replacement by path.
 @Test(arguments: [false, true], [false, true])
 func pinCoversTheSessionNamedWithOrWithoutPrivate(pinPrivate: Bool, writePrivate: Bool) async throws {
-    let root = try swapTemporaryRoot()
+    let root = try TemporaryDirectory("swap").url
     defer { try? FileManager.default.removeItem(at: root) }
     try #require(root.path.hasPrefix("/var/"), "the temporary folder is not under /var: \(root.path)")
     func named(_ url: URL, withPrivate: Bool) -> URL {
@@ -444,7 +418,7 @@ func pinCoversTheSessionNamedWithOrWithoutPrivate(pinPrivate: Bool, writePrivate
 
 /// A path is pinned once at a time, and releasing a pin that already ended never ends a later one.
 @Test func sessionFolderPinsAreOneAtATime() throws {
-    let root = try swapTemporaryRoot()
+    let root = try TemporaryDirectory("swap").url
     defer { try? FileManager.default.removeItem(at: root) }
     let rootFD = open(root.path, O_RDONLY | O_DIRECTORY | O_CLOEXEC)
     #expect(rootFD >= 0)

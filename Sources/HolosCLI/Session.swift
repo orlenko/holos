@@ -14,6 +14,7 @@ struct Session: AsyncParsableCommand {
             Retranscribe.self,
             Diarize.self,
             EchoAnalyze.self,
+            EchoLabelCounts.self,
             Import.self,
             Export.self,
             Score.self,

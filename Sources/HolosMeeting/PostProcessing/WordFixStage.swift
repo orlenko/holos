@@ -53,7 +53,7 @@ public struct WordFixDependencies: Sendable {
 /// run and its effective edits onto the new word positions; `force` instead labels speakers again. Without the model (Apple
 /// Intelligence's fix off in Settings, or unavailable) only the corrections are applied, and a transcript whose terms
 /// the model chose before is kept as it is. Cancellation publishes nothing.
-enum WordFixStage {
+public enum WordFixStage {
     private struct IncompletePublication: LocalizedError {
         var message: String
         var errorDescription: String? { message }
@@ -256,14 +256,14 @@ enum WordFixStage {
     }
 
     /// What `fix` made of a transcript.
-    struct Computed {
+    public struct Computed {
         /// A new revision (`fixedFrom` the transcript given) with the fixes made and marked.
-        var transcript: Transcript
-        var counts: WordFixes.Counts
+        public var transcript: Transcript
+        public var counts: WordFixes.Counts
         /// Places put to the model.
         var asked: Int
         /// What the messages add: places not checked, and why.
-        var notes: [String]
+        public var notes: [String]
         /// Why the model could not be asked about some place (it was not), when it could not.
         var unavailable: String?
         /// Every often-heard-as place was decided by the model (`.term` or `.keep`). False for unavailable models,
@@ -317,11 +317,11 @@ enum WordFixStage {
     /// `maximumQuestions`, one after another, none once `maximumTimeoutsInARow` went unanswered in a row. `progress`
     /// gets the share of places asked. Throws only `CancellationError`. The stage publishes the result; an evaluation
     /// candidate can use it as is.
-    static func fix(_ base: Transcript, title: String, corrections: CorrectionList, terms: CorrectionList,
-                    dependencies: WordFixDependencies,
-                    preservingTermsFrom priorFixed: Transcript? = nil,
-                    screenContext: ScreenContextRecord? = nil,
-                    progress: (Double) -> Void = { _ in }) async throws -> Computed {
+    public static func fix(_ base: Transcript, title: String, corrections: CorrectionList, terms: CorrectionList,
+                           dependencies: WordFixDependencies,
+                           preservingTermsFrom priorFixed: Transcript? = nil,
+                           screenContext: ScreenContextRecord? = nil,
+                           progress: (Double) -> Void = { _ in }) async throws -> Computed {
         var working: [WordFixes.Working?] = base.segments.map {
             WordFixes.Working($0, preservingExistingFixes: true)
         }

@@ -3,6 +3,7 @@ import Foundation
 import Testing
 import HolosCore
 @testable import HolosStorage
+import HolosTestSupport
 
 // DictationHistoryService (docs/design.md "Dictation history"): the app's in-memory history over the store, with its
 // serial file queue flushed on quit and reloads that never drop a change made while they read.
@@ -15,8 +16,7 @@ private struct ServiceFixture {
     let suite: String
 
     init() throws {
-        root = FileManager.default.temporaryDirectory.appendingPathComponent("holos-history-service-\(UUID().uuidString)")
-        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        root = try TemporaryDirectory("history-service").url
         store = DictationHistoryStore(directory: root.appendingPathComponent("History"))
         suite = "holos-history-tests-\(UUID().uuidString)"
         defaults = try #require(UserDefaults(suiteName: suite))
@@ -83,14 +83,6 @@ private final class HeldHistoryLock {
     #expect(try fixture.store.load().records.isEmpty, "A clear asked for before quitting is on disk.")
 }
 
-/// Polls (a bounded number of turns, no clock) until `done` holds.
-@MainActor
-private func settle(_ done: () -> Bool) async {
-    for _ in 0..<20_000 where !done() {
-        try? await Task.sleep(for: .milliseconds(2))
-    }
-}
-
 @MainActor
 @Test func aFailedWriteIsReportedAndTheRecordsFollowTheFile() async throws {
     let fixture = try ServiceFixture()
@@ -108,13 +100,13 @@ private func settle(_ done: () -> Bool) async {
     service.delete(kept.id)
     #expect(service.records.isEmpty, "The delete shows at once…")
     #expect(service.flush(timeout: 600) == .failed, "…and a flush reports that a write failed.")
-    await settle { !failures.isEmpty && service.records == [kept] }
+    _ = await eventually(timeout: .seconds(40)) { !failures.isEmpty && service.records == [kept] }
     #expect(service.records == [kept], "…until the failure brings it back from the file.")
     #expect(failures.count == 1)
     #expect(service.problem?.hasPrefix("The dictation could not be deleted; it is still kept on this Mac.") == true)
 
     service.clear()
-    await settle { failures.count == 2 && service.records == [kept] }
+    _ = await eventually(timeout: .seconds(40)) { failures.count == 2 && service.records == [kept] }
     #expect(service.records == [kept], "A failed Clear History leaves the kept dictations shown.")
     #expect(service.problem?.hasPrefix("History could not be cleared") == true)
 
@@ -124,7 +116,7 @@ private func settle(_ done: () -> Bool) async {
     let lost = dictation("not saved")
     service.add(lost)
     #expect(service.records == [kept, lost])
-    await settle { failures.count == 3 && service.records == [kept] }
+    _ = await eventually(timeout: .seconds(40)) { failures.count == 3 && service.records == [kept] }
     #expect(service.records == [kept])
     #expect(service.problem?.hasPrefix("This dictation could not be saved in History.") == true)
     #expect(service.flush(timeout: 600) == .failed)
@@ -136,7 +128,7 @@ private func settle(_ done: () -> Bool) async {
     service.onChange = { changes += 1 }
     service.add(dictation("saved again"))
     #expect(service.problem != nil, "Not before the write succeeded.")
-    await settle { service.problem == nil }
+    _ = await eventually(timeout: .seconds(40)) { service.problem == nil }
     #expect(service.problem == nil)
     #expect(changes >= 2, "The add, then the recovery, are both reported.")
     #expect(service.flush(timeout: 600) == .written)
@@ -190,7 +182,7 @@ private func settle(_ done: () -> Bool) async {
     service.onChange = { changes += 1 }
     service.clear()
     await service.flushed()
-    await settle { !service.unreadable }
+    _ = await eventually(timeout: .seconds(40)) { !service.unreadable }
     #expect(!service.unreadable)
     #expect(service.problem == nil)
     #expect(changes >= 1)

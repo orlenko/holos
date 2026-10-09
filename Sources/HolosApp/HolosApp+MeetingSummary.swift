@@ -22,8 +22,8 @@ final class MeetingSummaryAppState {
         set { UserDefaults.standard.set(newValue, forKey: enabledKey) }
     }
 
-    /// The meeting summarized now and the child's pid (0 while it starts).
-    var running: (sessionID: String, pid: Int32)?
+    /// The meeting summarized now and the child's handle (nil while it starts).
+    var running: (sessionID: String, child: CommandHandle?)?
     /// The key (transcript and speakers' names) each meeting was last tried with when no summary came of it (failed),
     /// so it is not tried again until that key changes; kept until the app quits.
     var attempted: [String: String] = [:]
@@ -95,8 +95,8 @@ extension HolosAppDelegate {
     /// nothing) and made again afterwards, if its meeting is not queued for a final transcript meanwhile.
     func meetingSummaryReconcileStarted() {
         meeting.summaries.reconciling += 1
-        if let running = meeting.summaries.running, running.pid > 0, meeting.summaries.preempted == nil,
-           kill(running.pid, SIGTERM) == 0 {
+        if let running = meeting.summaries.running, meeting.summaries.preempted == nil,
+           running.child?.terminate() == true {
             meeting.summaries.preempted = running.sessionID
         }
     }
@@ -136,8 +136,8 @@ extension HolosAppDelegate {
     /// written).
     func cancelMeetingSummary(_ sessionID: String) {
         meeting.summaries.removeRequest(sessionID)
-        if let running = meeting.summaries.running, running.sessionID == sessionID, running.pid > 0 {
-            kill(running.pid, SIGTERM)
+        if let running = meeting.summaries.running, running.sessionID == sessionID {
+            running.child?.terminate()
         }
     }
 
@@ -145,8 +145,8 @@ extension HolosAppDelegate {
     /// again once the meeting is saved.
     func meetingSummaryMeetingStateChanged() {
         guard let controller = meeting.controller, meetingIsBusy(controller.state),
-              let running = meeting.summaries.running, running.pid > 0, meeting.summaries.preempted == nil,
-              kill(running.pid, SIGTERM) == 0 else { return }
+              let running = meeting.summaries.running, meeting.summaries.preempted == nil,
+              running.child?.terminate() == true else { return }
         meeting.summaries.preempted = running.sessionID
         Self.summaryLog.notice("Summary of \(running.sessionID, privacy: .public) stopped for a meeting")
     }
@@ -241,7 +241,7 @@ extension HolosAppDelegate {
 
     private func startNextMeetingSummary(_ candidates: [MeetingSummarySchedule.Candidate], gone: Set<String>) {
         // A reconciliation that began while the folder was scanned holds summaries back; the next look starts one.
-        guard let controller = meeting.controller, let maintenance = meeting.maintenance,
+        guard let controller = meeting.controller, let commands = meeting.commands,
               meeting.summaries.running == nil, meeting.summaries.launchReady,
               meeting.summaries.reconciling == 0 else { return }
         let now = Date()
@@ -277,47 +277,42 @@ extension HolosAppDelegate {
         // Marked running before the meeting is taken: taking it schedules again (`onSessionsInUseChanged`), which must
         // then see a summary running and start nothing else. The meeting is held for the whole run, as for a final
         // transcript, so Review and the meeting's commands wait and its speaker labels cannot change under it.
-        meeting.summaries.running = (sessionID, 0)
+        meeting.summaries.running = (sessionID, nil)
         guard controller.beginUsing(sessionID, for: Self.summaryRunningText) else {
             meeting.summaries.running = nil
             meeting.summaries.delayedUntil[sessionID] = Date().addingTimeInterval(60)
             return
         }
-        let output = Self.temporaryFile("summary")
-        let errors = Self.temporaryFile("summary-err")
         do {
             // Run for a Summarize Again: its ID goes into summary.json, so the request is known answered.
             let answers = meeting.summaries.requests.last { $0.sessionID == sessionID }.map {
                 ["--answers-request", $0.id]
             } ?? []
-            let pid = try maintenance.run(["session", "summarize", path, "--json"] + (force ? ["--force"] : [])
-                                              + answers,
-                                          standardOutput: output, standardError: errors) { [weak self] code in
-                self?.meetingSummaryEnded(sessionID, key: key, code: code, output: output, errors: errors)
+            let child = try commands.start(["session", "summarize", path, "--json"] + (force ? ["--force"] : [])
+                                               + answers,
+                                           output: "summary", errors: "summary-err", maxOutputBytes: 4 << 20,
+                                           as: SessionSummarizeCommand.Outcome.self) { [weak self] result in
+                self?.meetingSummaryEnded(sessionID, key: key, result)
             }
-            meeting.summaries.running = (sessionID, pid)
+            meeting.summaries.running = (sessionID, child)
             Self.summaryLog.notice("Summary of \(sessionID, privacy: .public) started")
         } catch {
             meeting.summaries.running = nil
             meeting.summaries.delayedUntil[sessionID] = Date().addingTimeInterval(60)
             controller.endUsing(sessionID)
-            Self.removeFile(output)
-            Self.removeFile(errors)
             Self.summaryLog.error("Cannot start the summary: \(error.localizedDescription, privacy: .private)")
         }
         meeting.meetingsPane?.update(summarizing: meeting.summaries.running?.sessionID)
     }
 
-    private func meetingSummaryEnded(_ sessionID: String, key: String?, code: Int32, output: URL, errors: URL) {
-        let outcome = (try? AtomicFile.readIfPresent(output, maxBytes: 4 << 20)).flatMap {
-            $0.flatMap { try? HolosJSON.decoder().decode(SummaryOutcome.self, from: $0) }
-        }
-        Self.removeFile(output)
-        Self.removeFile(errors)
+    private func meetingSummaryEnded(_ sessionID: String, key: String?,
+                                     _ result: CommandResult<SessionSummarizeCommand.Outcome>) {
+        let code = result.code
+        let outcome = result.outcome
         let preempted = meeting.summaries.preempted == sessionID
         if preempted { meeting.summaries.preempted = nil }
         meeting.summaries.running = nil
-        let status = outcome.map { SessionSummarizeCommand.Status($0.status) }
+        let status = outcome?.status
         let requested = meeting.summaries.requested.contains(sessionID)
         // A result the command reports decides: a summary it saved counts even when a meeting started at the very
         // end (SIGTERM cannot stop the save). Without one, a run stopped for a meeting is tried again.
@@ -345,7 +340,7 @@ extension HolosAppDelegate {
                                  outcome?.message ?? "The summary command stopped (code \(code)).")
             }
         }
-        Self.summaryLog.notice("Summary of \(sessionID, privacy: .public) ended with \(code, privacy: .public) (\(outcome?.status ?? "no result", privacy: .public))")
+        Self.summaryLog.notice("Summary of \(sessionID, privacy: .public) ended with \(code, privacy: .public) (\(outcome?.status.rawValue ?? "no result", privacy: .public))")
         meeting.controller?.endUsing(sessionID)
         meeting.maintenanceEnded[sessionID, default: 0] += 1
         // A new generated title may be the one the meeting shows: an open Review window takes it.
@@ -393,12 +388,6 @@ extension HolosAppDelegate {
         // Cancel Summary: the summary stops, and Review opens once it has let go of the meeting.
         if alert.runModal() == .alertSecondButtonReturn { cancelMeetingSummary(sessionID) }
         return true
-    }
-
-    /// The part of `voiceislocal session summarize --json` the app reads.
-    private struct SummaryOutcome: Decodable {
-        var status: String
-        var message: String?
     }
 
     private func showSummaryAlert(_ title: String, _ text: String) {
