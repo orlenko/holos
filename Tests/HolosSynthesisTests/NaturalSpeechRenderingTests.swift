@@ -120,9 +120,14 @@ private final class FakeChecker: SpeechChunkChecker, Sendable {
 
 @MainActor private final class FakeFallback: ParagraphFallback {
     private(set) var texts: [String] = []
+    private(set) var voices: [String?] = []
 
-    func samples(for text: String, language: String, sampleRate: Double) async throws -> (samples: [Float], voice: String) {
+    func defaultVoice(language: String) -> String? { "com.apple.voice.premium.en-US.Ava" }
+
+    func samples(for text: String, voice: String?, language: String, sampleRate: Double) async throws
+        -> (samples: [Float], voice: String) {
         texts.append(text)
+        voices.append(voice)
         return ([Float](repeating: 0.5, count: 4_800), "Ava (Premium)")
     }
 }
@@ -311,7 +316,10 @@ private actor WatchedBackend: NaturalSpeechBackend {
 }
 
 @MainActor private final class NoFallback: ParagraphFallback {
-    func samples(for text: String, language: String, sampleRate: Double) async throws -> (samples: [Float], voice: String) {
+    func defaultVoice(language: String) -> String? { nil }
+
+    func samples(for text: String, voice: String?, language: String, sampleRate: Double) async throws
+        -> (samples: [Float], voice: String) {
         throw HolosError.io("not expected")
     }
 }
@@ -538,3 +546,49 @@ private actor CountingBackend: NaturalSpeechBackend {
         #expect(renderer.lastStats.paragraphs == 3)
     }
 }
+
+@Suite struct SpeechChunkCheckNumbersOnlyTests {
+    @Test func aParagraphOfNumbersAloneFailsWhenLittleOrNothingIsHeard() {
+        let numbers = "1,500 2,000 3,500."
+        // Nothing heard, or a cut-off take: not taken for right because no word is left to compare.
+        #expect(!SpeechChunkCheck.evaluate(expected: numbers, heard: "").passed)
+        #expect(!SpeechChunkCheck.evaluate(expected: numbers, heard: "fifteen").passed)
+        // Heard, however the numbers are written.
+        #expect(SpeechChunkCheck.evaluate(expected: numbers, heard: "1500 2000 3500").passed)
+        #expect(SpeechChunkCheck.evaluate(expected: numbers,
+                                          heard: "fifteen hundred two thousand thirty five hundred").passed)
+        #expect(SpeechChunkCheck.evaluate(expected: "2015", heard: "twenty fifteen").passed)
+        #expect(!SpeechChunkCheck.evaluate(expected: "2015", heard: "").passed)
+    }
+}
+
+@MainActor @Suite struct NaturalRenderSettingsTests {
+    private func folder() throws -> URL {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("holos-settings-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        return folder
+    }
+
+    @Test func aReadingsSavedSettingsAreUsedNotTodays() async throws {
+        let fallback = FakeFallback()
+        let checker = FakeChecker { _ in "nothing alike at all" }
+        let renderer = NaturalSpeechRenderer(backend: CountingBackend(), checker: checker, fallback: fallback,
+                                             installedPacks: { [.english] })
+        #expect(renderer.settings(for: "pocket:en:alba")
+            == NaturalRenderSettings(fallbackVoice: "com.apple.voice.premium.en-US.Ava", checked: true))
+        // Saved when the reading started: another system voice than today's best.
+        let saved = NaturalRenderSettings(fallbackVoice: "com.apple.voice.enhanced.en-GB.Daniel", checked: true)
+        #expect(NaturalRenderSettings(values: saved.values) == saved)
+        _ = try await renderer.render(text: "This paragraph has plenty of words in it.", voiceIdentifier: "pocket:en:alba",
+                                      rate: nil, settings: saved, to: try folder().appendingPathComponent("a.caf"))
+        #expect(fallback.voices == ["com.apple.voice.enhanced.en-GB.Daniel"])
+        // Saved with the check off: no paragraph is heard back, whatever the renderer would do today.
+        let unchecked = NaturalRenderSettings(fallbackVoice: nil, checked: false)
+        #expect(NaturalRenderSettings(values: unchecked.values) == unchecked)
+        _ = try await renderer.render(text: "Another paragraph with words.", voiceIdentifier: "pocket:en:alba",
+                                      rate: nil, settings: unchecked, to: try folder().appendingPathComponent("b.caf"))
+        #expect(checker.calls == 2)
+        #expect(fallback.texts.count == 1)
+    }
+}
+

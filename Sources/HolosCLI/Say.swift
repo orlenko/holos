@@ -60,10 +60,17 @@ struct Say: AsyncParsableCommand {
     @Option(help: ArgumentHelp("An existing folder for a natural voice's temporary files (the app passes one).",
                                visibility: .hidden))
     var scratchDirectory: String?
+    @Option(help: ArgumentHelp("A natural voice: the system voice a paragraph it fails is read with (a reading saves it).",
+                               visibility: .hidden))
+    var fallbackVoice: String?
+    @Option(help: ArgumentHelp("A natural voice: on or off, whether paragraphs are heard back (a reading saves it).",
+                               visibility: .hidden))
+    var check: String?
     @Option(help: "Maximum seconds to wait for another Voice is Local playback.") var maxWait: Double = 10
 
     func validate() throws {
         if textFile != nil && !text.isEmpty { throw ValidationError("Give the text or --text-file, not both.") }
+        if let check, !["on", "off"].contains(check) { throw ValidationError("--check must be on or off.") }
     }
 
     @MainActor mutating func run() async throws {
@@ -86,8 +93,14 @@ struct Say: AsyncParsableCommand {
             }
             let renderer = NaturalVoicesCLI.renderer(scratch: scratch)
             let rate = self.rate
+            // A reading's part renders with the settings the reading saved when it started.
+            var settings = renderer.settings(for: voice)
+            if let fallbackVoice { settings?.fallbackVoice = fallbackVoice }
+            if let check { settings?.checked = check == "on" }
+            let pinned = settings
             render = {
-                let result = try await renderer.render(text: input, voiceIdentifier: voice, rate: rate, to: $0)
+                let result = try await renderer.render(text: input, voiceIdentifier: voice, rate: rate,
+                                                       settings: pinned, to: $0)
                 if ProcessInfo.processInfo.environment["HOLOS_NATURAL_STATS"] == "1" {
                     let stats = renderer.lastStats
                     Console.error(String(format: "Natural voice: %d paragraphs, %.2f s of audio, %.2f s speaking, "
