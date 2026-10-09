@@ -69,7 +69,7 @@ add a row when a step is split. The working rules that came out of this audit ar
 | HolosDiarization | 1,103 / 5 | Core, FluidAudio | Diarizer (CLI only) |
 | HolosWhisper | 791 / 4 | Core, WhisperKit | Deep transcription (CLI only) |
 | HolosApp (executable) | 21,915 / 44 | 10 targets | AppKit shell: `HolosAppDelegate` plus 11 extensions, MainWindow panes, Review window, Reading UI |
-| HolosCLI (executable) | 4,748 / 28 | 11 targets + ArgumentParser | Mostly thin commands over HolosMeeting `*Command.run`; `Eval.swift` (leases, preparation, uploads) and `Speakers.swift` (sample refresh, export rewrites) hold workflow logic (step 15) |
+| HolosCLI (executable) | 4,748 / 28 | 11 targets + ArgumentParser | Mostly thin commands over HolosMeeting `*Command.run`; `Eval.swift` (leases, preparation, uploads) holds workflow logic (step 15); `Speakers.swift`'s sample refresh and export rewrites moved to `SpeakerEditCommand` (step 15a, #136) |
 
 **Processes** [M]:
 - **Recorder child.** The app `posix_spawn`s `voiceislocal record start` as a detached child. It talks to it through:
@@ -85,7 +85,7 @@ add a row when a step is split. The working rules that came out of this audit ar
 - FluidAudio and WhisperKit are out of the app.
 - HolosSpeakers does no file I/O.
 - HolosMeeting has no AppKit, so `ReviewSession` and `MeetingController` are testable `@MainActor` classes.
-- Most CLI commands are thin; `Eval.swift` and `Speakers.swift` are the exceptions (step 15).
+- Most CLI commands are thin; `Eval.swift` is the exception (step 15). `Speakers.swift` keeps parsing, selectors, `list`, the hidden `embed` (pipes, stdin and SIGTERM) and printing.
 
 ### 1.2 Layering violations and unclear boundaries
 
@@ -370,7 +370,7 @@ All steps preserve behaviour unless marked. Sizes are non-test lines, with moved
 | 12 | W | RecordingWorkflow split + `RecorderExit` + one options mapping | RecordingWorkflow; MeetingController 32–33, 648–656; RecorderLauncher 59–78, 147–160; SessionImporter 311 | 12a moves, 12b exit owner (replaces 9 sites), 12c `MeetingVocabulary` and a single `RecordingOptions(settings:)`. **12c changes behaviour:** it removes the locale and mic divergence | Recorder tests with injected capture (`MeetingCapture`, `LiveSpeechSession` fakes); the user does a real record/stop after merge | 3 PRs: 450 moved / 450 / 200 | 12a moves (#133) and 12b `RecorderExitSequence` (#134) merged; 12c in review (#135) |
 | 13 | M | Core cleanup | 9 app-only files → HolosAppModel; Core `DictationRerun.swift` → `DictationTextPipeline.swift`; Corrections I/O → Storage. `Lexicon` stays in Core: `TranscriptFixer` (Core) builds it and takes it in its signatures, and Dictation depends on Core, so moving it would make a cycle; to drop AppKit from Core, put its `NSSpellChecker` lookup behind a protocol injected from an upper target | `git mv`, imports | Build and suite | 2 × about 300 | not started |
 | 14 | A | BackgroundJobCoordinator | +DeepTranscription 176–487, +EchoCatchUp 63–287; then +MeetingSummary 146–372 and MeetingController 673–735 | One coordinator: lock probe, holds, preemption, retry, order; **add tests in the same PR** (none today) | Coordinator tests with a fake runner, including post-meeting job order; the user checks the order in the app after merge | 2 × about 800 | not started |
-| 15 | A | CLI workflows into the library | `HolosCLI/Eval.swift` (lease, preparation, consent-then-upload orchestration) → `HolosEvaluation` command types; `HolosCLI/Speakers.swift` (sample refresh, export rewrites after an edit) → a `HolosMeeting` speaker-edit command | `*Command` types with `Request`/`Outcome`; the CLI keeps parsing, the consent prompt and printing | Library tests for the moved logic; CLI output unchanged | 2 × about 400 | not started (added after the audit) |
+| 15 | A | CLI workflows into the library | `HolosCLI/Eval.swift` (lease, preparation, consent-then-upload orchestration) → `HolosEvaluation` command types; `HolosCLI/Speakers.swift` (sample refresh, export rewrites after an edit) → a `HolosMeeting` speaker-edit command | `*Command` types with `Request`/`Outcome`; the CLI keeps parsing, the consent prompt and printing | Library tests for the moved logic; CLI output unchanged | 2 × about 400 | 15a Speakers → `SpeakerEditCommand`: in review (#136); 15b Eval: not started (step added after the audit) |
 
 **Later, as files are touched:**
 - Content splits (§2.5): lane C, 3 PRs, fully parallel.
