@@ -169,8 +169,7 @@ public enum SpeakerEditor {
                 viewState = viewState.applying(action, editID: id)
             }
             if skipIfUnchanged, !edits.contains(where: { if case .revert = $0.action { true } else { false } }),
-               current.speakers == base.projection.speakers, current.turns == base.projection.turns,
-               current.shownTurns == base.projection.shownTurns {
+               sameLabels(current, base.projection) {
                 log.info("Session \(base.run.sessionID, privacy: .public): a speaker change of \(edits.count, privacy: .public) edits changes nothing; not saved")
                 return nil
             }
@@ -293,16 +292,26 @@ public enum SpeakerEditor {
     /// the session may have changed since `view` was loaded, so to decide whether to save, or to tell the user there
     /// is nothing to change, call `applyUnlessUnchanged`, which decides on the current state under the speaker lock.
     public static func changesNothing(_ actions: [SpeakerEditAction], on view: SpeakerProjection) -> Bool {
+        // With what the editor adds for the stored speakers a joined speaker shows (`fanningOut`).
+        if actions.contains(where: { if case .revert = $0 { true } else { false } }) { return false }
         var next = view
-        for action in actions.map(cleaned) {
-            if case .revert = action { return false }
+        for action in view.fanningOut(actions.map(cleaned)) {
             let id = UUID().uuidString
             next = next.applying(action, editID: id)
             if next.staleEdits.contains(where: { $0.editID == id }) { return false }
         }
-        // Shown turns too: choosing Unknown for a turn shown with a neighbour's speaker (a short interjection, §5.10)
-        // changes no stored speaker but keeps it unknown from then on.
-        return next.speakers == view.speakers && next.turns == view.turns && next.shownTurns == view.shownTurns
+        return sameLabels(next, view)
+    }
+
+    /// Whether two projections hold the same labels: every stored speaker and turn as it is (`unjoined`, so a change
+    /// to one a joined speaker shows counts though the joined speaker looks the same), and the turns as shown (choosing
+    /// Unknown for a turn shown with a neighbour's speaker, a short interjection, §5.10, changes no stored speaker but
+    /// keeps it unknown from then on).
+    static func sameLabels(_ left: SpeakerProjection, _ right: SpeakerProjection) -> Bool {
+        let a = left.unjoined
+        let b = right.unjoined
+        return a.speakers == b.speakers && a.turns == b.turns && a.shownTurns == b.shownTurns
+            && left.shownTurns == right.shownTurns
     }
 
     /// Whether `saved` (a batch's actions in journal order) is `asked` as `apply` saves it: the same actions first,

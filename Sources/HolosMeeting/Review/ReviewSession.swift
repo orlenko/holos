@@ -1024,7 +1024,10 @@ public struct ReviewDeletedWords: Sendable, Equatable {
             return
         }
         if let person = person(named: name) {
-            if speaker.profileID == person.id, speaker.name == person.displayName { return }
+            // Already so: every stored speaker it shows (same-named ones too) linked to them under that name.
+            if SpeakerEditor.changesNothing([.linkProfile(speakerID: speakerID, profileID: person.id),
+                                             .rename(speakerID: speakerID, name: person.displayName)],
+                                            on: projection) { return }
             try await link(speakerID: speakerID, to: .existing(profileID: person.id), byName: true)
         } else {
             // Return pressed again while this speaker's link to that new name is still waiting or saving.

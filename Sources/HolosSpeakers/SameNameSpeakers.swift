@@ -118,28 +118,30 @@ extension ProjectedTurn {
 }
 
 extension SpeakerProjection {
-    /// The listed speaker shown under `name` as same-named speakers are joined: its name the user gave (or the channel
-    /// speaker's own) matches under `SameNameSpeakers.key`. Since the display joins every speaker of that name, there
-    /// is at most one; a name shown only through a link or an automatic match is not one, so it is never picked among
-    /// speakers it does not join. Nil when none is. Naming new speakers by it ("New Speaker…" with a name already in
-    /// the meeting) gives the turns to that speaker instead of making a second one.
+    /// The listed speaker shown under `name` as same-named speakers are joined: the name it is joined by in the journal
+    /// (`SameNameSpeakers.nameKey`: the name the user gave, else the channel speaker's own, "Me", linked or not)
+    /// matches under `SameNameSpeakers.key`. Since the display joins every speaker of that name, there is at most one;
+    /// a name shown only through a link or an automatic match is not one, so it is never picked among speakers it does
+    /// not join. Nil when none is. Naming new speakers by it ("New Speaker…" with a name already in the meeting) gives
+    /// the turns to that speaker instead of making a second one.
     public func speaker(named name: String) -> ProjectedSpeaker? {
         guard let key = SameNameSpeakers.key(name) else { return nil }
         let matching = speakers.filter { speaker in
-            let joinedBy = speaker.explicitName ?? (speaker.provenance == .channelAssumption ? speaker.name : nil)
-            return joinedBy.flatMap(SameNameSpeakers.key) == key
+            state.speakers[speaker.id].flatMap(SameNameSpeakers.nameKey(of:)) == key
         }
         return matching.count == 1 ? matching[0] : nil
     }
 
-    /// `actions` as `SpeakerEditor` saves them on this view: an edit of a speaker shown joined with same-named ones
-    /// (`ProjectedSpeaker.memberIDs`) also made to each stored speaker it shows, so they stay alike. `SpeakerEditor`
-    /// works it out under the speaker lock on the current labels; Review shows its queued changes through it on the
-    /// labels shown, so what it shows is what is saved.
+    /// `actions` as `SpeakerEditor` saves them on this view: an edit of any stored speaker of a same-name group
+    /// (`SameNameSpeakers.joins` on the journal's state: the speaker shown, or any it shows) also made to each other
+    /// stored speaker of that group, so they stay alike. `SpeakerEditor` works it out under the speaker lock on the
+    /// current labels; Review shows its queued changes through it on the labels shown, so what it shows is what is
+    /// saved. Keyed by the group, not by which speaker is shown: an edit made on a view where another speaker has since
+    /// joined the group, and is shown now, still reaches all of it.
     ///
-    /// - A rename (or clearing the name), a link, or a rejection ("Not Jim") of the speaker shown is made to each of
-    ///   them, in the order asked, one stored speaker after another.
-    /// - A merge of the speaker shown into another moves each of them into it (as merging a speaker always did).
+    /// - A rename (or clearing the name), a link, or a rejection ("Not Jim") of one of them is made to each of the
+    ///   others, in the order asked, one stored speaker after another.
+    /// - A merge of one of them into another speaker moves each of them into it (as merging a speaker always did).
     /// - Everything else (turns given to the speaker shown, new speakers, splits, exclusions) is left as it is: turns
     ///   given to the speaker shown go to the one shown.
     ///
@@ -155,35 +157,35 @@ extension SpeakerProjection {
     public func fanningOutMarked(_ actions: [SpeakerEditAction]) -> [(action: SpeakerEditAction, added: Bool)] {
         let asked = actions.map { (action: $0, added: false) }
         guard !actions.contains(where: { if case .revert = $0 { true } else { false } }) else { return asked }
-        var others: [String: [String]] = [:]
-        var shownAs: [String: String] = [:]
-        for speaker in speakers where speaker.memberIDs.count > 1 {
-            others[speaker.id] = Array(speaker.memberIDs.dropFirst())
-            for member in speaker.memberIDs { shownAs[member] = speaker.id }
-        }
-        guard !others.isEmpty else { return asked }
-        // Per speaker shown, its edits to repeat on each stored speaker it shows.
+        // The groups as the journal's state has them (`SameNameSpeakers.joins`): every stored speaker of a name,
+        // whichever one is shown and whatever the echo mask hides, so an edit made on a view where another speaker
+        // has since joined the group (and is now the one shown) still reaches all of it.
+        let joins = SameNameSpeakers.joins(state.speakers, turns: state.turns)
+        var group: [String: [String]] = [:]
+        for members in joins.members.values { for member in members { group[member] = members } }
+        guard !group.isEmpty else { return asked }
+        // Per stored speaker edited, its edits to repeat on the others of its group.
         var repeated: [String: [SpeakerEditAction]] = [:]
         var order: [String] = []
         var merges: [SpeakerEditAction] = []
         for action in actions {
             switch action {
             case .rename(let speakerID, _), .linkProfile(let speakerID, _), .rejectProfile(let speakerID, _):
-                guard others[speakerID] != nil else { continue }
+                guard group[speakerID] != nil else { continue }
                 if repeated[speakerID] == nil { order.append(speakerID) }
                 repeated[speakerID, default: []].append(action)
             case .merge(let from, let into):
-                guard let members = others[from] else { continue }
-                let target = shownAs[into] ?? into
-                merges += members.filter { $0 != target }.map { .merge(from: $0, into: target) }
+                guard let members = group[from] else { continue }
+                let target = joins.into[into] ?? into
+                merges += members.filter { $0 != from && $0 != target }.map { .merge(from: $0, into: target) }
             case .reassignTurns, .splitTurn, .newSpeaker, .excludeFromEnrollment, .revert:
                 break
             }
         }
         var added: [SpeakerEditAction] = []
-        for shown in order {
-            for member in others[shown] ?? [] {
-                for action in repeated[shown] ?? [] {
+        for edited in order {
+            for member in group[edited] ?? [] where member != edited {
+                for action in repeated[edited] ?? [] {
                     switch action {
                     case .rename(_, let name): added.append(.rename(speakerID: member, name: name))
                     case .linkProfile(_, let profileID): added.append(.linkProfile(speakerID: member, profileID: profileID))

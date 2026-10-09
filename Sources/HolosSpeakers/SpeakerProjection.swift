@@ -170,7 +170,9 @@ public struct SpeakerProjection: Sendable, Equatable {
     /// This projection with every stored speaker listed as itself, with its own link, clusters and turns: same-named
     /// speakers are not joined. Voice data reads it (learning a person's sample, forgetting a person's entries),
     /// since a meeting's voice belongs to the person each stored speaker is linked to, not to whom a joined speaker
-    /// shows. `self` when it is already unjoined.
+    /// shows. Its `speakers` are every stored speaker that holds words (or was made by `newSpeaker`), also one whose
+    /// words the echo mask all hides (listed with no turn shown); `turns` are the turns shown, as here. `self` when it
+    /// is already unjoined.
     public var unjoined: SpeakerProjection {
         guard context.joinsSameNames else { return self }
         var separate = context
@@ -957,7 +959,15 @@ extension SpeakerProjection {
             }
 
             let byOrdinal = { (a: SpeakerState, b: SpeakerState) in (a.ordinal, a.id) < (b.ordinal, b.id) }
-            let listed = speakers.values.filter { turnCounts[$0.id] != nil || $0.isUserCreated }.sorted(by: byOrdinal)
+            // Unjoined (every stored speaker as itself, for voice data and edits that reach each one), a speaker whose
+            // words the echo mask all hides is listed too, with no turn shown: it still holds its words and its link.
+            var holding = Set<String>()
+            if !context.joinsSameNames {
+                for turn in turns where !turn.spans.isEmpty { if let id = turn.speakerID { holding.insert(id) } }
+            }
+            let listed = speakers.values
+                .filter { turnCounts[$0.id] != nil || $0.isUserCreated || holding.contains($0.id) }
+                .sorted(by: byOrdinal)
             let unjoined = listed.map {
                 describe($0, talk: talk[$0.id] ?? 0, turns: turnCounts[$0.id] ?? 0, memberIDs: nil, context: context)
             }

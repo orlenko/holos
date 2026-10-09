@@ -800,3 +800,47 @@ func appendWithoutJoining(_ actions: [SpeakerEditAction], session: URL) throws {
     #expect(after.speakers.map(\.memberIDs) == [["system:S1", "system:S2"]])
     #expect(try editorJournal(session).count == 2)
 }
+
+@Test func linkingAJoinedSpeakerToThePersonItShowsStillLinksEachStoredOne() async throws {
+    let temp = try TemporaryDirectory("editor")
+    defer { temp.remove() }
+    let (session, _, _) = try await SessionFixtures.labelledSession(in: temp.url, speakers: ["S1", "S2", "S3"],
+                                                                    duration: 30)
+    // Saved before edits fanned out: S1 linked to Alex, S3 only named Alex; shown as one, with Alex's link.
+    try appendWithoutJoining([.linkProfile(speakerID: "system:S1", profileID: "P-ALEX"),
+                              .rename(speakerID: "system:S1", name: "Alex"),
+                              .rename(speakerID: "system:S3", name: "Alex")], session: session)
+    let view = try SessionFixtures.view(session)
+    #expect(view.speakers.first?.profileID == "P-ALEX")
+    let link: [SpeakerEditAction] = [.linkProfile(speakerID: "system:S1", profileID: "P-ALEX"),
+                                     .rename(speakerID: "system:S1", name: "Alex")]
+    // The joined speaker looks linked already, but S3 is not: there is something to save.
+    #expect(!SpeakerEditor.changesNothing(link, on: view))
+    let saved = try SpeakerEditor.applyUnlessUnchanged(link, view: view, session: session, source: "cli",
+                                                       regenerateExports: false)
+    #expect(saved != nil)
+    #expect(try editorJournal(session).contains { $0.action == .linkProfile(speakerID: "system:S3", profileID: "P-ALEX") })
+    // Now every stored speaker is linked: nothing more to save.
+    #expect(SpeakerEditor.changesNothing(link, on: try SessionFixtures.view(session)))
+}
+
+@Test func anEditMadeBeforeAnotherSpeakerJoinedTheGroupStillReachesAllOfIt() async throws {
+    let temp = try TemporaryDirectory("editor")
+    defer { temp.remove() }
+    let (session, _, _) = try await SessionFixtures.labelledSession(in: temp.url, speakers: ["S1", "S2", "S3"],
+                                                                    duration: 30)
+    try SessionFixtures.appendEdits([.rename(speakerID: "system:S2", name: "Alex"),
+                                     .rename(speakerID: "system:S3", name: "Alex")], session: session)
+    // A window shows S2 and S3 as one Alex (S2 shown).
+    let older = try SessionFixtures.view(session)
+    #expect(older.speakers.first { $0.name == "Alex" }?.memberIDs == ["system:S2", "system:S3"])
+    // Another window names S1 Alex too: S1, the lower ordinal, is now the one shown.
+    try SpeakerEditor.apply([.rename(speakerID: "system:S1", name: "Alex")], view: try SessionFixtures.view(session),
+                            session: session, source: "app", regenerateExports: false)
+    // The first window renames its Alex (S2): every stored Alex is renamed, S1 included.
+    let result = try SpeakerEditor.apply([.rename(speakerID: "system:S2", name: "Bob")], view: older,
+                                         session: session, source: "app", regenerateExports: false)
+    let after = try #require(result.snapshot.projection)
+    #expect(after.speakers.map(\.name) == ["Bob"])
+    #expect(after.unjoined.speakers.map(\.name) == ["Bob", "Bob", "Bob"])
+}

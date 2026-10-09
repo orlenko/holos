@@ -215,6 +215,55 @@ private func turnSpeaker(_ projection: SpeakerProjection, _ id: String) -> Strin
     #expect(plain.speakers.map(\.memberIDs) == masked.speakers.map(\.memberIDs))
 }
 
+@Test func aSpeakerWhoseWordsAreAllEchoStaysAmongTheStoredOnes() throws {
+    // The microphone's speaker (linked to a person) has every word masked as echo; S1 is also called Me. Shown, the
+    // microphone's speaker has no turn; stored, it is still there with its link, for edits and voice data.
+    let system = TurnSpec(id: "A1", start: 0, speaker: "system:S1", words: 4)
+    let microphone = TurnSpec(id: "M1", start: 10, speaker: "mic:me", words: 6, track: "mic")
+    let callTranscript = Transcript(id: "CALL", createdAt: fixedDate, source: "mic+system", locale: "en-US",
+                                    backend: .speech, segments: [segment(system), segment(microphone)])
+    let callRun = DiarizationRun(
+        id: "RUN-CALL", sessionID: "SESSION", createdAt: fixedDate, transcriptID: "CALL", engine: nil,
+        alignment: AlignmentInfo(version: 1, parameters: .v1),
+        tracks: [TrackDiarization(track: "system", policy: .diarized),
+                 TrackDiarization(track: "mic", policy: .channel(speakerID: "mic:me", displayName: "Me"))],
+        speakers: [SessionSpeaker(id: "system:S1", ordinal: 1, provenance: .diarizer, clusterIDs: ["system:S1"]),
+                   SessionSpeaker(id: "mic:me", ordinal: 2, displayName: "Me", provenance: .channelAssumption)],
+        turns: [system, microphone].map { spec in
+            SpeakerTurn(id: spec.id, track: spec.track, start: spec.start, end: spec.start + Double(spec.words),
+                        speakerID: spec.speaker, clusterID: spec.track == "mic" ? nil : spec.speaker,
+                        spans: [WordSpan(segmentID: "seg-\(spec.id)", first: 0, end: spec.words)],
+                        assignmentScore: 0.9, timing: .measured)
+        })
+    let edits = [SpeakerEdit(id: "E1", baseRunID: "RUN-CALL", at: fixedDate, source: "cli",
+                             action: .linkProfile(speakerID: "mic:me", profileID: "P-SAM")),
+                 SpeakerEdit(id: "E2", baseRunID: "RUN-CALL", at: fixedDate, source: "cli",
+                             action: .rename(speakerID: "system:S1", name: "me"))]
+    let frames = Int(17 / AcousticEchoMask.hopSeconds)
+    let classes: [AcousticEchoMask.FrameClass] = (0..<frames).map { frame in
+        let centre = AcousticEchoMask.firstCentreSeconds + Double(frame) * AcousticEchoMask.hopSeconds
+        return centre >= 10 ? .echo : .local
+    }
+    let mask = try #require(AcousticEchoMask(classes: classes.map(\.rawValue),
+                                             echoLevels: [Int8](repeating: -40, count: frames)))
+    let masked = SpeakerProjection.make(run: callRun, transcript: callTranscript, edits: edits, recognition: nil,
+                                        profileNames: ["P-SAM": "Sam"], acousticEcho: mask)
+    #expect(!masked.turns.contains { $0.id == "M1" })
+    #expect(masked.speakers.map(\.memberIDs) == [["system:S1", "mic:me"]])
+    let stored = masked.unjoined.speakers
+    #expect(stored.map(\.id) == ["system:S1", "mic:me"])
+    #expect(stored.first { $0.id == "mic:me" }?.profileID == "P-SAM")
+    #expect(stored.first { $0.id == "mic:me" }?.turnCount == 0)
+}
+
+@Test func aLinkedChannelSpeakerIsStillFoundByItsOwnName() {
+    // The microphone's speaker linked to a person and shown under their name is still "Me" for joining and lookups.
+    var journal = Journal(names: ["P-SAM": "Sam"])
+    journal.append(.linkProfile(speakerID: "mic:me", profileID: "P-SAM"))
+    #expect(journal.view.speakers.first { $0.id == "mic:me" }?.name == "Sam")
+    #expect(journal.view.speaker(named: " me ")?.id == "mic:me")
+}
+
 @Test func differentNamesStaySeparate() {
     var journal = Journal()
     journal.append(.rename(speakerID: "system:S1", name: "Alice"))
@@ -338,7 +387,8 @@ private func turnSpeaker(_ projection: SpeakerProjection, _ id: String) -> Strin
                       .rejectProfile(speakerID: "system:S1", profileID: "P-ALEX1"),
                       .rejectProfile(speakerID: "system:S3", profileID: "P-ALEX2"),
                       .rename(speakerID: "system:S3", name: nil),
-                      .rejectProfile(speakerID: "system:S3", profileID: "P-ALEX1")])
+                      .rejectProfile(speakerID: "system:S3", profileID: "P-ALEX1"),
+                      .rejectProfile(speakerID: "system:S1", profileID: "P-ALEX2")])
     let view = journal.view
     #expect(view.speakers.map(\.name) == ["Speaker 1", "Speaker 2", "Speaker 3", "Me"])
     #expect(view.speakers.allSatisfy { $0.profileID == nil })

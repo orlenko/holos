@@ -3323,29 +3323,40 @@ speaker, with its own link and its own voice.
   Participants (talk time summed), in Review's sidebar and in every count, and what keeps
   names carried over by Label Again (`SpeakerCarryOver` maps the joined speaker) from
   listing a person twice.
-- *Voice.* `SpeakerProjection.unjoined` lists every stored speaker as itself, and voice data
-  reads it: samples are learned per stored speaker for the person it is linked to, and
-  forgetting a person removes exactly the clusters and turns of the stored speakers linked
-  to them. Two same-named speakers linked to two people are shown as one, yet each person's
-  voice stays theirs (`VoiceProfileService`: `syncSamples`, `samplesAffected`, earlier-run
-  views, `removeVoiceEntries`).
+- *Voice.* `SpeakerProjection.unjoined` lists every stored speaker as itself (every one that
+  holds words or was made by `newSpeaker`, also one whose words the echo mask all hides),
+  and voice data reads it: samples are learned per stored speaker for the person it is
+  linked to, and forgetting a person removes exactly the clusters and turns of the stored
+  speakers linked to them. Two same-named speakers linked to two people are shown as one,
+  yet each person's voice stays theirs (`VoiceProfileService`: `syncSamples`,
+  `samplesAffected`, earlier-run views, `removeVoiceEntries`).
 - *Editing (`SpeakerEditor`, Review, the CLI).* Giving a speaker a name another speaker has
-  only renames it; the display joins them. An edit of a speaker shown joined reaches every
-  stored speaker it shows, in the same batch (`SpeakerProjection.fanningOut`, worked out by
-  the editor under the speaker lock on the current labels, and by Review on the labels shown
-  for its preview): a rename or clearing the name, a link, a rejection ("Not Jim"), "This is
-  me", a confirmed suggestion and Confirm All are made to each of them, one stored speaker
-  after another; a merge of it into another speaker ("Merge into…") moves each of them into
-  that speaker. Turns given to it go to the one shown. Review's name field, clearing a name,
-  also unlinks each stored speaker from its own person when that differs from the person
-  shown, so no link names it again. The lines added follow the asked ones, carry the
-  current fingerprints, and share the batch's ID: one undo takes all of them back.
+  only renames it; the display joins them. An edit of any stored speaker of a same-name
+  group reaches every other one of the group, in the same batch
+  (`SpeakerProjection.fanningOut`, worked out by the editor under the speaker lock on the
+  current labels, and by Review on the labels shown for its preview). The group is the
+  journal's (`SameNameSpeakers.joins`), not "the speaker shown": an edit made on a view
+  where another speaker has since joined the group (and is now the one shown) still
+  reaches all of it. A rename or clearing the name, a link, a rejection ("Not Jim"), "This
+  is me", a confirmed suggestion and Confirm All are made to each of them, one stored
+  speaker after another; a merge of one into another speaker ("Merge into…") moves each
+  of them into that speaker. Turns given to the speaker shown go to it. Review's name
+  field, clearing a name, also unlinks each stored speaker from its own person when that
+  differs from the person shown, so no link names it again. The lines added follow the
+  asked ones, carry the current fingerprints, and share the batch's ID: one undo takes all
+  of them back. Whether a change changes anything (`SpeakerEditor.changesNothing`,
+  `applyUnlessUnchanged`, a link of a person already shown) is decided with these lines
+  added, on every stored speaker (`unjoined`), not on the speaker shown: linking the shown
+  Alex to the person it already shows still links a stored Alex that is not.
   `SpeakerEditor.saved(_:asAsked:)` lets a caller (Review) recognize its batch among the
   lines read back.
 - *Choosing a name that exists.* Review's "New Speaker…" (and `voiceislocal speakers assign
   --to new:NAME`) with a name a speaker is shown under gives the turns to the one shown
-  (`SpeakerProjection.speaker(named:)`: matched on the names that join, given names and the
-  channel's, never on a name shown only through a link, and never picked among several).
+  (`SpeakerProjection.speaker(named:)`: matched on the name each stored speaker joins by in
+  the journal, the given name or the channel speaker's own "Me" whether or not it is
+  linked, never on a name shown only through a link, and never picked among several).
+  Every name typed to choose a speaker or a person (the CLI's selectors, Review's name
+  field) compares as `SameNameSpeakers.key` does.
   "Assign to <person>" gives the turns to the
   speaker linked to that person, else to the speaker called their name (linked to them in
   the same batch when it is linked to nobody and never said "Not <person>"), else to a new

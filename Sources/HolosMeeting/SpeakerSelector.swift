@@ -13,12 +13,12 @@ public enum SpeakerTarget: Sendable, Equatable { case speaker(String), unknown }
 /// are for the person typing the command and are never logged.
 public enum SpeakerSelector {
     /// In order: exact speaker ID ("system:S2"); engine label if unique ("S2"); ordinal ("2", "Speaker 2");
-    /// name (case-insensitive, unique); "unknown". Errors list the candidates.
+    /// name (as `SameNameSpeakers.key` compares, unique); "unknown". Errors list the candidates.
     ///
     /// Only listed speakers (`projection.speakers`) can be named. IDs and engine labels (the part of the ID after
     /// its first ":") are compared exactly first, then ignoring case; a step that matches more than one speaker
     /// fails instead of falling through to the next step. Names are compared with `name` (never the " (auto)"
-    /// suffix of `label`), ignoring case and surrounding whitespace.
+    /// suffix of `label`) as `SameNameSpeakers.key` compares them: ignoring case, accents, width and spaces.
     public static func speaker(_ text: String, in projection: SpeakerProjection) throws -> SpeakerTarget {
         let query = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !query.isEmpty else {
@@ -47,10 +47,10 @@ public enum SpeakerSelector {
             return .speaker(found)
         }
 
-        // 4. Name.
-        let named = speakers.filter { speaker in
-            speaker.name.trimmingCharacters(in: .whitespacesAndNewlines).caseInsensitiveCompare(query) == .orderedSame
-        }
+        // 4. Name, compared as same-named speakers are joined (`SameNameSpeakers.key`: case, accents, width and
+        // spaces ignored), so "zoe" names the speaker shown as "Zoë".
+        let wanted = SameNameSpeakers.key(query)
+        let named = speakers.filter { speaker in wanted != nil && SameNameSpeakers.key(speaker.name) == wanted }
         if let found = try unique(named, query: query) { return .speaker(found) }
 
         // 5. The unknown speaker.

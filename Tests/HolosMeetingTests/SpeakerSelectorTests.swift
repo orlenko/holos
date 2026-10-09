@@ -114,6 +114,17 @@ private func selectorError(_ body: () throws -> Void, sourceLocation: SourceLoca
     #expect(try SpeakerSelector.speaker("S1", in: projection) == .speaker("mic:S1"))
 }
 
+@Test func namesAreSelectedIgnoringAccentsAndSpaces() throws {
+    // "Zoë" and "zoe" are one speaker, shown as "Zoë": typed without the accent, it is still found.
+    let projection = selectorProjection(
+        [SelectorTurn(id: "T1", track: "mic", start: 0, end: 5, speaker: "mic:S1"),
+         SelectorTurn(id: "T2", track: "system", start: 0, end: 5, speaker: "system:S1")],
+        speakers: [selectorSpeaker("mic:S1", 1), selectorSpeaker("system:S1", 2)],
+        names: ["mic:S1": "Zoë  Smith", "system:S1": "zoe smith"])
+    #expect(try SpeakerSelector.speaker("ZOE SMITH", in: projection) == .speaker("mic:S1"))
+    #expect(try SpeakerSelector.speaker(" zoë   smith ", in: projection) == .speaker("mic:S1"))
+}
+
 @Test func timeSelectorFindsTurn() throws {
     // T1…T14 on system audio: Tk from k minutes 3 s to k minutes 40 s, so T12 is 00:12:03–00:12:40.
     var turns: [SelectorTurn] = []
