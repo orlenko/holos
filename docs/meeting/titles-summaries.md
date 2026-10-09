@@ -278,7 +278,7 @@ results, by size and modification time) are checked again at the save: the whole
 they are and the people store read again in one read (names, Remember voices with a forget still
 going through the meetings, the user's own name; `SessionSummarizeCommand.VoiceInputs.read`), and
 must equal the key the summary was made with. The command holds the speaker lock and then the
-profile lock (`withLockedRead`, the ../conventions.md §1.7 order speakers → profiles) from that read until
+profile lock (`withLockedRead`, the docs/conventions.md §1.7 order speakers → profiles) from that read until
 summary.json and the transcript files are written, so no edit or rename lands between the check
 and the files; only a lock not taken is `busy`, and anything that fails with the locks held (a people store a
 newer build wrote meanwhile) fails the run with its reason; changed meanwhile (a rename in Terminal, a person
@@ -291,8 +291,8 @@ people's names go into prompts cut to 40 characters and 160 UTF-8 bytes, between
 name of any length, or of characters carrying any number of combining marks, leaves
 every part room for the words. `session list --json` leaves summaries out (`SessionSummary`
 does not encode `generatedSummary`). For
-its whole life it holds the deep transcription lock (deep-transcription.md §4.16), with
-`kind` `summary` in what it writes there: one summary, final transcript or echo analysis (online-calls-echo.md §5.11) runs at a time
+its whole life it holds the deep transcription lock (docs/meeting/deep-transcription.md §4.16), with
+`kind` `summary` in what it writes there: one summary, final transcript or echo analysis (docs/meeting/online-calls-echo.md §5.11) runs at a time
 on this Mac, and one started before an app relaunch is seen as busy (the app never adopts or signals a
 job it did not start; Review waits only for a deep pass). Another holder makes it exit 1 as
 `busy`. Ctrl-C or SIGTERM cancels it: before the save nothing is written (`cancelled`); the save
@@ -333,7 +333,7 @@ look): when a final transcript or a summary ends, or a command lets a meeting go
 first, and an automatic final
 transcript waits for that scan while a Summarize Again is pending; an automatic summary waits while a Make Final
 Transcript Now pass is ready to run or has its languages read (`Situation.askedForPassWaiting`); automatic work keeps its order.
-The app's echo catch-up (online-calls-echo.md §5.11, "Catching up in the app") goes after asked-for work and before automatic final
+The app's echo catch-up (docs/meeting/online-calls-echo.md §5.11, "Catching up in the app") goes after asked-for work and before automatic final
 transcripts and summaries. A Summarize
 Again request is dropped for a missing
 meeting only when no folder holds it, whatever the folder is named (`SessionCatalog.hasSession`: the sessions

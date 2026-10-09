@@ -6,7 +6,7 @@ file in 35 s with a 1.8 GB peak RSS on an M4 Pro. On the three Otter
 recordings it disagreed with Otter's speaker on 1.4–5.2 % of the time that both
 tools mark as speech. The default configuration did best of every setting
 tried. Single-pass diarization is enough for 3 h; the block-wise fallback in
-the plan (meeting-recording-plan.md §4, step 3) is not needed for memory.
+the plan (docs/meeting-recording-plan.md §4, step 3) is not needed for memory.
 
 All numbers are **agreement with Otter**, not accuracy. Otter's labels have
 their own errors, and an Otter "turn" runs from one speaker header to the next,
@@ -292,7 +292,7 @@ of `holos` (PR7c branch). Each Otter recording was imported once with
 `holos session import` (en-CA, Speech backend), then labelled with
 `holos session diarize --force` in each configuration and scored with
 `holos session score`. The session's rendered 16 kHz Int16 track goes through
-`FluidDiarizer` (meeting/post-processing.md §4.8), not `process(url)` on the MP3 as in S1. Everything else is
+`FluidDiarizer` (docs/meeting/post-processing.md §4.8), not `process(url)` on the MP3 as in S1. Everything else is
 the default configuration.
 
 All numbers are **agreement with Otter**, as in S1: confusion is the share of the
@@ -341,7 +341,7 @@ What these settle:
 
 - **`exclusiveSegments` stays false.** With overlapping segments kept, confusion is
   equal (001) or lower (002: 1.9 % against 2.6 %; 003: 5.1 % against 5.2 %), on
-  segments and on turns alike. The meeting/post-processing.md §4.8 rule switches the default only when false
+  segments and on turns alike. The docs/meeting/post-processing.md §4.8 rule switches the default only when false
   raises joint-speech confusion by more than one percentage point on any recording.
   The `exclusiveSegments` true row reproduces S1's joint-speech confusion (2.6 %,
   1.4 %, 5.2 %).
@@ -373,11 +373,11 @@ six shared participants were mapped to a cluster in both files.
 | Same person | 5 | 0.076 | 0.077 | 0.197 | 0.235 | 0.244 |
 | Different people | 37 | 0.421 | 0.514 | 0.846 | 0.992 | 1.044 |
 
-meeting/people-voice.md §4.10 accepts a suggestion when `distance ≤ possibleMaxDistance`. The largest
+docs/meeting/people-voice.md §4.10 accepts a suggestion when `distance ≤ possibleMaxDistance`. The largest
 threshold that admits at most 5 % of the 37 different-person pairs (1 pair) lies
 between the smallest different-person distance (0.421) and the next (0.444):
 halfway is **about 0.43**, which admits 1 of 37 (2.7 %). All 5 same-person pairs
-(at most 0.244) are below it. This is the measurement meeting/people-voice.md §4.10 asks PR10 to use for
+(at most 0.244) are below it. This is the measurement docs/meeting/people-voice.md §4.10 asks PR10 to use for
 `defaultThresholds.possibleMaxDistance`; the sample is small (42 pairs from two
 recordings of one team). The run printed 0.444, the second-smallest distance
 itself, which a `≤` comparison would meet for 2 of 37 pairs (5.4 %); the script now

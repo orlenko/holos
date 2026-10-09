@@ -19,7 +19,7 @@ instantaneous meeting feedback. The dictation stays monolingual."
 a list, the first used; `MeetingStartSettings.locales`; the recorder gets
 `--locale=<first>`; the manifest records one `locale`. Settings without a language (never
 from the start panel, which keeps Start off until it has one) record in the recorder's
-default, `AppleSpeechEngine.defaultLocale`, in process and as a child alike (recorder.md §4.1).
+default, `AppleSpeechEngine.defaultLocale`, in process and as a child alike (docs/meeting/recorder.md §4.1).
 
 **Phase 2 (LANG2).** A meeting may name up to three languages (`DictationLanguage.
 maximumMeetingLanguages`), each a different language (`sameLanguage`: language and script;
@@ -37,7 +37,7 @@ agree, gave 37.5 % WER against 46.5 % for French alone; 19.8 % on turns that mix
 against 34.9 %; an English-only control meeting stayed at 10.9 % with no window chosen
 French. Choosing per turn gave 41.8 %; splitting at pauses did not help.
 
-**Contract additions** (session-format.md §3.0 allows new optional fields and open-code constants):
+**Contract additions** (docs/meeting/session-format.md §3.0 allows new optional fields and open-code constants):
 
 - `MeetingInfo.languages: [String]?` (meeting.json), the recording's own locale first,
   written only when there are several; nil in older sessions and for one language.
@@ -162,7 +162,7 @@ recorder, `session diarize`, `recover`, `import`, the app's relabels):
    (Canada) in 61 % of the passages and English (Canada) in 39 %, with 171 switches."; the
    record's message (and so the app's finished message) starts "Transcribed in French
    (Canada) and English (Canada)." Speaker
-   labelling then sees a new transcript and relabels (names carry over, speaker-labels.md §4.9). A
+   labelling then sees a new transcript and relabels (names carry over, docs/meeting/speaker-labels.md §4.9). A
    cancellation publishes nothing; saved transcriptions stay for the next run. Taking a lock
    can wait without seeing a cancellation (the speaker lock polls for up to 2 s), so
    cancellation is checked again with the locks held, before a pass is saved and before
@@ -211,7 +211,7 @@ pure; `NaturalLanguageScorer` in `LanguageIdentification.swift` is the live scor
 5. *Echo in calls* (added in review). Each track is merged on its own, so a lone echoed
    window on the microphone could be smoothed into the other language, keep another
    recognizer's words than the system track's, and escape the speaker stages' echo filter
-   (online-calls-echo.md §5.11). So in a call the stage runs `EchoFilter.echoSpans` on each language's own
+   (docs/meeting/online-calls-echo.md §5.11). So in a call the stage runs `EchoFilter.echoSpans` on each language's own
    transcription (`Candidate.echo`), and a microphone window where at least half of a
    language's words are echo takes that language (the system track's choice there, or the
    one before, when several hear echo; else the most echo words), outside the smoothing.

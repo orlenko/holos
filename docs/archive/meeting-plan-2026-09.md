@@ -15,14 +15,14 @@ when it was written, not the code: the sections that describe behaviour are in `
 Status: implementation-ready design for PR1–PR11 of
 [meeting-recording-plan.md](../meeting-recording-plan.md) (PR12, minutes, is out of scope).
 Written 2026-09-23 from the code on branch `meeting-plan`, FluidAudio 0.17.1 sources
-(`5c51c5c9`), and the user's decisions in ../meeting-recording-plan.md §8. Revised 2026-09-24 after a three-lens
-design review (80 findings, meeting-plan-2026-09.md §10) and spike S1 ([speaker-evaluation.md](../speaker-evaluation.md)).
+(`5c51c5c9`), and the user's decisions in docs/meeting-recording-plan.md §8. Revised 2026-09-24 after a three-lens
+design review (80 findings, docs/archive/meeting-plan-2026-09.md §10) and spike S1 ([speaker-evaluation.md](../speaker-evaluation.md)).
 No product code exists for it yet.
 
 Several engineers build this in parallel, one PR each, without talking to each other.
 Everything they must agree on is fixed here: target graph, file formats, the contract
-files (../meeting/session-format.md §3; the Swift sources are the contract), the seams between PRs (meeting-plan-2026-09.md §4), and each PR's file list and
-"does not touch" list (§5). If a PR needs a contract change beyond what ../meeting/session-format.md §3.0 allows, it
+files (docs/meeting/session-format.md §3; the Swift sources are the contract), the seams between PRs (docs/archive/meeting-plan-2026-09.md §4), and each PR's file list and
+"does not touch" list (§5). If a PR needs a contract change beyond what docs/meeting/session-format.md §3.0 allows, it
 stops and reports it; it does not edit a file owned by another PR.
 
 ## 0. Overview
@@ -31,21 +31,21 @@ stops and reports it; it does not edit a file owned by another PR.
 
 | # | Decision | Where it shows up |
 |---|---|---|
-| 1 | FluidAudio 0.17.1, pinned, checksummed, credited | ../meeting/post-processing.md §4.8, PR7a, `THIRD_PARTY_NOTICES.md`, About panel (PR4) |
-| 2 | Remember voices: only from confirmed labels, with forget and export; on for new installs since 2026-10-06 ("if I label words with names, that's the whole point"); an existing setting is kept | ../meeting/people-voice.md §4.10, PR10. Voice embeddings are stored only as profile samples of people the user confirmed with voice learning on, extracted on demand (../meeting/people-voice.md §4.10); post-processing never persists them; names are not voiceprints and are always kept |
-| 3 | Int16 audio now; AAC compaction later | PR2a (`AudioChunkWriter`); system audio is also recorded mono (../meeting/recorder.md §4.5) |
-| 4 | Recorder = bundled `holos` CLI child of the app; in-process fallback allowed | ../meeting/recorder.md §4.1, §4.6, PR4 (`RecorderLauncher` with both implementations) |
-| 5 | Sleep < 15 min resumes, else finalize at the sleep point | ../meeting/recorder.md §4.4, PR2b. Refinement to confirm: sleep that starts while *paused* keeps the meeting paused (meeting-plan-2026-09.md §9 Q1) |
-| 6 | Dictation remains available during meeting recording; no dictation markers | ../meeting/recorder.md §4.12, PR4 |
-| 7 | No live speaker labels in v1 | Diarization runs only after stop (../meeting/post-processing.md §4.7) |
+| 1 | FluidAudio 0.17.1, pinned, checksummed, credited | docs/meeting/post-processing.md §4.8, PR7a, `THIRD_PARTY_NOTICES.md`, About panel (PR4) |
+| 2 | Remember voices: only from confirmed labels, with forget and export; on for new installs since 2026-10-06 ("if I label words with names, that's the whole point"); an existing setting is kept | docs/meeting/people-voice.md §4.10, PR10. Voice embeddings are stored only as profile samples of people the user confirmed with voice learning on, extracted on demand (docs/meeting/people-voice.md §4.10); post-processing never persists them; names are not voiceprints and are always kept |
+| 3 | Int16 audio now; AAC compaction later | PR2a (`AudioChunkWriter`); system audio is also recorded mono (docs/meeting/recorder.md §4.5) |
+| 4 | Recorder = bundled `holos` CLI child of the app; in-process fallback allowed | docs/meeting/recorder.md §4.1, §4.6, PR4 (`RecorderLauncher` with both implementations) |
+| 5 | Sleep < 15 min resumes, else finalize at the sleep point | docs/meeting/recorder.md §4.4, PR2b. Refinement to confirm: sleep that starts while *paused* keeps the meeting paused (docs/archive/meeting-plan-2026-09.md §9 Q1) |
+| 6 | Dictation remains available during meeting recording; no dictation markers | docs/meeting/recorder.md §4.12, PR4 |
+| 7 | No live speaker labels in v1 | Diarization runs only after stop (docs/meeting/post-processing.md §4.7) |
 | 8 | Consent is the user's responsibility; dismissible reminder in the start panel | PR4 start panel |
-| 9 | Built-in laptop microphone; no device picker; no boundary-mic test | ../meeting/recorder.md §4.12. In-person meetings record the built-in microphone. Refinement to confirm: online calls record the system default input (the headset the call app uses), shown as a static label (meeting-plan-2026-09.md §9 Q2) |
+| 9 | Built-in laptop microphone; no device picker; no boundary-mic test | docs/meeting/recorder.md §4.12. In-person meetings record the built-in microphone. Refinement to confirm: online calls record the system default input (the headset the call app uses), shown as a static label (docs/archive/meeting-plan-2026-09.md §9 Q2) |
 
 ### 0.2 PR map
 
 | PR | Wave | Goal | New targets |
 |---|---|---|---|
-| PR6 | 0 | Contract files (../meeting/session-format.md §3), `AtomicFile`, `SessionPaths`, locks and lease, free space, `SessionSpeakerStore`, `SessionArchive` fixes (torn appends, transcript pointer, maintenance open) | — |
+| PR6 | 0 | Contract files (docs/meeting/session-format.md §3), `AtomicFile`, `SessionPaths`, locks and lease, free space, `SessionSpeakerStore`, `SessionArchive` fixes (torn appends, transcript pointer, maintenance open) | — |
 | PR1 | 1 | Move recording out of the CLI into `HolosMeeting`; capture and speech seams; lifecycle hook; post-processor skeleton | HolosMeeting |
 | PR5a → PR5b → PR5c | 1 | `HolosSpeakers`: alignment and run builder (a); projection and carry-over (b); exporters, Otter parser, scoring (c) | HolosSpeakers (PR5a) |
 | PR7a ∥ PR7b → PR7c | 2 | FluidAudio adapter and model install (a); renderer, post-processor, exports, `session diarize` (b); import, score, Otter evaluation (c) | HolosDiarization (PR7a) |
@@ -59,11 +59,11 @@ stops and reports it; it does not edit a file owned by another PR.
 
 `→` means stacked (the later PR branches from the earlier one); `∥` means parallel.
 Meeting languages came after wave 5, outside this map: one language per meeting (LANG1),
-then several detected after the recording (LANG2); ../meeting/languages.md §4.14 describes both.
-Spike S1 finished with verdict "go" (../meeting/post-processing.md §4.8 uses its API facts and measurements). Spike S2
+then several detected after the recording (LANG2); docs/meeting/languages.md §4.14 describes both.
+Spike S1 finished with verdict "go" (docs/meeting/post-processing.md §4.8 uses its API facts and measurements). Spike S2
 (recorder process and platform) is pending; it picks the default launcher and runs the
-hardware checks in meeting-plan-2026-09.md §7.2. S2 does not change any interface: the `waiting` phase (../meeting/recorder.md §4.2)
-already covers ScreenCaptureKit stopping under screen lock, and ../meeting/recorder.md §4.2 names the fallback
+hardware checks in docs/archive/meeting-plan-2026-09.md §7.2. S2 does not change any interface: the `waiting` phase (docs/meeting/recorder.md §4.2)
+already covers ScreenCaptureKit stopping under screen lock, and docs/meeting/recorder.md §4.2 names the fallback
 if it does.
 
 ### 0.3 What this revision changed
@@ -72,7 +72,7 @@ The review log (§10) lists every finding and its disposition. The larger change
 
 - **Privacy.** Diarization runs hold no voice embeddings, and post-processing never
   persists them; a voiceprint is stored only as a profile sample of a person the user
-  confirmed with voice learning on (../meeting/people-voice.md §4.10). `speakers/voice/` exists only for hidden
+  confirmed with voice learning on (docs/meeting/people-voice.md §4.10). `speakers/voice/` exists only for hidden
   evaluation runs. Exports never contain vectors by
   default. Recognition only suggests names until thresholds are calibrated on the user's
   own confirmed meetings. Names are kept whatever the setting.
@@ -104,7 +104,7 @@ existing file. Signatures are the contract; bodies are the implementer's. When t
 compiler demands a small annotation change (for example `Sendable` on a protocol),
 make it without changing names or shapes and say so in the PR description. Every PR
 description ends with a "Docs note" paragraph for the PR that writes the wave's
-`README.md` and `docs/status.md` updates (meeting-plan-2026-09.md §6).
+`README.md` and `docs/status.md` updates (docs/archive/meeting-plan-2026-09.md §6).
 
 ### 5.1 PR6: Contracts and storage foundations (wave 0)
 
@@ -116,17 +116,17 @@ journal lines, a transcript pointer, maintenance opens under a lease).
 **Files.**
 
 - Add `Sources/HolosCore/HolosJSON.swift`, `MeetingModels.swift`, `SpeakerModels.swift`
-  (the contract, ../meeting/session-format.md §3.0), and `Sources/HolosCore/SupportPaths.swift`
+  (the contract, docs/meeting/session-format.md §3.0), and `Sources/HolosCore/SupportPaths.swift`
   (`extension HolosPaths { public static var supportRoot: URL }`: `$HOLOS_SUPPORT_DIR`
   if set and non-empty, else `applicationSupport`).
-- Add `Sources/HolosStorage/AtomicFile.swift` (../conventions.md §1.7), `SessionPaths.swift` (../meeting/session-format.md §2.1),
+- Add `Sources/HolosStorage/AtomicFile.swift` (docs/conventions.md §1.7), `SessionPaths.swift` (docs/meeting/session-format.md §2.1),
   `SessionLocks.swift` (`ProcessingLease`, lease, speaker lock, retry helper),
   `SessionSpeakerStore.swift`, `FreeSpace.swift` (`FreeSpaceProvider`,
   `VolumeFreeSpace`, `FixedFreeSpace` for tests), `TranscriptPointer.swift`.
 - Change `Sources/HolosStorage/SessionArchive.swift`:
   - `create(root:name:source:locale:backend:id:)` with `id: String? = nil` (must be a
     UUID string; refuses an existing folder).
-  - The writer lock is acquired with the 1 s retry (../conventions.md §1.7 rule 3), fd `O_CLOEXEC` (already).
+  - The writer lock is acquired with the 1 s retry (docs/conventions.md §1.7 rule 3), fd `O_CLOEXEC` (already).
   - `append` goes through `AtomicFile.append`, so a failed append truncates back and
     `nextSequence` is unchanged.
   - `setJournalSync(_ mode: JournalSync)` with `JournalSync { case everyEvent,
@@ -140,8 +140,8 @@ journal lines, a transcript pointer, maintenance opens under a lease).
     corrupt middle line; `RecoveryReport` gains `unreadableEventLines`).
   - `saveTranscript(_:writeLegacyExports: Bool = true)`: after writing the revision,
     rewrites `transcripts/current.json`; `public nonisolated static func
-    currentTranscriptID(at:) throws -> String?` (../meeting/session-format.md §2.4).
-  - `openForMaintenance(at:lease:)`, `recover(at:lease:)` (../conventions.md §1.7); `recover(at:)` keeps
+    currentTranscriptID(at:) throws -> String?` (docs/meeting/session-format.md §2.4).
+  - `openForMaintenance(at:lease:)`, `recover(at:lease:)` (docs/conventions.md §1.7); `recover(at:)` keeps
     its signature and takes a lease itself, so it refuses while another process holds
     one.
   - `inspectRecovery` treats missing chunks as expected when `audio-deleted.json`
@@ -207,7 +207,7 @@ or voice data whose `sessionID` differs from the folder's manifest ID.
 | `unknownPhaseIsActive` | `"fancyNew"` as `RecorderPhase` | `.unknown`; `isMeetingActive` |
 | `floatVectorRoundTripsBitExactly` | [1, −0.0, NaN, 3.5] | bit patterns equal after encode/decode |
 | `floatVectorRejectsBadBase64` | `"abc"` | `DecodingError` |
-| `contractExamplesRoundTrip` | each ../meeting/session-format.md §3.4 example | decodes; re-encoding gives the same bytes |
+| `contractExamplesRoundTrip` | each docs/meeting/session-format.md §3.4 example | decodes; re-encoding gives the same bytes |
 | `runRoundTripsAndRefusesOverwrite` | write run R twice | first ok; second throws; file mode 0600, folder 0700 |
 | `headRefusesUnknownRun` | writeHead for a missing run | throws |
 | `editsAppendAndReadInOrder` | append [e1], then [e2, e3] | read e1, e2, e3; tornTail false |
@@ -261,7 +261,7 @@ post-processing hand-off. No user-visible behaviour change (the only new CLI sur
   - `LiveSpeechSession.swift`: protocol plus `extension AppleSpeechSession: LiveSpeechSession {}`.
   - `RecordingReporter.swift`.
   - `MeetingPostProcessor.swift`: `PostProcessingOptions`, `PostProcessHook`, and the
-    skeleton (../meeting/post-processing.md §4.7: final initializer and `run(session:lease:progress:)`, returning a
+    skeleton (docs/meeting/post-processing.md §4.7: final initializer and `run(session:lease:progress:)`, returning a
     `.skipped` record and writing nothing).
   - `LockedValue.swift`: the internal `LockedValue` helper, moved.
 - Add `Sources/HolosCLI/ConsoleReporter.swift`, `Sources/HolosCLI/PostProcessing.swift`:
@@ -273,7 +273,7 @@ post-processing hand-off. No user-visible behaviour change (the only new CLI sur
 - Change `Sources/HolosCLI/Record.swift` (Start calls the new API; adds
   `--no-postprocess`), `Sources/HolosCLI/Session.swift` (Retranscribe calls
   `TrackReplayer`; `subcommands:` written one per line), `Sources/HolosCLI/Holos.swift`
-  (`subcommands:` one per line), `Package.swift` (../conventions.md §1.2 wave 1), `docs/contracts.md`
+  (`subcommands:` one per line), `Package.swift` (docs/conventions.md §1.2 wave 1), `docs/contracts.md`
   (ownership table: `HolosMeeting` replaces `HolosWorkflows`, add `HolosSpeakers` and
   `HolosDiarization`; the "local app/session control" paragraph points to
   docs/meeting/recorder.md §4.1).
@@ -287,7 +287,7 @@ post-processing hand-off. No user-visible behaviour change (the only new CLI sur
 public struct CaptureRequest: Sendable, Equatable {
     public var source: AudioSource
     public var applicationBundleID: String?
-    /// Session time of this epoch's first frame (../meeting/session-format.md §2.3). PR1 always passes 0; PR2a uses it.
+    /// Session time of this epoch's first frame (docs/meeting/session-format.md §2.3). PR1 always passes 0; PR2a uses it.
     public var timelineOffset: Double
     public init(source: AudioSource, applicationBundleID: String? = nil, timelineOffset: Double = 0)
 }
@@ -338,7 +338,7 @@ public struct RecordingOptions: Sendable, Equatable {
     public var duration: Double?
     public var recordOnly: Bool
     public var applicationBundleID: String?
-    /// Contextual strings for every speech session of this recording (../meeting/recorder.md §4.12).
+    /// Contextual strings for every speech session of this recording (docs/meeting/recorder.md §4.12).
     public var vocabulary: [String]
     public init(name: String, source: AudioSource, locale: String, backend: SpeechBackend, root: URL,
                 duration: Double? = nil, recordOnly: Bool = false, applicationBundleID: String? = nil,
@@ -379,7 +379,7 @@ public struct RecordingOutcome: Sendable, Equatable {
 
 public enum RecordingWorkflow {
     /// Records until stop, saves audio and transcript, then (with a hook) takes the processing lease,
-    /// finishes the archive, and runs the hook under the lease (../meeting/recorder.md §4.6 steps 5–8).
+    /// finishes the archive, and runs the hook under the lease (docs/meeting/recorder.md §4.6 steps 5–8).
     /// Capture failure: marks the archive incomplete and throws `HolosError.incomplete` (as today).
     /// Transcription failure: does not throw; the outcome carries the errors.
     @MainActor public static func run(_ options: RecordingOptions,
@@ -406,7 +406,7 @@ makePostProcessHook(options: .init()))`; print `Saved <path>`; if `transcriptErr
 not empty, throw `HolosError.incomplete("Audio saved; transcription needs retry: …")`
 exactly as today (exit 1).
 
-**`Fakes.swift`** (PR1; later edited only per ../conventions.md §1.8): `FakeCaptureFactory` (hands out a new
+**`Fakes.swift`** (PR1; later edited only per docs/conventions.md §1.8): `FakeCaptureFactory` (hands out a new
 `FakeCapture` per epoch and records every `CaptureRequest`); `FakeCapture` (scripted
 frames per track with start times on its own clock plus `timelineOffset`, an optional
 error after N frames, an optional start error, an optional `stop()` that hangs for a
@@ -452,7 +452,7 @@ merges; free disk is about 24 GB.
 | Wave | PRs, merge order | Shared files and owner | Last-merged PR does |
 |---|---|---|---|
 | 0 | PR6 | none | writes its own README/status notes |
-| 1 | PR5a → PR5b → PR5c → PR1 | `Package.swift`: PR5a adds HolosSpeakers; PR1 adds HolosMeeting and, rebasing last, the HolosMeeting → HolosSpeakers dependency (../conventions.md §1.2). `HolosMeetingTests/Fakes.swift`: PR1. | PR1 resolves `Package.swift` to ../conventions.md §1.2 and writes the wave-1 notes |
+| 1 | PR5a → PR5b → PR5c → PR1 | `Package.swift`: PR5a adds HolosSpeakers; PR1 adds HolosMeeting and, rebasing last, the HolosMeeting → HolosSpeakers dependency (docs/conventions.md §1.2). `HolosMeetingTests/Fakes.swift`: PR1. | PR1 resolves `Package.swift` to docs/conventions.md §1.2 and writes the wave-1 notes |
 | 2 | PR7a → PR7b → PR2a → PR2b → PR7c | `Package.swift`, `PostProcessing.swift`, `Doctor.swift`: PR7a only. `MeetingPostProcessor.swift`: PR7b only. `Session.swift` `subcommands:`: PR7b adds `Diarize`, PR7c adds `Import`, `Score`. `RecordingWorkflow.swift`, `LiveTrack.swift`, `TrackReplayer.swift`, `Record.swift`, `ChunkWriter.swift`, `AudioCapture.swift`: PR2a, then PR2b. `Fakes.swift` and `SessionFixtures.swift`: PR7b. | PR7c writes the wave-2 notes |
 | 3 | PR8 → PR3 | `Session.swift` `subcommands:` (PR8 adds `Export`; PR3 adds `List`, `Delete`): keep all. `Fakes.swift`, `SessionFixtures.swift`: PR8. | PR3 writes the wave-3 notes |
 | 4 | PR4 → PR10 | `Package.swift` HolosApp dependencies (identical edit). `HolosApp.swift` and `HolosApp+Meeting.swift`: PR4 owns; PR10 adds one menu line and one vocabulary expression. `Fakes.swift`, `SessionFixtures.swift`: PR4. | PR10 writes the wave-4 notes |
@@ -462,13 +462,13 @@ Conflict rules:
 
 - Subcommand arrays and dependency lists: keep both sides, one item per line, and
   compare with the final text in this document.
-- A contract file (../meeting/session-format.md §3) changed beyond what §3.0 allows is a bug: stop and report it.
+- A contract file (docs/meeting/session-format.md §3) changed beyond what §3.0 allows is a bug: stop and report it.
 - Never resolve a conflict by deleting another PR's tests.
 - Final subcommand lists after wave 5:
   - `holos`: `Doctor, Setup, Transcribe, Record, Session, Speakers, People, Voices, Say, Read`
   - `holos record`: `Start, Status, Stop, Pause, Resume, Marker`
   - `holos session`: `Inspect, List, Recover, Retranscribe, Diarize, Import, Export, Score, Delete`,
-    then `Languages` (LANG2, ../meeting/languages.md §4.14)
+    then `Languages` (LANG2, docs/meeting/languages.md §4.14)
   - `holos speakers`: `List, Rename, Merge, Assign, Split, Exclude, Undo, Link, Me, Reject`
   - `holos people`: `List, Remember, Rename, Merge, Forget, Export, Calibrate`
 
@@ -515,10 +515,10 @@ Documentation ownership:
 | H7 | PR2 | Connect and disconnect AirPods during an in-person recording, then during a call recording | in person: stays on the built-in microphone (listen to the chunks), no stall over 3 s; call: follows the new default with an "Audio restarted" gap |
 | H8 | S2, PR7 | A real in-person meeting (≥ 3 people, ≥ 20 min) on the laptop microphone | audio intelligible; speaker count within ±1 of the people who spoke |
 | H9 | PR2, PR7 | 3 h soak, mic+system, audio playing | recorder RSS growth < 100 MB/h (`ps -o rss` hourly); ≈ 0.69 GB/h written; system audio is a proper mono mix; no unexplained `audioDiscontinuity`; labelled transcript ≤ 5 min after stop; diarization peak RSS < 4 GB |
-| H10 | PR2 | Record into a small disk image (`hdiutil create -size 2g`, `HOLOS_DATA_DIR` on it) | start warns or refuses per ../meeting/recorder.md §4.5; recording stops by itself below 500 MB with audio saved; speaker labelling is skipped with the disk message |
+| H10 | PR2 | Record into a small disk image (`hdiutil create -size 2g`, `HOLOS_DATA_DIR` on it) | start warns or refuses per docs/meeting/recorder.md §4.5; recording stops by itself below 500 MB with audio saved; speaker labelling is skipped with the disk message |
 | H11 | PR2 | Pause a meeting, close the lid for 20 minutes, open it | the meeting is still paused; Resume continues it in the same session |
 | H12 | PR4 | During a meeting, hold Right Option in a text field | dictation inserts normally; both meeting tracks continue; sleep still requires explicit enable |
-| H13 | PR4 | Quit during a recording: each choice | behaves as ../meeting/app-controls.md §5.8 |
+| H13 | PR4 | Quit during a recording: each choice | behaves as docs/meeting/app-controls.md §5.8 |
 | H14 | PR9 | Import the 89-min Otter meeting and label it from scratch in the review window | done in under 10 minutes |
 | H15 | PR10 | Turn on Remember voices; confirm a speaker in meeting A; record or import meeting B with that person | B suggests them ("Maybe …"); Forget removes the suggestion next time |
 | H16 | PR11 | A call on laptop speakers; then a hybrid call (laptop speakers, two people in the room, "Others are in the room" checked) | warning shown; echoed phrases absent; room speakers labelled on the microphone track; no speaker made only of echo |
@@ -536,13 +536,13 @@ the review changed them); R43 onward come from the review (§10).
 
 | ID | Question | Resolution |
 |---|---|---|
-| R1 | HolosMeeting depends on HolosDiarization (../meeting-recording-plan.md §2)? | No. HolosMeeting takes `any SpeakerDiarizer`; only HolosCLI links HolosDiarization; the app never links FluidAudio and runs diarization in a `holos` child. |
+| R1 | HolosMeeting depends on HolosDiarization (docs/meeting-recording-plan.md §2)? | No. HolosMeeting takes `any SpeakerDiarizer`; only HolosCLI links HolosDiarization; the app never links FluidAudio and runs diarization in a `holos` child. |
 | R2 | FluidAudio's default trait links a prebuilt text-normalization binary | Keep default traits: S1 found `traits: []` failed to link (incremental build). The binary is Apache-2.0 and credited. |
 | R3 | New error types for disk full, capture gap, etc.? | Keep `HolosError`; carry reasons as data (`StopReason`, warnings, `ControlResult`). |
 | R4 | `record start --status-file` | Dropped: `status.json` is always written. |
 | R5 | `status.json` "removed at finish" | Kept after exit with `phase: exited` so a relaunched app can show the outcome; staleness is judged by locks, pid, and the heartbeat. |
 | R6 | How does the app find the child's session? | The app assigns it with `--session-id`. |
-| R7 | Post-processing before or after `archive.finish`? | After, with the processing lease taken before `finish` and handed to post-processing (../meeting/recorder.md §4.6). |
+| R7 | Post-processing before or after `archive.finish`? | After, with the processing lease taken before `finish` and handed to post-processing (docs/meeting/recorder.md §4.6). |
 | R8 | `withProcessingLock` "for one write" vs long processing | Two locks: `withSpeakerLock` (one write) and `ProcessingLease` (one run, or one recover → rebuild → post-process chain). |
 | R9 | Re-diarization and existing edits | Names, profile links, and rejections carry to the new run by shared speech time, and time kept out of voice learning stays out; other turn-level edits stay in the journal under the old run and are reported as not carried. `--force` is required to replace an edited head. `--use-run` is deferred. |
 | R10 | Are turns persisted or recomputed? | Persisted in the immutable run, so edit targets (turn IDs, word refs) never shift. |
@@ -576,7 +576,7 @@ the review changed them); R43 onward come from the review (§10).
 | R38 | Journal order and time precision | File order is authoritative in journals; control requests by `sentAtNanos`; nothing is ordered by a date. |
 | R39 | Recognition thresholds | Suggestions only by default; `possibleMaxDistance` from PR7c's cross-recording calibration; `likely` only after `holos people calibrate --apply`. FluidAudio's 0.65 does not apply. |
 | R40 | Where do shared value types go? | The three contract files, all added by PR6 in wave 0. |
-| R41 | Block-wise diarization fallback (../meeting-recording-plan.md §4 step 3) | Not built: S1 measured 1.8 GB peak RSS for 3 h in one pass; tracks run one at a time. Revisit only for recordings longer than 3 h. |
+| R41 | Block-wise diarization fallback (docs/meeting-recording-plan.md §4 step 3) | Not built: S1 measured 1.8 GB peak RSS for 3 h in one pass; tracks run one at a time. Revisit only for recordings longer than 3 h. |
 | R42 | Keeping diarization offline and models verified | `OfflineDiarizerModels.load` + `initialize` under `ModelHub.offlineMode = true` (never `prepareModels`); verify the revision marker and every file's SHA-256. |
 | R43 | Brief audio loss | `waiting` phase with backoff and immediate retries on wake, lid, unlock, and device changes; the meeting ends only after 10 minutes without audio. |
 | R44 | Disk latency during capture | Capture pump (60 s per track), off-main consumer, journal group commit; overflow drops and marks audio instead of failing. |
@@ -613,7 +613,7 @@ experiment.
 3. **S2:** does macOS credit microphone and system-audio permission to Holos.app for the
    bundled child (decides the default launcher)? Does ScreenCaptureKit keep delivering
    under screen lock? If not, the `waiting` phase keeps the meeting alive; a separate
-   AVAudioEngine microphone capture in calls is the follow-up (../meeting/recorder.md §4.2).
+   AVAudioEngine microphone capture in calls is the follow-up (docs/meeting/recorder.md §4.2).
 4. Does ScreenCaptureKit deliver buffers of silence when nothing is playing? If not, the
    system-track stall warning must be reworded or suppressed (the system track is never
    restarted for a stall).
@@ -662,52 +662,52 @@ reprocessing" in `docs/contracts.md`).
 
 | ID | Sev | Finding | Disposition |
 |---|---|---|---|
-| C1 | blocker | Three fast retries end the meeting on brief audio loss; `RecorderPhase` could not grow after wave 1 | Accepted. `RecorderPhase.waiting`, `audioUnavailable` warning and gap reason, `captureWaiting` event in the wave-0 contract; backoff 0.5 → 30 s; immediate retry on wake, lid open, unlock, device-list change; finish only after 10 min without audio; only `SCStreamError.userStopped` counts as a user stop (../meeting/recorder.md §4.2). A separate AVAudioEngine microphone in calls waits for S2 (no interface change). Tests `failFiveTimesThenRecover`, `waitingTimesOutAfterTenMinutes`, `retryOnScreenUnlockAndDeviceChange`. |
-| C2 | blocker | Rebuild refuses its own lease; lease → writer breaks lock order; locks released between recover steps | Accepted. `openForMaintenance(at:lease:)`, `recover(at:lease:)`, and lease parameters on rebuild and post-processing; one lease across recover → rebuild → post-process; lock rules restated (../conventions.md §1.7); moved into PR6. Tests `recoverRebuildAndPostProcessUnderOneLease`, `rebuildSavesWhileHoldingItsOwnLease`. |
+| C1 | blocker | Three fast retries end the meeting on brief audio loss; `RecorderPhase` could not grow after wave 1 | Accepted. `RecorderPhase.waiting`, `audioUnavailable` warning and gap reason, `captureWaiting` event in the wave-0 contract; backoff 0.5 → 30 s; immediate retry on wake, lid open, unlock, device-list change; finish only after 10 min without audio; only `SCStreamError.userStopped` counts as a user stop (docs/meeting/recorder.md §4.2). A separate AVAudioEngine microphone in calls waits for S2 (no interface change). Tests `failFiveTimesThenRecover`, `waitingTimesOutAfterTenMinutes`, `retryOnScreenUnlockAndDeviceChange`. |
+| C2 | blocker | Rebuild refuses its own lease; lease → writer breaks lock order; locks released between recover steps | Accepted. `openForMaintenance(at:lease:)`, `recover(at:lease:)`, and lease parameters on rebuild and post-processing; one lease across recover → rebuild → post-process; lock rules restated (docs/conventions.md §1.7); moved into PR6. Tests `recoverRebuildAndPostProcessUnderOneLease`, `rebuildSavesWhileHoldingItsOwnLease`. |
 | C3 | major | Disk stalls (fsync, manifest rewrite) end the capture | Accepted, with one change: `ChunkWriterPump` (60 s per track) and an off-main consumer remove disk from the capture path; capture overflow drops and marks `overflow`; journal group commit once per second (PR6). Chunk registration stays on the writer task, where the pump absorbs its latency. Tests `pumpAbsorbsSlowWriter`, `pumpDropsBeyondCapacityAndMarksOverflow`, `captureOverflowDoesNotFail`. |
-| C4 | major | Clock starts before capture; overlapping epochs and chunks | Accepted. Session time 0 = epoch 0's capture origin; clock anchored there; epoch offset `max(now, lastFrameEnd + 0.01)`; 50 ms continuity; overlaps trimmed with `timestampOverlap`; watchdog on arrival time (../meeting/session-format.md §2.3). Tests `sessionTimeStartsAtFirstCapture`, `epochOffsetNeverOverlaps`, `overlapIsTrimmedAndRecorded`, `slowStartIsNotAStall`, `rendererTrimsOverlappingChunks`, `compositionTrimsOverlappingChunks`. |
-| C5 | major | One dropped frame discards hours of live words and forces a full replay | Accepted. `TranscriptCoverage` in the normal stop path (PR2a) and in recovery; `transcriptionBehind {from}`; replay from coverage − 2 s only; next speech session created before capture restarts; live queue sized in seconds (../meeting/recorder.md §4.6). Test `liveOverflowKeepsLiveWordsAndReplaysOnlyTheRest`. |
-| C6 | major | New speech sessions may report times from their first buffer | Accepted and made independent of the answer: every speech session is rebased to 0 and its base added back (../meeting/session-format.md §2.3); opt-in `HOLOS_SPEECH_FIXTURE` test before PR2a merges. Test `speechSessionsAreRebased`, `speechFixtureTimesAreAbsolute`. |
+| C4 | major | Clock starts before capture; overlapping epochs and chunks | Accepted. Session time 0 = epoch 0's capture origin; clock anchored there; epoch offset `max(now, lastFrameEnd + 0.01)`; 50 ms continuity; overlaps trimmed with `timestampOverlap`; watchdog on arrival time (docs/meeting/session-format.md §2.3). Tests `sessionTimeStartsAtFirstCapture`, `epochOffsetNeverOverlaps`, `overlapIsTrimmedAndRecorded`, `slowStartIsNotAStall`, `rendererTrimsOverlappingChunks`, `compositionTrimsOverlappingChunks`. |
+| C5 | major | One dropped frame discards hours of live words and forces a full replay | Accepted. `TranscriptCoverage` in the normal stop path (PR2a) and in recovery; `transcriptionBehind {from}`; replay from coverage − 2 s only; next speech session created before capture restarts; live queue sized in seconds (docs/meeting/recorder.md §4.6). Test `liveOverflowKeepsLiveWordsAndReplaysOnlyTheRest`. |
+| C6 | major | New speech sessions may report times from their first buffer | Accepted and made independent of the answer: every speech session is rebased to 0 and its base added back (docs/meeting/session-format.md §2.3); opt-in `HOLOS_SPEECH_FIXTURE` test before PR2a merges. Test `speechSessionsAreRebased`, `speechFixtureTimesAreAbsolute`. |
 | C7 | major | Restarts skip `stopCapture`; late ends from an old epoch count | Accepted. Every restart is stop then start; `captureEnded(epoch:)`; other epochs ignored. Tests `configurationChangeStopsThenRestarts`, `staleEpochEndIsIgnored`. |
-| C8 | major | Dark wake resets the sleep start and forgets a pause | Accepted (../meeting/recorder.md §4.4). Tests `darkWakeKeepsSleepStart`, `pausedStaysPausedThroughDarkWake`. |
+| C8 | major | Dark wake resets the sleep start and forgets a pause | Accepted (docs/meeting/recorder.md §4.4). Tests `darkWakeKeepsSleepStart`, `pausedStaysPausedThroughDarkWake`. |
 | C9 | major | Control requests ordered by second-precision dates | Accepted. `ControlRequest.sentAtNanos` in the contract; order `(sentAtNanos, id)`; senders wait for the previous ack. Test `inboxOrdersBySentAtNotCreatedAt`. |
 | C10 | major | A short write leaves a corrupt line in `events.jsonl` | Accepted (PR6): appends truncate back on failure; readers skip and count corrupt lines; maintenance open repairs a torn tail. Tests `failedAppendLeavesNoPartialLine`, `corruptMiddleEventLineIsSkippedAndCounted`, `maintenanceOpenRepairsTornTail`. |
 | C11 | major | Post-processing after a disk-low stop fills the disk | Accepted. Render only with free ≥ render + 1 GB; skipped after a `diskLow` stop; no `process(url)` fallback. Tests `diskLowStopSkipsRender`, `lowFreeSpaceSkipsRender`, `renderCheckNeedsOneGigabyteHeadroom`. |
-| C12 | major | Editor computes its own precondition, so stale views edit the wrong turn | Accepted (with B3): `apply(view:)`, head check, fingerprints from the caller's view, refusal writes nothing (../meeting/speaker-labels.md §4.9). Tests `editAgainstReplacedHeadIsRefused`, `concurrentReassignIsRefused`. |
+| C12 | major | Editor computes its own precondition, so stale views edit the wrong turn | Accepted (with B3): `apply(view:)`, head check, fingerprints from the caller's view, refusal writes nothing (docs/meeting/speaker-labels.md §4.9). Tests `editAgainstReplacedHeadIsRefused`, `concurrentReassignIsRefused`. |
 | C13 | major | Flicker smoothing gives isolated short replies to the chair | Accepted. Gap, boundary, and own-segment conditions; three new `AlignmentParameters` fields. Tests `isolatedShortReplyIsKept`, `boundaryFlickerIsSmoothed`, `flickerCoveredByOwnSegmentIsKept`. |
 | C14 | major | Split and range edits reuse the whole turn's embedding | Accepted (first option). Split parts are `modified` and excluded from enrollment; merged turns qualify (B19). `reassignRange` is removed (P15). Tests `splitThenReassignKeepsOtherVoiceOut`, `mergeKeepsTurnsInSample`. |
-| C15 | major | Current transcript chosen by date; run spans index another transcript | Accepted (with B4). `transcripts/current.json`; the snapshot loads `run.transcriptID`; `transcriptChanged`; span validation (../meeting/session-format.md §2.4). Tests `transcriptPointerFollowsLatestSave`, `snapshotLoadsRunTranscriptAndFlagsChange`, `invalidSpanMakesRunUnusable`. |
+| C15 | major | Current transcript chosen by date; run spans index another transcript | Accepted (with B4). `transcripts/current.json`; the snapshot loads `run.transcriptID`; `transcriptChanged`; span validation (docs/meeting/session-format.md §2.4). Tests `transcriptPointerFollowsLatestSave`, `snapshotLoadsRunTranscriptAndFlagsChange`, `invalidSpanMakesRunUnusable`. |
 | C16 | major | Regenerating exports inside the speaker lock deadlocks on itself | Accepted (with B12). Regeneration after release; `regenerateLocked`; stage 6 releases before stage 8. Tests `exportsRegenerateAfterLockRelease`, `regenerateLockedRunsInsideTheLock`. |
 | C17 | major | No lock held between finish and post-processing; probes break acquisitions | Accepted. Lease before `finish`; `status.json` heartbeat; 1 s retries on writer and lease. Tests `leaseTakenBeforeFinish`, `heartbeatKeepsStatusFresh`, `leaseAcquisitionSurvivesAProbe`. |
-| C18 | major | Reducer fails starts during permission prompts and never recovers | Accepted (with B2, B13). Child-process liveness while starting, 5 s hint, 120 s timeout with SIGTERM, fresh status returns to `active`, `send` refuses without a manifest, `finishing` + dead → idle, no "Recover" text when nothing was saved (../meeting/app-controls.md §5.8). Tests `missingFolderWhileStartingIsNotFailure`, `startTimesOutAfterTwoMinutes`, `freshStatusRecoversFromFailed`, `childExitBeforeRecordingShowsLogTail`, `channelSendRefusesWithoutManifest`. |
+| C18 | major | Reducer fails starts during permission prompts and never recovers | Accepted (with B2, B13). Child-process liveness while starting, 5 s hint, 120 s timeout with SIGTERM, fresh status returns to `active`, `send` refuses without a manifest, `finishing` + dead → idle, no "Recover" text when nothing was saved (docs/meeting/app-controls.md §5.8). Tests `missingFolderWhileStartingIsNotFailure`, `startTimesOutAfterTwoMinutes`, `freshStatusRecoversFromFailed`, `childExitBeforeRecordingShowsLogTail`, `channelSendRefusesWithoutManifest`. |
 | C19 | major | Unbounded awaits on platform stops and speech finish | Accepted. `StopTimeouts` (5 s; 30 s + 0.05 × audio); sleep acknowledged after chunks close. Tests `hungCaptureStopTimesOut`, `hungSpeechFinishTimesOut`, `loopAcknowledgesAfterClosingChunks`. |
 | C20 | minor | Rebuild seam duplicates or loses words; journal holes; date-based idempotence | Accepted. Word-level merge; journal drops recorded as `transcriptionBehind`; idempotence by event sequence. Tests `uncoveredTailIsReplayedAtWordLevel`, `journalDropRecordsBehind`, `recoveryIsIdempotent`. |
 | C21 | minor | Fingerprints read recognition; forgotten people still shown | Accepted. Journal-only fingerprints; matches for unknown profiles ignored; forgetting regenerates affected exports. Tests `fingerprintIgnoresRecognition`, `forgottenProfileMatchIsIgnored`. |
-| C22 | minor | Children inherit lock descriptors | Accepted (../conventions.md §1.7 rule 4). Tests `lockDescriptorsAreCloseOnExec`, `spawnedChildInheritsNoLocks`. |
+| C22 | minor | Children inherit lock descriptors | Accepted (docs/conventions.md §1.7 rule 4). Tests `lockDescriptorsAreCloseOnExec`, `spawnedChildInheritsNoLocks`. |
 | C23 | minor | Late progress overwrites `exited` | Accepted. One ordered stream; `StatusWriter` ignores updates after `finish`. Tests `progressIsMirroredInOrder`, `updatesAfterExitAreIgnored`. |
 | C24 | minor | Long pauses render hours of silence | Accepted. Render gap compression with a time map; idle-sleep assertion released while paused; 6 h pause limit. Tests `rendererCompressesLongGaps`, `timeMapSplitsSegmentsAcrossCompressedGap`, `pauseTimesOutAfterSixHours`. |
 | C25 | minor | Constant timing bias between words and segments | Accepted. Per-track offset estimate recorded in `AlignmentInfo.trackOffsets`; PR7c reports the measured offsets. Tests `offsetEstimateRecoversShift`, `offsetIsZeroWithFewWords`. |
 | C26 | minor | Review edits block the main actor | Accepted (with B29). `async` edits on a serial queue with an optimistic projection. Test `projectionUpdatesBeforeWriteCompletes`. |
-| C27 | minor | Closed enums in shared files break older readers | Accepted. `OpenStringCode` for stage, state, result, transcription state; `RecorderPhase.unknown`; schema-bump rule for enums persisted in runs (../conventions.md §1.6). Tests `openCodesDecodeUnknownValues`, `unknownPhaseIsActive`. |
-| C28 | minor | `TrackReplayer` has no start offset; shared fakes unowned | Accepted. `replay(from:)` in PR1's API (test `replayFromSkipsEarlierAudio`); helper ownership rule (../conventions.md §1.8). |
-| C29 | minor | In-process fallback consumes frames on the main thread | Accepted. Off-main consumer, `beginActivity`, in-process quit waits for the transcript (../meeting/recorder.md §4.1, ../meeting/app-controls.md §5.8). |
-| P1 | blocker | Every diarized meeting stores voiceprints of everyone, whatever the setting | Accepted. Runs and cluster summaries hold no vectors; `SessionVoiceData` in `speakers/voice/` only while "Remember voices" is on, excluded from backups, removed by every forget and delete path (`SpeakerModels.swift`, ../meeting/people-voice.md §4.10). "Recompute voice data" is not built: relabelling with the setting on, with names carried over, gives the same result. Tests `runHoldsNoVectors`, `rememberOffMeansNoVoiceDataAndNoRecognition`, `forgetAllRemovesVoiceFilesKeepsNames`. |
-| P2 | blocker | Regenerated exports overwrite the user's text fixes | Accepted. Exports are a 0400 generated cache with `.generated.json`; edited files are moved aside; "Open Transcript" is a Quick Look preview; "Save Transcript As…" gives the editable copy (../meeting/exports.md §4.11). Test `regenerateMovesHandEditedExportAside`. |
+| C27 | minor | Closed enums in shared files break older readers | Accepted. `OpenStringCode` for stage, state, result, transcription state; `RecorderPhase.unknown`; schema-bump rule for enums persisted in runs (docs/conventions.md §1.6). Tests `openCodesDecodeUnknownValues`, `unknownPhaseIsActive`. |
+| C28 | minor | `TrackReplayer` has no start offset; shared fakes unowned | Accepted. `replay(from:)` in PR1's API (test `replayFromSkipsEarlierAudio`); helper ownership rule (docs/conventions.md §1.8). |
+| C29 | minor | In-process fallback consumes frames on the main thread | Accepted. Off-main consumer, `beginActivity`, in-process quit waits for the transcript (docs/meeting/recorder.md §4.1, docs/meeting/app-controls.md §5.8). |
+| P1 | blocker | Every diarized meeting stores voiceprints of everyone, whatever the setting | Accepted. Runs and cluster summaries hold no vectors; `SessionVoiceData` in `speakers/voice/` only while "Remember voices" is on, excluded from backups, removed by every forget and delete path (`SpeakerModels.swift`, docs/meeting/people-voice.md §4.10). "Recompute voice data" is not built: relabelling with the setting on, with names carried over, gives the same result. Tests `runHoldsNoVectors`, `rememberOffMeansNoVoiceDataAndNoRecognition`, `forgetAllRemovesVoiceFilesKeepsNames`. |
+| P2 | blocker | Regenerated exports overwrite the user's text fixes | Accepted. Exports are a 0400 generated cache with `.generated.json`; edited files are moved aside; "Open Transcript" is a Quick Look preview; "Save Transcript As…" gives the editable copy (docs/meeting/exports.md §4.11). Test `regenerateMovesHandEditedExportAside`. |
 | P3 | major | JSON export includes centroids by default; bulk voiceprint export | Accepted for sessions: no session export ever contains vectors (the flag is removed rather than inverted). Rejected for `people export --include-voiceprints`: decision 2 includes "forget and export"; it stays opt-in, off by default, with a stderr warning. Test `jsonExportIsDeterministicAndHasNoVectors`, `peopleExportOmitsEmbeddingsByDefault`. |
-| P4 | major | Calls record the laptop microphone instead of the headset | Accepted, to confirm (Q2): calls use the system default input; the missing-built-in refusal applies only in person (../meeting/recorder.md §4.12). Tests `callUsesSystemDefault`, `callStartAllowedWithoutBuiltInMic`; H21. |
-| P5 | major | With Remember off, names never carry across meetings | Accepted. People without samples; `link` always creates the profile; name combo box; "This is me" (`isSelf`); People window lists everyone (../meeting/people-voice.md §4.10). Tests `linkWithoutRememberKeepsTheName`, `markSelfCreatesOneSelfProfile`. |
+| P4 | major | Calls record the laptop microphone instead of the headset | Accepted, to confirm (Q2): calls use the system default input; the missing-built-in refusal applies only in person (docs/meeting/recorder.md §4.12). Tests `callUsesSystemDefault`, `callStartAllowedWithoutBuiltInMic`; H21. |
+| P5 | major | With Remember off, names never carry across meetings | Accepted. People without samples; `link` always creates the profile; name combo box; "This is me" (`isSelf`); People window lists everyone (docs/meeting/people-voice.md §4.10). Tests `linkWithoutRememberKeepsTheName`, `markSelfCreatesOneSelfProfile`. |
 | P6 | major | A modal per person and no bulk confirm | Accepted. Footer checkbox "Learn voices of people I name in this meeting"; "Confirm All Suggestions" as one batch (`SpeakerEdit.batchID` added to the contract). Tests `confirmAllIsOneEdit`, `footerToggleControlsSampleWrites`, `confirmAllIsOneUndo`. |
 | P7 | major | Uncalibrated automatic names; merged-cluster voiceprints | Accepted (with B6). Suggestions only until `holos people calibrate --apply` (≥ 3 meetings); PR7c cross-recording calibration; enrollment outlier pass. Tests `likelyIsOffByDefault`, `mergedClusterSampleDropsOutlierTurns`, `calibrationNeedsThreeMeetings`. |
-| P8 | major | Merged quiet speakers need turn-by-turn fixes; relabel drops names | Accepted in part. (a) PR7c evaluates min/max hints. (b) `MeetingInfo.expectedSpeakers` in the contract; the start-panel field only if (a) shows a benefit. (c) Replaced: "Find More Speakers…" relabels with a higher minimum count instead of 2-means over stored turn embeddings, which would keep voiceprints of everyone (conflicts with P1). (d) Names carry over by shared speech time rather than centroids (centroids are not kept; ../meeting/speaker-labels.md §4.9). (e) H20. |
-| P9 | major | Nothing deletes or expires meetings | Accepted. Delete Audio, Delete Meeting (Trash, recorder log, optional forget of samples), mono system audio (0.35 GB/h), storage footer, Clean Up (../meeting/retention-deletion.md §4.13). Automatic expiry is not added (Q12). Tests `deleteAudioKeepsTranscript`, `moveToTrashRemovesRecorderLog`. |
-| P10 | major | Shutdown during labelling leaves it undone; no path to naming | Accepted. Automatic relabel, "Name Speakers — …" menu item with a status-item dot, stop alert text (../meeting/app-controls.md §5.8). Tests `autoRelabelPicksInterruptedRecentUnedited`, `exitedStatusFinishesAndOffersNaming`; H22. |
-| P11 | major | No vocabulary for meeting transcription | Accepted. `contextualStrings` in `LiveSpeechFactory` (PR1) and through replay, rebuild, import; `vocabulary.json`; app hand-off file (../meeting/recorder.md §4.12). Tests `vocabularyReachesSpeechFactory`, `importPassesVocabulary`, `vocabularyFileIsPrivate`. |
+| P8 | major | Merged quiet speakers need turn-by-turn fixes; relabel drops names | Accepted in part. (a) PR7c evaluates min/max hints. (b) `MeetingInfo.expectedSpeakers` in the contract; the start-panel field only if (a) shows a benefit. (c) Replaced: "Find More Speakers…" relabels with a higher minimum count instead of 2-means over stored turn embeddings, which would keep voiceprints of everyone (conflicts with P1). (d) Names carry over by shared speech time rather than centroids (centroids are not kept; docs/meeting/speaker-labels.md §4.9). (e) H20. |
+| P9 | major | Nothing deletes or expires meetings | Accepted. Delete Audio, Delete Meeting (Trash, recorder log, optional forget of samples), mono system audio (0.35 GB/h), storage footer, Clean Up (docs/meeting/retention-deletion.md §4.13). Automatic expiry is not added (Q12). Tests `deleteAudioKeepsTranscript`, `moveToTrashRemovesRecorderLog`. |
+| P10 | major | Shutdown during labelling leaves it undone; no path to naming | Accepted. Automatic relabel, "Name Speakers — …" menu item with a status-item dot, stop alert text (docs/meeting/app-controls.md §5.8). Tests `autoRelabelPicksInterruptedRecentUnedited`, `exitedStatusFinishesAndOffersNaming`; H22. |
+| P11 | major | No vocabulary for meeting transcription | Accepted. `contextualStrings` in `LiveSpeechFactory` (PR1) and through replay, rebuild, import; `vocabulary.json`; app hand-off file (docs/meeting/recorder.md §4.12). Tests `vocabularyReachesSpeechFactory`, `importPassesVocabulary`, `vocabularyFileIsPrivate`. |
 | P12 | major | A paused meeting that sleeps 15 min is split in two | Accepted, to confirm (Q1): sleep while paused stays paused, up to the 6 h pause limit. Test `pausedSleepOverFifteenMinutesStaysPaused`; H11. |
-| P13 | major | An unpaused in-camera item cannot be removed | Accepted in part. `GapReason.redacted` reserved and the scrub list written down (../meeting/retention-deletion.md §4.13). The command is deferred (Q7): it rewrites the journal and audio chunks and deserves its own PR; `GapReason` is an open code, so adding it later changes no contract. |
+| P13 | major | An unpaused in-camera item cannot be removed | Accepted in part. `GapReason.redacted` reserved and the scrub list written down (docs/meeting/retention-deletion.md §4.13). The command is deferred (Q7): it rewrites the journal and audio chunks and deserves its own PR; `GapReason` is an open code, so adding it later changes no contract. |
 | P14 | minor | The hotkey skips the consent reminder and checks | Accepted: the meeting hotkey is dropped from v1 (file, effects, tests, old H11). |
 | P15 | minor | SRT/VTT and `reassignRange` are extra scope | Accepted: formats md, txt, json; `reassignRange` removed from the contract; `--from/--until` removed. |
 | P16 | minor | Markdown and text split one report into many blocks | Accepted: `TranscriptExporter.blocks` merges consecutive turns of one speaker. Tests `consecutiveSameSpeakerTurnsExportAsOneBlock`, `blocksBreakAtGapMarkerAndLongSilence`. |
-| P17 | minor | Dictation menu items stay live; sleep and meeting pauses conflict; terminal meetings missed | Accepted (../meeting/recorder.md §4.12). Test `controllerFindsTerminalMeetingAfterLaunch`; H12. |
+| P17 | minor | Dictation menu items stay live; sleep and meeting pauses conflict; terminal meetings missed | Accepted (docs/meeting/recorder.md §4.12). Test `controllerFindsTerminalMeetingAfterLaunch`; H12. |
 | P18 | minor | "Jim?" means two things; jargon in the status line | Accepted: "Jim (auto)" everywhere; "Maybe Maria — Confirm" only in the UI; plain status text. Test `autoLabelAndNoSuggestionsInExports`. |
 | P19 | minor | People window promises too much; Remember off keeps samples silently | Accepted: backup exclusion and honest text; forget prompt when unchecking; consent line. Test `profileStoreIsPrivateLockedAndNotBackedUp`. |
 | P20 | minor | Export destination unspecified; speakers identifiable only by audio | Accepted: Save As… and Copy as Markdown; text previews in the sidebar. Test `previewsShowTwoLongestTurns`. |
@@ -718,9 +718,9 @@ reprocessing" in `docs/contracts.md`).
 | B3 | major | Edits resolve against whatever head exists; lost updates | Merged into C12; sequential fingerprints within a batch. Test `batchFingerprintsAreSequential`. |
 | B4 | major | Snapshot pairs the head run with a different transcript | Merged into C15; stage 3 relabels when the transcript changed. Test `changedTranscriptRelabels`. |
 | B5 | major | Two spellings of gap reasons across PR2 and PR7 | Accepted: `GapReason` raw values are the event strings; unknown reasons → `audioGap`; `closeAll` on every restart. Tests `discontinuityReasonsUseGapReasonStrings`, `timelineReaderMapsEveryReason`, `timelineReaderSplitsGapAtPauseEvents`. |
-| B6 | major | 0.65 comes from another pipeline and model | Merged into P7 (../meeting/people-voice.md §4.10 explains why 0.65 does not apply). |
+| B6 | major | 0.65 comes from another pipeline and model | Merged into P7 (docs/meeting/people-voice.md §4.10 explains why 0.65 does not apply). |
 | B7 | major | Default suite reaches IOKit, CoreAudio, and real profiles | Accepted. `findInputDevices` seam; inert defaults for dependencies added after PR1; `HOLOS_SUPPORT_DIR` via `supportRoot` and `scripts/test.sh`; `profiles:` parameters; `FluidModels.status(directory:pinned:)`. Test `supportRootHonoursEnvironment`. |
-| B8 | major | Parallel PRs collide on shared test helpers | Accepted: one owner per wave for `Fakes.swift` and `SessionFixtures.swift`; others `fileprivate` or prefixed (../conventions.md §1.8); PR1's `FakeCapture` covers epochs, offsets, and scripted errors. |
+| B8 | major | Parallel PRs collide on shared test helpers | Accepted: one owner per wave for `Fakes.swift` and `SessionFixtures.swift`; others `fileprivate` or prefixed (docs/conventions.md §1.8); PR1's `FakeCapture` covers epochs, offsets, and scripted errors. |
 | B9 | major | PR3's rebuild cannot take its own locks | Merged into C2. |
 | B10 | major | App users cannot install models or learn why labels are missing | Merged into P21. |
 | B11 | major | PR5, PR7, PR2 are too large | Accepted: PR5a → PR5b → PR5c; PR7a ∥ PR7b → PR7c; PR2a → PR2b; plus wave 0 for PR6 (§0.2, §6). |
@@ -731,36 +731,36 @@ reprocessing" in `docs/contracts.md`).
 | B16 | minor | The machine cannot express watchdog restarts | Accepted: `tick(lastFrameAt:)`, watchdog state in the machine, stop-then-start restart. Tests `stalledMicRestartsInNewEpoch`, `watchdogFlagsAfterThreeSecondsAndClears`. |
 | B17 | minor | Power events cannot be polled; lid closes wait 30 s after the loop | Accepted: `pendingEvents()`, `attach`/`detach`, the monitor acknowledges while detached. Tests `monitorAcknowledgesWhenDetached`, `loopAcknowledgesAfterClosingChunks`. |
 | B18 | minor | Renders left behind after a crash | Accepted: `derived/` cleared at stage 0 and stage 9; Clean Up in Meetings; catalog reports `derivedBytes`. Test `derivedClearedAtStartAndEnd`. |
-| B19 | minor | Merged turns count as reassigned | Accepted: cluster-membership definition (../meeting/speaker-labels.md §4.9). Test `mergedTurnsAreNotReassigned`. |
+| B19 | minor | Merged turns count as reassigned | Accepted: cluster-membership definition (docs/meeting/speaker-labels.md §4.9). Test `mergedTurnsAreNotReassigned`. |
 | B20 | minor | Terminal-started meetings after launch go unnoticed | Merged into P17. |
 | B21 | minor | `saveTranscript` overwrites speaker exports with legacy ones | Accepted: `saveTranscript(_:writeLegacyExports:)` in PR6; new code passes false. Test `saveTranscriptCanSkipLegacyExports`. |
 | B22 | minor | Controls sent after capture stops are never acknowledged | Accepted: post-loop polling acknowledges `ignored`; leftovers deleted at exit; stop does not cancel post-processing. Test `commandsAfterStopAreIgnored`. |
 | B23 | minor | `TrackReplayer` lacks `from:` | Merged into C28. |
-| B24 | minor | FluidAudio's `AudioSource` and `WordTiming` clash with Holos types | Accepted (../conventions.md §1.1); verified in the checkout. |
+| B24 | minor | FluidAudio's `AudioSource` and `WordTiming` clash with Holos types | Accepted (docs/conventions.md §1.1); verified in the checkout. |
 | B25 | minor | No switch for `exclusiveSegments`; evaluation transcribes per configuration | Accepted in part: hidden `--exclusive-segments` and `--voice-data`; one transcribed import is reused for every configuration with `--force`. Rejected: diarizing sessions without a transcript, which would need runs without a `transcriptID` to save one transcription per recording. |
-| B26 | minor | Model folder layout and revision marker unspecified | Accepted: paths relative to `<dir>/speaker-diarization/`; `status` checks `.fluidaudio-revision`; `config.json` and `provenance.json` pinned via the Hugging Face tree API (../meeting/post-processing.md §4.8). |
+| B26 | minor | Model folder layout and revision marker unspecified | Accepted: paths relative to `<dir>/speaker-diarization/`; `status` checks `.fluidaudio-revision`; `config.json` and `provenance.json` pinned via the Hugging Face tree API (docs/meeting/post-processing.md §4.8). |
 | B27 | minor | Unneeded CLI behaviour changes | Accepted: exit 1 kept for incomplete transcription; SIGHUP unchanged (Q6); `session score` hidden; `--use-run` deferred. Rejected for `transcript.txt`: the speaker-less text has no consumer in the repo (the evaluator runs `holos transcribe`), and speaker-labelled text is one of the plan's formats (R23). |
 | B28 | minor | Losing the call-mode microphone ends the whole recording | Accepted: restart without the microphone, warn, retry with it on a device change. Test `callWithoutAnyInputRecordsSystemOnly`. |
 | B29 | minor | `ReviewSession` edits are synchronous on the main actor | Merged into C26. |
-| S1 | — | Fold spike S1 into PR7 | Done in ../meeting/post-processing.md §4.8: the FluidAudio API actually used, configuration, cache layout and pinning, memory (one pass per track, tracks in sequence, no block-wise fallback), embeddings (segment embedding = centroid; chunk embeddings for turns; persisted only as opt-in voice data), accuracy to expect, and the license and citation text for `THIRD_PARTY_NOTICES.md` and the About panel. |
+| S1 | — | Fold spike S1 into PR7 | Done in docs/meeting/post-processing.md §4.8: the FluidAudio API actually used, configuration, cache layout and pinning, memory (one pass per track, tracks in sequence, no block-wise fallback), embeddings (segment embedding = centroid; chunk embeddings for turns; persisted only as opt-in voice data), accuracy to expect, and the license and citation text for `THIRD_PARTY_NOTICES.md` and the About panel. |
 
 ### 10.1 Codex review of the design (PR #4)
 
 | Comment | Disposition |
 |---|---|
-| In-process mode released the lease before spawning the diarizer, leaving a window with no lock | Accepted. The lease descriptor is inherited by the child at fd 3 (`--lease-fd 3`) and the parent closes its copy only after a successful spawn (../meeting/recorder.md §4.1). Test `inProcessLeaseHandoffHasNoGap`. |
-| The vocabulary temp file leaked when launch failed or the child exited early | Accepted. `MeetingController` deletes it on launch failure, child exit, and first status; stale files are swept at launch (../meeting/recorder.md §4.12). Three PR4 tests. |
-| `markSelf` had no consent flag for voice learning | Accepted. `learnVoice:` added to `VoiceProfileService.markSelf`; `ReviewSession.markSelf` passes `learnVoices` (../meeting/people-voice.md §4.10, PR10). Test `markSelfHonoursLearnVoice`. |
-| (second pass) Voice data for every diarized speaker was persisted before anyone was confirmed | Accepted. Post-processing never persists embeddings; recognition uses them in memory. Samples are extracted on demand for the confirmed speaker only (`VoiceSampleExtractor`, hidden `holos speakers embed`) (../meeting/people-voice.md §4.10). Tests `rememberOnStoresNoVoiceData`, `enrollExtractsOnlyTheConfirmedSpeaker`, `enrollWithoutAudioKeepsNameOnly`. This also settles open question Q9 (retention of unnamed speakers' voice data): there is none. |
-| (second pass) A crash during Forget could strand voice data with no way to retry | Accepted. Forget writes a tombstone to `forget-journal.jsonl` before touching the store; `resumePendingForgets` finishes pending work at app launch and CLI start (../meeting/people-voice.md §4.10). Tests `forgetResumesAfterCrashBetweenStoreAndSessions`, `forgetJournalReplayIsIdempotent`. |
-| (second pass) note | The contract file comment on `SessionVoiceData` (../meeting/session-format.md §3) still says "written only while Remember voices is on". Contract files are frozen by their ../meeting/session-format.md §3.0 digests and wave 0 already copied them, so the comment is left as is; the rules in ../meeting/people-voice.md §4.10 govern. |
-| (second pass) The diarize command did not accept the inherited lease | Accepted. Hidden `--lease-fd N` with descriptor validation (../meeting/speaker-labels.md §5.5 PR7b CLI). Tests `diarizeAdoptsInheritedLease`, `diarizeRefusesForeignLeaseFd`. |
-| (third pass) A PR10 test and the initializer note still required voice files when Remember voices is on | Accepted. Test renamed `rememberOnWritesRecognitionOnly` (no voice file); initializer note corrected; ../meeting/session-format.md §3.0 notes the frozen contract comment is superseded by ../meeting/people-voice.md §4.10. |
-| (third pass) Most edit actions had no fingerprint, so stale edits could act on split or reassigned turns | Accepted. Fingerprints for reject, merge, split, newSpeaker, and excludeFromEnrollment (../meeting/speaker-labels.md §4.9 table). Tests `staleExcludeAfterSplitIsRefused`, `staleMergeAfterReassignIsRefused`, `staleRejectAfterRelinkIsRefused`. |
-| (third pass) On-demand extraction kept only windows contained in a turn, so short turns never enrolled | Accepted. Overlap-weighted selection as in `TurnEmbeddings.compute` (../meeting/people-voice.md §4.10). Test `extractorUsesOverlappingWindowsForShortTurns`. |
-| (third pass) A zero `likelyMaxDistance` still allowed `likely` at distance 0 | Accepted. `likely` requires `calibratedThresholds != nil` (../meeting/people-voice.md §4.10 step 4–5). Test `identicalVectorIsOnlyPossibleUntilCalibrated`. |
-| (fourth pass) Enrollment methods were synchronous with no way to reach the async extractor | Accepted. `link`, `confirmAll`, `markSelf`, `refreshSamples` are `async` and take `extractor: (any VoiceSampleExtractor)?`; `SpeakerEditor.apply` returns `needsSampleRefresh` for callers to await; the app injects `SubprocessVoiceSampleExtractor` (hidden `holos speakers embed`, JSON on stdout only), the CLI injects `FluidVoiceSampleExtractor` (../meeting/people-voice.md §4.10). `VoiceEnrollment.sample` takes `turnEmbeddings`. |
-| (fourth pass) Time overlap alone could mix another speaker's slot vector from a shared 10 s window into a sample | Accepted. The extractor maps each turn to the fresh pass's dominant `speakerId` and uses only that slot's `ChunkEmbedding`s; turns without a dominant speaker get none (../meeting/people-voice.md §4.10). Tests `extractorIgnoresOtherSpeakerSlotInSharedWindow`, `extractorSkipsTurnsWithoutADominantSpeaker`. |
-| (fifth pass) Concurrent sample refreshes could let an older extraction overwrite a newer sample | Accepted. Generation check (head run + journal length) under speaker lock then `profiles.lock` before upsert; retry up to 3 times; samples stamped with their generation (../meeting/people-voice.md §4.10). Tests `staleRefreshDoesNotOverwriteNewerSample`, `refreshGivesUpAfterThreeChanges`. |
-| (fifth pass) `SpeakerEditor.apply`/`undoLast` declared no refresh flag | Accepted. Both return `SpeakerEditResult { snapshot, needsSampleRefresh }` (../meeting/exports.md §5.7). |
+| In-process mode released the lease before spawning the diarizer, leaving a window with no lock | Accepted. The lease descriptor is inherited by the child at fd 3 (`--lease-fd 3`) and the parent closes its copy only after a successful spawn (docs/meeting/recorder.md §4.1). Test `inProcessLeaseHandoffHasNoGap`. |
+| The vocabulary temp file leaked when launch failed or the child exited early | Accepted. `MeetingController` deletes it on launch failure, child exit, and first status; stale files are swept at launch (docs/meeting/recorder.md §4.12). Three PR4 tests. |
+| `markSelf` had no consent flag for voice learning | Accepted. `learnVoice:` added to `VoiceProfileService.markSelf`; `ReviewSession.markSelf` passes `learnVoices` (docs/meeting/people-voice.md §4.10, PR10). Test `markSelfHonoursLearnVoice`. |
+| (second pass) Voice data for every diarized speaker was persisted before anyone was confirmed | Accepted. Post-processing never persists embeddings; recognition uses them in memory. Samples are extracted on demand for the confirmed speaker only (`VoiceSampleExtractor`, hidden `holos speakers embed`) (docs/meeting/people-voice.md §4.10). Tests `rememberOnStoresNoVoiceData`, `enrollExtractsOnlyTheConfirmedSpeaker`, `enrollWithoutAudioKeepsNameOnly`. This also settles open question Q9 (retention of unnamed speakers' voice data): there is none. |
+| (second pass) A crash during Forget could strand voice data with no way to retry | Accepted. Forget writes a tombstone to `forget-journal.jsonl` before touching the store; `resumePendingForgets` finishes pending work at app launch and CLI start (docs/meeting/people-voice.md §4.10). Tests `forgetResumesAfterCrashBetweenStoreAndSessions`, `forgetJournalReplayIsIdempotent`. |
+| (second pass) note | The contract file comment on `SessionVoiceData` (docs/meeting/session-format.md §3) still says "written only while Remember voices is on". Contract files are frozen by their docs/meeting/session-format.md §3.0 digests and wave 0 already copied them, so the comment is left as is; the rules in docs/meeting/people-voice.md §4.10 govern. |
+| (second pass) The diarize command did not accept the inherited lease | Accepted. Hidden `--lease-fd N` with descriptor validation (docs/meeting/speaker-labels.md §5.5 PR7b CLI). Tests `diarizeAdoptsInheritedLease`, `diarizeRefusesForeignLeaseFd`. |
+| (third pass) A PR10 test and the initializer note still required voice files when Remember voices is on | Accepted. Test renamed `rememberOnWritesRecognitionOnly` (no voice file); initializer note corrected; docs/meeting/session-format.md §3.0 notes the frozen contract comment is superseded by docs/meeting/people-voice.md §4.10. |
+| (third pass) Most edit actions had no fingerprint, so stale edits could act on split or reassigned turns | Accepted. Fingerprints for reject, merge, split, newSpeaker, and excludeFromEnrollment (docs/meeting/speaker-labels.md §4.9 table). Tests `staleExcludeAfterSplitIsRefused`, `staleMergeAfterReassignIsRefused`, `staleRejectAfterRelinkIsRefused`. |
+| (third pass) On-demand extraction kept only windows contained in a turn, so short turns never enrolled | Accepted. Overlap-weighted selection as in `TurnEmbeddings.compute` (docs/meeting/people-voice.md §4.10). Test `extractorUsesOverlappingWindowsForShortTurns`. |
+| (third pass) A zero `likelyMaxDistance` still allowed `likely` at distance 0 | Accepted. `likely` requires `calibratedThresholds != nil` (docs/meeting/people-voice.md §4.10 step 4–5). Test `identicalVectorIsOnlyPossibleUntilCalibrated`. |
+| (fourth pass) Enrollment methods were synchronous with no way to reach the async extractor | Accepted. `link`, `confirmAll`, `markSelf`, `refreshSamples` are `async` and take `extractor: (any VoiceSampleExtractor)?`; `SpeakerEditor.apply` returns `needsSampleRefresh` for callers to await; the app injects `SubprocessVoiceSampleExtractor` (hidden `holos speakers embed`, JSON on stdout only), the CLI injects `FluidVoiceSampleExtractor` (docs/meeting/people-voice.md §4.10). `VoiceEnrollment.sample` takes `turnEmbeddings`. |
+| (fourth pass) Time overlap alone could mix another speaker's slot vector from a shared 10 s window into a sample | Accepted. The extractor maps each turn to the fresh pass's dominant `speakerId` and uses only that slot's `ChunkEmbedding`s; turns without a dominant speaker get none (docs/meeting/people-voice.md §4.10). Tests `extractorIgnoresOtherSpeakerSlotInSharedWindow`, `extractorSkipsTurnsWithoutADominantSpeaker`. |
+| (fifth pass) Concurrent sample refreshes could let an older extraction overwrite a newer sample | Accepted. Generation check (head run + journal length) under speaker lock then `profiles.lock` before upsert; retry up to 3 times; samples stamped with their generation (docs/meeting/people-voice.md §4.10). Tests `staleRefreshDoesNotOverwriteNewerSample`, `refreshGivesUpAfterThreeChanges`. |
+| (fifth pass) `SpeakerEditor.apply`/`undoLast` declared no refresh flag | Accepted. Both return `SpeakerEditResult { snapshot, needsSampleRefresh }` (docs/meeting/exports.md §5.7). |
 | (fifth pass) Open question Q9 still described retaining unnamed speakers' voice data | Accepted. Q9 marked resolved (§9). |

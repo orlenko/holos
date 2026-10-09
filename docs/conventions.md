@@ -50,7 +50,7 @@ Rules:
 Wave 0 (PR6): no change.
 
 Wave 1. PR5a adds the HolosSpeakers targets; PR1 adds HolosMeeting and, when it rebases
-on PR5a (it merges last in the wave, archive/meeting-plan-2026-09.md §6), makes HolosMeeting depend on HolosSpeakers.
+on PR5a (it merges last in the wave, docs/archive/meeting-plan-2026-09.md §6), makes HolosMeeting depend on HolosSpeakers.
 Final text of the changed lines:
 
 ```swift
@@ -120,7 +120,7 @@ FluidAudio plus a small probe at 70–80 s and a 1.6 GB `.build`; with ~24 GB fr
   `RecordingWorkflow.run`'s control loop, `MeetingController`, `ReviewSession`, all
   windows. Audio frames are **consumed off the main actor**: the frame stream is
   `Sendable`, and a detached consumer task only copies frames into bounded queues
-  (meeting/recorder.md §4.3), so a main-thread stall in the app cannot overflow capture.
+  (docs/meeting/recorder.md §4.3), so a main-thread stall in the app cannot overflow capture.
 - Real-time callbacks only copy samples and yield to bounded streams (existing rule in
   `docs/contracts.md`). No `await`, file IO, or locks that can block in them.
 - Small shared state uses `Mutex` from `Synchronization`, as `RecordingWorkflow` and
@@ -131,15 +131,15 @@ FluidAudio plus a small probe at 70–80 s and a 1.6 GB `.build`; with ~24 GB fr
   `OfflineDiarizerModels` in the actor.
 - Progress callbacks are `@escaping @Sendable (…) -> Void`. A consumer that must see
   progress in order (status.json) feeds it into one `AsyncStream` read by one task, and
-  finishes and awaits that task before writing its final state (meeting/recorder.md §4.6).
-- Every await on a platform API that can hang has a timeout (meeting/recorder.md §4.6): stopping capture,
+  finishes and awaits that task before writing its final state (docs/meeting/recorder.md §4.6).
+- Every await on a platform API that can hang has a timeout (docs/meeting/recorder.md §4.6): stopping capture,
   finishing a speech session, and the sleep acknowledgement.
 - Long loops (rendering, replay, diarization, rebuild) call `Task.checkCancellation()`
   per chunk or block. Cancelled work publishes nothing partial; runs, exports, and
   transcripts appear only by atomic rename.
 - In the app, file work that can exceed ~10 ms (loading a 3 h projection, applying an
   edit, regenerating exports) runs off the main actor and returns a value to it.
-  `ReviewSession` edits are `async` (meeting/review-window.md §5.10).
+  `ReviewSession` edits are `async` (docs/meeting/review-window.md §5.10).
 
 ### 1.4 Errors and exit codes
 
@@ -194,7 +194,7 @@ vocabulary, or embeddings. Log user paths only as `privacy: .private`.
   requests, profiles, and samples. They satisfy `SessionArchive.validToken`. Turn IDs
   are `T1…Tn` within a run; split parts are `T5/<editID>`. Speaker IDs are
   `<track>:S<n>`, `mic:me`, or `user:<UUID>`.
-- Session times are `Double` seconds on the session timeline (meeting/session-format.md §2.3). Wall-clock times
+- Session times are `Double` seconds on the session timeline (docs/meeting/session-format.md §2.3). Wall-clock times
   are `Date`.
 - Schema rules:
   1. Every persisted JSON object has a top-level `schemaVersion: Int`, starting at 1.
@@ -217,7 +217,7 @@ vocabulary, or embeddings. Log user paths only as `privacy: .private`.
      journal (`SpeakerEditAction`) grow only with a schema bump: runs go to version 2;
      journal lines an older reader cannot decode are skipped and counted.
 - Permissions: directories `0700`, files `0600`, as `SessionArchive` does today. Files in
-  `exports/` are `0400` (meeting/exports.md §4.11). New folders inside a session are created lazily, so
+  `exports/` are `0400` (docs/meeting/exports.md §4.11). New folders inside a session are created lazily, so
   older archives stay valid.
 
 ### 1.7 Atomic writes and locks
@@ -279,9 +279,9 @@ Locks are `flock` on files in the session folder, one open file description per 
 | Lock file | Holders | Held for | How it is taken |
 |---|---|---|---|
 | `.writer.lock` | recorder's `SessionArchive` actor; `SessionArchive.recover`; `openForMaintenance` | capture start → `finish`; maintenance: one save | `LOCK_EX\|LOCK_NB`, retried every 20 ms for up to 1 s |
-| `.processing.lock` (the processing lease) | recorder from just before `finish` until exit (meeting/recorder.md §4.6); `holos session diarize`, `recover`, `delete`, `rename` (meeting/titles-summaries.md §4.17, with the writer lock through `openForMaintenance`); the app's automatic relabel runs the CLI | one post-processing, rebuild, deletion, or rename | `LOCK_EX\|LOCK_NB`, retried every 20 ms for up to 1 s |
-| `.speakers.lock` | `SpeakerEditor`; `SessionExports.regenerate`; post-processor while publishing run, head, voice data, recognition, and a merged transcript (meeting/languages.md §4.14, inside the writer lock) | one write (milliseconds) | polled every 20 ms up to 2 s |
-| `<support>/Speakers/profiles.lock` | `SpeakerProfileStore.update`; `withLockedDatabase` (recognition's saved comparison, a forget's per-meeting clean-up, a meeting summary's save, meeting/titles-summaries.md §4.17), always inside the speaker lock when both are held | one read-modify-write, or one read and the session write made from it | polled every 20 ms up to 2 s (PR10) |
+| `.processing.lock` (the processing lease) | recorder from just before `finish` until exit (docs/meeting/recorder.md §4.6); `holos session diarize`, `recover`, `delete`, `rename` (docs/meeting/titles-summaries.md §4.17, with the writer lock through `openForMaintenance`); the app's automatic relabel runs the CLI | one post-processing, rebuild, deletion, or rename | `LOCK_EX\|LOCK_NB`, retried every 20 ms for up to 1 s |
+| `.speakers.lock` | `SpeakerEditor`; `SessionExports.regenerate`; post-processor while publishing run, head, voice data, recognition, and a merged transcript (docs/meeting/languages.md §4.14, inside the writer lock) | one write (milliseconds) | polled every 20 ms up to 2 s |
+| `<support>/Speakers/profiles.lock` | `SpeakerProfileStore.update`; `withLockedDatabase` (recognition's saved comparison, a forget's per-meeting clean-up, a meeting summary's save, docs/meeting/titles-summaries.md §4.17), always inside the speaker lock when both are held | one read-modify-write, or one read and the session write made from it | polled every 20 ms up to 2 s (PR10) |
 
 Rules:
 
@@ -291,9 +291,9 @@ Rules:
    speaker lock"; the plain variant takes the lock itself.
 2. **Order for waits.** Only the speaker and profile locks are waited on (2 s). Take
    them in the order speakers → profiles, and release the speaker lock before calling
-   anything that regenerates exports (meeting/speaker-labels.md §4.9). Writer and lease acquisitions never wait
+   anything that regenerates exports (docs/meeting/speaker-labels.md §4.9). Writer and lease acquisitions never wait
    more than 1 s, so they cannot deadlock. The recorder takes the lease while holding
-   the writer (hand-off, meeting/recorder.md §4.6). Maintenance takes the writer while holding the lease,
+   the writer (hand-off, docs/meeting/recorder.md §4.6). Maintenance takes the writer while holding the lease,
    only through `openForMaintenance(at:lease:)` and `recover(at:lease:)`, and only for
    the final save.
 3. **Probes do not break acquisitions.** `isActive` and `isProcessing` take
@@ -371,7 +371,7 @@ extension SessionArchive {
 
 - Do not launch or kill Holos.app, do not run `scripts/build-app.sh`, do not record from
   the microphone, do not trigger permission prompts. PRs that change those paths list
-  manual checks instead (archive/meeting-plan-2026-09.md §7).
+  manual checks instead (docs/archive/meeting-plan-2026-09.md §7).
 - The Otter references are private. Evaluation code and agents print counts,
   durations, and metrics only, never reference or hypothesis text or speaker names.
   Evaluation output goes under `.local/evaluation/` (ignored).

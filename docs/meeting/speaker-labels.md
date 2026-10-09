@@ -108,11 +108,11 @@ Application order in `make`:
    → `userConfirmed`; automatic likely match not rejected → `recognized`; channel →
    `channelAssumption`; else `diarizer`. Then list same-named speakers as one ("Speakers
    with the same name", below).
-6. With a call's acoustic echo mask, hide the words and clusters it flags (online-calls-echo.md §5.11). A turn
-   with no words at all (every one deleted in Review with its segment, review-window.md §5.10 "Editing
+6. With a call's acoustic echo mask, hide the words and clusters it flags (docs/meeting/online-calls-echo.md §5.11). A turn
+   with no words at all (every one deleted in Review with its segment, docs/meeting/review-window.md §5.10 "Editing
    words") is not shown either, mask or not; edits still name it.
 7. Decide the short interjections of the unknown speaker on the turns of step 6
-   (`interjections`, `shownTurns`, review-window.md §5.10 "Short interjections"). Presentation only: `turns`
+   (`interjections`, `shownTurns`, docs/meeting/review-window.md §5.10 "Short interjections"). Presentation only: `turns`
    and `speakers` stay as steps 1–6 left them; the Review list and the exports read
    `shownTurns`.
 
@@ -327,7 +327,7 @@ The actions are appended with `source: "carry"`, the new run as `baseRunID`, and
 batch ID. The command reports "Kept 8 names; 1 name could not be matched and 12
 turn-level changes were not carried." Old edits stay in the journal under the old run
 ID. User-created speakers carry by time like any other. Speech kept out of voice learning
-(`excludeFromEnrollment`, by the user or by an automatic merge nobody confirmed, people-voice.md §4.10)
+(`excludeFromEnrollment`, by the user or by an automatic merge nobody confirmed, docs/meeting/people-voice.md §4.10)
 stays out: every new turn that shares any time with an excluded old turn on the same track
 is excluded in the carry batch (`SpeakerCarryOver.excludedTurnIDs`), whichever speaker it
 lands in, so a relabel never lets that speech reach a voice sample. Exclusions are therefore
@@ -345,11 +345,11 @@ PR5b the edit projection and carry-over, PR5c exporters, the Otter parser, and s
 **Files.**
 
 - PR5a: add `Sources/HolosSpeakers/{WordTiming, DiarizationNormalizer, SpeakerAlignment, TurnEmbeddings, SpeakerRunBuilder, VectorMath, FakeDiarizer}.swift`;
-  change `Package.swift` (../conventions.md §1.2 wave 1: the HolosSpeakers target and test target);
+  change `Package.swift` (docs/conventions.md §1.2 wave 1: the HolosSpeakers target and test target);
   tests `Tests/HolosSpeakersTests/{WordTimingTests, NormalizerTests, AlignmentTests, TurnEmbeddingTests, RunBuilderTests, VectorMathTests, FakeDiarizerTests}.swift`.
 - PR5b: add `Sources/HolosSpeakers/{SpeakerProjection, SpeakerCarryOver}.swift` (§4.9);
   tests `{ProjectionTests, CarryOverTests}.swift`.
-- PR5c: add `Sources/HolosSpeakers/Export/{ExportDocument, MarkdownExport, JSONExport, TextExport, TimeFormat}.swift` (exports.md §4.11),
+- PR5c: add `Sources/HolosSpeakers/Export/{ExportDocument, MarkdownExport, JSONExport, TextExport, TimeFormat}.swift` (docs/meeting/exports.md §4.11),
   `OtterTranscriptParser.swift`, `DiarizationScoring.swift`;
   tests `{ExportTests, OtterParserTests, ScoringTests}.swift`.
 
@@ -469,7 +469,7 @@ public enum VectorMath {
 **API (PR5b):** §4.9 (`ProjectedSpeaker`, `ProjectedTurn`, `StaleEdit`,
 `SpeakerProjection` with `make`, `fingerprint`, `applying`; `SpeakerCarryOver`).
 
-**API (PR5c):** exports.md §4.11 (`ExportMetadata`, `ExportDocument`, `ExportFormat`, `ExportBlock`,
+**API (PR5c):** docs/meeting/exports.md §4.11 (`ExportMetadata`, `ExportDocument`, `ExportFormat`, `ExportBlock`,
 `TranscriptExporter`), plus:
 
 ```swift
@@ -602,12 +602,12 @@ reader, and `holos session diarize`, all tested with `FakeDiarizer`. PR7c (after
   `FluidDiarizer` with `FluidDiarizerConfiguration.default.overridden(by:
   options.engineOverrides)` when `FluidModels.status() == .verified`, else `nil`),
   `Sources/HolosCLI/Doctor.swift` (model status line; `"speakerModels": "verified" |
-  "notInstalled" | "damaged"` in `--json`; `setup --speakers`), `Package.swift` (../conventions.md §1.2
+  "notInstalled" | "damaged"` in `--json`; `setup --speakers`), `Package.swift` (docs/conventions.md §1.2
   wave 2).
-- Add `THIRD_PARTY_NOTICES.md` (post-processing.md §4.8).
+- Add `THIRD_PARTY_NOTICES.md` (docs/meeting/post-processing.md §4.8).
 - Tests: `Tests/HolosDiarizationTests/{ModelVerificationTests, SampleSourceTests, FluidDiarizerFixtureTests}.swift`.
 
-**API:** post-processing.md §4.8.
+**API:** docs/meeting/post-processing.md §4.8.
 
 **CLI.**
 
@@ -619,7 +619,7 @@ holos doctor [--json]         # adds "Speaker models: verified | not installed |
 `setup --speakers` prints progress to stderr and `Ready: speaker models (FluidAudio
 0.17.1, speaker-diarization-coreml@df2625ac79a7).` plus the credits line.
 `HOLOS_RECORD_MODEL_MANIFEST=1` prints the file manifest instead of verifying (the
-one-time pinning step, post-processing.md §4.8).
+one-time pinning step, docs/meeting/post-processing.md §4.8).
 
 **Tests.**
 
@@ -646,9 +646,9 @@ the implementer runs the fixture and reports its numbers.
 
 - Add `Sources/HolosAudio/TrackRenderer.swift` (with `RenderTimeMap`).
 - Add `Sources/HolosMeeting/PostProcessing/`: `SpeakerAnalysis.swift` (stages 2–6),
-  `SessionExports.swift` (exports.md §4.11), `SpeakerSessionSnapshot.swift`,
+  `SessionExports.swift` (docs/meeting/exports.md §4.11), `SpeakerSessionSnapshot.swift`,
   `SessionTimelineReader.swift`.
-- Change `Sources/HolosMeeting/MeetingPostProcessor.swift` (post-processing.md §4.7 stages).
+- Change `Sources/HolosMeeting/MeetingPostProcessor.swift` (docs/meeting/post-processing.md §4.7 stages).
 - Add `Sources/HolosCLI/SessionDiarize.swift`; change `Sources/HolosCLI/Session.swift`
   (add `Diarize.self`).
 - Tests: `Tests/HolosAudioTests/TrackRendererTests.swift`;
@@ -675,7 +675,7 @@ public struct RenderedTrack: Sendable, Equatable {
 }
 public enum RenderTimeMap {
     public static func sessionTime(_ renderTime: Double, map: [RenderSpan]) -> Double
-    /// Maps segments and windows to session time; splits anything crossing inserted silence (post-processing.md §4.7).
+    /// Maps segments and windows to session time; splits anything crossing inserted silence (docs/meeting/post-processing.md §4.7).
     public static func map(_ output: DiarizerOutput, map: [RenderSpan]) -> DiarizerOutput
 }
 public enum TrackRenderer {
@@ -692,7 +692,7 @@ public struct SpeakerSessionSnapshot: Sendable {
     public let session: URL
     public let manifest: SessionManifest
     public let meeting: MeetingInfo            // meeting.json or MeetingInfo.inferred
-    /// The head run's transcript when a run exists (session-format.md §2.4); otherwise the current transcript.
+    /// The head run's transcript when a run exists (docs/meeting/session-format.md §2.4); otherwise the current transcript.
     public let transcript: Transcript
     public let run: DiarizationRun?            // head run, nil when unusable
     public let journal: EditJournal
@@ -728,7 +728,7 @@ public enum SessionTimelineReader {
 holos session diarize <path> [--force] [--speakers N | --min-speakers N --max-speakers N]
                              [--others-in-room | --no-others-in-room] [--keep-derived]
                              [--after-recording] [--keep-transcript] [--json]
-                             # --keep-transcript: no language detection (languages.md §4.14), the review window's relabels
+                             # --keep-transcript: no language detection (docs/meeting/languages.md §4.14), the review window's relabels
                              # hidden: [--exclusive-segments true|false] [--voice-data]
                              #         [--lease-fd N]
 ```
@@ -738,7 +738,7 @@ holos session diarize <path> [--force] [--speakers N | --min-speakers N --max-sp
   Refuses to replace an edited head without `--force`. Exit 0, 3 (partial), or 1.
 - `--after-recording`: waits up to 30 s for the writer lock to be released, then takes
   the lease, unless `--lease-fd` is given.
-- `--lease-fd N` (hidden; in-process hand-off, recorder.md §4.1): adopts the inherited descriptor as
+- `--lease-fd N` (hidden; in-process hand-off, docs/meeting/recorder.md §4.1): adopts the inherited descriptor as
   the `ProcessingLease` instead of acquiring one. It validates that `fstat(N)` has the same
   device and inode as this session's lease file and that `flock(N, LOCK_EX | LOCK_NB)`
   succeeds (it does, idempotently, because the parent's lock belongs to the same open file
@@ -860,7 +860,7 @@ holos session score <path> --otter <transcript.txt> [--collar 0.25] [--json]    
 above and the calibration run; numbers recorded in `../speaker-evaluation.md` and the PR
 description (counts and metrics only): runtime, peak RSS (`/usr/bin/time -l`),
 agreement confusion per configuration, speaker counts, track offsets, and calibration
-percentiles. The `exclusiveSegments` default follows post-processing.md §4.8. Temporary sessions and audio
+percentiles. The `exclusiveSegments` default follows docs/meeting/post-processing.md §4.8. Temporary sessions and audio
 are deleted.
 
 **Does not touch.** HolosDiarization, `MeetingPostProcessor.swift`, HolosAudio,

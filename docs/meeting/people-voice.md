@@ -87,7 +87,7 @@ public struct SpeakerProfileDatabase: Codable, Sendable, Equatable {
   unchanged and otherwise starts again: enrollment and refresh publish only when the
   speaker generation is unchanged and the store still gives the same sample plan;
   recognition compares again and writes its result while holding the speaker lock and then
-  `profiles.lock` (`withLockedDatabase`, the ../conventions.md §1.7 order), so every store change (a
+  `profiles.lock` (`withLockedDatabase`, the docs/conventions.md §1.7 order), so every store change (a
   suggestion or Remember voices setting, a merge, a forget, a sample, a calibration) is
   either reflected in the result or made after it is written; a forget's per-meeting
   clean-up reads the people the same way. Nothing takes a speaker lock while holding
@@ -369,7 +369,7 @@ public struct SpeakerProfileDatabase: Codable, Sendable, Equatable {
   every sample change, and would take back a name the user has already seen and kept.
 - **Accepted races.** Two user-initiated Holos operations on the same data, started in
   different windows inside the same lock-free window, can interleave in ways Holos does not
-  coordinate. ../conventions.md §1.7 is not the reason: it excludes a hostile process running as the user,
+  coordinate. docs/conventions.md §1.7 is not the reason: it excludes a hostile process running as the user,
   and Holos does defend against its own concurrent processes elsewhere. These are listed
   once, deliberately, rather than answered with more coordination:
   - `holos session export --all` reads "Remember voices" before it takes the meeting's
@@ -531,7 +531,7 @@ public struct SpeakerProfileDatabase: Codable, Sendable, Equatable {
     is left alone) and refused under the speaker lock when the journal has an unreadable
     line. The merged speaker's turns are first marked `excludeFromEnrollment` in the same
     batch: nobody confirmed them, and a voice sample never comes from an automatic match.
-    Labelling the meeting again keeps that speech excluded (carry-over, speaker-labels.md §4.9).
+    Labelling the meeting again keeps that speech excluded (carry-over, docs/meeting/speaker-labels.md §4.9).
     A speaker whose name field has the keyboard (`speakerBeingNamed`, asked when the merges
     are worked out) is never merged, so the name being typed still has its speaker at
     Return.
@@ -627,7 +627,7 @@ public struct SpeakerProfileDatabase: Codable, Sendable, Equatable {
     `link`/`markSelf` when they enroll) reads the session's speaker generation under the
     speaker lock: `SessionSpeakerStore.generation(session:)` = head run ID plus the edit
     journal's byte length (PR10 adds this additive helper). It computes the sample outside
-    the lock, then takes the speaker lock, then `profiles.lock` (the ../conventions.md §1.7 order), re-reads
+    the lock, then takes the speaker lock, then `profiles.lock` (the docs/conventions.md §1.7 order), re-reads
     the generation, and upserts only if it is unchanged. Otherwise it releases both,
     rebuilds the projection, and retries (at most 3 times, then leaves the existing sample
     and logs). Samples are also stamped with the generation they were built from, so an
@@ -641,10 +641,10 @@ public struct SpeakerProfileDatabase: Codable, Sendable, Equatable {
     `setRemember(_:forgetExisting:)`, `profileNames()`, `knownPeople()`. Forgetting a
     person also regenerates the exports of sessions whose recognition file names them.
     Forget operations update the profile store first, release `profiles.lock`, then
-    rewrite each affected voice file under that session's speaker lock (../conventions.md §1.7 rule 2).
+    rewrite each affected voice file under that session's speaker lock (docs/conventions.md §1.7 rule 2).
 - **Export.** `holos people export` writes names and sample metadata; embeddings only
   with `--include-voiceprints`, which prints a warning to stderr (decision 2 includes
-  export). Session exports never contain vectors (exports.md §4.11).
+  export). Session exports never contain vectors (docs/meeting/exports.md §4.11).
 
 ### 5.9 PR10: People and voice profiles (wave 4)
 

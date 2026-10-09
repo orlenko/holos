@@ -231,9 +231,9 @@ entry point (`ReviewSession.submit(_:seen:)`), a lock-token type.
   old numbers) goes between `<!-- citations: <file>.md -->` and `<!-- /citations -->`: a bare `§N.M` there cites
   that file, and once that file is an index (`docs/meeting-design.md`), the file its table maps the number to.
   Elsewhere in docs, a `§N.M` with no file named before it names a heading of its own file; cite another file's
-  section by its path relative to the citing file (`../<file>.md §<N.M>`). `scripts/check-doc-citations.py` checks
-  all of this in under a second (`--self-test` runs its own cases). Run it before every PR that moves a section or
-  adds a citation.
+  section from the repository root (`docs/<file>.md §<N.M>`), as everywhere; only link destinations are relative.
+  `scripts/check-doc-citations.py` checks all of this in under a second (`--self-test` runs its own cases). Run it
+  before every PR that moves a section or adds a citation.
 - A PR that changes behaviour updates the cited section in the same PR.
 - Comments explain why and state rules; they do not narrate review rounds.
 
