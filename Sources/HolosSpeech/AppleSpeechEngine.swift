@@ -36,6 +36,12 @@ public enum AppleSpeechEngine {
                                   installedLocales: installed.map(\.identifier).sorted())
     }
 
+    /// The backend's supported locale closest to the user's preferred languages (`DictationLanguage.preferred`): the
+    /// dictation language Settings shows until the user picks one, and the language of a meeting that names none.
+    public static func defaultLocale(backend: SpeechBackend) async -> String {
+        DictationLanguage.preferredForSystem(supported: await capabilities(backend: backend).supportedLocales)
+    }
+
     public static func installAssets(locale: String, backend: SpeechBackend) async throws {
         let module = try await makeModule(locale: locale, backend: backend)
         if let request = try await AssetInventory.assetInstallationRequest(supporting: [module.module]) {
