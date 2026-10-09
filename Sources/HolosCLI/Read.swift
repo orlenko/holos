@@ -145,7 +145,7 @@ struct Read: AsyncParsableCommand {
         let script = ReadingScript(document: document)
         // A declared language that is not a usable tag ("english") is ignored, not trusted.
         let language = AudioBookMetadata.languageTag(document.language) ?? ReadingLanguage.detect(script.text)
-        // Natural voices read through the reading pipeline in a later change; `say` takes them already.
+        // `read` takes Apple's voices; natural voices are for `say`.
         let selected = try resolveVoice(request.voice, language: language, explainDefault: true, allowNatural: false)
         // The first title with readable text: `--title` (checked in `validate`), the document's,
         // then the file's name.
