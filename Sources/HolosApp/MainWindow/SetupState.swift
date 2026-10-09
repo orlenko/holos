@@ -79,6 +79,8 @@ struct SetupState {
     /// app's appearance (UserDefaults "appearance").
     var openWindowAtLaunch = true
     var appearance = AppearanceChoice.system
+    /// Settings › Reading › Natural voices: each pack's download.
+    var naturalVoices: [NaturalVoicePack: NaturalVoiceDownload] = [:]
 }
 
 enum SetupAction: Int, CaseIterable {
@@ -97,6 +99,8 @@ enum SetupAction: Int, CaseIterable {
     case toggleMeetingScreenCapture
     /// Settings › Meetings › Final transcript: download the model, and turn the pass after meetings on or off.
     case deepTranscriptionModel, toggleDeepTranscription
+    /// Settings › Reading › Natural voices: download (or cancel) a language pack.
+    case naturalVoicesEnglish, naturalVoicesFrench
     /// Settings › Meetings › Title and summarize meetings with Apple Intelligence.
     case toggleMeetingSummaries
     /// A permission row's System Settings… link (or its Open Settings once granted): only opens the page, while

@@ -1,22 +1,57 @@
 import AVFoundation
 import AppKit
 import HolosCore
+import HolosMeeting
 import HolosSynthesis
 
 /// ▶ Preview: speaks a short sample with a voice and speed; a second press stops it.
 @MainActor
-final class VoicePreview: NSObject, AVSpeechSynthesizerDelegate {
+final class VoicePreview: NSObject, AVSpeechSynthesizerDelegate, AVAudioPlayerDelegate {
     private var synthesizer: AVSpeechSynthesizer?
+    /// A natural voice's sample: made by the bundled tool (a few seconds), then played.
+    private var natural: Task<Void, Never>?
+    private var player: (any PreviewPlayback)?
+    /// Starts playing a made sample; throws when it does not start. Tests pass one that plays nothing.
+    var startPlayback: (URL, VoicePreview) throws -> any PreviewPlayback = { file, preview in
+        let player = try AVAudioPlayer(contentsOf: file)
+        player.delegate = preview
+        guard player.play() else { throw HolosError.io("The voice sample could not be played.") }
+        return player
+    }
+    /// Renders a natural voice's sample to a file (`renderedByHelper()` in the app).
+    var renderNatural: ((_ text: String, _ voice: String, _ rate: Float?, _ output: URL) async throws -> Void)?
+
+    /// Renders a sample through the bundled tool (`HelperNaturalRenderer`), one helper at a time with the readings'.
+    static func renderedByHelper() -> (_ text: String, _ voice: String, _ rate: Float?, _ output: URL) async throws
+        -> Void {
+        let natural = HelperNaturalRenderer(launcher: MaintenanceLauncher(executable: ChildProcessLauncher.bundledExecutable))
+        return { text, voice, rate, output in
+            _ = try await natural.render(text: text, voiceIdentifier: voice, rate: rate, to: output)
+        }
+    }
     /// Called when speaking starts or ends.
     var onChange: (() -> Void)?
+    /// A natural sample could not be made.
+    var onError: ((String) -> Void)?
 
-    var isSpeaking: Bool { synthesizer != nil }
+    /// The natural voice packs installed now, and the user's first language (what Automatic is previewed in).
+    var installedPacks: () -> Set<NaturalVoicePack> = { NaturalVoicesAppState.shared.installed }
+    var preferredLanguage: () -> String = { Locale.preferredLanguages.first ?? "en-US" }
 
-    /// Speaks the sample in `voiceIdentifier`'s language (nil: the best voice for the user's first language).
+    var isSpeaking: Bool { synthesizer != nil || natural != nil || player != nil }
+
+    /// Speaks the sample in `voiceIdentifier`'s language. Nil (Automatic): the voice Make Audio would read the user's
+    /// first language with (`ReadingVoices.automatic`): the natural voice once its pack is installed, else the best
+    /// Apple voice.
     func speak(voiceIdentifier: String?, speed: Double) {
         stop()
         let identifier = voiceIdentifier
-            ?? NativeSpeechRenderer.bestVoice(language: Locale.preferredLanguages.first ?? "en-US")?.id
+            ?? ReadingVoices.automatic(language: preferredLanguage(), installed: installedPacks(),
+                                       bestApple: NativeSpeechRenderer.bestVoice(language:))?.id
+        if let identifier, let voice = NaturalVoiceCatalog.voice(id: identifier) {
+            speakNatural(voice, speed: speed)
+            return
+        }
         let voice = identifier.flatMap(AVSpeechSynthesisVoice.init(identifier:))
         let utterance = AVSpeechUtterance(string: Self.sample(language: voice?.language ?? "en"))
         utterance.voice = voice
@@ -28,7 +63,57 @@ final class VoicePreview: NSObject, AVSpeechSynthesizerDelegate {
         onChange?()
     }
 
+    /// Makes the sample with the natural voice (into a temporary folder), then plays it.
+    private func speakNatural(_ voice: NaturalVoice, speed: Double) {
+        guard let renderNatural else { return }
+        let text = Self.sample(language: voice.pack.languageCode)
+        let rate = ReadingSpeed.rate(for: speed)
+        natural = Task { [weak self] in
+            let folder = FileManager.default.temporaryDirectory
+                .appendingPathComponent("holos-preview-\(UUID().uuidString)", isDirectory: true)
+            defer {
+                try? FileManager.default.removeItem(at: folder)
+                NaturalVoiceHelpers.done(folder)
+            }
+            do {
+                try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: false,
+                                                        attributes: [.posixPermissions: 0o700])
+                NaturalVoiceHelpers.using(folder)
+                let file = folder.appendingPathComponent("preview.caf")
+                try await renderNatural(text, voice.id, rate, file)
+                try Task.checkCancellation()
+                guard let self else { return }
+                // One that does not start playing is a failure (said under the card), never a Stop left showing.
+                let player = try self.startPlayback(file, self)
+                self.natural = nil
+                self.player = player
+            } catch {
+                guard let self, !Task.isCancelled else { return }
+                self.natural = nil
+                self.onError?((error as? LocalizedError)?.errorDescription ?? error.localizedDescription)
+                self.onChange?()
+            }
+        }
+        onChange?()
+    }
+
+    nonisolated func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) {
+        let finished = ObjectIdentifier(player)
+        Task { @MainActor in
+            guard let current = self.player, ObjectIdentifier(current as AnyObject) == finished else { return }
+            self.player = nil
+            self.onChange?()
+        }
+    }
+
     func stop() {
+        if natural != nil || player != nil {
+            natural?.cancel()
+            natural = nil
+            player?.stop()
+            player = nil
+            onChange?()
+        }
         guard let synthesizer else { return }
         self.synthesizer = nil
         // Kept until its didCancel (or didFinish) arrives: it is never freed while it may still call back.
@@ -72,3 +157,11 @@ final class VoicePreview: NSObject, AVSpeechSynthesizerDelegate {
         return samples[code] ?? samples["en"]!
     }
 }
+
+/// A natural voice sample playing (`AVAudioPlayer`).
+@MainActor protocol PreviewPlayback: AnyObject {
+    func stop()
+}
+
+extension AVAudioPlayer: PreviewPlayback {}
+

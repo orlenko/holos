@@ -204,7 +204,21 @@ Markdown, RTF, OpenDocument or text file anywhere on the section, or use **Choos
 for the text's language; Premium voices are marked), hear it with **▶ Preview** (press again
 to stop), set **Speed** (0.8×–1.4×), and press **Make Audio** (Return).
 
-Readings are made one at a time, in this process; the list shows each one's title and
+**Natural voices** sound much closer to a person reading than Apple's: Kyutai's Pocket TTS,
+running on this Mac. Download them in Settings › Reading (English about 530 MB, French about
+1.9 GB; the size is on the button, and Cancel stops a download, which resumes next time);
+Apple's voices keep working meanwhile and without them. Once a language is downloaded,
+Automatic reads English with **Alba** and French with **Estelle**, and the Voice menu lists
+"Natural — Alba (English)" and the other natural voices first. Each paragraph is heard back
+by Apple's on-device recognizer; one that comes out garbled is rendered again, and if it fails
+twice it is read by an Apple voice instead. From Terminal: `voiceislocal setup
+--natural-voices [--language fr]`, then `voiceislocal read <source> --voice pocket:en:alba`
+(without `--voice` the natural voice is the default once installed), and `voiceislocal voices
+list`. Only voices whose recordings allow commercial use are offered; credits are in About
+and THIRD_PARTY_NOTICES.md.
+
+Readings are made one at a time, Apple's voices in the app itself and natural voices in its
+bundled `voiceislocal` helper; the list shows each one's title and
 source, then "Rendering part N of M" with a progress bar and **Stop**, or, once made, its
 length, chapters, size and voice with **▶ Play** (Space; shows the position), **Share…**
 (⇧⌘S: AirDrop, Messages, Mail…), **Show in Finder**, and **Delete…** (⌫, asks first; the
@@ -217,7 +231,8 @@ while a reading is made asks: **Keep Rendering** quits and continues it at the n
 Files go to `~/Music/Voice is Local/Readings/<Title>.m4a` ("Title 2.m4a" when the name is
 taken), a folder Settings › Reading can change, along with the default voice and speed.
 It is not in Documents because iCloud Drive's "Desktop & Documents Folders" would upload
-it; nothing is uploaded, and the only network access is fetching the page you paste. The
+it; nothing is uploaded, and the only network access is fetching the page you paste and,
+when you choose Download in Settings › Reading, the natural voices (530 MB to 1.9 GB). The
 render cache stays in Application Support/Holos/Readings, as for `voiceislocal read`.
 
 **History** keeps each finished dictation that produced text: the text as written (or as
