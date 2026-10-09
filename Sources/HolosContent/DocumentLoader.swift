@@ -136,7 +136,7 @@ public enum DocumentText {
             throw HolosError.invalidInput(error.message)
         }
         defer { try? handle.close() }
-        let data = try handle.read(upToCount: maximumBytes + 1) ?? Data()
+        let data = try readUpTo(handle, maximumBytes + 1)
         guard data.count <= maximumBytes else {
             throw HolosError.invalidInput("\(url.path) is larger than \(maximumBytes / (1 << 20)) MB.")
         }
@@ -144,6 +144,22 @@ public enum DocumentText {
             throw HolosError.invalidInput("\(url.path) is empty or is not UTF-8 text.")
         }
         return text
+    }
+
+    /// Up to `limit` bytes of `handle`, read until its end or `limit`: one read may return fewer bytes than asked
+    /// before the end (a network volume).
+    static func readUpTo(_ handle: FileHandle, _ limit: Int) throws -> Data {
+        try readUpTo(limit) { try handle.read(upToCount: $0) }
+    }
+
+    /// `readUpTo` with the reads given: `read(n)` returns at most `n` bytes, nil or none at the end.
+    static func readUpTo(_ limit: Int, read: (Int) throws -> Data?) throws -> Data {
+        var data = Data()
+        while data.count < limit {
+            guard let chunk = try read(limit - data.count), !chunk.isEmpty else { break }
+            data.append(chunk.prefix(limit - data.count))
+        }
+        return data
     }
 
     /// `bytes` as code units of `width` bytes in the given byte order, decoded with `codec`; nil for a leftover byte or

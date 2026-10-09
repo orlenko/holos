@@ -113,6 +113,37 @@ import Testing
     }
 }
 
+@Suite struct ShortReadTests {
+    @Test func readingGoesOnUntilTheLimitWhenAReadReturnsLess() throws {
+        // A pipe hands out at most its buffer (16–64 KB) per read, as a network volume may return less than asked.
+        let pipe = Pipe()
+        let size = 150_001
+        let bytes = Data((0..<size).map { UInt8($0 % 251) })
+        let writer = pipe.fileHandleForWriting
+        DispatchQueue.global().async {
+            try? writer.write(contentsOf: bytes)
+            try? writer.close()
+        }
+        let reader = pipe.fileHandleForReading
+        #expect(try DocumentText.readUpTo(reader, size + 1) == bytes)
+    }
+
+    @Test func readsThatReturnLessAreRepeatedUntilTheEndOrTheLimit() throws {
+        let bytes = Data((0..<1_000).map { UInt8($0 % 251) })
+        // A file system that hands out 64 bytes per read.
+        func reads() -> (Int) -> Data? {
+            var offset = 0
+            return { wanted in
+                let count = min(64, wanted, bytes.count - offset)
+                defer { offset += count }
+                return count > 0 ? bytes.subdata(in: offset..<(offset + count)) : nil
+            }
+        }
+        #expect(try DocumentText.readUpTo(1_001, read: reads()) == bytes)
+        #expect(try DocumentText.readUpTo(500, read: reads()) == bytes.prefix(500))
+    }
+}
+
 @Suite struct TextFileReadingTests {
     @Test func onlyARegularFileIsReadAndOnlyUpToTheLimit() throws {
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent("holos-textfile-\(UUID().uuidString)")
