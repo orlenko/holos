@@ -72,6 +72,9 @@ public struct ReadingManifest: Codable, Sendable, Equatable {
     /// The finished file's size, saved with its checksum: a copy that a crash cut off is smaller; a file with the
     /// copy's identity that is as large is the finished file edited in place since, never removed as a partial one.
     public var outputSize: Int64? = nil
+    /// The natural voices' model commit the parts were rendered with (`NaturalVoiceModels.revision`); nil for an Apple
+    /// voice. A reading is resumed only with the same one, so no file mixes parts of two versions of the voices.
+    public var modelRevision: String? = nil
 
     /// Manifests are small (under 1 KB per part); a larger `manifest.json` is not read.
     static let maximumBytes = 64 << 20
@@ -92,6 +95,7 @@ public struct ReadingManifest: Codable, Sendable, Equatable {
     func sameSettings(voiceIdentifier: String, rate: Float?, metadata: AudioBookMetadata, output: URL,
                       volume: ReadingPathIdentity.VolumeQuery = ReadingPathIdentity.volumeRules) -> Bool {
         self.voiceIdentifier == voiceIdentifier && self.rate == rate
+            && modelRevision == ReadingPipeline.modelRevision(for: voiceIdentifier)
             && title == metadata.title && author == metadata.author && language == metadata.language
             && comment == metadata.comment && format == .current
             // Compared byte for byte: Swift's `==` takes NFC and NFD spellings for one string.
@@ -137,6 +141,33 @@ extension ReadingAudioRenderer {
 }
 
 extension NativeSpeechRenderer: ReadingAudioRenderer {}
+extension NaturalSpeechRenderer: ReadingAudioRenderer {}
+
+/// Reads with a natural voice ("pocket:…", see `NaturalVoiceCatalog`) through `natural`, and with any other voice
+/// through `system` (Apple's voices).
+@MainActor public final class RoutingSpeechRenderer: ReadingAudioRenderer {
+    private let system: any ReadingAudioRenderer
+    private let natural: any ReadingAudioRenderer
+
+    public init(system: any ReadingAudioRenderer = NativeSpeechRenderer(), natural: any ReadingAudioRenderer) {
+        self.system = system
+        self.natural = natural
+    }
+
+    private func renderer(for identifier: String?) -> any ReadingAudioRenderer {
+        identifier.map(NaturalVoiceCatalog.isNatural) == true ? natural : system
+    }
+
+    public func render(text: String, voiceIdentifier: String?, rate: Float?, to output: URL)
+        async throws -> RenderedAudio {
+        try await renderer(for: voiceIdentifier).render(text: text, voiceIdentifier: voiceIdentifier, rate: rate,
+                                                        to: output)
+    }
+
+    public func checkVoice(_ identifier: String) throws {
+        try renderer(for: identifier).checkVoice(identifier)
+    }
+}
 
 @MainActor public protocol ReadingAudioJoiner {
     func join(parts: [AudioBookPart], metadata: AudioBookMetadata, to output: URL) async throws -> AudioBookSummary
@@ -203,10 +234,15 @@ public struct AudioBookJoiner: ReadingAudioJoiner {
         let comment: String
         let format: ReadingFormatSettings
         let segments: [Segment]
+        /// The natural voices' model commit; nil (and left out of the encoding, so the key of a reading with an Apple
+        /// voice is what it always was) for an Apple voice.
+        var modelRevision: String? = nil
 
-        // Nil values are written as null rather than left out, so each field is always present.
+        // Nil values are written as null rather than left out, so each field is always present (but the model
+        // revision, written only for a natural voice).
         enum CodingKeys: String, CodingKey {
             case kind, schemaVersion, voiceIdentifier, rate, title, author, language, comment, format, segments
+            case modelRevision
         }
 
         func encode(to encoder: any Encoder) throws {
@@ -221,7 +257,14 @@ public struct AudioBookJoiner: ReadingAudioJoiner {
             try container.encode(comment, forKey: .comment)
             try container.encode(format, forKey: .format)
             try container.encode(segments, forKey: .segments)
+            if let modelRevision { try container.encode(modelRevision, forKey: .modelRevision) }
         }
+    }
+
+    /// The model commit a reading with `voiceIdentifier` is rendered with: `NaturalVoiceModels.revision` for a natural
+    /// voice, nil for an Apple voice.
+    nonisolated public static func modelRevision(for voiceIdentifier: String) -> String? {
+        NaturalVoiceCatalog.isNatural(voiceIdentifier) ? NaturalVoiceModels.revision : nil
     }
 
     /// The cache key for a reading with an explicit output: the text and every setting that
@@ -235,7 +278,8 @@ public struct AudioBookJoiner: ReadingAudioJoiner {
             kind: ReadingManifest.readingKind, schemaVersion: ReadingManifest.currentSchemaVersion,
             voiceIdentifier: voiceIdentifier, rate: rate.map { "\($0)" }, title: metadata.title, author: metadata.author,
             language: metadata.language, comment: metadata.comment, format: .current,
-            segments: script.segments.map { Identity.Segment(chapter: $0.chapter, text: $0.text) })
+            segments: script.segments.map { Identity.Segment(chapter: $0.chapter, text: $0.text) },
+            modelRevision: modelRevision(for: voiceIdentifier))
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
         // Only strings, integers, and the format's finite constants are encoded: this cannot fail.
@@ -556,6 +600,12 @@ public struct AudioBookJoiner: ReadingAudioJoiner {
             let savedSource = try? fileSHA256(sourceURL)
             // A Stop during the check is a stop, never "the source differs".
             if Task.isCancelled { throw CancellationError() }
+            if manifest.voiceIdentifier == voiceIdentifier,
+               manifest.modelRevision != modelRevision(for: voiceIdentifier) {
+                throw HolosError.invalidInput("This reading was started with another version of the natural voices "
+                    + "(\(manifest.modelRevision ?? "unknown")); its parts cannot be joined with ones the current voices "
+                    + "make. Delete it and make it again.")
+            }
             guard manifest.sourceSHA256 == sourceHash,
                   manifest.sameSettings(voiceIdentifier: voiceIdentifier, rate: rate, metadata: metadata, output: output),
                   savedSource == sourceHash else {
@@ -584,7 +634,8 @@ public struct AudioBookJoiner: ReadingAudioJoiner {
                                        title: metadata.title, author: metadata.author, language: metadata.language,
                                        comment: metadata.comment, format: .current, output: output.path,
                                        outputSHA256: nil, duration: nil, chapters: [],
-                                       status: "incomplete", parts: expected)
+                                       status: "incomplete", parts: expected,
+                                       modelRevision: modelRevision(for: voiceIdentifier))
             try ReadingCache.create(directory, source: Data(text.utf8), manifest: manifest, fault: fault)
             if reservation == nil { reservation = try ReadingOutputReservation.acquire(output: output) }
         }

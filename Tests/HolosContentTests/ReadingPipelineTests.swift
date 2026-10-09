@@ -2177,3 +2177,92 @@ import Testing
         #expect(try manifest(place).outputSHA256 != nil)
     }
 }
+
+extension ReadingPipelineTests {
+    /// A reading with a natural voice is keyed by, and resumed only with, the natural voices' model commit; an Apple
+    /// voice's key is unchanged (no model commit in it).
+    @Test func aNaturalReadingIsTiedToItsModelCommit() async throws {
+        #expect(ReadingPipeline.modelRevision(for: "pocket:en:alba") == NaturalVoiceModels.revision)
+        #expect(ReadingPipeline.modelRevision(for: voice) == nil)
+        func json(_ revision: String?) throws -> String {
+            let identity = ReadingPipeline.Identity(
+                kind: ReadingManifest.readingKind, schemaVersion: ReadingManifest.currentSchemaVersion,
+                voiceIdentifier: voice, rate: nil, title: "Book", author: nil, language: nil, comment: "c",
+                format: .current, segments: [], modelRevision: revision)
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.sortedKeys]
+            return String(decoding: try encoder.encode(identity), as: UTF8.self)
+        }
+        #expect(try !json(nil).contains("modelRevision"))
+        #expect(try json("abc").contains("\"modelRevision\":\"abc\""))
+
+        let parent = try root()
+        defer { try? FileManager.default.removeItem(at: parent) }
+        let place = location(parent)
+        let natural = "pocket:en:alba"
+        let renderer = FakeRenderer()
+        renderer.failOnCall = 2
+        await #expect(throws: HolosError.self) {
+            _ = try await ReadingPipeline(renderer: renderer, joiner: FakeJoiner())
+                .render(script: script(3), voiceIdentifier: natural, metadata: metadata, location: place)
+        }
+        let manifestURL = place.workDirectory.appendingPathComponent(ReadingManifest.fileName)
+        var manifest = try JSONDecoder().decode(ReadingManifest.self, from: Data(contentsOf: manifestURL))
+        #expect(manifest.modelRevision == NaturalVoiceModels.revision)
+        // The voices were updated since: the reading is refused, saying why, rather than joined from two versions.
+        manifest.modelRevision = "0000000000000000000000000000000000000000"
+        try JSONEncoder().encode(manifest).write(to: manifestURL)
+        renderer.failOnCall = nil
+        let error = await #expect(throws: HolosError.self) {
+            _ = try await ReadingPipeline(renderer: renderer, joiner: FakeJoiner())
+                .render(script: script(3), voiceIdentifier: natural, metadata: metadata, location: place, resume: true)
+        }
+        #expect(error?.localizedDescription.contains("another version of the natural voices") == true)
+        // With the commit it was made with, it resumes.
+        manifest.modelRevision = NaturalVoiceModels.revision
+        try JSONEncoder().encode(manifest).write(to: manifestURL)
+        let resumed = try await ReadingPipeline(renderer: renderer, joiner: FakeJoiner())
+            .render(script: script(3), voiceIdentifier: natural, metadata: metadata, location: place, resume: true)
+        #expect(resumed.manifest.status == "complete")
+    }
+}
+
+extension ReadingPipelineTests {
+    /// The app's Resume reopens a reading's saved cache (`ReadingLibrary.savedLocation`) instead of the one its
+    /// settings name now: after the natural voices' commit changed, it is refused with the reason, and no new cache is
+    /// started beside it.
+    @Test func resumeReopensTheSavedCacheAndRefusesAnotherCommit() async throws {
+        let parent = try root()
+        defer { try? FileManager.default.removeItem(at: parent) }
+        let place = location(parent)
+        #expect(try ReadingLibrary.savedLocation(cache: place.workDirectory.path, output: place.output.path) == nil)
+        #expect(try ReadingLibrary.savedLocation(cache: nil, output: place.output.path) == nil)
+        let natural = "pocket:en:alba"
+        let renderer = FakeRenderer()
+        renderer.failOnCall = 2
+        await #expect(throws: HolosError.self) {
+            _ = try await ReadingPipeline(renderer: renderer, joiner: FakeJoiner())
+                .render(script: script(3), voiceIdentifier: natural, metadata: metadata, location: place)
+        }
+        let manifestURL = place.workDirectory.appendingPathComponent(ReadingManifest.fileName)
+        var manifest = try JSONDecoder().decode(ReadingManifest.self, from: Data(contentsOf: manifestURL))
+        manifest.modelRevision = "0000000000000000000000000000000000000000"
+        try JSONEncoder().encode(manifest).write(to: manifestURL)
+        let before = try FileManager.default.contentsOfDirectory(atPath: parent.path).sorted()
+
+        let saved = try #require(try ReadingLibrary.savedLocation(cache: place.workDirectory.path,
+                                                                  output: place.output.path))
+        #expect(saved.workDirectory.standardizedFileURL == place.workDirectory.standardizedFileURL)
+        #expect(saved.output.standardizedFileURL == place.output.standardizedFileURL)
+        renderer.failOnCall = nil
+        let error = await #expect(throws: HolosError.self) {
+            _ = try await ReadingPipeline(renderer: renderer, joiner: FakeJoiner())
+                .render(script: script(3), voiceIdentifier: natural, metadata: metadata, location: saved, resume: true)
+        }
+        #expect(error?.localizedDescription.contains("another version of the natural voices") == true)
+        // Nothing new beside it: the old parts stay in the reading's own cache, which Delete removes.
+        #expect(try FileManager.default.contentsOfDirectory(atPath: parent.path).sorted() == before)
+        #expect(FileManager.default.fileExists(atPath: place.workDirectory.appendingPathComponent("parts").path))
+    }
+}
+
