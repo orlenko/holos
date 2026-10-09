@@ -760,35 +760,27 @@ public enum WordFixStage {
     /// locks held publishes nothing.
     private static func publish(_ fixed: Transcript, details: [String: String], request: Request) async throws
         -> Publication {
-        return try await SessionArchive.withMaintenanceArchive(at: request.session, lease: request.lease) { archive in
-            try await SessionArchive.withSpeakerLockAsync(at: request.session) {
-                () async throws -> Publication in
-                let head = try SpeakerAnalysis.headState(session: request.session, transcript: request.transcript)
-                let edited = head?.needsForce(false) == true
-                if edited, !request.requested { return Publication(problem: editedHead) }
-                var plan: SpeakerTranscriptRetarget.Plan?
-                if request.requested, !request.force, head?.usableRunID != nil {
-                    let snapshot = try SpeakerSessionSnapshot.load(session: request.session)
-                    plan = try SpeakerTranscriptRetarget.plan(session: request.session, from: snapshot, to: fixed)
-                    if edited, plan == nil {
-                        return Publication(problem: "The speaker labels could not be kept, so the transcript was not changed.")
-                    }
+        try await TranscriptPublisher.publish(session: request.session, lease: request.lease) {
+            () throws -> TranscriptPublisher.Decision<Publication> in
+            let head = try SpeakerAnalysis.headState(session: request.session, transcript: request.transcript)
+            let edited = head?.needsForce(false) == true
+            if edited, !request.requested { return .keep(Publication(problem: editedHead)) }
+            var plan: SpeakerTranscriptRetarget.Plan?
+            if request.requested, !request.force, head?.usableRunID != nil {
+                let snapshot = try SpeakerSessionSnapshot.load(session: request.session)
+                plan = try SpeakerTranscriptRetarget.plan(session: request.session, from: snapshot, to: fixed)
+                if edited, plan == nil {
+                    return .keep(Publication(problem: "The speaker labels could not be kept, so the transcript was not changed."))
                 }
-                whilePublishing?()
-                try Task.checkCancellation()
-                if let plan { try SpeakerTranscriptRetarget.stage(plan, session: request.session) }
-                try await archive.recordEvent(kind: MeetingEventKind.wordsFixed, details: details)
-                try await archive.saveTranscript(fixed, writeLegacyExports: false)
-                if let plan {
-                    do {
-                        try SpeakerTranscriptRetarget.publishHead(plan, session: request.session)
-                    } catch {
-                        throw IncompletePublication(message: "The fixed transcript was saved, but the speaker head "
-                                                    + "could not be published: \(error.localizedDescription)")
-                    }
-                }
-                return Publication(problem: nil, labelsPreserved: plan != nil)
             }
+            whilePublishing?()
+            let change = TranscriptPublisher.Change(
+                transcript: fixed, event: .init(kind: MeetingEventKind.wordsFixed, details: details), retarget: plan,
+                headFailed: { error in
+                    IncompletePublication(message: "The fixed transcript was saved, but the speaker head could not be "
+                                          + "published: \(error.localizedDescription)")
+                })
+            return .publish(change, Publication(problem: nil, labelsPreserved: plan != nil))
         }
     }
 
@@ -799,29 +791,25 @@ public enum WordFixStage {
     private static func repairPreservedHeadIfNeeded(_ transcript: Transcript, request: Request) async throws -> Bool {
         let initial = try SpeakerAnalysis.headState(session: request.session, transcript: transcript)
         guard let initial, !initial.sameTranscript, initial.run != nil else { return false }
-        return try await SessionArchive.withMaintenanceArchive(at: request.session, lease: request.lease) { _ in
-            try await SessionArchive.withSpeakerLockAsync(at: request.session) { () async throws -> Bool in
-                guard try SessionFiles.currentTranscript(session: request.session)?.id == transcript.id else {
-                    throw HolosError.invalidInput("The transcript changed while its speaker labels were being repaired.")
-                }
-                guard let head = try SpeakerAnalysis.headState(session: request.session, transcript: transcript),
-                      head.runID == initial.runID else {
-                    throw HolosError.invalidInput("The speaker labels changed while they were being repaired.")
-                }
-                if head.sameTranscript { return false }
-                let snapshot = try SpeakerSessionSnapshot.load(session: request.session)
-                guard let plan = try SpeakerTranscriptRetarget.plan(session: request.session, from: snapshot,
-                                                                   to: transcript) else {
-                    if head.hasEdits {
-                        throw HolosError.invalidInput("The edited speaker labels cannot be mapped to the fixed words.")
-                    }
-                    return false
-                }
-                try Task.checkCancellation()
-                try SpeakerTranscriptRetarget.stage(plan, session: request.session)
-                try SpeakerTranscriptRetarget.publishHead(plan, session: request.session)
-                return true
+        return try await TranscriptPublisher.publish(session: request.session, lease: request.lease) {
+            () throws -> TranscriptPublisher.Decision<Bool> in
+            guard try SessionFiles.currentTranscript(session: request.session)?.id == transcript.id else {
+                throw HolosError.invalidInput("The transcript changed while its speaker labels were being repaired.")
             }
+            guard let head = try SpeakerAnalysis.headState(session: request.session, transcript: transcript),
+                  head.runID == initial.runID else {
+                throw HolosError.invalidInput("The speaker labels changed while they were being repaired.")
+            }
+            if head.sameTranscript { return .keep(false) }
+            let snapshot = try SpeakerSessionSnapshot.load(session: request.session)
+            guard let plan = try SpeakerTranscriptRetarget.plan(session: request.session, from: snapshot,
+                                                               to: transcript) else {
+                if head.hasEdits {
+                    throw HolosError.invalidInput("The edited speaker labels cannot be mapped to the fixed words.")
+                }
+                return .keep(false)
+            }
+            return .repairHead(plan, now: nil, true)
         }
     }
 

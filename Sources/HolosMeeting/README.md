@@ -16,8 +16,9 @@ recorder ↔ app protocol.
   `CommandResult`; `CommandHandle` stops it with SIGTERM until it is reaped. `DoctorReport` is what `doctor --json`
   prints and the app reads; the `Session*Command.Outcome` types play the same role for the session commands.
 - `PostProcessing/`: `MeetingPostProcessor` and its stages (render, echo, diarize, align, recognize, export), the
-  language, word-fix, live-hint and deep-transcription stages, `SessionExports`, `SpeakerSessionSnapshot`, and the
-  library side of the `voiceislocal session …` commands (`Session*Command`).
+  language, word-fix, live-hint and deep-transcription stages, `TranscriptPublisher` (the one path that makes a new
+  transcript current, used by those stages and Review's word edits), `SessionExports`, `SpeakerSessionSnapshot`, and
+  the library side of the `voiceislocal session …` commands (`Session*Command`).
 - `Review/`: `ReviewSession` (`@MainActor`), playback, learning, paragraphs, maintenance.
 - `Summary/`: titles and summaries (`MeetingSummarizer`, `SessionSummarizeCommand`, `SessionRenameCommand`).
 - People and sessions: `VoiceProfileService`, `SpeakerEditor`, `SessionCatalog`, `SessionLocator`,

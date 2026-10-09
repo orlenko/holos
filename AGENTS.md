@@ -165,14 +165,15 @@ Exist today:
   `DoctorReport`, `PostProcessingRecord`, `SessionSummarizeCommand.Outcome`, `SessionEchoAnalyzeCommand.Outcome`,
   `SessionRenameCommand.Outcome`. Long-running installs whose progress is read while they run (`setup --speakers`,
   `setup --whisper`) go through `MaintenanceLauncher` directly.
+- Making a new transcript current, or carrying the speaker head over to it: `TranscriptPublisher.publish`
+  (HolosMeeting; the checks run under the writer and speaker locks, then one write order and its repair).
 - Exports: `SessionExports.regenerate(session:people:)`. Reading files: `ExclusivePublisher.publish`.
 - Logging: `Logger(subsystem: "ca.orlenko.holos.app", category: …)`; categories and privacy rules in
   `docs/meeting-design.md §1.5`.
 
 Planned, see the [architecture roadmap](docs/architecture-roadmap.md) (`docs/architecture-roadmap.md §3` and
 `docs/architecture-roadmap.md §6`; none of these exist yet, so do not reference them as if they did):
-`TranscriptPublisher` (one publish path for transcripts), `SessionGeneration`
-(derived-data stamps), `Drainable` (pending work at close and quit), `ReviewRevision` (revision-stamped Review
+`SessionGeneration` (derived-data stamps), `Drainable` (pending work at close and quit), `ReviewRevision` (revision-stamped Review
 commands), a lock-token type.
 
 ## Tests
