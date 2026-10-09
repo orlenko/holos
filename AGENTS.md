@@ -58,7 +58,7 @@ Known exceptions today (not precedents; do not add to them):
   JSON that `session recover`, `diarize` and `delete` print (and `rename`, besides its typed outcome) as
   `[String: Any]` with `JSONSerialization`. The other outputs the app reads (`doctor`, `deep-transcribe`,
   `summarize`, `echo-analyze`) are decoded into their library types through `CommandRunner`.
-- `HolosCLI/Speakers.swift` and `Eval.swift` hold more than parsing and printing.
+- `HolosCLI/Eval.swift` holds more than parsing and printing.
 - `WebArticleExtractor` embeds several hundred lines of JavaScript in Swift strings (over the 50-line cap below).
 
 ## Where new code goes

@@ -25,7 +25,9 @@ recorder ↔ app protocol.
   the library side of the `voiceislocal session …` commands (`Session*Command`).
 - `Review/`: `ReviewSession` (`@MainActor`), playback, learning, paragraphs, maintenance.
 - `Summary/`: titles and summaries (`MeetingSummarizer`, `SessionSummarizeCommand`, `SessionRenameCommand`).
-- People and sessions: `VoiceProfileService`, `SpeakerEditor`, `SessionCatalog`, `SessionLocator`,
+- People and sessions: `VoiceProfileService`, `SpeakerEditor`, `SpeakerEditCommand` (the library side of the
+  `voiceislocal speakers` edits: one change on a `LoadedSpeakers` view, then the exports rewritten and the voice
+  samples from the meeting brought in step), `SessionCatalog`, `SessionLocator`,
   `SessionImporter`, `SessionRecoveryCommand`, `DeepTranscriptionQueue`, `EchoCatchUp`.
 
 **Must not own:** AppKit or windows, FluidAudio or WhisperKit (diarization and deep transcription run in a

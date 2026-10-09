@@ -15,7 +15,7 @@
 1191 Sources/HolosApp/Review/TurnListView.swift
 737 Sources/HolosAudio/MeetingScreenCapture.swift
 692 Sources/HolosAudio/TrackRenderer.swift
-1004 Sources/HolosCLI/Speakers.swift
+649 Sources/HolosCLI/Speakers.swift
 1753 Sources/HolosContent/DocumentLoader.swift
 1269 Sources/HolosContent/ReadingLibrary.swift
 611 Sources/HolosContent/ReadingOutput.swift
