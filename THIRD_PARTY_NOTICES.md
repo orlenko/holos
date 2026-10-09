@@ -1,9 +1,10 @@
 # Third-party notices
 
 The `voiceislocal` command-line tool includes FluidAudio, Mozilla Readability, and WhisperKit; `voiceislocal setup
---speakers` downloads the speaker diarization models it runs, and `voiceislocal setup --whisper` the Whisper model of
-deep transcription. Their licenses and credits follow. The Voice is Local app does not link FluidAudio or WhisperKit
-or include the models; it runs speaker labelling and deep transcription through the `voiceislocal` tool.
+--speakers` downloads the speaker diarization models it runs, `voiceislocal setup --whisper` the Whisper model of
+deep transcription, and `voiceislocal setup --natural-voices` the Pocket TTS voices of Reading. Their licenses and
+credits follow. The Voice is Local app does not link FluidAudio or WhisperKit or include the models; it runs speaker
+labelling, deep transcription, and natural voices through the `voiceislocal` tool.
 
 ## 1. FluidAudio 0.17.1
 
@@ -981,3 +982,29 @@ and not included in the app.
 
 Citation: Alec Radford, Jong Wook Kim, Tao Xu, Greg Brockman, Christine McLeavey, and Ilya Sutskever. "Robust Speech
 Recognition via Large-Scale Weak Supervision." ICML 2023.
+
+## 6. Pocket TTS (natural Reading voices)
+
+Natural voices use Kyutai's Pocket TTS (https://huggingface.co/kyutai/pocket-tts, Copyright Kyutai), licensed under
+the Creative Commons Attribution 4.0 International License (CC BY 4.0, https://creativecommons.org/licenses/by/4.0/),
+in Fluid Inference's Core ML conversion from https://huggingface.co/FluidInference/pocket-tts-coreml (CC BY 4.0,
+"Attribution to Kyutai is required"; revision 91748676fe3c8b2eb3007b3125253bcd898202c3 on 2026-10-08), run with
+FluidAudio 0.17.1. The English (`v2.1/english`) and French (`v2.1/french_24l`) packs are downloaded by
+`voiceislocal setup --natural-voices` and not included in the app. The models were converted to Core ML; no other
+change was made to them. Voices that the app does not offer are deleted from the downloaded packs.
+
+Each voice is a prompt Kyutai made from a recording; the recordings' licences are those given at
+https://huggingface.co/kyutai/tts-voices (read 2026-10-08), and the voice-to-recording mapping is the one on the
+Pocket TTS model card. Voices whose recording is licensed for non-commercial use only (`cosette`, from Expresso,
+and `jean`, from EARS, both CC BY-NC 4.0) are not offered. The voices offered:
+
+- Alba: `alba-mackenna/casual.wav`, voice acted by Alba MacKenna, CC BY 4.0.
+- Anna, Azelma, Charles, Eponine, Eve, Fantine, George, Jane, Mary, Michael, Paul, Vera: recordings of the VCTK
+  corpus (CSTR, The University of Edinburgh; https://datashare.ed.ac.uk/handle/10283/3443), enhanced by Kyutai,
+  CC BY 4.0.
+- Bill Boerst, Caro Davy, Peter Yearsley, Stuart Bell: `voice-zero`, CC0.
+- Javert, Marius: `voice-donations`, CC0.
+- Estelle (French): Kyutai's own recording (`unmute-prod-website/developpeuse-3.wav`), CC0.
+
+Kyutai's terms of use for Pocket TTS forbid voice impersonation or cloning without explicit and lawful consent, and
+presenting generated content as genuine recordings of real people or events; Voice is Local clones no voice.

@@ -28,7 +28,7 @@ lists Holos targets, then notable system or package frameworks.
 | [HolosCore](Sources/HolosCore/README.md) | Shared value types, `HolosJSON`, `HolosError`, `HolosPaths`, text processing (fixer, spoken code, seams, fillers, word list) | File I/O, locks, UI, engines | (none); Foundation, NaturalLanguage |
 | [HolosStorage](Sources/HolosStorage/README.md) | Every path and lock inside a `<id>.holos` folder, `AtomicFile`, `SessionArchive`, the speaker, profile, history, word-list and screen-context stores, deletion | Transcript interpretation, capture, UI | Core |
 | [HolosSpeech](Sources/HolosSpeech/README.md) | Apple `SpeechTranscriber`/`DictationTranscriber` adapter | Recording lifetime, session files, focus | Core; Speech, AVFoundation |
-| [HolosSynthesis](Sources/HolosSynthesis/README.md) | Voice inventory and selection, rendering, playback, audiobook writing, `ExclusivePublisher` | Document loading, meetings | Core; AVFoundation |
+| [HolosSynthesis](Sources/HolosSynthesis/README.md) | Voice inventory and selection, rendering, playback, audiobook writing, `ExclusivePublisher`, the natural voice catalog and pack install (`NaturalVoiceModels`) | Document loading, meetings, FluidAudio | Core; AVFoundation, CryptoKit |
 | [HolosContent](Sources/HolosContent/README.md) | Document and web extraction, the reading pipeline, the reading library and its files | Speech recognition, meetings | Core, Synthesis; AppKit, PDFKit, WebKit |
 | [HolosAudio](Sources/HolosAudio/README.md) | Microphone/system capture, chunk writing, track rendering, screen capture, power | Transcripts, speaker names, UI | Core, Storage; AVFoundation, CoreAudio, ScreenCaptureKit, IOKit |
 | [HolosDesktop](Sources/HolosDesktop/README.md) | Global hotkey, text insertion into other apps | Dictation logic, storage | Core; AppKit, ApplicationServices, Carbon |
@@ -37,8 +37,9 @@ lists Holos targets, then notable system or package frameworks.
 | [HolosMeeting](Sources/HolosMeeting/README.md) | Recorder workflow and state machine, `MeetingController`, post-processing, `ReviewSession`, summaries, people and voice profiles, import, catalog | AppKit, FluidAudio, WhisperKit, evaluation code, new path literals inside a session (existing ones: see below) | Core, Storage, Audio, Speech, Speakers; AVFoundation, Vision, NaturalLanguage |
 | [HolosDiarization](Sources/HolosDiarization/README.md) | The FluidAudio diarizer adapter and model install/verification | Being linked by the app | Core; FluidAudio |
 | [HolosWhisper](Sources/HolosWhisper/README.md) | WhisperKit deep transcription and model install | Being linked by the app | Core; WhisperKit, CoreML |
+| [HolosPocket](Sources/HolosPocket/README.md) | The Pocket TTS natural-voice backend (FluidAudio) and its pinned download and check | Being linked by the app; which voices are offered | Core, Synthesis; FluidAudio |
 | [HolosEvaluation](Sources/HolosEvaluation/README.md) | The reference evaluation behind `voiceislocal eval`: cloud and local runs, scoring, review | Being linked by the app; anything the recording path needs | Core, Storage, Audio, Speakers, Meeting; AVFoundation, CryptoKit |
-| [HolosApp](Sources/HolosApp/README.md) | AppKit views, windows, menus, wiring of controllers | Business logic, session-file layout, decoding CLI output by hand | All libraries except Diarization, Whisper and Evaluation |
+| [HolosApp](Sources/HolosApp/README.md) | AppKit views, windows, menus, wiring of controllers | Business logic, session-file layout, decoding CLI output by hand | All libraries except Diarization, Whisper, Pocket and Evaluation |
 | [HolosCLI](Sources/HolosCLI/README.md) | Argument parsing and printing over library `*Command` types | A second copy of workflow logic | All libraries except Desktop; ArgumentParser |
 
 Two library targets live under `Tests/` and only test targets depend on them: `HolosTestSupport` (HolosCore only)
@@ -70,8 +71,8 @@ Known exceptions today (not precedents; do not add to them):
   can drive it. `HolosApp` gets the view and the wiring only.
 - A CLI command: the logic as a `*Command` type (with `Request`/`Outcome`) in the library; `HolosCLI` parses and
   prints.
-- Anything that needs FluidAudio or WhisperKit: `HolosDiarization`/`HolosWhisper`, reached by the app only through
-  a `voiceislocal` child process.
+- Anything that needs FluidAudio or WhisperKit: `HolosDiarization`/`HolosWhisper`/`HolosPocket`, reached by the app
+  only through a `voiceislocal` child process.
 - Evaluation and cloud comparison code: `HolosEvaluation` (of the products, only `HolosCLI` links it). App-only
   models stay in `HolosApp` (no `HolosAppModel` target yet; planned in `docs/architecture-roadmap.md §6`).
 

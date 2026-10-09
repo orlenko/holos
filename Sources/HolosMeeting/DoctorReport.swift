@@ -23,17 +23,20 @@ public struct DoctorReport: Codable, Sendable {
     public var speakerModels: String
     /// "installed", "downloading", or "notInstalled" (docs/meeting-design.md §4.16).
     public var deepTranscriptionModel: DeepModelStatus
+    /// Each natural voice pack ("english", "french"): "installed", "downloading", or "notInstalled".
+    public var naturalVoices: [String: DeepModelStatus]?
 
     public init(os: String, microphone: String, systemAudioPermission: Bool, accessibilityPermission: Bool,
                 foundationModel: String, contextSize: Int?, voiceCount: Int, speech: SpeechCapabilities,
                 dictation: SpeechCapabilities, locale: String, speechAssetStatus: String,
                 dictationAssetStatus: String, sessionsDirectory: String, speakerModels: String,
-                deepTranscriptionModel: DeepModelStatus) {
+                deepTranscriptionModel: DeepModelStatus, naturalVoices: [String: DeepModelStatus]? = nil) {
         self.os = os; self.microphone = microphone; self.systemAudioPermission = systemAudioPermission
         self.accessibilityPermission = accessibilityPermission; self.foundationModel = foundationModel
         self.contextSize = contextSize; self.voiceCount = voiceCount; self.speech = speech
         self.dictation = dictation; self.locale = locale; self.speechAssetStatus = speechAssetStatus
         self.dictationAssetStatus = dictationAssetStatus; self.sessionsDirectory = sessionsDirectory
         self.speakerModels = speakerModels; self.deepTranscriptionModel = deepTranscriptionModel
+        self.naturalVoices = naturalVoices
     }
 }

@@ -50,6 +50,11 @@ let package = Package(
         .target(name: "HolosWhisper", dependencies: [
             "HolosCore", .product(name: "WhisperKit", package: "WhisperKit"),
         ], exclude: ["README.md"]),
+        // Natural voices for Reading (docs/design.md "Natural voices"): Kyutai Pocket TTS through FluidAudio. Only the
+        // command-line tool links it; the app renders natural parts through voiceislocal.
+        .target(name: "HolosPocket", dependencies: [
+            "HolosCore", "HolosSynthesis", .product(name: "FluidAudio", package: "FluidAudio"),
+        ], exclude: ["README.md"]),
         .executableTarget(name: "HolosApp", dependencies: [
             "HolosCore", "HolosAudio", "HolosSpeech", "HolosDesktop", "HolosDictation",
             "HolosStorage", "HolosSpeakers", "HolosMeeting", "HolosSynthesis", "HolosContent",
@@ -57,6 +62,7 @@ let package = Package(
         .executableTarget(name: "HolosCLI", dependencies: [
             "HolosCore", "HolosSpeech", "HolosSynthesis", "HolosStorage", "HolosAudio", "HolosContent",
             "HolosMeeting", "HolosSpeakers", "HolosDiarization", "HolosDictation", "HolosWhisper", "HolosEvaluation",
+            "HolosPocket",
             .product(name: "ArgumentParser", package: "swift-argument-parser"),
         ], exclude: ["README.md"], linkerSettings: [.unsafeFlags([
             "-Xlinker", "-sectcreate", "-Xlinker", "__TEXT", "-Xlinker", "__info_plist", "-Xlinker", cliInfoPlist,
@@ -67,7 +73,7 @@ let package = Package(
         .target(name: "HolosSessionTestSupport", dependencies: ["HolosCore", "HolosStorage"],
                 path: "Tests/HolosSessionTestSupport"),
         .testTarget(name: "HolosCoreTests", dependencies: ["HolosCore"]),
-        .testTarget(name: "HolosAppTests", dependencies: ["HolosApp", "HolosContent", "HolosCore", "HolosMeeting",
+        .testTarget(name: "HolosAppTests", dependencies: ["HolosApp", "HolosContent", "HolosCore", "HolosMeeting", "HolosSynthesis",
                                                          "HolosStorage"]),
         .testTarget(name: "HolosStorageTests", dependencies: [
             "HolosStorage", "HolosCore", "HolosTestSupport", "HolosSessionTestSupport",
@@ -96,6 +102,7 @@ let package = Package(
             "HolosWhisper", "HolosMeeting", "HolosEvaluation", "HolosCore", "HolosSynthesis", "HolosAudio",
             "HolosStorage", .product(name: "WhisperKit", package: "WhisperKit"),
         ]),
+        .testTarget(name: "HolosPocketTests", dependencies: ["HolosPocket", "HolosSynthesis", "HolosCore", "HolosTestSupport"]),
         .testTarget(name: "HolosDiarizationTests", dependencies: [
             "HolosDiarization", "HolosSpeakers", "HolosSynthesis", "HolosAudio", "HolosCore",
         ]),
