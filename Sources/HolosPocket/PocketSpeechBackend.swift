@@ -179,9 +179,8 @@ public actor PocketSpeechBackend: NaturalSpeechBackend {
     /// Deletes `constants_bin/<voice>.safetensors` for every voice the pack's folder holds that is not offered in it.
     static func pruneVoices(_ pack: NaturalVoicePack, languageRoot: URL) {
         let folder = languageRoot.appendingPathComponent("constants_bin", isDirectory: true)
-        let kept = Set(NaturalVoiceCatalog.offered.filter { $0.pack == pack }.map { $0.name + ".safetensors" })
         guard let names = try? FileManager.default.contentsOfDirectory(atPath: folder.path) else { return }
-        for name in names where name.hasSuffix(".safetensors") && !kept.contains(name) {
+        for name in names where NaturalVoicePackFiles.isUnofferedVoice("constants_bin/\(name)", pack: pack) {
             try? FileManager.default.removeItem(at: folder.appendingPathComponent(name))
         }
     }

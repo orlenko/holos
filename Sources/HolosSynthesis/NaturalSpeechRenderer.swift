@@ -14,8 +14,36 @@ public protocol SpeechChunkChecker: Sendable {
 
 /// Speaks a paragraph with a system voice when the natural voice keeps failing the check.
 @MainActor public protocol ParagraphFallback {
-    /// The paragraph spoken by a system voice for `language`, as mono samples at `sampleRate`; also the voice's name.
-    func samples(for text: String, language: String, sampleRate: Double) async throws -> (samples: [Float], voice: String)
+    /// The system voice it reads `language` with now.
+    func defaultVoice(language: String) -> String?
+    /// The paragraph spoken by the system voice `voice` (else the default one for `language`), as mono samples at
+    /// `sampleRate`; also the voice's name.
+    func samples(for text: String, voice: String?, language: String, sampleRate: Double) async throws
+        -> (samples: [Float], voice: String)
+}
+
+/// What a natural rendering depends on besides its voice, text, and speed: the system voice a failed paragraph is
+/// read with, and whether paragraphs are checked. A reading saves them when it starts and renders every part with
+/// them, so a resumed reading does not mix fallback voices or check policies.
+public struct NaturalRenderSettings: Codable, Sendable, Equatable {
+    public var fallbackVoice: String?
+    public var checked: Bool
+
+    public init(fallbackVoice: String?, checked: Bool) {
+        self.fallbackVoice = fallbackVoice
+        self.checked = checked
+    }
+
+    /// As a reading's manifest keeps a renderer's settings.
+    public var values: [String: String] {
+        var values = ["check": checked ? "on" : "off"]
+        if let fallbackVoice { values["fallbackVoice"] = fallbackVoice }
+        return values
+    }
+
+    public init(values: [String: String]) {
+        self.init(fallbackVoice: values["fallbackVoice"], checked: values["check"] != "off")
+    }
 }
 
 /// How a part is fed to the natural voice: one paragraph at a time (Pocket TTS splits a paragraph into sentences
@@ -143,6 +171,13 @@ public enum SpeechChunkCheck {
 
     public static func evaluate(expected: String, heard: String) -> Verdict {
         let reference = words(expected), hypothesis = words(heard)
+        // A paragraph of numbers alone leaves nothing to compare once they are left out: it passes only when about as
+        // much is heard (at least half its words, however they are written), never on an empty or cut-off take.
+        if reference.isEmpty {
+            let written = tokens(expected).count, said = tokens(heard).count
+            return Verdict(passed: written == 0 || said * 2 >= written, wordErrorRate: said >= written ? 0 : 1,
+                           expectedWords: written, heardWords: said)
+        }
         let edits = editDistance(reference, hypothesis)
         let rate = reference.isEmpty ? (hypothesis.isEmpty ? 0 : 1) : Double(edits) / Double(reference.count)
         let allowed = max(minimumAllowedEdits, Int((maximumWordErrorRate * Double(reference.count)).rounded(.down)))
@@ -156,9 +191,7 @@ public enum SpeechChunkCheck {
     /// word (English and French cardinals, ordinals, and their parts), and a joining word between two of them ("and",
     /// "point", "et", "pour" in "cinquante pour cent").
     static func words(_ text: String) -> [String] {
-        let tokens = text.folding(options: [.caseInsensitive, .diacriticInsensitive, .widthInsensitive], locale: nil)
-            .components(separatedBy: CharacterSet.alphanumerics.inverted)
-            .filter { !$0.isEmpty }
+        let tokens = tokens(text)
         let numeric = tokens.map { $0.rangeOfCharacter(from: .decimalDigits) != nil || numberWords.contains($0) }
         return tokens.indices.compactMap { index in
             if numeric[index] { return nil }
@@ -166,6 +199,13 @@ public enum SpeechChunkCheck {
                numeric[index - 1], numeric[index + 1] { return nil }
             return tokens[index]
         }
+    }
+
+    /// Every word of `text`, folded, numbers included.
+    static func tokens(_ text: String) -> [String] {
+        text.folding(options: [.caseInsensitive, .diacriticInsensitive, .widthInsensitive], locale: nil)
+            .components(separatedBy: CharacterSet.alphanumerics.inverted)
+            .filter { !$0.isEmpty }
     }
 
     /// Number words, folded (no accents).
@@ -353,10 +393,24 @@ public struct NaturalSpeechStats: Sendable, Equatable {
         return voice
     }
 
+    /// The settings a rendering with `voiceIdentifier` gets now (see `NaturalRenderSettings`).
+    public func settings(for voiceIdentifier: String) -> NaturalRenderSettings? {
+        guard let voice = NaturalVoiceCatalog.voice(id: voiceIdentifier) else { return nil }
+        return NaturalRenderSettings(fallbackVoice: fallback.defaultVoice(language: voice.pack.languageCode),
+                                     checked: checker != nil)
+    }
+
     public func render(text: String, voiceIdentifier: String?, rate: Float?, to output: URL)
         async throws -> RenderedAudio {
+        try await render(text: text, voiceIdentifier: voiceIdentifier, rate: rate, settings: nil, to: output)
+    }
+
+    /// `settings`: those a reading saved when it started (nil: the current ones, `settings(for:)`).
+    public func render(text: String, voiceIdentifier: String?, rate: Float?, settings: NaturalRenderSettings?,
+                       to output: URL) async throws -> RenderedAudio {
         guard let voiceIdentifier else { throw HolosError.invalidInput("A natural voice must be named.") }
         let voice = try voice(voiceIdentifier)
+        let settings = settings ?? self.settings(for: voiceIdentifier)
         let blocks = NaturalSpeechPlan.blocks(text)
         guard !blocks.isEmpty else { throw HolosError.invalidInput("Speech text is empty.") }
         guard output.isFileURL else { throw HolosError.invalidInput("Speech output must be a file URL.") }
@@ -370,7 +424,7 @@ public struct NaturalSpeechStats: Sendable, Equatable {
         try SpeechRate.validate(rate)
         let speed = NaturalSpeechSpeed.factor(rate: rate)
         var stats = NaturalSpeechStats()
-        var checking = checker != nil && !uncheckable.contains(voice.pack.languageCode)
+        var checking = checker != nil && settings?.checked != false && !uncheckable.contains(voice.pack.languageCode)
         // Each paragraph goes to the file as soon as it is made, so a long text never holds more than one paragraph's
         // samples; the file is written beside the output and published once whole.
         let temporary = output.deletingLastPathComponent()
@@ -380,7 +434,8 @@ public struct NaturalSpeechStats: Sendable, Equatable {
         for block in blocks {
             try Task.checkCancellation()
             // Events and the log name the part's paragraph (a long one's groups share its number).
-            var speech = try await paragraph(block.text, index: block.paragraph, voice: voice, checking: &checking,
+            var speech = try await paragraph(block.text, index: block.paragraph, voice: voice,
+                                             fallbackVoice: settings?.fallbackVoice, checking: &checking,
                                              stats: &stats)
             speech = try TimeStretch.apply(speech, sampleRate: Self.sampleRate, rate: speed)
             try writer.append(speech)
@@ -411,8 +466,8 @@ public struct NaturalSpeechStats: Sendable, Equatable {
     }
 
     /// One paragraph: rendered, checked, rendered again once with the next seed, else read by a system voice.
-    private func paragraph(_ text: String, index: Int, voice: NaturalVoice, checking: inout Bool,
-                           stats: inout NaturalSpeechStats) async throws -> [Float] {
+    private func paragraph(_ text: String, index: Int, voice: NaturalVoice, fallbackVoice: String?,
+                           checking: inout Bool, stats: inout NaturalSpeechStats) async throws -> [Float] {
         var reason = ""
         for take in 1...2 {
             try Task.checkCancellation()
@@ -463,7 +518,7 @@ public struct NaturalSpeechStats: Sendable, Equatable {
             Self.log.notice("Paragraph \(index + 1, privacy: .public) failed its check (take \(take, privacy: .public), WER \(verdict.wordErrorRate, privacy: .public))")
             if take == 1 { stats.rerenders += 1 }
         }
-        let fallen = try await fallback.samples(for: text, language: voice.pack.languageCode,
+        let fallen = try await fallback.samples(for: text, voice: fallbackVoice, language: voice.pack.languageCode,
                                                 sampleRate: Self.sampleRate)
         stats.fallbacks += 1
         onEvent?(.fellBack(paragraph: index + 1, voice: fallen.voice, reason: reason))
@@ -567,9 +622,16 @@ extension Duration {
         self.temporaryRoot = temporaryRoot
     }
 
-    public func samples(for text: String, language: String, sampleRate: Double) async throws
+    public func defaultVoice(language: String) -> String? {
+        NativeSpeechRenderer.bestVoice(language: language)?.id
+    }
+
+    /// The voice asked for while it is installed, else the best one for `language` now.
+    public func samples(for text: String, voice chosen: String?, language: String, sampleRate: Double) async throws
         -> (samples: [Float], voice: String) {
-        guard let voice = NativeSpeechRenderer.bestVoice(language: language) else {
+        let installed = NativeSpeechRenderer.voices()
+        guard let voice = chosen.flatMap({ id in installed.first { $0.id == id } })
+                ?? NativeSpeechRenderer.bestVoice(language: language) else {
             throw HolosError.unavailable("No system voice speaks \(language) to read a paragraph the natural voice "
                 + "could not.")
         }
