@@ -329,7 +329,9 @@ timeline and a larger local-model benchmark are follow-ups.
 - `voices list` and `say` provide native voice discovery (with each voice's quality, and a
   hint to download Premium voices when none is installed), playback, and `.m4a`, `.wav`,
   or `.caf` export. Text comes from arguments or UTF-8 stdin. `--voice` takes a name as
-  `say -v '?'` prints it ("Ava (Premium)") or an identifier.
+  `say -v '?'` prints it ("Ava (Premium)") or an identifier. Natural voices, once their pack is installed
+  (`voiceislocal setup --natural-voices`), are listed first ("Alba (Natural)") and `say` renders them paragraph by
+  paragraph, each heard back by Apple's on-device recognizer; `--text-file` reads the text from a UTF-8 file.
 - `read` turns a local .txt, .md, .html, .pdf, .rtf, .rtfd, .docx, .doc, or .odt file,
   stdin, or an `https://` web article (Mozilla Readability in an offscreen web view; the
   byline becomes the author) into one AAC `.m4a` (mono, 22.05 kHz, about 32 kbit/s, about 14 MB per hour) named

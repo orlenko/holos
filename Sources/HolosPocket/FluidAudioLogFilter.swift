@@ -4,7 +4,7 @@ import Synchronization
 
 /// Keeps FluidAudio's quiet log lines out of a file descriptor (stderr). FluidAudio's `AppLogger` writes every message
 /// to stderr in a debug build, and Pocket TTS logs each chunk of text it speaks at the info level, so the text being
-/// read would reach the terminal, or the app's helper log. Once installed, a pipe takes the descriptor's place and a
+/// read would reach the terminal, or wherever stderr is written. Once installed, a pipe takes the descriptor's place and a
 /// thread copies every line but FluidAudio's debug, info and notice ones (`isQuiet`) to where it went before;
 /// warnings and errors still go through.
 ///

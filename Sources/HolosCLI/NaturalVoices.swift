@@ -17,11 +17,10 @@ enum NaturalVoicesCLI {
         return filter
     }()
 
-    /// The renderer `say` and `read` use for natural voices. The check runs unless `HOLOS_NATURAL_CHECK=0`, or a reading
-    /// saved its policy when it started (its resume follows that policy either way: the checker is always made). What it
-    /// finds (a re-render, a paragraph read by a system voice) is said on stderr.
-    /// `scratch`: the folder its temporary files go in (the app gives each part one, and deletes it when it stops the
-    /// tool); nil for the system's temporary folder. `installed`: the packs found installed (`installedPacks()`).
+    /// The renderer `say` uses for natural voices. The check runs unless `HOLOS_NATURAL_CHECK=0` or `--check off` (the
+    /// checker is always made, so `--check on` is honoured either way). What it finds (a re-render, a paragraph read by
+    /// a system voice) is said on stderr. `scratch`: the folder its temporary files go in (`--scratch-directory`); nil for
+    /// the system's temporary folder. `installed`: the packs found installed (`installedPacks()`).
     @MainActor static func renderer(log: Bool = true, scratch: URL? = nil, installed: Set<NaturalVoicePack>)
         -> NaturalSpeechRenderer {
         // FluidAudio's own log of the text it speaks stays off stderr from now on (`FluidAudioLogFilter`).
@@ -65,6 +64,8 @@ enum NaturalVoicesCLI {
         return installed
     }
 
+    /// Set once, by the first `installedPacks()` of the run, and never changed after (the run uses one view of the
+    /// packs).
     @MainActor private static var installedSnapshot: Set<NaturalVoicePack>?
 
     @MainActor static func resolve(_ query: String) async throws -> NaturalVoice? {
