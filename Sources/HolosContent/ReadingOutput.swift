@@ -662,14 +662,16 @@ public enum ReadingResumeVoice {
     /// Refuses a reading made with a natural voice from another commit of the voices: its parts cannot be joined
     /// with the current ones, so it cannot be resumed, whatever voice is asked for now or whether the pack is
     /// installed. Said before anything else (reinstalling a pack would not help).
-    public static func checkRevision(_ manifest: ReadingManifest) throws {
+    /// `again`: what to do instead (the app says it its way).
+    public static func checkRevision(_ manifest: ReadingManifest,
+                                     again: String = "Make it again without --resume.") throws {
         let id = manifest.voiceIdentifier
         guard NaturalVoiceCatalog.isNatural(id), manifest.modelRevision != ReadingPipeline.modelRevision(for: id)
         else { return }
         let name = NaturalVoiceCatalog.voice(id: id)?.title ?? id
         throw HolosError.invalidInput("This reading was started with \(name) from another version of the natural "
             + "voices (\(manifest.modelRevision ?? "unknown")); its parts cannot be joined with the current ones, so it "
-            + "cannot be resumed. Make it again without --resume.")
+            + "cannot be resumed. \(again)")
     }
 
     /// The voice of a saved reading, when it can be resumed here. A natural voice made with another commit of the
@@ -691,7 +693,8 @@ public enum ReadingResumeVoice {
         return id
     }
 
-    static func manifest(in directory: URL) -> ReadingManifest? {
+    /// The manifest of the reading whose cache is `directory` (this app's kind only); nil when there is none.
+    public static func manifest(in directory: URL) -> ReadingManifest? {
         manifestAndDate(in: directory)?.manifest
     }
 

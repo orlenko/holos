@@ -26,15 +26,24 @@ import Synchronization
     private let installedPacks: () -> Set<NaturalVoicePack>
     private let signal: @Sendable (Int32) -> Void
     private let gate: NaturalVoiceHelperGate
+    private let currentSettings: (NaturalVoice) -> NaturalRenderSettings
 
+    /// `currentSettings`: what the tool would use now for a voice (a reading saves them when it starts): the best
+    /// Apple voice of its language for a paragraph it fails, and the check unless `HOLOS_NATURAL_CHECK=0` (the tool
+    /// gets this app's environment).
     init(launch: @escaping Launch, installedPacks: @escaping () -> Set<NaturalVoicePack> = {
              NaturalVoiceModels.installedPacks()
          }, signal: @escaping @Sendable (Int32) -> Void = { _ = kill($0, SIGTERM) },
-         gate: NaturalVoiceHelperGate = .shared) {
+         gate: NaturalVoiceHelperGate = .shared,
+         currentSettings: @escaping (NaturalVoice) -> NaturalRenderSettings = { voice in
+             NaturalRenderSettings(fallbackVoice: NativeSpeechRenderer.bestVoice(language: voice.pack.languageCode)?.id,
+                                   checked: ProcessInfo.processInfo.environment["HOLOS_NATURAL_CHECK"] != "0")
+         }) {
         self.launch = launch
         self.installedPacks = installedPacks
         self.signal = signal
         self.gate = gate
+        self.currentSettings = currentSettings
     }
 
     /// Through a `MaintenanceLauncher` of the bundled tool.
@@ -54,14 +63,32 @@ import Synchronization
         }
     }
 
+    func renderSettings(for voiceIdentifier: String) -> [String: String]? {
+        NaturalVoiceCatalog.voice(id: voiceIdentifier).map { currentSettings($0).values }
+    }
+
     /// The tool's arguments for one part. Its temporary files (the recognizer's and the system voice's) go in
-    /// `scratch`, the folder this app tracks and deletes, so stopping the tool leaves nothing behind.
-    static func arguments(voice: String, rate: Float?, textFile: URL, scratch: URL, output: URL) -> [String] {
-        ["say", "--voice", voice, "--text-file", textFile.path, "--scratch-directory", scratch.path,
-         "--output", output.path] + (rate.map { ["--rate", "\($0)"] } ?? [])
+    /// `scratch`, the folder this app tracks and deletes, so stopping the tool leaves nothing behind. `parent` (this
+    /// app): the tool stops when it ends, a crash included, and waits for one an ended app left writing `output`.
+    /// `settings`: those the reading saved, else the tool's own.
+    static func arguments(voice: String, rate: Float?, settings: NaturalRenderSettings?, textFile: URL, scratch: URL,
+                          output: URL, parent: Int32 = getpid()) -> [String] {
+        var arguments = ["say", "--voice", voice, "--text-file", textFile.path, "--scratch-directory", scratch.path,
+                         "--output", output.path, "--parent-pid", "\(parent)"]
+        if let settings {
+            arguments += ["--check", settings.checked ? "on" : "off"]
+            if let fallback = settings.fallbackVoice { arguments += ["--fallback-voice", fallback] }
+        }
+        if let rate { arguments += ["--rate", "\(rate)"] }
+        return arguments
     }
 
     func render(text: String, voiceIdentifier: String?, rate: Float?, to output: URL) async throws -> RenderedAudio {
+        try await render(text: text, voiceIdentifier: voiceIdentifier, rate: rate, savedSettings: nil, to: output)
+    }
+
+    func render(text: String, voiceIdentifier: String?, rate: Float?, savedSettings: [String: String]?,
+                to output: URL) async throws -> RenderedAudio {
         guard let voiceIdentifier else { throw HolosError.invalidInput("A natural voice must be named.") }
         try checkVoice(voiceIdentifier)
         // One helper at a time, app-wide: each loads the model (up to 1.6 GB for French). A Preview waits behind a
@@ -80,8 +107,9 @@ import Synchronization
         let textFile = folder.appendingPathComponent("part.txt")
         let errors = folder.appendingPathComponent("stderr.txt")
         try Data(text.utf8).write(to: textFile, options: .atomic)
-        let arguments = Self.arguments(voice: voiceIdentifier, rate: rate, textFile: textFile, scratch: folder,
-                                       output: output)
+        let arguments = Self.arguments(voice: voiceIdentifier, rate: rate,
+                                       settings: savedSettings.map(NaturalRenderSettings.init(values:)),
+                                       textFile: textFile, scratch: folder, output: output)
         let child = ChildState()
         let code: Int32 = try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { continuation in
@@ -185,10 +213,16 @@ enum NaturalVoiceHelpers {
 /// The voices the Reading section and Settings offer, and which one a reading gets.
 @MainActor enum ReadingVoices {
     /// A reading's voice: the one it was started with, else the one asked for, else the natural voice for its
-    /// language once that pack is installed (Alba in English, Estelle in French), else the best Apple voice.
-    static func choose(fixed: String?, fixedName: String?, language: String?, installed: Set<NaturalVoicePack>,
-                       appleVoices: [VoiceDescriptor], bestApple: (String) -> VoiceDescriptor?,
+    /// language once that pack is installed (Alba in English, Estelle in French), else the best Apple voice. `saved`:
+    /// the manifest of a reading begun before; one started with another commit of the natural voices is refused
+    /// first, before its pack is asked for (installing it again would not help), as `voiceislocal read --resume` does.
+    static func choose(fixed: String?, fixedName: String?, language: String?, saved: ReadingManifest? = nil,
+                       installed: Set<NaturalVoicePack>, appleVoices: [VoiceDescriptor],
+                       bestApple: (String) -> VoiceDescriptor?,
                        appleDefault: () throws -> String) throws -> VoiceDescriptor {
+        if let saved {
+            try ReadingResumeVoice.checkRevision(saved, again: "Delete this reading and make it again.")
+        }
         if let fixed {
             if NaturalVoiceCatalog.isNatural(fixed) {
                 guard let natural = NaturalVoiceCatalog.voice(id: fixed) else {

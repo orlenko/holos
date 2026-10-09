@@ -552,7 +552,11 @@ final class ReadingController {
             return (script, AudioBookMetadata.languageTag(document.language) ?? ReadingLanguage.detect(script.text))
         }
         try Task.checkCancellation()
-        let voice = try Self.voice(for: entry, language: language)
+        // A reading begun before: its manifest, read off the main actor, is checked before its voice (see `choose`).
+        let cacheFolder = entry.cache.map { ReadingOutput.fileURL(keepingSpelling: $0, isDirectory: true) }
+        let begun = try await offMain { cacheFolder.flatMap(ReadingResumeVoice.manifest(in:)) }
+        try Task.checkCancellation()
+        let voice = try Self.voice(for: entry, language: language, saved: begun)
         let rate = ReadingSpeed.rate(for: entry.speed)
         let metadata = AudioBookMetadata(
             title: [document.title, entry.source.fallbackName].lazy.compactMap(AudioBookMetadata.usableTitle).first,
@@ -684,9 +688,11 @@ final class ReadingController {
 
     /// The voice the reading was started with; else the one asked for; else the best installed voice for its
     /// language (as `voiceislocal read` picks it).
-    static func voice(for entry: ReadingEntry, language: String?) throws -> VoiceDescriptor {
+    static func voice(for entry: ReadingEntry, language: String?, saved: ReadingManifest? = nil) throws
+        -> VoiceDescriptor {
         try ReadingVoices.choose(
             fixed: entry.voiceIdentifier ?? entry.requestedVoice, fixedName: entry.voiceName, language: language,
+            saved: saved,
             installed: NaturalVoiceModels.installedPacks(), appleVoices: NativeSpeechRenderer.voices(),
             bestApple: NativeSpeechRenderer.bestVoice(language:),
             appleDefault: NativeSpeechRenderer.defaultVoiceIdentifier)

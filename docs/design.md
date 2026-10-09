@@ -673,7 +673,13 @@ the process; Stop sends it SIGTERM. One helper runs at a time in the app (`Natur
 asked for while a reading's part renders waits behind it, and a Preview started again waits until the helper it
 replaced has exited, so the model is never loaded twice at once. The tool runs detached, so quitting Voice is Local stops every natural-voice
 helper still running (a reading's part, a Preview) and removes their temporary folders (`NaturalVoiceHelpers`,
-from `applicationWillTerminate`); a part cut off so is rendered again on Resume. The tool's own temporary files (the
+from `applicationWillTerminate`); a part cut off so is rendered again on Resume. A crash or SIGKILL skips that, so
+the app also passes its pid (`--parent-pid`): the tool watches it (a process-exit event, and `getppid()` once the
+watch is set, for an app that ended before) and, when it ends, cancels the render (its temporary file beside the
+part goes) and removes the app's folder for it (`NaturalHelperRun`, HolosSynthesis). A tool started so also takes a
+lock on its output (`NaturalOutputLock`: one file per output path in `holos-output-locks` in the temporary folder),
+so the tool a relaunched app starts for the same part waits until one an ended app left running has exited. The
+tool's own temporary files (the
 recognizer's and the system voice's) go in the folder the app gives it (`--scratch-directory`), the one it deletes;
 at launch the app removes `holos-natural-`, `holos-preview-`, `holos-check-`, and `holos-fallback-` folders a day
 old that a crash left in the temporary folder (`NaturalVoiceTemporaries`). Each part loads the compiled model again: about 3 s for English and 11 s for
@@ -685,9 +691,13 @@ French (`NaturalVoiceCatalog.defaultVoice(language:installed:)`); until then, an
 Apple voice. A reading keeps the voice it started with, so a resume never switches voice: the app saves it in the
 reading's entry before rendering, and `voiceislocal read --resume` without `--voice` uses the voice in the reading's
 manifest (`ReadingResumeVoice`: for an explicit output, whose cache is keyed by every setting, the saved manifests
-for the same file, text, rate, and metadata are read and the one written to last continues, whatever voice it used;
-a natural reading from another commit of the voices is refused as such, and one whose pack is gone says to install
-it again). A natural voice whose pack is gone fails with where to
+for the same file, text, part plan, rate, and metadata are read off the main actor and the one written to last
+continues, whatever voice it used, or only one made with `--voice` when it is given; a natural reading from another
+commit of the voices is refused as such before any voice or pack is checked (`ReadingResumeVoice.checkRevision`, the
+app's Resume included), and one whose pack is gone says to install it again). A reading also saves its renderer's
+settings when it starts (`ReadingManifest.rendererSettings`: a natural voice's fallback system voice and whether
+paragraphs are heard back), and every part, a resume's included, is rendered with them; the app passes them to the
+tool (`--fallback-voice`, `--check`). A natural voice whose pack is gone fails with where to
 download it. Preview of Automatic speaks with the voice Make Audio would use for the user's first language
 (`ReadingVoices.automatic`); a sample that does not start playing is reported under the card, not left as Stop.
 `say --text-file` reads only a regular file, at most 16 MB, decoded strictly.

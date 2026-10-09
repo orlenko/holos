@@ -1,6 +1,6 @@
 import AppKit
 import Foundation
-import HolosContent
+@testable import HolosContent
 import HolosCore
 import HolosSynthesis
 import Synchronization
@@ -82,11 +82,11 @@ import Testing
     private let ava = VoiceDescriptor(id: "ava", name: "Ava (Premium)", language: "en-US", quality: "premium")
     private let amelie = VoiceDescriptor(id: "amelie", name: "Amélie", language: "fr-CA", quality: "default")
 
-    private func choose(fixed: String? = nil, language: String?, installed: Set<NaturalVoicePack>) throws
-        -> VoiceDescriptor {
+    private func choose(fixed: String? = nil, language: String?, saved: ReadingManifest? = nil,
+                        installed: Set<NaturalVoicePack>) throws -> VoiceDescriptor {
         let apple = [ava, amelie]
         return try ReadingVoices.choose(
-            fixed: fixed, fixedName: nil, language: language, installed: installed, appleVoices: apple,
+            fixed: fixed, fixedName: nil, language: language, saved: saved, installed: installed, appleVoices: apple,
             bestApple: { tag in apple.first { $0.language.hasPrefix(String(tag.prefix(2))) } },
             appleDefault: { "ava" })
     }
@@ -108,6 +108,31 @@ import Testing
         #expect(error?.localizedDescription.contains("The French natural voices are not installed. Download them in "
             + "Settings › Reading, then choose Resume.") == true)
         #expect(throws: HolosError.self) { try choose(fixed: "pocket:en:cosette", language: "en", installed: [.english]) }
+    }
+
+    @Test func aReadingFromAnotherCommitOfTheVoicesIsRefusedBeforeItsPackIsAskedFor() throws {
+        func manifest(revision: String?) -> ReadingManifest {
+            ReadingManifest(kind: ReadingManifest.readingKind, schemaVersion: ReadingManifest.currentSchemaVersion,
+                            sourceSHA256: "s", voiceIdentifier: "pocket:fr:estelle", rate: nil, title: "Jardin",
+                            author: nil, language: "fr", comment: "c", format: .current, output: "/tmp/Jardin.m4a",
+                            outputSHA256: nil, duration: nil, chapters: [], status: "incomplete", parts: [],
+                            modelRevision: revision)
+        }
+        // The French pack is not installed, and installing it would not help: the commit is said first.
+        let stale = manifest(revision: "0000000000000000000000000000000000000000")
+        let error = #expect(throws: HolosError.self) {
+            try choose(fixed: "pocket:fr:estelle", language: "fr", saved: stale, installed: [.english])
+        }
+        #expect(error?.localizedDescription.contains("another version of the natural voices") == true)
+        #expect(error?.localizedDescription.contains("Delete this reading and make it again.") == true)
+        // The same commit: the missing pack is what is said.
+        let current = manifest(revision: NaturalVoiceModels.revision)
+        let missing = #expect(throws: HolosError.self) {
+            try choose(fixed: "pocket:fr:estelle", language: "fr", saved: current, installed: [.english])
+        }
+        #expect(missing?.localizedDescription.contains("natural voices are not installed") == true)
+        #expect(try choose(fixed: "pocket:fr:estelle", language: "fr", saved: current, installed: [.french]).id
+            == "pocket:fr:estelle")
     }
 
     @Test func theVoiceMenuListsNaturalVoicesFirstOrSaysWhereToGetThem() {
@@ -370,11 +395,34 @@ import Testing
         // The tool's temporary files go in the folder this app tracks (and deletes on Stop or Quit): the text file's.
         #expect(arguments[5] == "--scratch-directory")
         #expect(arguments[6] == URL(fileURLWithPath: arguments[4]).deletingLastPathComponent().path)
-        #expect(Array(arguments.suffix(4)) == ["--output", output.path, "--rate", "\(rate!)"])
+        // The tool stops when this app ends, and waits for one an ended app left writing the same part.
+        #expect(Array(arguments.suffix(6)) == ["--output", output.path, "--parent-pid", "\(getpid())", "--rate",
+                                               "\(rate!)"])
         #expect(launches.signals.withLock { $0 }.isEmpty)
         // The text file is gone with its folder.
         #expect(!FileManager.default.fileExists(atPath: arguments[4]))
         #expect(!FileManager.default.fileExists(atPath: arguments[6]))
+    }
+
+    @Test func aPartIsRenderedWithTheSettingsItsReadingSaved() async throws {
+        let launches = Launches()
+        let renderer = HelperNaturalRenderer(launch: { arguments, _, onExit in
+            launches.arguments.withLock { $0.append(arguments) }
+            try NaturalSpeechFile.write([Float](repeating: 0.1, count: 2_400), sampleRate: 24_000,
+                                        to: URL(fileURLWithPath: arguments[8]))
+            DispatchQueue.main.async { onExit(0) }
+            return 4242
+        }, installedPacks: { [.english] }, gate: NaturalVoiceHelperGate(),
+           currentSettings: { _ in NaturalRenderSettings(fallbackVoice: "today", checked: true) })
+        // What a reading saves when it starts: the tool's settings now.
+        #expect(renderer.renderSettings(for: "pocket:en:alba") == ["fallbackVoice": "today", "check": "on"])
+        #expect(renderer.renderSettings(for: "ava") == nil)
+        // Started with Ava as the fallback and the check off: each part is rendered so, whatever today's settings.
+        _ = try await renderer.render(text: "Hello.", voiceIdentifier: "pocket:en:alba", rate: nil,
+                                      savedSettings: ["fallbackVoice": "ava", "check": "off"],
+                                      to: try folder().appendingPathComponent("p.caf"))
+        let arguments = launches.arguments.withLock { $0 }.first ?? []
+        #expect(Array(arguments.suffix(4)) == ["--check", "off", "--fallback-voice", "ava"])
     }
 
     @Test func aFailedRenderSaysWhatTheToolSaid() async throws {

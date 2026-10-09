@@ -66,6 +66,9 @@ struct Say: AsyncParsableCommand {
     @Option(help: ArgumentHelp("A natural voice: on or off, whether paragraphs are heard back (a reading saves it).",
                                visibility: .hidden))
     var check: String?
+    @Option(help: ArgumentHelp("The app that started this: when it ends, the render stops and cleans up; another one "
+                               + "still writing the same output is waited for.", visibility: .hidden))
+    var parentPid: Int32?
     @Option(help: "Maximum seconds to wait for another Voice is Local playback.") var maxWait: Double = 10
 
     func validate() throws {
@@ -116,7 +119,23 @@ struct Say: AsyncParsableCommand {
             render = { try await renderer.render(text: input, voiceIdentifier: voice, rate: rate, to: $0) }
         }
         if let output {
-            let result = try await render(fileURL(output))
+            let url = fileURL(output)
+            let result: RenderedAudio
+            if let parentPid {
+                // The app's helper: it waits for an earlier one still writing this part (left by an app that
+                // ended), and stops when the app ends, removing the app's folder for it.
+                let scratch = scratchDirectory.map(fileURL)
+                result = try await NaturalHelperRun.whileParentRuns(
+                    parentPid, isAlive: { getppid() == parentPid }, output: url,
+                    waiting: { Console.error("Waiting for an earlier render of \(url.lastPathComponent) to stop.") },
+                    parentEnded: {
+                        guard let scratch else { return }
+                        _ = try? AtomicFile.removeTree([scratch.lastPathComponent],
+                                                       in: scratch.deletingLastPathComponent())
+                    }) { try await render(url) }
+            } else {
+                result = try await render(url)
+            }
             Console.output(result.url.path)
         } else {
             // The folder is created here (exclusively, 0700) and removed with `AtomicFile.removeTree`, which opens
