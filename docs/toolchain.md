@@ -13,7 +13,9 @@ it to SwiftPM's `swiftbuild` driver. On this Command Line Tools installation,
 `swift test` can import `Testing` but sometimes fails to discover that macro plugin
 after rebuilding the package graph. The explicit plugin argument makes discovery
 repeatable. The script uses `--disable-xctest` because the package's tests use
-Swift Testing; it forwards additional SwiftPM test options unchanged.
+Swift Testing; it forwards additional SwiftPM test options unchanged. It always points
+`HOLOS_DATA_DIR` and `HOLOS_SUPPORT_DIR` at a fresh temporary folder, replacing values
+set in the shell, so the default suite never reads or writes your real sessions or support files.
 
 `swift test --filter` (and so `./scripts/test.sh --filter`) still builds every
 target, including WhisperKit, FluidAudio, the app, and the CLI. To build and run one
