@@ -130,6 +130,8 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
     let wordListStore = WordListStore()
     /// `words.json` as last read, so a change made outside the app (`voiceislocal words`) is read again.
     var wordListStamp: WordListStore.Stamp?
+    /// People's names for dictation and Run Again, read again when the people store changed.
+    let peopleNames = PeopleNames()
     /// Why `words.json` could not be read; nil when it could.
     var wordListProblem: String?
     /// The main window (HolosApp+MainWindow.swift), made on first use.
@@ -229,7 +231,9 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
             message = "Could not read corrections.json; corrections are off until it is fixed or removed."
         }
         loadWordList()
-        updateDictationVocabulary()
+        controller.contextualStrings = dictationVocabulary(language: locale)
+        // Asked at each dictation's start: the word list and corrections as held then, and People as it is now.
+        controller.seamTerms = { [weak self] in self?.dictationSeamTerms() ?? [] }
         let folder = CorrectionList.defaultURL.deletingLastPathComponent()
         correctionsWatcher = FolderWatcher(folder: folder) { [weak self] in
             MainActor.assumeIsolated {
@@ -1352,12 +1356,10 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
         adoptCorrections(list)
     }
 
-    /// The next dictation's contextual strings (the word list, then the words of learned corrections) and the words
-    /// whose capitals stay after a pause (`dictationSeamTerms`, people's names as they are now). A dictation already
-    /// listening keeps the ones it started with.
+    /// The next dictation's contextual strings: the word list, then the words of learned corrections. A dictation
+    /// already listening keeps the ones it started with.
     func updateDictationVocabulary() {
         controller.contextualStrings = dictationVocabulary(language: locale)
-        controller.seamTerms = dictationSeamTerms()
     }
 
     private func write(_ text: String, to destination: Destination) -> InsertionOutcome {

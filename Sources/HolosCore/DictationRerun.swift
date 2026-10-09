@@ -212,6 +212,9 @@ public struct DictationTextPipeline: Sendable {
     /// which depends on timing, so its result may differ.
     public func run(segments: [String]) async -> Output {
         let seams = makeSeams()
+        // Live dictation asks the spell checker about a pause's word while the result is still being recognized;
+        // these results come at once, so they are asked about first.
+        await seams.prepare(segments)
         let heard = Self.transcript(segments, seams: seams)
         let withoutFillers = withoutFillers(heard).trimmingCharacters(in: .whitespacesAndNewlines)
         let (corrected, count) = corrections.applyCounting(to: withoutFillers)

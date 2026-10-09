@@ -28,8 +28,12 @@ public struct DictationStatus: Sendable, Equatable {
     /// One normalization for preview, committed, and final text, so committed text stays a prefix of the result:
     /// with `seams`, a capital a pause left inside a sentence is lowered (`DictationSeams`).
     /// Run Again joins a saved dictation's results the same way (`DictationTextPipeline.transcript`).
-    static func transcript(_ segments: [TranscriptSegment], seams: DictationSeams? = nil) -> String {
-        DictationTextPipeline.transcript(segments.sorted { $0.start < $1.start }.map(\.text), seams: seams)
+    /// `provisional`: results still being recognized, whose pauses are decided again at each revision.
+    static func transcript(_ segments: [TranscriptSegment], provisional: [TranscriptSegment] = [],
+                           seams: DictationSeams? = nil) -> String {
+        let pieces = (segments.map { ($0, true) } + provisional.map { ($0, false) }).sorted { $0.0.start < $1.0.start }
+        guard let seams else { return DictationTextPipeline.transcript(pieces.map(\.0.text)) }
+        return seams.join(pieces.map { DictationSeams.Piece($0.0.text, isFinal: $0.1) })
     }
 }
 
@@ -82,8 +86,8 @@ public final class DictationController {
     /// The recognizer's locale; read when each utterance starts, so a change never affects one in progress.
     public var locale: String
     /// Words whose capitals stay after a pause (`DictationSeams.terms`: the word list, learned corrections' meant
-    /// phrases, people's names); read when each utterance starts.
-    public var seamTerms: [String] = []
+    /// phrases, people's names); asked when each utterance starts, so a change counts from the next one.
+    public var seamTerms: @MainActor () -> [String] = { [] }
     /// Given each microphone frame the recognizer took, with its utterance ID, in order: History keeps the audio of a
     /// dictation from exactly what was recognized.
     public var frameTap: (@MainActor (UUID, PCMFrame) -> Void)?
@@ -147,7 +151,7 @@ public final class DictationController {
         generation = id
         releaseRequested = false
         reducer = TranscriptReducer()
-        seams = DictationSeams(language: locale, terms: seamTerms)
+        seams = DictationSeams(language: locale, terms: seamTerms())
         capture = nil
         speech = nil
         updateContinuation = nil
@@ -317,7 +321,8 @@ public final class DictationController {
         do {
             try reducer.apply(update)
             publish(.init(phase: status.phase, utteranceID: id,
-                          text: DictationStatus.transcript(reducer.finalized + reducer.provisional, seams: seams),
+                          text: DictationStatus.transcript(reducer.finalized, provisional: reducer.provisional,
+                                                           seams: seams),
                           committedText: DictationStatus.transcript(reducer.finalized, seams: seams),
                           message: status.message))
         } catch {

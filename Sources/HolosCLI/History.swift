@@ -146,7 +146,7 @@ struct History: ParsableCommand {
             let (pipeline, note) = DictationRerun.pipeline(language: locale, removeFillers: preferences.removeFillers,
                                                            corrections: corrections, wordList: wordList.terms,
                                                            heardAs: wordList.heardAsPairs,
-                                                           names: VoiceProfileService.profileNames().values.sorted(),
+                                                           names: PeopleNames().current(),
                                                            aiFix: preferences.aiFix && !noAIFix,
                                                            spokenCode: preferences.spokenCode && !noSpokenCode,
                                                            backticks: preferences.spokenCodeBackticks)

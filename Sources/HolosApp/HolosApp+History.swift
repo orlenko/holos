@@ -66,7 +66,7 @@ extension HolosAppDelegate {
         let (pipeline, note) = DictationRerun.pipeline(language: locale, removeFillers: removeFillers,
                                                        corrections: corrections, wordList: wordList.terms,
                                                        heardAs: wordList.heardAsPairs,
-                                                       names: VoiceProfileService.profileNames().values.sorted(),
+                                                       names: peopleNames.current(),
                                                        aiFix: AIFixSetting.isOn,
                                                        spokenCode: SpokenCodeSetting.isOn,
                                                        backticks: SpokenCodeSetting.backticks)

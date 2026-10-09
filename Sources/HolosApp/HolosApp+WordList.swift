@@ -37,10 +37,11 @@ extension HolosAppDelegate {
     }
 
     /// The words whose capitals dictation keeps after a pause inside a sentence (`DictationSeams`): the word list's
-    /// terms, learned corrections' meant phrases, and people's names.
+    /// terms, learned corrections' meant phrases, and people's names (as People holds them now: `peopleNames` reads
+    /// the people store again when it changed). Live dictation asks it as each dictation starts; Run Again uses the
+    /// same names.
     func dictationSeamTerms() -> [String] {
-        DictationSeams.terms(wordList: wordList.terms, corrections: corrections,
-                             names: VoiceProfileService.profileNames().values.sorted())
+        DictationSeams.terms(wordList: wordList.terms, corrections: corrections, names: peopleNames.current())
     }
 
     /// A meeting's contextual strings in `languages`: the word list (read again if it changed), people's names, then
