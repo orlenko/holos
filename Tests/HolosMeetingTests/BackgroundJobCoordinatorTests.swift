@@ -794,6 +794,23 @@ extension World {
 }
 
 @Test(.timeLimit(.minutes(1)))
+@MainActor func aPeopleStoreThatCannotBeReadEndsTheScanWithoutAnotherUntilALaterLook() async {
+    let world = World(echo: ["C"])
+    world.summaries.launchReady = true
+    world.summaries.requests = [MeetingSummarySchedule.Request(sessionID: "S", id: "R1")]
+    world.summaryScan.withLock { $0 = .unreadable(nil) }
+    #expect(await world.lookAndScan())
+    // The look the scan's end makes starts the echo analysis held for it, not another scan (which would hold it again).
+    #expect(await world.settle())
+    #expect(world.runner.started == ["echo C"])
+    #expect(world.scans.value == 1)
+    world.runner.finishLast(0)
+    #expect(await world.settle())
+    #expect(await eventually { world.scans.value == 2 && !world.summaries.scanning }, "A later look scans again.")
+    #expect(world.summaries.requested == ["S"], "Kept for when the store can be read.")
+}
+
+@Test(.timeLimit(.minutes(1)))
 @MainActor func aSummaryIsAJobLikeTheOthersAndAMeetingStopsIt() async {
     let world = World(deep: ["A"])
     world.summarize([summaryCandidate("S")])

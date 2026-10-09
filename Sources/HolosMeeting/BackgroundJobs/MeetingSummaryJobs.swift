@@ -16,7 +16,8 @@ import os
 /// 2. No scan starts, and no summary is picked, before the launch is ready (`launchReady`) or while a final-transcript
 ///    reconciliation runs (`reconciling`); none starts while a summary runs or a meeting is busy.
 /// 3. A scan's result is offered only to the look made when it ends (`onScanned`), and to the looks made during it (a
-///    job that could not start looks again), and then dropped.
+///    job that could not start looks again), and then dropped. No scan starts during those looks, even when the scan
+///    found nothing to offer (a people store it could not read): the next one waits for a later look.
 /// 4. A run that failed for good is not tried again for the same key (transcript and speakers' names) until the key
 ///    changes, the setting is turned on again, or the app starts again (`attempted`).
 @MainActor public final class MeetingSummaryJobs: BackgroundJobKind {
@@ -82,6 +83,8 @@ import os
     private let scanner: @Sendable (_ root: URL, _ requested: [String]) -> Scan
     /// The result of the scan that just ended, during the look it makes (invariant 3).
     private var found: (candidates: [MeetingSummarySchedule.Candidate], gone: Set<String>)?
+    /// The look a scan's end makes is going on (invariant 3).
+    private var scanEnding = false
     /// The key of each meeting picked, for a failure.
     private var keys: [String: String] = [:]
 
@@ -113,7 +116,7 @@ import os
 
     /// Starts a scan when none goes on and a summary could follow (invariant 2).
     public func lookForWork(_ holds: BackgroundJobHolds) {
-        guard let root, !scanning, found == nil, holds.running == nil, launchReady, reconciling == 0,
+        guard let root, !scanning, !scanEnding, found == nil, holds.running == nil, launchReady, reconciling == 0,
               !holds.meetingBusy else { return }
         scanning = true
         let requested = requested
@@ -146,7 +149,9 @@ import os
             }
             found = (candidates, gone)
         }
+        scanEnding = true
         onScanned()
+        scanEnding = false
         found = nil
     }
 
