@@ -354,24 +354,21 @@ public enum RecordingWorkflow {
 // MARK: - Recorder
 
 /// One recording from its first status write to `exited` (docs/meeting-design.md §4.2, §4.6). Its work is split by
-/// concern: `Recorder+Capture` (epochs), `+Power`, `+Status` (status.json and the journal), `+Stop` (the stop path)
-/// and `+Exit` (the exited status and the locks).
+/// concern: `Recorder+Capture` (epochs), `+Power`, `+Status` (status.json and the journal) and `+Stop` (the stop
+/// path); `RecorderExitSequence` writes the exited status and lets go of the locks still held at the end.
 ///
 /// Invariants:
-/// 1. Once `init` has succeeded, `run` calls `exitStatus` before it returns or throws.
-/// 2. `exitStatus` releases the writer lock only after `exited` has been written or a write of it has failed. After a
-///    failed write, until the recorder writes `exited`, `releaseWriterLock` and `releaseLease` give their lock to
-///    `exitRetry` instead of releasing it.
-/// 3. The stop path takes the processing lease while it still holds the writer lock.
-/// 4. The stop path finishes the pump, awaits the writer task and finishes the chunk writer before it reads the
+/// 1. Once `init` has succeeded, `run` ends through `exitSequence` (`finish`, or `finishUnlessWritten` in its catch)
+///    before it returns or throws.
+/// 2. The stop path takes the processing lease while it still holds the writer lock, and the recorder lets the lease
+///    go only through `exitSequence` (`finish` or `release`).
+/// 3. The stop path finishes the pump, awaits the writer task and finishes the chunk writer before it reads the
 ///    manifest, saves a transcript or takes the processing lease.
-/// 5. The recorder calls `stop()` at most once per capture: `captureStopped` is set before each call and cleared
+/// 4. The recorder calls `stop()` at most once per capture: `captureStopped` is set before each call and cleared
 ///    only for a new capture.
-/// 6. The stop source, `stop.request` and the duration are each applied at most once (their `…Handled` flags).
-/// 7. Once `cancelled` is set, `apply` applies no more inputs and `run` throws `CancellationError`.
-/// 8. Every willSleep the loop drains is allowed (`allowSleep`) right after it is applied.
-/// 9. The recorder deletes leftover request files and the closed marker only after `exited` was written (by
-///    `exitStatus` or `exitRetry`).
+/// 5. The stop source, `stop.request` and the duration are each applied at most once (their `…Handled` flags).
+/// 6. Once `cancelled` is set, `apply` applies no more inputs and `run` throws `CancellationError`.
+/// 7. Every willSleep the loop drains is allowed (`allowSleep`) right after it is applied.
 @MainActor
 final class Recorder {
     static let log = Logger(subsystem: "ca.orlenko.holos.app", category: "recorder")
@@ -428,16 +425,10 @@ final class Recorder {
     var cancelled = false
     var recordingError: Error?
     var archiveOpen = true
-    /// The exit was published (or tried): requests are no longer answered.
-    var exited = false
-    /// status.json says exited.
-    var exitWritten = false
-    /// The exited status could not be written: the session's last lock stays held until it is (`exitRetry`) or this
-    /// process exits, so liveness never reads a recorder that is still shutting down as dead.
-    var holdsLocksUntilExit: Bool { exited && !exitWritten }
-    /// Keeps trying the exited status in the background once `StatusWriter` gave up, and holds the locks until then.
-    var exitRetry: ExitRetry?
-    var stoppedInbox: Task<Void, Never>?
+    /// Writes `exited` and lets go of the locks the recorder still holds when the run ends.
+    lazy var exitSequence = RecorderExitSequence(
+        archive: archive, status: status, liveText: liveText, tuning: dependencies.tuning,
+        exitStatusWait: dependencies.exitStatusWait) { [weak self] in await self?.answerStoppedRequests() }
 
     init(archive: SessionArchive, options: RecordingOptions, dependencies: RecordingDependencies,
          plan: EpochPlan) throws {
@@ -500,12 +491,10 @@ final class Recorder {
                 try? await archive.finish(status: ArchiveStatus.transcriptionIncomplete, keepingLock: true)
                 archiveOpen = false
             }
-            if !exitWritten {
+            await exitSequence.finishUnlessWritten {
                 let saved = (try? SessionArchive.readManifest(at: archive.directory).status) ?? ArchiveStatus.incomplete
-                await exitStatus(RecorderExit(archiveStatus: saved, reason: machine.stopReason ?? .requested,
-                                              message: error is CancellationError ? "Cancelled." : error.localizedDescription))
-            } else {
-                await releaseWriterLock()
+                return RecorderExit(archiveStatus: saved, reason: machine.stopReason ?? .requested,
+                                    message: error is CancellationError ? "Cancelled." : error.localizedDescription)
             }
             throw error
         }
@@ -559,8 +548,8 @@ final class Recorder {
             try? await archive.recordEvent(kind: MeetingEventKind.startFailed, details: details)
             try? await archive.finish(status: ArchiveStatus.failed, keepingLock: true)
             archiveOpen = false
-            await exitStatus(RecorderExit(archiveStatus: ArchiveStatus.failed, reason: .startFailed,
-                                    message: details["error"]))
+            await exitSequence.finish(RecorderExit(archiveStatus: ArchiveStatus.failed, reason: .startFailed,
+                                                   message: details["error"]))
             Self.log.error("Session \(self.archive.id, privacy: .public) failed to start capture")
             if cancelledAtStart { throw CancellationError() }
             throw error

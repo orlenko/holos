@@ -209,7 +209,7 @@ private func writeStatusUnsynced(_ status: RecorderStatus, session: URL) throws 
     try HolosJSON.encoder().encode(status).write(to: SessionPaths.status(session))
 }
 
-/// The exiting recorder's steps, in the order `Recorder.exitStatus` takes them, driven one at a time.
+/// The exiting recorder's steps, in the order `RecorderExitSequence.exitStatus` takes them, driven one at a time.
 private final class ExitingRecorder {
     enum Step: CaseIterable { case close, poll, answer, exited, sweep, reopen }
 
