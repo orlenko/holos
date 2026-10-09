@@ -86,15 +86,6 @@ public enum EchoCatchUpSchedule {
     }
 
     public struct Situation: Sendable, Equatable {
-        /// A meeting is starting, recording, or saving: it has the Mac to itself.
-        public var meetingBusy: Bool
-        /// Another background job runs: this app's final transcript or summary, or any process's
-        /// (`DeepTranscriptionLock` held, also by an echo analysis that outlived the app that started it). One at a
-        /// time.
-        public var otherJobRunning: Bool
-        /// Work the user asked for is about to start (Make Final Transcript Now ready to run, or a Summarize Again the
-        /// summary scan going on may start): it goes first.
-        public var askedForWorkWaiting: Bool
         /// The meeting this app analyses now, if any.
         public var running: String?
         /// Meetings another command of the app works on, and meetings open (or opening, or saving) in Review, which
@@ -106,41 +97,22 @@ public enum EchoCatchUpSchedule {
         public var delayedUntil: [String: Date]
         public var now: Date
 
-        public init(meetingBusy: Bool = false, otherJobRunning: Bool = false, askedForWorkWaiting: Bool = false,
-                    running: String? = nil, inUse: Set<String> = [], failed: Set<String> = [],
+        public init(running: String? = nil, inUse: Set<String> = [], failed: Set<String> = [],
                     delayedUntil: [String: Date] = [:], now: Date = Date()) {
-            self.meetingBusy = meetingBusy; self.otherJobRunning = otherJobRunning
-            self.askedForWorkWaiting = askedForWorkWaiting; self.running = running; self.inUse = inUse
+            self.running = running; self.inUse = inUse
             self.failed = failed; self.delayedUntil = delayedUntil; self.now = now
         }
     }
 
-    public enum Decision: Sendable, Equatable {
-        /// Analyse this meeting now.
-        case run(Candidate)
-        /// A meeting is ready, but a meeting, another job, or work the user asked for goes first.
-        case wait
-        /// Nothing is ready: the queue is empty, or every meeting in it is in use, delayed, or failed.
-        case idle
-    }
-
-    /// The queued meetings that could run were nothing else going on, in queue order: not running, not in use or
-    /// under review, not failed in this launch, and not delayed. The final transcript and summary schedulers ask this
-    /// to let an automatic job wait while echo work is ready.
+    /// The queued meetings that could run were no other job going on, in queue order: not running, not in use or
+    /// under review, not failed in this launch, and not delayed. `EchoCatchUpJobs` runs the first; whether it starts
+    /// now, and whether automatic work waits for it, is `BackgroundJobOrder`'s.
     public static func ready(_ queue: [Candidate], _ situation: Situation) -> [Candidate] {
         queue.filter { candidate in
             candidate.sessionID != situation.running && !situation.inUse.contains(candidate.sessionID)
                 && !situation.failed.contains(candidate.sessionID)
                 && (situation.delayedUntil[candidate.sessionID].map { $0 <= situation.now } ?? true)
         }
-    }
-
-    /// The next run: none while one runs; else the first ready meeting (the queue is newest first), unless a meeting
-    /// is busy, another background job runs, or work the user asked for waits (then `wait`).
-    public static func next(_ queue: [Candidate], _ situation: Situation) -> Decision {
-        guard situation.running == nil, let first = ready(queue, situation).first else { return .idle }
-        guard !situation.meetingBusy, !situation.otherJobRunning, !situation.askedForWorkWaiting else { return .wait }
-        return .run(first)
     }
 
     /// What becomes of a meeting whose run ended.

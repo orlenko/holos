@@ -214,14 +214,10 @@ extension HolosAppDelegate {
         case unreadable(String?)
     }
 
-    /// An echo analysis or automatic final transcript held back for this scan (`waitsForSummaryScan`) is looked at
-    /// again: it starts unless the scan started a summary
+    /// An echo analysis or automatic final transcript held back for this scan
+    /// (`BackgroundJobCoordinator.waitsForSummaryScan`) is looked at again: it starts unless the scan started a summary
     /// (then it waits for it).
     private func meetingSummaryScanEnded() {
-        if meeting.echo.waitsForSummaryScan {
-            meeting.echo.waitsForSummaryScan = false
-            scheduleEchoCatchUp()
-        }
         meeting.deep.coordinator?.summaryScanEnded()
     }
 
@@ -241,8 +237,7 @@ extension HolosAppDelegate {
             enabled: MeetingSummaryAppState.enabled, modelAvailable: OnDeviceFix.unavailableReason == nil,
             meetingBusy: meetingIsBusy(controller.state),
             // This app's echo analysis counts as a job running (one at a time, §5.11).
-            deepPassRunning: meeting.deep.coordinator?.isRunning == true || DeepTranscriptionLock.state() != .free
-                || meeting.echo.running != nil,
+            deepPassRunning: meeting.deep.coordinator?.isRunning == true || DeepTranscriptionLock.state() != .free,
             running: nil,
             inUse: inUse, attempted: meeting.summaries.attempted, delayedUntil: meeting.summaries.delayedUntil,
             requested: meeting.summaries.requested, onBattery: PowerSource.current() == .battery,
@@ -254,8 +249,8 @@ extension HolosAppDelegate {
         guard case .run(let sessionID, let path, let force) = MeetingSummarySchedule.next(candidates, situation)
         else { return }
         // A call's missing echo analysis goes before an automatic summary (§5.11); Summarize Again does not wait.
-        if !meeting.summaries.requested.contains(sessionID), echoCatchUpReady() {
-            scheduleEchoCatchUp()
+        if !meeting.summaries.requested.contains(sessionID), meeting.deep.coordinator?.catchUpReady() == true {
+            scheduleBackgroundJobs()
             return
         }
         // A failure is remembered by the meeting's key (transcript and speakers' names): either changing makes it
@@ -342,7 +337,6 @@ extension HolosAppDelegate {
         // analysis. Summaries are looked for first, so one the user asked for goes before the next automatic job
         // (which waits for the scan).
         scheduleMeetingSummaries()
-        scheduleEchoCatchUp()
         scheduleBackgroundJobs()
     }
 

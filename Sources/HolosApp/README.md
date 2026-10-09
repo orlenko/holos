@@ -8,7 +8,7 @@ wiring between them and the library controllers (docs/design.md "Main window").
   bar item and menu, plus 12 `HolosApp+<Area>.swift` extensions (Meeting, DeepTranscription, MeetingSummary,
   EchoCatchUp, BackgroundJobs, MainWindow, History, People, WordList, Reading, SetupAssistant, MeetingLanguage) with
   their state holders (`MeetingAppState`, `DeepTranscriptionAppState`, …). `+BackgroundJobs` wires `HolosMeeting`'s
-  `BackgroundJobCoordinator`, which runs final transcripts.
+  `BackgroundJobCoordinator`, which runs final transcripts and echo analyses.
 - `MainWindow/`: `MainWindowController` (sidebar window) and the panes (History, Meetings, People, Corrections,
   Reading, Settings, live meeting view).
 - `Review/`: `ReviewWindow`, `TurnListView` (+WordEditing, +Splitting), `SpeakerSidebarView`, `ReviewPlayer`,
@@ -20,8 +20,8 @@ wiring between them and the library controllers (docs/design.md "Main window").
 controllers in `HolosMeeting`/`HolosDictation` and paths in `HolosStorage`. Commands whose output the app reads go
 through `HolosMeeting`'s `CommandRunner` and decode into the library's types (`DoctorReport`,
 `PostProcessingRecord`, `SessionSummarizeCommand.Outcome`, `SessionEchoAnalyzeCommand.Outcome`,
-`SessionRenameCommand.Outcome`). Today it still holds the dictation session and the summary and echo catch-up
-schedulers (`+MeetingSummary`, `+EchoCatchUp`; their scheduling has no tests), 13 files import
+`SessionRenameCommand.Outcome`). Today it still holds the dictation session and the summary scheduler
+(`+MeetingSummary`; its scheduling has no tests), 13 files import
 `HolosStorage`, and `CommandPrinted` (`HolosApp+Meeting.swift`) reads the result line of `session recover`,
 `diarize`, `delete` and `rename` output as untyped JSON. Shrink these, do not copy them.
 

@@ -98,7 +98,7 @@ final class MeetingAppState {
     /// Meeting titles and summaries (docs/meeting-design.md §4.17).
     let summaries = MeetingSummaryAppState()
     /// The acoustic echo analysis of calls that miss it (docs/meeting-design.md §5.11, "Catching up in the app").
-    let echo = EchoCatchUpAppState()
+    let echo = EchoCatchUpJobs()
 }
 
 extension HolosAppDelegate: NSMenuDelegate {
@@ -132,7 +132,6 @@ extension HolosAppDelegate: NSMenuDelegate {
             // next echo analysis's. Summaries are looked for first, so a Summarize Again waiting goes before the next
             // automatic job (which waits for that scan); the echo analysis goes before an automatic final transcript.
             self?.scheduleMeetingSummaries()
-            self?.scheduleEchoCatchUp()
             self?.scheduleBackgroundJobs()
         }
         // Reviews open, opening, or still saving after they closed: the automatic relabel leaves those meetings alone.
@@ -150,7 +149,7 @@ extension HolosAppDelegate: NSMenuDelegate {
         refreshSpeakerModels()
         setUpDeepTranscription()
         setUpMeetingSummaries()
-        setUpEchoCatchUp()
+        scanEchoCatchUp()
         Task { [weak self] in await self?.promptAboutInterruptedRecordings() }
     }
 
@@ -179,7 +178,6 @@ extension HolosAppDelegate: NSMenuDelegate {
         // again afterwards.
         meeting.deep.coordinator?.meetingStateChanged()
         meetingSummaryMeetingStateChanged()
-        echoCatchUpMeetingStateChanged()
     }
 
     private func handleMeetingEffect(_ effect: MeetingEffect) {

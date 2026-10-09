@@ -92,6 +92,8 @@ public enum BackgroundJobEnd: Sendable, Equatable {
     var name: String { get }
     /// What the Meetings list shows while the job runs (`MeetingController.beginUsing`).
     var runningText: String { get }
+    /// The queue is still being found (a scan goes on): automatic work waits for it as for a ready catch-up job.
+    var finding: Bool { get }
     /// Called before every look, whatever comes of it, with the kind's meeting running now.
     func willLook(running: String?)
     /// The job this kind starts next were nothing else going on (`holds` applied), or nil. It may tidy the queue on
@@ -99,6 +101,11 @@ public enum BackgroundJobEnd: Sendable, Equatable {
     func next(_ holds: BackgroundJobHolds) -> BackgroundJobPick?
     /// Work of this kind the user asked for is waiting, whether or not it can start yet: catch-up work waits for it.
     func askedForWaiting(_ holds: BackgroundJobHolds) -> Bool
+    /// A check run off the main actor once the meeting is taken and before the command starts (false: nothing to
+    /// do); nil when the command starts at once.
+    func preparation(for pick: BackgroundJobPick) -> (@Sendable () -> Bool)?
+    /// The check found nothing to do.
+    func nothingToDo(_ sessionID: String) -> BackgroundJobEnd
     /// The command exited; `preempted`: the coordinator signalled it because a meeting started.
     func ended(_ sessionID: String, result: CommandResult<Outcome>, preempted: Bool) -> BackgroundJobEnd
     /// How long a meeting turned down `attempts` times in a row waits.
@@ -108,8 +115,11 @@ public enum BackgroundJobEnd: Sendable, Equatable {
 }
 
 extension BackgroundJobKind {
+    public var finding: Bool { false }
     public func willLook(running: String?) {}
     public func askedForWaiting(_ holds: BackgroundJobHolds) -> Bool { false }
+    public func preparation(for pick: BackgroundJobPick) -> (@Sendable () -> Bool)? { nil }
+    public func nothingToDo(_ sessionID: String) -> BackgroundJobEnd { .finished }
     public func settled(_ sessionID: String) {}
 }
 
@@ -124,8 +134,7 @@ public enum BackgroundJobOrder {
         public var askedForWaiting: Bool
         /// The summary scan going on may start a Summarize Again: catch-up and automatic work wait for its end.
         public var summaryRequestScan: Bool
-        /// Catch-up work no pick stands for is ready, or a catch-up queue is not known yet (its scan goes on):
-        /// automatic work waits for it.
+        /// A catch-up queue is not known yet (its scan goes on): automatic work waits for it.
         public var catchUpPending: Bool
 
         public init(blocked: Bool = false, askedForWaiting: Bool = false, summaryRequestScan: Bool = false,

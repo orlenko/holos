@@ -2,13 +2,12 @@ import Foundation
 import os
 
 /// Runs the app's background jobs on meetings, one at a time on this Mac (docs/meeting-design.md §4.16 "App",
-/// §4.17, §5.11 "Catching up in the app"): final transcripts (`DeepTranscriptionJobs`). Each kind keeps its queue and
-/// says what runs next and what an exit comes to; the coordinator probes the background job lock, applies the holds,
-/// orders the kinds' picks (`BackgroundJobOrder`), takes the meeting, starts the command through
-/// `BackgroundJobRunner`, stops it when a meeting starts, and retries what was turned down. Summaries and the echo
-/// catch-up keep their own schedulers: their jobs count as other jobs here (`Environment.otherJobRunning`), a
-/// Summarize Again their scan may start goes first (`Environment.summaryRequestScan`), and automatic work waits for
-/// echo work (`Environment.otherCatchUpReady`).
+/// §4.17, §5.11 "Catching up in the app"): final transcripts (`DeepTranscriptionJobs`) and echo analyses
+/// (`EchoCatchUpJobs`). Each kind keeps its queue and says what runs next and what an exit comes to; the coordinator
+/// probes the background job lock, applies the holds, orders the kinds' picks (`BackgroundJobOrder`), takes the
+/// meeting, starts the command through `BackgroundJobRunner`, stops it when a meeting starts, and retries what was
+/// turned down. Summaries keep their own scheduler: they count as another job here (`Environment.otherJobRunning`),
+/// and a Summarize Again their scan may start goes first (`Environment.summaryRequestScan`).
 ///
 /// The app calls `schedule()` whenever something may let a job start (a job or command ending, a meeting saved, a
 /// queue changing, and a 30 s tick, which also ends delays), and `meetingStateChanged()` on every meeting state change.
@@ -38,16 +37,14 @@ import os
         /// Takes a meeting for a job (`MeetingController.beginUsing`); false when the app already uses it.
         public var beginUsing: @MainActor (_ sessionID: String, _ doing: String) -> Bool
         public var lockState: @MainActor () -> DeepTranscriptionLock.State
-        /// Another scheduler of this app runs a job (a summary, an echo analysis).
+        /// Another scheduler of this app runs a job (a summary).
         public var otherJobRunning: @MainActor () -> Bool
         /// The summary scan going on may start a Summarize Again.
         public var summaryRequestScan: @MainActor () -> Bool
-        /// Catch-up work of another scheduler (the echo catch-up) is ready or not known yet: automatic work waits.
-        public var otherCatchUpReady: @MainActor () -> Bool
-        /// Asked to start that catch-up work when automatic work waited for it.
-        public var startOtherCatchUp: @MainActor () -> Void
-        /// Looks for the other schedulers' next jobs (summaries first), before this coordinator looks for its own.
+        /// Looks for the other schedulers' next jobs (summaries), before this coordinator looks for its own.
         public var scheduleOthers: @MainActor () -> Void
+        /// A job took its meeting, before its command starts.
+        public var started: @MainActor (_ kind: any BackgroundJobKind, _ sessionID: String) -> Void
         /// A job let go of its meeting (invariant 3): the app ends its use (`MeetingController.endUsing`).
         public var released: @MainActor (_ kind: any BackgroundJobKind, _ sessionID: String) -> Void
         /// What the Meetings list shows of the jobs may have changed.
@@ -60,24 +57,22 @@ import os
                     lockState: @escaping @MainActor () -> DeepTranscriptionLock.State = { DeepTranscriptionLock.state() },
                     otherJobRunning: @escaping @MainActor () -> Bool = { false },
                     summaryRequestScan: @escaping @MainActor () -> Bool = { false },
-                    otherCatchUpReady: @escaping @MainActor () -> Bool = { false },
-                    startOtherCatchUp: @escaping @MainActor () -> Void = {},
                     scheduleOthers: @escaping @MainActor () -> Void = {},
+                    started: @escaping @MainActor (any BackgroundJobKind, String) -> Void = { _, _ in },
                     released: @escaping @MainActor (any BackgroundJobKind, String) -> Void,
                     changed: @escaping @MainActor () -> Void = {},
                     now: @escaping @MainActor () -> Date = { Date() }) {
             self.meetingBusy = meetingBusy; self.sessionsInUse = sessionsInUse; self.beginUsing = beginUsing
             self.lockState = lockState; self.otherJobRunning = otherJobRunning
-            self.summaryRequestScan = summaryRequestScan; self.otherCatchUpReady = otherCatchUpReady
-            self.startOtherCatchUp = startOtherCatchUp; self.scheduleOthers = scheduleOthers
-            self.released = released; self.changed = changed; self.now = now
+            self.summaryRequestScan = summaryRequestScan; self.scheduleOthers = scheduleOthers
+            self.started = started; self.released = released; self.changed = changed; self.now = now
         }
     }
 
     private struct Running {
         let kind: any BackgroundJobKind
         let sessionID: String
-        /// Nil until the command started.
+        /// Nil until the command started (a kind's `preparation` runs first).
         var handle: (any BackgroundJobHandle)?
         /// Signalled because a meeting started (invariant 4).
         var preempted = false
@@ -123,6 +118,15 @@ import os
         return running.sessionID
     }
 
+    /// Whether automatic work of another scheduler (a summary) waits for catch-up work: a catch-up queue is not known
+    /// yet, or, with no job of this coordinator running, a catch-up job could start were nothing else going on.
+    public func catchUpReady() -> Bool {
+        if kinds.contains(where: \.finding) { return true }
+        guard running == nil else { return false }
+        return picks(busy: environment.meetingBusy(), inUse: environment.sessionsInUse(), now: environment.now())
+            .contains { $0.pick.priority == .catchUp }
+    }
+
     /// Whether work the user asked for of one of the kinds waits (ready or not): automatic summaries wait for it.
     public func askedForWorkWaiting() -> Bool {
         let now = environment.now()
@@ -133,8 +137,9 @@ import os
 
     // MARK: - Scheduling
 
-    /// Starts the next job when one may start (invariant 1), in `BackgroundJobOrder`'s order.
-    public func schedule() {
+    /// Starts the next job when one may start (invariant 1), in `BackgroundJobOrder`'s order. `catchUpOnly`: only a
+    /// catch-up job may start (a catch-up queue just found, before summaries are looked for).
+    public func schedule(catchUpOnly: Bool = false) {
         for kind in kinds { kind.willLook(running: runningSession(of: kind)) }
         let now = environment.now()
         // Also while a job runs, so a clock set back before it ends brings no wait back (invariant 5).
@@ -146,20 +151,14 @@ import os
         lock = environment.lockState()
         let busy = environment.meetingBusy()
         let inUse = environment.sessionsInUse()
-        let found = picks(busy: busy, inUse: inUse, now: now)
-        let otherCatchUp = environment.otherCatchUpReady()
+        let found = picks(busy: busy, inUse: inUse, now: now).filter { !catchUpOnly || $0.pick.priority == .catchUp }
         let situation = BackgroundJobOrder.Situation(
             blocked: busy || lock != .free || environment.otherJobRunning(),
             askedForWaiting: kinds.contains { $0.askedForWaiting(holds(for: $0, busy: busy, inUse: inUse, now: now)) },
             summaryRequestScan: environment.summaryRequestScan(),
-            catchUpPending: otherCatchUp)
+            catchUpPending: kinds.contains(where: \.finding))
         guard let index = BackgroundJobOrder.next(found.map(\.pick.priority), situation) else {
             if situation.summaryRequestScan, !found.isEmpty { waitsForSummaryScan = true }
-            // Automatic work waited for the other scheduler's catch-up work: it is started (or keeps waiting).
-            if !situation.blocked, !situation.summaryRequestScan, otherCatchUp,
-               found.contains(where: { $0.pick.priority == .automatic }) {
-                environment.startOtherCatchUp()
-            }
             environment.changed()
             return
         }
@@ -228,8 +227,24 @@ import os
             environment.changed()
             return
         }
+        environment.started(kind, sessionID)
         environment.changed()
-        launch(kind, pick)
+        guard let check = kind.preparation(for: pick) else {
+            launch(kind, pick)
+            return
+        }
+        Task { [weak self] in
+            let needed = await Task.detached { check() }.value
+            guard let self else { return }
+            if !needed {
+                self.finish(kind, sessionID, kind.nothingToDo(sessionID))
+            } else if self.environment.meetingBusy() {
+                // A meeting started while the check ran: it has the Mac to itself; the job stays queued.
+                self.finish(kind, sessionID, .stopped)
+            } else {
+                self.launch(kind, pick)
+            }
+        }
     }
 
     private func launch<Kind: BackgroundJobKind>(_ kind: Kind, _ pick: BackgroundJobPick) {

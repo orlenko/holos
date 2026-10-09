@@ -106,30 +106,18 @@ func aCallWhoseFilesWereNotRewrittenForItsMaskIsFoundAgain() async throws {
 @Test func meetingsInUseUnderReviewFailedOrDelayedWaitAndTheNextReadyOneRuns() {
     let queue = [candidate("A", hoursAgo: 1), candidate("B", hoursAgo: 2), candidate("C", hoursAgo: 3),
                  candidate("D", hoursAgo: 4)]
-    #expect(EchoCatchUpSchedule.next(queue, .init(now: base)) == .run(queue[0]))
+    #expect(EchoCatchUpSchedule.ready(queue, .init(now: base)).first == queue[0])
     // A command or a review holds A, B failed in this launch, C is turned down for a while: D runs.
     var situation = EchoCatchUpSchedule.Situation(inUse: ["A"], failed: ["B"],
                                                   delayedUntil: ["C": base.addingTimeInterval(60)], now: base)
     #expect(EchoCatchUpSchedule.ready(queue, situation).map(\.sessionID) == ["D"])
-    #expect(EchoCatchUpSchedule.next(queue, situation) == .run(queue[3]))
     // Once C's delay is over it goes first again (newest first).
     situation.now = base.addingTimeInterval(60)
-    #expect(EchoCatchUpSchedule.next(queue, situation) == .run(queue[2]))
-    // Nothing ready: idle, whatever else goes on.
-    let blocked = EchoCatchUpSchedule.Situation(meetingBusy: true, inUse: ["A", "B", "C", "D"], now: base)
-    #expect(EchoCatchUpSchedule.next(queue, blocked) == .idle)
-    #expect(EchoCatchUpSchedule.next([], .init(now: base)) == .idle)
-}
-
-@Test func oneJobAtATimeAndWorkTheUserAskedForGoesFirst() {
-    let queue = [candidate("A")]
-    #expect(EchoCatchUpSchedule.next(queue, .init(running: "A", now: base)) == .idle, "A run is going on.")
-    #expect(EchoCatchUpSchedule.next(queue + [candidate("B", hoursAgo: 2)], .init(running: "A", now: base)) == .idle)
-    #expect(EchoCatchUpSchedule.next(queue, .init(meetingBusy: true, now: base)) == .wait)
-    #expect(EchoCatchUpSchedule.next(queue, .init(otherJobRunning: true, now: base)) == .wait)
-    #expect(EchoCatchUpSchedule.next(queue, .init(askedForWorkWaiting: true, now: base)) == .wait)
-    // Ready regardless: an automatic final transcript or summary waits for it.
-    #expect(EchoCatchUpSchedule.ready(queue, .init(meetingBusy: true, otherJobRunning: true, now: base)) == queue)
+    #expect(EchoCatchUpSchedule.ready(queue, situation).first == queue[2])
+    // The meeting running now is not ready again; nothing ready leaves nothing to run.
+    #expect(EchoCatchUpSchedule.ready(queue, .init(running: "A", now: base)).first == queue[1])
+    #expect(EchoCatchUpSchedule.ready(queue, .init(inUse: ["A", "B", "C", "D"], now: base)).isEmpty)
+    #expect(EchoCatchUpSchedule.ready([], .init(now: base)).isEmpty)
 }
 
 // MARK: - How a run ends
@@ -172,14 +160,13 @@ func aCallWhoseFilesWereNotRewrittenForItsMaskIsFoundAgain() async throws {
     // A runs; a meeting starts, so the app stops it (SIGTERM) and keeps it queued: it is neither failed nor delayed,
     // and waits only for the meeting.
     let queue = [candidate("A", hoursAgo: 1), candidate("B", hoursAgo: 2)]
-    #expect(EchoCatchUpSchedule.next(queue, .init(now: base)) == .run(candidate("A", hoursAgo: 1)))
+    #expect(EchoCatchUpSchedule.ready(queue, .init(now: base)).first == candidate("A", hoursAgo: 1))
     let end = EchoCatchUpSchedule.runEnded(code: DeepTranscriptionSchedule.terminatedExitCode, preempted: true,
                                            summary: nil, errors: "")
     #expect(end == .stopped)
     #expect(EchoCatchUpSchedule.problemText(end) == nil, "The list says nothing about it.")
     #expect(EchoCatchUpSchedule.stateTexts(queue, running: nil, failed: [])["A"] == EchoCatchUpSchedule.queuedText)
-    #expect(EchoCatchUpSchedule.next(queue, .init(meetingBusy: true, now: base)) == .wait)
-    #expect(EchoCatchUpSchedule.next(queue, .init(now: base)) == .run(candidate("A", hoursAgo: 1)))
+    #expect(EchoCatchUpSchedule.ready(queue, .init(now: base)).first == candidate("A", hoursAgo: 1))
 }
 
 @Test(.timeLimit(.minutes(1)))
@@ -206,7 +193,8 @@ func anEchoAnalysisLeftRunningFromBeforeARelaunchHoldsTheNextOneBack() async thr
     // The relaunched app finds the first busy (its lease) and the second needing work, and starts nothing while the
     // lock is held.
     let queue = [EchoCatchUpSchedule.Candidate(sessionID: secondID, path: second.path, createdAt: base)]
-    #expect(EchoCatchUpSchedule.next(queue, .init(otherJobRunning: state != .free, now: base)) == .wait)
+    #expect(EchoCatchUpSchedule.ready(queue, .init(now: base)) == queue)
+    #expect(BackgroundJobOrder.next([.catchUp], .init(blocked: state != .free)) == nil)
     // A run that starts anyway (the lock taken a moment after the app looked) is refused with nothing changed, and
     // tried again later.
     await #expect {
@@ -234,7 +222,7 @@ func anEchoAnalysisLeftRunningFromBeforeARelaunchHoldsTheNextOneBack() async thr
     // A launch: A fails, so B runs next; A is still needed (a rescan finds it again) but not tried again.
     var queue = [candidate("A", hoursAgo: 1), candidate("B", hoursAgo: 2)]
     var failed: Set<String> = []
-    guard case .run(let first) = EchoCatchUpSchedule.next(queue, .init(failed: failed, now: base)) else {
+    guard let first = EchoCatchUpSchedule.ready(queue, .init(failed: failed, now: base)).first else {
         Issue.record("A runs first")
         return
     }
@@ -243,11 +231,11 @@ func anEchoAnalysisLeftRunningFromBeforeARelaunchHoldsTheNextOneBack() async thr
         failed.insert("A")
         queue.removeAll { $0.sessionID == "A" }
     }
-    #expect(EchoCatchUpSchedule.next(queue, .init(failed: failed, now: base)) == .run(candidate("B", hoursAgo: 2)))
+    #expect(EchoCatchUpSchedule.ready(queue, .init(failed: failed, now: base)).first == candidate("B", hoursAgo: 2))
     queue = [candidate("A", hoursAgo: 1)]
-    #expect(EchoCatchUpSchedule.next(queue, .init(failed: failed, now: base)) == .idle)
+    #expect(EchoCatchUpSchedule.ready(queue, .init(failed: failed, now: base)).isEmpty)
     // The next launch starts with nothing failed: A is tried once more.
-    #expect(EchoCatchUpSchedule.next(queue, .init(now: base)) == .run(candidate("A", hoursAgo: 1)))
+    #expect(EchoCatchUpSchedule.ready(queue, .init(now: base)).first == candidate("A", hoursAgo: 1))
 }
 
 // MARK: - What the Meetings list shows
