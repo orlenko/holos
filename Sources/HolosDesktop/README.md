@@ -16,9 +16,11 @@ writes to the pasteboard: when text cannot be inserted it returns `needsCopy` an
 **Depends on:** HolosCore. AppKit, ApplicationServices (Accessibility), Carbon, CoreGraphics, CryptoKit.
 
 **Invariants**
-- Insertion never lands somewhere other than the target captured at key-down; a changed target gives
-  `targetChanged`, and success is reported only when it can be verified (terminals give `typed`).
-- Everything runs on the main actor; Accessibility objects never leave it.
+- Insertion checks the target captured at key-down before writing; a changed target gives `targetChanged`.
+  `inserted` is reported only after the text is read back; keystrokes typed into a terminal cannot be read back
+  (`typed`), and focus that moves while typing gives `unverified`.
+- `GlobalHotkeyMonitor`, `TextInsertion`, `InsertionTarget` and `KeystrokeTarget` are `@MainActor`;
+  `InsertionTarget` keeps its `AXUIElement` file-private.
 
 **Tests:** `Tests/HolosDesktopTests` (`HotkeyReducerTests`, `TextInsertionPolicyTests`, `TerminalFocusTests`,
 `HotkeyPermissionTests`): policies and reducers, no events posted to other apps.

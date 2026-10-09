@@ -21,7 +21,9 @@ Text-to-speech with the voices installed on the Mac: rendering to files, playbac
   on volumes without one, `ExclusivePublisher` creates the destination with `O_EXCL` and copies into it, so the
   partly written file is visible until the copy ends. A failed copy is removed; if that removal cannot be
   confirmed, `CleanupFailed` names the file so the caller can finish later.
-- Voice lookup fails explicitly (`HolosError.unavailable`) when a voice is missing; nothing substitutes another.
+- A render that names a voice fails (`HolosError.unavailable`) when that voice is missing; it never substitutes
+  another. A render that names none uses an English system voice (`defaultVoiceIdentifier`: the current locale when it is
+  English, else en-US).
 
 **Tests:** `Tests/HolosSynthesisTests`. `NativeSpeechRendererTests` renders real speech to files and
 `AudioBookWriterTests` joins generated tones (both `.serialized`); nothing is played aloud.

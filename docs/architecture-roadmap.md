@@ -9,6 +9,9 @@ add a row when a step is split. The working rules that came out of this audit ar
 
 **Tags:** [M] = measured with rg/fd/wc/git/gh. [J] = judged from reading the code.
 
+**Citations:** a bare `§N` in this file is a section of this file. The table in §4.3 lists sections of
+`docs/meeting-design.md`; other documents are always named.
+
 ---
 
 ## 0. Summary
@@ -38,7 +41,7 @@ add a row when a step is split. The working rules that came out of this audit ar
    - `<id>.holos` folder names are built in 7 places and parsed in 5, with different rules.
 5. **Agents have little to orient by** [M].
    - There is no AGENTS.md or CLAUDE.md, and no module READMEs.
-   - `meeting-design.md` is 9,317 lines: 35% is a PR plan (§5) and 18% is code copies (§3.1–3.3). Those copies have drifted: the SHA-256 digests it lists for `MeetingModels.swift` and `SpeakerModels.swift` no longer match the code.
+   - `meeting-design.md` is 9,317 lines: 35% is a PR plan (its section 5) and 18% is code copies (its sections 3.1–3.3). Those copies have drifted: the SHA-256 digests it lists for `MeetingModels.swift` and `SpeakerModels.swift` no longer match the code.
    - `docs/contracts.md` describes a `HolosCorrections` target and a SQLite store that don't exist.
    - 92 of 204 test files are not named after the source file they test.
 6. **Roadmap (§6):** 14 steps, about 24 PRs, each preserving behaviour and under 1,000 non-test lines, in parallel lanes.
@@ -98,7 +101,7 @@ add a row when a step is split. The working rules that came out of this audit ar
 | L8 | Duplicated helpers | `InstallLock` (`WhisperModels.swift:255`, `FluidModels.swift:447`); `ProgressMeter` (Audio and Meeting); 3 one-shot gates (`OutcomeGate`, `RaceGate`, `OneShot`); flock hand-written in 11 files across 8 targets | M |
 | L9 | Dependency cycle inside Meeting | VoiceProfileService calls SpeakerEditor and SessionExports, which call back into it | M |
 | L10 | HolosAppTests depends on the executable target | 16 files `@testable import HolosApp`, so every focused test run builds the whole app | M |
-| L11 | Ownership docs are stale | `contracts.md:21-42` lists HolosCorrections and SQLite. `meeting-design §1.1` says "HolosApp keeps AppKit views only", but the app holds scheduler logic | M |
+| L11 | Ownership docs are stale | `contracts.md:21-42` lists HolosCorrections and SQLite. `docs/meeting-design.md §1.1` says "HolosApp keeps AppKit views only", but the app holds scheduler logic | M |
 
 ### 1.3 CLI and app duplication [M]
 
@@ -264,9 +267,9 @@ the plan for step 2.
 
 ### 4.3 Docs layout
 
-Keep the `§N.M` numbers as headings so all 686 existing citations still resolve. Section sizes [M]: §3 = 1,640 lines, §4 = 3,420, §5 = 3,299.
+Keep the `§N.M` numbers as headings so all 686 existing citations still resolve. Section sizes of `docs/meeting-design.md` [M]: section 3 = 1,640 lines, section 4 = 3,420, section 5 = 3,299.
 
-| New file | Sections from meeting-design.md |
+| New file | Sections from `docs/meeting-design.md` |
 |---|---|
 | `docs/conventions.md` | §1 |
 | `docs/meeting/session-format.md` | §2 and §3.4. Delete §3.1–3.3 (1,550 lines of stale code copies) |

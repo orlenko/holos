@@ -10,18 +10,22 @@ staying awake while recording.
   `AudioEnvironmentEvents`.
 - Writing: `AudioChunkWriter` (actor; 16-bit chunks through HolosStorage), `ChunkWriterPump` (bounded hand-off that
   records an overflow as a discontinuity), `DictationAudioWriter`.
-- `TrackRenderer`: one track's chunks joined into a mono 16 kHz CAF on the session timeline, for post-stop analysis (diarization, echo analysis, deep transcription).
-- `MeetingScreenCapture` (`@MainActor`): optional display capture for screen context (docs/meeting-design.md
-  §4.15), with the pure `ScreenCapturePlan`, `ScreenFrameDifference`, `ScreenStoragePolicy`.
+- `TrackRenderer`: one track's chunks joined into a mono 16 kHz CAF on the session timeline, for post-stop
+  analysis (diarization, echo analysis, deep transcription).
+- `MeetingScreenCapture` (`@MainActor`): optional display capture for screen context
+  (`docs/meeting-design.md §4.15`), with the pure `ScreenCapturePlan`, `ScreenFrameDifference`,
+  `ScreenStoragePolicy`.
 - Power: `SystemPowerMonitor` (`SystemPowerEvents`), `PowerAssertion`.
 
 **Must not own:** transcripts, speaker names, recorder policy (when to restart or stop is `HolosMeeting`'s), UI.
 
 **Depends on:** HolosCore, HolosStorage. AVFoundation, CoreAudio, AudioToolbox, ScreenCaptureKit, CoreImage, IOKit.
 
-**Invariants** (docs/meeting-design.md §1.3, §2.3, §4.3)
-- Real-time callbacks only copy samples into bounded queues: no `await`, file I/O, or blocking locks in them.
-- A gap is recorded as a discontinuity event, never filled with fabricated audio; audio is never written twice.
+**Invariants** (`docs/meeting-design.md §1.3`, `docs/meeting-design.md §2.3`, `docs/meeting-design.md §4.3`)
+- Capture callbacks copy samples into a `PCMFrame` and yield it to a bounded stream: no `await`, file I/O or
+  resampling in them, and only short `Mutex` sections (the microphone timeline, drop counts).
+- `AudioChunkWriter` records a gap as a discontinuity event, never as fabricated audio, and drops samples that
+  would overlap the previous chunk, so no audio is written twice.
 - In a meeting recording, frames are consumed off the main actor, so a main-thread stall cannot overflow capture.
   Dictation is the exception: `DictationController` reads its frames in a `@MainActor` task, and its capture
   ends with an error on overflow (`CaptureOverflow.fail`) instead of dropping audio.
