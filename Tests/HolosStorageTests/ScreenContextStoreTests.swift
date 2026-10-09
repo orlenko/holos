@@ -2,12 +2,11 @@ import Darwin
 import Foundation
 import HolosCore
 import HolosStorage
-import HolosTestSupport
 import HolosSessionTestSupport
 import Testing
 
 private func screenStoreFixture() async throws -> (URL, SessionArchive) {
-    let root = try TemporaryDirectory("screen-store").url
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("holos-screen-store-\(UUID().uuidString)")
     let archive = try SessionFixtureBuilder(name: "Synthetic slides").create(in: root)
     try await archive.finish(status: ArchiveStatus.audioOnly)
     return (root, archive)

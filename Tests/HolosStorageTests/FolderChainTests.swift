@@ -82,7 +82,7 @@ private func swapForLink(_ folder: URL, movedTo moved: URL, target: URL) {
 
 @Test func speakerFoldersAreMadeInOneChainFromTheSession() async throws {
     let fm = FileManager.default
-    let root = try TemporaryDirectory("chain").url
+    let root = fm.temporaryDirectory.appendingPathComponent("holos-chain-\(UUID().uuidString)", isDirectory: true)
     defer { try? fm.removeItem(at: root) }
     let archive = try SessionFixtureBuilder(name: "Chain", source: .microphoneAndSystem).create(in: root)
     try await archive.finish(status: ArchiveStatus.complete)

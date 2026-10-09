@@ -40,7 +40,7 @@ private func age(_ url: URL, by seconds: TimeInterval) throws {
     let appended = try store.append(record, audio: finished)
     #expect(appended.audio == .init(file: "\(record.id.uuidString).m4a", seconds: 2.5))
     #expect(FileInspection.exists(store.audioURL(for: record.id)))
-    #expect(!FileInspection.exists(finished.partial))
+    #expect(!FileInspection.entryExists(finished.partial))
     #expect(FileInspection.mode(store.audioDirectory) == 0o700)
     #expect(FileInspection.mode(store.audioURL(for: record.id)) == 0o600)
     #expect(try store.load().records == [appended])
@@ -51,12 +51,12 @@ private func age(_ url: URL, by seconds: TimeInterval) throws {
     let stray = try partialAudio(for: UUID(), in: store)
     let kept = try store.append(other, audio: stray)
     #expect(kept.audio == nil)
-    #expect(!FileInspection.exists(stray.partial))
+    #expect(!FileInspection.entryExists(stray.partial))
     // Nothing heard: no link either, and the partial goes.
     let silent = dictation("Silent.")
     let empty = try partialAudio(for: silent.id, in: store, seconds: 0)
     #expect(try store.append(silent, audio: empty).audio == nil)
-    #expect(!FileInspection.exists(empty.partial))
+    #expect(!FileInspection.entryExists(empty.partial))
 }
 
 @Test func deleteAndClearRemoveTheAudio() throws {
@@ -67,7 +67,7 @@ private func age(_ url: URL, by seconds: TimeInterval) throws {
     let second = dictation("Second.")
     for record in [first, second] { _ = try store.append(record, audio: try partialAudio(for: record.id, in: store)) }
     #expect(try store.delete(id: first.id))
-    #expect(!FileInspection.exists(store.audioURL(for: first.id)))
+    #expect(!FileInspection.entryExists(store.audioURL(for: first.id)))
     #expect(FileInspection.exists(store.audioURL(for: second.id)))
 
     // A dictation in progress keeps its partial audio through Clear History; an old partial goes.
@@ -75,9 +75,9 @@ private func age(_ url: URL, by seconds: TimeInterval) throws {
     let stale = try partialAudio(for: UUID(), in: store)
     try age(stale.partial, by: DictationHistoryStore.partialAudioLifetime + 60)
     #expect(try store.clear() == 1)
-    #expect(!FileInspection.exists(store.audioURL(for: second.id)))
+    #expect(!FileInspection.entryExists(store.audioURL(for: second.id)))
     #expect(FileInspection.exists(inProgress.partial))
-    #expect(!FileInspection.exists(stale.partial))
+    #expect(!FileInspection.entryExists(stale.partial))
     #expect(try store.load().records.isEmpty)
 }
 
@@ -107,17 +107,17 @@ private func age(_ url: URL, by seconds: TimeInterval) throws {
     #expect(FileManager.default.createFile(atPath: other.path, contents: Data("x".utf8)))
 
     #expect(try store.sweep(.days30, now: audioNow) == 1)
-    #expect(!FileInspection.exists(store.audioURL(for: old.id)))
+    #expect(!FileInspection.entryExists(store.audioURL(for: old.id)))
     #expect(FileInspection.exists(store.audioURL(for: recent.id)))
     #expect(FileInspection.exists(store.audioURL(for: newerID)))
-    #expect(!FileInspection.exists(store.audioURL(for: orphan)))
-    #expect(!FileInspection.exists(stale.partial))
+    #expect(!FileInspection.entryExists(store.audioURL(for: orphan)))
+    #expect(!FileInspection.entryExists(stale.partial))
     #expect(FileInspection.exists(fresh.partial))
     #expect(FileInspection.exists(other))
 
     // At launch no dictation is in progress: every partial goes.
     try store.sweep(before: .distantPast, partialsBefore: Date().addingTimeInterval(60))
-    #expect(!FileInspection.exists(fresh.partial))
+    #expect(!FileInspection.entryExists(fresh.partial))
     #expect(FileInspection.exists(store.audioURL(for: recent.id)))
 }
 
@@ -171,7 +171,7 @@ private func storeWithAudio(_ root: URL, _ name: String) throws -> (DictationHis
     #expect(rename(store.partialAudioURL(for: gone).path, store.audioURL(for: gone).path + ".removing") == 0)
     try store.sweep(before: .distantPast)
     #expect(FileInspection.exists(store.audioURL(for: linked.id)))
-    #expect(!FileInspection.exists(URL(fileURLWithPath: store.audioURL(for: gone).path + ".removing")))
+    #expect(!FileInspection.entryExists(URL(fileURLWithPath: store.audioURL(for: gone).path + ".removing")))
     #expect(store.audioFiles().allSatisfy { $0.kind == .finished })
 }
 
@@ -184,7 +184,7 @@ private func storeWithAudio(_ root: URL, _ name: String) throws -> (DictationHis
     unlinked.audio = nil
     try AtomicFile.write(try HolosJSON.line(records[0]) + HolosJSON.line(unlinked), to: store.fileURL)
     try store.sweep(before: .distantPast)
-    #expect(!FileInspection.exists(store.audioURL(for: unlinked.id)), "Nothing can play it any more.")
+    #expect(!FileInspection.entryExists(store.audioURL(for: unlinked.id)), "Nothing can play it any more.")
     #expect(FileInspection.exists(store.audioURL(for: records[0].id)))
     #expect(try store.load().records.map(\.text) == ["Old.", "Recent."])
 }
@@ -198,7 +198,7 @@ private func storeWithAudio(_ root: URL, _ name: String) throws -> (DictationHis
     _ = try store.append(record, audio: try partialAudio(for: record.id, in: store))
     try store.append(plain)
     #expect(try store.removeAllAudio() == 1)
-    #expect(!FileInspection.exists(store.audioURL(for: record.id)))
+    #expect(!FileInspection.entryExists(store.audioURL(for: record.id)))
     #expect(try store.load().records.map(\.text) == ["Kept text.", "No audio."])
     #expect(try store.load().records.allSatisfy { $0.audio == nil })
     #expect(store.audioBytes() == 0)
@@ -273,7 +273,7 @@ private final class FakeRecording: DictationAudioRecording, Sendable {
     service.add(quiet, audio: dropped)
     await service.flushed()
     #expect(dropped.log == ["discard"])
-    #expect(!FileInspection.exists(store.partialAudioURL(for: quiet.id)))
+    #expect(!FileInspection.entryExists(store.partialAudioURL(for: quiet.id)))
     #expect(try store.load().records.map(\.text) == ["With audio.", "Text only."])
 
     // History off: nothing is recorded, the audio neither.
@@ -293,7 +293,7 @@ private final class FakeRecording: DictationAudioRecording, Sendable {
     #expect(service.records.allSatisfy { $0.audio == nil })
     await service.flushed()
     #expect(await eventually { service.audioBytes == 0 }, "The condition never held.")
-    #expect(!FileInspection.exists(store.audioURL(for: record.id)))
+    #expect(!FileInspection.entryExists(store.audioURL(for: record.id)))
     #expect(try store.load().records.allSatisfy { $0.audio == nil })
 
     // Delete removes a dictation's audio.
@@ -303,7 +303,7 @@ private final class FakeRecording: DictationAudioRecording, Sendable {
     #expect(await eventually { service.records.last?.audio != nil }, "The condition never held.")
     service.delete(spoken.id)
     await service.flushed()
-    #expect(!FileInspection.exists(store.audioURL(for: spoken.id)))
+    #expect(!FileInspection.entryExists(store.audioURL(for: spoken.id)))
 }
 
 @MainActor

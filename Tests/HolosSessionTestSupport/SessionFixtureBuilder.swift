@@ -10,7 +10,7 @@ public struct SessionFixtureBuilder: Sendable {
     public var source: AudioSource
     public var locale: String
     public var backend: SpeechBackend
-    /// Written to meeting.json when set.
+    /// Written to meeting.json when set, with the new session's ID in place of its own `sessionID`.
     public var meetingInfo: MeetingInfo?
     /// Saved as the current transcript when set.
     public var transcript: Transcript?
@@ -39,7 +39,8 @@ public struct SessionFixtureBuilder: Sendable {
     @discardableResult
     public func finished(in root: URL) async throws -> (session: URL, id: String) {
         let archive = try create(in: root)
-        if let meetingInfo {
+        if var meetingInfo {
+            meetingInfo.sessionID = archive.id
             try AtomicFile.writeJSON(meetingInfo, to: SessionPaths.meetingInfo(archive.directory))
         }
         if let transcript { try await archive.saveTranscript(transcript, writeLegacyExports: legacyExports) }

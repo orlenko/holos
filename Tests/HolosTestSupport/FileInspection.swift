@@ -21,7 +21,15 @@ public enum FileInspection {
         return value.intValue
     }
 
+    /// Whether `url` leads to something: a symbolic link is followed, so a dangling one does not exist.
     public static func exists(_ url: URL) -> Bool { FileManager.default.fileExists(atPath: url.path) }
+
+    /// Whether there is an entry at `url` itself (`lstat`): a symbolic link counts, even a dangling one. Use it to
+    /// check that something was removed.
+    public static func entryExists(_ url: URL) -> Bool {
+        var info = stat()
+        return lstat(url.path, &info) == 0
+    }
 
     /// The names directly inside `folder`, sorted; throws when it cannot be listed.
     public static func entries(_ folder: URL) throws -> [String] {
