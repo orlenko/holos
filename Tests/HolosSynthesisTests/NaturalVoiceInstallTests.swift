@@ -6,18 +6,19 @@ import Testing
 
 // Natural voices: the catalog and its licences, and the install of a pack (pinned commit, checks, staging).
 
-/// Writes the files `NaturalVoicePackFiles.looksComplete` looks for under `base`, so a fake download leaves a pack
-/// that counts as installed once marked.
+/// Writes a small pack under `base` as a download leaves it: the models, the constants the loader reads (tokenizer,
+/// embeddings, Mimi state), every voice offered, and a voice that is not offered (removed once installed).
 func fillPack(_ base: URL, _ pack: NaturalVoicePack) throws {
-    let folder = base.appendingPathComponent(NaturalVoicePackFiles.repositoryPath)
-        .appendingPathComponent(NaturalVoicePackFiles.languageSubdirectory(pack))
+    let folder = NaturalVoicePackFiles.languageFolder(base: base, pack: pack)
     let files = NaturalVoicePackFiles.requiredModels.flatMap { model in
-        NaturalVoicePackFiles.modelFiles.map { "\(model)/\($0)" }
-    } + NaturalVoiceCatalog.offered.filter { $0.pack == pack }.map { "constants_bin/\($0.name).safetensors" }
+        ["coremldata.bin", "model.mil", "weights/weight.bin"].map { "\(model)/\($0)" }
+    } + ["constants_bin/tokenizer.model", "constants_bin/bos_emb.bin", "constants_bin/text_embed_table.bin",
+         "constants_bin/mimi_init_state/state_0.bin", "constants_bin/cosette.safetensors", "manifest.json"]
+        + NaturalVoiceCatalog.offered.filter { $0.pack == pack }.map { "constants_bin/\($0.name).safetensors" }
     for path in files {
         let url = folder.appendingPathComponent(path)
         try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-        try Data("x".utf8).write(to: url)
+        try Data("x\(path.count)".utf8).write(to: url)
     }
 }
 
@@ -308,6 +309,47 @@ func fillPack(_ base: URL, _ pack: NaturalVoicePack) throws {
         // Once it is done, the pack is reported installed again.
         try await NaturalVoiceModels.setUp(root: root, pack: .english, force: false, download: { pack, base, _ in try fillPack(base, pack) },
                                            warmUp: { _, _ in }, notice: { _ in }, progress: { _ in })
+    }
+
+    @Test func theReadinessIsReadUnderTheInstallLock() async throws {
+        try await NaturalVoiceModels.setUp(root: root, pack: .english, force: false,
+                                           download: { pack, base, _ in try fillPack(base, pack) },
+                                           warmUp: { _, _ in }, notice: { _ in }, progress: { _ in })
+        // While the files are looked at, no install can take the lock (it would wait for the look to end).
+        let excluded = NaturalVoiceModels.whileNoInstall(root: root, pack: .english) { () -> Bool in
+            let fd = open(NaturalVoiceModels.lockPath(root: root, pack: .english), O_RDWR)
+            defer { close(fd) }
+            return flock(fd, LOCK_EX | LOCK_NB) != 0
+        }
+        #expect(excluded == true)
+    }
+
+    @Test func theInventoryCoversEveryFileTheLoaderReadsAndNoUnofferedVoice() async throws {
+        try await NaturalVoiceModels.setUp(root: root, pack: .english, force: false,
+                                           download: { pack, base, _ in try fillPack(base, pack) },
+                                           warmUp: { _, _ in }, notice: { _ in }, progress: { _ in })
+        let files = try #require(NaturalVoiceModels.marker(root: root, pack: .english)?.files)
+        #expect(files["constants_bin/tokenizer.model"] != nil)
+        #expect(files["constants_bin/mimi_init_state/state_0.bin"] != nil)
+        #expect(files["constants_bin/alba.safetensors"] != nil)
+        #expect(files["constants_bin/cosette.safetensors"] == nil)
+        #expect(NaturalVoicePackFiles.isUnofferedVoice("constants_bin/cosette.safetensors", pack: .english))
+        #expect(!NaturalVoicePackFiles.isUnofferedVoice("constants_bin/alba.safetensors", pack: .english))
+        #expect(NaturalVoicePackFiles.isUnofferedVoice("constants_bin/alba.safetensors", pack: .french))
+        #expect(!NaturalVoicePackFiles.isUnofferedVoice("constants_bin/tokenizer.model", pack: .english))
+        #expect(NaturalVoiceModels.status(root: root, pack: .english) == .installed)
+        // The tokenizer deleted (a file no voice list names): not installed.
+        let folder = NaturalVoicePackFiles.languageFolder(base: NaturalVoiceModels.directory(root: root, pack: .english),
+                                                          pack: .english)
+        try FileManager.default.removeItem(at: folder.appendingPathComponent("constants_bin/tokenizer.model"))
+        #expect(NaturalVoiceModels.status(root: root, pack: .english) == .notInstalled)
+        // A marker written before the files were recorded is not taken for an installed pack either.
+        try fillPack(NaturalVoiceModels.directory(root: root, pack: .english), .english)
+        let unrecorded = NaturalVoiceModels.Marker(pack: .english, repository: NaturalVoiceModels.repository,
+                                                   revision: NaturalVoiceModels.revision, installedAt: Date())
+        try HolosJSON.encoder().encode(unrecorded).write(
+            to: NaturalVoiceModels.directory(root: root, pack: .english).appendingPathComponent("installed.json"))
+        #expect(NaturalVoiceModels.status(root: root, pack: .english) == .notInstalled)
     }
 
     @Test func aMarkedPackWithFilesMissingIsNotInstalledAndIsRepaired() async throws {

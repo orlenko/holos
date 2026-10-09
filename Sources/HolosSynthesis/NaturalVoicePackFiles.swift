@@ -42,21 +42,53 @@ public enum NaturalVoicePackFiles {
     /// The pack's folder in the repository ("v2.1/english").
     public static func languageSubdirectory(_ pack: NaturalVoicePack) -> String { "v2.1/" + pack.fluidLanguage }
 
-    /// The files of each model the voices load that must be there, and not empty.
-    static let modelFiles = ["coremldata.bin", "model.mil", "weights/weight.bin"]
+    /// The pack's folder under its base folder (`<base>/Models/pocket-tts/v2.1/<language>`).
+    public static func languageFolder(base: URL, pack: NaturalVoicePack) -> URL {
+        base.appendingPathComponent(repositoryPath).appendingPathComponent(languageSubdirectory(pack))
+    }
 
-    /// A cheap look (no hashing) at an installed pack under `base`: every model the voices load has its files, and
-    /// every voice offered in the pack its prompt, none empty. A pack whose files were deleted or cut since it was
-    /// installed fails it, and is then checked and repaired by setup.
-    public static func looksComplete(base: URL, pack: NaturalVoicePack) -> Bool {
-        let folder = base.appendingPathComponent(repositoryPath).appendingPathComponent(languageSubdirectory(pack))
-        let files = requiredModels.flatMap { model in modelFiles.map { "\(model)/\($0)" } }
-            + NaturalVoiceCatalog.offered.filter { $0.pack == pack }.map { "constants_bin/\($0.name).safetensors" }
-        return files.allSatisfy { path in
+    /// Whether a path in the pack's folder is the prompt of a voice the app does not offer in that pack: the files
+    /// the install removes once the pack is installed, and leaves out of its inventory. The one rule for both.
+    public static func isUnofferedVoice(_ path: String, pack: NaturalVoicePack) -> Bool {
+        let parts = path.split(separator: "/")
+        guard parts.count == 2, parts[0] == "constants_bin", parts[1].hasSuffix(".safetensors") else { return false }
+        let name = String(parts[1].dropLast(".safetensors".count))
+        return !NaturalVoiceCatalog.offered.contains { $0.pack == pack && $0.name == name }
+    }
+
+    /// Every file of the installed pack, relative to its folder, with its size: what the marker records once the
+    /// download was checked against the listing, so the cheap look below covers every file the loader reads (the
+    /// models, the tokenizer, the embeddings, the Mimi state, the voices), not a list kept by hand. Voices not
+    /// offered are left out (they are removed next).
+    public static func inventory(base: URL, pack: NaturalVoicePack) -> [String: Int64] {
+        let folder = languageFolder(base: base, pack: pack).standardizedFileURL
+        guard let walker = FileManager.default.enumerator(at: folder, includingPropertiesForKeys:
+                                                              [.isRegularFileKey, .fileSizeKey]) else { return [:] }
+        var files: [String: Int64] = [:]
+        let prefix = folder.path + "/"
+        for case let url as URL in walker {
+            guard let values = try? url.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey]),
+                  values.isRegularFile == true else { continue }
+            let path = url.standardizedFileURL.path
+            guard path.hasPrefix(prefix) else { continue }
+            let relative = String(path.dropFirst(prefix.count))
+            if isUnofferedVoice(relative, pack: pack) { continue }
+            files[relative] = Int64(values.fileSize ?? 0)
+        }
+        return files
+    }
+
+    /// A cheap look (no hashing) at an installed pack under `base`: every file its inventory recorded is there, at
+    /// its size. A pack whose files were deleted or cut since it was installed fails it, and is then checked and
+    /// repaired by setup.
+    public static func looksComplete(base: URL, pack: NaturalVoicePack, files: [String: Int64]) -> Bool {
+        guard !files.isEmpty else { return false }
+        let folder = languageFolder(base: base, pack: pack)
+        return files.allSatisfy { path, size in
             guard let attributes = try? FileManager.default.attributesOfItem(
                       atPath: folder.appendingPathComponent(path).path),
                   (attributes[.type] as? FileAttributeType) == .typeRegular else { return false }
-            return ((attributes[.size] as? NSNumber)?.int64Value ?? 0) > 0
+            return (attributes[.size] as? NSNumber)?.int64Value == size
         }
     }
 

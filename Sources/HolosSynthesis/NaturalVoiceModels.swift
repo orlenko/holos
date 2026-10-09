@@ -26,6 +26,9 @@ public enum NaturalVoiceModels {
         /// The repository's commit the pack was downloaded from; nil in a marker written before it was recorded.
         public var revision: String?
         public var installedAt: Date
+        /// Every file of the pack and its size (`NaturalVoicePackFiles.inventory`); nil in a marker written before
+        /// they were recorded (such a pack is checked again by the next setup).
+        public var files: [String: Int64]? = nil
     }
 
     public static let repository = "FluidInference/pocket-tts-coreml"
@@ -66,10 +69,13 @@ public enum NaturalVoiceModels {
     // MARK: - Status
 
     /// Files only, no network: `downloading` while a process holds the pack's install lock (it may be replacing the
-    /// files), else `installed` once the pack is ready (`isReady`), else `notInstalled`.
+    /// files), else `installed` once the pack is ready (`isReady`), else `notInstalled`. The readiness is read under
+    /// a shared hold of the lock, so no install can start replacing the files while they are looked at.
     public static func status(root: URL = root, pack: NaturalVoicePack) -> DeepModelStatus {
-        if lockIsHeld(root: root, pack: pack) { return .downloading }
-        return isReady(root: root, pack: pack) ? .installed : .notInstalled
+        guard let ready = whileNoInstall(root: root, pack: pack, { isReady(root: root, pack: pack) }) else {
+            return .downloading
+        }
+        return ready ? .installed : .notInstalled
     }
 
     /// The packs installed now.
@@ -79,17 +85,27 @@ public enum NaturalVoiceModels {
 
     /// Ready and no install running: what the voice lists and the renderers take for installed.
     static func isInstalled(root: URL, pack: NaturalVoicePack) -> Bool {
-        isReady(root: root, pack: pack) && !lockIsHeld(root: root, pack: pack)
+        whileNoInstall(root: root, pack: pack, { isReady(root: root, pack: pack) }) ?? false
     }
 
-    /// The pack's marker names this pack and the pinned commit, and its files are there
-    /// (`NaturalVoicePackFiles.looksComplete`: the models and the offered voices, not empty; not hashed). Whether an
-    /// install runs is not asked (`setUp` holds the lock when it asks).
+    /// `body` run while holding the pack's install lock shared (an install, which takes it exclusively, cannot start
+    /// meanwhile); nil when an install holds it now. No lock file (no install ever ran): `body` runs as is.
+    static func whileNoInstall<T>(root: URL, pack: NaturalVoicePack, _ body: () -> T) -> T? {
+        let fd = open(lockPath(root: root, pack: pack), O_RDONLY | O_CLOEXEC | O_NOFOLLOW)
+        guard fd >= 0 else { return body() }
+        defer { close(fd) }
+        guard flock(fd, LOCK_SH | LOCK_NB) == 0 else { return errno == EWOULDBLOCK ? nil : body() }
+        defer { flock(fd, LOCK_UN) }
+        return body()
+    }
+
+    /// The pack's marker names this pack and the pinned commit, and every file it recorded is there at its size
+    /// (`NaturalVoicePackFiles.looksComplete`; not hashed). Whether an install runs is not asked (`setUp` holds the
+    /// lock when it asks).
     static func isReady(root: URL, pack: NaturalVoicePack) -> Bool {
-        guard let marker = marker(root: root, pack: pack), marker.pack == pack, marker.revision == revision else {
-            return false
-        }
-        return NaturalVoicePackFiles.looksComplete(base: directory(root: root, pack: pack), pack: pack)
+        guard let marker = marker(root: root, pack: pack), marker.pack == pack, marker.revision == revision,
+              let files = marker.files else { return false }
+        return NaturalVoicePackFiles.looksComplete(base: directory(root: root, pack: pack), pack: pack, files: files)
     }
 
     /// The pack's marker, whatever commit it names.
@@ -97,15 +113,6 @@ public enum NaturalVoiceModels {
         let url = directory(root: root, pack: pack).appendingPathComponent(markerName)
         guard let data = try? Data(contentsOf: url) else { return nil }
         return try? HolosJSON.decoder().decode(Marker.self, from: data)
-    }
-
-    static func lockIsHeld(root: URL, pack: NaturalVoicePack) -> Bool {
-        let fd = open(lockPath(root: root, pack: pack), O_RDONLY | O_CLOEXEC | O_NOFOLLOW)
-        guard fd >= 0 else { return false }
-        defer { close(fd) }
-        guard flock(fd, LOCK_SH | LOCK_NB) == 0 else { return errno == EWOULDBLOCK }
-        flock(fd, LOCK_UN)
-        return false
     }
 
     // MARK: - Install
@@ -254,7 +261,8 @@ public enum NaturalVoiceModels {
     }
 
     private static func writeMarker(_ pack: NaturalVoicePack, in directory: URL) throws {
-        let marker = Marker(pack: pack, repository: repository, revision: revision, installedAt: Date())
+        let marker = Marker(pack: pack, repository: repository, revision: revision, installedAt: Date(),
+                            files: NaturalVoicePackFiles.inventory(base: directory, pack: pack))
         try HolosJSON.encoder().encode(marker).write(to: directory.appendingPathComponent(markerName),
                                                      options: .atomic)
     }
