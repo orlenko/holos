@@ -7,8 +7,8 @@
 
 Each file is split into paragraphs: in Markdown, a paragraph, a list item, a table row or a heading (inside fenced
 code, each run of non-blank lines); in source files, a run of consecutive comment lines (`//`, `///`, every line of
-a `/* ... */` block, or `#` in shell and Python), with each other line on its own. Within a paragraph, every `§<N.M>` cites the last
-Markdown file named before it in that paragraph. A file is named by
+a `/* ... */` block, or `#` in shell and Python), with each other line on its own. Within a paragraph, every
+`§<N.M>` cites the last Markdown file named before it in that paragraph. A file is named by
 
 - a Markdown link to it: `[label](<file>.md)`, `[label](<<file>.md>)` or `[label](<file>.md "title")`; the label may
   wrap across lines and hold balanced brackets, and its text never names a file (a `§` inside it cites the link's
@@ -17,9 +17,11 @@ Markdown file named before it in that paragraph. A file is named by
   files under `docs/` also a plain `<file>.md`.
 
 A citation resolves when the file exists and has a heading, outside fenced code, whose text starts with the number:
-`§4.1` needs a heading `4.1 ...` (not `4.10 ...`), and `§3` a heading `3. ...` or `3 ...`. Fences follow CommonMark,
-also after a list marker or in a block quote: a block closes at a fence of the same character, at least as long as
-the opening one, indented at most 3 spaces more than the opening one's container content.
+`§4.1` needs a heading `4.1 ...` (not `4.10 ...`), and `§3` a heading `3. ...` or `3 ...`. A range (`§<A>–<B>` or
+`§<A>–§<B>`, with an en dash or a hyphen) cites every number in it, counting up the last component (`§4.1–4.3` is
+4.1, 4.2 and 4.3; `§8–§10` is 8, 9 and 10). Fences follow CommonMark, also after list markers and block quote
+markers in any order: a block closes at a fence of the same character, at least as long as the opening one, inside
+the same block quotes, and indented at most 3 spaces more than the opening fence's container.
 Files are found like this:
 
 - a link destination: from the citing file's folder (from the repository root when it starts with `/`);
@@ -46,18 +48,19 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SUFFIXES = (".swift", ".md", ".sh", ".py")
 SELF = "scripts/check-doc-citations.py"
 
-SECTION = re.compile(r"§(\d+(?:\.\d+)*)")
 LINK = re.compile(
     r"\[(?P<label>(?:[^\[\]]|\[[^\[\]]*\])*)\]\(\s*(?:<(?P<angle>[^<>\n]*)>|(?P<plain>[^\s()<>]+))"
     r"""(?:\s+(?:"[^"]*"|'[^']*'))?\s*\)""")
 PATH = re.compile(r"(?<![\w./:<>-])(?P<path>(?:\.{1,2}/)*[A-Za-z0-9_][A-Za-z0-9_./-]*\.md)(?![\w/-])")
 HEADING = re.compile(r"^ {0,3}#{1,6}[ \t]+(.*?)[ \t#]*$")
 # A fence's container: up to 3 spaces, then block quote markers and list markers, each with the spaces after it.
-FENCE_OPEN = re.compile(r"^(?P<prefix> {0,3}(?:(?:>|[-*+]|\d+[.)])(?:[ \t]+|$))*?[ \t]{0,3})(?P<fence>`{3,}|~{3,})(?P<info>.*)$")
-QUOTE = re.compile(r"^[ \t]*(?:>[ \t]?)+")
+FENCE_OPEN = re.compile(
+    r"^(?P<prefix> {0,3}(?:(?:>|[-*+]|\d+[.)])[ \t]+)*>?[ \t]{0,3})(?P<fence>`{3,}|~{3,})(?P<info>.*)$")
+FENCE_CLOSE = re.compile(r"^(?P<lead>[ \t>]*)(?P<marks>`{3,}|~{3,})[ \t]*$")
 REGION_OPEN = re.compile(r"^[ \t]*<!--[ \t]*citations:[ \t]*(?P<path>\S+\.md)[ \t]*-->[ \t]*$")
 REGION_CLOSE = re.compile(r"^[ \t]*<!--[ \t]*/citations[ \t]*-->[ \t]*$")
-RANGE = re.compile(r"§(\d+)\.(\d+)[–-](?:§?\1\.)?(\d+)(?![\d.])")
+# A section number or a range of them: `§4.1`, `§4.1–4.6`, `§4.1-§4.6`, `§8–§10`.
+SECTION_RUN = re.compile(r"§(\d+(?:\.\d+)*)(?:[–-]§?(\d+(?:\.\d+)*))?(?!\d)")
 LIST_ITEM = re.compile(r"^[ \t]*(?:[-*+]|\d+[.)])[ \t]+")
 SOURCE_COMMENT = re.compile(r"^[ \t]*(?://|/\*|\*|#)")
 
@@ -96,22 +99,39 @@ def tracked_files():
 
 
 def opens(line):
-    """The fence a line opens, as (fence, column of the container's content, in a block quote), or None."""
+    """The fence a line opens, as (fence, width of its container prefix, block quote markers in it), or None."""
     match = FENCE_OPEN.match(line)
     if not match or (match.group("fence")[0] == "`" and "`" in match.group("info")):
         return None
     prefix = match.group("prefix")
-    quote = QUOTE.match(prefix)
-    quoted = quote.group(0) if quote else ""
-    return match.group("fence"), len(prefix) - len(quoted), bool(quoted)
+    return match.group("fence"), len(prefix), prefix.count(">")
 
 
 def closes(line, fence):
-    marks, column, quoted = fence
-    if quoted:
-        line = QUOTE.sub("", line, count=1)
-    pattern = r"^[ \t]{0," + str(column + 3) + "}" + re.escape(marks[0]) + "{" + str(len(marks)) + r",}[ \t]*$"
-    return re.match(pattern, line) is not None
+    """Whether a line closes the fence: same character, at least as long, inside the same block quotes, and
+    indented at most 3 spaces more than the opening fence's container."""
+    marks, width, quotes = fence
+    match = FENCE_CLOSE.match(line)
+    return (match is not None and match.group("marks")[0] == marks[0] and len(match.group("marks")) >= len(marks)
+            and match.group("lead").count(">") == quotes and len(match.group("lead")) <= width + 3)
+
+
+def sections(text):
+    """Every section number in `text` with its offset, ranges expanded (`§4.1–4.3` is 4.1, 4.2 and 4.3)."""
+    found = []
+    for match in SECTION_RUN.finditer(text):
+        first, last = match.group(1), match.group(2)
+        numbers = [first]
+        if last:
+            start, end = first.split("."), last.split(".")
+            if len(end) < len(start):
+                end = start[:len(start) - len(end)] + end
+            if len(start) == len(end) and start[:-1] == end[:-1] and 0 < int(end[-1]) - int(start[-1]) <= 100:
+                numbers = [".".join(start[:-1] + [str(n)]) for n in range(int(start[-1]), int(end[-1]) + 1)]
+            else:
+                numbers.append(".".join(end))
+        found += [(number, match.start()) for number in numbers]
+    return found
 
 
 def markdown_paragraphs(lines):
@@ -225,8 +245,8 @@ def tokens(text, in_docs):
             continue
         if "/" in path or in_docs:
             found.append((match.start(), "file", path, False))
-    for match in SECTION.finditer(text):
-        found.append((match.start(), "section", match.group(1), False))
+    for number, offset in sections(text):
+        found.append((offset, "section", number, False))
     return sorted(found, key=lambda token: (token[0], token[1] == "section"))
 
 
@@ -243,11 +263,7 @@ def index_map(tree, rel, cache):
             if not dests:
                 continue
             target = os.path.normpath(os.path.join(os.path.dirname(rel), dests[-1]))
-            numbers = [match.group(1) for match in SECTION.finditer(line)]
-            for match in RANGE.finditer(line):
-                major, first, last = match.group(1), int(match.group(2)), int(match.group(3))
-                numbers += [f"{major}.{minor}" for minor in range(first, last + 1)]
-            for number in numbers:
+            for number, _ in sections(line):
                 mapping.setdefault(number, target)
         cache[key] = mapping
     return cache[key]
@@ -350,8 +366,11 @@ SELF_TEST_FILES = {
     "code-breaks.swift": "// docs/a.md §1.3\nlet x = 1\n// §3.2 is bare: the code line ends the comment\n",
     "docs/sub/relative.md": "./b.md §1.1, ../a.md §1.3 and docs/a.md §1.3 resolve; ./a.md §1.3 does not.\n",
     "fence.md": "docs/a.md §9.9\n",
-    "docs/fenced.md": "# F\n\n- ```\n  ## 8.1 Fake\n  ```\n\n1. ```\n   ## 8.2 Fake\n   ```\n\n> ```\n## 8.3 Fake\n> ```\n",
-    "fence-containers.md": "docs/fenced.md §8.1, §8.2 and §8.3\n",
+    "docs/fenced.md": "# F\n\n- ```\n  ## 8.1 Fake\n  ```\n\n1. ```\n   ## 8.2 Fake\n   ```\n\n> ```\n## 8.3 Fake\n> ```\n\n"
+                      "- > ```\n## 8.4 Fake\n  > ```\n\n## 8.5 Real: the fence above closed\n\n```\n> ```\n## 8.6 Fake\n```\n",
+    "fence-containers.md": "docs/fenced.md §8.1, §8.2, §8.3, §8.4, §8.5 and §8.6\n",
+    "docs/r.md": "# R\n\n## 0.2 A\n\n## 0.4 C\n\n## 8 E\n\n## 10 G\n",
+    "ranges.md": "docs/r.md §0.2–0.4 and §8–§10\nand §0.2-0.4, §0.2–§0.4\n",
     "block.swift": "/* docs/spec.md\nSee §99.9\n*/\n/* docs/spec.md §1.2\n and §9.9\n*/\nlet x = 1 // §9.8\n",
     "docs/sub/deep.md": "../../docs/spec.md §99.9\n",
     "docs/folder.md": "missing/status.md §1.1, and sub/b.md §1.1 resolves.\n",
@@ -365,7 +384,7 @@ SELF_TEST_FILES = {
 }
 SELF_TEST_PATHS = [name for name in SELF_TEST_FILES if name not in ("docs/a.md", "docs/c.md", "docs/sub/b.md",
                                                                      "docs/spec.md", "docs/conventions.md",
-                                                                     "docs/fenced.md", "docs/index.md")]
+                                                                     "docs/fenced.md", "docs/index.md", "docs/r.md")]
 SELF_TEST_PROBLEMS = [
     "link-target.md:1: docs/a.md §3.2: no heading 3.2 in docs/a.md",
     "link-text.md:1: missing.md §4.10: no such file",
@@ -385,6 +404,11 @@ SELF_TEST_PROBLEMS = [
     "fence-containers.md:1: docs/fenced.md §8.1: no heading 8.1 in docs/fenced.md",
     "fence-containers.md:1: docs/fenced.md §8.2: no heading 8.2 in docs/fenced.md",
     "fence-containers.md:1: docs/fenced.md §8.3: no heading 8.3 in docs/fenced.md",
+    "fence-containers.md:1: docs/fenced.md §8.4: no heading 8.4 in docs/fenced.md",
+    "fence-containers.md:1: docs/fenced.md §8.6: no heading 8.6 in docs/fenced.md",
+    "ranges.md:1: docs/r.md §0.3: no heading 0.3 in docs/r.md",
+    "ranges.md:1: docs/r.md §9: no heading 9 in docs/r.md",
+    "ranges.md:2: docs/r.md §0.3: no heading 0.3 in docs/r.md",
     "block.swift:2: docs/spec.md §99.9: no heading 99.9 in docs/spec.md",
     "block.swift:5: docs/spec.md §9.9: no heading 9.9 in docs/spec.md",
     "docs/sub/deep.md:1: ../../docs/spec.md §99.9: no heading 99.9 in docs/spec.md",
