@@ -408,11 +408,12 @@ private let leaseMessage = "Error: Another Voice is Local process is processing 
     let world = World(deep: ["A"])
     world.runner.failNextStart = true
     world.jobs.schedule()
-    #expect(!world.jobs.askedForWorkWaiting())
     var queue = world.deep.queue
     queue.enqueue(sessionID: "A", path: "/m/A.holos", at: base, runNow: true)
     world.deep.queue = queue
+    #expect(!world.jobs.askedForWorkWaiting(), "Not while every pass waits after the failed start.")
     world.jobs.clearRetry(world.deep)
+    #expect(world.jobs.askedForWorkWaiting())
     world.jobs.schedule()
     #expect(world.runner.started == ["deep A"])
 }

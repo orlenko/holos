@@ -16,8 +16,9 @@ import os
 ///    `considered` too (`consideredKey`): a pass cut short by a quit or crash runs again at the next launch.
 /// 2. The after-meeting queueing and the launch check never queue a meeting already in `considered`, and every
 ///    meeting they queue joins it.
-/// 3. Every turn of the setting changes `activation`; a language read or launch check begun under another activation
-///    queues nothing.
+/// 3. Every turn of the setting changes `activation`; an automatic after-meeting language read or a reconciliation
+///    begun under another activation queues nothing. A Make Final Transcript Now request is not bound to it: its
+///    language read queues it whatever the setting did meanwhile.
 /// 4. `coordinator` is made once (`setUpBackgroundJobs`), after the meeting controller and its maintenance launcher,
 ///    and is the only thing that starts a pass; it runs `jobs`.
 @MainActor
