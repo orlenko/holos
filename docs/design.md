@@ -647,7 +647,9 @@ would otherwise fetch from `main` at every load. The marker records the commit; 
 not installed, and the next setup downloads it again at the pinned one. A reading made with a natural voice records
 the commit in its cache key and manifest (`ReadingManifest.modelRevision`; none for an Apple voice, whose key is
 unchanged), so after the commit changes it is never resumed with parts of two versions: the resume says the voices
-changed and the reading must be made again (the constant is updated with the FluidAudio
+changed and the reading must be made again. The app's Resume and Try Again reopen the reading's own saved cache
+(`ReadingLibrary.savedLocation`), not the one its settings would name now, so the refusal shows on its row and Delete
+removes the old parts (the constant is updated with the FluidAudio
 pin, after checking the new commit's card, licences, and listing). It downloads into `<pack>.download/`: the
 repository's listing is read first (each file's size, and SHA-256 for LFS files), every listed file is ensured with FluidAudio's
 `ModelHub.download(subdirectory:)` (a file already there is kept, a partial one resumed), and every file is then

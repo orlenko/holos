@@ -578,7 +578,14 @@ final class ReadingController {
         let shown = (folder.path as NSString).abbreviatingWithTildeInPath
         let support = HolosPaths.supportRoot
         let configured = ProcessInfo.processInfo.environment["HOLOS_SUPPORT_DIR"]
+        let (savedCache, savedOutput) = (entry.cache, entry.output)
         let (location, resume) = try await offMain { () -> (ReadingLocation, Bool) in
+            // A reading begun before (Resume, Try Again, a launch continuing it) reopens its own cache, never one the
+            // identity computed now names: the pipeline checks it (the natural voices' commit included) and says why
+            // it cannot be resumed, and Delete removes it.
+            if let saved = try ReadingLibrary.savedLocation(cache: savedCache, output: savedOutput) {
+                return (saved, true)
+            }
             let readings = try ReadingOutput.readingsRoot(support: support, configured: configured, create: true)
             try FileManager.default.createDirectory(at: readings, withIntermediateDirectories: true)
             let location = try ReadingLibrary.location(
