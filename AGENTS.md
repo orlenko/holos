@@ -11,6 +11,8 @@ Read first: the `README.md` of each module you touch, then the doc sections its 
   still hold behaviour the code cites, so read the cited subsection, not the whole plan.
 - `docs/design.md` describes the user-facing tools, one heading per feature. `docs/contracts.md` lists the
   cross-module contracts. `docs/status.md` says what is verified and what is pending.
+- `docs/architecture-roadmap.md` lists the planned structural changes and their status. Check it before
+  starting structural work, and update its Status column in your PR.
 
 ## Module map
 
@@ -52,7 +54,8 @@ CLI-only code in the app's link graph; the dictation session and the background-
 - Anything that needs FluidAudio or WhisperKit: `HolosDiarization`/`HolosWhisper`, reached by the app only through
   a `voiceislocal` child process.
 - Evaluation and cloud comparison code: `HolosMeeting/Evaluation` until the `HolosEvaluation` target exists
-  (planned). App-only models stay in `HolosApp` (no `HolosAppModel` target yet).
+  ([roadmap](docs/architecture-roadmap.md) step 4). App-only models stay in `HolosApp` (no `HolosAppModel`
+  target yet; step 13).
 
 ## Size caps
 
@@ -117,9 +120,9 @@ Exist today:
 - Exports: `SessionExports.regenerate(session:people:)`. Reading files: `ExclusivePublisher.publish`.
 - Logging: `Logger(subsystem: "ca.orlenko.holos.app", category: …)`; categories and privacy rules in §1.5.
 
-Planned, see the architecture roadmap (none of these exist yet; do not reference them as if they did):
-`TranscriptPublisher` and `withMaintenanceArchive` (one publish path for transcripts), `CommandRunner` and `TemporaryArtifact` (spawn, decode,
-clean up), `VersionedFile<T>` (one schema-checked decoder), `SessionPaths.folder`/`parse` (one `<id>.holos` naming
+Planned, see the [architecture roadmap](docs/architecture-roadmap.md) §3 and §6 (none of these exist yet; do not
+reference them as if they did): `TranscriptPublisher` and `withMaintenanceArchive` (one publish path for
+transcripts), `CommandRunner` and `TemporaryArtifact` (spawn, decode, clean up), `VersionedFile<T>` (one schema-checked decoder), `SessionPaths.folder`/`parse` (one `<id>.holos` naming
 rule), `SessionGeneration` (derived-data stamps), `Drainable` (pending work at close and quit), `ReviewRevision`
 (revision-stamped Review commands), a lock-token type, `HolosTestSupport`, `scripts/test-target.sh`.
 
@@ -144,7 +147,8 @@ rule), `SessionGeneration` (derived-data stamps), `Drainable` (pending work at c
 ## Docs and comments
 
 - State current behaviour in the present tense. No PR numbers, waves, dates, "used to", "now", or "the user
-  asked" in docs or code comments. History belongs in git and PR descriptions.
+  asked" in docs or code comments. History belongs in git and PR descriptions. The one exception is the Status
+  column of `docs/architecture-roadmap.md` §6, which tracks steps by PR.
 - Cite specs as `docs/<file>.md §N.M`, or `docs/design.md "<Heading>"` for docs without numbers. A citation must
   resolve to an existing heading.
 - A PR that changes behaviour updates the cited section in the same PR.
