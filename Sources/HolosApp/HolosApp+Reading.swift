@@ -17,6 +17,8 @@ final class NaturalVoicesAppState {
     var outputs: [NaturalVoicePack: URL] = [:]
     /// The packs installed as the voice menus last showed them.
     var watch = NaturalVoicesWatch()
+    /// Looks for the end of an install another process runs (`NaturalVoicesInstallPoll`).
+    var poll: Task<Void, Never>?
     /// The launcher of the bundled tool, made on first use.
     lazy var launcher = MaintenanceLauncher(executable: ChildProcessLauncher.bundledExecutable)
 }
@@ -82,6 +84,22 @@ extension HolosAppDelegate {
     /// --natural-voices`) is offered by the voice menus, as after a download from Settings. A check of two small files.
     func applicationDidBecomeActive(_ notification: Notification) {
         checkNaturalVoicesInstalled()
+        pollNaturalVoiceInstalls()
+    }
+
+    /// While a pack is being installed by another process, checks every few seconds until it ends.
+    func pollNaturalVoiceInstalls() {
+        guard naturalVoices.poll == nil else { return }
+        let inProgress = {
+            NaturalVoicePack.allCases.contains { NaturalVoiceModels.status(pack: $0) == .downloading }
+        }
+        guard inProgress() else { return }
+        naturalVoices.poll = Task { [weak self] in
+            await NaturalVoicesInstallPoll.run(
+                inProgress: inProgress, check: { self?.checkNaturalVoicesInstalled() },
+                pause: { try? await Task.sleep(for: NaturalVoicesInstallPoll.interval) })
+            self?.naturalVoices.poll = nil
+        }
     }
 
     /// Tells the voice menus when the installed packs changed since they were last told (`force`: tell them anyway).

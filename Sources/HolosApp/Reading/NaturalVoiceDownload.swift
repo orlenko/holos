@@ -126,3 +126,19 @@ struct NaturalVoicesWatch: Equatable {
     }
 }
 
+/// While a pack is being installed by another process (`voiceislocal setup` in Terminal, or a download this app
+/// started before a relaunch), its result is looked for every few seconds, so the voice menus get the new voices as
+/// soon as it ends rather than at the next activation. Pure: the app passes the checks and the pause.
+@MainActor enum NaturalVoicesInstallPoll {
+    static let interval: Duration = .seconds(3)
+
+    /// Pauses, then `check`s, for as long as `inProgress` says an install runs; returns once none does, after the
+    /// check that sees its end (or when cancelled).
+    static func run(inProgress: () -> Bool, check: () -> Void, pause: () async -> Void) async {
+        while inProgress(), !Task.isCancelled {
+            await pause()
+            check()
+        }
+    }
+}
+

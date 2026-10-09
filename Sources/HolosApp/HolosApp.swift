@@ -258,6 +258,7 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
         DispatchQueue.global(qos: .utility).async { NaturalVoiceTemporaries.sweep() }
         // The natural voice packs the menus start with; a change later (Terminal) is noticed at activation.
         checkNaturalVoicesInstalled()
+        pollNaturalVoiceInstalls()
         PeopleLaunch.resumePendingForgetsOnce()
         Task { await loadLanguages() }
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)

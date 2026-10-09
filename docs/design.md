@@ -660,7 +660,9 @@ damaged. A lock file keeps two installs apart. Settings › Reading has a row pe
 failure's reason (offline, for instance) with Try Again; Apple's voices stay available throughout. The voice menus
 end with a disabled "Natural voices: download them in Settings › Reading" while a pack is missing; when a download
 ends, they are filled again with the new voices and keep the voice and speed chosen on the Reading card; a pack
-installed from Terminal meanwhile is noticed when the app becomes active (`NaturalVoicesWatch`).
+installed from Terminal meanwhile is noticed when the app becomes active (`NaturalVoicesWatch`), and while
+another process is installing one (its install lock held) the app looks again every 3 s until it ends
+(`NaturalVoicesInstallPoll`).
 
 **Rendering a part.** `NaturalSpeechPlan` splits the part into paragraphs (blank lines, spaces or tabs on them allowed; line breaks inside one read
 as spaces) and feeds Pocket TTS one paragraph at a time; it splits a paragraph into sentences itself. A paragraph

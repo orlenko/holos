@@ -205,6 +205,30 @@ import Testing
         #expect(removed)
     }
 
+    @Test func anInstallElsewhereIsFollowedUntilItEnds() async {
+        // What a fake status source says at each look: installing for three looks, then installed.
+        var looks = 0
+        var watch = NaturalVoicesWatch()
+        _ = watch.observe([])
+        var announced = 0
+        var pauses = 0
+        await NaturalVoicesInstallPoll.run(
+            inProgress: { looks < 3 },
+            check: {
+                looks += 1
+                if watch.observe(looks >= 3 ? [.english] : []) { announced += 1 }
+            },
+            pause: { pauses += 1 })
+        // The check after the install ended told the menus once, and the polling stopped there.
+        #expect(announced == 1)
+        #expect(looks == 3)
+        #expect(pauses == 3)
+        // Nothing being installed: no polling at all.
+        var idleChecks = 0
+        await NaturalVoicesInstallPoll.run(inProgress: { false }, check: { idleChecks += 1 }, pause: {})
+        #expect(idleChecks == 0)
+    }
+
     private final class FakePlayback: PreviewPlayback {
         var stopped = false
         func stop() { stopped = true }
