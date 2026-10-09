@@ -61,7 +61,8 @@ struct Say: AsyncParsableCommand {
     @Option(help: ArgumentHelp("An existing folder for a natural voice's temporary files (the app passes one).",
                                visibility: .hidden))
     var scratchDirectory: String?
-    @Option(help: ArgumentHelp("A natural voice: the system voice a paragraph it fails is read with (a reading saves it).",
+    @Option(help: ArgumentHelp("A natural voice: the system voice a paragraph it fails is read with (a reading saves it; "
+                               + "empty: none was saved, today's best is used then).",
                                visibility: .hidden))
     var fallbackVoice: String?
     @Option(help: ArgumentHelp("A natural voice: on or off, whether paragraphs are heard back (a reading saves it).",
@@ -99,7 +100,7 @@ struct Say: AsyncParsableCommand {
             let rate = self.rate
             // A reading's part renders with the settings the reading saved when it started.
             var settings = renderer.settings(for: voice)
-            if let fallbackVoice { settings?.fallbackVoice = fallbackVoice }
+            if let fallbackVoice { settings?.fallbackVoice = fallbackVoice.isEmpty ? nil : fallbackVoice }
             if let check { settings?.checked = check == "on" }
             let pinned = settings
             render = {
