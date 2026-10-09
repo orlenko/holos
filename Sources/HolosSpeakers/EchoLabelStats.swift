@@ -175,8 +175,23 @@ public struct EchoLabelStats: Sendable, Equatable, Encodable {
         return echo > 0 && echo >= echoDominance * local
     }
 
+    /// The total over sessions' counts. The row counts (which need speaker labels) are summed only when every session
+    /// has them, and are left out otherwise, so a total never presents some sessions' rows as all of them.
+    public static func total(_ sessions: [EchoLabelStats]) -> EchoLabelStats {
+        var total = EchoLabelStats()
+        for stats in sessions { total.add(stats) }
+        if sessions.contains(where: { $0.microphoneRowsBefore == nil }) {
+            total.microphoneRowsBefore = nil
+            total.microphoneRowsAfter = nil
+            total.unknownRowsBefore = nil
+            total.unknownRowsAfter = nil
+            total.rowsChanged = nil
+        }
+        return total
+    }
+
     /// Adds `other`'s counts (a total over sessions); an optional count is added when both have it, else kept from
-    /// the one that has it.
+    /// the one that has it (`total` leaves the row counts out when a session lacks them).
     public mutating func add(_ other: EchoLabelStats) {
         microphoneWords += other.microphoneWords
         judgedWords += other.judgedWords

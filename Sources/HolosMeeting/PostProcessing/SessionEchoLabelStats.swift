@@ -72,9 +72,8 @@ public enum SessionEchoLabelStats {
     /// The report for `sessions` in order; nil stands for an argument that named no session (unreadable).
     public static func report(_ sessions: [URL?]) -> Report {
         let results = sessions.map { $0.map(measure) ?? SessionResult(sessionID: nil, status: .unreadable) }
-        var total = EchoLabelStats()
-        for result in results { if let stats = result.stats { total.add(stats) } }
-        return Report(sessions: results, total: total, measured: results.filter { $0.stats != nil }.count)
+        let measured = results.compactMap(\.stats)
+        return Report(sessions: results, total: EchoLabelStats.total(measured), measured: measured.count)
     }
 
     /// `EchoLabelStats.compare` with Review's rows: the turns shown grouped into paragraphs (`ReviewParagraphs.group`,

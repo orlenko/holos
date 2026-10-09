@@ -964,6 +964,26 @@ private let falseLocalInWordSix = levelledMask(seconds: 30, local: [
         + "echo->local 0); in echo 0 -> 0")
 }
 
+@Test func aTotalLeavesRowsOutWhenASessionHasNoLabels() {
+    var labelled = EchoLabelStats()
+    labelled.microphoneWords = 100
+    labelled.microphoneRowsBefore = 20
+    labelled.microphoneRowsAfter = 17
+    labelled.unknownRowsBefore = 6
+    labelled.unknownRowsAfter = 2
+    labelled.rowsChanged = 5
+    var unlabelled = EchoLabelStats()
+    unlabelled.microphoneWords = 10
+    // Rows are counted only from labels: a total over a session without them has no row counts at all.
+    let mixed = EchoLabelStats.total([labelled, unlabelled])
+    #expect(mixed.microphoneWords == 110)
+    #expect(mixed.microphoneRowsBefore == nil && mixed.unknownRowsAfter == nil && mixed.rowsChanged == nil)
+    #expect(!mixed.line.contains("mic rows") && !mixed.line.contains("rows changed"))
+    let both = EchoLabelStats.total([labelled, labelled])
+    #expect((both.microphoneRowsBefore, both.microphoneRowsAfter) == (40, 34))
+    #expect((both.unknownRowsBefore, both.unknownRowsAfter, both.rowsChanged) == (12, 4, 10))
+}
+
 @Test func echoDominatesAWordWhenItsFramesAreThreeTimesTheLocalOnes() {
     // ±0.5 s around the word's middle: about 62 frames.
     let mostlyEcho = echoMask(count: 300, local: [(140..<150, -40)])
