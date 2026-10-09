@@ -4,18 +4,17 @@
     scripts/check-doc-citations.py           check every tracked .swift, .md, .sh and .py file
     scripts/check-doc-citations.py FILE...   check only these files
 
-A citation is a Markdown file path followed by a section number: `docs/conventions.md §1.7`, also when a line break
+A citation is a Markdown file path followed by a section number (`docs/<file>.md §<N.M>`), also when a line break
 and a comment marker (`///`, `//`, `*`, `>`) come between the path and the number, or when the path is a Markdown
-link (`[meeting-design.md §7.2](meeting-design.md)`). Numbers chained after it with a comma, "and", "to", "or",
-a slash or a dash (`docs/conventions.md §1.5, §1.9`, `§4.8 to §4.11`, `§8–§10`), optionally after a quoted
-subheading, are citations of the same file. Each one resolves when the file exists and has a heading (outside
-fenced code) whose text starts with the number: `§4.1` needs a heading `4.1 ...`, and `§3` a heading `3. ...` or
-`3 ...`. A path that starts with a top-level folder of the repository is read from the repository root; any other
-path from the citing file's folder first.
+link whose text or target is the path. Numbers chained after it with a comma, "and", "to", "or", a slash or a dash
+(`§<A>, §<B>`, `§<A> to §<B>`, `§<A>–§<B>`), optionally after a quoted subheading, are citations of the same file.
+Each one resolves when the file exists and has a heading (outside fenced code) whose text starts with the number:
+`§4.1` needs a heading `4.1 ...` (not `4.10 ...`), and `§3` a heading `3. ...` or `3 ...`. A path that starts with
+a top-level folder of the repository is read from the repository root; any other path from the citing file's folder
+first.
 
 A bare `§N.M` with no path before it is not checked: it names a section of the file it appears in, or, in older
-code comments, of the meeting design, whose numbers stay unique across its files (`docs/meeting-design.md` maps
-each number to its file).
+code comments, of the meeting design, whose section numbers are unique.
 
 Prints each broken citation as `file:line: path §N.M: reason` and a summary; exits 1 when any is broken.
 """
