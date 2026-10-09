@@ -23,7 +23,8 @@ public enum ReadingResumeVoice {
     }
 
     /// The search itself: each manifest read once; the part plan compared too, since documents with the same text can
-    /// be split into other parts and chapters (another reading).
+    /// be split into other parts and chapters (another reading). Only a manifest of this schema and audio format is a
+    /// candidate: another one cannot be resumed here, so it never wins by being newer.
     static func saved(output: String?, name: String, readingsRoot: URL, sourceSHA256: String, plan: [ReadingPart],
                       rate: Float?, metadata: AudioBookMetadata, voice: String? = nil,
                       volume: ReadingPathIdentity.VolumeQuery = ReadingPathIdentity.volumeRules) throws
@@ -38,7 +39,9 @@ public enum ReadingResumeVoice {
         for name in names where name.hasPrefix("Output-") {
             try Task.checkCancellation()
             let folder = readingsRoot.appendingPathComponent(name, isDirectory: true)
-            guard let (manifest, changed) = manifestAndDate(in: folder), manifest.sourceSHA256 == sourceSHA256,
+            guard let (manifest, changed) = manifestAndDate(in: folder),
+                  manifest.schemaVersion == ReadingManifest.currentSchemaVersion, manifest.format == .current,
+                  manifest.sourceSHA256 == sourceSHA256,
                   voice.map({ $0 == manifest.voiceIdentifier }) ?? true,
                   manifest.rate == rate, manifest.title == metadata.title, manifest.author == metadata.author,
                   manifest.language == metadata.language, manifest.comment == metadata.comment,
