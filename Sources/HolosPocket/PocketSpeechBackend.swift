@@ -85,7 +85,7 @@ public actor PocketSpeechBackend: NaturalSpeechBackend {
                                     progressHandler: { update in progress(update.fractionCompleted) },
                                     shouldSkip: { !NaturalVoicePackFiles.wanted($0) })
         for path in roots where !FileManager.default.fileExists(atPath: folder.appendingPathComponent(path).path) {
-            guard let url = NaturalVoicePackFiles.fileURL(path: path) else { continue }
+            let url = try fileURL(path)
             let data = try await ModelHub.fetchFile(from: url, description: path)
             try data.write(to: folder.appendingPathComponent(path), options: .atomic)
         }
@@ -117,9 +117,7 @@ public actor PocketSpeechBackend: NaturalSpeechBackend {
     /// commit.
     static func listing(_ subdirectory: String, recursive: Bool = true) async throws
         -> [NaturalVoicePackFiles.Expected] {
-        guard var next = NaturalVoicePackFiles.listingURL(path: subdirectory, recursive: recursive) else {
-            throw HolosError.invalidInput("Bad listing address.")
-        }
+        var next = try listingURL(subdirectory, recursive: recursive)
         var files: [NaturalVoicePackFiles.Expected] = []
         // The listing comes in pages, linked by the response's `Link: <…>; rel="next"`.
         for _ in 0..<50 {
@@ -133,6 +131,19 @@ public actor PocketSpeechBackend: NaturalSpeechBackend {
         }
         guard !files.isEmpty else { throw HolosError.unavailable("Hugging Face listed no natural voice files.") }
         return files
+    }
+
+    /// The listing of `path` at the pinned commit, through FluidAudio's registry (its host and repository mirrors,
+    /// as its downloads use them).
+    static func listingURL(_ path: String, recursive: Bool) throws -> URL {
+        try ModelRegistry.apiModels(Repo.pocketTts.remotePath,
+                                    "tree/\(NaturalVoiceModels.revision)" + (path.isEmpty ? "" : "/\(path)")
+                                        + (recursive ? "?recursive=1" : ""))
+    }
+
+    /// One file at the pinned commit, through FluidAudio's registry.
+    static func fileURL(_ path: String) throws -> URL {
+        try ModelRegistry.resolveModel(Repo.pocketTts.remotePath, path, revision: NaturalVoiceModels.revision)
     }
 
     /// The `rel="next"` address of a `Link` header.

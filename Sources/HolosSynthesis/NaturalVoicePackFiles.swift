@@ -36,18 +36,28 @@ public enum NaturalVoicePackFiles {
         }
     }
 
-    /// The listing of `path` in `repository` at `revision`, recursive: Hugging Face's tree API.
-    public static func listingURL(repository: String = NaturalVoiceModels.repository,
-                                  revision: String = NaturalVoiceModels.revision, path: String,
-                                  recursive: Bool = true) -> URL? {
-        URL(string: "https://huggingface.co/api/models/\(repository)/tree/\(revision)"
-            + (path.isEmpty ? "" : "/\(path)") + (recursive ? "?recursive=1" : ""))
-    }
+    /// Where FluidAudio keeps the repository under a pack's base folder.
+    public static let repositoryPath = "Models/pocket-tts"
 
-    /// The address of one file of `repository` at `revision`.
-    public static func fileURL(repository: String = NaturalVoiceModels.repository,
-                               revision: String = NaturalVoiceModels.revision, path: String) -> URL? {
-        URL(string: "https://huggingface.co/\(repository)/resolve/\(revision)/\(path)")
+    /// The pack's folder in the repository ("v2.1/english").
+    public static func languageSubdirectory(_ pack: NaturalVoicePack) -> String { "v2.1/" + pack.fluidLanguage }
+
+    /// The files of each model the voices load that must be there, and not empty.
+    static let modelFiles = ["coremldata.bin", "model.mil", "weights/weight.bin"]
+
+    /// A cheap look (no hashing) at an installed pack under `base`: every model the voices load has its files, and
+    /// every voice offered in the pack its prompt, none empty. A pack whose files were deleted or cut since it was
+    /// installed fails it, and is then checked and repaired by setup.
+    public static func looksComplete(base: URL, pack: NaturalVoicePack) -> Bool {
+        let folder = base.appendingPathComponent(repositoryPath).appendingPathComponent(languageSubdirectory(pack))
+        let files = requiredModels.flatMap { model in modelFiles.map { "\(model)/\($0)" } }
+            + NaturalVoiceCatalog.offered.filter { $0.pack == pack }.map { "constants_bin/\($0.name).safetensors" }
+        return files.allSatisfy { path in
+            guard let attributes = try? FileManager.default.attributesOfItem(
+                      atPath: folder.appendingPathComponent(path).path),
+                  (attributes[.type] as? FileAttributeType) == .typeRegular else { return false }
+            return ((attributes[.size] as? NSNumber)?.int64Value ?? 0) > 0
+        }
     }
 
     /// Files at the repository's root a pack also needs: the 24-layer packs' voice-clone reprojection, which
