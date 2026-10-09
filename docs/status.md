@@ -330,7 +330,9 @@ timeline and a larger local-model benchmark are follow-ups.
 - `voices list` and `say` provide native voice discovery (with each voice's quality, and a
   hint to download Premium voices when none is installed), playback, and `.m4a`, `.wav`,
   or `.caf` export. Text comes from arguments or UTF-8 stdin. `--voice` takes a name as
-  `say -v '?'` prints it ("Ava (Premium)") or an identifier.
+  `say -v '?'` prints it ("Ava (Premium)") or an identifier. Natural voices, once their pack is installed
+  (`voiceislocal setup --natural-voices`), are listed first ("Alba (Natural)") and `say` renders them paragraph by
+  paragraph, each heard back by Apple's on-device recognizer; `--text-file` reads the text from a UTF-8 file.
 - `read` turns a local .txt, .md, .html, .pdf, .rtf, .rtfd, .docx, .doc, or .odt file,
   stdin, or an `https://` web article (Mozilla Readability in an offscreen web view; the
   byline becomes the author) into one AAC `.m4a` (mono, 22.05 kHz, about 32 kbit/s, about 14 MB per hour) named
@@ -559,6 +561,23 @@ timeline and a larger local-model benchmark are follow-ups.
   logic, the voice order, the speed mapping, and the pipeline's new progress reports are
   unit-tested; the section itself is built and compiled only and has not been seen on screen
   yet (docs/dictation-validation.md "Reading section").
+- Natural voices (docs/design.md "Natural voices"): Reading can use Kyutai's Pocket TTS through
+  FluidAudio 0.17.1, rendered by the bundled `voiceislocal say` (the app does not link
+  FluidAudio). `voiceislocal setup --natural-voices [--language fr]` or Settings › Reading
+  (Download with the size, progress, Cancel, failure shown) installs a pack into
+  `Application Support/Holos/Models/pocket-tts` (English about 530 MB, French about 1.9 GB) and
+  warms it up. Once installed, Automatic reads English with Alba and French with Estelle; 19
+  English voices and Estelle are offered (voices with non-commercial recordings, `cosette` and
+  `jean`, are not). Paragraphs are fed one at a time with a fixed seed (renders are
+  byte-identical), with 0.6 s pauses between paragraphs and 0.9 s after a heading; speed is a
+  time-stretch afterwards; each paragraph is heard back by Apple's recognizer and rendered again
+  or read by an Apple voice when it does not match. Unit-tested with a fake backend (catalog and
+  licences, identifiers, defaults, feeding, pauses, seed, speed, check, re-render, fallback,
+  install and download states, the tool's arguments and Stop); the real model was run from the
+  CLI and the opt-in integration test (English 3.5× real time with the check, which takes about
+  9 % of the time; French about 1× including an 11 s load, 2× after). Not yet: anything through
+  the app (Settings, the menus, Preview, a reading rendered by the bundled tool) seen on screen,
+  a book-length reading, and listening to the speed-changed audio.
 - Dictation history (docs/design.md "Dictation history"): each finished dictation that
   produced text is kept in `Application Support/Holos/History/dictations.jsonl` (0600, one
   JSON line each) with its app, language, text as written and as heard, fixes, outcome,

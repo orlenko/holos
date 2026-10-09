@@ -58,18 +58,18 @@ struct Say: AsyncParsableCommand {
         valueName: "name")) var voice: String?
     @Option(parsing: .unconditional, help: speechRateHelp, transform: parseSpeechRate) var rate: Float?
     @Option(help: "Read the text from this UTF-8 file instead of the arguments or stdin.") var textFile: String?
-    @Option(help: ArgumentHelp("An existing folder for a natural voice's temporary files (the app passes one).",
+    @Option(help: ArgumentHelp("An existing folder for a natural voice's temporary files.",
                                visibility: .hidden))
     var scratchDirectory: String?
-    @Option(help: ArgumentHelp("A natural voice: the system voice a paragraph it fails is read with (a reading saves it; "
-                               + "empty: none was saved, today's best is used then).",
+    @Option(help: ArgumentHelp("A natural voice: the system voice a paragraph it fails is read with (empty: none "
+                               + "was kept, today's best is used then).",
                                visibility: .hidden))
     var fallbackVoice: String?
-    @Option(help: ArgumentHelp("A natural voice: on or off, whether paragraphs are heard back (a reading saves it).",
+    @Option(help: ArgumentHelp("A natural voice: on or off, whether paragraphs are heard back.",
                                visibility: .hidden))
     var check: String?
-    @Option(help: ArgumentHelp("The app that started this: when it ends, the render stops and cleans up; another one "
-                               + "still writing the same output is waited for.", visibility: .hidden))
+    @Option(help: ArgumentHelp("The process that started this: when it ends, the render stops and cleans up; "
+                               + "another one still writing the same output is waited for.", visibility: .hidden))
     var parentPid: Int32?
     @Option(help: "Maximum seconds to wait for another Voice is Local playback.") var maxWait: Double = 10
 
@@ -91,17 +91,22 @@ struct Say: AsyncParsableCommand {
         if let query = self.voice { voice = try await resolveVoice(query, language: nil, explainDefault: false).id }
         let render: (URL) async throws -> RenderedAudio
         if let voice, NaturalVoiceCatalog.isNatural(voice) {
-            let scratch = try scratchDirectory.map { path -> URL in
+            var scratch: URL?
+            if let path = scratchDirectory {
                 let url = fileURL(path)
-                var isFolder: ObjCBool = false
-                guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isFolder), isFolder.boolValue else {
+                // Looked at off the main actor, as every file here.
+                let isFolder = try await offMain { () -> Bool in
+                    var isFolder: ObjCBool = false
+                    return FileManager.default.fileExists(atPath: url.path, isDirectory: &isFolder) && isFolder.boolValue
+                }
+                guard isFolder else {
                     throw HolosError.invalidInput("--scratch-directory must be an existing folder: \(path)")
                 }
-                return url
+                scratch = url
             }
             let renderer = NaturalVoicesCLI.renderer(scratch: scratch, installed: await NaturalVoicesCLI.installedPacks())
             let rate = self.rate
-            // A reading's part renders with the settings the reading saved when it started.
+            // Settings a caller kept from an earlier run (--fallback-voice, --check) take the place of today's.
             var settings = renderer.settings(for: voice)
             if let fallbackVoice { settings?.fallbackVoice = fallbackVoice.isEmpty ? nil : fallbackVoice }
             if let check { settings?.checked = check == "on" }
@@ -127,9 +132,9 @@ struct Say: AsyncParsableCommand {
             let url = fileURL(output)
             let result: RenderedAudio
             if let parentPid {
-                // The app's helper: it waits for an earlier one still writing this part (left by an app that
-                // ended), and stops when the app ends, removing the app's folder for it: only a folder the app made
-                // for it (NaturalHelperScratch), never another one named with --scratch-directory.
+                // Started by a parent process: it waits for an earlier one still writing this output (left by a
+                // parent that ended), and stops when its parent ends, removing the folder the parent made for it
+                // (NaturalHelperScratch), never another one named with --scratch-directory.
                 let scratch = scratchDirectory.map(fileURL)
                 result = try await NaturalHelperRun.whileParentRuns(
                     parentPid, isAlive: { getppid() == parentPid }, output: url,

@@ -7,12 +7,31 @@ import HolosSynthesis
 enum ReadingVoicePopup {
     static let automaticTitle = "Automatic — best voice for the text's language"
 
-    /// `selecting` nil: Automatic. A voice that is not installed falls back to Automatic.
-    static func fill(_ popup: NSPopUpButton, selecting id: String?) {
+    static let naturalHint = "Natural voices: download them in Settings › Reading"
+
+    /// `selecting` nil: Automatic. A voice that is not installed falls back to Automatic. The natural voices of the
+    /// installed packs come first (Automatic picks Alba or Estelle once they are), then Apple's voices; without any,
+    /// a disabled line says where to download them.
+    static func fill(_ popup: NSPopUpButton, selecting id: String?,
+                     installed: Set<NaturalVoicePack> = NaturalVoicesAppState.shared.installed) {
         let items = ReadingVoiceMenu.items(NativeSpeechRenderer.voices(), preferredLanguages: Locale.preferredLanguages)
         popup.removeAllItems()
+        popup.autoenablesItems = false
         let automatic = NSMenuItem(title: automaticTitle, action: nil, keyEquivalent: "")
         popup.menu?.addItem(automatic)
+        let natural = NaturalVoiceCatalog.voices(installed: installed)
+        if !natural.isEmpty { popup.menu?.addItem(.separator()) }
+        for voice in natural {
+            let entry = NSMenuItem(title: voice.title, action: nil, keyEquivalent: "")
+            entry.representedObject = voice.id
+            popup.menu?.addItem(entry)
+        }
+        if installed.count < NaturalVoicePack.allCases.count {
+            popup.menu?.addItem(.separator())
+            let hint = NSMenuItem(title: naturalHint, action: nil, keyEquivalent: "")
+            hint.isEnabled = false
+            popup.menu?.addItem(hint)
+        }
         var previousPreferred: Bool?
         for item in items {
             if previousPreferred != item.preferred { popup.menu?.addItem(.separator()) }

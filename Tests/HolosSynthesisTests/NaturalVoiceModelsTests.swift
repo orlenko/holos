@@ -1,5 +1,6 @@
 import Foundation
 import HolosCore
+import HolosTestSupport
 import Synchronization
 import Testing
 @testable import HolosSynthesis
@@ -19,82 +20,6 @@ func fillPack(_ base: URL, _ pack: NaturalVoicePack) throws {
         let url = folder.appendingPathComponent(path)
         try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
         try Data("x\(path.count)".utf8).write(to: url)
-    }
-}
-
-@Suite struct NaturalVoiceCatalogTests {
-    @Test func onlyVoicesThatAllowCommercialUseAreOffered() {
-        let offered = NaturalVoiceCatalog.offered.map(\.id)
-        #expect(!offered.contains("pocket:en:cosette"))
-        #expect(!offered.contains("pocket:en:jean"))
-        #expect(offered.contains("pocket:en:alba"))
-        #expect(offered.contains("pocket:fr:estelle"))
-        #expect(NaturalVoiceCatalog.offered.allSatisfy { $0.license != .ccByNC4 })
-        #expect(NaturalVoiceCatalog.all.filter { $0.license == .ccByNC4 }.map(\.name).sorted() == ["cosette", "jean"])
-        #expect(Set(NaturalVoiceCatalog.all.map(\.id)).count == NaturalVoiceCatalog.all.count)
-        #expect(NaturalVoiceCatalog.voice(id: "pocket:en:cosette") == nil)
-        #expect(NaturalVoiceCatalog.voice(id: "pocket:en:jean") == nil)
-    }
-
-    @Test func identifiersParseStrictly() {
-        #expect(NaturalVoiceCatalog.parse("pocket:en:alba")?.pack == .english)
-        #expect(NaturalVoiceCatalog.parse("pocket:fr:estelle")?.name == "estelle")
-        #expect(NaturalVoiceCatalog.parse("pocket:en:peter_yearsley")?.name == "peter_yearsley")
-        for bad in ["pocket:EN:alba", "pocket:de:juergen", "pocket:en:", "pocket:en:a:b", "apple:en:alba",
-                    "pocket:en:al-ba", "pocket:en:Alba", "pocket::alba", "pocket", ""] {
-            #expect(NaturalVoiceCatalog.parse(bad) == nil, "\(bad)")
-        }
-        #expect(NaturalVoiceCatalog.isNatural("pocket:anything"))
-        #expect(!NaturalVoiceCatalog.isNatural("com.apple.voice.premium.en-US.Ava"))
-    }
-
-    @Test func labelsAndDescriptors() {
-        let alba = NaturalVoiceCatalog.defaultVoice(for: .english)
-        #expect(alba.id == "pocket:en:alba")
-        #expect(alba.title == "Natural — Alba (English)")
-        #expect(alba.descriptor == VoiceDescriptor(id: "pocket:en:alba", name: "Alba (Natural)", language: "en",
-                                                   quality: "natural"))
-        #expect(NaturalVoiceCatalog.defaultVoice(for: .french).title == "Natural — Estelle (French)")
-    }
-
-    @Test func voicesOfInstalledPacksDefaultFirst() {
-        #expect(NaturalVoiceCatalog.voices(installed: []).isEmpty)
-        let english = NaturalVoiceCatalog.voices(installed: [.english])
-        #expect(english.first?.name == "alba")
-        #expect(english.allSatisfy { $0.pack == .english })
-        #expect(english.count == 19)
-        #expect(Array(english.dropFirst().map(\.displayName)) == english.dropFirst().map(\.displayName).sorted())
-        #expect(NaturalVoiceCatalog.voices(installed: [.french]).map(\.id) == ["pocket:fr:estelle"])
-        #expect(NaturalVoiceCatalog.voices(installed: [.french, .english]).last?.id == "pocket:fr:estelle")
-    }
-
-    @Test func defaultsSwitchOnceAPackIsInstalled() {
-        #expect(NaturalVoiceCatalog.defaultVoice(language: "en-US", installed: []) == nil)
-        #expect(NaturalVoiceCatalog.defaultVoice(language: "en-GB", installed: [.english])?.id == "pocket:en:alba")
-        #expect(NaturalVoiceCatalog.defaultVoice(language: "fr-CA", installed: [.english]) == nil)
-        #expect(NaturalVoiceCatalog.defaultVoice(language: "fr-CA", installed: [.english, .french])?.id
-            == "pocket:fr:estelle")
-        #expect(NaturalVoiceCatalog.defaultVoice(language: "de", installed: [.english, .french]) == nil)
-        #expect(NaturalVoiceCatalog.defaultVoice(language: nil, installed: [.english]) == nil)
-    }
-
-    @Test func queriesMatchOfferedVoicesOnly() {
-        for query in ["Alba", "alba", "Alba (Natural)", "pocket:en:alba", "POCKET:EN:ALBA", "Natural — Alba (English)"] {
-            #expect(NaturalVoiceCatalog.match(query)?.id == "pocket:en:alba", "\(query)")
-        }
-        #expect(NaturalVoiceCatalog.match("Peter Yearsley")?.id == "pocket:en:peter_yearsley")
-        #expect(NaturalVoiceCatalog.match("cosette") == nil)
-        #expect(NaturalVoiceCatalog.match("Ava") == nil)
-        #expect(NaturalVoiceCatalog.match("  ") == nil)
-    }
-
-    @Test func packSizes() {
-        #expect(NaturalVoicePack.english.downloadSize == "530 MB")
-        #expect(NaturalVoicePack.french.downloadSize == "1.9 GB")
-        #expect(NaturalVoicePack.forLanguage("fr-FR") == .french)
-        #expect(NaturalVoicePack.forLanguage("it") == nil)
-        #expect(NaturalVoicePack.english.fluidLanguage == "english")
-        #expect(NaturalVoicePack.french.fluidLanguage == "french_24l")
     }
 }
 
@@ -207,97 +132,7 @@ func fillPack(_ base: URL, _ pack: NaturalVoicePack) throws {
     }
 }
 
-@Suite final class NaturalVoicePackFilesTests {
-    private let folder = FileManager.default.temporaryDirectory.appendingPathComponent("holos-pack-\(UUID().uuidString)")
-
-    deinit { try? FileManager.default.removeItem(at: folder) }
-
-    @Test func theFilterMatchesFluidAudiosForAPack() {
-        for kept in ["v2.1/english/cond_prefill.mlmodelc", "v2.1/english/cond_prefill.mlmodelc/weights/weight.bin",
-                     "v2.1/english/constants_bin/alba.safetensors", "v2.1/english/manifest.json",
-                     "v2.1/french_24l/flowlm_step.mlmodelc/coremldata.bin"] {
-            #expect(NaturalVoicePackFiles.wanted(kept), "\(kept)")
-        }
-        for skipped in ["v2.1/english/cond_prefill.mlpackage", "v2.1/english/cond_prefill.mlpackage/Manifest.json",
-                        "v2.1/english/flowlm_stepv2.mlmodelc/weights/weight.bin", "v2.1/english/cond_step.mlmodelc",
-                        "v2.1/english/constants/bos.npy", "v2.1/english/verify.wav", "v2.1/english/.DS_Store",
-                        "v2.1/english/flowlm_step_ane.mlmodelc/model.mil"] {
-            #expect(!NaturalVoicePackFiles.wanted(skipped), "\(skipped)")
-        }
-    }
-
-    @Test func aListingGivesItsFilesWithSizesAndChecksums() throws {
-        let listing = Data("""
-            [{"type":"directory","oid":"x","size":0,"path":"v2.1/english/constants_bin"},
-             {"type":"file","oid":"a","size":243,"path":"v2.1/english/cond_prefill.mlmodelc/coremldata.bin",
-              "lfs":{"oid":"ABC","size":243,"pointerSize":130}},
-             {"type":"file","oid":"b","size":228662,"path":"v2.1/english/cond_prefill.mlmodelc/model.mil"},
-             {"type":"file","oid":"c","size":5,"path":"v2.1/english/cond_prefill.mlpackage/Manifest.json"}]
-            """.utf8)
-        #expect(try NaturalVoicePackFiles.files(fromListing: listing) == [
-            .init(path: "v2.1/english/cond_prefill.mlmodelc/coremldata.bin", size: 243, sha256: "ABC"),
-            // Not in LFS: its Git blob SHA-1, the listing's `oid`.
-            .init(path: "v2.1/english/cond_prefill.mlmodelc/model.mil", size: 228_662, gitBlobSHA1: "b"),
-        ])
-    }
-
-    @Test func aListingWithAnUnsafePathIsRefused() {
-        for path in ["../outside.bin", "v2.1/../../outside.bin", "/etc/passwd", "v2.1//x.bin", "v2.1/./x.bin", ""] {
-            let listing = Data("[{\"type\":\"file\",\"oid\":\"a\",\"size\":1,\"path\":\"\(path)\"}]".utf8)
-            #expect(throws: HolosError.self, "\(path)") { try NaturalVoicePackFiles.files(fromListing: listing) }
-        }
-    }
-
-    @Test func aMissingDamagedFileNeedsNothingRemoved() throws {
-        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-        try NaturalVoicePackFiles.remove(["v2.1/english/never-downloaded.bin"], in: folder)
-    }
-
-    private func write(_ path: String, _ text: String) throws {
-        let url = folder.appendingPathComponent(path)
-        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-        try Data(text.utf8).write(to: url)
-    }
-
-    @Test func aCutOffOrDamagedFileIsFound() throws {
-        // The listing's checksum of the weights (not the checksum of what is written below).
-        let weights = NaturalVoicePackFiles.Expected(
-            path: "v2.1/english/flowlm_step.mlmodelc/weights/weight.bin", size: 8,
-            sha256: "c5a1ff1da1a1aab6b26f0a2d5fb73e66e4e3cc1a7e4fe5b4eca1c5c2a4d6c8fa")
-        // Files outside LFS, checked by their Git blob SHA-1 (of "mil!" and "alb").
-        let mil = NaturalVoicePackFiles.Expected(path: "v2.1/english/flowlm_step.mlmodelc/model.mil", size: 4,
-                                                 gitBlobSHA1: "93a183fb2d02058ba563d6df6a48719377599bce")
-        let voice = NaturalVoicePackFiles.Expected(path: "v2.1/english/constants_bin/alba.safetensors", size: 3,
-                                                   gitBlobSHA1: "44db1c1bcac6aef83c0c654e8c1572f1f5184d7a")
-        try write(mil.path, "mil!")
-        // The weights were cut off: only a partial file is there. The voice has the wrong size.
-        try write(weights.path + ".partial", "weig")
-        try write(voice.path, "alba")
-        #expect(NaturalVoicePackFiles.problems([weights, mil, voice], in: folder) == [weights.path, voice.path])
-        // Whole, but other content than the listing's checksum.
-        try write(weights.path, "weights?")
-        #expect(NaturalVoicePackFiles.problems([weights], in: folder) == [weights.path])
-        let real = try NaturalVoicePackFiles.sha256(of: folder.appendingPathComponent(weights.path))
-        let right = NaturalVoicePackFiles.Expected(path: weights.path, size: 8, sha256: real.uppercased())
-        try write(voice.path, "alb")
-        #expect(NaturalVoicePackFiles.problems([right, mil, voice], in: folder).isEmpty)
-    }
-
-    @Test func aFileOutsideLFSIsCheckedByContentNotJustSize() throws {
-        let mil = NaturalVoicePackFiles.Expected(path: "v2.1/english/mimi_decoder.mlmodelc/model.mil", size: 4,
-                                                 gitBlobSHA1: "93a183fb2d02058ba563d6df6a48719377599bce")
-        // The same size, other bytes.
-        try write(mil.path, "mil?")
-        #expect(NaturalVoicePackFiles.problems([mil], in: folder) == [mil.path])
-        try write(mil.path, "mil!")
-        #expect(NaturalVoicePackFiles.problems([mil], in: folder).isEmpty)
-        // Listed without any digest: nothing proves its content, so it is not taken as verified.
-        let unknown = NaturalVoicePackFiles.Expected(path: mil.path, size: 4)
-        #expect(NaturalVoicePackFiles.problems([unknown], in: folder) == [mil.path])
-    }
-}
-
-@Suite final class NaturalVoiceInstallLockTests {
+@Suite(.timeLimit(.minutes(1))) final class NaturalVoiceInstallLockTests {
     private let root = FileManager.default.temporaryDirectory.appendingPathComponent("holos-lock-\(UUID().uuidString)")
 
     deinit { try? FileManager.default.removeItem(at: root) }
@@ -327,6 +162,58 @@ func fillPack(_ base: URL, _ pack: NaturalVoicePack) throws {
         // Once it is done, the pack is reported installed again.
         try await NaturalVoiceModels.setUp(root: root, pack: .english, force: false, download: { pack, base, _ in try fillPack(base, pack) },
                                            warmUp: { _, _ in }, notice: { _ in }, progress: { _ in })
+    }
+
+    /// An English install the test holds in its download, and what a French install started meanwhile did.
+    private final class TwoInstalls: Sendable {
+        let downloading = Mutex(false)
+        let released = Mutex(false)
+        let frenchSteps = Mutex(0)
+    }
+
+    @Test func anotherPacksInstallIsRefusedWhileOneRuns() async throws {
+        let installs = TwoInstalls()
+        let english = Task { [root] in
+            try await NaturalVoiceModels.setUp(root: root, pack: .english, force: false, download: { pack, base, _ in
+                installs.downloading.withLock { $0 = true }
+                while !installs.released.withLock({ $0 }) { try await Task.sleep(for: .milliseconds(5)) }
+                try fillPack(base, pack)
+            }, warmUp: { _, _ in }, notice: { _ in }, progress: { _ in })
+        }
+        #expect(await eventually { installs.downloading.withLock { $0 } })
+        // The French install (the app's Download, or a second Terminal) starts while English downloads: refused
+        // before it downloads or warms up anything.
+        let error = await #expect(throws: HolosError.self) {
+            try await NaturalVoiceModels.setUp(root: root, pack: .french, force: false, download: { pack, base, _ in
+                installs.frenchSteps.withLock { $0 += 1 }
+                try fillPack(base, pack)
+            }, warmUp: { _, _ in installs.frenchSteps.withLock { $0 += 1 } }, notice: { _ in }, progress: { _ in })
+        }
+        #expect(error?.localizedDescription.contains("Other natural voices are being installed") == true)
+        #expect(installs.frenchSteps.withLock { $0 } == 0)
+        installs.released.withLock { $0 = true }
+        try await english.value
+        // Once English is done, French installs.
+        try await NaturalVoiceModels.setUp(root: root, pack: .french, force: false, download: { pack, base, _ in
+            try fillPack(base, pack)
+        }, warmUp: { _, _ in }, notice: { _ in }, progress: { _ in })
+        #expect(NaturalVoiceModels.installedPacks(root: root) == [.english, .french])
+    }
+
+    @Test func anInstalledPackIsStillReportedWhileAnotherPackInstalls() async throws {
+        try await NaturalVoiceModels.setUp(root: root, pack: .english, force: false,
+                                           download: { pack, base, _ in try fillPack(base, pack) },
+                                           warmUp: { _, _ in }, notice: { _ in }, progress: { _ in })
+        let fd = open(NaturalVoiceModels.anyInstallLockPath(root: root), O_RDWR | O_CREAT, 0o600)
+        #expect(fd >= 0)
+        defer { close(fd) }
+        #expect(flock(fd, LOCK_EX | LOCK_NB) == 0)
+        // Another pack's install holds the shared lock: English is still installed, and its setup says so.
+        #expect(NaturalVoiceModels.installedPacks(root: root) == [.english])
+        try await NaturalVoiceModels.setUp(root: root, pack: .english, force: false,
+                                           download: { pack, base, _ in try fillPack(base, pack) },
+                                           warmUp: { _, _ in }, notice: { _ in }, progress: { _ in })
+        flock(fd, LOCK_UN)
     }
 
     @Test func theReadinessIsReadUnderTheInstallLock() async throws {

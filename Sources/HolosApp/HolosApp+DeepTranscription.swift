@@ -20,7 +20,7 @@ import os
 ///    begun under another activation queues nothing. A Make Final Transcript Now request is not bound to it: its
 ///    language read queues it whatever the setting did meanwhile.
 /// 4. `coordinator` is made once (`setUpBackgroundJobs`), after the meeting controller and its maintenance launcher,
-///    and is the only thing that starts a pass; it runs `jobs`.
+///    and is the only thing that starts a pass; it runs `jobs` and the echo catch-up (`MeetingAppState.echo`).
 @MainActor
 final class DeepTranscriptionAppState {
     /// Settings › Meetings › "Deep transcription after meetings" (off until turned on, and only once the model is
@@ -61,7 +61,7 @@ final class DeepTranscriptionAppState {
     var considered: [String] = UserDefaults.standard.stringArray(forKey: consideredKey) ?? [] {
         didSet { UserDefaults.standard.set(considered, forKey: Self.consideredKey) }
     }
-    /// Runs the passes, one background job at a time on this Mac (invariant 4).
+    /// Runs the passes and the echo analyses, one background job at a time on this Mac (invariant 4).
     var coordinator: BackgroundJobCoordinator?
     /// Meetings whose Review was asked for while this app's pass works on them: opened when the pass ends.
     var reviewAfterPass: [String: (directory: URL, name: String)] = [:]

@@ -97,7 +97,7 @@ public enum NaturalSpeechFile {
     }
 }
 
-/// A render's file, written off the main actor: each paragraph is time-stretched to the reading's speed
+/// A render's file, written off the main actor: each paragraph is time-stretched to the render's speed
 /// (`TimeStretch`) and appended here, then the pause after it.
 ///
 /// Invariants:
@@ -112,10 +112,14 @@ actor NaturalSpeechSink {
         self.sampleRate = sampleRate
     }
 
-    /// Creates the file at `url`, off the main actor.
-    static func open(_ url: URL, sampleRate: Double) async throws -> NaturalSpeechSink {
+    /// Creates the file at `url`, off the main actor; fails when `output` (where it will be published) already exists.
+    static func open(_ url: URL, refusing output: URL, sampleRate: Double) async throws -> NaturalSpeechSink {
         try await Task.detached(priority: .userInitiated) {
-            NaturalSpeechSink(writer: try NaturalSpeechFileWriter(url: url, sampleRate: sampleRate), sampleRate: sampleRate)
+            guard !FileManager.default.fileExists(atPath: output.path) else {
+                throw HolosError.invalidInput("Speech output already exists: \(output.path)")
+            }
+            return NaturalSpeechSink(writer: try NaturalSpeechFileWriter(url: url, sampleRate: sampleRate),
+                                     sampleRate: sampleRate)
         }.value
     }
 
