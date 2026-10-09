@@ -1273,3 +1273,84 @@ func echoLabelStatsReadEachArgumentOnItsOwnAndNameNoPath() async throws {
     #expect(ForgetResumeScope.applies(to: ["speakers", "echo-label-stats"]))
     #expect(ForgetResumeScope.applies(to: ["session", "export", "echo-label-stats"]))
 }
+
+@Test func echoLabelStatsCountRowsAsReviewGroupsThem() throws {
+    // Two microphone turns of "Me" 2.5 s apart: Review shows them as one row. The second is the call's echo with
+    // false local frames (+2 dB), the user's under the rule before only.
+    let first = SessionFixtures.segment(["a1", "a2", "a3"], track: "mic", start: 10, id: "A")
+    let second = SessionFixtures.segment(["b1", "b2", "b3"], track: "mic", start: 13.9, id: "B")
+    let transcript = SessionFixtures.transcript([first, second])
+    let run = SpeakerRunBuilder.build(
+        sessionID: "SESSION", transcript: transcript,
+        tracks: [SpeakerRunBuilder.TrackInput(track: "mic", policy: .channel(speakerID: "mic:me", displayName: "Me"))],
+        engine: nil, parameters: .v1, id: "RUN").run
+    #expect(run.turns.count == 2)
+    let count = Int(30 / AcousticEchoMask.hopSeconds)
+    var classes = [UInt8](repeating: AcousticEchoMask.FrameClass.echo.rawValue, count: count)
+    var levels = [Int8](repeating: 0, count: count)
+    var local: [(Double, Double, Int8)] = [(10, 11.4, -40)]
+    for word in second.words {
+        local += [(word.start, word.start + 0.08, 4), (word.start + 0.2, word.start + 0.28, 4)]
+    }
+    for frame in 0..<count {
+        let centre = AcousticEchoMask.centre(ofFrame: frame)
+        for (start, end, level) in local where centre >= start && centre < end {
+            classes[frame] = AcousticEchoMask.FrameClass.local.rawValue
+            levels[frame] = level
+        }
+    }
+    let mask = try #require(AcousticEchoMask(classes: classes, echoLevels: levels))
+
+    let stats = SessionEchoLabelStats.compare(transcript: transcript, mask: mask, run: run, edits: [])
+    #expect(stats.localToEcho == 3)
+    #expect((stats.microphoneRowsBefore, stats.microphoneRowsAfter) == (1, 1))
+    #expect(stats.rowsChanged == 1, "The row lost its second turn.")
+    // Turn by turn, it would have been two rows before.
+    let ungrouped = EchoLabelStats.compare(transcript: transcript, mask: mask, run: run)
+    #expect((ungrouped.microphoneRowsBefore, ungrouped.microphoneRowsAfter) == (2, 1))
+}
+
+@Test(.timeLimit(.minutes(2)))
+func aMeetingWithoutAudioHasItsTranscriptFilesRewrittenForItsSavedAnalysis() async throws {
+    // A call analysed and labelled, its audio then deleted (echo/ stays), and its transcript files written under the
+    // earlier word rule: the catch-up finds it, and echo-analyze rewrites the files from the saved analysis.
+    let temp = try TemporaryDirectory("echo")
+    defer { temp.remove() }
+    let call = CallTranscript()
+    let session = try await callSession(in: temp.url, audio: CallAudio.tracks(echo: true), transcript: call.transcript)
+    _ = try await MeetingPostProcessor(voiceSamples: .none, diarizer: systemDiarizer(), freeSpace: FixedFreeSpace(.max))
+        .run(session: session, lease: nil)
+    let deleting = try SessionArchive.acquireProcessingLease(at: session)
+    try SessionDeletion.deleteAudio(session: session, lease: deleting)
+    deleting.release()
+    let manifest = try SessionArchive.readManifest(at: session)
+    let store = SpeakerProfileStore(directory: temp.url.appendingPathComponent("Support/Speakers", isDirectory: true))
+    let sha256 = try #require(try EchoMaskStore.current(session: session, manifest: manifest)?.record.frames?.sha256)
+    #expect(EchoMaskStore.usable(session: session, manifest: manifest) != nil, "Review still hides the echo.")
+    #expect(SessionExports.echoMaskIsCurrent(session: session))
+    #expect(!EchoCatchUpSchedule.needsAnalysis(session: session))
+    #expect(EchoCatchUpSchedule.scan(root: temp.url).isEmpty)
+
+    let url = SessionPaths.generatedExports(session)
+    var record = try #require(try JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any])
+    record["echoMask"] = sha256
+    try JSONSerialization.data(withJSONObject: record).write(to: url)
+    #expect(!EchoAnalysisStage.needed(session: session), "No audio to analyse.")
+    #expect(EchoCatchUpSchedule.needsAnalysis(session: session, profiles: store))
+    #expect(EchoCatchUpSchedule.scan(root: temp.url).map(\.sessionID) == [manifest.id])
+
+    let outcome = try await SessionEchoAnalyzeCommand.run(.init(session: session), voiceSamples: fixedVoice,
+                                                          profiles: store,
+                                                          freeSpace: FixedFreeSpace(.max))
+    #expect(!outcome.analysed)
+    #expect(outcome.verdict == .echo)
+    #expect(outcome.exitCode == 0)
+    #expect(SessionExports.echoMaskIsCurrent(session: session))
+    #expect(!EchoCatchUpSchedule.needsAnalysis(session: session, profiles: store))
+    #expect(EchoCatchUpSchedule.scan(root: temp.url).isEmpty)
+    // A new analysis needs the audio.
+    await #expect(throws: HolosError.self) {
+        _ = try await SessionEchoAnalyzeCommand.run(.init(session: session, force: true), voiceSamples: .none,
+                                                    freeSpace: FixedFreeSpace(.max))
+    }
+}

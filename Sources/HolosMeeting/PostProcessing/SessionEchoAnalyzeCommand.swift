@@ -49,11 +49,13 @@ public enum SessionEchoAnalyzeCommand {
 
     /// Runs under the background-job lock (`Request.jobLock`) and the session's processing lease. Throws, with nothing
     /// changed, when another job holds the lock (`DeepTranscriptionLock.busyMessage`), the meeting is still recording,
-    /// another process holds the lease, the audio was deleted, a saved analysis was written by a newer Voice is Local,
-    /// or the audio cannot be prepared (the next run tries again). `profiles` gives people's names to the exports, and
-    /// with `voiceSamples` the voice samples people have from this meeting are brought in step with what the labels
-    /// now show (`VoiceProfileService.refreshSamples`, as after an edit): worked out from the files, so a mask an
-    /// earlier pass saved without doing so is caught up too, and up-to-date samples cost nothing.
+    /// another process holds the lease, the audio was deleted and there is no saved analysis of it to use (or `force`
+    /// asks for a new one), a saved analysis was written by a newer Voice is Local, or the audio cannot be prepared
+    /// (the next run tries again). With the audio deleted and a saved analysis of it, only the transcript files are
+    /// written again. `profiles` gives people's names to the exports, and with `voiceSamples` (and the audio kept) the
+    /// voice samples people have from this meeting are brought in step with what the labels now show
+    /// (`VoiceProfileService.refreshSamples`, as after an edit): worked out from the files, so a mask an earlier pass
+    /// saved without doing so is caught up too, and up-to-date samples cost nothing.
     ///
     /// Cancelled (Ctrl-C, or SIGTERM when the app needs the Mac for a meeting), it throws `CancellationError`: before
     /// it starts, or before the voice samples (whose recomputing can take minutes on a long call), and while they are
@@ -84,10 +86,13 @@ public enum SessionEchoAnalyzeCommand {
         }
         let lease = try SessionArchive.acquireProcessingLease(at: session)
         defer { lease.release() }
-        var outcome = try await lease.withUse(for: session) {
+        let result = try await lease.withUse(for: session) {
             try analyze(request, profiles: profiles, freeSpace: freeSpace, progress: progress)
         }
-        if outcome.verdict != nil, let profiles, let makeExtractor = voiceSamples.extractor {
+        var outcome = result.outcome
+        let audioDeleted = result.audioDeleted
+        // Without audio a sample cannot be computed again: the samples are left as they are.
+        if outcome.verdict != nil, !audioDeleted, let profiles, let makeExtractor = voiceSamples.extractor {
             // Stopped now, the samples are still out of step with the saved mask: the next run brings them in step.
             try Task.checkCancellation()
             do {
@@ -104,8 +109,10 @@ public enum SessionEchoAnalyzeCommand {
         return outcome
     }
 
+    /// The outcome, and whether the meeting's audio was deleted (its saved analysis was used as it is).
     private static func analyze(_ request: Request, profiles: SpeakerProfileStore?, freeSpace: any FreeSpaceProvider,
-                                progress: @escaping @Sendable (String) -> Void) throws -> Outcome {
+                                progress: @escaping @Sendable (String) -> Void) throws
+        -> (outcome: Outcome, audioDeleted: Bool) {
         let session = request.session
         let manifest = try SessionArchive.readManifest(at: session)
         let meeting = try SessionFiles.meetingInfo(session: session, manifest: manifest)
@@ -113,11 +120,11 @@ public enum SessionEchoAnalyzeCommand {
         guard EchoAnalysisStage.applies(meeting: meeting, manifest: manifest) else {
             outcome.summary = "This meeting was not recorded as a call with microphone audio, so there is no echo of "
                 + "the call to find. Nothing changed."
-            return outcome
+            return (outcome, false)
         }
-        if try SessionFiles.audioDeleted(session: session, sessionID: manifest.id) {
-            throw HolosError.unavailable("The recording's audio was deleted, so its echo can't be analysed.")
-        }
+        // With the audio deleted, a saved analysis of it is still used (Delete Audio keeps echo/): the transcript
+        // files are written again for it (after a new word rule, say), but nothing can be analysed again.
+        let audioDeleted = try SessionFiles.audioDeleted(session: session, sessionID: manifest.id)
         let stored: EchoMaskStore.Stored
         switch EchoAnalysisStage.saved(session: session, manifest: manifest) {
         case .current(let current) where !request.force:
@@ -126,6 +133,9 @@ public enum SessionEchoAnalyzeCommand {
             throw HolosError.unavailable("echo/mask.json was written by a newer version of Voice is Local; update "
                                          + "Voice is Local to analyse this meeting's echo again.")
         default:
+            if audioDeleted {
+                throw HolosError.unavailable("The recording's audio was deleted, so its echo can't be analysed.")
+            }
             stored = try EchoAnalysisStage.analyzeSession(session: session, manifest: manifest, freeSpace: freeSpace,
                                                           progress: progress)
             outcome.analysed = true
@@ -141,7 +151,7 @@ public enum SessionEchoAnalyzeCommand {
             + "shown without the echo."
         guard try SessionArchive.currentTranscriptID(at: session) != nil else {
             outcome.summary = noLabels
-            return outcome
+            return (outcome, audioDeleted)
         }
         // What the labels now show: the same run and edits, with and without the echo hidden. Without labels (none
         // made yet, as after post-processing without speaker models) the summary says so.
@@ -168,7 +178,7 @@ public enum SessionEchoAnalyzeCommand {
                 + "the command again, or use Update Transcript Files in the app."
             outcome.exitCode = 3
         }
-        return outcome
+        return (outcome, audioDeleted)
     }
 
     /// Microphone words in the turns `view` shows.

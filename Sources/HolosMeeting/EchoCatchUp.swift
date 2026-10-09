@@ -53,7 +53,9 @@ public enum EchoCatchUpSchedule {
     /// manifest and saved analysis.
     public static func scan(root: URL, profiles: SpeakerProfileStore? = nil) -> [Candidate] {
         select(SessionCatalog.list(root: root).map { summary in
-            let finished = DeepTranscriptionSchedule.isFinished(summary.state, audioDeleted: summary.audioDeleted)
+            // A meeting whose audio was deleted is looked at too: its transcript files may still be owed a rewrite
+            // for its saved analysis (`needsAnalysis` says when).
+            let finished = DeepTranscriptionSchedule.isFinished(summary.state, audioDeleted: false)
             return Found(candidate: Candidate(sessionID: summary.id, path: summary.directory.path,
                                               createdAt: summary.createdAt),
                          finished: finished,
@@ -67,17 +69,19 @@ public enum EchoCatchUpSchedule {
     /// (`EchoAnalysisStage.needed`), or it is saved but the transcript files were not rewritten for it
     /// (`SessionExports.echoMaskIsCurrent`) or a voice sample learned from the meeting was not brought in step with it
     /// (`VoiceProfileService.samplesOutOfStep`, with `profiles`): a run cut short after saving the mask, or one whose
-    /// rewrite or refresh failed. Run again, the command keeps the saved analysis and finishes the rest.
+    /// rewrite or refresh failed. Run again, the command keeps the saved analysis and finishes the rest. With the
+    /// audio deleted only the transcript files count (written under an earlier word rule, say): the command rewrites
+    /// them from the saved analysis, and a sample cannot be computed again without audio.
     public static func needsAnalysis(session: URL, profiles: SpeakerProfileStore? = nil) -> Bool {
         if EchoAnalysisStage.needed(session: session) { return true }
         guard let manifest = try? SessionArchive.readManifest(at: session),
               let meeting = try? SessionFiles.meetingInfo(session: session, manifest: manifest),
               EchoAnalysisStage.applies(meeting: meeting, manifest: manifest),
               !EchoAnalysisStage.renderTracks(manifest: manifest).isEmpty,
-              (try? SessionFiles.audioDeleted(session: session, sessionID: manifest.id)) == false,
+              let audioDeleted = try? SessionFiles.audioDeleted(session: session, sessionID: manifest.id),
               case .current = EchoAnalysisStage.saved(session: session, manifest: manifest) else { return false }
         if !SessionExports.echoMaskIsCurrent(session: session) { return true }
-        guard let profiles else { return false }
+        guard !audioDeleted, let profiles else { return false }
         return VoiceProfileService.samplesOutOfStep(session: session, store: profiles)
     }
 

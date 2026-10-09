@@ -22,21 +22,23 @@ public struct EchoLabelStats: Sendable, Equatable, Encodable {
     /// echo kept as the user's, mostly.
     public var localInEchoBefore = 0
     public var localInEchoAfter = 0
-    /// Microphone rows shown (`SpeakerProjection.shownTurns`, short interjections joined or hidden as Review shows
-    /// them), and those of them with no speaker ("Unknown"), before and now; nil without speaker labels.
+    /// Microphone rows Review shows (the turns of `SpeakerProjection.shownTurns`, short interjections joined or
+    /// hidden, grouped into rows by `compare`'s `rows`; a row with a microphone turn), and those of them with no
+    /// speaker ("Unknown"), before and now; nil without speaker labels.
     public var microphoneRowsBefore: Int?
     public var microphoneRowsAfter: Int?
     public var unknownRowsBefore: Int?
     public var unknownRowsAfter: Int?
-    /// Microphone rows (as `microphoneRowsBefore`) whose words or speaker differ between the two rules (one shown
-    /// only under one counts too); nil without speaker labels.
-    public var turnsChanged: Int?
+    /// Microphone rows (as `microphoneRowsBefore`, by their first turn) whose turns, words or speaker differ between
+    /// the two rules (one shown only under one counts too); nil without speaker labels.
+    public var rowsChanged: Int?
 
     public init() {}
 
-    /// What a row shows, for `turnsChanged`.
+    /// What a row shows, for `rowsChanged`.
     private struct ShownRow: Equatable {
         var speakerID: String?
+        var turnIDs: [String]
         var spans: [WordSpan]
     }
 
@@ -51,8 +53,12 @@ public struct EchoLabelStats: Sendable, Equatable, Encodable {
     /// A word is judged as `SpeakerProjection` judges it (`EchoFilter.acousticEchoSpans`): every effective word of a
     /// segment of the "mic" track, except words the run's text filter dropped, words edited in Review, words with
     /// estimated times, and words the mask cannot judge (times that are not numbers, or past its last frame).
+    ///
+    /// `rows` groups the turns shown (every track, in the projection's order) into rows as Review does
+    /// (`ReviewParagraphs.group` in HolosMeeting); by default each turn is a row.
     public static func compare(transcript: Transcript, mask: AcousticEchoMask, run: DiarizationRun? = nil,
-                               edits: [SpeakerEdit] = []) -> EchoLabelStats {
+                               edits: [SpeakerEdit] = [],
+                               rows: ([ProjectedTurn]) -> [[ProjectedTurn]] = { $0.map { [$0] } }) -> EchoLabelStats {
         let before = mask.countingEveryLocalFrame()
         var stats = EchoLabelStats()
         var excluded = EchoFilter.reviewEditedWords(in: transcript)
@@ -96,20 +102,23 @@ public struct EchoLabelStats: Sendable, Equatable, Encodable {
                 SpeakerProjection.make(run: run, transcript: transcript, edits: edits, recognition: nil,
                                        profileNames: [:], acousticEcho: mask)
             }
-            let rows = views.map { view in
-                view.shownTurns(includingHidden: false).filter { $0.track == EchoFilter.microphoneTrack }
-            }
-            stats.microphoneRowsBefore = rows[0].count
-            stats.microphoneRowsAfter = rows[1].count
-            stats.unknownRowsBefore = rows[0].filter { $0.speakerID == nil }.count
-            stats.unknownRowsAfter = rows[1].filter { $0.speakerID == nil }.count
             // The rows as Review shows them: a short interjection hidden under both rules is no change, whatever its
-            // words; one attached to a neighbour shows with that speaker.
-            let shown = rows.map { rows in
-                Dictionary(rows.map { ($0.id, ShownRow(speakerID: $0.speakerID, spans: $0.spans)) },
-                           uniquingKeysWith: { first, _ in first })
+            // words; one attached to a neighbour shows with that speaker; consecutive turns of one speaker are one row.
+            let shown = views.map { view -> [String: ShownRow] in
+                let microphone = rows(view.shownTurns(includingHidden: false)).filter { row in
+                    row.contains { $0.track == EchoFilter.microphoneTrack }
+                }
+                return Dictionary(microphone.compactMap { row -> (String, ShownRow)? in
+                    guard let first = row.first else { return nil }
+                    return (first.id, ShownRow(speakerID: first.speakerID, turnIDs: row.map(\.id),
+                                               spans: row.flatMap(\.spans)))
+                }, uniquingKeysWith: { first, _ in first })
             }
-            stats.turnsChanged = Set(shown[0].keys).union(shown[1].keys).filter { shown[0][$0] != shown[1][$0] }.count
+            stats.microphoneRowsBefore = shown[0].count
+            stats.microphoneRowsAfter = shown[1].count
+            stats.unknownRowsBefore = shown[0].values.filter { $0.speakerID == nil }.count
+            stats.unknownRowsAfter = shown[1].values.filter { $0.speakerID == nil }.count
+            stats.rowsChanged = Set(shown[0].keys).union(shown[1].keys).filter { shown[0][$0] != shown[1][$0] }.count
         }
         return stats
     }
@@ -151,11 +160,11 @@ public struct EchoLabelStats: Sendable, Equatable, Encodable {
         microphoneRowsAfter = sum(microphoneRowsAfter, other.microphoneRowsAfter)
         unknownRowsBefore = sum(unknownRowsBefore, other.unknownRowsBefore)
         unknownRowsAfter = sum(unknownRowsAfter, other.unknownRowsAfter)
-        turnsChanged = sum(turnsChanged, other.turnsChanged)
+        rowsChanged = sum(rowsChanged, other.rowsChanged)
     }
 
     /// One line of counts: "mic words 1200, judged 1100; user's 400 -> 340 (local->echo 60, echo->local 0); in echo
-    /// 90 -> 35; mic rows 120 -> 104, unknown 30 -> 18; turns changed 22".
+    /// 90 -> 35; mic rows 120 -> 104, unknown 30 -> 18; rows changed 22".
     public var line: String {
         var text = "mic words \(microphoneWords), judged \(judgedWords); user's \(localBefore) -> \(localAfter) "
             + "(local->echo \(localToEcho), echo->local \(echoToLocal)); in echo \(localInEchoBefore) -> "
@@ -164,7 +173,7 @@ public struct EchoLabelStats: Sendable, Equatable, Encodable {
             text += "; mic rows \(microphoneRowsBefore) -> \(microphoneRowsAfter), unknown \(unknownRowsBefore) -> "
                 + "\(unknownRowsAfter)"
         }
-        if let turnsChanged { text += "; turns changed \(turnsChanged)" }
+        if let rowsChanged { text += "; rows changed \(rowsChanged)" }
         return text
     }
 }

@@ -7,8 +7,9 @@ import HolosCore
 /// `firstCentreSeconds + k · hopSeconds`.
 ///
 /// Speaker labelling asks it about words (`isEcho(start:end:)`); review playback can ask it where the microphone has
-/// speech of its own (`localSpeechIntervals()`). Both trust a local frame only within a local stretch with evidence
-/// (`localStretches()`): the call cancelled poorly also leaves frames the frame rule calls local.
+/// speech of its own (`localSpeechIntervals()`). Both read the same local stretches (`localStretches()`) and trust a
+/// local frame only where its stretch shows speech of the microphone's own: the call cancelled poorly also leaves
+/// frames the frame rule calls local.
 public struct AcousticEchoMask: Sendable, Equatable {
     public enum FrameClass: UInt8, Sendable {
         /// The microphone is within `EchoAnalysis` `activeAboveFloorDB` of its noise floor.
@@ -23,12 +24,12 @@ public struct AcousticEchoMask: Sendable, Equatable {
     public static let hopSeconds = 0.016
     /// Session time of frame 0's centre: half of the 1,024-sample window.
     public static let firstCentreSeconds = 0.032
-    /// A word is echo when fewer than this share of its active frames are local frames of a local stretch
-    /// with evidence (`localStretches()`).
+    /// A word is echo when fewer than this share of its active frames are local frames the word rule trusts
+    /// (`LocalStretch.wordFrames`).
     public static let localWordShare = 0.3
     /// The version of the word rule (`isEcho`), part of the mask's identity (`EchoMaskStore.identity`), so transcript
     /// files written under an earlier rule are out of date. 1: every local frame counted; 2 (2026-10-08): only the
-    /// local frames of a stretch with evidence.
+    /// local frames `LocalStretch.wordFrames` trusts.
     public static let wordRuleVersion = 2
     /// A word without active frames is echo when the predicted echo is at least this many decibels relative to the
     /// microphone over the word (median of its frames).
@@ -47,6 +48,16 @@ public struct AcousticEchoMask: Sendable, Equatable {
     /// on real calls they come scattered through the call's speech in runs of a few frames, and alone they would open
     /// the microphone onto the echo in review and give echo words to the microphone's speakers.
     public static let evidenceDB = -6.0
+    /// A run of at least this many consecutive local frames (208 ms: a held syllable; over four times the 48 ms the
+    /// 5-frame smoothing can leave, and over twice the 3–5-frame runs the call cancelled poorly leaves scattered
+    /// through its speech)
+    public static let sustainedRunFrames = 13
+    /// with the median predicted echo below this many decibels relative to the microphone is sustained speech of the
+    /// microphone's own over the call, for the word rule. Speech in the room adds to the echo, so the microphone is
+    /// louder than the echo alone: by 3 dB at equal loudness (−3 dB here), by 1 dB for speech about 6 dB quieter than
+    /// the echo; the echo cancelled poorly predicts 0 to +3.5 dB. Review playback does not use it: such a stretch
+    /// holds the echo at about the user's own loudness, which #108 chose not to play.
+    public static let sustainedLevelDB = -1.0
     /// Review playback (`localSpeechIntervals`): stretches with evidence are padded by this much before,
     public static let playbackLeadSeconds = 0.064
     /// and by this much after.
@@ -58,9 +69,9 @@ public struct AcousticEchoMask: Sendable, Equatable {
     /// the Int8 range (no predicted echo or no microphone sound: the lowest). Words without active frames use it, and
     /// the evidence of local stretches (`localStretches()`).
     public let echoLevels: [Int8]
-    /// The frames whose local frames count for the word rule (`isEcho`), in order and disjoint: the local stretches
-    /// with evidence, worked out once (a call has hundreds of thousands of frames and thousands of words). Every
-    /// stretch in `countingEveryLocalFrame()`.
+    /// The frames whose local frames count for the word rule (`isEcho`), in order and disjoint
+    /// (`LocalStretch.wordFrames`), worked out once (a call has hundreds of thousands of frames and thousands of
+    /// words). Every stretch whole in `countingEveryLocalFrame()`.
     let wordStretches: [Range<Int>]
 
     /// Nil when the counts differ or a class is not a `FrameClass`.
@@ -70,8 +81,21 @@ public struct AcousticEchoMask: Sendable, Equatable {
         }
         self.classes = classes
         self.echoLevels = echoLevels
-        wordStretches = Self.localStretches(classes: classes, echoLevels: echoLevels).filter(\.hasEvidence)
-            .map(\.frames)
+        wordStretches = Self.joined(Self.localStretches(classes: classes, echoLevels: echoLevels)
+            .flatMap(\.wordFrames))
+    }
+
+    /// `ranges` in order, with ranges that overlap or touch joined.
+    static func joined(_ ranges: [Range<Int>]) -> [Range<Int>] {
+        var joined: [Range<Int>] = []
+        for range in ranges.sorted(by: { $0.lowerBound < $1.lowerBound }) where !range.isEmpty {
+            if let last = joined.last, range.lowerBound <= last.upperBound {
+                joined[joined.count - 1] = last.lowerBound..<max(last.upperBound, range.upperBound)
+            } else {
+                joined.append(range)
+            }
+        }
+        return joined
     }
 
     private init(classes: [UInt8], echoLevels: [Int8], wordStretches: [Range<Int>]) {
@@ -108,12 +132,12 @@ public struct AcousticEchoMask: Sendable, Equatable {
     /// say (times that are not numbers, or a word after the last frame), and the word is kept.
     ///
     /// The word's frames are those whose centre lies in [start, end), at least the first frame centred at or after
-    /// `start`. With active frames, it is echo when fewer than `localWordShare` of them are local frames of a local
-    /// stretch with evidence (`localStretches()`, the stretches review playback keeps): a local frame of a stretch
-    /// without evidence (the call cancelled poorly) counts as echo. The stretch is judged whole, beyond the word, so a
-    /// word spoken quietly over the call is the microphone's when the stretch it is in has louder frames elsewhere,
-    /// and a word only partly in a stretch with evidence counts just its frames inside it. Without active frames, it
-    /// is echo only when the predicted echo explains its energy: the median stored level is at least
+    /// `start`. With active frames, it is echo when fewer than `localWordShare` of them are local frames the word rule
+    /// trusts (`LocalStretch.wordFrames`: a stretch with evidence or sustained, whole; otherwise its runs without
+    /// predicted echo): any other local frame (the call cancelled poorly) counts as echo. The stretch is judged whole,
+    /// beyond the word, so a word spoken quietly over the call is the microphone's when the stretch it is in has
+    /// louder frames elsewhere, and a word only partly in a trusted stretch counts just its frames inside it. Without
+    /// active frames, it is echo only when the predicted echo explains its energy: the median stored level is at least
     /// `explainedEchoDB`.
     public func isEcho(start: Double, end: Double) -> Bool? {
         guard start.isFinite, end.isFinite else { return nil }
@@ -161,39 +185,53 @@ public struct AcousticEchoMask: Sendable, Equatable {
 
     // MARK: - Local stretches
 
-    /// Runs of local frames joined across gaps shorter than `stretchGapSeconds`, with how many of their local frames
-    /// are evidence of the microphone's own speech.
+    /// Runs of local frames joined across gaps shorter than `stretchGapSeconds`, with what in them shows speech of the
+    /// microphone's own.
     public struct LocalStretch: Sendable, Equatable {
         /// From the stretch's first local frame to after its last (the frames between its runs included).
         public var frames: Range<Int>
         /// Its local frames with the predicted echo below `evidenceDB`.
         public var evidence: Int
-        /// None of its local frames has any predicted echo (the lowest stored level: none at all, or more than 64 dB
-        /// below the microphone): the call says nothing there, so there is no echo for the frames to be.
-        public var withoutPredictedEcho: Bool
+        /// It has a run of at least `sustainedRunFrames` local frames whose median predicted echo is below
+        /// `sustainedLevelDB`.
+        public var sustained: Bool
+        /// Its runs of local frames none of which has any predicted echo (the lowest stored level: none at all, or
+        /// more than 64 dB below the microphone): the call says nothing there, so there is no echo for them to be.
+        /// Each run on its own: a local run with predicted echo joined to one of them does not share it.
+        public var unpredictedRuns: [Range<Int>]
 
-        public init(frames: Range<Int>, evidence: Int, withoutPredictedEcho: Bool = false) {
-            self.frames = frames; self.evidence = evidence; self.withoutPredictedEcho = withoutPredictedEcho
+        public init(frames: Range<Int>, evidence: Int, sustained: Bool = false, unpredictedRuns: [Range<Int>] = []) {
+            self.frames = frames; self.evidence = evidence; self.sustained = sustained
+            self.unpredictedRuns = unpredictedRuns
         }
 
-        /// At least `evidenceFrames` frames of evidence, or any length without predicted echo (the analysis's 5-frame
-        /// smoothing can leave a single local frame of a quiet sound whose alternate frames were local, while the call
-        /// is silent): speech of the microphone's own (the user, or someone in the room), whose every local frame
-        /// counts, also the quieter ones over the call. Review playback plays it too: where nothing is predicted there
-        /// is no echo to play.
-        public var hasEvidence: Bool { evidence >= AcousticEchoMask.evidenceFrames || withoutPredictedEcho }
+        /// At least `evidenceFrames` frames of evidence: speech of the microphone's own (the user, or someone in the
+        /// room), whose every local frame counts, also the quieter ones over the call. Review playback plays such a
+        /// stretch whole (#108).
+        public var hasEvidence: Bool { evidence >= AcousticEchoMask.evidenceFrames }
+
+        /// The frames whose local frames the word rule trusts: the whole stretch when it has evidence or is sustained
+        /// (double-talk at the echo's loudness has no frame 6 dB clear of it, but holds for a syllable or more),
+        /// otherwise only its runs without predicted echo (the 5-frame smoothing can leave a single local frame of a
+        /// quiet sound while the call is silent).
+        public var wordFrames: [Range<Int>] { hasEvidence || sustained ? [frames] : unpredictedRuns }
+
+        /// The frames review playback plays: the whole stretch with evidence (#108), otherwise its runs without
+        /// predicted echo, where there is no echo to play.
+        public var playbackFrames: [Range<Int>] { hasEvidence ? [frames] : unpredictedRuns }
+
         /// Session time from its first frame to its last, each frame covering one hop around its centre.
-        public var start: Double {
-            AcousticEchoMask.centre(ofFrame: frames.lowerBound) - AcousticEchoMask.hopSeconds / 2
-        }
-        public var end: Double {
-            AcousticEchoMask.centre(ofFrame: frames.upperBound - 1) + AcousticEchoMask.hopSeconds / 2
-        }
+        public var start: Double { AcousticEchoMask.start(ofFrames: frames) }
+        public var end: Double { AcousticEchoMask.end(ofFrames: frames) }
     }
 
-    /// Every local stretch, with evidence or not, in frame order. The one place both rules that trust local frames
-    /// read: review playback (`localSpeechIntervals`) plays the stretches with evidence, and the word rule (`isEcho`)
-    /// counts only their local frames.
+    /// Session time from the start of `frames`' first frame (one hop around its centre) to the end of its last.
+    static func start(ofFrames frames: Range<Int>) -> Double { centre(ofFrame: frames.lowerBound) - hopSeconds / 2 }
+    static func end(ofFrames frames: Range<Int>) -> Double { centre(ofFrame: frames.upperBound - 1) + hopSeconds / 2 }
+
+    /// Every local stretch in frame order, whatever it shows. The one place both rules that trust local frames read:
+    /// review playback (`localSpeechIntervals`) plays `playbackFrames`, and the word rule (`isEcho`) counts the local
+    /// frames of `wordFrames`.
     public func localStretches() -> [LocalStretch] {
         Self.localStretches(classes: classes, echoLevels: echoLevels)
     }
@@ -206,19 +244,27 @@ public struct AcousticEchoMask: Sendable, Equatable {
             guard classes[frame] == local else { frame += 1; continue }
             let first = frame
             var evidence = 0
-            var withoutPredictedEcho = true
+            var unpredicted = true
             while frame < classes.count, classes[frame] == local {
                 if Double(echoLevels[frame]) * levelStepDB < evidenceDB { evidence += 1 }
-                if echoLevels[frame] != .min { withoutPredictedEcho = false }
+                if echoLevels[frame] != .min { unpredicted = false }
                 frame += 1
             }
-            let run = LocalStretch(frames: first..<frame, evidence: evidence,
-                                   withoutPredictedEcho: withoutPredictedEcho)
+            var sustained = false
+            if frame - first >= sustainedRunFrames {
+                let levels = echoLevels[first..<frame].sorted()
+                let middle = levels.count / 2
+                let median = levels.count % 2 == 1 ? Double(levels[middle])
+                    : (Double(levels[middle - 1]) + Double(levels[middle])) / 2
+                sustained = median * levelStepDB < sustainedLevelDB
+            }
+            let run = LocalStretch(frames: first..<frame, evidence: evidence, sustained: sustained,
+                                   unpredictedRuns: unpredicted ? [first..<frame] : [])
             if let last = stretches.last, run.start - last.end < stretchGapSeconds {
                 stretches[stretches.count - 1].frames = last.frames.lowerBound..<frame
-                stretches[stretches.count - 1].evidence += evidence
-                stretches[stretches.count - 1].withoutPredictedEcho = last.withoutPredictedEcho
-                    && withoutPredictedEcho
+                stretches[stretches.count - 1].evidence += run.evidence
+                stretches[stretches.count - 1].sustained = last.sustained || run.sustained
+                stretches[stretches.count - 1].unpredictedRuns += run.unpredictedRuns
             } else {
                 stretches.append(run)
             }
@@ -235,15 +281,15 @@ public struct AcousticEchoMask: Sendable, Equatable {
         public init(start: Double, end: Double) { self.start = start; self.end = end }
     }
 
-    /// Session-time intervals where the microphone has speech of its own, for review playback: the local stretches
-    /// with evidence (`localStretches()`; a stretch keeps all its runs, so speech over the call keeps its quieter
-    /// syllables and its first one), widened by `playbackLeadSeconds` before (not below 0) and `playbackTailSeconds`
-    /// after, and joined again where they meet. In start order, disjoint.
+    /// Session-time intervals where the microphone has speech of its own, for review playback: the frames of
+    /// `LocalStretch.playbackFrames` (the stretches with evidence, whole, so speech over the call keeps its quieter
+    /// syllables and its first one; otherwise runs without predicted echo), widened by `playbackLeadSeconds` before
+    /// (not below 0) and `playbackTailSeconds` after, and joined again where they meet. In start order, disjoint.
     public func localSpeechIntervals() -> [Interval] {
         var padded: [Interval] = []
-        for stretch in localStretches() where stretch.hasEvidence {
-            let interval = Interval(start: max(0, stretch.start - Self.playbackLeadSeconds),
-                                    end: stretch.end + Self.playbackTailSeconds)
+        for frames in localStretches().flatMap(\.playbackFrames) {
+            let interval = Interval(start: max(0, Self.start(ofFrames: frames) - Self.playbackLeadSeconds),
+                                    end: Self.end(ofFrames: frames) + Self.playbackTailSeconds)
             if let last = padded.last, interval.start <= last.end {
                 padded[padded.count - 1].end = max(last.end, interval.end)
             } else {

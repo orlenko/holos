@@ -77,6 +77,15 @@ public enum SessionEchoLabelStats {
         return Report(sessions: results, total: total, measured: results.filter { $0.stats != nil }.count)
     }
 
+    /// `EchoLabelStats.compare` with Review's rows: the turns shown grouped into paragraphs (`ReviewParagraphs.group`,
+    /// without the breaks a window may have made, which are never saved).
+    public static func compare(transcript: Transcript, mask: AcousticEchoMask, run: DiarizationRun?,
+                               edits: [SpeakerEdit]) -> EchoLabelStats {
+        EchoLabelStats.compare(transcript: transcript, mask: mask, run: run, edits: edits) { turns in
+            ReviewParagraphs.group(turns).map(\.turns)
+        }
+    }
+
     /// One session's stats, against the labels as they are on disk: the head run with its edit journal, and the mask
     /// they are shown with (`EchoMaskStore.usable`).
     public static func measure(_ session: URL) -> SessionResult {
@@ -97,8 +106,8 @@ public enum SessionEchoLabelStats {
                 return result
             }
             let snapshot = try SpeakerSessionSnapshot.load(session: session, applyRecognition: false)
-            result.stats = EchoLabelStats.compare(transcript: snapshot.transcript, mask: mask, run: snapshot.run,
-                                                  edits: snapshot.journal.edits)
+            result.stats = compare(transcript: snapshot.transcript, mask: mask, run: snapshot.run,
+                                   edits: snapshot.journal.edits)
             result.status = .measured
         } catch {
             log.error("Echo label stats: a session could not be read: \(error.localizedDescription, privacy: .private)")
