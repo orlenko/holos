@@ -95,7 +95,7 @@ extension HolosAppDelegate {
             // The automatic jobs held back while the queue was not known go on (or keep waiting for a call it found).
             if !self.meeting.echo.scanning {
                 self.scheduleMeetingSummaries()
-                self.scheduleDeepTranscription()
+                self.scheduleBackgroundJobs()
             }
         }
     }
@@ -120,9 +120,9 @@ extension HolosAppDelegate {
         let summaryAsked = meeting.summaries.scanning && !meeting.summaries.requests.isEmpty
         return EchoCatchUpSchedule.Situation(
             meetingBusy: meetingIsBusy(controller.state),
-            otherJobRunning: meeting.deep.running != nil || meeting.summaries.running != nil
+            otherJobRunning: meeting.jobs?.isRunning == true || meeting.summaries.running != nil
                 || DeepTranscriptionLock.state() != .free,
-            askedForWorkWaiting: summaryAsked || askedForPassWaiting(inUse: inUse, now: now),
+            askedForWorkWaiting: summaryAsked || meeting.jobs?.askedForWorkWaiting() == true,
             running: meeting.echo.running, inUse: inUse, failed: meeting.echo.failed,
             delayedUntil: meeting.echo.turnedDown.mapValues(\.until), now: now)
     }
@@ -250,7 +250,7 @@ extension HolosAppDelegate {
         updateEchoStates()
         scheduleMeetingSummaries()
         scheduleEchoCatchUp()
-        scheduleDeepTranscription()
+        scheduleBackgroundJobs()
     }
 
     /// Another process held the meeting or the background job lock (or it records again): it waits, longer each time

@@ -29,6 +29,13 @@ recorder ↔ app protocol.
   `voiceislocal speakers` edits: one change on a `LoadedSpeakers` view, then the exports rewritten and the voice
   samples from the meeting brought in step), `SessionCatalog`, `SessionLocator`,
   `SessionImporter`, `SessionRecoveryCommand`, `DeepTranscriptionQueue`, `EchoCatchUp`.
+- `BackgroundJobs/`: `BackgroundJobCoordinator` (`@MainActor`) runs the app's background jobs on meetings one at a
+  time: it probes `DeepTranscriptionLock`, applies the holds (a meeting starting, recording or saving; meetings in
+  use or under review), orders the kinds' picks (`BackgroundJobOrder`, pure: asked-for work, then catch-up, then
+  automatic work), stops its job when a meeting starts, and retries what was turned down. Its kind
+  (`BackgroundJobKind`) is `DeepTranscriptionJobs` (the saved queue of final transcripts); commands start through
+  `BackgroundJobRunner` (`CommandRunner`, or a fake in tests). Summaries and the echo catch-up keep their schedulers
+  in the app and meet it through its `Environment`.
 
 **Must not own:** AppKit or windows, FluidAudio or WhisperKit (diarization and deep transcription run in a
 `voiceislocal` child), evaluation code (`HolosEvaluation`, which depends on this target), network access,
@@ -47,7 +54,9 @@ NaturalLanguage, CryptoKit.
   last lock.
 - Post-processing writes its files through `AtomicFile` (atomic rename). The rule that cancelled work publishes
   nothing partial is `docs/meeting-design.md §1.3`; lock rules are `docs/meeting-design.md §1.7`.
-- `ReviewSession` and `MeetingController` are `@MainActor` and testable without a window.
+- `ReviewSession`, `MeetingController` and `BackgroundJobCoordinator` are `@MainActor` and testable without a window.
+- At most one background job of the app runs on this Mac (`BackgroundJobCoordinator` invariant 1): every one holds
+  `DeepTranscriptionLock` while it runs, and the app starts none while the lock is held.
 
 **Known size debt:** `ReviewSession` (3,872 lines), `RecordingWorkflow`, `VoiceProfileService`. Do not grow them;
 move code out first, in a moves-only PR.

@@ -208,19 +208,6 @@ extension HolosAppDelegate {
         }
     }
 
-    /// A Make Final Transcript Now pass is queued (or its languages are being read) and could start (the setting and power do not hold it back; its
-    /// meeting is not in use or delayed, and the model is installed): asked-for work goes before automatic summaries.
-    func askedForPassWaiting(inUse: Set<String>, now: Date) -> Bool {
-        guard meeting.deep.model == "installed", meeting.deep.retryAfter.map({ $0 <= now }) ?? true else { return false }
-        // One whose languages are still being read (`pending`, saved so the request survives a quit) counts too: it
-        // is about to join the queue.
-        if meeting.deep.queue.pending.contains(where: \.runNow) { return true }
-        return meeting.deep.queue.items.contains { item in
-            item.runNow && !inUse.contains(item.sessionID)
-                && (meeting.deep.delayed[item.sessionID].map { $0 <= now } ?? true)
-        }
-    }
-
     /// A scan's result: the meetings, or a people store it could not read (with the reason when that is for good).
     private enum PeopleStoreScan: Sendable {
         case scanned([MeetingSummarySchedule.Candidate], Set<String>)
@@ -228,15 +215,14 @@ extension HolosAppDelegate {
     }
 
     /// An echo analysis or automatic final transcript held back for this scan (`waitsForSummaryScan`) is looked at
-    /// again: it starts unless the scan started a summary (then it waits for it).
+    /// again: it starts unless the scan started a summary
+    /// (then it waits for it).
     private func meetingSummaryScanEnded() {
         if meeting.echo.waitsForSummaryScan {
             meeting.echo.waitsForSummaryScan = false
             scheduleEchoCatchUp()
         }
-        guard meeting.deep.waitsForSummaryScan else { return }
-        meeting.deep.waitsForSummaryScan = false
-        scheduleDeepTranscription()
+        meeting.jobs?.summaryScanEnded()
     }
 
     private func startNextMeetingSummary(_ candidates: [MeetingSummarySchedule.Candidate], gone: Set<String>) {
@@ -255,14 +241,15 @@ extension HolosAppDelegate {
             enabled: MeetingSummaryAppState.enabled, modelAvailable: OnDeviceFix.unavailableReason == nil,
             meetingBusy: meetingIsBusy(controller.state),
             // This app's echo analysis counts as a job running (one at a time, §5.11).
-            deepPassRunning: meeting.deep.running != nil || DeepTranscriptionLock.state() != .free
+            deepPassRunning: meeting.jobs?.isRunning == true || DeepTranscriptionLock.state() != .free
                 || meeting.echo.running != nil,
             running: nil,
             inUse: inUse, attempted: meeting.summaries.attempted, delayedUntil: meeting.summaries.delayedUntil,
             requested: meeting.summaries.requested, onBattery: PowerSource.current() == .battery,
             finalTranscriptQueued: Set((meeting.deep.queue.items + meeting.deep.queue.pending).map(\.sessionID))
                 .union(meeting.deep.deciding),
-            askedForPassWaiting: askedForPassWaiting(inUse: inUse, now: now),
+            // A Make Final Transcript Now ready to run (or having its languages read) goes first.
+            askedForPassWaiting: meeting.jobs?.askedForWorkWaiting() ?? false,
             now: now)
         guard case .run(let sessionID, let path, let force) = MeetingSummarySchedule.next(candidates, situation)
         else { return }
@@ -356,7 +343,7 @@ extension HolosAppDelegate {
         // (which waits for the scan).
         scheduleMeetingSummaries()
         scheduleEchoCatchUp()
-        scheduleDeepTranscription()
+        scheduleBackgroundJobs()
     }
 
     /// What the Meetings list shows while a summary is made (`MeetingController.beginUsing`).
