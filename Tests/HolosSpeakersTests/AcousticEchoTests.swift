@@ -821,8 +821,9 @@ private func isEcho(_ mask: AcousticEchoMask, _ frames: Range<Int>) -> Bool? {
     #expect(isEcho(mixed, 160..<172) == true)
 }
 
-@Test func playbackAndTheWordRuleReadTheSameStretches() {
-    // The masks of the playback tests: review plays exactly the stretches with evidence, padded, whichever word rule.
+@Test func playbackPlaysExactlyTheStretchesWithEvidence() {
+    // The masks of the playback tests: review plays exactly the stretches with evidence, padded. The word rule's own,
+    // wider trust (`trustedWordFrames`) is tested separately and leaves playback as it was.
     let masks = [
         echoMask(count: 500, local: [(20..<23, 2), (50..<53, 6), (80..<85, -8), (120..<124, 0), (200..<212, 2),
                                      (300..<305, -8), (310..<314, -7)]),

@@ -8972,7 +8972,7 @@ genuinely local (the user, or people in the room) stays even while the call play
   finished opening after the run ended rereads the meeting too (`maintenanceEnded`).
 - *Playback.* `AcousticEchoMask.localSpeechIntervals()` gives the microphone's own
   speech: runs of local frames, joined into stretches across gaps under 300 ms
-  (`localStretches()`, `stretchGapSeconds`, also read by the word rule); a stretch is
+  (`localStretches()`, `stretchGapSeconds`; the word rule has its own, wider trust, `trustedWordFrames`); a stretch is
   kept only when at least 3 of its local frames (`evidenceFrames`) have the predicted
   echo more than 6 dB below the microphone (`evidenceDB`); kept stretches are padded
   64 ms before and 200 ms after. The review window plays the microphone only there (§5.10,
@@ -9028,8 +9028,8 @@ headphones, missing or silent system audio, and one signal on both tracks are no
 playback keeps sustained local speech with its lead and double-talk from its weak first run,
 and leaves scattered local runs the call explains muted; the word rule makes words with
 scattered false-local frames echo, keeps double-talk and quiet speech without predicted echo
-the user's, counts only the frames inside a stretch with evidence for a word partly in it,
-and reads the very stretches playback keeps; files written under the earlier word rule are out
+the user's, counts only the frames it trusts for a word partly in them, and trusts more than
+playback opens (a word can stay the user's while its audio stays muted); files written under the earlier word rule are out
 of date and `echo-analyze` rewrites them; the stats count words, rows and unknown rows and
 print no text; the projection hides echo words from turns that keep their IDs, a split chosen among the words
 shown lands at that stored word (assign and undo too, through the review), hides echo
