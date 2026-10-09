@@ -760,9 +760,8 @@ public enum WordFixStage {
     /// locks held publishes nothing.
     private static func publish(_ fixed: Transcript, details: [String: String], request: Request) async throws
         -> Publication {
-        let archive = try SessionArchive.openForMaintenance(at: request.session, lease: request.lease)
-        do {
-            let publication = try await SessionArchive.withSpeakerLockAsync(at: request.session) {
+        return try await SessionArchive.withMaintenanceArchive(at: request.session, lease: request.lease) { archive in
+            try await SessionArchive.withSpeakerLockAsync(at: request.session) {
                 () async throws -> Publication in
                 let head = try SpeakerAnalysis.headState(session: request.session, transcript: request.transcript)
                 let edited = head?.needsForce(false) == true
@@ -790,11 +789,6 @@ public enum WordFixStage {
                 }
                 return Publication(problem: nil, labelsPreserved: plan != nil)
             }
-            await archive.releaseLock()
-            return publication
-        } catch {
-            await archive.releaseLock()
-            throw error
         }
     }
 
@@ -805,9 +799,8 @@ public enum WordFixStage {
     private static func repairPreservedHeadIfNeeded(_ transcript: Transcript, request: Request) async throws -> Bool {
         let initial = try SpeakerAnalysis.headState(session: request.session, transcript: transcript)
         guard let initial, !initial.sameTranscript, initial.run != nil else { return false }
-        let archive = try SessionArchive.openForMaintenance(at: request.session, lease: request.lease)
-        do {
-            let repaired = try await SessionArchive.withSpeakerLockAsync(at: request.session) { () async throws -> Bool in
+        return try await SessionArchive.withMaintenanceArchive(at: request.session, lease: request.lease) { _ in
+            try await SessionArchive.withSpeakerLockAsync(at: request.session) { () async throws -> Bool in
                 guard try SessionFiles.currentTranscript(session: request.session)?.id == transcript.id else {
                     throw HolosError.invalidInput("The transcript changed while its speaker labels were being repaired.")
                 }
@@ -829,11 +822,6 @@ public enum WordFixStage {
                 try SpeakerTranscriptRetarget.publishHead(plan, session: request.session)
                 return true
             }
-            await archive.releaseLock()
-            return repaired
-        } catch {
-            await archive.releaseLock()
-            throw error
         }
     }
 

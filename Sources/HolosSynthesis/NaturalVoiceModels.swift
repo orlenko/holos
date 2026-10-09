@@ -4,7 +4,7 @@ import HolosCore
 import os
 
 /// Where the natural voices' models live, whether they are installed, and how they are installed
-/// (docs/design.md "Natural voices"). Files only here; the download and the first load (FluidAudio) are passed in by
+/// (Sources/HolosSynthesis/README.md). Files only here; the download and the first load (FluidAudio) are passed in by
 /// the `voiceislocal` tool, so the app, which does not link FluidAudio, can read the status.
 ///
 /// Layout, under `root` (`<supportRoot>/Models/pocket-tts`, or `$HOLOS_POCKET_MODELS_DIR`):

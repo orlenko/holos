@@ -2,6 +2,7 @@ import Accelerate
 import Foundation
 import Testing
 import HolosCore
+import HolosTestSupport
 @testable import HolosSpeakers
 
 // Acoustic microphone echo in calls (docs/meeting-design.md §5.11): EchoAnalysis on synthetic signals only, the mask's
@@ -9,21 +10,7 @@ import HolosCore
 
 // MARK: - Synthetic call
 
-/// A deterministic generator (SplitMix64).
-private struct Noise {
-    var state: UInt64
-
-    mutating func next() -> UInt64 {
-        state &+= 0x9E37_79B9_7F4A_7C15
-        var z = state
-        z = (z ^ (z >> 30)) &* 0xBF58_476D_1CE4_E5B9
-        z = (z ^ (z >> 27)) &* 0x94D0_49BB_1331_11EB
-        return z ^ (z >> 31)
-    }
-
-    /// Uniform in [−1, 1).
-    mutating func uniform() -> Float { Float(Double(next() >> 11) / Double(1 << 52)) - 1 }
-
+private extension SplitMix64 {
     /// Roughly Gaussian (sum of four uniforms).
     mutating func gaussian() -> Float { (uniform() + uniform() + uniform() + uniform()) * 0.866 }
 }
@@ -33,7 +20,7 @@ private let rate = 16_000
 /// Speech-like noise: band-limited noise, modulated at a syllable rate of 4 Hz, inside `intervals` (seconds) only,
 /// scaled to `rms` while it speaks.
 private func speech(seconds: Double, intervals: [(Double, Double)], rms: Float, seed: UInt64) -> [Float] {
-    var noise = Noise(state: seed)
+    var noise = SplitMix64(state: seed)
     let count = Int(seconds * Double(rate))
     var out = [Float](repeating: 0, count: count)
     var low: Float = 0
@@ -77,7 +64,7 @@ private func level(_ signal: [Float], _ intervals: [(Double, Double)]) -> Float 
 
 /// The room's echo path: `delay` seconds to the direct sound, then 30 ms of decaying random reflections.
 private func echoPath(of system: [Float], delay: Double, gain: Float, seed: UInt64) -> [Float] {
-    var noise = Noise(state: seed)
+    var noise = SplitMix64(state: seed)
     let shift = Int((delay * Double(rate)).rounded())
     let response = (0..<480).map { $0 == 0 ? 1 : 0.4 * Float(exp(-Double($0) / 80)) * noise.uniform() }
     // out[i] = Σ response[lag] · system[i − shift − lag], with vDSP_conv over a zero-padded input.
@@ -121,7 +108,7 @@ private struct SyntheticCall {
         let overlapEcho = level(echo, [Self.doubleTalk])
         let over = speech(seconds: Self.seconds, intervals: [Self.doubleTalk], rms: overlapEcho * doubleTalkLevel,
                           seed: 4)
-        var floor = Noise(state: 5)
+        var floor = SplitMix64(state: 5)
         let hiss = (0..<echo.count).map { _ in floor.gaussian() * 1e-4 }
         microphone = add(echo, own, over, hiss)
     }
@@ -218,7 +205,7 @@ func headphonesLeaveNothingToMask() throws {
     let system = speech(seconds: SyntheticCall.seconds, intervals: SyntheticCall.systemTalks, rms: 0.05, seed: 1)
     let own = speech(seconds: SyntheticCall.seconds, intervals: SyntheticCall.localTalks + [SyntheticCall.doubleTalk],
                      rms: 0.02, seed: 3)
-    var floor = Noise(state: 5)
+    var floor = SplitMix64(state: 5)
     let microphone = add(own, (0..<own.count).map { _ in floor.gaussian() * 1e-4 })
     let result = try EchoAnalysis.analyze(microphone: InMemoryEchoAudio(microphone),
                                           system: InMemoryEchoAudio(system))
@@ -508,20 +495,10 @@ private func echoMask(count: Int, local: [(frames: Range<Int>, level: Int8)]) ->
 
 private let session = "SESSION"
 
-/// A segment of 0.3 s words starting every 0.4 s.
+/// A segment of words "<id>w0", "<id>w1", …, each 0.3 s long, starting every 0.4 s.
 private func segment(_ id: String, words: Int, track: String, start: Double) -> TranscriptSegment {
-    var text = ""
-    var timed: [TimedWord] = []
-    for index in 0..<words {
-        let word = "\(id)w\(index)"
-        if !text.isEmpty { text += " " }
-        let wordStart = start + Double(index) * 0.4
-        timed.append(TimedWord(text: word, start: wordStart, end: wordStart + 0.3, utf16Offset: text.utf16.count,
-                               utf16Length: word.utf16.count))
-        text += word
-    }
-    return TranscriptSegment(id: id, start: start, end: start + Double(words) * 0.4, text: text, words: timed,
-                             track: track)
+    TranscriptFixtures.segment(TranscriptFixtures.numberedWords(id, count: words), id: id, track: track, start: start,
+                               every: 0.4, lasting: 0.3)
 }
 
 /// A mask of `seconds` whose frames inside `echo` (seconds) are echo and the rest local.

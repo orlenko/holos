@@ -13,6 +13,6 @@ Helpers shared by the test targets. Both are ordinary library targets that only 
   through `SessionArchive`. Fixtures that need audio chunks from `AudioChunkWriter`, speaker runs, or HolosMeeting
   stay in that target's tests (HolosMeetingTests/SessionFixtures.swift) and can build on it.
 
-HolosStorageTests uses them; HolosTestSupportTests checks them. Other targets adopt them when they are next touched: drop the target's own copy of a
+HolosStorageTests and HolosSpeakersTests use them; HolosTestSupportTests checks them. Other targets adopt them when they are next touched: drop the target's own copy of a
 helper in the same change, keep helpers that differ from these, and add nothing here that pulls a heavy module
 (WhisperKit, FluidAudio, the app) into targets that do not need it.

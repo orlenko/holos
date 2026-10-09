@@ -202,9 +202,8 @@ enum SessionWordEdit {
               !state.sameTranscript, let run = state.run,
               let edited = try editedEvent(of: transcript.id, session: session),
               edited.base == run.transcriptID else { return false }
-        let archive = try SessionArchive.openForMaintenance(at: session, lease: lease)
-        do {
-            let repaired = try await SessionArchive.withSpeakerLockAsync(at: session) { () async throws -> Bool in
+        return try await SessionArchive.withMaintenanceArchive(at: session, lease: lease) { _ in
+            try await SessionArchive.withSpeakerLockAsync(at: session) { () async throws -> Bool in
                 guard try SessionFiles.currentTranscript(session: session)?.id == transcript.id,
                       let head = try SpeakerAnalysis.headState(session: session, transcript: transcript),
                       head.runID == run.id else {
@@ -223,11 +222,6 @@ enum SessionWordEdit {
                 try SpeakerTranscriptRetarget.publishHead(plan, session: session, now: now)
                 return true
             }
-            await archive.releaseLock()
-            return repaired
-        } catch {
-            await archive.releaseLock()
-            throw error
         }
     }
 
@@ -288,14 +282,8 @@ enum SessionWordEdit {
         let lease = try SessionArchive.acquireProcessingLease(at: session)
         defer { lease.release() }
         return try await lease.withUse(for: session) {
-            let archive = try SessionArchive.openForMaintenance(at: session, lease: lease)
-            do {
-                let value = try await SessionArchive.withSpeakerLockAsync(at: session) { try await body(archive) }
-                await archive.releaseLock()
-                return value
-            } catch {
-                await archive.releaseLock()
-                throw error
+            return try await SessionArchive.withMaintenanceArchive(at: session, lease: lease) { archive in
+                try await SessionArchive.withSpeakerLockAsync(at: session) { try await body(archive) }
             }
         }
     }
