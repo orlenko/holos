@@ -1,6 +1,7 @@
 import Foundation
 import Testing
 import HolosCore
+import HolosTestSupport
 @testable import HolosSpeakers
 
 // Microphone echo of system audio in calls (docs/meeting-design.md §5.11, PR11).
@@ -8,17 +9,7 @@ import HolosCore
 /// A segment on `track` with measured words, word i at `start + i × wordSeconds`, each lasting `wordSeconds`.
 private func echoSegment(_ id: String, _ words: [String], track: String, start: Double,
                          wordSeconds: Double = 0.3) -> TranscriptSegment {
-    var text = ""
-    var timed: [TimedWord] = []
-    for (index, word) in words.enumerated() {
-        if !text.isEmpty { text += " " }
-        let wordStart = start + Double(index) * wordSeconds
-        timed.append(TimedWord(text: word, start: wordStart, end: wordStart + wordSeconds,
-                               utf16Offset: text.utf16.count, utf16Length: word.utf16.count))
-        text += word
-    }
-    return TranscriptSegment(id: id, start: start, end: start + Double(words.count) * wordSeconds, text: text,
-                             words: timed, track: track)
+    TranscriptFixtures.segment(words, id: id, track: track, start: start, every: wordSeconds, lasting: wordSeconds)
 }
 
 private func echoTranscript(_ segments: [TranscriptSegment]) -> Transcript {

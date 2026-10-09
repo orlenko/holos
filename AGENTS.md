@@ -178,9 +178,9 @@ commands), a lock-token type.
   plain `swift test` can touch real data; never use it.
 - Shared helpers live in `Tests/HolosTestSupport` (`TemporaryDirectory`, `PollBudget`, `eventually`,
   `FileInspection`, `SeededNumbers`, transcript and audio fixtures) and `Tests/HolosSessionTestSupport`
-  (`SessionFixtureBuilder`); see `Tests/HolosTestSupport/README.md`. Use them in new tests; HolosStorageTests has
-  moved to them, other targets still have local copies (such as `Tests/HolosMeetingTests/Fakes.swift`) that go when
-  the target is next touched.
+  (`SessionFixtureBuilder`); see `Tests/HolosTestSupport/README.md`. Use them in new tests; HolosStorageTests and
+  HolosSpeakersTests have moved to them, other targets still have local copies (such as
+  `Tests/HolosMeetingTests/Fakes.swift`) that go when the target is next touched.
 - Swift Testing only (`@Test`, `#expect`, `#require`). Test names describe behaviour.
 - Name new files `<Source>Tests.swift` or `<Source>+<Feature>Tests.swift` so the tests for a file can be found.
   Rename old ones when their source file is split, not in bulk.
