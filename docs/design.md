@@ -628,7 +628,8 @@ Drive's "Desktop & Documents Folders" would upload. The default folder is create
 missing; a chosen one is not (its disk may be disconnected, and creating the path would
 write to the startup disk), so the reading fails asking to connect it or choose another.
 Documents dropped or chosen are the files `DocumentLoader` reads, RTFD packages included.
-Nothing is uploaded; the only network access is loading the page the user pasted.
+Nothing is uploaded; the only network access is loading the page the user pasted and, when the user chooses
+Download in Settings › Reading, the natural voice packs.
 
 Quitting while a reading is made or waits asks: **Keep Rendering** (quit now; the index
 marks those readings, and the next launch queues them again, the one being made first),

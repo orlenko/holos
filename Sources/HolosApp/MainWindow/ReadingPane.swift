@@ -13,7 +13,9 @@ final class ReadingPane: NSViewController, MainSectionContent, NSTableViewDataSo
     NSTextFieldDelegate, NSMenuItemValidation {
     private let controller: ReadingController
     private let player = ReadingPlayer()
-    private let preview = VoicePreview()
+    let preview = VoicePreview()
+    /// The last Preview's failure while it is shown; a new Preview clears it.
+    private var previewProblem: String?
     private let field = NSTextField()
     private let chooseButton = NSButton(title: "Choose File…", target: nil, action: nil)
     let voicePopup = NSPopUpButton(frame: .zero, pullsDown: false)
@@ -46,7 +48,10 @@ final class ReadingPane: NSViewController, MainSectionContent, NSTableViewDataSo
         player.onChange = { [weak self] in self?.playerChanged() }
         player.onError = { [weak self] problem in self?.showMessage(problem, problem: true) }
         preview.onChange = { [weak self] in self?.updatePreviewButton() }
-        preview.onError = { [weak self] problem in self?.showMessage(problem, problem: true) }
+        preview.onError = { [weak self] problem in
+            self?.previewProblem = problem
+            self?.showMessage(problem, problem: true)
+        }
         let natural = HelperNaturalRenderer(launcher: MaintenanceLauncher(executable: ChildProcessLauncher.bundledExecutable))
         preview.renderNatural = { text, voice, rate, output in
             _ = try await natural.render(text: text, voiceIdentifier: voice, rate: rate, to: output)
@@ -271,7 +276,7 @@ final class ReadingPane: NSViewController, MainSectionContent, NSTableViewDataSo
     private var footerText: String {
         if let notice = controller.notice { return notice }
         return "Audio files are saved in \(ReadingPreferences.folderText) (Settings › Reading). Nothing is uploaded: "
-            + "the only thing fetched is the page you paste."
+            + "the only things fetched are the page you paste and, when you download them, the natural voices."
     }
 
     /// Rebuilds the voice menu (voices can be installed while Voice is Local runs), keeping the choice: `id` when
@@ -427,15 +432,25 @@ final class ReadingPane: NSViewController, MainSectionContent, NSTableViewDataSo
 
     @objc private func speedChanged() {
         speedLabel.stringValue = ReadingSpeed.label(speedSlider.doubleValue)
-        if preview.isSpeaking { preview.speak(voiceIdentifier: selectedVoice, speed: speedSlider.doubleValue) }
+        if preview.isSpeaking { startPreview() }
     }
 
-    @objc private func togglePreview() {
+    @objc func togglePreview() {
         if preview.isSpeaking { preview.stop() } else {
             player.pause()
-            preview.speak(voiceIdentifier: selectedVoice, speed: speedSlider.doubleValue)
+            startPreview()
         }
     }
+
+    /// Speaks the sample, clearing the previous Preview's failure (one of this attempt is shown when it comes).
+    private func startPreview() {
+        if let shown = previewProblem, messageLabel.stringValue == shown { showMessage(nil) }
+        previewProblem = nil
+        preview.speak(voiceIdentifier: selectedVoice, speed: speedSlider.doubleValue)
+    }
+
+    /// The card's message line (tests read it).
+    var message: String? { messageLabel.isHidden ? nil : messageLabel.stringValue }
 
     private func updatePreviewButton() {
         previewButton.title = preview.isSpeaking ? "■ Stop" : "▶ Preview"

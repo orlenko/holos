@@ -230,7 +230,8 @@ while a reading is made asks: **Keep Rendering** quits and continues it at the n
 Files go to `~/Music/Voice is Local/Readings/<Title>.m4a` ("Title 2.m4a" when the name is
 taken), a folder Settings › Reading can change, along with the default voice and speed.
 It is not in Documents because iCloud Drive's "Desktop & Documents Folders" would upload
-it; nothing is uploaded, and the only network access is fetching the page you paste. The
+it; nothing is uploaded, and the only network access is fetching the page you paste and,
+when you choose Download in Settings › Reading, the natural voices (530 MB to 1.9 GB). The
 render cache stays in Application Support/Holos/Readings, as for `voiceislocal read`.
 
 **History** keeps each finished dictation that produced text: the text as written (or as

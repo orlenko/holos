@@ -104,18 +104,21 @@ import Synchronization
         defer { gate.release() }
         // Made, marked as this app's (its pid: the tool removes it if this app ends, and no other folder), and given
         // the text off the main actor; removed off it too.
-        let (folder, textFile) = try await offMain { () -> (URL, URL) in
-            let folder = try NaturalHelperScratch.create()
-            let textFile = folder.appendingPathComponent("part.txt")
-            do {
-                try Data(text.utf8).write(to: textFile, options: .atomic)
-            } catch {
-                Self.remove(folder)
-                throw error
+        // Made and registered in one step (`NaturalVoiceHelpers.makeFolder`), so a quit's `stopAll` either removes it
+        // or comes first and nothing is made: the reading's text is never left behind.
+        let folder = try await offMain {
+            try NaturalVoiceHelpers.makeFolder {
+                let folder = try NaturalHelperScratch.create()
+                do {
+                    try Data(text.utf8).write(to: folder.appendingPathComponent("part.txt"), options: .atomic)
+                } catch {
+                    Self.discard(folder)
+                    throw error
+                }
+                return folder
             }
-            return (folder, textFile)
         }
-        NaturalVoiceHelpers.using(folder)
+        let textFile = folder.appendingPathComponent("part.txt")
         defer { Task.detached(priority: .utility) { Self.remove(folder) } }
         let errors = folder.appendingPathComponent("stderr.txt")
         let arguments = Self.arguments(voice: voiceIdentifier, rate: rate,
@@ -174,16 +177,20 @@ import Synchronization
         }
     }
 
-    /// Removes a helper's folder and forgets it; a folder that cannot be removed is logged (the launch sweep removes
-    /// it once a day old).
+    /// Removes a helper's folder and forgets it.
     nonisolated private static func remove(_ folder: URL) {
+        discard(folder)
+        NaturalVoiceHelpers.done(folder)
+    }
+
+    /// Removes a helper's folder; one that cannot be removed is logged (the launch sweep removes it once a day old).
+    nonisolated private static func discard(_ folder: URL) {
         do {
             try FileManager.default.removeItem(at: folder)
         } catch {
             Logger(subsystem: "ca.orlenko.holos.app", category: "reading")
                 .error("Could not remove a natural voice folder: \(error.localizedDescription, privacy: .public)")
         }
-        NaturalVoiceHelpers.done(folder)
     }
 
     /// The child's pid once started, and whether the render was cancelled before or after.
@@ -228,20 +235,32 @@ import Synchronization
 /// folders they use. They run detached, so a quit stops them here (`stopAll`), from `applicationWillTerminate`:
 /// the cancellations that would stop them (a reading's Stop, Preview's stop) end only after the app has exited.
 enum NaturalVoiceHelpers {
-    private static let state = Mutex<(pids: Set<Int32>, folders: Set<String>)>(([], []))
+    private static let state = Mutex<(pids: Set<Int32>, folders: Set<String>, stopped: Bool)>(([], [], false))
 
     static func started(_ pid: Int32) { _ = state.withLock { $0.pids.insert(pid) } }
     static func ended(_ pid: Int32) { _ = state.withLock { $0.pids.remove(pid) } }
     static func using(_ folder: URL) { _ = state.withLock { $0.folders.insert(folder.path) } }
+
+    /// Makes a helper's folder with `make` and registers it in one step, under the lock `stopAll` takes: a folder is
+    /// made and registered before a quit's `stopAll` (which removes it), or not made at all once the quit has begun.
+    static func makeFolder(_ make: () throws -> URL) throws -> URL {
+        try state.withLock { value in
+            guard !value.stopped else { throw CancellationError() }
+            let folder = try make()
+            value.folders.insert(folder.path)
+            return folder
+        }
+    }
     static func done(_ folder: URL) { _ = state.withLock { $0.folders.remove(folder.path) } }
 
     /// Sends every helper still running SIGTERM (the tool stops at once; a reading's part is rendered again on
-    /// Resume) and removes the temporary folders in use. Returns the helpers signalled.
+    /// Resume) and removes the temporary folders in use. Returns the helpers signalled. `ending` (the quit): no
+    /// folder is made after this (`makeFolder`); tests that go on pass false.
     @discardableResult
-    static func stopAll(signal: (Int32) -> Void = { _ = kill($0, SIGTERM) }) -> [Int32] {
+    static func stopAll(ending: Bool = true, signal: (Int32) -> Void = { _ = kill($0, SIGTERM) }) -> [Int32] {
         let (pids, folders) = state.withLock { value in
             let taken = value
-            value = ([], [])
+            value = ([], [], ending)
             return (taken.pids, taken.folders)
         }
         for pid in pids where pid > 0 { signal(pid) }

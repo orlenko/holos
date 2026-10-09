@@ -216,6 +216,46 @@ import Testing
         #expect(popup.selectedItem?.representedObject as? String == "pocket:en:alba")
     }
 
+    @Test func noHelperFolderIsMadeOnceTheQuitHasBegun() throws {
+        // Made before the quit: registered, so the quit removes it.
+        let before = try NaturalVoiceHelpers.makeFolder { try NaturalHelperScratch.create() }
+        NaturalVoiceHelpers.stopAll { _ in }
+        defer { NaturalVoiceHelpers.stopAll(ending: false) { _ in } }
+        #expect(!FileManager.default.fileExists(atPath: before.path))
+        // Asked for after it: nothing is made, so nothing (no reading text) can be left behind.
+        let made = Mutex(false)
+        #expect(throws: CancellationError.self) {
+            _ = try NaturalVoiceHelpers.makeFolder {
+                made.withLock { $0 = true }
+                return try NaturalHelperScratch.create()
+            }
+        }
+        #expect(!made.withLock { $0 })
+    }
+
+    @Test func aNewPreviewClearsTheLastOnesFailure() async throws {
+        let pane = ReadingPane(controller: ReadingController())
+        pane.installedPacks = { [.english] }
+        pane.preview.installedPacks = { [.english] }
+        let popup = pane.voicePopup
+        let before = popup.itemArray.first
+        ReadingVoices.announceInstalled()
+        #expect(await eventually { popup.itemArray.first !== before })
+        let alba = try #require(popup.itemArray.first { $0.representedObject as? String == "pocket:en:alba" })
+        popup.select(alba)
+        _ = popup.sendAction(popup.action, to: popup.target)
+        pane.preview.renderNatural = { _, _, _, _ in throw HolosError.io("The sample could not be made.") }
+        pane.togglePreview()
+        #expect(await eventually { pane.message?.contains("could not be made") == true })
+        // The next Preview starts without the old failure on the card (nothing is played: it never finishes).
+        pane.preview.renderNatural = { _, _, _, _ in
+            while true { try await Task.sleep(for: .milliseconds(10)) }
+        }
+        pane.togglePreview()
+        #expect(pane.message == nil)
+        pane.togglePreview()
+    }
+
     @Test func quittingStopsTheToolAndRemovesItsFolder() async throws {
         let exit = Mutex<(@MainActor (Int32) -> Void)?>(nil)
         let textFile = Mutex<String?>(nil)
@@ -231,13 +271,13 @@ import Testing
         #expect(FileManager.default.fileExists(atPath: working.path))
         // The quit: the tool is signalled and its folder removed at once, before the render has seen it end.
         var signalled: [Int32] = []
-        let stopped = NaturalVoiceHelpers.stopAll { signalled.append($0) }
+        let stopped = NaturalVoiceHelpers.stopAll(ending: false) { signalled.append($0) }
         #expect(stopped == [31_337])
         #expect(signalled == [31_337])
         #expect(!FileManager.default.fileExists(atPath: working.path))
         exit.withLock { $0 }?(143)
         await #expect(throws: HolosError.self) { _ = try await task.value }
-        #expect(NaturalVoiceHelpers.stopAll { _ in }.isEmpty)
+        #expect(NaturalVoiceHelpers.stopAll(ending: false) { _ in }.isEmpty)
     }
 
     @Test func theMenusAreToldWhenPacksAreInstalledElsewhere() {
@@ -490,7 +530,7 @@ import Testing
         _ = try? await task.value
         // Its pid may belong to another process by now: nothing is signalled.
         #expect(signals.withLock { $0 }.isEmpty)
-        #expect(NaturalVoiceHelpers.stopAll { _ in }.isEmpty)
+        #expect(NaturalVoiceHelpers.stopAll(ending: false) { _ in }.isEmpty)
     }
 
     @Test func aToolThatIgnoresTheStopIsKilled() async throws {
