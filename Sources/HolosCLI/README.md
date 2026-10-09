@@ -14,8 +14,10 @@ that needs FluidAudio or WhisperKit, and for recording (unless the app's in-proc
 (`SessionSummarizeCommand`, `SessionDiarizeCommand`, … in `HolosMeeting`) and print the `Outcome`; `words` calls
 `WordListCommand` in `HolosStorage`. The `speakers` edits (`rename`, `merge`, `assign`, `split`, `exclude`, `undo`,
 `link`, `me`, `reject`) resolve their selectors, then run `SpeakerEditCommand` and print what it reports as it goes.
-The other commands call library types directly, and `Eval.swift` still holds more than parsing and printing. New
-logic goes in the library so the app and tests can use it.
+The `eval` commands (except `list`, which only prints the saved runs) run `Eval*Command` in `HolosEvaluation` the same
+way; `eval cloud` asks the consent question itself (the library takes the answer through a callback), and
+`EvalInterrupt` stops their long steps on Ctrl-C. The other commands call library types directly. New logic goes in
+the library so the app and tests can use it.
 
 **Depends on:** every library except HolosDesktop, including HolosDiarization, HolosWhisper and HolosEvaluation
 (of the products, only this target links them). ArgumentParser, FoundationModels (`doctor`, `session summarize`).
