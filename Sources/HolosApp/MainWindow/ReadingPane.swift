@@ -1,6 +1,5 @@
 import AppKit
 import HolosContent
-import HolosMeeting
 import UniformTypeIdentifiers
 import HolosSynthesis
 
@@ -33,8 +32,7 @@ final class ReadingPane: NSViewController, MainSectionContent, NSTableViewDataSo
     private var windowObserver: NSObjectProtocol?
     private var preferencesObserver: NSObjectProtocol?
     private var voicesObserver: NSObjectProtocol?
-    /// The voice chosen on the card (nil: Automatic), kept while its pack is briefly missing (a reinstall), so the
-    /// menu selects it again once it is back.
+    /// The card's chosen voice (nil: Automatic), kept while its pack is briefly missing (a reinstall).
     private var chosenVoice: String?
     /// The natural voice packs the menu offers (tests set it).
     var installedPacks: () -> Set<NaturalVoicePack> = { NaturalVoiceModels.installedPacks() }
@@ -48,14 +46,8 @@ final class ReadingPane: NSViewController, MainSectionContent, NSTableViewDataSo
         player.onChange = { [weak self] in self?.playerChanged() }
         player.onError = { [weak self] problem in self?.showMessage(problem, problem: true) }
         preview.onChange = { [weak self] in self?.updatePreviewButton() }
-        preview.onError = { [weak self] problem in
-            self?.previewProblem = problem
-            self?.showMessage(problem, problem: true)
-        }
-        let natural = HelperNaturalRenderer(launcher: MaintenanceLauncher(executable: ChildProcessLauncher.bundledExecutable))
-        preview.renderNatural = { text, voice, rate, output in
-            _ = try await natural.render(text: text, voiceIdentifier: voice, rate: rate, to: output)
-        }
+        preview.onError = { [weak self] in self?.previewProblem = $0; self?.showMessage($0, problem: true) }
+        preview.renderNatural = VoicePreview.renderedByHelper()
         // Natural voices installed: the menu offers them, and the card keeps the voice and speed chosen in it.
         voicesObserver = NotificationCenter.default.addObserver(
             forName: ReadingVoices.installedChanged, object: nil, queue: .main) { [weak self] _ in
@@ -279,8 +271,7 @@ final class ReadingPane: NSViewController, MainSectionContent, NSTableViewDataSo
             + "the only things fetched are the page you paste and, when you download them, the natural voices."
     }
 
-    /// Rebuilds the voice menu (voices can be installed while Voice is Local runs), keeping the choice: `id` when
-    /// given, else the voice chosen on the card, even one missing from this menu for now.
+    /// Rebuilds the voice menu (voices can be installed while it runs), selecting `id`, else the card's chosen voice.
     private func refreshVoices(selecting id: String?? = nil) {
         if let id { chosenVoice = id }
         ReadingVoicePopup.fill(voicePopup, selecting: chosenVoice, installed: installedPacks())
@@ -449,8 +440,7 @@ final class ReadingPane: NSViewController, MainSectionContent, NSTableViewDataSo
         preview.speak(voiceIdentifier: selectedVoice, speed: speedSlider.doubleValue)
     }
 
-    /// The card's message line (tests read it).
-    var message: String? { messageLabel.isHidden ? nil : messageLabel.stringValue }
+    var message: String? { messageLabel.isHidden ? nil : messageLabel.stringValue }  // the card's message (tests)
 
     private func updatePreviewButton() {
         previewButton.title = preview.isSpeaking ? "■ Stop" : "▶ Preview"

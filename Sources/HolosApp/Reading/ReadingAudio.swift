@@ -1,6 +1,7 @@
 import AVFoundation
 import AppKit
 import HolosCore
+import HolosMeeting
 import HolosSynthesis
 
 /// ▶ Preview: speaks a short sample with a voice and speed; a second press stops it.
@@ -17,8 +18,17 @@ final class VoicePreview: NSObject, AVSpeechSynthesizerDelegate, AVAudioPlayerDe
         guard player.play() else { throw HolosError.io("The voice sample could not be played.") }
         return player
     }
-    /// Renders a natural voice's sample to a file (`HelperNaturalRenderer`).
+    /// Renders a natural voice's sample to a file (`renderedByHelper()` in the app).
     var renderNatural: ((_ text: String, _ voice: String, _ rate: Float?, _ output: URL) async throws -> Void)?
+
+    /// Renders a sample through the bundled tool (`HelperNaturalRenderer`), one helper at a time with the readings'.
+    static func renderedByHelper() -> (_ text: String, _ voice: String, _ rate: Float?, _ output: URL) async throws
+        -> Void {
+        let natural = HelperNaturalRenderer(launcher: MaintenanceLauncher(executable: ChildProcessLauncher.bundledExecutable))
+        return { text, voice, rate, output in
+            _ = try await natural.render(text: text, voiceIdentifier: voice, rate: rate, to: output)
+        }
+    }
     /// Called when speaking starts or ends.
     var onChange: (() -> Void)?
     /// A natural sample could not be made.
