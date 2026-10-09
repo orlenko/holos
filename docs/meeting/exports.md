@@ -164,7 +164,7 @@ commands, and `holos session export`.
 
 ```swift
 public enum SpeakerEditor {
-    /// §4.9. Under the speaker lock: loads the current snapshot; refuses the batch (nothing written) when the
+    /// speaker-labels.md §4.9. Under the speaker lock: loads the current snapshot; refuses the batch (nothing written) when the
     /// head run is not `view.runID` or any action's fingerprint on `view` (applied sequentially) differs from the
     /// current state; checks every target exists (throws invalidInput otherwise); appends all lines with one
     /// batchID in one write. Then releases the lock and regenerates exports unless told not to.

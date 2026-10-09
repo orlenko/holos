@@ -23,7 +23,7 @@ Holos.app/Contents/MacOS/holos record start
     --no-live-text --directory <HolosPaths.sessions>
 ```
 
-- `posix_spawn` with `POSIX_SPAWN_SETSID | POSIX_SPAWN_CLOEXEC_DEFAULT` (§1.7 rule 4).
+- `posix_spawn` with `POSIX_SPAWN_SETSID | POSIX_SPAWN_CLOEXEC_DEFAULT` (../conventions.md §1.7 rule 4).
   fd 0 is `/dev/null`; fds 1 and 2 are `~/Library/Logs/Holos/recorder-<UUID>.log`
   (`O_WRONLY|O_APPEND|O_CREAT`, 0600). Never pipes: a pipe to a dead app would raise
   SIGPIPE in the recorder. With its own session the recorder gets no terminal SIGHUP
@@ -117,7 +117,7 @@ hands its values to the child. Settings without a language take the recorder's d
 supported language closest to the user's (`AppleSpeechEngine.defaultLocale`, the default
 dictation language Settings shows), in both; a recording without the microphone (`system`)
 ignores a microphone choice in both, and the child gets no `--microphone`. Frames are
-consumed off the main actor (§1.3), and the launcher holds
+consumed off the main actor (../conventions.md §1.3), and the launcher holds
 `ProcessInfo.processInfo.beginActivity(options: [.userInitiated, .idleSystemSleepDisabled])`
 while recording so App Nap and timer coalescing do not apply. The recorder code writes
 the same `status.json` and reads the same `control/`, so `MeetingController` does not
@@ -175,7 +175,7 @@ public enum RecorderInput: Sendable, Equatable {
 public enum RecorderEffect: Sendable, Equatable {
     /// Stop capture (≤ 5 s), drain, close every open chunk with `reason` pending, send a boundary to each LiveTrack.
     case stopCapture(reason: GapReason)
-    /// Start epoch `epoch` at timelineOffset max(clock.now(), lastFrameEnd + 0.01) (§2.3).
+    /// Start epoch `epoch` at timelineOffset max(clock.now(), lastFrameEnd + 0.01) (session-format.md §2.3).
     case startCapture(epoch: Int)
     case recordEvent(kind: String, details: [String: String])
     case acknowledge(ControlAck)
@@ -344,7 +344,7 @@ AudioCapture callback ─yield─▶ frames stream (4,096 buffers; overflow drop
   today's per-event fsync.
 - `AudioChunkWriter` additions (PR2a): `bytesWritten()`, `lastFrameEnd`,
   `closeAll(expectingGap:)`, and `noteGap(track:reason:)`, which sets the reason of the
-  track's next `audioDiscontinuity`. It applies `FrameContinuity` (§2.3).
+  track's next `audioDiscontinuity`. It applies `FrameContinuity` (session-format.md §2.3).
 - The `audioDiscontinuity.reason` strings are exactly the `GapReason` raw values
   (`paused`, `sleep`, `deviceChanged`, `captureRestarted`, `audioUnavailable`,
   `overflow`) plus the writer's own `timestampGap` and `formatChanged`. There is no
@@ -443,7 +443,7 @@ system audio).
 
 The runtime check runs on every 1 s tick (`statfs` is cheap). `stop` →
 `recordEvent(diskLow {freeBytes, action: stop})` and `finish(diskLow)`; audio already on
-disk is finalized normally, and post-processing skips rendering (§4.7 stage 4).
+disk is finalized normally, and post-processing skips rendering (post-processing.md §4.7 stage 4).
 
 ### 4.6 Stop path, transcript coverage, timeouts, hand-off (PR2a)
 
@@ -524,8 +524,8 @@ status stays fresh through transcription and post-processing.
   array of `TimedWord`). The journal queue holds 4,096 segments; if it is full, the
   earliest dropped segment's start is remembered and recorded as `transcriptionBehind
   {track, from}` once the queue drains, so recovery knows where the journal has a hole.
-- Speech sessions are rebased to 0 and created with the meeting vocabulary (§2.3,
-  §4.12).
+- Speech sessions are rebased to 0 and created with the meeting vocabulary (session-format.md §2.3,
+  recorder.md §4.12).
 
 **`TranscriptCoverage`** (PR2a, `Sources/HolosMeeting/TranscriptCoverage.swift`, pure;
 PR3 reuses it):
@@ -555,7 +555,7 @@ public typealias PostProcessHook = @Sendable (_ session: URL, _ lease: Processin
 `RecordingDependencies.postProcess: PostProcessHook?`. The CLI passes a hook that runs
 `makeMeetingPostProcessor(options:).run(session:lease:progress:)`; the in-process app
 passes the child-process hook of §4.1; `nil` (`--no-postprocess`, `--record-only`)
-skips steps 5 and 7. `Record.Start` only maps the outcome to exit codes (§1.4), so the
+skips steps 5 and 7. `Record.Start` only maps the outcome to exit codes (../conventions.md §1.4), so the
 CLI and the in-process app run the same lifecycle.
 
 ### 4.12 Concurrent dictation, microphone selection, vocabulary
@@ -674,10 +674,10 @@ selection, and the environment events that retry a waiting recorder.
   exit codes); add `RecordControl.swift` (`pause`, `resume`, `marker`, registered in
   `Record`'s `subcommands:`).
 - Docs: append a "Long recordings" section to `docs/hardware-validation.md` (H4–H10
-  procedures from §7.2).
+  procedures from ../archive/meeting-plan-2026-09.md §7.2).
 - Tests: `Tests/HolosAudioTests/{Int16ChunkTests, FrameContinuityTests, ChunkWriterPumpTests}.swift`;
   `Tests/HolosMeetingTests/{RecorderMachineTests, DiskPolicyTests, ControlInboxTests, RecorderChannelTests, StatusWriterTests, RecorderEpochTests, LiveTrackTests, TranscriptCoverageTests, StopPathTests, SpeechFixtureTests}.swift`,
-  helpers in `RecorderTestSupport.swift` (`fileprivate` or prefixed `recorder…`, §1.8).
+  helpers in `RecorderTestSupport.swift` (`fileprivate` or prefixed `recorder…`, ../conventions.md §1.8).
 
 **API (additions).**
 
@@ -702,7 +702,7 @@ public enum FrameContinuity {
         case gap(seconds: Double)
         case overlap(dropFrames: Int)     // leading frames to drop; ≥ frameCount means drop the whole frame
     }
-    /// §2.3 rules with the 0.05 s tolerance. `expected` nil means the first frame of the track.
+    /// session-format.md §2.3 rules with the 0.05 s tolerance. `expected` nil means the first frame of the track.
     public static func classify(frameStart: Double, frameCount: Int, sampleRate: Double,
                                 expected: Double?) -> Decision
 }
@@ -727,7 +727,7 @@ extension AudioChunkWriter {
 
 // HolosMeeting
 public protocol SessionClock: Sendable { func now() -> Double }
-public struct ContinuousSessionClock: SessionClock { public init(hostTimeOrigin: Double) }   // §2.3
+public struct ContinuousSessionClock: SessionClock { public init(hostTimeOrigin: Double) }   // session-format.md §2.3
 public final class ManualSessionClock: SessionClock { public init(_ start: Double = 0); public func advance(by: Double) }
 
 public actor StatusWriter {
@@ -759,7 +759,7 @@ public struct StopTimeouts: Sendable, Equatable {
 `SessionArchive.create(id:)`), `othersInRoom: Bool`, `expectedSpeakers: Int?`,
 `liveText: Bool`, and `microphone: MicrophoneSelection` (from PR2b: `.builtIn` for
 `mic`, `.systemDefault` for `mic+system`). `CaptureRequest` gains `microphone`
-(default `.systemDefault`). `RecordingDependencies` gains, with inert defaults (§5.2):
+(default `.systemDefault`). `RecordingDependencies` gains, with inert defaults (../archive/meeting-plan-2026-09.md §5.2):
 `makeClock: @Sendable (Double) -> any SessionClock`, `freeSpace: any FreeSpaceProvider`
 (`FixedFreeSpace(.max)`), and `timeouts: StopTimeouts` (`.standard`); `.live(...)` sets
 `ContinuousSessionClock` and `VolumeFreeSpace`.
@@ -805,7 +805,7 @@ holos record marker <session-id> [--label TEXT] [--directory D] [--no-wait]
 - `record status` keeps its tab-separated lines and appends `phase=<phase>
   elapsed=<h:mm:ss>` for live sessions; `--json` prints
   `[{id, status, name, chunks, phase?, elapsedSeconds?}]`.
-- Exit codes per §1.4: 1 for transcription incomplete and capture failure (as today);
+- Exit codes per ../conventions.md §1.4: 1 for transcription incomplete and capture failure (as today);
   3 for `diskLow`, `sleepTimeout`, `pauseTimeout`, and post-processing
   `partial`/`failed`.
 
@@ -872,7 +872,7 @@ implementer; no microphone). Agents do not run a live recording.
 
 **Does not touch.** `MeetingPostProcessor.swift`, `Sources/HolosCLI/PostProcessing.swift`,
 `Session.swift`, `Doctor.swift`, `Package.swift`, `HolosStorage` (uses PR6's API only),
-`HolosSpeakers`, contract files (except additions allowed by §3.0), `HolosDictation`,
+`HolosSpeakers`, contract files (except additions allowed by session-format.md §3.0), `HolosDictation`,
 `HolosApp`, `Fakes.swift`.
 
 #### PR2b (stacked on PR2a)
@@ -976,7 +976,7 @@ ones.
 | `callWithoutAnyInputRecordsSystemOnly` | `systemDefault == nil` on restart | capture starts without the microphone; `warn(microphoneUnavailable)`; after `audioDevicesChanged` with a device back, restarts with it |
 | `builtInClassification` | (built-in, 1 input stream), (USB, 1), (built-in, 0) | true, false, false |
 
-**Manual checks.** H4–H7, H9–H11, and H21 in §7.2, recorded in `docs/hardware-validation.md`.
+**Manual checks.** H4–H7, H9–H11, and H21 in ../archive/meeting-plan-2026-09.md §7.2, recorded in `docs/hardware-validation.md`.
 
 **Does not touch.** Same list as PR2a.
 
@@ -1063,7 +1063,7 @@ public struct SessionSummary: Codable, Sendable, Equatable, Identifiable {
     public var bytes: Int64
     public var derivedBytes: Int64
     public var audioDeleted: Bool
-    /// LANG2 (§4.14 step 5): languages of a meeting in several that the transcript misses.
+    /// LANG2 (languages.md §4.14 step 5): languages of a meeting in several that the transcript misses.
     public var languageWork: LanguageWork?
 }
 
@@ -1078,9 +1078,9 @@ public enum SessionCatalog {
 }
 
 public enum SessionDeletion {
-    /// §4.13. Requires the lease and no writer.
+    /// retention-deletion.md §4.13. Requires the lease and no writer.
     public static func deleteAudio(session: URL, lease: ProcessingLease) throws
-    /// §4.13. `trash` defaults to FileManager.trashItem; `logDirectory` to ~/Library/Logs/Holos (tests inject both).
+    /// retention-deletion.md §4.13. `trash` defaults to FileManager.trashItem; `logDirectory` to ~/Library/Logs/Holos (tests inject both).
     public static func moveToTrash(session: URL, lease: ProcessingLease,
                                    logDirectory: URL = SessionDeletion.defaultLogDirectory,
                                    trash: (URL) throws -> Void = SessionDeletion.systemTrash) throws

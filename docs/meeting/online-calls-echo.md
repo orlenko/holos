@@ -153,7 +153,7 @@ genuinely local (the user, or people in the room) stays even while the call play
   `SpeakerSessionSnapshot.load` reads the mask (`EchoMaskStore.usable`: none when it is
   missing, out of date, damaged or from a newer build) and `SpeakerProjection.make(acousticEcho:)`
   hides the microphone words it flags, after the edit journal is applied to the stored turns
-  (§4.9 step 6). Review, exports, summaries, search, live speaker hints and voice learning all
+  (speaker-labels.md §4.9 step 6). Review, exports, summaries, search, live speaker hints and voice learning all
   read that projection; voice learning and voice matching leave out turns cut by echo
   (`ProjectedTurn.cutByEcho`), since a turn's voice data covers its echo. Not through it, on
   purpose: relabel decisions and name carry-over (`SpeakerAnalysis.headState`, matched against
@@ -166,7 +166,7 @@ genuinely local (the user, or people in the room) stays even while the call play
   split is chosen from are the words shown, each named by its place in its segment (`WordRef`),
   so the split lands at that word of the stored turn; assign and undo name the turn. The
   journal only ever names stored turns and words, so it does not depend on the mask shown.
-  Short interjections (§5.10) are decided after the mask, on the words it leaves: a turn
+  Short interjections (review-window.md §5.10) are decided after the mask, on the words it leaves: a turn
   of an echo cluster shown as unknown, or one the mask cut down to "Yeah.", is a candidate
   like any other, and the exports leave hidden ones out as they leave out echo.
 - *Out of date when the mask changes.* The transcript files record the mask they were written
@@ -214,11 +214,11 @@ genuinely local (the user, or people in the room) stays even while the call play
   A failure saves nothing, so the next pass tries again. Recover makes a missing analysis once
   per run (unless its post-processing just tried). Transcript files are rewritten after a save
   by `echo-analyze` and Recover with the speaker lock, then `profiles.lock`, held while people's
-  names are read (§1.7 order).
+  names are read (../conventions.md §1.7 order).
 - *Existing meetings.* `voiceislocal session echo-analyze <id|path> [--force] [--json]`
   (`SessionEchoAnalyzeCommand`) saves the analysis and rewrites the transcript files through
   the projection. Nothing else changes: speaker labels, edits, the transcript and its word
-  fixes stay as they are on disk. For its whole life it holds the background job lock (§4.16,
+  fixes stay as they are on disk. For its whole life it holds the background job lock (deep-transcription.md §4.16,
   `kind` `echo`; `Request.jobLock`), so it runs alone with final transcripts and summaries, and a
   run that outlived the app that started it is seen as busy after a relaunch; another holder
   makes it exit 1 with the lock's busy message, nothing changed. Post-processing and Recover make
@@ -245,7 +245,7 @@ genuinely local (the user, or people in the room) stays even while the call play
   echo-analyze <path> --json` as a maintenance command (so the transcript files and the voice
   samples learned from the meeting follow, exactly as the command does them), after reading
   `needed` once more (a relabel, Recover or a run in Terminal may have made it since). It
-  shares the one-job-at-a-time rule of final transcripts and summaries (§4.16, §4.17): nothing
+  shares the one-job-at-a-time rule of final transcripts and summaries (deep-transcription.md §4.16, titles-summaries.md §4.17): nothing
   starts while a meeting starts, records or saves, while this app makes a final transcript or a
   summary, or while any process holds the background job lock; while it runs neither of them
   starts. The command holds that lock itself (`kind` `echo`), so a run the app started before it
@@ -281,7 +281,7 @@ genuinely local (the user, or people in the room) stays even while the call play
   (`localStretches()`, `stretchGapSeconds`; the word rule has its own, wider trust, `trustedWordFrames`); a stretch is
   kept only when at least 3 of its local frames (`evidenceFrames`) have the predicted
   echo more than 6 dB below the microphone (`evidenceDB`); kept stretches are padded
-  64 ms before and 200 ms after. The review window plays the microphone only there (§5.10,
+  64 ms before and 200 ms after. The review window plays the microphone only there (review-window.md §5.10,
   echo-free playback). The evidence rule (2026-10-08) answers echo heard in review on a call
   through laptop speakers: where the call's speech is cancelled poorly, the frame rule calls
   short runs of a few frames local all through it, their predicted echo at or above the

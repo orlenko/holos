@@ -26,8 +26,11 @@ Paths are found like this:
 - a path whose first folder is a top-level folder of the repository (`docs/...`, `Sources/...`): from the root;
 - any other path: from the citing file's folder, then from the root.
 
-A bare `§N.M` with no path before it is not checked: it names a section of the file it appears in, or, in older
-code comments, of the meeting design, whose section numbers are unique.
+A bare `§N.M` (one that is not part of a citation) in a Markdown file under `docs/` names a section of that file
+and must resolve to one of its own headings. Two files are exempt: `docs/meeting-design.md`, the index of where
+each meeting design section is, and `docs/architecture-roadmap.md`, whose §4.3 table and §6 Status column name
+sections of the meeting design as it was. Elsewhere (code comments, AGENTS.md) a bare `§N.M` is not checked; in
+older code comments it names a section of the meeting design, whose section numbers are unique.
 
 Prints each broken citation as `file:line: path §N.M: reason` and a summary; exits 1 when any is broken.
 """
@@ -51,6 +54,7 @@ PATH_CITATION = re.compile(r"(?<![\w./-])(?P<path>[A-Za-z0-9_./-]*[A-Za-z0-9_-]\
 LINK = re.compile(r"\[(?P<text>[^\]\n]*)\]\((?P<target>[^)\s#]+\.md)(?:#[^)\s]*)?\)")
 AFTER_LINK = re.compile(SPACE + NUMBER)
 IN_TEXT = re.compile(NUMBER)
+BARE_EXEMPT = ("docs/meeting-design.md", "docs/architecture-roadmap.md")
 HEADING = re.compile(r"^ {0,3}#{1,6}[ \t]+(.*?)[ \t#]*$")
 FENCE_OPEN = re.compile(r"^[ \t]*(`{3,}|~{3,})(.*)$")
 
@@ -147,7 +151,8 @@ def check(paths):
         except (OSError, UnicodeDecodeError) as error:
             broken.append(f"{rel}: cannot read: {error}")
             continue
-        for cited, link, numbers in citations(text):
+        found = citations(text)
+        for cited, link, numbers in found:
             target = resolve(cited, rel, link)
             for number, offset in numbers:
                 count += 1
@@ -157,6 +162,15 @@ def check(paths):
                 elif not has_section(heading_texts(target, cache), number):
                     where = os.path.relpath(target, ROOT)
                     broken.append(f"{rel}:{line}: {cited} §{number}: no heading {number} in {where}")
+        if rel.startswith("docs/") and rel.endswith(".md") and rel not in BARE_EXEMPT:
+            cited_at = {offset for _, _, numbers in found for _, offset in numbers}
+            for match in IN_TEXT.finditer(text):
+                if match.start(1) in cited_at:
+                    continue
+                count += 1
+                if not has_section(heading_texts(os.path.join(ROOT, rel), cache), match.group(1)):
+                    line = text.count("\n", 0, match.start()) + 1
+                    broken.append(f"{rel}:{line}: §{match.group(1)}: no heading {match.group(1)} in this file")
     return count, broken
 
 
@@ -171,6 +185,9 @@ SELF_TEST_FILES = {
     "docs/sub/relative.md": "./b.md §1.1, ../a.md §1.3 and docs/a.md §1.3 resolve; ./a.md §1.3 does not.\n",
     "fence.md": "docs/a.md §9.9\n",
     "prefix.md": "docs/a.md §4.1 is not docs/a.md §4.10.\n",
+    "docs/bare.md": "# Bare\n\n## 2.1 Here\n\nSee §2.1 and §2.2; docs/a.md §1.3, §2.1 is a chained citation.\n",
+    "docs/meeting-design.md": "# Index\n\n§4.1 is in another file.\n",
+    "bare.swift": "// §7.7 is not checked outside docs/.\n",
 }
 SELF_TEST_BROKEN = [
     "link-target.md:1: docs/a.md §3.2: no heading 3.2 in docs/a.md",
@@ -182,6 +199,8 @@ SELF_TEST_BROKEN = [
     "docs/sub/relative.md:1: ./a.md §1.3: no such file",
     "fence.md:1: docs/a.md §9.9: no heading 9.9 in docs/a.md",
     "prefix.md:1: docs/a.md §4.1: no heading 4.1 in docs/a.md",
+    "docs/bare.md:5: §2.2: no heading 2.2 in this file",
+    "docs/bare.md:5: docs/a.md §2.1: no heading 2.1 in docs/a.md",
 ]
 
 
@@ -211,7 +230,7 @@ def main():
     count, broken = check(paths)
     for line in broken:
         print(line)
-    print(f"{count} citations in {len(paths)} files, {len(broken)} broken")
+    print(f"{count} citations and bare references in {len(paths)} files, {len(broken)} broken")
     return 1 if broken else 0
 
 

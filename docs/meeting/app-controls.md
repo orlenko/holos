@@ -31,7 +31,7 @@ lead to naming speakers after a meeting.
 - Change `Resources/App-Info.plist` (`NSMicrophoneUsageDescription`: "Holos uses your
   microphone for push-to-talk dictation and for meeting recordings you start.";
   `CFBundleVersion` 3), `scripts/build-app.sh` (bundle the CLI), `Package.swift`
-  (§1.2 wave 4, identical to PR10's edit).
+  (../conventions.md §1.2 wave 4, identical to PR10's edit).
 - Add `docs/meeting-validation.md` with sections "Recording controls (PR4)", "Review
   window (PR9)", "Online calls (PR11)"; the last two contain only `Pending.`
 - Tests: `Tests/HolosMeetingTests/{MeetingReducerTests, MeetingControllerTests, LauncherTests, AutoRelabelPolicyTests}.swift`.
@@ -138,7 +138,7 @@ public enum AutoRelabelPolicy {
                 now: @escaping @MainActor () -> Date = Date.init,
                 onChange: @escaping @MainActor (MeetingState) -> Void,
                 onEffect: @escaping @MainActor (MeetingEffect) -> Void)
-    /// Finds a live meeting (§4.1), then polls its status every second; while idle, rescans every 3 s and runs
+    /// Finds a live meeting (recorder.md §4.1), then polls its status every second; while idle, rescans every 3 s and runs
     /// the automatic relabel every 30 s.
     public func attachOnLaunch()
     /// Disk and microphone checks, writes the vocabulary file (0600), then launches. Throws with the start
@@ -193,7 +193,7 @@ plus monospaced digits from `status.elapsedSeconds`), `⏸ 1:23:45` when paused,
 `◌ 1:23:45` while waiting for audio, with `⚠` appended while a warning is present.
 While finishing: `waveform` plus `…`.
 
-Menu while recording (the normal dictation block remains available, §4.12):
+Menu while recording (the normal dictation block remains available, recorder.md §4.12):
 
 ```
 ● Recording — Council meeting                      (disabled)
@@ -273,7 +273,7 @@ commands behind the buttons: Recover when `SessionRecoveryCommand.rebuilds` woul
 meeting whose transcript cannot be read qualifies) or the meeting is interrupted, never for a
 damaged manifest or a transcript from a newer Holos; Label Speakers for speaker state none,
 notLabelled, failed, or interrupted, or (any state but unreadable) while a missed language of
-a meeting in several can be detected now (`LanguageWork.ready`, §4.14 step 5), with a
+a meeting in several can be detected now (`LanguageWork.ready`, languages.md §4.14 step 5), with a
 readable transcript and audio, not interrupted. No
 lease-taking action while the app uses the meeting or another process holds it (liveness
 capturing, processing, maintenance).
@@ -343,9 +343,9 @@ failure), and a quit waits for it the same way (`isRecording` stays true, `isWri
 Test `inProcessRecordingEndsOnlyOnceItsExitedStatusIsWritten`.
 
 About Holos: `NSApp.orderFrontStandardAboutPanel(options: [.credits: …])` with the
-credits text of §4.8 embedded as a string constant (the app has no resource bundle).
+credits text of post-processing.md §4.8 embedded as a string constant (the app has no resource bundle).
 
-**Concurrent dictation.** §4.12. Meeting effects do not alter dictation state.
+**Concurrent dictation.** recorder.md §4.12. Meeting effects do not alter dictation state.
 
 **Vocabulary.** The app passes `vocabulary: { corrections.vocabulary }` (the list
 dictation uses). PR10 extends this closure with known people's names.
@@ -388,7 +388,7 @@ signature in the middle of a meeting.
 | `autoRelabelPicksInterruptedRecentUnedited` | interrupted (recent, no edits), labelled, interrupted with edits, interrupted 10 days old, notLabelled (models missing) | only the first |
 | `autoRelabelWaitsForModelsAndIdle` | models missing; or a meeting active; or 2 attempts | none |
 
-**Manual checks.** H1–H3, H12, H13, H17, H19, H22 in §7, written into
+**Manual checks.** H1–H3, H12, H13, H17, H19, H22 in ../archive/meeting-plan-2026-09.md §7, written into
 `docs/meeting-validation.md`.
 
 **Does not touch.** HolosSpeakers, profile store, `PeopleWindow*`, `RecordingWorkflow.swift`

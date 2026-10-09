@@ -58,8 +58,8 @@ speakers, undo, export.
     public func confirmAllSuggestions() async throws
     public func markSelf(speakerID: String) async throws   // passes learnVoices to VoiceProfileService.markSelf
     public func rejectSuggestion(speakerID: String) async throws
-    /// `holos session diarize --keep-transcript --force --min-speakers <current + 1>`; names carry over (§4.9).
-    /// Every relabel from here passes --keep-transcript: a meeting's languages are not detected again (§4.14).
+    /// `holos session diarize --keep-transcript --force --min-speakers <current + 1>`; names carry over (speaker-labels.md §4.9).
+    /// Every relabel from here passes --keep-transcript: a meeting's languages are not detected again (languages.md §4.14).
     public func findMoreSpeakers() async throws
     /// `holos session diarize --keep-transcript --force --others-in-room` (call recordings).
     public func labelMicrophoneSpeakers() async throws
@@ -123,7 +123,7 @@ public enum SessionAudioComposition {
   (`acceptTurnHint`), whatever else is selected, and VoiceOver hears "sounds like Jim" on
   the pop-up (that turn's own uncertainty gives way to it; the row's other turns' stays).
   Rows are only how turns are shown: edits still name turns, and the journal and exports are unchanged
-  (Markdown and text already merge a speaker's consecutive turns into blocks, §4.11).
+  (Markdown and text already merge a speaker's consecutive turns into blocks, exports.md §4.11).
   Everything per word works across a row's turns: clicking a word, the word playing and
   following it, word-fix underlines, tooltips and Revert, VoiceOver's per-word actions.
   Assigning a row (its pop-up, Assign to…, 1–9, New Speaker…) gives every turn of the
@@ -232,7 +232,7 @@ public enum SessionAudioComposition {
   also when the divider is dragged to the edge.
 - Short interjections (`ShortInterjections`, HolosSpeakers; pure, deterministic):
   presentation only, in the one view the list and the exports read. `SpeakerProjection`
-  decides them after the echo mask (§4.9 step 7) into `interjections` and `shownTurns`;
+  decides them after the echo mask (speaker-labels.md §4.9 step 7) into `interjections` and `shownTurns`;
   `turns`, `speakers` (talk time, turn counts), the run and the edit journal are left as
   they are, and edits, previews, Play samples, voice learning and voice matching read
   `turns`. A candidate is a shown turn of the unknown speaker of at most 4 words
@@ -274,7 +274,7 @@ public enum SessionAudioComposition {
   finished the previous speaker's sentence all showed as Unknown. Transcript files
   written before this change keep the old rows until they are next rewritten (the next
   speaker change rewrites them); a meeting with such turns has new summary lines, so its summary
-  shows as out of date (§4.17).
+  shows as out of date (titles-summaries.md §4.17).
 - Playback bar (above the footer): Play/Pause, position / length, a scrubber, the speed
   (1×, 1.25×, 1.5×, 2×; remembered, pitch kept), and who is speaking. Playing goes on
   through the meeting until paused (only a speaker's samples stop by themselves); Play
@@ -298,9 +298,9 @@ public enum SessionAudioComposition {
 - Export ▾: "Save As…" (NSSavePanel; Markdown, text, or JSON) and "Copy as Markdown".
 - No modal prompts for voices: the footer checkbox decides whether naming a person
   learns their voice. Learning runs in the background after the name is saved
-  ("Learning voices…" in the footer), never on the edit queue (§4.10, "Voices within one
+  ("Learning voices…" in the footer), never on the edit queue (people-voice.md §4.10, "Voices within one
   meeting").
-- Voices within the meeting (§4.10): while the window is open it works out every turn's
+- Voices within the meeting (people-voice.md §4.10): while the window is open it works out every turn's
   voice once ("Comparing voices…"); after a speaker is named, other speakers with that
   voice show "Maybe Jim" (Confirm / Not Jim, in Confirm All (n)), and a turn inside
   another speaker that sounds like Jim lists "Jim (suggested)" first in its speaker
@@ -315,7 +315,7 @@ public enum SessionAudioComposition {
   (an order-preserving word difference for untimed segments), clears this window's
   speaker-undo history, and schedules fresh exports; it never diarizes. The restored words
   stay protected from automatic fixing until `session fix-words` is explicitly requested.
-- Heavy work (snapshot load, edits, export regeneration) runs off the main actor (§1.3).
+- Heavy work (snapshot load, edits, export regeneration) runs off the main actor (../conventions.md §1.3).
 - The footer is redrawn on every change of the player's state (loading, ready, off and
   why), so "Playback is off: …" shows as soon as a first build fails.
 
@@ -495,7 +495,7 @@ shown, Otter-style.
   would make them stale), and the changes run after the reread. After the column width or the row heights change, the field
   is put back over its words.
 - *What an edit is.* `ReviewSession.editWords(refs, to: text)`: shown words (stored
-  `WordRef`s, so a word the echo mask hides is never named, §5.11) of one segment, in a row,
+  `WordRef`s, so a word the echo mask hides is never named, online-calls-echo.md §5.11) of one segment, in a row,
   replaced by any text: more or fewer words, or nothing (a deletion). The refs must be
   consecutive stored indices of words shown in one projected turn; hidden echo words between
   them, another segment, or another turn refuse the edit with a message. The span grows to
@@ -544,7 +544,7 @@ shown, Otter-style.
     new speaker) carry over, and its words come back to it. The projection shows no turn
     without words, as it shows no turn of echo alone: it counts for no speaker
     (a speaker with no other turn is not listed, unless made in Review), and no list or
-    export has it (§4.9 step 6). Every other plan keeps such a turn as it is (mapped by time, a turn with
+    export has it (speaker-labels.md §4.9 step 6). Every other plan keeps such a turn as it is (mapped by time, a turn with
     no words stays with none). A split made in Review whose word was in the deleted segment,
     or whose first part would be left with no word, cannot be carried over, and the deletion
     is refused saying so.
@@ -835,10 +835,10 @@ the disk.
   manifest says, whose track or time range cannot be loaded, or that AVFoundation
   refuses leaves only its own time silent and never shortens the next chunk.
 - Echo-free playback (`SessionAudioComposition.makePlayback`, `ReviewEchoMute`,
-  `ReviewMicVolume`): when the call's current echo analysis found echo (§5.11,
+  `ReviewMicVolume`): when the call's current echo analysis found echo (online-calls-echo.md §5.11,
   `EchoMaskStore.current` with verdict `echo`), the player item gets an audio mix that plays
   the microphone track at full volume in `AcousticEchoMask.localSpeechIntervals()` (local
-  stretches with at least 3 frames clearly above the predicted echo, §5.11 *Playback*) and at 0
+  stretches with at least 3 frames clearly above the predicted echo, online-calls-echo.md §5.11 *Playback*) and at 0
   elsewhere, with 25 ms linear ramps (a fade in ends where an interval starts, inside its
   lead padding; a fade out starts where it ends; intervals closer than two ramps are
   joined). The echo is muted only where the system track plays: a call whose system chunks
@@ -938,7 +938,7 @@ whose review is open or still opening):
 | `choosingUnknownForAnAttachedTurnIsSavedAndUndone` | an attached turn given Unknown; undo | the edit is saved though no stored speaker changes; shown unknown; attached again after undo |
 | `ReviewPanesTests` (HolosAppTests) | the panes and the list laid out offscreen | hiding the speakers pane gives the list the window's width, showing it brings it back, each change reported once; the state per meeting, capped; Show Short Interjections lists the hidden turn as its own unknown row, the attached one stays in its neighbour's row; the View menu's targetless actions reach the window's delegate (`NSWindow.supplementalTarget`); a hidden interjection playing tints no row, a pause still does; a name being typed is found through the field editor |
 
-**Manual.** H14 and H20 in §7.
+**Manual.** H14 and H20 in ../archive/meeting-plan-2026-09.md §7.
 
 **Does not touch.** HolosSpeakers algorithms, `MeetingStartPanel.swift`, `HolosApp.swift`,
 profile store, CLI, `Package.swift`, `Fakes.swift` and `SessionFixtures.swift` (PR11 owns

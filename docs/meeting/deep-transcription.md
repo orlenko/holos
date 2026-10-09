@@ -231,7 +231,7 @@ carried over.
 **App.** The app does not link WhisperKit; it runs `voiceislocal setup --whisper` and
 `voiceislocal session deep-transcribe <session> --json` as maintenance commands
 (`HolosApp+DeepTranscription.swift`). The passes are a kind of background job (`DeepTranscriptionJobs`) that
-`BackgroundJobCoordinator` runs with the echo catch-up (§5.11): it owns the lock probe, the holds, preemption, the
+`BackgroundJobCoordinator` runs with the echo catch-up (online-calls-echo.md §5.11): it owns the lock probe, the holds, preemption, the
 retries and the order between them (`BackgroundJobOrder`).
 
 - *Settings › Meetings.* A "Final transcript" row with the model's state from `voiceislocal
@@ -280,8 +280,8 @@ retries and the order between them (`BackgroundJobOrder`).
   sessionID, force}` into it once it holds it; a second pass finds it held (it retries for 2 s,
   since a probe holds it for an instant) and exits 1 with "Another final transcript, meeting
   summary or echo analysis is running…". The kernel lets go of the lock when the process ends,
-  however it ends. `session summarize` (§4.17, `kind` `summary`) and `session echo-analyze`
-  (§5.11, `kind` `echo`) hold the same lock.
+  however it ends. `session summarize` (titles-summaries.md §4.17, `kind` `summary`) and `session echo-analyze`
+  (online-calls-echo.md §5.11, `kind` `echo`) hold the same lock.
 - *The app manages only its own pass.* A lock held by any other process (a pass started in
   Terminal, or one the app started before it was quit, since maintenance commands are
   detached) only means "busy": the app starts nothing while it is held, checks again every
