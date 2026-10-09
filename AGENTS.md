@@ -173,13 +173,16 @@ Exist today:
 - Making a new transcript current, or carrying the speaker head over to it: `TranscriptPublisher.publish`
   (HolosMeeting; the checks run under the writer and speaker locks, then one write order and its repair).
 - Exports: `SessionExports.regenerate(session:people:)`. Reading files: `ExclusivePublisher.publish`.
+- What the Review window showed when the person acted (word moves followed, words epoch, labels run):
+  `ReviewRevision`, from `ReviewSession.revision`. Edit fields, splits and joins carry it as one value; do not add
+  another loose counter beside it.
 - Logging: `Logger(subsystem: "ca.orlenko.holos.app", category: …)`; categories and privacy rules in
   `docs/meeting-design.md §1.5`.
 
 Planned, see the [architecture roadmap](docs/architecture-roadmap.md) (`docs/architecture-roadmap.md §3` and
 `docs/architecture-roadmap.md §6`; none of these exist yet, so do not reference them as if they did):
-`SessionGeneration` (derived-data stamps), `Drainable` (pending work at close and quit), `ReviewRevision` (revision-stamped Review
-commands), a lock-token type.
+`SessionGeneration` (derived-data stamps), `Drainable` (pending work at close and quit), one revision-stamped Review
+entry point (`ReviewSession.submit(_:seen:)`), a lock-token type.
 
 ## Tests
 

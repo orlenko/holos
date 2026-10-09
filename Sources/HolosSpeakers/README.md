@@ -8,7 +8,8 @@ Pure speaker algorithms over values: who said which words, how edits apply, and 
   `SpeakerRunBuilder` (turns of a run), `ShortInterjections`, `TurnOrder`, `FakeDiarizer` (the test diarizer).
 - Edits: `SpeakerProjection` (a run with its edit journal applied: the view exports, Review, the CLI and enrollment
   read), `SpeakerCarryOver` (names carried to a new labelling), `SameNameSpeakers` (same name in one meeting shows
-  as one speaker; display only).
+  as one speaker; display only), `ReviewJournalClaim` (which lines a reread journal adds are the Review window's
+  own).
 - Voices: `TurnEmbeddings`, `VoiceEnrollment`, `SpeakerRecognizer`, `RecognitionCalibration`, `MeetingVoiceMatcher`,
   `VectorMath`.
 - Echo of call audio on the microphone: `EchoFilter` (word copies), `EchoAnalysis` and `AcousticEchoMask`
