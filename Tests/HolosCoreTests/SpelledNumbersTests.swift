@@ -40,6 +40,17 @@ import Testing
         }
     }
 
+    @Test func frenchGroupsWithAnySpaceAreOneNumber() {
+        let million = "un million deux cent trente-quatre mille cinq cent soixante-sept"
+        for spaced in ["1 234 567", "1\u{00A0}234\u{00A0}567", "1\u{202F}234\u{202F}567"] {
+            #expect(words(spaced, "fr") == words(million, "fr"), "\(spaced)")
+        }
+        #expect(words("1 500 visiteurs", "fr") == words("mille cinq cents visiteurs", "fr"))
+        // Not French groups: a year then a number, a first group of four digits, or English.
+        #expect(words("en 2015 500 visiteurs", "fr") == words("en deux mille quinze cinq cents visiteurs", "fr"))
+        #expect(words("1 234", "en") == ["one", "two", "hundred", "thirty", "four"])
+    }
+
     @Test func whatTheFormatterCannotParseIsSpelledByGroup() {
         #expect(words("1,2,3") == ["one", "two", "three"])
         #expect(words("1.500", "fr") == ["un", "cinq", "cents"])
