@@ -7,8 +7,8 @@
 
 Each file is split into paragraphs: in Markdown, a paragraph, a list item, a table row or a heading (inside fenced
 code, each run of non-blank lines); in source files, a run of consecutive comment lines (`//`, `///`, every line of
-a `/* ... */` block, or `#` in shell and Python), with each other line on its own. Within a paragraph, every `§<N.M>` cites the last
-Markdown file named before it in that paragraph. A file is named by
+a `/* ... */` block, or `#` in shell and Python), with each other line on its own. Within a paragraph, every
+`§<N.M>` cites the last Markdown file named before it in that paragraph. A file is named by
 
 - a Markdown link to it: `[label](<file>.md)`, `[label](<<file>.md>)` or `[label](<file>.md "title")`; the label may
   wrap across lines and hold balanced brackets, and its text never names a file (a `§` inside it cites the link's
@@ -17,9 +17,11 @@ Markdown file named before it in that paragraph. A file is named by
   files under `docs/` also a plain `<file>.md`.
 
 A citation resolves when the file exists and has a heading, outside fenced code, whose text starts with the number:
-`§4.1` needs a heading `4.1 ...` (not `4.10 ...`), and `§3` a heading `3. ...` or `3 ...`. Fences follow CommonMark,
-also after a list marker or in a block quote: a block closes at a fence of the same character, at least as long as
-the opening one, indented at most 3 spaces more than the opening one's container content.
+`§4.1` needs a heading `4.1 ...` (not `4.10 ...`), and `§3` a heading `3. ...` or `3 ...`. A range (`§<A>–<B>` or
+`§<A>–§<B>`, with an en dash or a hyphen) cites every number in it, counting up the last component (`§4.1–4.3` is
+4.1, 4.2 and 4.3; `§8–§10` is 8, 9 and 10). Fences follow CommonMark, also after list markers and block quote
+markers in any order: a block closes at a fence of the same character, at least as long as the opening one, inside
+the same block quotes, and indented at most 3 spaces more than the opening fence's container.
 Files are found like this:
 
 - a link destination: from the citing file's folder (from the repository root when it starts with `/`);
@@ -28,22 +30,23 @@ Files are found like this:
 - any other path: from the citing file's folder.
 
 A `§<N.M>` with no file named before it in its paragraph is bare. In a Markdown file under `docs/` it names a
-section of that file and must resolve to one of its own headings (`docs/meeting-design.md`, the index of where each
-meeting design section is, is exempt). Elsewhere (code comments, AGENTS.md) a bare `§<N.M>` is not checked; in older
+section of that file and must resolve to one of its own headings. Elsewhere (code comments, AGENTS.md) a bare `§<N.M>` is not checked; in older
 code comments it names a section of the meeting design, whose section numbers are unique. Between
 the lines `<!-- citations: <file>.md -->` and `<!-- /citations -->` of a Markdown file, a bare `§<N.M>` cites that
 file (from the repository root). It resolves to a heading of that file or, when that file is an index, to a
 heading of the file its table maps the number to (a row naming `§<N.M>`, or a range `§<N.M>–<N.K>` that holds it,
 and a link; a number not listed is looked up by its parents: `§0.2` by `§0`).
 
-In Markdown files under `docs/`, outside fenced code (where paths are examples), a file named by a link, by a path
-starting with `./`, `../` or `docs/`, or by a path whose first folder is in the citing file's folder must exist, with
-or without a section after it; so must any other path or plain `<file>.md` whose file name is the name of a file under
-`docs/` (other names, such as `README.md` or a session's `exports/transcript.md`, are not docs).
+In Markdown files under `docs/`, outside fenced code (where paths are examples), every file a link or a path names
+must exist, with or without a section after it, except paths whose file name is in NOT_DOCS: files that are not
+docs of this repository (a module's `README.md`, the root `TRADEMARKS.md`, a session's `exports/transcript.md`, a
+model's `NOTICE.md`). The index `docs/meeting-design.md` wraps its table in a citations region of itself, so each
+row's numbers must be headings of the file that row links to.
 
 Prints each problem as `file:line: ...` and a summary; exits 1 when there is any.
 """
 
+import fnmatch
 import os
 import re
 import subprocess
@@ -53,19 +56,26 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SUFFIXES = (".swift", ".md", ".sh", ".py")
 SELF = "scripts/check-doc-citations.py"
 
-BARE_EXEMPT = ("docs/meeting-design.md",)
-SECTION = re.compile(r"§(\d+(?:\.\d+)*)")
 LINK = re.compile(
     r"\[(?P<label>(?:[^\[\]]|\[[^\[\]]*\])*)\]\(\s*(?:<(?P<angle>[^<>\n]*)>|(?P<plain>[^\s()<>]+))"
     r"""(?:\s+(?:"[^"]*"|'[^']*'))?\s*\)""")
 PATH = re.compile(r"(?<![\w./:<>-])(?P<path>(?:\.{1,2}/)*[A-Za-z0-9_][A-Za-z0-9_./-]*\.md)(?![\w/-])")
 HEADING = re.compile(r"^ {0,3}#{1,6}[ \t]+(.*?)[ \t#]*$")
 # A fence's container: up to 3 spaces, then block quote markers and list markers, each with the spaces after it.
-FENCE_OPEN = re.compile(r"^(?P<prefix> {0,3}(?:(?:>|[-*+]|\d+[.)])(?:[ \t]+|$))*?[ \t]{0,3})(?P<fence>`{3,}|~{3,})(?P<info>.*)$")
-QUOTE = re.compile(r"^[ \t]*(?:>[ \t]?)+")
+FENCE_OPEN = re.compile(
+    r"^(?P<prefix> {0,3}(?:(?:>|[-*+]|\d+[.)])[ \t]+)*>?[ \t]{0,3})(?P<fence>`{3,}|~{3,})(?P<info>.*)$")
+FENCE_CLOSE = re.compile(r"^(?P<lead>[ \t>]*)(?P<marks>`{3,}|~{3,})[ \t]*$")
 REGION_OPEN = re.compile(r"^[ \t]*<!--[ \t]*citations:[ \t]*(?P<path>\S+\.md)[ \t]*-->[ \t]*$")
 REGION_CLOSE = re.compile(r"^[ \t]*<!--[ \t]*/citations[ \t]*-->[ \t]*$")
-RANGE = re.compile(r"§(\d+)\.(\d+)[–-](?:§?\1\.)?(\d+)(?![\d.])")
+# A section number or a range of them: `§4.1`, `§4.1–4.6`, `§4.1-§4.6`, `§8–§10`.
+# File names that docs mention but that are not docs of this repository, so need not resolve from the doc.
+NOT_DOCS = (
+    "README.md", "AGENTS.md", "CLAUDE.md", "TRADEMARKS.md", "THIRD_PARTY_NOTICES.md",  # root and module files
+    "NOTICE.md", "PROVENANCE.md", "*-LICENSE.md",  # files inside downloaded model packages
+    "transcript.md", "edited-*.md", "summary.md", "report.md",  # session exports and evaluation reports
+    "GettingStarted.md", "SpeakerManager.md", "Benchmarks.md",  # FluidAudio's own documentation
+)
+SECTION_RUN = re.compile(r"§(\d+(?:\.\d+)*)(?:[–-]§?(\d+(?:\.\d+)*))?(?!\d)")
 LIST_ITEM = re.compile(r"^[ \t]*(?:[-*+]|\d+[.)])[ \t]+")
 SOURCE_COMMENT = re.compile(r"^[ \t]*(?://|/\*|\*|#)")
 
@@ -90,10 +100,6 @@ class Tree:
             return any(name.startswith(rel + "/") for name in self.files)
         return os.path.isdir(os.path.join(self.root, rel))
 
-    def doc_names(self):
-        names = self.files if self.files is not None else tracked_files()
-        return {os.path.basename(name) for name in names if name.startswith("docs/") and name.endswith(".md")}
-
     def read(self, rel):
         if self.files is not None:
             return self.files[rel]
@@ -108,22 +114,39 @@ def tracked_files():
 
 
 def opens(line):
-    """The fence a line opens, as (fence, column of the container's content, in a block quote), or None."""
+    """The fence a line opens, as (fence, width of its container prefix, block quote markers in it), or None."""
     match = FENCE_OPEN.match(line)
     if not match or (match.group("fence")[0] == "`" and "`" in match.group("info")):
         return None
     prefix = match.group("prefix")
-    quote = QUOTE.match(prefix)
-    quoted = quote.group(0) if quote else ""
-    return match.group("fence"), len(prefix) - len(quoted), bool(quoted)
+    return match.group("fence"), len(prefix), prefix.count(">")
 
 
 def closes(line, fence):
-    marks, column, quoted = fence
-    if quoted:
-        line = QUOTE.sub("", line, count=1)
-    pattern = r"^[ \t]{0," + str(column + 3) + "}" + re.escape(marks[0]) + "{" + str(len(marks)) + r",}[ \t]*$"
-    return re.match(pattern, line) is not None
+    """Whether a line closes the fence: same character, at least as long, inside the same block quotes, and
+    indented at most 3 spaces more than the opening fence's container."""
+    marks, width, quotes = fence
+    match = FENCE_CLOSE.match(line)
+    return (match is not None and match.group("marks")[0] == marks[0] and len(match.group("marks")) >= len(marks)
+            and match.group("lead").count(">") == quotes and len(match.group("lead")) <= width + 3)
+
+
+def sections(text):
+    """Every section number in `text` with its offset, ranges expanded (`§4.1–4.3` is 4.1, 4.2 and 4.3)."""
+    found = []
+    for match in SECTION_RUN.finditer(text):
+        first, last = match.group(1), match.group(2)
+        numbers = [first]
+        if last:
+            start, end = first.split("."), last.split(".")
+            if len(end) < len(start):
+                end = start[:len(start) - len(end)] + end
+            if len(start) == len(end) and start[:-1] == end[:-1] and 0 < int(end[-1]) - int(start[-1]) <= 100:
+                numbers = [".".join(start[:-1] + [str(n)]) for n in range(int(start[-1]), int(end[-1]) + 1)]
+            else:
+                numbers.append(".".join(end))
+        found += [(number, match.start()) for number in numbers]
+    return found
 
 
 def markdown_paragraphs(lines):
@@ -237,8 +260,8 @@ def tokens(text, in_docs):
             continue
         if "/" in path or in_docs:
             found.append((match.start(), "file", path, False))
-    for match in SECTION.finditer(text):
-        found.append((match.start(), "section", match.group(1), False))
+    for number, offset in sections(text):
+        found.append((offset, "section", number, False))
     return sorted(found, key=lambda token: (token[0], token[1] == "section"))
 
 
@@ -255,11 +278,7 @@ def index_map(tree, rel, cache):
             if not dests:
                 continue
             target = os.path.normpath(os.path.join(os.path.dirname(rel), dests[-1]))
-            numbers = [match.group(1) for match in SECTION.finditer(line)]
-            for match in RANGE.finditer(line):
-                major, first, last = match.group(1), int(match.group(2)), int(match.group(3))
-                numbers += [f"{major}.{minor}" for minor in range(first, last + 1)]
-            for number in numbers:
+            for number, _ in sections(line):
                 mapping.setdefault(number, target)
         cache[key] = mapping
     return cache[key]
@@ -292,17 +311,13 @@ def regions(lines):
     return found
 
 
-def must_exist(tree, cited, citing, link, doc_names):
-    """Whether a file named in a doc must exist: it is a link, a ./, ../ or docs/ path, a path into a folder next
-    to the citing file, or has the name of a doc."""
-    if link or cited.startswith(("./", "../", "docs/")) or os.path.basename(cited) in doc_names:
-        return True
-    return "/" in cited and tree.isdir(os.path.normpath(os.path.join(os.path.dirname(citing), cited.split("/")[0])))
+def must_exist(cited, link):
+    """Whether a file a doc names must exist: a link, or a path whose file name is not in NOT_DOCS."""
+    return link or not any(fnmatch.fnmatchcase(os.path.basename(cited), name) for name in NOT_DOCS)
 
 
 def check(paths, tree):
     cache = {}
-    doc_names = tree.doc_names()
     problems = []
     count = 0
     for given in paths:
@@ -331,7 +346,7 @@ def check(paths, tree):
             for position, kind, value, link in tokens(joined, in_docs):
                 if kind == "file":
                     named = (value, resolve(tree, value, rel, link), False)
-                    if in_docs and not fenced and named[1] is None and must_exist(tree, value, rel, link, doc_names):
+                    if in_docs and not fenced and named[1] is None and must_exist(value, link):
                         problems.append(f"{rel}:{line_of(position)}: {value}: no such file")
                         named = (value, None, True)
                     continue
@@ -345,7 +360,7 @@ def check(paths, tree):
                         elif not region_resolves(tree, target, value, cache):
                             problems.append(f"{rel}:{line_of(position)}: {region} §{value}: no heading {value} in "
                                             f"{target} or the file its index maps it to")
-                    elif in_docs and rel not in BARE_EXEMPT:
+                    elif in_docs:
                         count += 1
                         if not has_section(headings(tree, rel, cache), value):
                             problems.append(f"{rel}:{line_of(position)}: §{value}: no heading {value} in this file")
@@ -366,7 +381,7 @@ SELF_TEST_FILES = {
     "docs/sub/b.md": "# B\n\n## 1.1 One\n",
     "docs/spec.md": "# Spec\n\n## 1.2 Two\n",
     "docs/conventions.md": "# Conventions\n\n### 1.7 Locks\n",
-    "docs/meeting-design.md": "# Index\n\n## 1.3 Concurrency\n\n§4.1 is in another file.\n",
+    "docs/meeting-design.md": "# Index\n\n## 1.3 Concurrency\n",
     "link-target.md": "[design](docs/a.md) §1.3 resolves; [design](docs/a.md) §3.2 does not.\n",
     "link-text.md": "[docs/a.md](missing.md) §4.10 and [docs/a.md §1.3](missing.md) cite the destination.\n",
     "link-chain.md": "[Concurrency §1.3](docs/meeting-design.md), §3.2\n",
@@ -379,16 +394,22 @@ SELF_TEST_FILES = {
     "code-breaks.swift": "// docs/a.md §1.3\nlet x = 1\n// §3.2 is bare: the code line ends the comment\n",
     "docs/sub/relative.md": "./b.md §1.1, ../a.md §1.3 and docs/a.md §1.3 resolve; ./a.md §1.3 does not.\n",
     "fence.md": "docs/a.md §9.9\n",
-    "docs/fenced.md": "# F\n\n- ```\n  ## 8.1 Fake\n  ```\n\n1. ```\n   ## 8.2 Fake\n   ```\n\n> ```\n## 8.3 Fake\n> ```\n",
-    "fence-containers.md": "docs/fenced.md §8.1, §8.2 and §8.3\n",
+    "docs/fenced.md": "# F\n\n- ```\n  ## 8.1 Fake\n  ```\n\n1. ```\n   ## 8.2 Fake\n   ```\n\n> ```\n## 8.3 Fake\n> ```\n\n"
+                      "- > ```\n## 8.4 Fake\n  > ```\n\n## 8.5 Real: the fence above closed\n\n```\n> ```\n## 8.6 Fake\n```\n",
+    "fence-containers.md": "docs/fenced.md §8.1, §8.2, §8.3, §8.4, §8.5 and §8.6\n",
+    "docs/r.md": "# R\n\n## 0.2 A\n\n## 0.4 C\n\n## 8 E\n\n## 10 G\n",
+    "ranges.md": "docs/r.md §0.2–0.4 and §8–§10\nand §0.2-0.4, §0.2–§0.4\n",
     "block.swift": "/* docs/spec.md\nSee §99.9\n*/\n/* docs/spec.md §1.2\n and §9.9\n*/\nlet x = 1 // §9.8\n",
     "docs/sub/deep.md": "../../docs/spec.md §99.9\n",
     "docs/folder.md": "missing/status.md §1.1, and sub/b.md §1.1 resolves.\n",
     "nested-label.md": "[§99.9 [draft]](missing.md)\n",
     "docs/index.md": "# Index\n\n| §1.1 One | [sub/b.md](sub/b.md) |\n| §1.2–1.3 Two | [spec.md](spec.md) |\n",
-    "docs/example.md": "# Example\n\n§5.5 is bare. See [the spec](spec.md) and ../README.md.\n",
+    "docs/example.md": "# Example\n\n§5.5 is bare. See [the spec](spec.md) and ../MISSING.md.\n",
     "docs/sub/plain.md": 'See b.md, spec.md "Word list", README.md and exports/transcript.md.\n```\nread ./x.md\n```\n',
-    "docs/folder2.md": "See missing/spec.md, sub/none.md and exports/transcript.md.\n",
+    "docs/folder2.md": "See missing/status.md, sub/none.md and exports/transcript.md.\n",
+    "docs/typo.md": "See desgin.md, README.md and exports/transcript.md.\n",
+    "docs/index2.md": "<!-- citations: docs/index2.md -->\n| §1.1 One | [sub/b.md](sub/b.md) |\n| §1.2–1.3 Stale | "
+                      "[spec.md](spec.md) |\n<!-- /citations -->\n",
     "docs/region.md": "<!-- citations: docs/index.md -->\n| §1.1 | §1.2 | §1.3 | §7.7 |\n<!-- /citations -->\n§7.7\n",
     "fence-indent.md": "docs/c.md §7.1\n",
     "prefix.md": "docs/a.md §4.1 is not docs/a.md §4.10.\n",
@@ -397,7 +418,7 @@ SELF_TEST_FILES = {
 }
 SELF_TEST_PATHS = [name for name in SELF_TEST_FILES if name not in ("docs/a.md", "docs/c.md", "docs/sub/b.md",
                                                                      "docs/spec.md", "docs/conventions.md",
-                                                                     "docs/fenced.md", "docs/index.md",
+                                                                     "docs/fenced.md", "docs/index.md", "docs/r.md",
                                                                      "docs/example.md")] + ["./docs/example.md"]
 SELF_TEST_PROBLEMS = [
     "link-target.md:1: docs/a.md §3.2: no heading 3.2 in docs/a.md",
@@ -418,18 +439,25 @@ SELF_TEST_PROBLEMS = [
     "docs/bare.md:5: docs/a.md §2.1: no heading 2.1 in docs/a.md",
     "docs/bare.md:7: §2.3: no heading 2.3 in this file",
     "docs/example.md:3: §5.5: no heading 5.5 in this file",
-    "docs/example.md:3: ../README.md: no such file",
+    "docs/example.md:3: ../MISSING.md: no such file",
     "docs/sub/plain.md:1: spec.md: no such file",
-    "docs/folder2.md:1: missing/spec.md: no such file",
+    "docs/folder2.md:1: missing/status.md: no such file",
+    "docs/typo.md:1: desgin.md: no such file",
+    "docs/index2.md:3: docs/index2.md §1.3: no heading 1.3 in docs/index2.md or the file its index maps it to",
     "docs/folder2.md:1: sub/none.md: no such file",
     "docs/region.md:4: §7.7: no heading 7.7 in this file",
     "fence-containers.md:1: docs/fenced.md §8.1: no heading 8.1 in docs/fenced.md",
     "fence-containers.md:1: docs/fenced.md §8.2: no heading 8.2 in docs/fenced.md",
     "fence-containers.md:1: docs/fenced.md §8.3: no heading 8.3 in docs/fenced.md",
+    "fence-containers.md:1: docs/fenced.md §8.4: no heading 8.4 in docs/fenced.md",
+    "fence-containers.md:1: docs/fenced.md §8.6: no heading 8.6 in docs/fenced.md",
+    "ranges.md:1: docs/r.md §0.3: no heading 0.3 in docs/r.md",
+    "ranges.md:1: docs/r.md §9: no heading 9 in docs/r.md",
+    "ranges.md:2: docs/r.md §0.3: no heading 0.3 in docs/r.md",
     "block.swift:2: docs/spec.md §99.9: no heading 99.9 in docs/spec.md",
     "block.swift:5: docs/spec.md §9.9: no heading 9.9 in docs/spec.md",
     "docs/sub/deep.md:1: ../../docs/spec.md §99.9: no heading 99.9 in docs/spec.md",
-    "docs/folder.md:1: missing/status.md §1.1: no such file",
+    "docs/folder.md:1: missing/status.md: no such file",
     "nested-label.md:1: missing.md §99.9: no such file",
     "docs/region.md:2: docs/index.md §1.3: no heading 1.3 in docs/index.md or the file its index maps it to",
     "docs/region.md:2: docs/index.md §7.7: no heading 7.7 in docs/index.md or the file its index maps it to",
