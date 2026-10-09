@@ -36,19 +36,16 @@ trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
-# As in scripts/test.sh: unless the caller chose folders, sessions and support files go to a fresh temporary folder.
-if [ -z "${HOLOS_DATA_DIR:-}" ] || [ -z "${HOLOS_SUPPORT_DIR:-}" ]; then
-    temporary_base=${TMPDIR:-/tmp}
-    holos_test_root=$(mktemp -d "${temporary_base%/}/holos-test.XXXXXX")
+# As in scripts/test.sh: sessions and support files always go to a fresh temporary folder; values already set in
+# the environment are replaced, so a shell that points them at real data cannot leak into a test run.
+if [ -n "${HOLOS_DATA_DIR:-}" ] || [ -n "${HOLOS_SUPPORT_DIR:-}" ]; then
+    echo "test-target.sh: ignoring HOLOS_DATA_DIR/HOLOS_SUPPORT_DIR from the environment; tests use a temporary folder" >&2
 fi
-if [ -z "${HOLOS_DATA_DIR:-}" ]; then
-    HOLOS_DATA_DIR="$holos_test_root/Sessions"
-    mkdir -m 700 "$HOLOS_DATA_DIR"
-fi
-if [ -z "${HOLOS_SUPPORT_DIR:-}" ]; then
-    HOLOS_SUPPORT_DIR="$holos_test_root/Support"
-    mkdir -m 700 "$HOLOS_SUPPORT_DIR"
-fi
+temporary_base=${TMPDIR:-/tmp}
+holos_test_root=$(mktemp -d "${temporary_base%/}/holos-test.XXXXXX")
+HOLOS_DATA_DIR="$holos_test_root/Sessions"
+HOLOS_SUPPORT_DIR="$holos_test_root/Support"
+mkdir -m 700 "$HOLOS_DATA_DIR" "$HOLOS_SUPPORT_DIR"
 export HOLOS_DATA_DIR HOLOS_SUPPORT_DIR
 
 swiftc_path=$(xcrun --find swiftc)
