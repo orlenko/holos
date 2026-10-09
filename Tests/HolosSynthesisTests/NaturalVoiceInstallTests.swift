@@ -6,6 +6,21 @@ import Testing
 
 // Natural voices: the catalog and its licences, and the install of a pack (pinned commit, checks, staging).
 
+/// Writes the files `NaturalVoicePackFiles.looksComplete` looks for under `base`, so a fake download leaves a pack
+/// that counts as installed once marked.
+func fillPack(_ base: URL, _ pack: NaturalVoicePack) throws {
+    let folder = base.appendingPathComponent(NaturalVoicePackFiles.repositoryPath)
+        .appendingPathComponent(NaturalVoicePackFiles.languageSubdirectory(pack))
+    let files = NaturalVoicePackFiles.requiredModels.flatMap { model in
+        NaturalVoicePackFiles.modelFiles.map { "\(model)/\($0)" }
+    } + NaturalVoiceCatalog.offered.filter { $0.pack == pack }.map { "constants_bin/\($0.name).safetensors" }
+    for path in files {
+        let url = folder.appendingPathComponent(path)
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data("x".utf8).write(to: url)
+    }
+}
+
 @Suite struct NaturalVoiceCatalogTests {
     @Test func onlyVoicesThatAllowCommercialUseAreOffered() {
         let offered = NaturalVoiceCatalog.offered.map(\.id)
@@ -93,10 +108,9 @@ import Testing
     }
 
     private func download(_ calls: Calls, failing: (any Error)? = nil) -> NaturalVoiceModels.Download {
-        { _, base, progress in
+        { pack, base, progress in
             calls.downloads.withLock { $0 += 1 }
-            try FileManager.default.createDirectory(at: base.appendingPathComponent("Models"),
-                                                    withIntermediateDirectories: true)
+            try fillPack(base, pack)
             progress(0.5)
             if let failing { throw failing }
             progress(1)
@@ -271,7 +285,7 @@ import Testing
 
     @Test func anInstalledPackIsNotReportedWhileAnotherInstallHoldsTheLock() async throws {
         // Installed.
-        try await NaturalVoiceModels.setUp(root: root, pack: .english, force: false, download: { _, _, _ in },
+        try await NaturalVoiceModels.setUp(root: root, pack: .english, force: false, download: { pack, base, _ in try fillPack(base, pack) },
                                            warmUp: { _, _ in }, notice: { _ in }, progress: { _ in })
         #expect(NaturalVoiceModels.status(root: root, pack: .english) == .installed)
         // Another process starts a forced reinstall (it holds the lock and may remove the pack).
@@ -281,15 +295,42 @@ import Testing
         #expect(flock(fd, LOCK_EX | LOCK_NB) == 0)
         let finished = Mutex(false)
         await #expect(throws: HolosError.self) {
-            try await NaturalVoiceModels.setUp(root: root, pack: .english, force: false, download: { _, _, _ in },
+            try await NaturalVoiceModels.setUp(root: root, pack: .english, force: false, download: { pack, base, _ in try fillPack(base, pack) },
                                                warmUp: { _, _ in }, finish: { _, _ in finished.withLock { $0 = true } },
                                                notice: { _ in }, progress: { _ in })
         }
         #expect(!finished.withLock { $0 })
+        // While it runs, the pack is being installed, not installed: nothing offers its voices.
+        #expect(NaturalVoiceModels.status(root: root, pack: .english) == .downloading)
+        #expect(NaturalVoiceModels.installedPacks(root: root).isEmpty)
         flock(fd, LOCK_UN)
+        #expect(NaturalVoiceModels.installedPacks(root: root) == [.english])
         // Once it is done, the pack is reported installed again.
-        try await NaturalVoiceModels.setUp(root: root, pack: .english, force: false, download: { _, _, _ in },
+        try await NaturalVoiceModels.setUp(root: root, pack: .english, force: false, download: { pack, base, _ in try fillPack(base, pack) },
                                            warmUp: { _, _ in }, notice: { _ in }, progress: { _ in })
+    }
+
+    @Test func aMarkedPackWithFilesMissingIsNotInstalledAndIsRepaired() async throws {
+        let downloads = Mutex(0)
+        let download: NaturalVoiceModels.Download = { pack, base, _ in
+            downloads.withLock { $0 += 1 }
+            try fillPack(base, pack)
+        }
+        try await NaturalVoiceModels.setUp(root: root, pack: .english, force: false, download: download,
+                                           warmUp: { _, _ in }, notice: { _ in }, progress: { _ in })
+        #expect(NaturalVoiceModels.status(root: root, pack: .english) == .installed)
+        // A voice deleted since (or a model cut): marked, but not usable.
+        let voice = NaturalVoiceModels.directory(root: root, pack: .english)
+            .appendingPathComponent(NaturalVoicePackFiles.repositoryPath)
+            .appendingPathComponent("v2.1/english/constants_bin/alba.safetensors")
+        try FileManager.default.removeItem(at: voice)
+        #expect(NaturalVoiceModels.status(root: root, pack: .english) == .notInstalled)
+        #expect(NaturalVoiceModels.installedPacks(root: root).isEmpty)
+        // The next setup does not take it for installed: it goes through the download, which repairs it.
+        try await NaturalVoiceModels.setUp(root: root, pack: .english, force: false, download: download,
+                                           warmUp: { _, _ in }, notice: { _ in }, progress: { _ in })
+        #expect(downloads.withLock { $0 } == 2)
+        #expect(NaturalVoiceModels.status(root: root, pack: .english) == .installed)
     }
 }
 
@@ -356,14 +397,7 @@ import Testing
         #expect(NaturalVoiceModels.revision.count == 40)
         let hex = NaturalVoiceModels.revision.allSatisfy { $0.isHexDigit }
         #expect(hex)
-        let listing = try #require(NaturalVoicePackFiles.listingURL(path: "v2.1/english"))
-        #expect(listing.absoluteString == "https://huggingface.co/api/models/FluidInference/pocket-tts-coreml/tree/"
-            + NaturalVoiceModels.revision + "/v2.1/english?recursive=1")
-        let rootListing = try #require(NaturalVoicePackFiles.listingURL(path: "", recursive: false))
-        #expect(rootListing.absoluteString.hasSuffix("/tree/" + NaturalVoiceModels.revision))
-        let file = try #require(NaturalVoicePackFiles.fileURL(path: "encoder_recover_pinv.bin"))
-        #expect(file.absoluteString.contains("/resolve/" + NaturalVoiceModels.revision + "/"))
-        #expect(![listing, rootListing, file].contains { $0.absoluteString.contains("/main") })
+        // The addresses built from it: HolosPocketTests (they go through FluidAudio's registry).
         #expect(NaturalVoicePackFiles.rootFiles(for: .french) == ["encoder_recover_pinv.bin"])
         #expect(NaturalVoicePackFiles.rootFiles(for: .english).isEmpty)
     }
@@ -373,12 +407,13 @@ import Testing
         let download: NaturalVoiceModels.Download = { _, base, _ in
             let names = (try? FileManager.default.contentsOfDirectory(atPath: base.path))?.sorted() ?? []
             calls.withLock { $0.append("download sees \(names)") }
+            try fillPack(base, .english)
         }
         let warmUp: NaturalVoiceModels.WarmUp = { _, _ in calls.withLock { $0.append("warm up") } }
         // A pack installed from an older commit.
         let directory = NaturalVoiceModels.directory(root: root, pack: .english)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        try Data("weights".utf8).write(to: directory.appendingPathComponent("Models"))
+        try fillPack(directory, .english)
         let old = NaturalVoiceModels.Marker(pack: .english, repository: NaturalVoiceModels.repository,
                                             revision: "0000000000000000000000000000000000000000", installedAt: Date())
         try HolosJSON.encoder().encode(old).write(to: directory.appendingPathComponent("installed.json"))
@@ -431,7 +466,10 @@ import Testing
     private func setUp(_ calls: Calls, verify: @escaping NaturalVoiceModels.Verify) async throws {
         try await NaturalVoiceModels.setUp(
             root: root, pack: .english, force: false,
-            download: { _, _, _ in calls.events.withLock { $0.append("download") } },
+            download: { pack, base, _ in
+                calls.events.withLock { $0.append("download") }
+                try fillPack(base, pack)
+            },
             warmUp: { _, base in
                 let staged = base.lastPathComponent.hasSuffix(".download") ? "staging" : "place"
                 calls.events.withLock { $0.append("warm up in \(staged)") }

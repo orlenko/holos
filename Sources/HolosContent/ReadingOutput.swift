@@ -610,41 +610,66 @@ public enum ReadingLanguage {
     }
 }
 
-/// The voice a reading resumed without `--voice` was started with (`voiceislocal read --resume`): the default voice
-/// can have changed since (natural voices installed after the reading was started), and a reading resumes only with
-/// its own voice. `--output` naming the reading's folder: the voice its manifest saved. An explicit output, whose
-/// cache is keyed by the voice among the other settings: of `candidates` (the voices the reading could have been
-/// started with by default), the one whose cache holds a reading made with it; when several do (a natural reading
-/// stopped, its pack removed, the same text started again with the Apple voice now the default), the one written to
-/// last, so the latest reading resumes. Nil when none is found (the resume then says there is no reading to resume, as
-/// before).
+/// The saved reading `voiceislocal read --resume` continues when no `--voice` is given: the voice it was started with
+/// is read from its manifest, never guessed (it may have been any voice, or a default that has changed since).
+/// `--output` naming the reading's folder: that folder's manifest. An explicit output, whose cache is keyed by every
+/// setting the reading was made with: of the readings in the Readings folder made for that same file from the same
+/// text, with the same rate, title, author, and language, the one written to last (its manifest is saved after every
+/// part), whatever voice it used. Nil when none is found (the resume then says there is no reading to resume).
 public enum ReadingResumeVoice {
-    public static func saved(output: String?, name: String, readingsRoot: URL, candidates: [String],
-                             identity: (String) -> String) -> String? {
-        var found: [(voice: String, changed: Date)] = []
-        for candidate in candidates {
-            guard let (location, destination) = try? ReadingOutput.resolve(
-                      output: output, name: name, identity: identity(candidate), readingsRoot: readingsRoot),
-                  let manifest = manifest(in: location.workDirectory) else { continue }
-            if destination == .readingFolder { return manifest.voiceIdentifier }
-            guard manifest.voiceIdentifier == candidate else { continue }
-            let url = location.workDirectory.appendingPathComponent(ReadingManifest.fileName)
-            let changed = (try? FileManager.default.attributesOfItem(atPath: url.path)[.modificationDate]) as? Date
-            found.append((candidate, changed ?? .distantPast))
-        }
-        // The latest reading (its manifest is saved after every part); on a tie, the earlier candidate.
-        return found.enumerated().max { lhs, rhs in
-            lhs.element.changed != rhs.element.changed ? lhs.element.changed < rhs.element.changed
-                : lhs.offset > rhs.offset
-        }?.element.voice
+    public static func saved(output: String?, name: String, readingsRoot: URL, script: ReadingScript, rate: Float?,
+                             metadata: AudioBookMetadata) -> ReadingManifest? {
+        saved(output: output, name: name, readingsRoot: readingsRoot, sourceSHA256: sha256(Data(script.text.utf8)),
+              rate: rate, metadata: metadata)
     }
 
-    /// The voices a reading in `language` may have been started with without `--voice`: its pack's natural voice
-    /// (whether that pack is installed now or not: it may have been removed since), then `apple`, the best Apple
-    /// voice.
-    public static func candidates(language: String, apple: String) -> [String] {
-        [NaturalVoicePack.forLanguage(language).map { NaturalVoiceCatalog.defaultVoice(for: $0).id }, apple]
-            .compactMap { $0 }
+    static func saved(output: String?, name: String, readingsRoot: URL, sourceSHA256: String, rate: Float?,
+                      metadata: AudioBookMetadata,
+                      volume: ReadingPathIdentity.VolumeQuery = ReadingPathIdentity.volumeRules) -> ReadingManifest? {
+        guard let (location, destination) = try? ReadingOutput.resolve(
+                  output: output, name: name, identity: "", readingsRoot: readingsRoot) else { return nil }
+        if destination == .readingFolder { return manifest(in: location.workDirectory) }
+        guard destination == .explicit,
+              let names = try? FileManager.default.contentsOfDirectory(atPath: readingsRoot.path) else { return nil }
+        let file = ReadingPathIdentity.key(location.output, .exact, volume: volume)
+        var latest: (manifest: ReadingManifest, changed: Date)?
+        for name in names where name.hasPrefix("Output-") {
+            let folder = readingsRoot.appendingPathComponent(name, isDirectory: true)
+            guard let manifest = manifest(in: folder), manifest.sourceSHA256 == sourceSHA256,
+                  manifest.rate == rate, manifest.title == metadata.title, manifest.author == metadata.author,
+                  manifest.language == metadata.language, manifest.comment == metadata.comment,
+                  manifest.output.utf8.elementsEqual(location.output.path.utf8)
+                      || ReadingPathIdentity.key(path: manifest.output, .exact, volume: volume).utf8
+                          .elementsEqual(file.utf8) else { continue }
+            let url = folder.appendingPathComponent(ReadingManifest.fileName)
+            let changed = ((try? FileManager.default.attributesOfItem(atPath: url.path))?[.modificationDate] as? Date)
+                ?? .distantPast
+            if latest.map({ changed > $0.changed }) ?? true { latest = (manifest, changed) }
+        }
+        return latest?.manifest
+    }
+
+    /// The voice of a saved reading, when it can be resumed here. A natural voice made with another commit of the
+    /// voices cannot be, installed or not, and that is said first (installing the pack again would not help); one
+    /// whose pack is not installed says to install it.
+    public static func voice(of manifest: ReadingManifest, installed: Set<NaturalVoicePack>) throws -> String {
+        let id = manifest.voiceIdentifier
+        guard NaturalVoiceCatalog.isNatural(id) else { return id }
+        guard let voice = NaturalVoiceCatalog.voice(id: id) else {
+            throw HolosError.unavailable("The voice this reading was started with is not available: \(id)")
+        }
+        guard manifest.modelRevision == ReadingPipeline.modelRevision(for: id) else {
+            throw HolosError.invalidInput("This reading was started with \(voice.title) from another version of the "
+                + "natural voices (\(manifest.modelRevision ?? "unknown")); its parts cannot be joined with the current "
+                + "ones, so it cannot be resumed. Make it again without --resume.")
+        }
+        guard installed.contains(voice.pack) else {
+            throw HolosError.unavailable("This reading was started with \(voice.title), and the "
+                + "\(voice.pack.languageName) natural voices are no longer installed. Run voiceislocal setup "
+                + "--natural-voices" + (voice.pack == .english ? "" : " --language \(voice.pack.languageCode)")
+                + ", then resume.")
+        }
+        return id
     }
 
     static func manifest(in directory: URL) -> ReadingManifest? {
