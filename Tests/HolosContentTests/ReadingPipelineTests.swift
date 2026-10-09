@@ -2266,3 +2266,49 @@ extension ReadingPipelineTests {
     }
 }
 
+
+/// A renderer whose settings can change between runs; records what each part was rendered with.
+@MainActor private final class SettingsRenderer: ReadingAudioRenderer {
+    var current = ["fallbackVoice": "today", "check": "on"]
+    var failOnCall: Int?
+    private(set) var used: [[String: String]?] = []
+
+    func renderSettings(for voiceIdentifier: String) -> [String: String]? { current }
+
+    func render(text: String, voiceIdentifier: String?, rate: Float?, to output: URL) async throws -> RenderedAudio {
+        try await render(text: text, voiceIdentifier: voiceIdentifier, rate: rate, savedSettings: nil, to: output)
+    }
+
+    func render(text: String, voiceIdentifier: String?, rate: Float?, savedSettings: [String: String]?,
+                to output: URL) async throws -> RenderedAudio {
+        used.append(savedSettings)
+        if used.count == failOnCall { throw HolosError.unavailable("Simulated render failure.") }
+        try Data(text.utf8).write(to: output, options: [.withoutOverwriting])
+        return RenderedAudio(url: output, duration: 1, frameCount: 100, sampleRate: 100)
+    }
+}
+
+extension ReadingPipelineTests {
+    /// The renderer's settings are saved when a reading starts and given back for every part, a resume included,
+    /// whatever the renderer's settings are by then.
+    @Test func aResumedReadingRendersWithTheSettingsItStartedWith() async throws {
+        let parent = try root()
+        defer { try? FileManager.default.removeItem(at: parent) }
+        let place = location(parent)
+        let renderer = SettingsRenderer()
+        renderer.failOnCall = 2
+        await #expect(throws: HolosError.self) {
+            _ = try await ReadingPipeline(renderer: renderer, joiner: FakeJoiner())
+                .render(script: script(8, sections: 2), voiceIdentifier: voice, metadata: metadata, location: place,
+                        maxPartUTF16Units: 120)
+        }
+        // Today the fallback voice and the check policy are other ones.
+        renderer.current = ["fallbackVoice": "tomorrow", "check": "off"]
+        renderer.failOnCall = nil
+        _ = try await ReadingPipeline(renderer: renderer, joiner: FakeJoiner())
+            .render(script: script(8, sections: 2), voiceIdentifier: voice, metadata: metadata, location: place,
+                    resume: true, maxPartUTF16Units: 120)
+        #expect(renderer.used.count > 3)
+        #expect(renderer.used.allSatisfy { $0 == ["fallbackVoice": "today", "check": "on"] })
+    }
+}

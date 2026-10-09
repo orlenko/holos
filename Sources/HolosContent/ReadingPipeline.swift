@@ -75,6 +75,10 @@ public struct ReadingManifest: Codable, Sendable, Equatable {
     /// The natural voices' model commit the parts were rendered with (`NaturalVoiceModels.revision`); nil for an Apple
     /// voice. A reading is resumed only with the same one, so no file mixes parts of two versions of the voices.
     public var modelRevision: String? = nil
+    /// What the renderer rendered the first part with besides voice, text, and speed (a natural voice's fallback
+    /// system voice and check policy, `NaturalRenderSettings`), saved when the reading starts and given back for every
+    /// part, so a resumed reading does not mix them; nil for a renderer that has none.
+    public var rendererSettings: [String: String]? = nil
 
     /// Manifests are small (under 1 KB per part); a larger `manifest.json` is not read.
     static let maximumBytes = 64 << 20
@@ -132,16 +136,40 @@ public struct ReadingResult: Sendable, Equatable {
     /// Fails unless the renderer can speak with the voice `identifier`. Checked before a reading
     /// creates anything.
     func checkVoice(_ identifier: String) throws
+    /// The settings a reading with `voiceIdentifier` saves when it starts (`ReadingManifest.rendererSettings`).
+    func renderSettings(for voiceIdentifier: String) -> [String: String]?
+    /// `render` with the settings the reading saved (nil: the renderer's current ones).
+    func render(text: String, voiceIdentifier: String?, rate: Float?, savedSettings: [String: String]?,
+                to output: URL) async throws -> RenderedAudio
 }
 
 extension ReadingAudioRenderer {
     /// A renderer that cannot tell which voices it has accepts every one here; `render` fails
     /// for one it lacks.
     public func checkVoice(_ identifier: String) throws {}
+
+    /// A renderer with nothing to save.
+    public func renderSettings(for voiceIdentifier: String) -> [String: String]? { nil }
+
+    public func render(text: String, voiceIdentifier: String?, rate: Float?, savedSettings: [String: String]?,
+                       to output: URL) async throws -> RenderedAudio {
+        try await render(text: text, voiceIdentifier: voiceIdentifier, rate: rate, to: output)
+    }
 }
 
 extension NativeSpeechRenderer: ReadingAudioRenderer {}
-extension NaturalSpeechRenderer: ReadingAudioRenderer {}
+
+extension NaturalSpeechRenderer: ReadingAudioRenderer {
+    public func renderSettings(for voiceIdentifier: String) -> [String: String]? {
+        settings(for: voiceIdentifier)?.values
+    }
+
+    public func render(text: String, voiceIdentifier: String?, rate: Float?, savedSettings: [String: String]?,
+                       to output: URL) async throws -> RenderedAudio {
+        try await render(text: text, voiceIdentifier: voiceIdentifier, rate: rate,
+                         settings: savedSettings.map(NaturalRenderSettings.init(values:)), to: output)
+    }
+}
 
 /// Reads with a natural voice ("pocket:…", see `NaturalVoiceCatalog`) through `natural`, and with any other voice
 /// through `system` (Apple's voices).
@@ -166,6 +194,16 @@ extension NaturalSpeechRenderer: ReadingAudioRenderer {}
 
     public func checkVoice(_ identifier: String) throws {
         try renderer(for: identifier).checkVoice(identifier)
+    }
+
+    public func renderSettings(for voiceIdentifier: String) -> [String: String]? {
+        renderer(for: voiceIdentifier).renderSettings(for: voiceIdentifier)
+    }
+
+    public func render(text: String, voiceIdentifier: String?, rate: Float?, savedSettings: [String: String]?,
+                       to output: URL) async throws -> RenderedAudio {
+        try await renderer(for: voiceIdentifier).render(text: text, voiceIdentifier: voiceIdentifier, rate: rate,
+                                                        savedSettings: savedSettings, to: output)
     }
 }
 
@@ -301,13 +339,7 @@ public struct AudioBookJoiner: ReadingAudioJoiner {
         // Planned off the main actor: a book is split into hundreds of parts, each hashed.
         let (planned, expected) = try await offMain { () -> ([ReadingScript.Part], [ReadingPart]) in
             let planned = script.parts(maxUTF16Units: maxPartUTF16Units)
-            let expected = planned.map { part in
-                ReadingPart(index: part.index, sourceUTF16Offset: part.offset, sourceUTF16Length: part.length,
-                            textSHA256: sha256(Data(part.text.utf8)),
-                            relativeAudioPath: Self.partPath(part.index),
-                            chapter: part.chapter, startsSection: part.startsSegment, status: "pending")
-            }
-            return (planned, expected)
+            return (planned, Self.plan(planned))
         }
         try Task.checkCancellation()
         let manifestURL = directory.appendingPathComponent(ReadingManifest.fileName)
@@ -317,9 +349,12 @@ public struct AudioBookJoiner: ReadingAudioJoiner {
         // off the main actor: the output folder may be on a slow share. The lock and the reservation are held until
         // this render returns.
         let (text, fault) = (script.text, initializationFault)
+        // Saved with a new reading (a resume keeps those it saved).
+        let settings = renderer.renderSettings(for: voiceIdentifier)
         let prepared = try await offMain {
             try Self.prepare(directory: directory, output: output, resume: resume, text: text, expected: expected,
-                             voiceIdentifier: voiceIdentifier, rate: rate, metadata: metadata, run: run, fault: fault)
+                             voiceIdentifier: voiceIdentifier, rate: rate, metadata: metadata, settings: settings,
+                             run: run, fault: fault)
         }
         // The joined file's name for this run: the joiner makes it, and it goes on every exit, cancellation (Ctrl-C in
         // `voiceislocal read`) included. The name carries this run's UUID, so nothing but this run's joiner makes a
@@ -450,7 +485,8 @@ public struct AudioBookJoiner: ReadingAudioJoiner {
             }
             do {
                 let result = try await renderer.render(text: part.text, voiceIdentifier: voiceIdentifier,
-                                                       rate: rate, to: audio)
+                                                       rate: rate, savedSettings: manifest.rendererSettings,
+                                                       to: audio)
                 guard result.url.standardizedFileURL == audio.standardizedFileURL else {
                     throw HolosError.io("Speech renderer returned an unexpected part path.")
                 }
@@ -568,7 +604,8 @@ public struct AudioBookJoiner: ReadingAudioJoiner {
     /// are removed last: the lock means no other run of this reading is active, and only names this reading's runs
     /// create are touched.
     nonisolated static func prepare(directory: URL, output: URL, resume: Bool, text: String, expected: [ReadingPart],
-                                    voiceIdentifier: String, rate: Float?, metadata: AudioBookMetadata, run: UUID,
+                                    voiceIdentifier: String, rate: Float?, metadata: AudioBookMetadata,
+                                    settings: [String: String]? = nil, run: UUID,
                                     fault: (ReadingCache.Step) throws -> Void) throws -> Prepared {
         try checkLocation(directory: directory, output: output, resume: resume)
         let writerLock = try ReadingDirectoryLock.acquire(for: directory)
@@ -635,7 +672,8 @@ public struct AudioBookJoiner: ReadingAudioJoiner {
                                        comment: metadata.comment, format: .current, output: output.path,
                                        outputSHA256: nil, duration: nil, chapters: [],
                                        status: "incomplete", parts: expected,
-                                       modelRevision: modelRevision(for: voiceIdentifier))
+                                       modelRevision: modelRevision(for: voiceIdentifier),
+                                       rendererSettings: settings)
             try ReadingCache.create(directory, source: Data(text.utf8), manifest: manifest, fault: fault)
             if reservation == nil { reservation = try ReadingOutputReservation.acquire(output: output) }
         }
@@ -745,6 +783,20 @@ public struct AudioBookJoiner: ReadingAudioJoiner {
 
     nonisolated static func partPath(_ index: Int) -> String {
         String(format: "parts/part%04d.%@", index + 1, partExtension)
+    }
+
+    /// The parts of a reading as its manifest plans them.
+    nonisolated static func plan(_ parts: [ReadingScript.Part]) -> [ReadingPart] {
+        parts.map { part in
+            ReadingPart(index: part.index, sourceUTF16Offset: part.offset, sourceUTF16Length: part.length,
+                        textSHA256: sha256(Data(part.text.utf8)), relativeAudioPath: partPath(part.index),
+                        chapter: part.chapter, startsSection: part.startsSegment, status: "pending")
+        }
+    }
+
+    /// Whether a saved part plan is the one `planned` gives (its parts' places, texts, chapters, and sections).
+    nonisolated static func samePlan(_ saved: [ReadingPart], _ planned: [ReadingPart]) -> Bool {
+        saved.count == planned.count && zip(saved, planned).allSatisfy { samePlan($0, $1) }
     }
 
     nonisolated private static func samePlan(_ saved: ReadingPart, _ planned: ReadingPart) -> Bool {
