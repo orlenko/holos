@@ -25,14 +25,11 @@ import UniformTypeIdentifiers
 /// Invariants:
 /// 1. `closeTask` is set once, by `beginClosing`, and never cleared (`isClosing`). Setting it invalidates playback and
 ///    detaches `review.onChange`, so no model change refreshes a closing window, and hands the open field's edit (or
-///    the one `heldOpenEdit` holds) to `ReviewSession.close`.
-/// 2. Every word edit and Restore goes through `trackWordChange`: it is queued in the review before anything awaits,
-///    and listed in `pendingWordEdits` until its save ends.
-/// 3. A close by hand (`windowShouldClose`) is refused while `unsavedEdits` holds an edit, and otherwise waits for
-///    `pendingWordEdits` and the open field's edit through `closeGate`. While that close saves, no field opens and
-///    no word change starts (`canEditWordsNow`).
-/// 4. What was typed is never dropped: an edit that is not saved opens its field again with it, or is kept in
-///    `unsavedEdits` (or in the close's outcome while a close by hand saves).
+///    the one a close by hand holds, `ReviewWordEditCoordinator.takeHeldEdit`) to `ReviewSession.close`.
+/// 2. Every word edit and Restore goes through `wordEdits.track` (`ReviewWordEditCoordinator`, its invariant 1).
+/// 3. A close by hand (`windowShouldClose`) is `wordEdits.shouldClose`'s to decide (its invariant 2). While that close
+///    saves, no field opens and no word change starts (`canEditWordsNow`).
+/// 4. What was typed is never dropped (`ReviewWordEditCoordinator` invariant 3).
 /// 5. Joins and paragraph breaks are the window's view only, never saved. Every join goes when a change fails, on
 ///    Undo, and when the labels show more reverts than at the last refresh (`clearJoins`, `refresh`).
 /// 6. `problem`, `notice` and `offeredTerm` describe the last action only: a new action clears them first
@@ -105,7 +102,7 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, NSM
     /// The last action's error, until the next action. Internal (as the join state below) for `ReviewWindow+Joining`.
     var problem: String?
     /// What the last action did, when it says so (a term added to the word list), until the next action.
-    private var notice: String?
+    var notice: String?
     private var query = ""
     /// Where "Split Turn" broke a paragraph without splitting a turn, and where a row was joined to the row before
     /// it: the window's view only, never saved; kept with its turn on its run and through this window's word-fix
@@ -126,19 +123,12 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, NSM
     private var shownPlayerState = StateChangeTracker<ReviewPlayer.State>()
     private var resignedKeyAt: Date?
     private var closeTask: Task<Void, Never>?
-    /// A close by hand waits for the edit typed in the field to be saved (`windowShouldClose`).
-    private let closeGate = ReviewCloseGate()
-    /// Word edits the field handed over that are still saving (`editWords`), in the order they were made: each ends
-    /// with the edit when it was not saved (`FailedWordEdit`), nil when it was. A close by hand waits for them too.
-    private var pendingWordEdits: [(id: UUID, saving: Task<FailedWordEdit?, Never>)] = []
-    /// The field's edit a close by hand took and has not queued yet (it waits for the edits before it).
-    private var heldOpenEdit: OpenWordEdit?
-    /// Word edits not saved whose field could not open again: in the footer until reopened or dismissed.
-    private var unsavedEdits = UnsavedWordEdits()
+    /// Word edits handed over by the field: their saves, the edits not saved, and the close by hand that saves them.
+    private lazy var wordEdits = ReviewWordEditCoordinator(host: self)
 
     /// Words can be edited in the window now: the review allows it, and no close by hand is saving the edits before
     /// it closes (no field opens meanwhile, so nothing typed then can be left behind by the close).
-    private var canEditWordsNow: Bool { review.canEditWords && !closeGate.saving }
+    private var canEditWordsNow: Bool { review.canEditWords && !wordEdits.savingForClose }
     private var splitSheet: SplitSheet?
     private var assignSignature: [String] = []
     private var refreshScheduled = false
@@ -572,7 +562,7 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, NSM
         }
     }
 
-    private func refreshToolbar() {
+    func refreshToolbar() {
         let editable = review.isEditable
         let selected = turnList.selectedTurns
         nextUncertainButton.isEnabled = review.shownTurns.contains(where: \.uncertain)
@@ -664,11 +654,11 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, NSM
             lines.append(Notice(text: "⚠ " + reloadProblem, color: .systemRed, button: "Reread",
                                 action: #selector(rereadLabels)))
         }
-        if let problem, !unsavedEdits.edits.contains(where: { $0.message == problem }) {
+        if let problem, !wordEdits.unsaved.edits.contains(where: { $0.message == problem }) {
             lines.append(Notice(text: "⚠ " + problem, color: .systemRed))
         }
         // Each edit not saved whose field could not open, with what was typed; the first can be edited again.
-        for (index, line) in unsavedEdits.lines.enumerated() {
+        for (index, line) in wordEdits.unsaved.lines.enumerated() {
             lines.append(index == 0
                 ? Notice(text: line, color: .systemRed, button: "Edit Again", action: #selector(editUnsavedAgain),
                          secondButton: "Dismiss", secondAction: #selector(dismissUnsaved))
@@ -1231,7 +1221,7 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, NSM
 
     /// Restore Deleted “…”: segment `segmentID`'s words, all deleted earlier, come back to the turns that held them.
     /// Its run keeps the turns, as a word edit's does, so the paragraph breaks stay. It is a word edit for the window
-    /// (`trackWordChange`): offered and made only while a field could open (`canEditWordsNow`: not while a close waits
+    /// (`wordEdits.track`): offered and made only while a field could open (`canEditWordsNow`: not while a close waits
     /// for earlier saves), queued in the review before this returns, tracked until it ends so a close waits for it,
     /// and saved once its `committed` says so, also when the labels could not be reread afterwards. Nothing was typed,
     /// so a failure is said in the footer and never held as an edit to type again (`UnsavedWordEdits`).
@@ -1242,7 +1232,7 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, NSM
         }
         clearTransientMessages()
         paragraphBreaks.beginCarryOver()
-        trackWordChange([], text: "", seen: review.revision, restoring: segmentID, saved: { _ in },
+        wordEdits.track([], text: "", seen: review.revision, restoring: segmentID, saved: { _ in },
                         ended: { [weak self] in self?.endBreakCarryOver() }) {
             [review] committed in
             try review.queueRestoreDeletedWords(segmentID: segmentID, committed: committed)
@@ -1299,7 +1289,7 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, NSM
 
     /// Saves an edit made in the turn list. Its new run keeps the turns, as does its undo's (`ReviewSession.keepsTurns`),
     /// so the window's paragraph breaks stay (`refresh`). Once saved, a new text that looks like a name or term is
-    /// offered for the word list (with ⌥Return it is added at once). Tracked until it ends (`pendingWordEdits`), so
+    /// offered for the word list (with ⌥Return it is added at once). Tracked until it ends (`wordEdits.track`), so
     /// closing the window by hand waits for it, and stays open when it is not saved.
     /// `seen`: the revision the field opened under over `words`; the save is refused when words were changed
     /// elsewhere since, even when the list has not shown that yet.
@@ -1309,7 +1299,7 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, NSM
         problem = nil
         notice = nil
         refreshFooter()
-        trackWordChange(words, text: text, seen: seen,
+        wordEdits.track(words, text: text, seen: seen,
                         saved: { [weak self] edit in self?.offerTerm(after: edit, add: addTerm) }) {
             [review] committed in
             try review.queueWordEdit(words.map(\.ref), to: text, seenMoves: seen.moves, whileUnread: whileUnread,
@@ -1317,99 +1307,9 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, NSM
         }
     }
 
-    /// The one way a word change (an edit, or a Restore of deleted words: `restoring` its segment) is made and
-    /// followed: `queue` queues it in the review at once, before anything else runs, so a close or a quit right after
-    /// finds it there (saved before the review closes, listed by `unsavedWordEdits` meanwhile), never only in a task
-    /// of the window's; `saved` runs once it is committed (`ReviewSession`'s `committed`, also when the labels could
-    /// not be reread afterwards: the change stands); it is tracked until it ends (`pendingWordEdits`), so closing the
-    /// window by hand waits for it and stays open when it is not saved; `ended` runs then.
-    private func trackWordChange(
-        _ words: [ReviewWord], text: String, seen: ReviewRevision, restoring: String? = nil,
-        saved: @escaping (ReviewWordEdit) -> Void, ended: (() -> Void)? = nil,
-        queue: (@escaping (ReviewWordEdit) -> Void) throws -> (@MainActor () async throws -> ReviewWordEdit?)?
-    ) {
-        let id = UUID()
-        let flag = SavedFlag()
-        let committed: (ReviewWordEdit) -> Void = { edit in
-            flag.value = true
-            saved(edit)
-        }
-        let queued: Result<(@MainActor () async throws -> ReviewWordEdit?)?, any Error>
-        do {
-            queued = .success(try queue(committed))
-        } catch {
-            queued = .failure(error)
-        }
-        let saving: Task<FailedWordEdit?, Never> = Task { [weak self] () async -> FailedWordEdit? in
-            guard let self else { return nil }
-            let refusal: String? = await self.saveEdit(words, to: text, queued: queued, saved: flag,
-                                                       seen: seen, restoring: restoring)
-            self.pendingWordEdits.removeAll { $0.id == id }
-            ended?()
-            return refusal.map {
-                FailedWordEdit(words: words, text: text, seen: seen, message: $0, restoring: restoring)
-            }
-        }
-        pendingWordEdits.append((id, saving))
-    }
-
-    /// Whether a word edit was saved (`ReviewSession.queueWordEdit`'s `committed`), read when it then throws.
-    private final class SavedFlag {
-        var value = false
-    }
-
-    /// `editWords`' save, already queued (`queued`): nil when saved (also when its labels could not be reread after
-    /// it: the edit stands, and ⌥Return's term is still added), else why, with what was typed (the field opens again
-    /// with it when its words are still there). Made on the words as the field showed them: never over words changed
-    /// elsewhere since.
-    private func saveEdit(_ words: [ReviewWord], to text: String,
-                          queued: Result<(@MainActor () async throws -> ReviewWordEdit?)?, any Error>,
-                          saved: SavedFlag, seen: ReviewRevision, restoring: String? = nil) async -> String? {
-        do {
-            if let wait = try queued.get() { _ = try await wait() }
-            return nil
-        } catch is CancellationError {
-            return nil
-        } catch {
-            // A change that failed: every join goes (they are only how rows read).
-            clearJoins()
-            if saved.value {
-                problem = error.localizedDescription
-                refreshFooter()
-                return nil
-            }
-            // A Restore: nothing was typed, no field to open again or edit to keep; the footer says why.
-            if restoring != nil {
-                let message = Self.restoreFailed(error)
-                problem = message
-                refreshFooter()
-                return message
-            }
-            let message = Self.withTyped(error.localizedDescription, text)
-            // Where its words are now: through the moves saved since, never across words changed elsewhere.
-            let reopened = turnList.reopenWordEdit(words, typed: text, message: message, seen: seen)
-            // Reopened: said once, in the banner over the field that holds what was typed, as every other refusal of
-            // an edit is (`reopenWordEdit`). Not reopened: in the footer, kept until reopened or dismissed (the next
-            // edit never clears it); a close waiting for it keeps it itself (`keepAfterFailedClose`).
-            if !reopened {
-                if !closeGate.saving {
-                    unsavedEdits.add([FailedWordEdit(words: words, text: text, seen: seen, message: message)])
-                }
-                problem = message
-                refreshFooter()
-            }
-            return message
-        }
-    }
-
     /// What the footer says of a Restore of deleted words that was not saved.
     static func restoreFailed(_ error: any Error) -> String {
-        "The deleted words were not restored: " + error.localizedDescription
-    }
-
-    /// `message` with what was typed, unless it says it already or nothing was typed (a deletion).
-    private static func withTyped(_ message: String, _ text: String) -> String {
-        TranscriptWordEdit.withTyped(message, text)
+        ReviewWordEditCoordinator.restoreFailed(error)
     }
 
     /// After a saved edit: with `add` (⌥Return), its new text goes into the word list now, with what the recognizer
@@ -1468,24 +1368,21 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, NSM
     @objc private func editUnsavedAgain() {
         guard canEditWordsNow else { return }
         if !turnList.editingWords { setEditMode(true) }
-        let opened = unsavedEdits.reopenNext { failed in
-            turnList.reopenWordEdit(failed.words, typed: failed.text, message: failed.message, seen: failed.seen)
-        }
+        let opened = wordEdits.reopenNextUnsaved()
         notice = opened ? nil : "Those words are no longer shown as they were; edit them again, or dismiss this."
         refreshFooter()
     }
 
     @objc private func dismissUnsaved() {
-        unsavedEdits.dismissNext()
-        if !unsavedEdits.holdsClose, notice == Self.unsavedBeforeClose { notice = nil }
+        wordEdits.dismissNextUnsaved()
+        if !wordEdits.unsaved.holdsClose, notice == Self.unsavedBeforeClose { notice = nil }
         refreshFooter()
     }
 
-    static let unsavedBeforeClose = "Some words you edited were not saved. Edit them again or dismiss each one, then "
-        + "close the window."
+    static var unsavedBeforeClose: String { ReviewWordEditCoordinator.unsavedBeforeClose }
 
     /// What was typed in each edit not saved whose field could not open again (`UnsavedWordEdits`): quitting logs them.
-    var unsavedEditTexts: [String] { unsavedEdits.typedTexts }
+    var unsavedEditTexts: [String] { wordEdits.unsaved.typedTexts }
 
     private func endBreakCarryOver() {
         paragraphBreaks.endCarryOver(turns: review.projection.turns, runID: review.projection.runID)
@@ -1817,108 +1714,11 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, NSM
         if window.attachedSheet == nil { resignedKeyAt = Date() }
     }
 
-    /// Closed by hand with an edit typed in the field: saved first, and the window stays open when it is not
-    /// (`ReviewCloseGate`).
-    /// Also with edits handed over and still saving (Return, then ⌘W at once): the window waits for them, and stays
-    /// open when one is not saved (its own failure opens its field again, or says what was typed).
+    /// Closed by hand: with an edit typed in the field, or edits handed over and still saving, saved first, and the
+    /// window stays open when one is not (`ReviewWordEditCoordinator.shouldClose`).
     func windowShouldClose(_ sender: NSWindow) -> Bool {
         guard sender === window, closeTask == nil else { return true }
-        // Edits not saved whose fields could not open again: closing would drop what was typed, so the window stays
-        // open, its footer offering Edit Again or Dismiss for each (`UnsavedWordEdits`). A close already saving decides
-        // itself.
-        if unsavedEdits.holdsClose, !closeGate.saving {
-            notice = Self.unsavedBeforeClose
-            refreshFooter()
-            return false
-        }
-        let open: OpenWordEdit? = closeGate.saving ? nil : turnList.takeOpenWordEdit()
-        // Held until it is queued, with the revision its field opened under: a quit meanwhile closes the review with it
-        // (`beginClosing`); words changed elsewhere since the field opened refuse it.
-        if let open { heldOpenEdit = open }
-        let epoch = open?.seen.wordsEpoch ?? review.wordsEpoch
-        let pending: [Task<FailedWordEdit?, Never>] = closeGate.saving ? [] : pendingWordEdits.map(\.saving)
-        let outcome = CloseSaveOutcome()
-        let save: () async -> String? = { [weak self] in
-            await self?.saveBeforeClose(open, after: pending, outcome: outcome)
-        }
-        let close: () -> Void = { [weak self] in self?.window.close() }
-        let keep: (String) -> Void = { [weak self] message in
-            self?.keepAfterFailedClose(open, epoch: epoch, outcome: outcome, message: message)
-        }
-        let closesNow = closeGate.shouldClose(typed: open != nil || !pending.isEmpty, save: save, close: close,
-                                              keep: keep)
-        // Saving first: no field opens until the window closes, or stays open (`canEditWordsNow`).
-        if !closesNow { refreshToolbar() }
-        return closesNow
-    }
-
-    /// The open field's edit as `TurnListView.takeOpenWordEdit` hands it over, with the revision its field opened
-    /// under.
-    private typealias OpenWordEdit = (words: [ReviewWord], text: String, seen: ReviewRevision)
-
-    /// What a close by hand found when it saved (`saveBeforeClose`): every edit not saved, in the order they were made
-    /// (those handed over before, then the open field's).
-    private final class CloseSaveOutcome {
-        var failures: [FailedWordEdit] = []
-    }
-
-    /// Before a close by hand: waits for the edits handed over (in the order they were made), then saves the open
-    /// field's. Nil when all were saved, else every refusal, each with what was typed. While it waits no field can open
-    /// (`canEditWordsNow`), so each edit not saved is kept (`outcome`) for when the window stays open.
-    private func saveBeforeClose(_ open: OpenWordEdit?, after pending: [Task<FailedWordEdit?, Never>],
-                                 outcome: CloseSaveOutcome) async -> String? {
-        for edit in pending {
-            if let failed = await edit.value { outcome.failures.append(failed) }
-        }
-        // Unless the window's close took it meanwhile (quitting), which queues it itself.
-        if open != nil, closeTask == nil, let open = heldOpenEdit {
-            heldOpenEdit = nil
-            if let refusal = await saveTypedEdit(open.words, text: open.text, seen: open.seen) {
-                outcome.failures.append(FailedWordEdit(words: open.words, text: open.text, seen: open.seen,
-                                                       message: refusal))
-            }
-        }
-        return outcome.failures.isEmpty ? nil : outcome.failures.map(\.message).joined(separator: " ")
-    }
-
-    /// A close by hand stopped because edits were not saved: fields may open again, so the first one's field opens with
-    /// what was typed and why, and the footer says every other one, each with what was typed
-    /// (`ReviewCloseRecovery`).
-    private func keepAfterFailedClose(_ open: OpenWordEdit?, epoch: Int, outcome: CloseSaveOutcome,
-                                      message: String) {
-        // Quitting closed the window meanwhile: its close saves (or logs) what is left.
-        guard closeTask == nil else { return }
-        // Fields may open again (the close by hand ended).
-        refreshToolbar()
-        // Restores not saved have nothing typed to keep: the footer says why (`problem`).
-        let typed = outcome.failures.filter { $0.restoring == nil }
-        let restores = outcome.failures.filter { $0.restoring != nil }.map(\.message)
-        if !typed.isEmpty, !turnList.editingWords { turnList.editingWords = true }
-        let others = ReviewCloseRecovery.recover(typed) { failed in
-            // Where its words are now: through the moves saved since, never across words changed elsewhere.
-            turnList.reopenWordEdit(failed.words, typed: failed.text, message: failed.message, seen: failed.seen)
-        }
-        // The others stay in the footer, each with what was typed, until reopened or dismissed.
-        unsavedEdits.add(others)
-        problem = outcome.failures.isEmpty ? message : restores.isEmpty ? nil : restores.joined(separator: " ")
-        refreshFooter()
-    }
-
-    /// Saves an edit typed in the field and waits for it: nil when saved (also when its labels could not be reread
-    /// after it: the edit stands), else why, with what was typed.
-    private func saveTypedEdit(_ words: [ReviewWord], text: String, seen: ReviewRevision) async -> String? {
-        var saved = false
-        let committed: (ReviewWordEdit) -> Void = { _ in saved = true }
-        do {
-            _ = try await review.editWords(words.map(\.ref), to: text, seenMoves: seen.moves, whileUnread: true,
-                                           expecting: words.map(\.shown), seenEpoch: seen.wordsEpoch,
-                                           committed: committed)
-            return nil
-        } catch {
-            // A change that failed: every join goes, as for any other (`saveEdit`).
-            clearJoins()
-            return saved ? nil : Self.withTyped(error.localizedDescription, text)
-        }
+        return wordEdits.shouldClose()
     }
 
     func windowWillClose(_ notification: Notification) {
@@ -1935,8 +1735,7 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, NSM
         // AppKit ends no editing when a window closes: an open edit field's text is saved (and learned) by the close,
         // as is one a close by hand took from the field and has not queued yet (quitting came first).
         let fromField = turnList.takeOpenWordEdit()
-        let held = heldOpenEdit
-        heldOpenEdit = nil
+        let held = wordEdits.takeHeldEdit()
         // Checked against the revision its field opened under.
         let typed = (fromField ?? held).map(ReviewSession.TypedEdit.init)
         closeTask = Task { [weak self] in
