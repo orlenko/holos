@@ -485,7 +485,8 @@ private let leaseMessage = "Error: Another Voice is Local process is processing 
     world.jobs.schedule()
     #expect(world.runner.started.isEmpty)
     #expect(world.deep.queue.contains("A") && world.taken.isEmpty, "Kept queued, the meeting let go of.")
-    #expect(world.events == ["released deep A", "others"], "The other schedulers look for their next jobs.")
+    #expect(world.events == ["started deep A", "released deep A", "summaries"],
+            "The other schedulers look for their next jobs.")
     world.now = base.addingTimeInterval(59)
     world.jobs.schedule()
     #expect(world.runner.started.isEmpty)
@@ -549,13 +550,21 @@ private let leaseMessage = "Error: Another Voice is Local process is processing 
 // MARK: - The echo analysis's check
 
 @Test(.timeLimit(.minutes(1)))
-@MainActor func anEchoAnalysisMadeSinceTheScanIsNotRun() async {
-    let world = World(echo: ["C"])
+@MainActor func anEchoAnalysisMadeSinceTheScanIsNotRunAndTheNextOneStartsByItself() async {
+    let world = World(echo: ["C", "D"])
     _ = world.analysed.withLock { $0.insert("C.holos") }
     world.jobs.schedule()
-    #expect(await eventually { world.events.contains("released echo C") })
-    #expect(world.runner.started.isEmpty)
-    #expect(world.echo.queue.isEmpty && world.echo.failed == ["C"])
+    #expect(await eventually { world.runner.started == ["echo D"] })
+    #expect(world.events.contains("released echo C"))
+    #expect(world.echo.queue.map(\.sessionID) == ["D"] && world.echo.failed == ["C"])
+}
+
+@Test(.timeLimit(.minutes(1)))
+@MainActor func aPassThatCannotStartLetsTheEchoAnalysisGoByItself() async {
+    let world = World(deep: ["A"], runNow: ["A"], echo: ["C"])
+    world.runner.failNextStart = true
+    world.jobs.schedule()
+    #expect(await eventually { world.runner.started == ["echo C"] })
 }
 
 @Test(.timeLimit(.minutes(1)))
