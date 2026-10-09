@@ -13,7 +13,7 @@ enum ReadingVoicePopup {
     /// installed packs come first (Automatic picks Alba or Estelle once they are), then Apple's voices; without any,
     /// a disabled line says where to download them.
     static func fill(_ popup: NSPopUpButton, selecting id: String?,
-                     installed: Set<NaturalVoicePack> = NaturalVoiceModels.installedPacks()) {
+                     installed: Set<NaturalVoicePack> = NaturalVoicesAppState.shared.installed) {
         let items = ReadingVoiceMenu.items(NativeSpeechRenderer.voices(), preferredLanguages: Locale.preferredLanguages)
         popup.removeAllItems()
         popup.autoenablesItems = false

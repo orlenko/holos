@@ -35,7 +35,7 @@ import Synchronization
     /// gets this app's environment). A Stop sends the tool `signal` (SIGTERM); one still running `killAfter` later
     /// gets `forceKill` (SIGKILL), so a wedged tool never holds the helper gate.
     init(launch: @escaping Launch, installedPacks: @escaping () -> Set<NaturalVoicePack> = {
-             NaturalVoiceModels.installedPacks()
+             NaturalVoicesAppState.shared.installed
          }, signal: @escaping @Sendable (Int32) -> Void = { _ = kill($0, SIGTERM) },
          forceKill: @escaping @Sendable (Int32) -> Void = { _ = kill($0, SIGKILL) },
          killAfter: Duration = .seconds(5),
@@ -330,7 +330,7 @@ enum NaturalVoiceHelpers {
         try choose(
             fixed: entry.voiceIdentifier ?? entry.requestedVoice, fixedName: entry.voiceName, language: language,
             saved: saved,
-            installed: NaturalVoiceModels.installedPacks(), appleVoices: NativeSpeechRenderer.voices(),
+            installed: NaturalVoicesAppState.shared.installed, appleVoices: NativeSpeechRenderer.voices(),
             bestApple: NativeSpeechRenderer.bestVoice(language:),
             appleDefault: NativeSpeechRenderer.defaultVoiceIdentifier)
     }

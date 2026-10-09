@@ -35,7 +35,7 @@ final class ReadingPane: NSViewController, MainSectionContent, NSTableViewDataSo
     /// The card's chosen voice (nil: Automatic), kept while its pack is briefly missing (a reinstall).
     private var chosenVoice: String?
     /// The natural voice packs the menu offers (tests set it).
-    var installedPacks: () -> Set<NaturalVoicePack> = { NaturalVoiceModels.installedPacks() }
+    var installedPacks: () -> Set<NaturalVoicePack> = { NaturalVoicesAppState.shared.installed }
 
     init(controller: ReadingController) {
         self.controller = controller

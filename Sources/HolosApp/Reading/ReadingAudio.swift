@@ -35,7 +35,7 @@ final class VoicePreview: NSObject, AVSpeechSynthesizerDelegate, AVAudioPlayerDe
     var onError: ((String) -> Void)?
 
     /// The natural voice packs installed now, and the user's first language (what Automatic is previewed in).
-    var installedPacks: () -> Set<NaturalVoicePack> = { NaturalVoiceModels.installedPacks() }
+    var installedPacks: () -> Set<NaturalVoicePack> = { NaturalVoicesAppState.shared.installed }
     var preferredLanguage: () -> String = { Locale.preferredLanguages.first ?? "en-US" }
 
     var isSpeaking: Bool { synthesizer != nil || natural != nil || player != nil }

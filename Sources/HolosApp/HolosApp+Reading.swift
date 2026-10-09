@@ -24,6 +24,41 @@ final class NaturalVoicesAppState {
 
     /// The app's one state (the app delegate's `naturalVoices`).
     static let shared = NaturalVoicesAppState()
+
+    /// The packs installed, and each pack's status, as last looked at (`refresh`): what the menus, Preview, the
+    /// renderer and Settings use, so none of them reads pack files on the main actor.
+    private(set) var installed: Set<NaturalVoicePack> = []
+    private(set) var statuses: [NaturalVoicePack: DeepModelStatus] = [:]
+    /// Looks at every pack's files (lock, marker, inventory); tests replace it.
+    var scan: @Sendable () -> [NaturalVoicePack: DeepModelStatus] = {
+        Dictionary(uniqueKeysWithValues: NaturalVoicePack.allCases.map { ($0, NaturalVoiceModels.status(pack: $0)) })
+    }
+    private var looking: Task<Void, Never>?
+    private var afterLook: [@MainActor () -> Void] = []
+
+    /// Looks at the packs off the main actor, one look at a time, records what it found (and each download row's
+    /// status), then calls `done`; a call during a look gets that look's result.
+    func refresh(then done: @escaping @MainActor () -> Void = {}) {
+        afterLook.append(done)
+        guard looking == nil else { return }
+        let scan = scan
+        looking = Task { [weak self] in
+            let found = await Task.detached(priority: .utility) { scan() }.value
+            guard let self else { return }
+            statuses = found
+            installed = Set(found.filter { $0.value == .installed }.keys)
+            for (pack, status) in found { downloads[pack]?.checked(status) }
+            looking = nil
+            let waiting = afterLook
+            afterLook = []
+            waiting.forEach { $0() }
+        }
+    }
+
+    /// Whether `pack`'s download may start: one download at a time, so two models are never set up together.
+    func mayStart(_ pack: NaturalVoicePack) -> Bool {
+        !downloads.contains { $0.key != pack && $0.value.isRunning }
+    }
 }
 
 /// Natural voices: the download from Settings › Reading.
@@ -37,10 +72,13 @@ extension HolosAppDelegate {
     /// a SIGKILL left behind (a day old, so none in use) are removed; the voice menus start with the packs installed
     /// (a change later, in Terminal, is noticed at activation, or by polling while another process installs one).
     func startReadings() {
-        readings.start()
         DispatchQueue.global(qos: .utility).async { NaturalVoiceTemporaries.sweep() }
-        checkNaturalVoicesInstalled()
-        pollNaturalVoiceInstalls()
+        // The packs first (off the main actor), so a natural reading continued now finds its voice.
+        naturalVoices.refresh { [weak self] in
+            self?.readings.start()
+            self?.checkNaturalVoicesInstalled()
+            self?.pollNaturalVoiceInstalls()
+        }
     }
 
     /// At quit: natural voice helpers (a reading's part, a Preview) run detached, so they are stopped now and their
@@ -49,9 +87,10 @@ extension HolosAppDelegate {
         NaturalVoiceHelpers.stopAll()
     }
 
-    /// Settings › Reading's rows: each pack's download, its files checked first.
+    /// Settings › Reading's rows: each pack's download; its files are looked at again off the main actor, for the
+    /// next refresh of Settings.
     func naturalVoiceDownloads() -> [NaturalVoicePack: NaturalVoiceDownload] {
-        refreshNaturalVoices()
+        naturalVoices.refresh()
         return naturalVoices.downloads
     }
 
@@ -70,7 +109,8 @@ extension HolosAppDelegate {
             updateSettings()
             return
         }
-        guard download.start() else { return }
+        // One download at a time: Settings disables the other row meanwhile.
+        guard state.mayStart(pack), download.start() else { return }
         state.downloads[pack] = download
         let output = Self.temporaryFile("setup-natural")
         state.outputs[pack] = output
@@ -105,47 +145,44 @@ extension HolosAppDelegate {
         let last = output.flatMap(Self.lastLine)
         output.map(Self.removeFile)
         state.pids[pack] = nil
-        let installed = NaturalVoiceModels.status(pack: pack) == .installed
-        state.downloads[pack]?.ended(code: code, lastLine: last, installed: installed)
         Self.readingLog.notice("Natural voices download (\(pack.rawValue, privacy: .public)) ended with \(code, privacy: .public)")
-        // The voice menus offer the new voices (Automatic now picks them); what the Reading card shows stays.
-        if installed { checkNaturalVoicesInstalled(force: true) }
-        updateSettings()
+        state.refresh { [weak self] in
+            let installed = state.statuses[pack] == .installed
+            state.downloads[pack]?.ended(code: code, lastLine: last, installed: installed)
+            // The voice menus offer the new voices (Automatic now picks them); what the Reading card shows stays.
+            if installed { self?.checkNaturalVoicesInstalled(force: true) }
+            self?.updateSettings()
+        }
     }
 
     /// When the app becomes active: a pack installed (or removed) meanwhile from Terminal (`voiceislocal setup
     /// --natural-voices`) is offered by the voice menus, as after a download from Settings. A check of two small files.
     func applicationDidBecomeActive(_ notification: Notification) {
-        checkNaturalVoicesInstalled()
-        pollNaturalVoiceInstalls()
+        naturalVoices.refresh { [weak self] in
+            self?.checkNaturalVoicesInstalled()
+            self?.pollNaturalVoiceInstalls()
+        }
     }
 
     /// While a pack is being installed by another process, checks every few seconds until it ends.
     func pollNaturalVoiceInstalls() {
         guard naturalVoices.poll == nil else { return }
-        let inProgress = {
-            NaturalVoicePack.allCases.contains { NaturalVoiceModels.status(pack: $0) == .downloading }
-        }
+        let state = naturalVoices
+        let inProgress = { state.statuses.values.contains(.downloading) }
         guard inProgress() else { return }
         naturalVoices.poll = Task { [weak self] in
             await NaturalVoicesInstallPoll.run(
-                inProgress: inProgress, check: { self?.checkNaturalVoicesInstalled() },
+                inProgress: inProgress, check: { state.refresh { self?.checkNaturalVoicesInstalled() } },
                 pause: { try? await Task.sleep(for: NaturalVoicesInstallPoll.interval) })
             self?.naturalVoices.poll = nil
         }
     }
 
-    /// Tells the voice menus when the installed packs changed since they were last told (`force`: tell them anyway).
+    /// Tells the voice menus when the installed packs (as last looked at) changed since they were last told (`force`:
+    /// tell them anyway).
     func checkNaturalVoicesInstalled(force: Bool = false) {
-        if naturalVoices.watch.observe(NaturalVoiceModels.installedPacks()) || force {
+        if naturalVoices.watch.observe(naturalVoices.installed) || force {
             ReadingVoices.announceInstalled()
-        }
-    }
-
-    /// Checks the packs' files (a download in Terminal, or one finished while the app was closed).
-    func refreshNaturalVoices() {
-        for pack in NaturalVoicePack.allCases {
-            naturalVoices.downloads[pack]?.checked(NaturalVoiceModels.status(pack: pack))
         }
     }
 }

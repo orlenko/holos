@@ -738,7 +738,10 @@ pinned commit's listing (sizes and SHA-256s); only then is it warmed up again wi
 match, cannot be checked (offline), or does not load there goes back to `<pack>.download/`, where the next download checks it and fetches only what is missing or
 damaged. A lock file keeps two installs apart. Settings › Reading has a row per pack: Download
 (with the size), the tool's progress line and Cancel while it runs (SIGTERM; what was downloaded is kept), and the
-failure's reason (offline, for instance) with Try Again; Apple's voices stay available throughout. The voice menus
+failure's reason (offline, for instance) with Try Again; one pack downloads at a time (the other row's Download waits),
+so two models are never set up together; Apple's voices stay available throughout. The app looks at the packs' files
+off the main actor and keeps what it found (`NaturalVoicesAppState.refresh`) for the menus, Preview, the renderer and
+Settings. The voice menus
 end with a disabled "Natural voices: download them in Settings › Reading" while a pack is missing; when a download
 ends, they are filled again with the new voices and keep the voice and speed chosen on the Reading card; a pack
 installed from Terminal meanwhile is noticed when the app becomes active (`NaturalVoicesWatch`), and while
