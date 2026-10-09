@@ -16,8 +16,8 @@ that needs FluidAudio or WhisperKit, and for recording (unless the app's in-proc
 `Speakers.swift` and `Eval.swift` still hold more than parsing and printing. New logic goes in the library so the
 app and tests can use it.
 
-**Depends on:** every library except HolosDesktop, including HolosDiarization and HolosWhisper (only this target
-links them). ArgumentParser, FoundationModels (`doctor`, `session summarize`).
+**Depends on:** every library except HolosDesktop, including HolosDiarization, HolosWhisper and HolosEvaluation
+(only this target links them). ArgumentParser, FoundationModels (`doctor`, `session summarize`).
 
 **Conventions** (`docs/meeting-design.md §1.4`)
 - Stdout carries content and `--json` output; progress and messages go to stderr.

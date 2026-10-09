@@ -400,7 +400,7 @@ public enum TranscriptRebuilder {
 
     /// vocabulary.json's strings; none when it is missing, cannot be read, or is damaged. One written by a newer
     /// Holos is refused (`unavailable`, schema rule 3, §1.6), never read as having no strings.
-    static func sessionVocabulary(_ session: URL) throws -> [String] {
+    public static func sessionVocabulary(_ session: URL) throws -> [String] {
         let data: Data
         do {
             guard let read = try AtomicFile.readIfPresent(SessionPaths.vocabulary(session), maxBytes: 1 << 20) else {

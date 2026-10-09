@@ -3,6 +3,7 @@ import JavaScriptCore
 import Testing
 import HolosCore
 import HolosSpeakers
+@testable import HolosEvaluation
 @testable import HolosMeeting
 
 // `voiceislocal eval` pure logic (docs/reference-evaluation.md, "Cloud reference"): segmenting and stitching, cost,

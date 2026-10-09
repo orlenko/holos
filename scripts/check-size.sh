@@ -6,7 +6,7 @@
 #   scripts/check-size.sh --update-baseline [--allow-growth FILE]...
 #       Rewrite the baseline from the tree. Refused while a check would fail, unless every failing file is
 #       already in the baseline and named with --allow-growth (a reason goes in the PR description). A new
-#       file over the hard cap is never accepted.
+#       file over the hard cap is never accepted; for a file moved whole, rename its path in the baseline.
 #
 # The baseline lists every source file over the soft cap (600 lines) with its line count, one
 # "<count> <path>" per line, and declares how many there are ("# entries: N", which may be 0).

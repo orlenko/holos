@@ -17,7 +17,7 @@ public enum EvalReview {
         if !audioDeleted {
             // The page seeks with the run's time maps: the audio must still be what the run sent.
             for track in run.tracks
-            where EvalStore.audioFingerprint(manifest: manifest, track: track.track) != track.audioFingerprint {
+            where manifest.audioFingerprint(track: track.track) != track.audioFingerprint {
                 throw HolosError.invalidInput("The \(track.track) audio changed since run \(run.id); its times no "
                     + "longer match the recording.")
             }

@@ -22,12 +22,10 @@ recorder ↔ app protocol.
 - `Summary/`: titles and summaries (`MeetingSummarizer`, `SessionSummarizeCommand`, `SessionRenameCommand`).
 - People and sessions: `VoiceProfileService`, `SpeakerEditor`, `SessionCatalog`, `SessionLocator`,
   `SessionImporter`, `SessionRecoveryCommand`, `DeepTranscriptionQueue`, `EchoCatchUp`.
-- `Evaluation/`: local and cloud transcription comparison for `voiceislocal eval`, the only network code in this
-  target. The app never calls it; the one production use is `EchoAnalysisStage` calling
-  `EvalStore.audioFingerprint`.
 
 **Must not own:** AppKit or windows, FluidAudio or WhisperKit (diarization and deep transcription run in a
-`voiceislocal` child), file-name literals inside a session (use `SessionPaths`).
+`voiceislocal` child), evaluation code (`HolosEvaluation`, which depends on this target), network access,
+file-name literals inside a session (use `SessionPaths`).
 
 **Depends on:** HolosCore, HolosStorage, HolosAudio, HolosSpeech, HolosSpeakers. AVFoundation, Vision (screen OCR),
 NaturalLanguage, CryptoKit.

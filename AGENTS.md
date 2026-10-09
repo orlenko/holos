@@ -34,10 +34,11 @@ lists Holos targets, then notable system or package frameworks.
 | [HolosDesktop](Sources/HolosDesktop/README.md) | Global hotkey, text insertion into other apps | Dictation logic, storage | Core; AppKit, ApplicationServices, Carbon |
 | [HolosDictation](Sources/HolosDictation/README.md) | `DictationController` (one utterance at a time), Run Again, on-device fix | Insertion, windows | Core, Audio, Speech; FoundationModels |
 | [HolosSpeakers](Sources/HolosSpeakers/README.md) | Pure speaker algorithms: alignment, runs, projection, carry-over, echo, recognition math, exports | Any file I/O, engines, names inferred from text | Core; Accelerate |
-| [HolosMeeting](Sources/HolosMeeting/README.md) | Recorder workflow and state machine, `MeetingController`, post-processing, `ReviewSession`, summaries, people and voice profiles, import, catalog, evaluation | AppKit, FluidAudio, WhisperKit, path literals inside a session | Core, Storage, Audio, Speech, Speakers; AVFoundation, Vision, NaturalLanguage |
+| [HolosMeeting](Sources/HolosMeeting/README.md) | Recorder workflow and state machine, `MeetingController`, post-processing, `ReviewSession`, summaries, people and voice profiles, import, catalog | AppKit, FluidAudio, WhisperKit, evaluation code, path literals inside a session | Core, Storage, Audio, Speech, Speakers; AVFoundation, Vision, NaturalLanguage |
 | [HolosDiarization](Sources/HolosDiarization/README.md) | The FluidAudio diarizer adapter and model install/verification | Being linked by the app | Core; FluidAudio |
 | [HolosWhisper](Sources/HolosWhisper/README.md) | WhisperKit deep transcription and model install | Being linked by the app | Core; WhisperKit, CoreML |
-| [HolosApp](Sources/HolosApp/README.md) | AppKit views, windows, menus, wiring of controllers | Business logic, session-file layout, decoding CLI output by hand | All libraries except Diarization and Whisper |
+| [HolosEvaluation](Sources/HolosEvaluation/README.md) | The reference evaluation behind `voiceislocal eval`: cloud and local runs, scoring, review | Being linked by the app; anything the recording path needs | Core, Storage, Audio, Speakers, Meeting; AVFoundation, CryptoKit |
+| [HolosApp](Sources/HolosApp/README.md) | AppKit views, windows, menus, wiring of controllers | Business logic, session-file layout, decoding CLI output by hand | All libraries except Diarization, Whisper and Evaluation |
 | [HolosCLI](Sources/HolosCLI/README.md) | Argument parsing and printing over library `*Command` types | A second copy of workflow logic | All libraries except Desktop; ArgumentParser |
 
 Two library targets live under `Tests/` and only test targets depend on them: `HolosTestSupport` (HolosCore only)
@@ -47,11 +48,9 @@ Known exceptions today (not precedents; do not add to them):
 
 - `HolosCore` holds `Lexicon` (AppKit), `Corrections` (file I/O, flock) and app-only flows (`SetupAssistantFlow`,
   `SettingsSearch`, `PermissionButtons`, …).
-- `HolosMeeting/Evaluation` is evaluation code the app links but never calls; outside it only
-  `EvalStore.audioFingerprint` is used (by `EchoAnalysisStage`).
 - Session paths are also built outside HolosStorage: `<id>.holos` folder names in `SessionLocator`,
   `SessionCatalog`, `SessionImporter`, `VoiceProfileService`, `MeetingController` and two CLI commands;
-  `EvalStore`'s `eval/` and `derived/eval-cloud/` folders.
+  HolosEvaluation's `EvalPaths` (`eval/`, `derived/eval-cloud/`).
 - `HolosApp` holds the dictation session and the background-job schedulers (`HolosApp+DeepTranscription`,
   `+MeetingSummary`, `+EchoCatchUp`), and 13 of its files import `HolosStorage`.
 - `CommandPrinted` (`HolosApp+Meeting.swift`) still reads the result line (`summary`, `message`, `runID`) of the
@@ -72,9 +71,8 @@ Known exceptions today (not precedents; do not add to them):
   prints.
 - Anything that needs FluidAudio or WhisperKit: `HolosDiarization`/`HolosWhisper`, reached by the app only through
   a `voiceislocal` child process.
-- Evaluation and cloud comparison code: `HolosMeeting/Evaluation` until the `HolosEvaluation` target exists
-  ([roadmap](docs/architecture-roadmap.md) step 4). App-only models stay in `HolosApp` (no `HolosAppModel`
-  target yet; step 13).
+- Evaluation and cloud comparison code: `HolosEvaluation` (only `HolosCLI` links it). App-only models stay in
+  `HolosApp` (no `HolosAppModel` target yet; [roadmap](docs/architecture-roadmap.md) step 13).
 
 ## Size caps
 
@@ -93,7 +91,8 @@ do not match its `# entries: N` line, or a source file it cannot read, is an err
 second and is not part of `scripts/test.sh`; run it before every PR. After shrinking a file, run
 `scripts/check-size.sh --update-baseline` to lower its entry. The update is refused while the check fails;
 growth of a file already in the baseline must be named (`--update-baseline --allow-growth <path>`) and
-explained in the PR description. A new file over 1,000 lines is never accepted. The type and function caps are
+explained in the PR description. A new file over 1,000 lines is never accepted; a file moved whole (`git mv`)
+keeps its entry, so rename the path in `scripts/size-baseline.txt` in the same PR. The type and function caps are
 review rules; nothing checks them yet.
 
 ## Invariants at type level

@@ -10,7 +10,8 @@ Durable files: the session folder (`<id>.holos`), its locks, and the global stor
   down), `ChunkFile` (reading finalized audio chunks).
 - `SessionArchive`: the actor that is the one mutable owner of an active archive (manifest, event journal,
   transcript revisions), with `openForMaintenance(at:lease:)` and `recover(at:lease:)`. `TranscriptPointer`
-  (`transcripts/current.json`).
+  (`transcripts/current.json`). `SessionManifest.audioFingerprint(track:)`: a stable hash of a track's chunk list,
+  which echo analysis and evaluation runs store to tell whether the audio changed.
 - Locks (`SessionLocks.swift`): `.writer.lock`, `ProcessingLease` on `.processing.lock`, `withSpeakerLock` /
   `withSpeakerLockAsync` on `.speakers.lock`.
 - Stores: `SessionSpeakerStore` (runs, head, edit journal, voice data, recognition), `SpeakerProfileStore`
