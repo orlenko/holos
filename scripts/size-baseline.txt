@@ -39,7 +39,7 @@
 834 Sources/HolosMeeting/PostProcessing/WordFixStage.swift
 669 Sources/HolosMeeting/RecorderLauncher.swift
 652 Sources/HolosMeeting/RecorderMachine.swift
-1935 Sources/HolosMeeting/RecordingWorkflow.swift
+804 Sources/HolosMeeting/RecordingWorkflow.swift
 3872 Sources/HolosMeeting/Review/ReviewSession.swift
 852 Sources/HolosMeeting/SessionImporter.swift
 838 Sources/HolosMeeting/Summary/MeetingSummarizer.swift

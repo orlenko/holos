@@ -5,7 +5,9 @@ and voice profiles. `docs/meeting-design.md` section 4 is the spec; `docs/meetin
 recorder ↔ app protocol.
 
 **Owns** (by folder)
-- Recorder (top level): `RecordingWorkflow.run` (the recorder loop the `voiceislocal record start` child runs),
+- Recorder (top level): `RecordingWorkflow.run` (the recorder loop the `voiceislocal record start` child runs; its
+  `Recorder` is split by concern into `Recorder+Capture`, `+Power`, `+Status`, `+Stop` and `+Exit`, which also holds
+  `ExitRetry` and `ExitStatusWait`; `EpochPlan` and `EpochMonitor` have their own files),
   `RecorderMachine` (its pure state machine), `ControlInbox` (`control/<uuid>.json` requests), `StatusWriter`
   (`status.json`), `LiveTrack` / `LiveTranscript` / `LiveText` / `LiveHints`, `DiskPolicy`, `TrackReplayer`,
   seams `MeetingCapture`, `LiveSpeechSession`, `SessionClock`, `RecorderStopSource`.
