@@ -8813,7 +8813,10 @@ genuinely local (the user, or people in the room) stays even while the call play
      local and most local ones have the predicted echo below −1 dB (`sustainedWindowFrames`,
      `sustainedDensity`, `sustainedLevelDB`): speech in the room makes the microphone louder
      than the echo alone (−3 dB at equal loudness), syllables leave brief gaps, while poorly
-     cancelled echo predicts 0 to +3.5 dB in runs of 3–5 frames. Any other local frame is
+     cancelled echo predicts 0 to +3.5 dB in runs of 3–5 frames; (d) it is one of at least 3
+     local frames at most 3 frames apart (an utterance: the smoothing fills shorter gaps, and a
+     longer one ends it) whose median predicted echo is below −1 dB (`utteranceGapFrames`,
+     `utteranceFrames`), however short or far from other speech. Any other local frame is
      the call cancelled poorly and counts as echo. Playback keeps #108's stretches only
      (2026-10-08; before,
      every local frame counted, and the scattered false-local frames of poorly cancelled echo
@@ -8994,11 +8997,13 @@ genuinely local (the user, or people in the room) stays even while the call play
   labels under the word rule before the evidence requirement
   (`AcousticEchoMask.countingEveryLocalFrame()`) and now, and prints one line per session (by
   session ID) and a total; counts only, never text, names, word times or paths. Example
-  (synthetic numbers): `<ID>: mic words 1200, judged 1150; user's 420 -> 350 (local->echo 70,
-  echo->local 0); in echo 95 -> 30; mic rows 140 -> 118, unknown 41 -> 22; rows changed 35`.
+  (synthetic numbers): `<ID>: mic words 1200, judged 1150; user's 420 -> 350 (local->echo 70
+  [in echo 62, elsewhere 8], echo->local 0); in echo 95 -> 30; mic rows 140 -> 118, unknown
+  41 -> 22; rows changed 35`.
   Judged words are those the mask judges as the labels do (not dropped by the text filter, not
   edited in Review, timed); "user's" are judged words not echo; "in echo" are those whose
-  ±0.5 s surroundings hold at least three times as many echo frames as local ones; rows are
+  ±0.5 s surroundings hold at least three times as many echo frames as local ones (local->echo
+  is split the same way: "elsewhere" are likelier the user's own words lost); rows are
   the microphone rows Review shows (short interjections applied, then consecutive turns of one
   speaker grouped into rows by `ReviewParagraphs.group`), "unknown" those without a speaker;
   "rows changed" the microphone rows (matched before and after through a shared turn) whose

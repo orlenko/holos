@@ -766,10 +766,11 @@ private func isEcho(_ mask: AcousticEchoMask, _ frames: Range<Int>) -> Bool? {
     #expect(isEcho(scattered, 100..<118) == true)
     #expect(scattered.localSpeechIntervals().isEmpty)
     #expect(scattered.localStretches() == [AcousticEchoMask.LocalStretch(frames: 100..<115, evidence: 0)])
-    // Exactly 6 dB below is not below: still echo.
+    // Exactly 6 dB below is no evidence, so #108 keeps it muted; but a run that far under the echo is an utterance of
+    // the user's.
     let limit = echoMask(count: 300, local: [(100..<106, -12)])
-    #expect(isEcho(limit, 100..<110) == true)
-    #expect(isEcho(limit.countingEveryLocalFrame(), 100..<110) == false)
+    #expect(limit.localSpeechIntervals().isEmpty)
+    #expect(isEcho(limit, 100..<110) == false)
 }
 
 @Test func doubleTalkWordsStayTheUsers() {
@@ -782,10 +783,13 @@ private func isEcho(_ mask: AcousticEchoMask, _ frames: Range<Int>) -> Bool? {
     #expect(isEcho(doubleTalk, 108..<122) == false)
     #expect(isEcho(doubleTalk, 128..<152) == false)
     #expect(isEcho(doubleTalk, 300..<320) == true, "The call's echo after it.")
-    // Support reaches 18 frames from the evidence: a last quiet run 0.4 s after it, alone in its half second, is not
-    // the user's on the frames' word (playback still plays it with its stretch, #108).
-    #expect(isEcho(doubleTalk, 158..<172) == true)
-    #expect(isEcho(doubleTalk.countingEveryLocalFrame(), 158..<172) == false)
+    // The last quiet run, 0.4 s after the louder frames and alone in its half second, is an utterance of its own 2 dB
+    // under the echo: the user's.
+    #expect(isEcho(doubleTalk, 158..<172) == false)
+    // Every word the rule before kept, it keeps.
+    for frames in [98..<106, 108..<122, 128..<152, 158..<172, 300..<320] {
+        #expect(isEcho(doubleTalk, frames) == isEcho(doubleTalk.countingEveryLocalFrame(), frames))
+    }
 }
 
 @Test func quietSpeechWithoutPredictedEchoStaysTheUsers() {
@@ -886,6 +890,7 @@ private let falseLocalInWordSix = levelledMask(seconds: 30, local: [
     #expect(stats.microphoneWords == 10)
     #expect(stats.judgedWords == 10)
     #expect((stats.localBefore, stats.localAfter, stats.localToEcho, stats.echoToLocal) == (4, 3, 1, 0))
+    #expect((stats.localToEchoInEcho, stats.localToEchoElsewhere) == (1, 0))
     // Word 6 is surrounded by echo; the user's words are not.
     #expect((stats.localInEchoBefore, stats.localInEchoAfter) == (1, 0))
     #expect((stats.microphoneRowsBefore, stats.microphoneRowsAfter) == (1, 1))
@@ -926,6 +931,8 @@ private let falseLocalInWordSix = levelledMask(seconds: 30, local: [
     first.localBefore = 40
     first.localAfter = 30
     first.localToEcho = 10
+    first.localToEchoInEcho = 7
+    first.localToEchoElsewhere = 3
     first.localInEchoBefore = 12
     first.localInEchoAfter = 3
     first.microphoneRowsBefore = 20
@@ -941,9 +948,10 @@ private let falseLocalInWordSix = levelledMask(seconds: 30, local: [
     var total = EchoLabelStats()
     total.add(first)
     total.add(second)
-    #expect(total.line == "mic words 110, judged 100; user's 44 -> 34 (local->echo 10, echo->local 0); in echo "
-        + "12 -> 3; mic rows 20 -> 17, unknown 6 -> 2; rows changed 5")
-    #expect(second.line == "mic words 10, judged 10; user's 4 -> 4 (local->echo 0, echo->local 0); in echo 0 -> 0")
+    #expect(total.line == "mic words 110, judged 100; user's 44 -> 34 (local->echo 10 [in echo 7, elsewhere 3], "
+        + "echo->local 0); in echo 12 -> 3; mic rows 20 -> 17, unknown 6 -> 2; rows changed 5")
+    #expect(second.line == "mic words 10, judged 10; user's 4 -> 4 (local->echo 0 [in echo 0, elsewhere 0], "
+        + "echo->local 0); in echo 0 -> 0")
 }
 
 @Test func echoDominatesAWordWhenItsFramesAreThreeTimesTheLocalOnes() {
@@ -1208,4 +1216,36 @@ private func playback108(_ mask: AcousticEchoMask) -> [AcousticEchoMask.Interval
     #expect(isEcho(mask, 380..<400) == true)
     #expect(isEcho(mask.countingEveryLocalFrame(), 380..<400) == false)
     #expect(mask.wordStretches == [100..<103, 110..<114])
+}
+
+@Test func syllablesFarApartOverTheCallStayTheUsers() {
+    // The user over the call in syllables 160 ms long, 192 ms of echo alone between them: 10 local frames (microphone
+    // 3e-4, predicted echo 1e-4, residual 2e-4) then 12 echo frames, again and again. No syllable has its half second
+    // mostly local; each is an utterance 5 dB under the echo.
+    var set: [(frames: Range<Int>, mic: Float, echo: Float, residual: Float, system: Float)] = [
+        (1300..<1700, 1e-4, 1e-4, 1e-6, 1e-2),
+    ]
+    for start in stride(from: 1400, to: 1600, by: 22) { set.append((start..<(start + 10), 3e-4, 1e-4, 2e-4, 1e-2)) }
+    let mask = EchoAnalysis.classify(framePowers(set))
+    #expect((1400..<1410).allSatisfy { mask.frameClass($0) == .local })
+    #expect((1410..<1422).allSatisfy { mask.frameClass($0) == .echo })
+    #expect(isEcho(mask, 1400..<1428) == false)
+    #expect(isEcho(mask, 1466..<1494) == false)
+    #expect(isEcho(mask, 1320..<1348) == true, "The echo before it.")
+    #expect(mask.localSpeechIntervals().isEmpty, "Playback is #108's.")
+}
+
+@Test func aShortUtteranceAloneAfterTheUsersSpeechStaysTheUsers() {
+    // The user speaks (20 dB over the echo), the call goes on alone for 0.4 s, then the user says one short word 2 dB
+    // under the echo, alone in its half second: no evidence near it and no sustained speech around it.
+    let mask = echoMask(count: 400, local: [(100..<130, -40), (155..<165, -4)])
+    #expect(isEcho(mask, 153..<167) == false)
+    // The same short word 2 dB over the echo is the call cancelled poorly.
+    let over = echoMask(count: 400, local: [(100..<130, -40), (155..<165, 4)])
+    #expect(isEcho(over, 153..<167) == true)
+    // An utterance ends at a gap of 4 frames: a short run of the call's after the user's word does not share its
+    // level.
+    let apart = echoMask(count: 400, local: [(200..<210, -4), (214..<217, 4)])
+    #expect(isEcho(apart, 200..<210) == false)
+    #expect(isEcho(apart, 214..<217) == true)
 }

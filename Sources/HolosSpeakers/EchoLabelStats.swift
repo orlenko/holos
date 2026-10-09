@@ -18,6 +18,10 @@ public struct EchoLabelStats: Sendable, Equatable, Encodable {
     /// the evidence requirement only takes local frames away; counted to show it).
     public var localToEcho = 0
     public var echoToLocal = 0
+    /// Of `localToEcho`, the words whose surroundings the echo dominates (`echoDominated`: echo the rule now finds),
+    /// and the others (rather the user's own words the rule now misses).
+    public var localToEchoInEcho = 0
+    public var localToEchoElsewhere = 0
     /// Words counted as the microphone's own whose surroundings the echo dominates (`echoDominated`), before and now:
     /// echo kept as the user's, mostly.
     public var localInEchoBefore = 0
@@ -93,7 +97,10 @@ public struct EchoLabelStats: Sendable, Equatable, Encodable {
                     stats.localAfter += 1
                     if dominated { stats.localInEchoAfter += 1 }
                 }
-                if !echoBefore && echoAfter { stats.localToEcho += 1 }
+                if !echoBefore && echoAfter {
+                    stats.localToEcho += 1
+                    if dominated { stats.localToEchoInEcho += 1 } else { stats.localToEchoElsewhere += 1 }
+                }
                 if echoBefore && !echoAfter { stats.echoToLocal += 1 }
             }
         }
@@ -170,6 +177,8 @@ public struct EchoLabelStats: Sendable, Equatable, Encodable {
         localAfter += other.localAfter
         localToEcho += other.localToEcho
         echoToLocal += other.echoToLocal
+        localToEchoInEcho += other.localToEchoInEcho
+        localToEchoElsewhere += other.localToEchoElsewhere
         localInEchoBefore += other.localInEchoBefore
         localInEchoAfter += other.localInEchoAfter
         func sum(_ left: Int?, _ right: Int?) -> Int? {
@@ -183,11 +192,12 @@ public struct EchoLabelStats: Sendable, Equatable, Encodable {
         rowsChanged = sum(rowsChanged, other.rowsChanged)
     }
 
-    /// One line of counts: "mic words 1200, judged 1100; user's 400 -> 340 (local->echo 60, echo->local 0); in echo
-    /// 90 -> 35; mic rows 120 -> 104, unknown 30 -> 18; rows changed 22".
+    /// One line of counts: "mic words 1200, judged 1100; user's 400 -> 340 (local->echo 60 [in echo 52, elsewhere 8],
+    /// echo->local 0); in echo 90 -> 35; mic rows 120 -> 104, unknown 30 -> 18; rows changed 22".
     public var line: String {
         var text = "mic words \(microphoneWords), judged \(judgedWords); user's \(localBefore) -> \(localAfter) "
-            + "(local->echo \(localToEcho), echo->local \(echoToLocal)); in echo \(localInEchoBefore) -> "
+            + "(local->echo \(localToEcho) [in echo \(localToEchoInEcho), elsewhere \(localToEchoElsewhere)], "
+            + "echo->local \(echoToLocal)); in echo \(localInEchoBefore) -> "
             + "\(localInEchoAfter)"
         if let microphoneRowsBefore, let microphoneRowsAfter, let unknownRowsBefore, let unknownRowsAfter {
             text += "; mic rows \(microphoneRowsBefore) -> \(microphoneRowsAfter), unknown \(unknownRowsBefore) -> "
