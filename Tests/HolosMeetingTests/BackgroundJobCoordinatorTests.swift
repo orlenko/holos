@@ -809,3 +809,19 @@ extension World {
     world.runner.finishLast(DeepTranscriptionSchedule.terminatedExitCode)
     #expect(world.summaries.requested == ["S"])
 }
+
+@Test(.timeLimit(.minutes(1)))
+@MainActor func anAutomaticPassGoesBeforeAnAutomaticSummaryReadyAtTheSameLook() async {
+    let world = World(deep: ["A"])
+    world.summarize([summaryCandidate("S")])
+    world.held = ["A"]
+    let gate = DispatchSemaphore(value: 0)
+    world.scanGate.withLock { $0 = gate }
+    world.jobs.schedule()
+    // A is let go of while the scan runs: the look its end makes has both.
+    world.held = []
+    world.scanGate.withLock { $0 = nil }
+    gate.signal()
+    #expect(await eventually { !world.runner.started.isEmpty })
+    #expect(world.runner.started == ["deep A"])
+}
