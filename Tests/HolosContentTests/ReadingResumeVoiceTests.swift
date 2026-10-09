@@ -69,6 +69,21 @@ import Testing
         #expect(saved()?.voiceIdentifier == natural)
     }
 
+    @Test func aManifestOfAnotherSchemaIsNeverTheOneResumed() throws {
+        try FileManager.default.createDirectory(at: readings, withIntermediateDirectories: true)
+        try start(manifest(voice: apple, output: output))
+        // Written later by another version of the app, for the same file and text.
+        for version in [ReadingManifest.currentSchemaVersion - 1, ReadingManifest.currentSchemaVersion + 1] {
+            let other = ReadingManifest(
+                kind: ReadingManifest.readingKind, schemaVersion: version, sourceSHA256: "s",
+                voiceIdentifier: natural, rate: nil, title: "Garden", author: nil, language: "en", comment: "c",
+                format: .current, output: output.path, outputSHA256: nil, duration: nil, chapters: [],
+                status: "incomplete", parts: [], modelRevision: NaturalVoiceModels.revision)
+            try start(other, changed: Date(timeIntervalSinceNow: 60))
+            #expect(saved()?.voiceIdentifier == apple, "schema \(version)")
+        }
+    }
+
     @Test func aReadingsFolderResumesWithTheVoiceItsManifestSaved() throws {
         let folder = readings.appendingPathComponent("1234", isDirectory: true)
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)

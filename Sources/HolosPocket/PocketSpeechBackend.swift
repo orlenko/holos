@@ -117,20 +117,28 @@ public actor PocketSpeechBackend: NaturalSpeechBackend {
 
     /// The files of `subdirectory` the voices need, with their sizes and checksums, from Hugging Face, at the pinned
     /// commit.
-    static func listing(_ subdirectory: String, recursive: Bool = true) async throws
-        -> [NaturalVoicePackFiles.Expected] {
+    static func listing(_ subdirectory: String, recursive: Bool = true,
+                        fetch: (URL) async throws -> (Data, URLResponse) = { try await ModelHub.fetchWithAuth(from: $0) })
+        async throws -> [NaturalVoicePackFiles.Expected] {
         var next = try listingURL(subdirectory, recursive: recursive)
         var files: [NaturalVoicePackFiles.Expected] = []
-        // The listing comes in pages, linked by the response's `Link: <…>; rel="next"`.
-        for _ in 0..<50 {
-            let (data, response) = try await ModelHub.fetchWithAuth(from: next)
+        // The listing comes in pages, linked by the response's `Link: <…>; rel="next"`. One still linking to a next
+        // page after `maximumPages` (or to a page already read) fails: a partial listing would pass missing files.
+        var seen: Set<URL> = []
+        var complete = false
+        for _ in 0..<maximumPages where seen.insert(next).inserted {
+            let (data, response) = try await fetch(next)
             guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
                 throw HolosError.unavailable("Hugging Face did not list the natural voices' files.")
             }
             files += try NaturalVoicePackFiles.files(fromListing: data)
-            guard let link = http.value(forHTTPHeaderField: "Link"), let url = nextPage(link) else { break }
+            guard let link = http.value(forHTTPHeaderField: "Link"), let url = nextPage(link) else {
+                complete = true
+                break
+            }
             next = url
         }
+        guard complete else { throw HolosError.unavailable("Hugging Face's listing of the natural voices did not end.") }
         guard !files.isEmpty else { throw HolosError.unavailable("Hugging Face listed no natural voice files.") }
         return files
     }
@@ -147,6 +155,8 @@ public actor PocketSpeechBackend: NaturalSpeechBackend {
     static func fileURL(_ path: String) throws -> URL {
         try ModelRegistry.resolveModel(Repo.pocketTts.remotePath, path, revision: NaturalVoiceModels.revision)
     }
+
+    static let maximumPages = 50
 
     /// The `rel="next"` address of a `Link` header.
     static func nextPage(_ link: String) -> URL? {
