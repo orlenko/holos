@@ -278,8 +278,7 @@ import Synchronization
         progress: @escaping @Sendable (PostProcessingProgress) -> Void,
         pollInterval: Duration = .milliseconds(250)) async -> PostProcessingRecord {
         let startedAt = Date()
-        let sessionID = (try? SessionArchive.readManifest(at: session).id)
-            ?? SessionPaths.stem(ofFolderName: session.lastPathComponent)
+        let sessionID = (try? SessionArchive.readManifest(at: session).id) ?? SessionPaths.stem(ofFolderName: session.lastPathComponent)
         let output = FileManager.default.temporaryDirectory
             .appendingPathComponent("holos-postprocess-\(UUID().uuidString).json", isDirectory: false)
         defer { ProcessSpawner.removeRegularFile(output) }

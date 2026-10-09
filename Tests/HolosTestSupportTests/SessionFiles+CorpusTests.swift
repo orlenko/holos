@@ -6,13 +6,15 @@ import HolosStorage
 import HolosTestSupport
 import HolosSessionTestSupport
 
-/// How a transcript revision, meeting.json, and postprocess.json read in every shape they can be found in. The
-/// expectations were written against `SessionFiles` before `VersionedFile` and must not change.
-/// (Here rather than in HolosMeetingTests, which does not link the test support targets yet.)
+/// A transcript revision, meeting.json, and postprocess.json: a missing file is `incomplete`, `MeetingInfo.inferred`
+/// and nil; a newer `schemaVersion` is `unavailable` whatever else the file holds; version 0, a file that does not
+/// decode, one of another revision or session, and one over its size limit are `invalidInput`, with the plain
+/// "is damaged" message that `SessionFiles.isDamage` callers and the post-processing record show.
+/// (In HolosTestSupportTests because HolosMeetingTests does not link the test support targets.)
 enum CorpusSessionFile: CaseIterable, Sendable { case transcript, meetingInfo, postprocess }
 
 @Test(arguments: CorpusSessionFile.allCases)
-func sessionFilesReadAsTheyAlwaysHave(_ file: CorpusSessionFile) async throws {
+func sessionFilesRefuseNewerAndDamagedFilesWithStableMessages(_ file: CorpusSessionFile) async throws {
     let temp = try TemporaryDirectory("session-files-corpus")
     defer { temp.remove() }
     let (session, id) = try await SessionFixtureBuilder(name: "Corpus").finished(in: temp.url)
@@ -46,7 +48,7 @@ func sessionFilesReadAsTheyAlwaysHave(_ file: CorpusSessionFile) async throws {
         missing = "nil"
         read = { try SessionFiles.postProcessingRecord(session: session) }
     }
-    try? FileManager.default.removeItem(at: url)
+    if FileManager.default.fileExists(atPath: url.path) { try FileManager.default.removeItem(at: url) }
     #expect(VersionedFileCorpus.outcome(read) == missing)
 
     let damaged = "invalidInput: \(name) is damaged or was not written by Voice is Local."

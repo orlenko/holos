@@ -95,6 +95,19 @@ public struct RecoveryReport: Sendable, Equatable {
 }
 
 /// The only mutable owner of a session archive. A POSIX advisory lock is held until finish or deinit.
+///
+/// Invariants:
+/// 1. `directory` is named `SessionPaths.folderName(for: id)`, `id` is an uppercase UUID
+///    (`SessionPaths.parse(folderName:)` gives it back), and the manifest names `id`.
+/// 2. While the writer is open it holds the session's writer lock; once closed (`finish`, `releaseLock`) every
+///    write throws, and the lock is released unless `finish(keepingLock:)` keeps it.
+/// 3. `manifest` is what `manifest.json` holds: it changes only after the file is written.
+/// 4. Events are numbered from `nextSequence` upward, one each; a failed append leaves no partial line and uses no
+///    number. A journal opened with a torn last line is repaired before the first append.
+/// 5. Group commit: after every transition (append, immediate sync, `setJournalSync`, a flush firing or failing,
+///    `finish`) a dirty, open, interval-mode journal has exactly one pending flush, due one interval after
+///    `lastJournalSync` (or after `journalFlushFailedAt`, once a flush has failed since); any other journal has
+///    none. Every successful sync goes through `journalSynced(at:)`, which drops the pending flush.
 public actor SessionArchive {
     public nonisolated let directory: URL
     public nonisolated let id: String
@@ -117,11 +130,7 @@ public actor SessionArchive {
     private var lockFD: Int32
     private var closed = false
 
-    // Group commit keeps one invariant after every transition (append, immediate sync, `setJournalSync`, a
-    // flush firing or failing, `finish`): a dirty, open, interval-mode journal has exactly one pending flush, due
-    // one interval after `lastJournalSync` (or after `journalFlushFailedAt`, once a flush has failed since);
-    // any other journal has none. Every successful sync goes through `journalSynced(at:)`, which drops the
-    // pending flush.
+    // Group commit: invariant 5.
     private var journalSync: JournalSync = .everyEvent
     private var lastJournalSync: ContinuousClock.Instant?
     private var journalDirty = false

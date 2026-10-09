@@ -38,8 +38,13 @@ public enum VersionedFileCorpus {
     public static func writeOversized(_ valid: Data, to url: URL, maxBytes: Int) throws {
         try valid.write(to: url)
         let handle = try FileHandle(forWritingTo: url)
-        defer { try? handle.close() }
-        try handle.truncate(atOffset: UInt64(maxBytes) + 1)
+        do {
+            try handle.truncate(atOffset: UInt64(maxBytes) + 1)
+        } catch {
+            try handle.close()
+            throw error
+        }
+        try handle.close()
     }
 
     /// "value", "nil", or the error's kind and message ("invalidInput: …"); any other error is "other: …".

@@ -4,10 +4,12 @@ import HolosCore
 @testable import HolosStorage
 import HolosTestSupport
 
-/// How transcripts/current.json and transcripts/current.pending read in every shape they can be found in. The
-/// expectations were written against the readers before `VersionedFile` and must not change.
+/// transcripts/current.json and transcripts/current.pending: a missing file is nil; a newer `schemaVersion` is
+/// `unavailable` whatever else the file holds; version 0, a file that does not decode (empty, cut short, not JSON,
+/// no `schemaVersion`), an invalid transcript ID, and a file over 64 KiB are `invalidInput`, with the decoding
+/// failure in parentheses. These messages are what callers and users see, so they stay as they are.
 @Test(arguments: [("transcripts/current.json", "current.json"), ("transcripts/current.pending", "current.pending")])
-func transcriptPointerFilesReadAsTheyAlwaysHave(name: String, fileName: String) throws {
+func transcriptPointerRefusesNewerAndDamagedFilesWithStableMessages(name: String, fileName: String) throws {
     let temp = try TemporaryDirectory("pointer-corpus")
     defer { temp.remove() }
     let session = temp.url.appendingPathComponent("\(UUID().uuidString).holos", isDirectory: true)
