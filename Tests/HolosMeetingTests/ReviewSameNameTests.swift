@@ -72,8 +72,9 @@ func speakersSavedWithOneNameShowAsOneAndRenameAsOne() async throws {
     // A rename of the one shown renames her whole, as one change.
     try await review.setName("Alicia", speakerID: "system:S1")
     let lines = try sameNameJournal(session)
+    // Each stored speaker is renamed; none is merged.
     #expect(lines.suffix(2).map(\.action) == [.rename(speakerID: "system:S1", name: "Alicia"),
-                                                .merge(from: "user:A", into: "system:S1")])
+                                                .rename(speakerID: "user:A", name: "Alicia")])
     #expect(review.projection.speakers.map(\.name) == ["Alicia", "Speaker 2", "Speaker 3"])
     try await review.undo()
     #expect(review.projection.speakers == before.speakers)
@@ -134,7 +135,7 @@ func linkingASpeakerShownJoinedShowsOneSpeakerWhileItSaves() async throws {
     // The name field links her to Bob, a known person; the save is held.
     let linking = Task { @MainActor in try await review.setName("Bob", speakerID: "system:S1") }
     #expect(await eventually { gate.entered.value == 1 })
-    // Shown as it will be saved: S2 merged into S1, so no second "Alice" comes back meanwhile.
+    // Shown as it will be saved: S2 linked and renamed with S1, so no "Alice" comes back meanwhile.
     #expect(review.projection.speakers.map(\.id) == ["system:S1", "system:S3"])
     #expect(review.projection.speakers.map(\.name) == ["Bob", "Speaker 3"])
     #expect(review.projection.turns.first { $0.id == "T2" }?.speakerID == "system:S1")
@@ -143,7 +144,9 @@ func linkingASpeakerShownJoinedShowsOneSpeakerWhileItSaves() async throws {
 
     #expect(review.projection.speakers.map(\.name) == ["Bob", "Speaker 3"])
     #expect(review.speaker("system:S1")?.profileID == bob.id)
-    #expect(try sameNameJournal(session).contains { $0.action == .merge(from: "system:S2", into: "system:S1") })
+    let lines = try sameNameJournal(session).suffix(4).map(\.action)
+    #expect(lines == [.linkProfile(speakerID: "system:S1", profileID: bob.id), .rename(speakerID: "system:S1", name: "Bob"),
+                      .linkProfile(speakerID: "system:S2", profileID: bob.id), .rename(speakerID: "system:S2", name: "Bob")])
     #expect(review.snapshot.projection == review.projection)
 }
 
@@ -285,6 +288,49 @@ func assigningAPersonASpeakerOfTheirNameIsLinkedToOtherwiseOnlyMovesTheTurns() a
     #expect(try sameNameJournal(session).last?.action == .reassignTurns(turnIDs: ["T2"], to: "system:S1"))
 }
 
+
+@Test(.timeLimit(.minutes(1))) @MainActor
+func clearingTheNameOfASpeakerShownForTwoPeopleClearsEachStoredOne() async throws {
+    let temp = try TemporaryDirectory("review")
+    defer { temp.remove() }
+    let store = sameNameStore(temp)
+    let first = SpeakerProfile(displayName: "Alex")
+    let second = SpeakerProfile(displayName: "Alex")
+    try store.update { $0.profiles += [first, second] }
+    let session = try await sameNameSession(temp)
+    // Saved before the rule: S1 linked to one Alex, S2 to the other, both named Alex: shown as S1.
+    try appendWithoutJoining([.linkProfile(speakerID: "system:S1", profileID: first.id),
+                              .rename(speakerID: "system:S1", name: "Alex"),
+                              .linkProfile(speakerID: "system:S2", profileID: second.id),
+                              .rename(speakerID: "system:S2", name: "Alex")], session: session)
+    let review = try await sameNameOpen(session, store: store)
+    let before = review.projection
+    #expect(before.speakers.map(\.id) == ["system:S1", "system:S3"])
+
+    // An empty name clears him: both stored speakers, neither left linked to anyone (S2's own Alex included).
+    try await review.setName("", speakerID: "system:S1")
+    #expect(review.projection.speakers.map(\.name) == ["Speaker 1", "Speaker 2", "Speaker 3"])
+    #expect(review.projection.speakers.allSatisfy { $0.profileID == nil })
+    #expect(review.snapshot.projection == review.projection)
+
+    // One undo brings him back as he was.
+    try await review.undo()
+    #expect(review.projection.speakers == before.speakers)
+}
+
+@Test(.timeLimit(.minutes(1))) @MainActor
+func newSpeakerWithANameShownForSeveralStoredSpeakersGivesTheTurnsToTheOneShown() async throws {
+    let temp = try TemporaryDirectory("review")
+    defer { temp.remove() }
+    let session = try await sameNameSession(temp)
+    // Saved before the rule: S1 and a new speaker (holding T3) both named Alice, shown as S1.
+    try appendWithoutJoining([.newSpeaker(speakerID: "user:A", name: "Alice", turnIDs: ["T3"]),
+                              .rename(speakerID: "system:S1", name: "Alice")], session: session)
+    let review = try await sameNameOpen(session)
+    try await review.assign(["T2"], to: .newSpeaker(name: "ALICE"))
+    #expect(try sameNameJournal(session).last?.action == .reassignTurns(turnIDs: ["T2"], to: "system:S1"))
+    #expect(review.projection.turns.first { $0.id == "T2" }?.speakerID == "system:S1")
+}
 
 @Test(.timeLimit(.minutes(1))) @MainActor
 func namingASpeakerLikeAPersonIgnoresAccentsAndSpaces() async throws {

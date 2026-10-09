@@ -2,20 +2,16 @@ import Foundation
 import HolosCore
 
 /// "Same name, same person" (docs/meeting-design.md §4.9, "Speakers with the same name"): within one meeting, two
-/// speakers whose names compare equal under `key(_:)` are one speaker, always.
+/// speakers whose names compare equal under `key(_:)` are shown as one speaker, always.
 ///
-/// Two halves keep it true:
-/// - Read side: `SpeakerProjection` lists such speakers as one (`joins`), so every reader of the projection (the
-///   exports, Review, the CLI, summaries, voice learning) sees one person, also for journals saved before this rule
-///   and for names carried over by Label Again. Nothing is written. What each stored speaker owns stays readable
-///   (`SpeakerProjection.unjoinedSpeakers`, `unjoinedTurns`) for voice data, which belongs to the person each was
-///   linked to.
-/// - Write side: `SpeakerEditor` saves a batch that names a speaker as another one is named together with the merges
-///   that make them one stored speaker (`SpeakerProjection.joiningSameNames`), so the journal says what the meeting
-///   shows, one undo takes it all back, and later edits of that person reach all of it.
+/// It is display only. `SpeakerProjection` lists such speakers as one (`joins`), so every reader of the projection
+/// (the exports, Review, the CLI, summaries) shows one person, also for journals saved before this rule and for names
+/// carried over by Label Again. Nothing is ever merged automatically: the journal keeps every stored speaker with its
+/// own link and its own voice (`SpeakerProjection.unjoined`, which voice data reads). An edit of a speaker shown joined
+/// reaches each stored speaker it shows (`SpeakerProjection.fanningOut`), so they stay alike.
 ///
-/// Both read only the journal's state (names given, links, the channel's name), never the people store, so every
-/// projection of a meeting joins the same speakers the same way whoever builds it.
+/// The joins read only the names in the journal (the names given, the channel's), never links or the people store,
+/// so every projection of a meeting joins the same speakers the same way whoever builds it.
 public enum SameNameSpeakers {
     /// The form names are compared in: runs of whitespace (and control characters) become one space, the ends are
     /// trimmed, and case, diacritics and character width are ignored ("  Zoë  Smith" and "zoe smith" match). Nil when
@@ -67,11 +63,8 @@ public enum SameNameSpeakers {
         var into: [String: String] = [:]
         /// The one shown → every stored speaker it shows, itself first, then by (ordinal, ID).
         var members: [String: [String]] = [:]
-        /// The one shown → the person they are (`person(of:in:)`).
+        /// The one shown → the person shown for them (`person(of:staying:)`).
         var person: [String: String] = [:]
-        /// Joined speakers linked to another person than `person`: their voice is that person's, so their turns stay
-        /// out of voice learning.
-        var otherPerson = Set<String>()
 
         var isEmpty: Bool { into.isEmpty }
     }
@@ -94,10 +87,7 @@ public enum SameNameSpeakers {
             joins.members[shown.id] = ordered.map(\.id)
             let person = person(of: ordered, staying: shown)
             if let person { joins.person[shown.id] = person }
-            for member in ordered.dropFirst() {
-                joins.into[member.id] = shown.id
-                if let linked = member.profileID, linked != person { joins.otherPerson.insert(member.id) }
-            }
+            for member in ordered.dropFirst() { joins.into[member.id] = shown.id }
         }
         return joins
     }
@@ -107,8 +97,9 @@ public enum SameNameSpeakers {
         (left.ordinal, left.id) < (right.ordinal, right.id)
     }
 
-    /// The person a group of one name is: the link of the one that stays, else the link of the lowest (ordinal, ID)
-    /// other one that has a link. Nil when none has one.
+    /// The person shown for a group of one name: the link of the one shown, else the link of the lowest (ordinal, ID)
+    /// other one that has a link. Nil when none has one. Display only: each stored speaker keeps its own link, and its
+    /// voice stays that person's.
     static func person(of members: [SpeakerProjection.SpeakerState],
                        staying: SpeakerProjection.SpeakerState) -> String? {
         staying.profileID ?? members.sorted(by: precedes).lazy.compactMap(\.profileID).first
@@ -117,159 +108,92 @@ public enum SameNameSpeakers {
 
 extension ProjectedTurn {
     /// This turn shown as `speakerID`'s (a speaker it was joined into by name, `SameNameSpeakers.join`).
-    func given(to speakerID: String, excluded: Bool) -> ProjectedTurn {
+    func given(to speakerID: String) -> ProjectedTurn {
         ProjectedTurn(id: id, track: track, start: start, end: end, speakerID: speakerID, clusterID: clusterID,
                       spans: spans, overlap: overlap, otherClusters: otherClusters, assignmentScore: assignmentScore,
                       timing: timing, reassigned: reassigned, modified: modified,
-                      excludedFromEnrollment: excluded, uncertain: uncertain, cutByEcho: cutByEcho,
+                      excludedFromEnrollment: excludedFromEnrollment, uncertain: uncertain, cutByEcho: cutByEcho,
                       interjection: interjection)
     }
 }
 
 extension SpeakerProjection {
-    /// The listed speaker that is the person called `name`: its name matches under `SameNameSpeakers.key` and stands
-    /// for a person (`SameNameSpeakers.standsBy`). Nil when none is. Naming new speakers by it ("New Speaker…" with a
-    /// name already in the meeting) gives the turns to that speaker instead of making a second one.
+    /// The listed speaker shown under `name` as same-named speakers are joined: its name the user gave (or the channel
+    /// speaker's own) matches under `SameNameSpeakers.key`. Since the display joins every speaker of that name, there
+    /// is at most one; a name shown only through a link or an automatic match is not one, so it is never picked among
+    /// speakers it does not join. Nil when none is. Naming new speakers by it ("New Speaker…" with a name already in
+    /// the meeting) gives the turns to that speaker instead of making a second one.
     public func speaker(named name: String) -> ProjectedSpeaker? {
         guard let key = SameNameSpeakers.key(name) else { return nil }
-        return speakers.first { SameNameSpeakers.standsBy($0) && SameNameSpeakers.key($0.name) == key }
-    }
-
-    /// `actions` as `SpeakerEditor` saves them on this view, so that a meeting never keeps two stored speakers for one
-    /// name (docs/meeting-design.md §4.9, "Speakers with the same name"). `SpeakerEditor` works it out under the
-    /// speaker lock on the current labels; Review shows its queued changes through it on the labels shown.
-    ///
-    /// The asked actions come first, naming the speaker listed for one shown joined with others (a merge of such a
-    /// speaker also moves the others it shows). Then, worked out once on the labels after them, each group the batch
-    /// touched becomes one stored speaker: the speakers of one name (`SameNameSpeakers.joins`), together with those a
-    /// speaker the batch named, linked, rejected or merged into was shown joined with (renaming "Alice" renames all
-    /// of her). The one that stays is the lowest (ordinal, ID). Its person is the one the batch itself linked any of
-    /// them to (the last such link), else its own link, else the link of the lowest (ordinal, ID) other one that has
-    /// a link. The lines added, at the end: `excludeFromEnrollment` of the turns of each of them linked to another
-    /// person (their voice is that person's), the merges, then a `linkProfile` of the one that stays when its link is
-    /// not that person.
-    ///
-    /// Every line is in the caller's batch, so one undo takes back the change and everything added for it. A batch
-    /// with a `revert` (an undo) is returned as it is, and so is one this view refuses (the editor reports why).
-    public func joiningSameNames(_ actions: [SpeakerEditAction]) -> [SpeakerEditAction] {
-        joiningSameNamesMarked(actions).map(\.action)
-    }
-
-    /// `joiningSameNames`, each line marked `added` when it is one of the lines added for same-named speakers rather
-    /// than one of `actions` (possibly naming the speaker listed instead of one joined into it).
-    public func joiningSameNamesMarked(_ actions: [SpeakerEditAction])
-        -> [(action: SpeakerEditAction, added: Bool)] {
-        guard !actions.contains(where: { if case .revert = $0 { true } else { false } }) else {
-            return actions.map { ($0, false) }
+        let matching = speakers.filter { speaker in
+            let joinedBy = speaker.explicitName ?? (speaker.provenance == .channelAssumption ? speaker.name : nil)
+            return joinedBy.flatMap(SameNameSpeakers.key) == key
         }
-        // The asked actions, naming listed speakers; the shown groups they act on are kept together below.
-        var shownAs: [String: ProjectedSpeaker] = [:]
+        return matching.count == 1 ? matching[0] : nil
+    }
+
+    /// `actions` as `SpeakerEditor` saves them on this view: an edit of a speaker shown joined with same-named ones
+    /// (`ProjectedSpeaker.memberIDs`) also made to each stored speaker it shows, so they stay alike. `SpeakerEditor`
+    /// works it out under the speaker lock on the current labels; Review shows its queued changes through it on the
+    /// labels shown, so what it shows is what is saved.
+    ///
+    /// - A rename (or clearing the name), a link, or a rejection ("Not Jim") of the speaker shown is made to each of
+    ///   them, in the order asked, one stored speaker after another.
+    /// - A merge of the speaker shown into another moves each of them into it (as merging a speaker always did).
+    /// - Everything else (turns given to the speaker shown, new speakers, splits, exclusions) is left as it is: turns
+    ///   given to the speaker shown go to the one shown.
+    ///
+    /// Nothing is merged otherwise: naming a speaker as another is named only renames it, and the display joins them.
+    /// The lines added follow the asked ones, in the batch; one undo takes all of them back. A batch with a `revert`
+    /// (an undo) is returned as it is.
+    public func fanningOut(_ actions: [SpeakerEditAction]) -> [SpeakerEditAction] {
+        fanningOutMarked(actions).map(\.action)
+    }
+
+    /// `fanningOut`, each line marked `added` when it is one of the lines added for the stored speakers a joined speaker
+    /// shows, rather than one of `actions`.
+    public func fanningOutMarked(_ actions: [SpeakerEditAction]) -> [(action: SpeakerEditAction, added: Bool)] {
+        let asked = actions.map { (action: $0, added: false) }
+        guard !actions.contains(where: { if case .revert = $0 { true } else { false } }) else { return asked }
+        var others: [String: [String]] = [:]
+        var shownAs: [String: String] = [:]
         for speaker in speakers where speaker.memberIDs.count > 1 {
-            for member in speaker.memberIDs { shownAs[member] = speaker }
+            others[speaker.id] = Array(speaker.memberIDs.dropFirst())
+            for member in speaker.memberIDs { shownAs[member] = speaker.id }
         }
-        var together: [[String]] = []
-        func listed(_ speakerID: String) -> String {
-            guard let speaker = shownAs[speakerID] else { return speakerID }
-            together.append(speaker.memberIDs)
-            return speaker.id
-        }
-        var result: [(action: SpeakerEditAction, added: Bool)] = []
-        var linked: [(speakerID: String, profileID: String)] = []
-        var named = Set<String>()
+        guard !others.isEmpty else { return asked }
+        // Per speaker shown, its edits to repeat on each stored speaker it shows.
+        var repeated: [String: [SpeakerEditAction]] = [:]
+        var order: [String] = []
+        var merges: [SpeakerEditAction] = []
         for action in actions {
             switch action {
-            case .rename(let speakerID, let name):
-                let id = listed(speakerID)
-                named.insert(id)
-                result.append((.rename(speakerID: id, name: name), false))
-            case .linkProfile(let speakerID, let profileID):
-                let id = listed(speakerID)
-                named.insert(id)
-                linked.append((id, profileID))
-                result.append((.linkProfile(speakerID: id, profileID: profileID), false))
-            case .rejectProfile(let speakerID, let profileID):
-                result.append((.rejectProfile(speakerID: listed(speakerID), profileID: profileID), false))
+            case .rename(let speakerID, _), .linkProfile(let speakerID, _), .rejectProfile(let speakerID, _):
+                guard others[speakerID] != nil else { continue }
+                if repeated[speakerID] == nil { order.append(speakerID) }
+                repeated[speakerID, default: []].append(action)
             case .merge(let from, let into):
-                let target = listed(into)
-                named.insert(target)
-                guard let source = shownAs[from] else {
-                    result.append((.merge(from: from, into: target), false))
-                    continue
+                guard let members = others[from] else { continue }
+                let target = shownAs[into] ?? into
+                merges += members.filter { $0 != target }.map { .merge(from: $0, into: target) }
+            case .reassignTurns, .splitTurn, .newSpeaker, .excludeFromEnrollment, .revert:
+                break
+            }
+        }
+        var added: [SpeakerEditAction] = []
+        for shown in order {
+            for member in others[shown] ?? [] {
+                for action in repeated[shown] ?? [] {
+                    switch action {
+                    case .rename(_, let name): added.append(.rename(speakerID: member, name: name))
+                    case .linkProfile(_, let profileID): added.append(.linkProfile(speakerID: member, profileID: profileID))
+                    case .rejectProfile(_, let profileID):
+                        added.append(.rejectProfile(speakerID: member, profileID: profileID))
+                    default: break
+                    }
                 }
-                // A speaker shown joined with others moves with them.
-                if source.id == target, from != into {
-                    together.append(source.memberIDs)
-                    continue
-                }
-                result.append((.merge(from: source.id, into: target), false))
-                for member in source.memberIDs.dropFirst() where member != target {
-                    result.append((.merge(from: member, into: target), true))
-                }
-            case .newSpeaker(let speakerID, _, _):
-                named.insert(speakerID)
-                result.append((action, false))
-            case .reassignTurns(_, let to):
-                if let to { named.insert(to) }
-                result.append((action, false))
-            case .splitTurn, .excludeFromEnrollment, .revert:
-                result.append((action, false))
             }
         }
-
-        // The labels after them.
-        var after = self
-        for (action, _) in result {
-            let id = UUID().uuidString
-            after = after.applying(action, editID: id)
-            if after.staleEdits.contains(where: { $0.editID == id }) { return result }
-        }
-        let stored = after.state.speakers
-        // Groups: the speakers of one name, and the shown groups the batch acted on.
-        let joins = SameNameSpeakers.joins(stored, turns: after.state.turns)
-        var parent: [String: String] = [:]
-        func root(_ id: String) -> String {
-            var id = id
-            while let up = parent[id], up != id { id = up }
-            return id
-        }
-        func unite(_ ids: [String]) {
-            let present = ids.filter { stored[$0] != nil }
-            guard let first = present.first else { return }
-            for id in present { if parent[id] == nil { parent[id] = id } }
-            for id in present.dropFirst() {
-                let (a, b) = (root(first), root(id))
-                if a != b { parent[b] = a }
-            }
-        }
-        for members in joins.members.values { unite(members) }
-        for members in together { unite(members) }
-        var groups: [String: [SpeakerState]] = [:]
-        for id in parent.keys { if let speaker = stored[id] { groups[root(id), default: []].append(speaker) } }
-        let touched = named.union(together.joined())
-        for members in groups.values.map({ $0.sorted(by: SameNameSpeakers.precedes) })
-            .sorted(by: { SameNameSpeakers.precedes($0[0], $1[0]) })
-        where members.count > 1 && members.contains(where: { touched.contains($0.id) }) {
-            let stays = members[0]
-            let ids = Set(members.map(\.id))
-            let person = linked.last { ids.contains($0.speakerID) }?.profileID
-                ?? SameNameSpeakers.person(of: members, staying: stays)
-            for member in members {
-                guard let link = member.profileID, link != person else { continue }
-                let turns = after.state.voiceTurns(of: member.id)
-                if !turns.isEmpty { result.append((.excludeFromEnrollment(turnIDs: turns), true)) }
-            }
-            for member in members.dropFirst() { result.append((.merge(from: member.id, into: stays.id), true)) }
-            if let person, person != stays.profileID {
-                result.append((.linkProfile(speakerID: stays.id, profileID: person), true))
-            }
-        }
-        return result
-    }
-}
-
-extension SpeakerProjection.State {
-    /// The turns `speakerID` holds that voice learning could still use (with words, not kept out of it), run order.
-    func voiceTurns(of speakerID: String) -> [String] {
-        turns.filter { $0.speakerID == speakerID && !$0.spans.isEmpty && !$0.excluded }.map(\.id)
+        return asked + (added + merges).map { (action: $0, added: true) }
     }
 }

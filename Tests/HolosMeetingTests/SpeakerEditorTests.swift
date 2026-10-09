@@ -730,7 +730,7 @@ func appendWithoutJoining(_ actions: [SpeakerEditAction], session: URL) throws {
     try SessionSpeakerStore.appendEdits(edits, session: session)
 }
 
-@Test func renamingToANameAnotherSpeakerHasMergesThemInOneUndoableBatch() async throws {
+@Test func renamingToANameAnotherSpeakerHasShowsThemAsOneAndMergesNothing() async throws {
     let temp = try TemporaryDirectory("editor")
     defer { temp.remove() }
     let (session, _, _) = try await SessionFixtures.labelledSession(in: temp.url)
@@ -741,16 +741,12 @@ func appendWithoutJoining(_ actions: [SpeakerEditAction], session: URL) throws {
     let result = try SpeakerEditor.apply([.rename(speakerID: "system:S2", name: " ALICE ")], view: before,
                                          session: session, source: "cli")
     let lines = try editorJournal(session)
-    #expect(lines.count == 3)
-    // Both talk 10 s; the lower ordinal (S1) stays.
-    #expect(lines[1].action == .rename(speakerID: "system:S2", name: "ALICE"))
-    #expect(lines[2].action == .merge(from: "system:S2", into: "system:S1"))
-    #expect(lines[1].batchID == lines[2].batchID)
+    #expect(lines.map(\.action) == [.rename(speakerID: "system:S1", name: "Alice"),
+                                    .rename(speakerID: "system:S2", name: "ALICE")])
     let after = try #require(result.snapshot.projection)
     #expect(after.speakers.map(\.id) == ["system:S1"])
-    #expect(after.speakers.first?.name == "Alice")
-    #expect(after.speakers.first?.memberIDs == ["system:S1"])
-    #expect(after.turns.allSatisfy { $0.speakerID == "system:S1" })
+    #expect(after.speakers.first?.memberIDs == ["system:S1", "system:S2"])
+    #expect(after.unjoined.speakers.map(\.id) == ["system:S1", "system:S2"])
     // The exports list her once.
     let markdown = SessionFixtures.text(SessionPaths.export("md", in: session))
     let participants = markdown.split(separator: "\n").filter { $0.hasPrefix("- Participants:") }
@@ -758,57 +754,49 @@ func appendWithoutJoining(_ actions: [SpeakerEditAction], session: URL) throws {
     #expect(participants.first?.hasPrefix("- Participants: Alice (") == true)
     #expect(participants.first?.contains(",") == false)
 
-    // One undo brings back both speakers and S2's old name.
+    // One undo brings S2 back as itself.
     let undone = try SpeakerEditor.undoLast(view: after, session: session, source: "cli", regenerateExports: false)
     let restored = try #require(undone.snapshot.projection)
     #expect(restored.speakers == before.speakers)
     #expect(restored.turns == before.turns)
-    #expect(try editorJournal(session).count == 5)
 }
 
-@Test func anEditOfSpeakersSavedWithOneNameMakesThemOneStoredSpeaker() async throws {
+@Test func anEditOfASpeakerShownJoinedReachesEachStoredOneAsPreviewed() async throws {
     let temp = try TemporaryDirectory("editor")
     defer { temp.remove() }
     let (session, _, _) = try await SessionFixtures.labelledSession(in: temp.url, speakers: ["S1", "S2", "S3"],
                                                                     duration: 30)
-    // Lines written before the rule (no merge): two speakers named Bob, which the labels show as one.
-    try appendWithoutJoining([.rename(speakerID: "system:S1", name: "Bob"),
-                              .rename(speakerID: "system:S3", name: "bob")], session: session)
+    try SpeakerEditor.apply([.rename(speakerID: "system:S1", name: "Bob")], view: try SessionFixtures.view(session),
+                            session: session, source: "cli", regenerateExports: false)
+    try SpeakerEditor.apply([.rename(speakerID: "system:S3", name: "bob")], view: try SessionFixtures.view(session),
+                            session: session, source: "cli", regenerateExports: false)
     let view = try SessionFixtures.view(session)
     let bob = try #require(view.speakers.first { $0.name == "Bob" })
     #expect(bob.memberIDs == ["system:S1", "system:S3"])
-    #expect(view.speakers.count == 2)
 
-    // Renaming him renames all of him: the joined speaker is merged in, in the same batch.
-    let result = try SpeakerEditor.apply([.rename(speakerID: bob.id, name: "Robert")], view: view, session: session,
-                                         source: "cli", regenerateExports: false)
+    // Renaming him renames each stored speaker, exactly as a preview on the same labels shows it.
+    let asked: [SpeakerEditAction] = [.rename(speakerID: bob.id, name: "Robert")]
+    let preview = view.fanningOut(asked)
+    let result = try SpeakerEditor.apply(asked, view: view, session: session, source: "cli", regenerateExports: false)
     let lines = try editorJournal(session)
-    #expect(lines.suffix(2).map(\.action) == [.rename(speakerID: "system:S1", name: "Robert"),
-                                                .merge(from: "system:S3", into: "system:S1")])
+    #expect(Array(lines.suffix(2).map(\.action)) == preview)
+    #expect(preview == [.rename(speakerID: "system:S1", name: "Robert"), .rename(speakerID: "system:S3", name: "Robert")])
+    #expect(lines.suffix(2).allSatisfy { $0.batchID == lines.last?.batchID })
     let after = try #require(result.snapshot.projection)
     #expect(after.speakers.map(\.name) == ["Robert", "Speaker 2"])
 }
 
-@Test func twoWindowsNamingTwoSpeakersAlikeAtOnceLeaveOneStoredSpeaker() async throws {
+@Test func twoWindowsNamingTwoSpeakersAlikeAtOnceAreShownAsOne() async throws {
     let temp = try TemporaryDirectory("editor")
     defer { temp.remove() }
     let (session, _, _) = try await SessionFixtures.labelledSession(in: temp.url)
-    // Both windows load the labels; the first names S1 Carol and saves.
     let first = try SessionFixtures.view(session)
     let second = try SessionFixtures.view(session)
     try SpeakerEditor.apply([.rename(speakerID: "system:S1", name: "Carol")], view: first, session: session,
                             source: "app", regenerateExports: false)
-    // The second, not having seen that, names S2 carol: its rename is still valid (S2 did not change), and the
-    // merge is worked out on the labels saved, so S2 joins S1.
     let result = try SpeakerEditor.apply([.rename(speakerID: "system:S2", name: "carol")], view: second,
                                          session: session, source: "app", regenerateExports: false)
-    let lines = try editorJournal(session)
-    #expect(lines.map(\.action) == [.rename(speakerID: "system:S1", name: "Carol"),
-                                    .rename(speakerID: "system:S2", name: "carol"),
-                                    .merge(from: "system:S2", into: "system:S1")])
-    try #require(lines.count == 3)
-    #expect(lines[1].batchID == lines[2].batchID)
     let after = try #require(result.snapshot.projection)
-    #expect(after.speakers.map(\.id) == ["system:S1"])
-    #expect(after.speakers.first?.memberIDs == ["system:S1"])
+    #expect(after.speakers.map(\.memberIDs) == [["system:S1", "system:S2"]])
+    #expect(try editorJournal(session).count == 2)
 }

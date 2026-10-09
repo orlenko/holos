@@ -1198,9 +1198,9 @@ splitting a sentence across a speaker turn. Manual rename/split/merge/reassignme
 are edits over machine results. Reprocessing creates a new revision and flags
 ambiguous transfers of existing human edits instead of silently discarding them.
 Within a meeting, the same name is the same person (ignoring case, accents and extra
-spaces): naming a speaker as another one is named merges the two, and labels saved
-with two speakers of one name are shown and exported as one (meeting-design §4.9,
-"Speakers with the same name").
+spaces): speakers of one name are shown and exported as one, an edit of that speaker
+reaches each of them, and nothing is merged behind the user's back, so each keeps its
+own link and voice (meeting-design §4.9, "Speakers with the same name").
 
 Optionally capture the screen during a meeting (Settings › Meetings, off by default;
 the start panel's "Capture screen" for one meeting), so text on slides and shared

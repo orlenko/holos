@@ -53,12 +53,11 @@ public enum SpeakerEditor {
     ///   the newer changes first).
     /// - Names in `rename` and `newSpeaker` are saved as `cleanName` returns them (one line, no control
     ///   characters), so every name can be typed back as the exports show it.
-    /// - Same name, same person (docs/meeting-design.md §4.9): the batch saved is `joiningSameNames(actions)` worked
-    ///   out under the lock on the current labels (not on `view`, which may not show another window's speaker of
-    ///   the same name), which adds the merges that keep one stored speaker per name (a rename to a name another
-    ///   speaker has, a new speaker with such a name, a link to a person another speaker is named as, and an edit of
-    ///   a speaker shown joined by name) and the link of the person they are. The lines it adds carry the current
-    ///   fingerprints; the caller's own must match `view` as always. They share the batch ID, so one undo takes them
+    /// - Same name, same person (docs/meeting-design.md §4.9): same-named speakers are only shown as one; nothing is
+    ///   merged automatically. The batch saved is `fanningOut(actions)` worked out under the lock on the current
+    ///   labels (not on `view`, which may not show another window's speaker of the same name): an edit of a speaker
+    ///   shown joined also made to each stored speaker it shows. The lines it adds carry the current fingerprints; the
+    ///   caller's own must match `view` as always. They follow the caller's lines in the batch, so one undo takes them
     ///   back with the change. `saved(_:asAsked:)` tells a caller's batch apart in what was saved.
     /// - An action the projection would refuse on the current state (a speaker or turn that does not exist, a split
     ///   at a turn's first word, a merge of a speaker into itself, a `newSpeaker` ID that exists or does not start
@@ -143,12 +142,11 @@ public enum SpeakerEditor {
             let at = Date()
             var edits: [SpeakerEdit] = []
             edits.reserveCapacity(actions.count)
-            // Same name, same person: a batch that names a speaker as another is named also merges them, and one on
-            // a speaker shown joined by name merges the joined ones first (`joiningSameNames`). Worked out on the
-            // current labels, read under this lock, not on the caller's view: two windows naming two speakers alike
-            // at once each see only their own speaker, and the second must still merge into the first. The lines it
-            // adds carry the current fingerprints; the caller's own lines must still match its view.
-            for (action, added) in base.projection.joiningSameNamesMarked(actions.map(cleaned)) {
+            // Same name, same person: an edit of a speaker shown joined by name reaches each stored speaker it shows
+            // (`fanningOut`). Worked out on the current labels, read under this lock, not on the caller's view, which
+            // may not show a speaker another window has since named alike. The lines it adds carry the current
+            // fingerprints; the caller's own lines must still match its view.
+            for (action, added) in base.projection.fanningOutMarked(actions.map(cleaned)) {
                 let expected = current.fingerprint(for: action)
                 guard added || viewState.fingerprint(for: action) == expected else { throw refusedStaleView(base.run) }
                 if case .revert(let target) = action,
@@ -307,45 +305,19 @@ public enum SpeakerEditor {
         return next.speakers == view.speakers && next.turns == view.turns && next.shownTurns == view.shownTurns
     }
 
-    /// Whether `saved` (a batch's actions in journal order) is `asked` as `apply` saves it: the same actions, with at
-    /// most what `SpeakerProjection.joiningSameNames` adds for same-named speakers (exclusions from voice learning,
-    /// merges and links, before and after them). For a caller that recognizes its own batch among the
-    /// lines it reads back.
+    /// Whether `saved` (a batch's actions in journal order) is `asked` as `apply` saves it: the same actions first,
+    /// then at most what `SpeakerProjection.fanningOut` adds for the stored speakers a joined speaker shows (renames,
+    /// links, rejections, merges). For a caller that recognizes its own batch among the lines it reads back.
     public static func saved(_ saved: [SpeakerEditAction], asAsked asked: [SpeakerEditAction]) -> Bool {
-        guard saved.count >= asked.count else { return false }
-        for start in 0...(saved.count - asked.count) where Array(saved[start..<(start + asked.count)]) == asked {
-            // Before them, also the link of a speaker shown joined to its group's person (never in a batch that
-            // links that speaker itself, so `withoutJoins` need not strip it).
-            if isJoinSuffix(saved[..<start]), isJoinSuffix(saved[(start + asked.count)...]) { return true }
-        }
-        return false
+        saved.count >= asked.count && Array(saved.prefix(asked.count)) == asked
+            && saved.dropFirst(asked.count).allSatisfy(isFannedOut)
     }
 
-    /// `saved` without what `SpeakerProjection.joiningSameNames` added around the asked actions: its leading merges and
-    /// exclusions, and its trailing merges, exclusions and links. For a caller whose asked batch starts with neither a
-    /// merge nor an exclusion and ends with a `rename` (a link's `linkProfile` + `rename` pairs).
-    public static func withoutJoins<Line>(_ saved: [Line], action: (Line) -> SpeakerEditAction) -> [Line] {
-        var lines = ArraySlice(saved)
-        while let first = lines.first, isJoinPrefix([action(first)]) { lines = lines.dropFirst() }
-        while let last = lines.last, isJoinSuffix([action(last)]) { lines = lines.dropLast() }
-        return Array(lines)
-    }
-
-    private static func isJoinPrefix(_ actions: some Collection<SpeakerEditAction>) -> Bool {
-        actions.allSatisfy {
-            switch $0 {
-            case .merge, .excludeFromEnrollment: true
-            default: false
-            }
-        }
-    }
-
-    private static func isJoinSuffix(_ actions: some Collection<SpeakerEditAction>) -> Bool {
-        actions.allSatisfy {
-            switch $0 {
-            case .merge, .excludeFromEnrollment, .linkProfile: true
-            default: false
-            }
+    /// Whether `action` is of a kind `SpeakerProjection.fanningOut` adds.
+    public static func isFannedOut(_ action: SpeakerEditAction) -> Bool {
+        switch action {
+        case .rename, .linkProfile, .rejectProfile, .merge: true
+        case .reassignTurns, .splitTurn, .newSpeaker, .excludeFromEnrollment, .revert: false
         }
     }
 

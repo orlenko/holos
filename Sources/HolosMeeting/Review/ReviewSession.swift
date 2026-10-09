@@ -1001,8 +1001,20 @@ public struct ReviewDeletedWords: Sendable, Equatable {
             var actions: [SpeakerEditAction] = [.rename(speakerID: speakerID, name: nil)]
             // A linked person, or the person an automatic name ("Jim (auto)") comes from, as "Not Jim" does: either
             // would otherwise keep showing its name.
-            if let profileID = speaker.profileID ?? automaticProfileID(for: speakerID) {
-                actions.append(.rejectProfile(speakerID: speakerID, profileID: profileID))
+            let shownPerson = speaker.profileID ?? automaticProfileID(for: speakerID)
+            if let shownPerson {
+                actions.append(.rejectProfile(speakerID: speakerID, profileID: shownPerson))
+            }
+            // Shown joined with same-named speakers: each is cleared (`fanningOut` repeats the above for them), and one
+            // linked to somebody else than the person shown is unlinked from them too, or that link would name it again.
+            if speaker.memberIDs.count > 1 {
+                let stored = projection.unjoined.speakers
+                for member in speaker.memberIDs.dropFirst() {
+                    guard let own = stored.first(where: { $0.id == member })?.profileID, own != shownPerson else {
+                        continue
+                    }
+                    actions.append(.rejectProfile(speakerID: member, profileID: own))
+                }
             }
             try await apply(actions)
             return
@@ -1899,12 +1911,12 @@ public struct ReviewDeletedWords: Sendable, Equatable {
     /// Queues a change at once (it runs once the changes before it ran); `wait` for its outcome.
     ///
     /// Every change is shown at once as `SpeakerEditor` will save it (an edit, a link, "This is me", Confirm All, an
-    /// assignment to a person): its actions with the merges that keep one speaker per name
-    /// (`SpeakerProjection.joiningSameNames`, which the editor applies to the saved batch too), worked out on the
-    /// labels shown now. Otherwise a rename of a speaker shown joined by name would show its other stored speaker
-    /// again until the save, and a change queued on that row meanwhile would name a speaker the save merges away.
+    /// assignment to a person): its actions made to each stored speaker a speaker shown joined by name shows
+    /// (`SpeakerProjection.fanningOut`, which the editor applies to the saved batch too), worked out on the labels
+    /// shown now. Otherwise renaming such a speaker would show its other stored speakers apart, under the old name,
+    /// until the save.
     private func queued(_ kind: Operation.Kind, optimistic: [SpeakerEditAction]) -> Operation {
-        let shown = optimistic.isEmpty ? [] : projection.joiningSameNames(optimistic)
+        let shown = optimistic.isEmpty ? [] : projection.fanningOut(optimistic)
         let op = Operation(kind: kind, basis: savedVersion, runID: snapshot.run?.id, optimistic: shown)
         op.movesSeen = wordMoves.count
         // A newer change: voice samples wait for it (`holdSampleSync`); exports alone change no label.
@@ -3699,39 +3711,33 @@ public struct ReviewDeletedWords: Sendable, Equatable {
         text.split(whereSeparator: { $0.isWhitespace || $0.isNewline }).joined(separator: " ")
     }
 
-    /// linkProfile + rename of `speakerID` (a link, "This is me"), with the merges of same-named speakers the editor
-    /// may add around them (`SpeakerEditor.saved(_:asAsked:)`).
-    /// With `first` ("Assign to <person>"), that action comes before them in the same batch.
+    /// linkProfile + rename of `speakerID` (a link, "This is me"), then what the editor adds for the stored speakers
+    /// it shows joined by name (`SpeakerEditor.saved(_:asAsked:)`). With `first` ("Assign to <person>"), that action
+    /// comes before them in the same batch.
     private nonisolated static func linkBatch(_ speakerID: String,
                                               after first: SpeakerEditAction? = nil) -> ([SpeakerEdit]) -> Bool {
         { saved in
-            var batch = withoutMerges(saved)
+            var batch = saved.map(\.action)
             if let first {
-                guard batch.first?.action == first else { return false }
+                guard batch.first == first else { return false }
                 batch.removeFirst()
             }
-            guard batch.count == 2,
-                  case .linkProfile(let linked, _) = batch[0].action, linked == speakerID,
-                  case .rename(let renamed, _) = batch[1].action, renamed == speakerID else { return false }
-            return true
+            guard batch.count >= 2,
+                  case .linkProfile(let linked, _) = batch[0], linked == speakerID,
+                  case .rename(let renamed, _) = batch[1], renamed == speakerID else { return false }
+            return batch.dropFirst(2).allSatisfy(SpeakerEditor.isFannedOut)
         }
     }
 
-    /// linkProfile + rename pairs (Confirm All), with the merges of same-named speakers the editor may add.
+    /// linkProfile + rename pairs (Confirm All); the editor's additions for the stored speakers a joined speaker shows
+    /// are such pairs too.
     private nonisolated static func confirmBatch(_ saved: [SpeakerEdit]) -> Bool {
-        let batch = withoutMerges(saved)
-        guard !batch.isEmpty, batch.count % 2 == 0 else { return false }
-        return stride(from: 0, to: batch.count, by: 2).allSatisfy { index in
-            guard case .linkProfile(let linked, _) = batch[index].action,
-                  case .rename(let renamed, _) = batch[index + 1].action else { return false }
+        guard !saved.isEmpty, saved.count % 2 == 0 else { return false }
+        return stride(from: 0, to: saved.count, by: 2).allSatisfy { index in
+            guard case .linkProfile(let linked, _) = saved[index].action,
+                  case .rename(let renamed, _) = saved[index + 1].action else { return false }
             return linked == renamed
         }
-    }
-
-    /// A saved link batch without the editor's joins of same-named speakers around it (`SpeakerEditor.withoutJoins`):
-    /// merges before it, merges and the kept person's link after it.
-    private nonisolated static func withoutMerges(_ batch: [SpeakerEdit]) -> [SpeakerEdit] {
-        SpeakerEditor.withoutJoins(batch, action: \.action)
     }
 
     // MARK: - Loading (off the main actor)

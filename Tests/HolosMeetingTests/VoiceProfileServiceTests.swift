@@ -871,6 +871,28 @@ func forgettingOneOfTwoPeopleShownAsOneSpeakerRemovesOnlyTheirVoiceData() async 
 }
 
 @Test(.timeLimit(.minutes(1)))
+func renamingTheSpeakerShownForTwoPeopleKeepsEachPersonsVoiceTheirs() async throws {
+    // The shown "Alex" (mic:S1 and mic:S2) is renamed: each stored speaker is renamed and keeps its own person, so
+    // forgetting the second Alex afterwards still removes exactly that Alex's voice data.
+    let temp = try TemporaryDirectory("profiles")
+    defer { temp.remove() }
+    let store = profileStore(temp)
+    let (session, runID) = try await profileTwoAlexes(temp, store: store)
+    try SpeakerEditor.apply([.rename(speakerID: "mic:S1", name: "Alexander")], view: try SessionFixtures.view(session),
+                            session: session, source: "cli", regenerateExports: false)
+    let stored = try SessionFixtures.view(session).unjoined.speakers
+    #expect(stored.map(\.id) == ["mic:S1", "mic:S2"])
+    #expect(stored.map(\.profileID) == ["ALEX-1", "ALEX-2"])
+    #expect(stored.map(\.name) == ["Alexander", "Alexander"])
+
+    try VoiceProfileService.forget(profileID: "ALEX-2", store: store, sessionsRoot: temp.url)
+
+    let voice = try #require(try SessionSpeakerStore.readVoiceData(runID: runID, session: session))
+    #expect(Array(voice.centroids.keys) == ["mic:S1"])
+    #expect(voice.turnEmbeddings.map(\.turnID).sorted() == ["T1", "T3"])
+}
+
+@Test(.timeLimit(.minutes(1)))
 func forgetAllRemovesVoiceFilesKeepsNames() async throws {
     let temp = try TemporaryDirectory("profiles")
     defer { temp.remove() }

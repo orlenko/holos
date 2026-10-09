@@ -180,7 +180,7 @@ public enum VoiceProfileService {
         guard let database = try? store.load(), let sessionID = try? SessionArchive.readManifest(at: session).id,
               database.profiles.contains(where: { $0.samples.contains { $0.sessionID == sessionID } }),
               let snapshot = try? SpeakerSessionSnapshot.load(session: session), snapshot.journal.isComplete,
-              let run = snapshot.run, let projection = snapshot.projection,
+              let run = snapshot.run, let projection = snapshot.projection?.unjoined,
               let earlierRuns = try? earlierRunViews(database, snapshot: snapshot, headRunID: run.id) else {
             return false
         }
@@ -950,7 +950,9 @@ public enum VoiceProfileService {
                 }
                 return
             }
-            guard let run = snapshot.run, let projection = snapshot.projection else {
+            // Voice belongs to each stored speaker's person: samples are learned per stored speaker, never through
+            // same-named speakers shown as one (`SpeakerProjection.unjoined`).
+            guard let run = snapshot.run, let projection = snapshot.projection?.unjoined else {
                 log.notice("Session \(sessionID, privacy: .public): no usable speaker labels; voice samples left as they are")
                 guard enroll.isEmpty else {
                     throw HolosError.unavailable(snapshot.runProblem
@@ -1219,7 +1221,8 @@ public enum VoiceProfileService {
                     let masks: [AcousticEchoMask?] = result.mask == nil ? [nil] : [result.mask, nil]
                     result.retargeted[runID] = masks.map { mask in
                         SpeakerProjection.make(run: run, transcript: transcript, edits: snapshot.journal.edits,
-                                               recognition: nil, profileNames: [:], acousticEcho: mask)
+                                               recognition: nil, profileNames: [:], acousticEcho: mask,
+                                               joiningSameNames: false)
                     }
                 } catch let error where SessionFiles.isDamage(error) {}
                 continue
@@ -1229,7 +1232,8 @@ public enum VoiceProfileService {
                 let transcript = try SessionFiles.transcript(id: run.transcriptID, session: snapshot.session)
                 result.views[runID] = SpeakerProjection.make(run: run, transcript: transcript,
                                                              edits: snapshot.journal.edits, recognition: nil,
-                                                             profileNames: [:], acousticEcho: result.mask)
+                                                             profileNames: [:], acousticEcho: result.mask,
+                                                             joiningSameNames: false)
             } catch let error where SessionFiles.isDamage(error) {
                 result.views[runID] = .some(nil)
             }
@@ -1333,6 +1337,9 @@ public enum VoiceProfileService {
             log.error("Cannot read people to check voice samples: \(ProcessSpawner.logCategory(error), privacy: .public)")
             return true
         }
+        // Per stored speaker, as samples are learned (`SpeakerProjection.unjoined`).
+        let before = before.unjoined
+        let after = after.unjoined
         for profile in database.profiles {
             guard let sample = profile.samples.first(where: { $0.sessionID == sessionID }) else { continue }
             let old = linkedSpeakers(profile.id, sample: sample, projection: before, database: database)
@@ -1687,20 +1694,21 @@ public enum VoiceProfileService {
                                           uniquingKeysWith: { first, _ in first })
             if let forgotten { profileNames[forgotten] = profileNames[forgotten] ?? "(forgotten)" }
             projection = SpeakerProjection.make(run: run, transcript: transcript, edits: journal.edits,
-                                                recognition: recognition, profileNames: profileNames)
+                                                recognition: recognition, profileNames: profileNames,
+                                                joiningSameNames: false)
         } catch let error where SessionFiles.isDamage(error) || Self.isFromANewerHolos(error) {
             log.error("Deleted a meeting's voice data whose speaker labels cannot be read")
             try SessionSpeakerStore.deleteVoiceData(session: session)
             return false
         }
         // The effective person, not just the link: a speaker this meeting names automatically is theirs too, and
-        // a rejection, a link to somebody else or an explicit name has already taken that back. Per stored speaker,
-        // before same-named speakers are shown as one (`unjoinedSpeakers`): two joined speakers linked to two people
-        // each hold that person's voice, and forgetting one must take exactly theirs.
-        let speakers = projection.unjoinedSpeakers.filter { isThePerson($0.effectiveProfileID) }
+        // a rejection, a link to somebody else or an explicit name has already taken that back. Per stored speaker
+        // (the projection is built unjoined): same-named speakers linked to two people each hold that person's voice,
+        // and forgetting one must take exactly theirs.
+        let speakers = projection.speakers.filter { isThePerson($0.effectiveProfileID) }
         let speakerIDs = Set(speakers.map(\.id))
         let clusters = Set(speakers.flatMap(\.clusterIDs))
-        let spoken = projection.unjoinedTurns.filter { $0.speakerID.map(speakerIDs.contains) ?? false }
+        let spoken = projection.turns.filter { $0.speakerID.map(speakerIDs.contains) ?? false }
         let turns = Set(spoken.map { String($0.id.prefix { $0 != "/" }) })
         // A centroid is the machine's average of its cluster's speech. When the user moved a turn of this person to
         // a speaker that does not own its cluster (a reassignment, or a speaker the user made), that cluster's

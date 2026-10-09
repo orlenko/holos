@@ -648,11 +648,12 @@ func nameFieldLinksOrCreatesPeople() async throws {
     #expect(review.speaker("system:S1")?.profileID == jim.id)
     #expect(review.knownPeople().map(\.id) == [jim.id])
 
-    // A known name, typed in another case, links the same person, and so (same name, same person) merges S2 into
-    // S1 in the same change: their talk times tie and S1 comes first.
+    // A known name, typed in another case, links the same person; S2 is then called Jim as S1 is, so the two are
+    // shown as one (S1, the lower ordinal). Nothing is merged.
     try await review.setName("jim", speakerID: "system:S2")
     #expect(try store.load().profiles.count == 1)
-    #expect(try reviewJournal(fixture.session).last?.action == .merge(from: "system:S2", into: "system:S1"))
+    #expect(try reviewJournal(fixture.session).last?.action == .rename(speakerID: "system:S2", name: "Jim"))
+    #expect(review.speaker("system:S1")?.memberIDs == ["system:S1", "system:S2"])
     #expect(review.speaker("system:S2") == nil)
     #expect(review.speaker("system:S1")?.profileID == jim.id)
     #expect(review.projection.turns.first { $0.id == "T2" }?.speakerID == "system:S1")
@@ -707,8 +708,8 @@ func sameNewNameWhileTheFirstIsSavingMakesOnePerson() async throws {
     #expect(review.speaker("system:S2") == nil)
     #expect(review.projection.mergeSuggestions.isEmpty)
     let lines = try reviewJournal(fixture.session)
-    #expect(lines.count == 5, "Two links of two lines each and the merge they called for; Return again saved nothing.")
-    #expect(lines.last?.action == .merge(from: "system:S2", into: "system:S1"))
+    #expect(lines.count == 4, "Two links of two lines each; Return again saved nothing.")
+    #expect(!lines.contains { if case .merge = $0.action { true } else { false } })
     #expect(review.snapshot.projection == review.projection)
 }
 

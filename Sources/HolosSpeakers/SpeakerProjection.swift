@@ -164,12 +164,20 @@ public struct SpeakerProjection: Sendable, Equatable {
     public let shownTurns: [ProjectedTurn]
     /// `shownTurns` with the hidden interjections too (Review's "Show Short Interjections").
     public let shownTurnsWithHidden: [ProjectedTurn]
-    /// `speakers` and `turns` before same-named speakers are joined (`SameNameSpeakers`): every stored speaker with
-    /// its own link, clusters and turns. Voice data (forgetting a person's entries) reads these, since a meeting's
-    /// voice belongs to the person each stored speaker was linked to, not to whom the joined speaker shows. Equal to
-    /// `speakers` and `turns` when nobody shares a name.
-    public let unjoinedSpeakers: [ProjectedSpeaker]
-    public let unjoinedTurns: [ProjectedTurn]
+    /// Whether same-named speakers are listed as one (`SameNameSpeakers`); false in `unjoined`.
+    public var joinsSameNames: Bool { context.joinsSameNames }
+
+    /// This projection with every stored speaker listed as itself, with its own link, clusters and turns: same-named
+    /// speakers are not joined. Voice data reads it (learning a person's sample, forgetting a person's entries),
+    /// since a meeting's voice belongs to the person each stored speaker is linked to, not to whom a joined speaker
+    /// shows. `self` when it is already unjoined.
+    public var unjoined: SpeakerProjection {
+        guard context.joinsSameNames else { return self }
+        var separate = context
+        separate.joinsSameNames = false
+        return SpeakerProjection(context: separate, journal: journal, outcomes: outcomes, state: state,
+                                 otherRunEditCount: otherRunEditCount)
+    }
 
     /// `shownTurns`, or `shownTurnsWithHidden` when `includingHidden`.
     public func shownTurns(includingHidden: Bool) -> [ProjectedTurn] {
@@ -217,13 +225,15 @@ public struct SpeakerProjection: Sendable, Equatable {
     /// whose names match (`SameNameSpeakers`: the names the user gave and the channel's, read from the journal alone,
     /// never links or `profileNames`; never "Speaker N" or an automatic name) are listed as one, which
     /// `turns` gives their turns to (`ProjectedSpeaker.memberIDs`); edits and fingerprints still see each stored
-    /// speaker.
+    /// speaker. Display only: the journal keeps them separate (`unjoined`, or `joiningSameNames: false`).
     /// `recognition` matches whose profileID is not in `profileNames` (forgotten people) are ignored.
     public static func make(run: DiarizationRun, transcript: Transcript, edits: [SpeakerEdit],
                             recognition: RecognitionResult?, profileNames: [String: String],
-                            acousticEcho: AcousticEchoMask? = nil) -> SpeakerProjection {
-        let context = Context(run: run, transcript: transcript, recognition: recognition, profileNames: profileNames,
+                            acousticEcho: AcousticEchoMask? = nil,
+                            joiningSameNames: Bool = true) -> SpeakerProjection {
+        var context = Context(run: run, transcript: transcript, recognition: recognition, profileNames: profileNames,
                               acousticEcho: acousticEcho)
+        context.joinsSameNames = joiningSameNames
         var journal: [JournalEntry] = []
         var otherRunEditCount = 0
         for edit in edits {
@@ -342,8 +352,6 @@ public struct SpeakerProjection: Sendable, Equatable {
         let projected = state.project(context: context)
         speakers = projected.speakers
         turns = projected.turns
-        unjoinedSpeakers = projected.unjoinedSpeakers
-        unjoinedTurns = projected.unjoinedTurns
         mergeSuggestions = projected.mergeSuggestions
 
         // Step 7 (§5.10): short interjections, on the turns as shown (after the echo mask). A turn the user assigned
@@ -483,6 +491,8 @@ extension SpeakerProjection {
         let transcript: Transcript
         /// Profile ID → current name, for names that are not blank.
         let profileNames: [String: String]
+        /// Same-named speakers are listed as one (`SameNameSpeakers`); false for `SpeakerProjection.unjoined`.
+        var joinsSameNames = true
         /// Matches of known profiles by machine speaker, in file order, with current profile names. Empty when the
         /// recognition belongs to another run.
         let matches: [String: [SpeakerMatch]]
@@ -896,7 +906,6 @@ extension SpeakerProjection {
         // MARK: Step 5 and output
 
         func project(context: Context) -> (speakers: [ProjectedSpeaker], turns: [ProjectedTurn],
-                                           unjoinedSpeakers: [ProjectedSpeaker], unjoinedTurns: [ProjectedTurn],
                                            mergeSuggestions: [MergeSuggestion]) {
             var turnCounts: [String: Int] = [:]
             var talk: [String: Double] = [:]
@@ -953,17 +962,15 @@ extension SpeakerProjection {
                 describe($0, talk: talk[$0.id] ?? 0, turns: turnCounts[$0.id] ?? 0, memberIDs: nil, context: context)
             }
 
-            // Same name, same person (`SameNameSpeakers.joins`): stored speakers whose names match are
-            // listed as the lowest-ordinal one, with all their turns. From the journal's state alone.
-            let joins = SameNameSpeakers.joins(speakers, turns: turns)
+            // Same name, same person (`SameNameSpeakers.joins`): stored speakers whose names match are listed as the
+            // lowest-ordinal one, with all their turns. From the journal's state alone; display only.
+            let joins = context.joinsSameNames ? SameNameSpeakers.joins(speakers, turns: turns) : .init()
             guard !joins.isEmpty else {
-                return (unjoined, projectedTurns, unjoined, projectedTurns,
-                        mergeSuggestions(listed: unjoined, context: context))
+                return (unjoined, projectedTurns, mergeSuggestions(listed: unjoined, context: context))
             }
             let joinedTurns = projectedTurns.map { turn in
                 guard let speakerID = turn.speakerID, let target = joins.into[speakerID] else { return turn }
-                return turn.given(to: target,
-                                  excluded: turn.excludedFromEnrollment || joins.otherPerson.contains(speakerID))
+                return turn.given(to: target)
             }
             let shownIDs = Set(listed.map(\.id))
             var joined: [ProjectedSpeaker] = []
@@ -975,7 +982,7 @@ extension SpeakerProjection {
                     continue
                 }
                 guard members.contains(where: shownIDs.contains) else { continue }
-                // As a merge of the others into it, then a link of it to the person they are, would leave it.
+                // Shown with the group's person, clusters, talk time and turns.
                 var merged = speaker
                 merged.profileID = joins.person[speaker.id]
                 for member in members.dropFirst() {
@@ -987,7 +994,7 @@ extension SpeakerProjection {
                                        turns: members.reduce(0) { $0 + (turnCounts[$1] ?? 0) },
                                        memberIDs: members, context: context))
             }
-            return (joined, joinedTurns, unjoined, projectedTurns, mergeSuggestions(listed: joined, context: context))
+            return (joined, joinedTurns, mergeSuggestions(listed: joined, context: context))
         }
 
         /// A listed speaker as shown: step 5's name and provenance, with its talk time and turn count.
