@@ -143,12 +143,8 @@ public enum NaturalVoiceModels {
                              notice: @Sendable (String) -> Void,
                              progress: @escaping @Sendable (Double) -> Void) async throws {
         let directory = directory(root: root, pack: pack)
-        if !force, isInstalled(root: root, pack: pack) {
-            finish(pack, directory)
-            notice("The \(pack.languageName) natural voices are already installed.")
-            progress(1)
-            return
-        }
+        // The lock first, also for a pack that looks installed: a forced reinstall in another process may be about to
+        // remove it, and "already installed" is only true once no install runs.
         try ensurePrivateDirectory(root)
         let lock = try InstallLock(path: lockPath(root: root, pack: pack), pack: pack)
         defer { lock.release() }
