@@ -97,7 +97,7 @@ public struct NaturalVoice: Sendable, Equatable {
     }
 }
 
-/// The natural voices Voice is Local knows, and which of them it offers (docs/design.md "Natural voices").
+/// The natural voices Voice is Local knows, and which of them it offers (Sources/HolosSynthesis/README.md).
 ///
 /// Each voice's licence is the licence of the recording its prompt was made from (Kyutai's model card maps voices to
 /// recordings; the tts-voices repository gives each recording's licence). The weights themselves are CC BY 4.0

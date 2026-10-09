@@ -4,7 +4,7 @@ import HolosPocket
 import HolosSynthesis
 import Synchronization
 
-// The natural voices in the `voiceislocal` tool (docs/design.md "Natural voices"): the setup of the language packs.
+// The natural voices in the `voiceislocal` tool (Sources/HolosSynthesis/README.md): the setup of the language packs.
 
 /// `voiceislocal setup --natural-voices`.
 enum NaturalVoiceSetup {
