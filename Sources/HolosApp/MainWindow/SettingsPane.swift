@@ -10,7 +10,7 @@ import HolosSynthesis
 /// field above the page shows only the settings that match (`SettingsSearch`).
 @MainActor
 final class SettingsPane: NSViewController, MainSectionContent, NSSearchFieldDelegate {
-    private enum Mark { case done, pending, problem }
+    enum Mark { case done, pending, problem }
     private struct Row {
         let icon: NSImageView
         let title: NSTextField
@@ -85,10 +85,11 @@ final class SettingsPane: NSViewController, MainSectionContent, NSSearchFieldDel
         target: nil, action: nil)
     private static let meetingSummariesTitle = "Title and summarize meetings with Apple Intelligence (on-device)"
     private let meetingSummariesToggle = NSButton(checkboxWithTitle: meetingSummariesTitle, target: nil, action: nil)
-    private let readingVoicePopup = NSPopUpButton(frame: .zero, pullsDown: false)
+    let readingVoicePopup = NSPopUpButton(frame: .zero, pullsDown: false)
     private let readingSpeedSlider = NSSlider(value: ReadingSpeed.standard, minValue: ReadingSpeed.range.lowerBound,
                                               maxValue: ReadingSpeed.range.upperBound, target: nil, action: nil)
     private let readingSpeedLabel = NSTextField(labelWithString: "")
+    var shownNaturalVoices: Set<NaturalVoicePack> = []  // the packs the reading card's menu was last filled with
     private var readingFolderDetail: NSTextField?
     private let historyAudioToggle = NSButton(
         checkboxWithTitle: "Keep the audio of dictations (for Run Again)", target: nil, action: nil)
@@ -417,9 +418,7 @@ final class SettingsPane: NSViewController, MainSectionContent, NSSearchFieldDel
         readingVoicePopup.target = self
         readingVoicePopup.action = #selector(readingVoiceChosen(_:))
         readingVoicePopup.setAccessibilityLabel("Default reading voice")
-        addControlRow(.reading, "person.wave.2", "Voice", "Premium voices sound best; add them in System Settings › "
-                      + "Accessibility › Spoken Content",
-                      keywords: ["reading voice", "text to speech", "tts", "premium", "siri"],
+        addControlRow(.reading, "person.wave.2", "Voice", Self.readingVoiceHint, keywords: Self.readingVoiceKeywords,
                       control: readingVoicePopup, to: grid)
 
         readingSpeedSlider.numberOfTickMarks = 7
@@ -435,6 +434,8 @@ final class SettingsPane: NSViewController, MainSectionContent, NSSearchFieldDel
                       keywords: ["rate", "pace", "faster", "slower", "reading speed"], control: speed,
                       focus: readingSpeedSlider, to: grid)
 
+        addNaturalVoiceRows(to: grid)
+
         let (text, _, detail) = Self.labels("Save audio files in")
         readingFolderDetail = detail
         let icon = NSImageView(image: NSImage(systemSymbolName: "folder", accessibilityDescription: nil) ?? NSImage())
@@ -449,17 +450,14 @@ final class SettingsPane: NSViewController, MainSectionContent, NSSearchFieldDel
             title: "Save audio files in", keywords: ["folder", "location", "output", "music", "files"]),
             liveCaption: detail, grid: grid, gridAnchor: icon, focus: choose))
 
-        let note = Self.note("""
-            Readings are made on this Mac: nothing is uploaded, and the only thing fetched is the page you paste. \
-            While a reading is made, its parts are kept in Application Support so it can continue after a stop.
-            """)
+        let note = Self.note(Self.readingNote)
         addItem(.reading, "", caption: note.stringValue, keywords: [], views: [note], focus: nil)
         refreshReadingCard()
         return card(.reading, [grid, note], widths: [grid, note])
     }
 
     /// Shows Settings › Reading as saved (and the voices installed now).
-    private func refreshReadingCard() {
+    func refreshReadingCard() {
         ReadingVoicePopup.fill(readingVoicePopup, selecting: ReadingPreferences.voice)
         readingSpeedSlider.doubleValue = ReadingPreferences.speed
         readingSpeedLabel.stringValue = ReadingSpeed.label(readingSpeedSlider.doubleValue)
@@ -633,7 +631,7 @@ final class SettingsPane: NSViewController, MainSectionContent, NSSearchFieldDel
     }
 
     /// A status row (`addRow`): its title and detail line as shown when searched.
-    private func addRowItem(_ chapter: SettingsChapter, _ action: SetupAction, title: String? = nil,
+    func addRowItem(_ chapter: SettingsChapter, _ action: SetupAction, title: String? = nil,
                             keywords: [String]) {
         guard let row = rows[action] else { return }
         let titleLabel = row.title
@@ -652,7 +650,7 @@ final class SettingsPane: NSViewController, MainSectionContent, NSSearchFieldDel
     }
 
     /// A status row: icon, bold title over a detail line, and a button with an optional link under it (`set`).
-    private func addRow(_ action: SetupAction, _ title: String, to grid: NSGridView) {
+    func addRow(_ action: SetupAction, _ title: String, to grid: NSGridView) {
         let icon = NSImageView()
         icon.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 17, weight: .regular)
         let (text, titleLabel, detail) = Self.labels(title)
@@ -899,6 +897,8 @@ final class SettingsPane: NSViewController, MainSectionContent, NSSearchFieldDel
             set(.deepTranscriptionModel, .pending, "Checking…", button: download, enabled: false)
         }
 
+        showNaturalVoices(state)
+
         let count = state.historyCount
         let kept = state.historyUnreadable ? "History could not be read; it may still keep dictations on this Mac"
             : count == 0 ? "No dictations kept"
@@ -995,7 +995,7 @@ final class SettingsPane: NSViewController, MainSectionContent, NSSearchFieldDel
     }
 
     /// `sends`: the action the button reports (the row's own by default); `link`: the link under it, if any.
-    private func set(_ action: SetupAction, _ mark: Mark, _ detail: String, button title: String?, enabled: Bool = true,
+    func set(_ action: SetupAction, _ mark: Mark, _ detail: String, button title: String?, enabled: Bool = true,
                      sends: SetupAction? = nil, link: (title: String, sends: SetupAction)? = nil) {
         guard let row = rows[action] else { return }
         let (symbol, color): (String, NSColor) = switch mark {

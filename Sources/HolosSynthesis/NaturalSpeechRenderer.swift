@@ -23,8 +23,9 @@ public protocol SpeechChunkChecker: Sendable {
 }
 
 /// What a natural rendering depends on besides its voice, text, and speed: the system voice a failed paragraph is
-/// read with, and whether paragraphs are checked. A reading saves them when it starts and renders every part with
-/// them, so a resumed reading does not mix fallback voices or check policies.
+/// read with, and whether paragraphs are checked. A reading keeps them in its manifest when it starts
+/// (`ReadingManifest.rendererSettings`) and gives them back for every part (`render(…settings:)`; the app's parts pass
+/// them as `say --fallback-voice`, `--check`), so a resumed reading does not mix fallback voices or check policies.
 public struct NaturalRenderSettings: Codable, Sendable, Equatable {
     public var fallbackVoice: String?
     public var checked: Bool
@@ -34,7 +35,7 @@ public struct NaturalRenderSettings: Codable, Sendable, Equatable {
         self.checked = checked
     }
 
-    /// As a reading's manifest keeps a renderer's settings.
+    /// As strings, to keep with a caller's own data.
     public var values: [String: String] {
         var values = ["check": checked ? "on" : "off"]
         if let fallbackVoice { values["fallbackVoice"] = fallbackVoice }
@@ -150,7 +151,7 @@ public enum NaturalSpeechPlan {
     }
 }
 
-/// What happened to one paragraph of a natural reading.
+/// What happened to one paragraph of a natural rendering.
 public enum NaturalSpeechEvent: Sendable, Equatable {
     /// The paragraph passed (or failed) the check; `take` 1 is the first render, 2 the re-render.
     case checked(paragraph: Int, take: Int, verdict: SpeechChunkCheck.Verdict, seconds: Double)
@@ -172,8 +173,9 @@ public struct NaturalSpeechStats: Sendable, Equatable {
     public var fallbacks = 0
 }
 
-/// Renders text with a natural voice into one audio file (a reading's part, or `voiceislocal say -o`), paragraph by
-/// paragraph (see `NaturalSpeechPlan`), each with the same fixed seed so a resumed reading sounds as it would have.
+/// Renders text with a natural voice into one audio file (`voiceislocal say`, a part of `voiceislocal read`; the app's
+/// parts go through `say`), paragraph by paragraph (see
+/// `NaturalSpeechPlan`), each with the same fixed seed so the same text always sounds the same.
 /// Each paragraph is heard back (`SpeechChunkCheck`) when a checker is given: one that fails is rendered again with
 /// another seed, and one that fails again is read by a system voice (`ParagraphFallback`), and logged.
 ///
@@ -195,7 +197,7 @@ public struct NaturalSpeechStats: Sendable, Equatable {
     private let backend: any NaturalSpeechBackend
     private let checker: (any SpeechChunkChecker)?
     /// Whether a rendering without saved settings is checked (`HOLOS_NATURAL_CHECK=0` turns it off in the tool). The
-    /// checker is there either way, so a reading that saved "check on" is checked whatever the default is now.
+    /// checker is there either way, so settings given with the check on are honoured whatever the default is.
     private let checksByDefault: Bool
     private let fallback: any ParagraphFallback
     private let installedPacks: @Sendable () -> Set<NaturalVoicePack>
@@ -263,7 +265,7 @@ public struct NaturalSpeechStats: Sendable, Equatable {
         try await render(text: text, voiceIdentifier: voiceIdentifier, rate: rate, settings: nil, to: output)
     }
 
-    /// `settings`: those a reading saved when it started (nil: the current ones, `settings(for:)`).
+    /// `settings`: those a caller kept from an earlier run (nil: the current ones, `settings(for:)`).
     public func render(text: String, voiceIdentifier: String?, rate: Float?, settings: NaturalRenderSettings?,
                        to output: URL) async throws -> RenderedAudio {
         guard let voiceIdentifier else { throw HolosError.invalidInput("A natural voice must be named.") }
@@ -280,9 +282,6 @@ public struct NaturalSpeechStats: Sendable, Equatable {
         guard ["wav", "caf", "m4a"].contains(ext) else {
             throw HolosError.invalidInput("Unsupported speech output format .\(ext); use wav, caf, or m4a.")
         }
-        guard !FileManager.default.fileExists(atPath: output.path) else {
-            throw HolosError.invalidInput("Speech output already exists: \(output.path)")
-        }
         try SpeechRate.validate(rate)
         let speed = NaturalSpeechSpeed.factor(rate: rate)
         var stats = NaturalSpeechStats()
@@ -293,7 +292,7 @@ public struct NaturalSpeechStats: Sendable, Equatable {
             .appendingPathComponent(".holos-\(UUID().uuidString).\(ext)")
         defer { _ = unlink(temporary.path) }
         // The file is written, and each paragraph time-stretched, off the main actor (`NaturalSpeechSink`).
-        let sink = try await NaturalSpeechSink.open(temporary, sampleRate: Self.sampleRate)
+        let sink = try await NaturalSpeechSink.open(temporary, refusing: output, sampleRate: Self.sampleRate)
         for block in blocks {
             try Task.checkCancellation()
             // Events and the log name the part's paragraph (a long one's groups share its number).
@@ -389,6 +388,11 @@ public struct NaturalSpeechStats: Sendable, Equatable {
 }
 
 /// Whether the render publishing a file was cancelled: set by its cancellation handler, read by the copy.
+///
+/// Invariants:
+/// 1. The flag only goes from false to true, once; nothing clears it.
+/// 2. The cancellation handler is the one writer (`request`); the detached publication only reads it (`requested`),
+///    before the exclusive rename and between the copy's chunks.
 private final class PublicationStop: Sendable {
     private let flag = Mutex(false)
     var requested: Bool { flag.withLock { $0 } }
@@ -401,8 +405,8 @@ extension Duration {
 
 /// Reads a paragraph with the best system voice for its language, converted to the natural voice's format.
 @MainActor public final class NativeParagraphFallback: ParagraphFallback {
-    /// Where its temporary folders go: the scratch folder the app gives `voiceislocal say`, so stopping the tool and
-    /// deleting that folder leaves nothing behind.
+    /// Where its temporary folders go: the folder `say --scratch-directory` names, so deleting that folder leaves
+    /// nothing behind.
     private let temporaryRoot: URL
 
     public init(temporaryRoot: URL = FileManager.default.temporaryDirectory) {
@@ -413,28 +417,52 @@ extension Duration {
         NativeSpeechRenderer.bestVoice(language: language)?.id
     }
 
-    /// The voice asked for (a reading's saved one), else the best one for `language` now. A voice asked for that is no
-    /// longer installed fails, naming it: a reading never switches its fallback voice silently.
+    /// The voice asked for (the caller's settings), else the best one for `language` now. A voice asked for that is no
+    /// longer installed fails, naming it: a render never switches its fallback voice silently.
     public func samples(for text: String, voice chosen: String?, language: String, sampleRate: Double) async throws
         -> (samples: [Float], voice: String) {
         let installed = NativeSpeechRenderer.voices()
         if let chosen, !installed.contains(where: { $0.id == chosen }) {
-            throw HolosError.unavailable("A paragraph the natural voice could not read needs the system voice this "
-                + "reading was started with (\(chosen)), which is not installed any more. Install it again in System "
-                + "Settings › Accessibility › Spoken Content, or make the reading again.")
+            throw HolosError.unavailable("A paragraph the natural voice could not read needs the system voice "
+                + "\(chosen), which is not installed any more. Install it again in System Settings › Accessibility › "
+                + "Spoken Content.")
         }
         guard let voice = chosen.flatMap({ id in installed.first { $0.id == id } })
                 ?? NativeSpeechRenderer.bestVoice(language: language) else {
             throw HolosError.unavailable("No system voice speaks \(language) to read a paragraph the natural voice "
                 + "could not.")
         }
+        // The folder is made and removed, and the speech read and resampled, off the main actor. The removal is
+        // awaited before this returns or throws, so a short `say --output` cannot exit and leave the folder behind.
         let folder = temporaryRoot.appendingPathComponent("holos-fallback-\(UUID().uuidString)", isDirectory: true)
-        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: false,
-                                                attributes: [.posixPermissions: 0o700])
-        defer { try? FileManager.default.removeItem(at: folder) }
-        let rendered = try await NativeSpeechRenderer().render(text: text, voiceIdentifier: voice.id, rate: nil,
-                                                               to: folder.appendingPathComponent("speech.caf"))
-        return (try AudioSamples.mono(from: rendered.url, sampleRate: sampleRate), voice.name)
+        try await Task.detached(priority: .userInitiated) {
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: false,
+                                                    attributes: [.posixPermissions: 0o700])
+        }.value
+        let outcome: Result<[Float], any Error>
+        do {
+            let rendered = try await NativeSpeechRenderer().render(text: text, voiceIdentifier: voice.id, rate: nil,
+                                                                   to: folder.appendingPathComponent("speech.caf"))
+            outcome = .success(try await Task.detached(priority: .userInitiated) {
+                try AudioSamples.mono(from: rendered.url, sampleRate: sampleRate)
+            }.value)
+        } catch {
+            outcome = .failure(error)
+        }
+        await Self.remove(folder)
+        return (try outcome.get(), voice.name)
+    }
+
+    /// Removes a fallback folder off the main actor; a failure is logged, since the samples are already read.
+    private static func remove(_ folder: URL) async {
+        await Task.detached(priority: .userInitiated) {
+            do {
+                try FileManager.default.removeItem(at: folder)
+            } catch {
+                Logger(subsystem: "ca.orlenko.holos.app", category: "reading")
+                    .error("Could not remove a fallback folder: \(error.localizedDescription, privacy: .public)")
+            }
+        }.value
     }
 }
 
@@ -494,7 +522,7 @@ public enum AudioSamples {
 /// a SIGKILL): removed once they are a day old, so a folder in use is never removed. `voiceislocal` sweeps whenever it
 /// makes a natural voice renderer (`NaturalVoicesCLI.renderer`).
 public enum NaturalVoiceTemporaries {
-    /// The prefixes of the folders the app and the `voiceislocal` tool make for natural voices.
+    /// The prefixes of natural voices' temporary folders (`voiceislocal`'s own, and its callers' scratch folders).
     public static let prefixes = ["holos-natural-", "holos-preview-", "holos-check-", "holos-fallback-"]
     public static let maximumAge: TimeInterval = 24 * 60 * 60
 

@@ -33,10 +33,9 @@ recorder ↔ app protocol.
 - `BackgroundJobs/`: `BackgroundJobCoordinator` (`@MainActor`) runs the app's background jobs on meetings one at a
   time: it probes `DeepTranscriptionLock`, applies the holds (a meeting starting, recording or saving; meetings in
   use or under review), orders the kinds' picks (`BackgroundJobOrder`, pure: asked-for work, then catch-up, then
-  automatic work), stops its job when a meeting starts, and retries what was turned down. Its kind
-  (`BackgroundJobKind`) is `DeepTranscriptionJobs` (the saved queue of final transcripts); commands start through
-  `BackgroundJobRunner` (`CommandRunner`, or a fake in tests). Summaries and the echo catch-up keep their schedulers
-  in the app and meet it through its `Environment`.
+  automatic work), stops its job when a meeting starts, and retries what was turned down. The kinds
+  (`BackgroundJobKind`) are `DeepTranscriptionJobs` (the saved queue of final transcripts) and `EchoCatchUpJobs`;
+  commands start through `BackgroundJobRunner` (`CommandRunner`, or a fake in tests).
 
 **Must not own:** AppKit or windows, FluidAudio or WhisperKit (diarization and deep transcription run in a
 `voiceislocal` child), evaluation code (`HolosEvaluation`, which depends on this target), network access,

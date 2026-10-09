@@ -8,27 +8,28 @@ wiring between them and the library controllers (docs/design.md "Main window").
   bar item and menu, plus 12 `HolosApp+<Area>.swift` extensions (Meeting, DeepTranscription, MeetingSummary,
   EchoCatchUp, BackgroundJobs, MainWindow, History, People, WordList, Reading, SetupAssistant, MeetingLanguage) with
   their state holders (`MeetingAppState`, `DeepTranscriptionAppState`, …). `+BackgroundJobs` wires `HolosMeeting`'s
-  `BackgroundJobCoordinator`, which runs final transcripts.
+  `BackgroundJobCoordinator`, which runs final transcripts and echo analyses.
 - `MainWindow/`: `MainWindowController` (sidebar window) and the panes (History, Meetings, People, Corrections,
   Reading, Settings, live meeting view).
 - `Review/`: `ReviewWindow`, `TurnListView` (+WordEditing, +Splitting, +Joining) with its `TurnTableView`,
   `TurnTextView`, `TurnScrollView` and `AssignMenu`, `SpeakerSidebarView`, `ReviewPlayer`, `ScreenTextPanel`. The
   model is `HolosMeeting`'s `ReviewSession`.
-- `Reading/`: `ReadingController`, voice preview. Dictation UI: `DictationOverlay`, `DictationFixing`. Setup:
-  `SetupAssistantWindow`. Meeting start: `MeetingStartPanel`.
+- `Reading/`: `ReadingController`, voice preview, natural voices (`HelperNaturalRenderer` runs each natural part
+  in `voiceislocal say`; `NaturalVoiceDownload` is Settings › Reading's pack rows). Dictation UI:
+  `DictationOverlay`, `DictationFixing`. Setup: `SetupAssistantWindow`. Meeting start: `MeetingStartPanel`.
 
 **Must not own:** business logic, session-file layout or locks, decoding `voiceislocal` output by hand. Put
 controllers in `HolosMeeting`/`HolosDictation` and paths in `HolosStorage`. Commands whose output the app reads go
 through `HolosMeeting`'s `CommandRunner` and decode into the library's types (`DoctorReport`,
 `PostProcessingRecord`, `SessionSummarizeCommand.Outcome`, `SessionEchoAnalyzeCommand.Outcome`,
-`SessionRenameCommand.Outcome`). Today it still holds the dictation session and the summary and echo catch-up
-schedulers (`+MeetingSummary`, `+EchoCatchUp`; their scheduling has no tests), 13 files import
+`SessionRenameCommand.Outcome`). Today it still holds the dictation session and the summary scheduler
+(`+MeetingSummary`; its scheduling has no tests), 13 files import
 `HolosStorage`, and `CommandPrinted` (`HolosApp+Meeting.swift`) reads the result line of `session recover`,
 `diarize`, `delete` and `rename` output as untyped JSON. Shrink these, do not copy them.
 
 **Depends on:** HolosCore, HolosAudio, HolosSpeech, HolosDesktop, HolosDictation, HolosStorage, HolosSpeakers,
-HolosMeeting, HolosSynthesis, HolosContent. Never HolosDiarization or HolosWhisper (they run in a `voiceislocal`
-child), nor HolosEvaluation. AppKit, AVFoundation, ApplicationServices.
+HolosMeeting, HolosSynthesis, HolosContent. Never HolosDiarization, HolosWhisper or HolosPocket (they run in a
+`voiceislocal` child), nor HolosEvaluation. AppKit, AVFoundation, ApplicationServices.
 
 **Invariants**
 - One instance: a second launch with the same bundle identifier exits.
@@ -36,6 +37,8 @@ child), nor HolosEvaluation. AppKit, AVFoundation, ApplicationServices.
   and Copy As Heard, Review's and Corrections' copy commands), never automatically after dictation.
 - Closing the last window does not quit (`applicationShouldTerminateAfterLastWindowClosed` returns false), so
   dictation, recordings and readings keep running from the menu bar.
+- One natural-voice helper runs at a time (`NaturalVoiceHelperGate`); each gets the app's pid, so it stops if the
+  app ends, and a scratch folder marked as the app's (`NaturalHelperScratch`), the only folder it removes.
 
 **Tests:** `Tests/HolosAppTests` (`@testable import HolosApp`, so even a focused run builds the whole app). Tests
 build views and windows inside the test process; none launches the app bundle.

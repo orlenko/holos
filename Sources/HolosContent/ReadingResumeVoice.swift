@@ -74,7 +74,7 @@ public enum ReadingResumeVoice {
     /// Refuses a reading made with a natural voice from another commit of the voices: its parts cannot be joined
     /// with the current ones, so it cannot be resumed, whatever voice is asked for now or whether the pack is
     /// installed. Said before anything else (reinstalling a pack would not help).
-    /// `again`: what to do instead (the app says it its way).
+    /// `again`: what to do instead (each caller words it for its own users).
     public static func checkRevision(_ manifest: ReadingManifest,
                                      again: String = "Make it again without --resume.") throws {
         let id = manifest.voiceIdentifier

@@ -12,12 +12,14 @@ final class ReadingPane: NSViewController, MainSectionContent, NSTableViewDataSo
     NSTextFieldDelegate, NSMenuItemValidation {
     private let controller: ReadingController
     private let player = ReadingPlayer()
-    private let preview = VoicePreview()
+    let preview = VoicePreview()
+    /// The last Preview's failure while it is shown; a new Preview clears it.
+    private var previewProblem: String?
     private let field = NSTextField()
     private let chooseButton = NSButton(title: "Choose File…", target: nil, action: nil)
-    private let voicePopup = NSPopUpButton(frame: .zero, pullsDown: false)
+    let voicePopup = NSPopUpButton(frame: .zero, pullsDown: false)
     private let previewButton = NSButton(title: "▶ Preview", target: nil, action: nil)
-    private let speedSlider = NSSlider(value: ReadingSpeed.standard, minValue: ReadingSpeed.range.lowerBound,
+    let speedSlider = NSSlider(value: ReadingSpeed.standard, minValue: ReadingSpeed.range.lowerBound,
                                        maxValue: ReadingSpeed.range.upperBound, target: nil, action: nil)
     private let speedLabel = NSTextField(labelWithString: "")
     private let makeButton = NSButton(title: "Make Audio", target: nil, action: nil)
@@ -29,6 +31,11 @@ final class ReadingPane: NSViewController, MainSectionContent, NSTableViewDataSo
     private var rows: [ReadingEntry] = []
     private var windowObserver: NSObjectProtocol?
     private var preferencesObserver: NSObjectProtocol?
+    private var voicesObserver: NSObjectProtocol?
+    /// The card's chosen voice (nil: Automatic), kept while its pack is briefly missing (a reinstall).
+    private var chosenVoice: String?
+    /// The natural voice packs the menu offers (tests set it).
+    var installedPacks: () -> Set<NaturalVoicePack> = { NaturalVoicesAppState.shared.installed }
 
     init(controller: ReadingController) {
         self.controller = controller
@@ -39,6 +46,13 @@ final class ReadingPane: NSViewController, MainSectionContent, NSTableViewDataSo
         player.onChange = { [weak self] in self?.playerChanged() }
         player.onError = { [weak self] problem in self?.showMessage(problem, problem: true) }
         preview.onChange = { [weak self] in self?.updatePreviewButton() }
+        preview.onError = { [weak self] in self?.previewProblem = $0; self?.showMessage($0, problem: true) }
+        preview.renderNatural = VoicePreview.renderedByHelper()
+        // Natural voices installed: the menu offers them, and the card keeps the voice and speed chosen in it.
+        voicesObserver = NotificationCenter.default.addObserver(
+            forName: ReadingVoices.installedChanged, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.refreshVoices() }
+        }
         preferencesObserver = NotificationCenter.default.addObserver(
             forName: ReadingPreferences.changed, object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated { self?.applyPreferences() }
@@ -93,6 +107,8 @@ final class ReadingPane: NSViewController, MainSectionContent, NSTableViewDataSo
         chooseButton.toolTip = "Choose one or more documents to read"
 
         voicePopup.setAccessibilityLabel("Voice")
+        voicePopup.target = self
+        voicePopup.action = #selector(voiceChosen)
         // Wide enough for "Ava (Premium) — English (United States)", narrower when the section is.
         let voiceWidth = voicePopup.widthAnchor.constraint(equalToConstant: 340)
         voiceWidth.priority = .defaultLow
@@ -252,13 +268,16 @@ final class ReadingPane: NSViewController, MainSectionContent, NSTableViewDataSo
     private var footerText: String {
         if let notice = controller.notice { return notice }
         return "Audio files are saved in \(ReadingPreferences.folderText) (Settings › Reading). Nothing is uploaded: "
-            + "the only thing fetched is the page you paste."
+            + "the only things fetched are the page you paste and, when you download them, the natural voices."
     }
 
-    /// Rebuilds the voice menu (voices can be installed while Voice is Local runs), keeping the choice.
+    /// Rebuilds the voice menu (voices can be installed while it runs), selecting `id`, else the card's chosen voice.
     private func refreshVoices(selecting id: String?? = nil) {
-        ReadingVoicePopup.fill(voicePopup, selecting: id ?? selectedVoice)
+        if let id { chosenVoice = id }
+        ReadingVoicePopup.fill(voicePopup, selecting: chosenVoice, installed: installedPacks())
     }
+
+    @objc private func voiceChosen() { chosenVoice = selectedVoice }
 
     func controlTextDidChange(_ notification: Notification) {
         inputGeneration += 1
@@ -293,7 +312,7 @@ final class ReadingPane: NSViewController, MainSectionContent, NSTableViewDataSo
     /// Adds the readings; false (with the reason shown) when the list takes none.
     @discardableResult
     private func add(_ sources: [ReadingSource]) async -> Bool {
-        let (voice, speed) = (selectedVoice, speedSlider.doubleValue)
+        let (voice, speed) = (chosenVoice, speedSlider.doubleValue)  // chosen, even before its pack is offered
         var last: UUID?
         for source in sources {
             do {
@@ -404,15 +423,24 @@ final class ReadingPane: NSViewController, MainSectionContent, NSTableViewDataSo
 
     @objc private func speedChanged() {
         speedLabel.stringValue = ReadingSpeed.label(speedSlider.doubleValue)
-        if preview.isSpeaking { preview.speak(voiceIdentifier: selectedVoice, speed: speedSlider.doubleValue) }
+        if preview.isSpeaking { startPreview() }
     }
 
-    @objc private func togglePreview() {
+    @objc func togglePreview() {
         if preview.isSpeaking { preview.stop() } else {
             player.pause()
-            preview.speak(voiceIdentifier: selectedVoice, speed: speedSlider.doubleValue)
+            startPreview()
         }
     }
+
+    /// Speaks the sample, clearing the previous Preview's failure (one of this attempt is shown when it comes).
+    private func startPreview() {
+        if let shown = previewProblem, messageLabel.stringValue == shown { showMessage(nil) }
+        previewProblem = nil
+        preview.speak(voiceIdentifier: selectedVoice, speed: speedSlider.doubleValue)
+    }
+
+    var message: String? { messageLabel.isHidden ? nil : messageLabel.stringValue }  // the card's message (tests)
 
     private func updatePreviewButton() {
         previewButton.title = preview.isSpeaking ? "■ Stop" : "▶ Preview"

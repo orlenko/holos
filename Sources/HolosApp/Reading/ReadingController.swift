@@ -1,6 +1,7 @@
 import AppKit
 import HolosContent
 import HolosCore
+import HolosMeeting
 import HolosSynthesis
 
 /// Settings › Reading: the default voice and speed of new readings, and the folder their files go to. Kept in
@@ -66,8 +67,9 @@ enum ReadingPreferences {
 
 /// The Reading list and the readings being made (docs/design.md "Reading section"): the index
 /// (`ReadingLibraryStore`), one reading at a time through `ReadingWorkQueue`, each loaded with `DocumentLoader` or
-/// `WebArticleExtractor` and rendered in this process with `ReadingPipeline` into the output folder. Created at
-/// launch, so readings the user kept rendering over a quit continue.
+/// `WebArticleExtractor` and rendered with `ReadingPipeline` into the output folder: Apple's voices in this process,
+/// natural voices part by part in the bundled `voiceislocal` helper (`HelperNaturalRenderer`). Created at launch, so
+/// readings the user kept rendering over a quit continue.
 @MainActor
 final class ReadingController {
     /// What a reading being made is doing, for its row.
@@ -551,7 +553,11 @@ final class ReadingController {
             return (script, AudioBookMetadata.languageTag(document.language) ?? ReadingLanguage.detect(script.text))
         }
         try Task.checkCancellation()
-        let voice = try Self.voice(for: entry, language: language)
+        // A reading begun before: its manifest, read off the main actor, is checked before its voice (see `choose`).
+        let cacheFolder = entry.cache.map { ReadingOutput.fileURL(keepingSpelling: $0, isDirectory: true) }
+        let begun = try await offMain { cacheFolder.flatMap(ReadingResumeVoice.manifest(in:)) }
+        try Task.checkCancellation()
+        let voice = try ReadingVoices.voice(for: entry, language: language, saved: begun)
         let rate = ReadingSpeed.rate(for: entry.speed)
         let metadata = AudioBookMetadata(
             title: [document.title, entry.source.fallbackName].lazy.compactMap(AudioBookMetadata.usableTitle).first,
@@ -577,7 +583,14 @@ final class ReadingController {
         let shown = (folder.path as NSString).abbreviatingWithTildeInPath
         let support = HolosPaths.supportRoot
         let configured = ProcessInfo.processInfo.environment["HOLOS_SUPPORT_DIR"]
+        let (savedCache, savedOutput) = (entry.cache, entry.output)
         let (location, resume) = try await offMain { () -> (ReadingLocation, Bool) in
+            // A reading begun before (Resume, Try Again, a launch continuing it) reopens its own cache, never one the
+            // identity computed now names: the pipeline checks it (the natural voices' commit included) and says why
+            // it cannot be resumed, and Delete removes it.
+            if let saved = try ReadingLibrary.savedLocation(cache: savedCache, output: savedOutput) {
+                return (saved, true)
+            }
             let readings = try ReadingOutput.readingsRoot(support: support, configured: configured, create: true)
             try FileManager.default.createDirectory(at: readings, withIntermediateDirectories: true)
             let location = try ReadingLibrary.location(
@@ -587,8 +600,7 @@ final class ReadingController {
             return (location, try ReadingOutput.exists(location.workDirectory))
         }
         try Task.checkCancellation()
-        let voiceName = ReadingVoiceMenu.items(NativeSpeechRenderer.voices(), preferredLanguages: [])
-            .first { $0.id == voice.id }?.name ?? voice.name
+        let voiceName = ReadingVoices.name(of: voice)
         update(id) {
             $0.title = metadata.title ?? entry.source.label
             $0.voiceIdentifier = voice.id
@@ -606,7 +618,7 @@ final class ReadingController {
         }
         onChange?()
 
-        let result = try await ReadingPipeline().render(
+        let result = try await ReadingPipeline(renderer: renderer).render(
             script: script, voiceIdentifier: voice.id, rate: rate, metadata: metadata, location: location,
             resume: resume) { [weak self] progress in self?.progressed(id, progress) }
         update(id) {
@@ -675,26 +687,9 @@ final class ReadingController {
         return document
     }
 
-    /// The voice the reading was started with; else the one asked for; else the best installed voice for its
-    /// language (as `voiceislocal read` picks it).
-    static func voice(for entry: ReadingEntry, language: String?) throws -> VoiceDescriptor {
-        let voices = NativeSpeechRenderer.voices()
-        if let fixed = entry.voiceIdentifier ?? entry.requestedVoice {
-            guard let voice = voices.first(where: { $0.id == fixed }) else {
-                throw HolosError.unavailable("The voice \(entry.voiceName ?? fixed) is not installed any more. "
-                    + "Delete this reading and make it again with another voice.")
-            }
-            return voice
-        }
-        let wanted = language ?? Locale.preferredLanguages.first ?? "en-US"
-        if let best = NativeSpeechRenderer.bestVoice(language: wanted) { return best }
-        let fallback = try NativeSpeechRenderer.defaultVoiceIdentifier()
-        guard let voice = voices.first(where: { $0.id == fallback }) else {
-            throw HolosError.unavailable("No speech voice is installed. Add one in System Settings › Accessibility › "
-                + "Spoken Content › System Voice › Manage Voices.")
-        }
-        return voice
-    }
+    /// Renders Apple voices in this process and natural voices through the bundled `voiceislocal` tool.
+    private lazy var renderer = RoutingSpeechRenderer(
+        natural: HelperNaturalRenderer(launcher: MaintenanceLauncher(executable: ChildProcessLauncher.bundledExecutable)))
 
     private func progressed(_ id: UUID, _ progress: ReadingRenderProgress) {
         switch progress {

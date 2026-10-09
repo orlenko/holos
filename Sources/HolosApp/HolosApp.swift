@@ -255,8 +255,8 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
         history.onChange = { [weak self] in self?.historyChanged() }
         history.onFailure = { [weak self] problem in self?.showHistoryProblem(problem) }
         history.start()
-        // Readings the user kept rendering over the last quit continue.
-        readings.start()
+        // Readings the user kept rendering over the last quit continue; the natural voices are looked at.
+        startReadings()
         PeopleLaunch.resumePendingForgetsOnce()
         Task { await loadLanguages() }
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
@@ -335,7 +335,7 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
     func applicationWillTerminate(_ notification: Notification) {
         if reopenAfterQuit { reopenOnceExited() }
         enableTask?.cancel(); assetTask?.cancel(); overlayHideTask?.cancel(); resultExpiryTask?.cancel()
-        setupRefreshTask?.cancel(); assistantRefreshTask?.cancel()
+        setupRefreshTask?.cancel(); assistantRefreshTask?.cancel(); stopNaturalVoiceHelpers()
         history.stop()
         // A dictation just recorded, deleted, or cleared must reach the file before the process exits; bounded, so a
         // stuck disk never holds up the quit.
@@ -1538,7 +1538,7 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
             historyRetention: history.retention, historyCount: history.keptCount,
             historyUnreadable: history.unreadable, historyKeepsAudio: history.keepsAudio,
             historyAudioBytes: history.audioBytes,
-            openWindowAtLaunch: openWindowAtLaunch, appearance: appearance))
+            openWindowAtLaunch: openWindowAtLaunch, appearance: appearance, naturalVoices: naturalVoiceDownloads()))
     }
 
     /// The sidebar's dictation status, independent of meeting recording.
@@ -1605,10 +1605,10 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
         case .toggleMeetingScreenCapture:
             MeetingAppState.screenCaptureDefault.toggle()
             updateSettings()
-        case .speakerModels:
-            installSpeakerModels()
+        case .speakerModels: installSpeakerModels()
         case .deepTranscriptionModel:
             installDeepTranscriptionModel()
+        case .naturalVoicesEnglish, .naturalVoicesFrench: toggleNaturalVoiceDownload(for: action)
         case .toggleDeepTranscription:
             toggleDeepTranscription()
         case .toggleMeetingSummaries:

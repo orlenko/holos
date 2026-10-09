@@ -19,7 +19,7 @@ natural voices' catalog and pack install (their backend is in `HolosPocket`).
   seed, Speed as a time-stretch (`NaturalSpeechSpeed`, `TimeStretch`), and each paragraph heard back
   (`SpeechChunkCheck`, numbers written out in words on both sides with HolosCore's `SpelledNumbers`), rendered
   again or read by a system voice (`ParagraphFallback`) when it fails; one render at a time per renderer.
-  `NaturalRenderSettings` are what a reading pins. `NaturalVoiceTemporaries` sweeps the folders a killed render
+  `NaturalRenderSettings` are what a caller can keep across runs. `NaturalVoiceTemporaries` sweeps the folders a killed render
   leaves.
 - `NaturalHelperRun`, `ProcessExitWatch`, `NaturalOutputLock`, `NaturalHelperScratch`
   (`NaturalVoiceHelperGuard.swift`): the app's `voiceislocal say` helper stops when the app ends, waits for an
@@ -38,11 +38,11 @@ natural voices' catalog and pack install (their backend is in `HolosPocket`).
   confirmed, `CleanupFailed` names the file so the caller can finish later.
 - A natural voice pack counts as installed only when its marker names `NaturalVoiceModels.revision` and every file
   it inventories is in place, read under the pack's shared lock; one process installs a pack at a time
-  (`.<pack>.install.lock`).
+  (`.<pack>.install.lock`), and one install of any pack downloads or warms up at a time (`.install.lock`).
 - A render that names a voice fails (`HolosError.unavailable`) when that voice is missing; it never substitutes
   another. A render that names none uses an English system voice (`defaultVoiceIdentifier`: the current locale
   when it is English, else en-US).
 
 **Tests:** `Tests/HolosSynthesisTests`. `NativeSpeechRendererTests` renders real speech to files and
-`AudioBookWriterTests` joins generated tones (both `.serialized`); `NaturalVoiceInstallTests` installs fake packs in
-temporary folders; `NaturalSpeechRenderingTests` uses a fake backend and checker. Nothing is played aloud.
+`AudioBookWriterTests` joins generated tones (both `.serialized`); `NaturalVoiceModelsTests` installs fake packs in
+temporary folders; `NaturalSpeechRendererTests` uses a fake backend and checker. Nothing is played aloud.
