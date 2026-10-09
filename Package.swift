@@ -74,7 +74,7 @@ let package = Package(
                 path: "Tests/HolosSessionTestSupport"),
         .testTarget(name: "HolosCoreTests", dependencies: ["HolosCore"]),
         .testTarget(name: "HolosAppTests", dependencies: ["HolosApp", "HolosContent", "HolosCore", "HolosMeeting", "HolosSynthesis",
-                                                         "HolosStorage"]),
+                                                         "HolosStorage", "HolosTestSupport"]),
         .testTarget(name: "HolosStorageTests", dependencies: [
             "HolosStorage", "HolosCore", "HolosTestSupport", "HolosSessionTestSupport",
         ]),

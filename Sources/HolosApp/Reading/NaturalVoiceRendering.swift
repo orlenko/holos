@@ -341,6 +341,8 @@ enum NaturalVoiceHelpers {
 
     /// Whether a helper holds the gate now.
     var isBusy: Bool { busy }
+    /// How many renders wait for the gate.
+    var waitingCount: Int { waiting.count }
 
     func acquire() async throws {
         try Task.checkCancellation()

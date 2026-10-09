@@ -4,6 +4,7 @@ import Foundation
 import HolosCore
 import HolosSynthesis
 import Synchronization
+import HolosTestSupport
 import Testing
 @testable import HolosApp
 
@@ -164,7 +165,7 @@ import Testing
         let failed = Mutex(false)
         preview.onError = { _ in failed.withLock { $0 = true } }
         preview.speak(voiceIdentifier: nil, speed: 1)
-        for _ in 0..<10_000 where !failed.withLock({ $0 }) { await Task.yield() }
+        #expect(await eventually { failed.withLock { $0 } })
         #expect(asked.withLock { $0 } == ["pocket:en:alba"])
         #expect(!preview.isSpeaking)
         #expect(ReadingVoices.automatic(language: "fr-CA", installed: [.english], bestApple: { _ in nil }) == nil)
@@ -186,7 +187,7 @@ import Testing
         let before = popup.itemArray.first
         ReadingVoices.announceInstalled()
         // The menu is filled again (new items), on the main queue.
-        for _ in 0..<10_000 where popup.itemArray.first === before { await Task.yield() }
+        #expect(await eventually { popup.itemArray.first !== before })
         #expect(popup.itemArray.first !== before)
         #expect(popup.selectedItem?.representedObject as? String == chosen.representedObject as? String)
         #expect(abs(pane.speedSlider.doubleValue - speed) < 0.001, "\(pane.speedSlider.doubleValue) vs \(speed)")
@@ -200,7 +201,7 @@ import Testing
         func announced() async {
             let before = popup.itemArray.first
             ReadingVoices.announceInstalled()
-            for _ in 0..<10_000 where popup.itemArray.first === before { await Task.yield() }
+            _ = await eventually { popup.itemArray.first !== before }
         }
         await announced()
         let alba = try #require(popup.itemArray.first { $0.representedObject as? String == "pocket:en:alba" })
@@ -222,10 +223,10 @@ import Testing
             textFile.withLock { $0 = arguments[4] }
             exit.withLock { $0 = onExit }
             return 31_337
-        }, installedPacks: { [.english] }, signal: { _ in })
+        }, installedPacks: { [.english] }, signal: { _ in }, forceKill: { _ in })
         let output = try folder().appendingPathComponent("p.caf")
         let task = Task { try await renderer.render(text: "Hello.", voiceIdentifier: "pocket:en:alba", rate: nil, to: output) }
-        while exit.withLock({ $0 == nil }) { await Task.yield() }
+        #expect(await eventually { exit.withLock { $0 != nil } })
         let working = try #require(textFile.withLock { $0 }.map { URL(fileURLWithPath: $0).deletingLastPathComponent() })
         #expect(FileManager.default.fileExists(atPath: working.path))
         // The quit: the tool is signalled and its folder removed at once, before the render has seen it end.
@@ -288,7 +289,7 @@ import Testing
                 launched.append(name)
                 exits[name] = onExit
                 return Int32(100 + launched.count)
-            }, installedPacks: { [.english] }, signal: { _ in }, gate: gate)
+            }, installedPacks: { [.english] }, signal: { _ in }, forceKill: { _ in }, gate: gate)
         }
 
         func exit(_ name: String, code: Int32 = 143) { exits.removeValue(forKey: name)?(code) }
@@ -304,18 +305,18 @@ import Testing
         let helpers = FakeHelpers()
         // A reading's part is being rendered.
         let part = try render(helpers.renderer("part", gate: gate))
-        for _ in 0..<10_000 where helpers.launched.isEmpty { await Task.yield() }
+        #expect(await eventually { !helpers.launched.isEmpty })
         #expect(helpers.launched == ["part"])
         // A Preview asked for meanwhile waits: no second helper (and no second model) while the first runs.
         let preview = try render(helpers.renderer("preview", gate: gate))
-        for _ in 0..<1_000 { await Task.yield() }
+        #expect(await eventually { gate.waitingCount == 1 })
         #expect(helpers.launched == ["part"])
         // Stopping the part signals its helper; the Preview still waits until that helper has exited.
         part.cancel()
-        for _ in 0..<1_000 { await Task.yield() }
+        #expect(gate.waitingCount == 1)
         #expect(helpers.launched == ["part"])
         helpers.exit("part")
-        for _ in 0..<10_000 where helpers.launched.count < 2 { await Task.yield() }
+        #expect(await eventually { helpers.launched.count == 2 })
         #expect(helpers.launched == ["part", "preview"])
         helpers.exit("preview")
         _ = try? await part.value
@@ -327,9 +328,9 @@ import Testing
         let gate = NaturalVoiceHelperGate()
         let helpers = FakeHelpers()
         let first = try render(helpers.renderer("first", gate: gate))
-        for _ in 0..<10_000 where helpers.launched.isEmpty { await Task.yield() }
+        #expect(await eventually { !helpers.launched.isEmpty })
         let second = try render(helpers.renderer("second", gate: gate))
-        for _ in 0..<1_000 { await Task.yield() }
+        #expect(await eventually { gate.waitingCount == 1 })
         second.cancel()
         await #expect(throws: CancellationError.self) { _ = try await second.value }
         helpers.exit("first", code: 1)
@@ -361,7 +362,7 @@ import Testing
         preview.onError = { message in problem.withLock { $0 = message } }
         preview.speak(voiceIdentifier: "pocket:en:alba", speed: 1)
         #expect(preview.isSpeaking)
-        for _ in 0..<10_000 where problem.withLock({ $0 == nil }) { await Task.yield() }
+        #expect(await eventually { problem.withLock { $0 } != nil })
         #expect(problem.withLock { $0 }?.contains("could not be played") == true)
         #expect(!preview.isSpeaking)
     }
@@ -375,7 +376,7 @@ import Testing
             return playback
         }
         preview.speak(voiceIdentifier: "pocket:en:alba", speed: 1)
-        for _ in 0..<10_000 where !started.withLock({ $0 }) { await Task.yield() }
+        #expect(await eventually { started.withLock { $0 } })
         #expect(preview.isSpeaking)
         preview.stop()
         #expect(playback.stopped)
@@ -429,9 +430,7 @@ import Testing
                                                "\(rate!)"])
         #expect(launches.signals.withLock { $0 }.isEmpty)
         // The text file is gone with its folder (removed off the main actor).
-        for _ in 0..<2_000 where FileManager.default.fileExists(atPath: arguments[6]) {
-            try await Task.sleep(for: .milliseconds(5))
-        }
+        #expect(await eventually { !FileManager.default.fileExists(atPath: arguments[6]) })
         #expect(!FileManager.default.fileExists(atPath: arguments[4]))
         #expect(!FileManager.default.fileExists(atPath: arguments[6]))
     }
@@ -481,10 +480,10 @@ import Testing
             exit.withLock { $0 = onExit }
             return 4_321
         }, installedPacks: { [.english] }, signal: { pid in signals.withLock { $0.append(pid) } },
-           gate: NaturalVoiceHelperGate())
+           forceKill: { _ in }, gate: NaturalVoiceHelperGate())
         let output = try folder().appendingPathComponent("p.caf")
         let task = Task { try await renderer.render(text: "Hello.", voiceIdentifier: "pocket:en:alba", rate: nil, to: output) }
-        while exit.withLock({ $0 == nil }) { await Task.yield() }
+        #expect(await eventually { exit.withLock { $0 != nil } })
         // The tool exits (and is reaped); a Stop comes in the same turn, before the render has finished.
         exit.withLock { $0 }?(1)
         task.cancel()
@@ -510,7 +509,7 @@ import Testing
         }, killAfter: .milliseconds(20), gate: NaturalVoiceHelperGate())
         let output = try folder().appendingPathComponent("p.caf")
         let task = Task { try await renderer.render(text: "Hello.", voiceIdentifier: "pocket:en:alba", rate: nil, to: output) }
-        while exit.withLock({ $0 == nil }) { await Task.yield() }
+        #expect(await eventually { exit.withLock { $0 != nil } })
         task.cancel()
         await #expect(throws: CancellationError.self) { _ = try await task.value }
         #expect(launches.signals.withLock { $0 } == [77])
@@ -527,10 +526,10 @@ import Testing
             launches.signals.withLock { $0.append(pid) }
             // The tool ends on SIGTERM.
             DispatchQueue.main.async { MainActor.assumeIsolated { exit.withLock { $0 }?(143) } }
-        })
+        }, forceKill: { _ in })
         let output = try folder().appendingPathComponent("p.caf")
         let task = Task { try await renderer.render(text: "Hello.", voiceIdentifier: "pocket:en:alba", rate: nil, to: output) }
-        while exit.withLock({ $0 == nil }) { await Task.yield() }
+        #expect(await eventually { exit.withLock { $0 != nil } })
         task.cancel()
         await #expect(throws: CancellationError.self) { _ = try await task.value }
         #expect(launches.signals.withLock { $0 } == [99])
