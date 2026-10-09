@@ -241,6 +241,18 @@ func fillPack(_ base: URL, _ pack: NaturalVoicePack) throws {
         ])
     }
 
+    @Test func aListingWithAnUnsafePathIsRefused() {
+        for path in ["../outside.bin", "v2.1/../../outside.bin", "/etc/passwd", "v2.1//x.bin", "v2.1/./x.bin", ""] {
+            let listing = Data("[{\"type\":\"file\",\"oid\":\"a\",\"size\":1,\"path\":\"\(path)\"}]".utf8)
+            #expect(throws: HolosError.self, "\(path)") { try NaturalVoicePackFiles.files(fromListing: listing) }
+        }
+    }
+
+    @Test func aMissingDamagedFileNeedsNothingRemoved() throws {
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        try NaturalVoicePackFiles.remove(["v2.1/english/never-downloaded.bin"], in: folder)
+    }
+
     private func write(_ path: String, _ text: String) throws {
         let url = folder.appendingPathComponent(path)
         try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
@@ -504,6 +516,7 @@ func fillPack(_ base: URL, _ pack: NaturalVoicePack) throws {
     private func verify(expecting content: String) throws -> NaturalVoiceModels.Verify {
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent("holos-hash-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
         let reference = folder.appendingPathComponent("weight.bin")
         try Data(content.utf8).write(to: reference)
         let expected = [NaturalVoicePackFiles.Expected(
