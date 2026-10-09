@@ -180,7 +180,8 @@ public struct NaturalSpeechStats: Sendable, Equatable {
 /// Invariants:
 /// 1. One render at a time: `render` fails at once while another render of this renderer runs (`rendering`), so
 ///    `lastStats`, `onEvent`'s events, and `uncheckable` always belong to a single render in progress or just ended.
-/// 2. `lastStats` is set once, when a render has written all its paragraphs; a failed render leaves the previous one.
+/// 2. `lastStats` is set once, when a render has published its file; a failed or cancelled render leaves the
+///    previous one.
 /// 3. `uncheckable` only grows: a language found without a recognizer is not probed again by this renderer.
 @MainActor public final class NaturalSpeechRenderer {
     nonisolated public static let sampleRate = NaturalSpeechFormat.sampleRate
@@ -292,7 +293,6 @@ public struct NaturalSpeechStats: Sendable, Equatable {
         let frames = writer.frames
         stats.paragraphs = Set(blocks.map(\.paragraph)).count
         stats.audioSeconds = Double(frames) / Self.sampleRate
-        lastStats = stats
         guard frames > 0 else { throw HolosError.incomplete("The natural voice produced no audio.") }
         try Task.checkCancellation()
         let rename = exclusiveRename
@@ -308,6 +308,7 @@ public struct NaturalSpeechStats: Sendable, Equatable {
         } onCancel: {
             stop.request()
         }
+        lastStats = stats  // invariant 2: published
         return RenderedAudio(url: output, duration: Double(frames) / Self.sampleRate, frameCount: frames,
                              sampleRate: Self.sampleRate)
     }

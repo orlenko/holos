@@ -1,5 +1,6 @@
 import Foundation
 import HolosCore
+import HolosTestSupport
 import Synchronization
 import Testing
 @testable import HolosSynthesis
@@ -50,8 +51,7 @@ private actor GatedBackend: NaturalSpeechBackend {
             try await renderer.render(text: "The first part.", voiceIdentifier: "pocket:en:alba", rate: nil,
                                       to: self.root.appendingPathComponent("a.caf"))
         }
-        for _ in 0..<2_000 where !entered.withLock({ $0 }) { try await Task.sleep(for: .milliseconds(5)) }
-        #expect(entered.withLock { $0 })
+        #expect(await eventually { entered.withLock { $0 } })
         let error = await #expect(throws: HolosError.self) {
             _ = try await renderer.render(text: "The second part.", voiceIdentifier: "pocket:en:alba", rate: nil,
                                           to: self.root.appendingPathComponent("b.caf"))
@@ -64,6 +64,28 @@ private actor GatedBackend: NaturalSpeechBackend {
         // Once it has ended, the next render runs.
         _ = try await renderer.render(text: "The second part.", voiceIdentifier: "pocket:en:alba", rate: nil,
                                       to: root.appendingPathComponent("b.caf"))
+    }
+
+    @Test func aRenderThatFailsToPublishLeavesTheLastStats() async throws {
+        let failing = Mutex(false)
+        let renderer = NaturalSpeechRenderer(
+            backend: GatedBackend(entered: {}, isOpen: { true }), checker: nil, fallback: UnusedFallback(),
+            installedPacks: { [.english] },
+            exclusiveRename: { from, to in
+                guard failing.withLock({ $0 }) else { return renamex_np(from, to, UInt32(RENAME_EXCL)) }
+                errno = EEXIST
+                return -1
+            })
+        _ = try await renderer.render(text: "One.\n\nTwo.", voiceIdentifier: "pocket:en:alba", rate: nil,
+                                      to: root.appendingPathComponent("a.caf"))
+        #expect(renderer.lastStats.paragraphs == 2)
+        // Another process takes the output while this render writes: nothing is published, and the stats stay.
+        failing.withLock { $0 = true }
+        await #expect(throws: HolosError.self) {
+            _ = try await renderer.render(text: "One.\n\nTwo.\n\nThree.", voiceIdentifier: "pocket:en:alba",
+                                          rate: nil, to: self.root.appendingPathComponent("b.caf"))
+        }
+        #expect(renderer.lastStats.paragraphs == 2)
     }
 
     @Test func aSavedFallbackVoiceThatIsGoneIsSaid() async throws {
