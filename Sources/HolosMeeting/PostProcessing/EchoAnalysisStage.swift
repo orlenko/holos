@@ -167,22 +167,29 @@ public enum EchoMaskStore {
         usableWithIdentity(session: session, manifest: manifest).mask
     }
 
-    /// `usable`, with its identity: the SHA-256 of its frames, nil without a mask (a saved `noEcho` or
-    /// `noSystemAudio` verdict hides nothing, so it is nil too). The snapshot keeps the identity of the mask it shows,
-    /// and the transcript files record it when written (`SessionExports`), so a mask saved, replaced or dropped since
-    /// makes them out of date.
+    /// `usable`, with its identity: the SHA-256 of its frames and the version of the rule that judges words with it
+    /// (`identity(sha256:)`), nil without a mask (a saved `noEcho` or `noSystemAudio` verdict hides nothing, so it is
+    /// nil too). The snapshot keeps the identity of the mask it shows, and the transcript files record it when written
+    /// (`SessionExports`), so a mask saved, replaced or dropped since, or a word rule changed since, makes them out of
+    /// date.
     static func usableWithIdentity(session: URL, manifest: SessionManifest)
         -> (mask: AcousticEchoMask?, identity: String?) {
         do {
             guard let stored = try current(session: session, manifest: manifest), let mask = stored.mask else {
                 return (nil, nil)
             }
-            return (mask, stored.record.frames?.sha256)
+            return (mask, stored.record.frames.map { identity(sha256: $0.sha256) })
         } catch {
             log.error("Session \(manifest.id, privacy: .public): echo analysis not used: \(error.localizedDescription, privacy: .private)")
             return (nil, nil)
         }
     }
+
+    /// A mask's identity from the SHA-256 of its frames: "<sha256>+words<AcousticEchoMask.wordRuleVersion>". The
+    /// labels a mask shows depend on its frames and on the word rule (`AcousticEchoMask.isEcho`), so transcript files
+    /// written before the rule changed (which recorded the SHA-256 alone, or another version) are out of date, and the
+    /// app's echo catch-up rewrites them (`EchoCatchUpSchedule.needsAnalysis`, through `echoMaskIsCurrent`).
+    static func identity(sha256: String) -> String { "\(sha256)+words\(AcousticEchoMask.wordRuleVersion)" }
 
     /// `usableWithIdentity`'s identity alone.
     public static func identity(session: URL, manifest: SessionManifest) -> String? {
