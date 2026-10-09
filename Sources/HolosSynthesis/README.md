@@ -15,6 +15,12 @@ natural voices' catalog and pack install (their backend is in `HolosPocket`).
 - `NaturalVoiceModels` and `NaturalVoicePackFiles`: a pack's folder (`<supportRoot>/Models/pocket-tts/<pack>`,
   `HOLOS_POCKET_MODELS_DIR`), its install (staging, checks, warm-up, the `installed.json` marker with the commit and
   file inventory), status and readiness. The download and check steps come from `HolosPocket`.
+- `NaturalSpeechRenderer`: renders with a natural voice paragraph by paragraph (`NaturalSpeechPlan`), with a fixed
+  seed, Speed as a time-stretch (`NaturalSpeechSpeed`, `TimeStretch`), and each paragraph heard back
+  (`SpeechChunkCheck`, numbers written out in words on both sides with HolosCore's `SpelledNumbers`), rendered
+  again or read by a system voice (`ParagraphFallback`) when it fails; one render at a time per renderer.
+  `NaturalRenderSettings` are what a reading pins. `NaturalVoiceTemporaries` sweeps the folders a killed render
+  leaves.
 - `ExclusivePublisher`: moves a finished file into place without ever replacing an existing one; every file the
   renderer and the reading pipeline publish goes through `publish`.
 
@@ -36,4 +42,4 @@ natural voices' catalog and pack install (their backend is in `HolosPocket`).
 
 **Tests:** `Tests/HolosSynthesisTests`. `NativeSpeechRendererTests` renders real speech to files and
 `AudioBookWriterTests` joins generated tones (both `.serialized`); `NaturalVoiceInstallTests` installs fake packs in
-temporary folders. Nothing is played aloud.
+temporary folders; `NaturalSpeechRenderingTests` uses a fake backend and checker. Nothing is played aloud.

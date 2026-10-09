@@ -10,7 +10,8 @@ The values every other target shares, and text processing that needs no engine.
 - `HolosJSON` (the encoder and decoder for session files and the HolosStorage stores) and `OpenStringCode`.
 - Text processing: `TranscriptFixer` (language-model fix of misheard words, with an injected model and the
   `AIFixGuard` check), `SpokenCode`, `DictationSeams`, `FillerWords`,
-  `WordList`, `TranscriptEditLearning`, `DictationTextPipeline` (in `DictationRerun.swift`).
+  `WordList`, `TranscriptEditLearning`, `DictationTextPipeline` (in `DictationRerun.swift`), `SpelledNumbers` (the
+  numbers of a text written out in English or French words with Foundation's `NumberFormatter`).
 
 **Must not own:** file I/O, locks, UI, speech or model engines. Exceptions to shrink, not copy: `Lexicon`
 (AppKit `NSSpellChecker`), `Corrections.swift` (reads and writes `corrections.json`, a `FolderWatcher`, its own
