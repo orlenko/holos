@@ -19,7 +19,8 @@ The adapter over Apple's on-device speech recognition (`SpeechAnalyzer` with `Sp
 - A session only runs with installed assets; otherwise `make` throws `HolosError.unavailable` telling the user to
   run setup. The default test suite never installs assets.
 - Vocabulary (`contextualStrings`) is best effort; corrections are applied to the text afterwards by the callers.
-- Recognition is local; nothing here uses the network.
+- Recognition with installed assets runs on the Mac and uses no network. `installAssets` (`voiceislocal setup`
+  and the app's install actions) is the exception: it downloads Apple's speech assets through `AssetInventory`.
 
 **Tests:** `Tests/HolosSpeechTests/AppleSpeechEngineTests.swift`. Tests that need installed assets are opt-in
 (`HOLOS_SPEECH_TEST_*` environment variables).

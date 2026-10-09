@@ -57,8 +57,12 @@ The protocols that exist, and what implements them:
 - `SessionArchive` is the only mutable owner of an active archive. Writes go through `AtomicFile` (write, fsync,
   rename, folder fsync). The event journal has increasing sequence numbers; a failed append is truncated back, and a
   damaged line is skipped and counted. Details and lock rules: meeting-design.md §1.6, §1.7.
-- Every persisted JSON file is encoded with `HolosJSON` and carries `schemaVersion`. Readers refuse a newer version;
-  growable code sets are `OpenStringCode`s.
+- Session files and the HolosStorage stores (speaker data, profiles, dictation history, word list) are encoded
+  with `HolosJSON` and carry `schemaVersion`; readers refuse a version newer than they know (the edit journal
+  skips such lines instead; meeting-design.md §1.6), and growable code sets are `OpenStringCode`s. Exceptions today: `corrections.json` (`CorrectionList`) uses a plain `JSONEncoder` and has
+  no version; the reading pipeline and library (`ReadingManifest`, `library.json`) carry `schemaVersion` but use
+  their own encoders; small values kept in `UserDefaults` (review maintenance entries, the meeting-source notice)
+  are plain JSON without a version. New persisted files follow the `HolosJSON` rule.
 - Speaker edits go to an append-only journal; `SpeakerProjection` applies it to a run. An edit that no longer
   applies is reported as stale, never applied blindly.
 
@@ -75,15 +79,22 @@ The protocols that exist, and what implements them:
 ## Synthesis and documents
 
 - Each render names one voice and exact text. A missing voice fails explicitly; nothing substitutes another.
-- Finished files are published with `ExclusivePublisher` (exclusive rename), so no partial file sits at a final
-  path. A reading resumes from its cache of rendered parts.
+- Finished files are published with `ExclusivePublisher`, which never replaces an existing file. Where the volume
+  supports an exclusive rename (`renamex_np` with `RENAME_EXCL`) the file appears whole. Elsewhere (some exFAT and
+  network volumes) it creates the destination with `O_EXCL` and copies into it, so a partly written file is
+  visible until the copy ends; a failed copy is removed, and a reading's manifest keeps `publishing` so a copy cut
+  off by a crash is recognized and removed when the reading is resumed. A reading resumes from its cache of
+  rendered parts.
 - Extraction failures are explicit; no extractor substitutes a summary for the text.
 
 ## Errors and output
 
 - Throw `HolosError` (`invalidInput`, `unavailable`, `permissionDenied`, `incomplete`, `io`) with a message that
   says what to do next. Do not add cases; machine-readable reasons travel in data (`StopReason`, `ControlResult`,
-  `PostProcessingState`). `CancellationError` passes through unchanged.
+  `PostProcessingState`).
+- The rule for new code is that `CancellationError` passes through unchanged (meeting-design.md §1.4). Known
+  exception: `ReadingPipeline` turns any failure while rendering or joining parts, cancellation included, into
+  `HolosError.incomplete` after a best-effort save of its manifest, so a stopped reading reports "Reading stopped at part …".
 - Transcription failure after a successful recording keeps and names the saved audio.
 - CLIs put content and JSON on stdout and progress on stderr; exit codes are in meeting-design.md §1.4.
 - Logs use `Logger(subsystem: "ca.orlenko.holos.app", …)`. Never log transcript text, names, vocabulary or

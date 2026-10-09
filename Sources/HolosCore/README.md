@@ -7,7 +7,7 @@ The values every other target shares, and text processing that needs no engine.
   `HolosPaths`), `MeetingModels.swift` (recorder status, control requests, post-processing records),
   `SpeakerModels.swift` (diarization runs, turns, edits, `SpeakerDiarizer`), `VoiceProfiles.swift`,
   `DeepTranscription.swift` (`DeepTranscriber`), `DictationHistory.swift`.
-- `HolosJSON` (the encoder and decoder for every persisted file) and `OpenStringCode`.
+- `HolosJSON` (the encoder and decoder for session files and the HolosStorage stores) and `OpenStringCode`.
 - Text processing: `TranscriptFixer` (language-model fix of misheard words, with an injected model and the
   `AIFixGuard` check), `SpokenCode`, `DictationSeams`, `FillerWords`,
   `WordList`, `TranscriptEditLearning`, `DictationTextPipeline` (in `DictationRerun.swift`).
@@ -20,8 +20,9 @@ flock), and app-only flows (`SetupAssistantFlow`, `SettingsSearch`, `PermissionB
 **Depends on:** no Holos target. Foundation, NaturalLanguage (`DictationSeams`), AppKit (`Lexicon` only).
 
 **Invariants**
-- Persisted types carry `schemaVersion`; within a version fields are only added, never renamed or removed
-  (docs/meeting-design.md §1.6).
+- The persisted meeting and speaker types carry `schemaVersion`; within a version fields are only added, never
+  renamed or removed (docs/meeting-design.md §1.6). `CorrectionList` (`corrections.json`) is an exception: plain
+  `JSONEncoder`, no version (docs/contracts.md "Persistence").
 - Do not add `HolosError` cases; machine-readable reasons travel in data (`StopReason`, `ControlResult`, …),
   docs/meeting-design.md §1.4.
 - `HolosPaths.sessions` honours `HOLOS_DATA_DIR` and `HolosPaths.supportRoot` honours `HOLOS_SUPPORT_DIR`; build

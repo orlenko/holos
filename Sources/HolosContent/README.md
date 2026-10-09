@@ -20,8 +20,10 @@ list (docs/design.md "Reading section", "Text-to-speech").
 AVFoundation, CryptoKit, NaturalLanguage. This target is not headless.
 
 **Invariants**
-- Every file it publishes (a part, a finished reading) goes through `ExclusivePublisher`, so no partial file sits at
-  a final path and an existing file is never replaced.
+- Every file it publishes (a part, a finished reading) goes through `ExclusivePublisher`, so an existing file is
+  never replaced. On volumes without an exclusive rename the publish is a copy, visible while it runs; the
+  reading's manifest keeps `publishing` until it ends, so a copy cut off by a crash is found and removed when
+  the reading is resumed.
 - All of its files live under `HolosPaths.supportRoot` or the user's chosen output folder; tests set
   `HOLOS_SUPPORT_DIR`.
 - `WebArticleExtractor` needs a running main run loop (the app, or the CLI's async `main`).
