@@ -111,4 +111,19 @@ private actor GatedBackend: NaturalSpeechBackend {
         }
         #expect(error?.localizedDescription.contains("com.example.voice.gone") == true)
     }
+
+    @Test func aFallbackFolderIsGoneWhenItsSamplesReturn() async throws {
+        let fallback = NativeParagraphFallback(temporaryRoot: root)
+        let read = try await fallback.samples(for: "A paragraph.", voice: nil, language: "en", sampleRate: 24_000)
+        #expect(!read.samples.isEmpty)
+        #expect(try FileManager.default.contentsOfDirectory(atPath: root.path).isEmpty)
+    }
+
+    @Test func aFallbackFolderIsGoneWhenItsRenderThrows() async throws {
+        let fallback = NativeParagraphFallback(temporaryRoot: root)
+        await #expect(throws: HolosError.self) {
+            _ = try await fallback.samples(for: "   ", voice: nil, language: "en", sampleRate: 24_000)
+        }
+        #expect(try FileManager.default.contentsOfDirectory(atPath: root.path).isEmpty)
+    }
 }

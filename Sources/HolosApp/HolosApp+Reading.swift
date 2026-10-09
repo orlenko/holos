@@ -77,8 +77,10 @@ final class NaturalVoicesAppState {
         }
     }
 
-    /// Whether `pack`'s download may start: one install at a time, this app's or another process's (`voiceislocal
-    /// setup` in Terminal, its install lock held), so two models are never set up together.
+    /// Whether `pack`'s download may start, as the last look saw it: one install at a time, this app's or another
+    /// process's (`voiceislocal setup` in Terminal, its install lock held). A hint for the Download buttons only: the
+    /// setup itself refuses while any other pack's install runs (`NaturalVoiceModels.setUp`), even one started after
+    /// the last look.
     func mayStart(_ pack: NaturalVoicePack) -> Bool {
         !downloads.contains { $0.key != pack && ($0.value.isRunning || $0.value.phase == .otherProcess) }
             && !statuses.contains { $0.key != pack && $0.value == .downloading }

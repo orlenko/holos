@@ -13,6 +13,8 @@ import os
 ///   spoke a test sentence on this Mac (the first load compiles them for this Mac's GPU and Neural Engine).
 /// - `<pack>.download/`: an unfinished download, kept so the next setup resumes it.
 /// - `.<pack>.install.lock`: held by the one process installing the pack.
+/// - `.install.lock`: held by the one process downloading or warming up any pack, so two installs (the app's and one in
+///   Terminal, or two in Terminal) never download or compile models at once.
 ///
 /// FluidAudio lets the base folder be chosen (`PocketTtsManager(directory:)`), so nothing goes to its default
 /// `~/.cache/fluidaudio`.
@@ -64,6 +66,11 @@ public enum NaturalVoiceModels {
 
     static func lockPath(root: URL, pack: NaturalVoicePack) -> String {
         root.appendingPathComponent("." + pack.rawValue + ".install.lock").path
+    }
+
+    /// The lock every pack's install holds while it downloads or warms up (taken after the pack's own lock).
+    static func anyInstallLockPath(root: URL) -> String {
+        root.appendingPathComponent(".install.lock").path
     }
 
     // MARK: - Status
@@ -154,7 +161,8 @@ public enum NaturalVoiceModels {
     /// there (Core ML keys its compiled models by path, so they are compiled where they are used) and writes the
     /// marker last, then tidies it (`finish`). A pack in place without a marker (a warm-up cut off) is warmed up again
     /// without a download; one that does not load there goes back to the staging folder, where the download checks
-    /// every file and fetches only what is missing or damaged. Throws `unavailable` while another process installs it.
+    /// every file and fetches only what is missing or damaged. Throws `unavailable` while another process installs it,
+    /// or installs another pack (one install at a time, whatever starts it).
     public static func setUp(root: URL = root, pack: NaturalVoicePack, force: Bool, download: Download,
                              warmUp: WarmUp, finish: Finish = { _, _ in }, verify: Verify = { _, _ in false },
                              notice: @Sendable (String) -> Void,
@@ -163,7 +171,7 @@ public enum NaturalVoiceModels {
         // The lock first, also for a pack that looks installed: a forced reinstall in another process may be about to
         // remove it, and "already installed" is only true once no install runs.
         try ensurePrivateDirectory(root)
-        let lock = try InstallLock(path: lockPath(root: root, pack: pack), pack: pack)
+        let lock = try InstallLock(path: lockPath(root: root, pack: pack), refusal: busyMessage(pack))
         defer { lock.release() }
         // Marked and its files there; a pack marked but with files missing goes on below, where it is checked against
         // the listing and repaired.
@@ -173,6 +181,10 @@ public enum NaturalVoiceModels {
             progress(1)
             return
         }
+        // Past here it downloads or warms up: one install of any pack at a time.
+        let anyInstall = try InstallLock(path: anyInstallLockPath(root: root), refusal: "Other natural voices are "
+            + "being installed by another process; wait for that install to finish, then try again.")
+        defer { anyInstall.release() }
         // A pack installed from another commit: back to staging (below), where the download at this commit replaces it.
         let outdated = marker(root: root, pack: pack).map { $0.revision != revision } ?? false
         try? FileManager.default.removeItem(at: directory.appendingPathComponent(markerName))
@@ -249,12 +261,17 @@ public enum NaturalVoiceModels {
     /// Deletes an installed pack and any unfinished download.
     public static func remove(root: URL = root, pack: NaturalVoicePack) throws {
         try ensurePrivateDirectory(root)
-        let lock = try InstallLock(path: lockPath(root: root, pack: pack), pack: pack)
+        let lock = try InstallLock(path: lockPath(root: root, pack: pack), refusal: busyMessage(pack))
         defer { lock.release() }
         for folder in [directory(root: root, pack: pack), stagingFolder(root: root, pack: pack)]
         where FileManager.default.fileExists(atPath: folder.path) {
             try FileManager.default.removeItem(at: folder)
         }
+    }
+
+    private static func busyMessage(_ pack: NaturalVoicePack) -> String {
+        "The \(pack.languageName) natural voices are being installed by another process; wait for it to finish, then "
+            + "try again."
     }
 
     private static func writeMarker(_ pack: NaturalVoicePack, in directory: URL) throws {
@@ -305,11 +322,12 @@ public enum NaturalVoiceModels {
     }
 }
 
-/// `flock` on a pack's install lock; refuses when another process holds it.
+/// `flock` on an install lock (a pack's, or the one for any install); refuses with `refusal` when another process
+/// holds it.
 private final class InstallLock {
     private let fd: Int32
 
-    init(path: String, pack: NaturalVoicePack) throws {
+    init(path: String, refusal: String) throws {
         fd = open(path, O_RDWR | O_CREAT | O_CLOEXEC | O_NOFOLLOW, 0o600)
         guard fd >= 0 else { throw HolosError.io("Cannot open the natural voices' install lock.") }
         // A status check holds a shared lock for an instant; wait that out, but not another install.
@@ -319,8 +337,7 @@ private final class InstallLock {
             if attempt < 19 { usleep(50_000) }
         }
         close(fd)
-        throw HolosError.unavailable("The \(pack.languageName) natural voices are being installed by another "
-            + "process; wait for it to finish, then try again.")
+        throw HolosError.unavailable(refusal)
     }
 
     func release() {

@@ -736,9 +736,10 @@ and only then are the voices not offered removed (a setup that finds the pack in
 one was cut off). A pack in place without the marker (an interrupted setup, maybe an older one) is first checked against the
 pinned commit's listing (sizes and SHA-256s); only then is it warmed up again without a download. One that does not
 match, cannot be checked (offline), or does not load there goes back to `<pack>.download/`, where the next download checks it and fetches only what is missing or
-damaged. A lock file keeps two installs apart. Settings › Reading has a row per pack: Download
+damaged. A lock file per pack keeps two installs of it apart, and a shared one (`.install.lock`) lets only one install of any pack download or warm up at a time, whatever starts it. Settings › Reading has a row per pack: Download
 (with the size), the tool's progress line and Cancel while it runs (SIGTERM; what was downloaded is kept), and the
-failure's reason (offline, for instance) with Try Again; one pack downloads at a time (the other row's Download waits),
+failure's reason (offline, for instance) with Try Again; one pack downloads at a time (the other row's Download waits;
+a download started anyway, before the app saw the other install, is refused by the setup),
 so two models are never set up together; Apple's voices stay available throughout. The app looks at the packs' files
 off the main actor and keeps what it found (`NaturalVoicesAppState.refresh`) for the menus, Preview, the renderer and
 Settings. The voice menus
