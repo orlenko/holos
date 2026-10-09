@@ -2360,7 +2360,7 @@ shown, Otter-style.
     puts back exactly what `removed` kept in both layers (a fixed revision the fixed words,
     unless they no longer lie over the unfixed ones, which then come back in both; refused
     when what was kept is damaged), and one undo takes it back. For the window it is a word
-    edit, made the one way every edit is (`trackWordChange`): offered and made only while a
+    edit, made the one way every edit is (`ReviewWordEditCoordinator.track`): offered and made only while a
     field could open (not while a close by hand waits for earlier saves), queued in the review
     at once (`queueRestoreDeletedWords`), saved once its `committed` says so (also when the
     labels could not be reread afterwards: the words are back), and tracked, so a close by
