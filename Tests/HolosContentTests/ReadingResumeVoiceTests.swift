@@ -4,72 +4,93 @@ import HolosSynthesis
 import Testing
 @testable import HolosContent
 
-/// `voiceislocal read --resume` without `--voice` finds the voice the reading was started with (`ReadingResumeVoice`),
-/// and `--print-text` names the file it would write (`ReadingPreview.printed`).
+/// `voiceislocal read --resume` without `--voice` finds the reading it continues, and its voice, from the saved
+/// manifests (`ReadingResumeVoice`), and `--print-text` names the file it would write (`ReadingPreview.printed`).
 @Suite struct ReadingResumeVoiceTests {
     private let root = FileManager.default.temporaryDirectory.appendingPathComponent("holos-resume-\(UUID().uuidString)")
     private let apple = "com.apple.voice.premium.en-US.Ava"
     private let natural = "pocket:en:alba"
+    private let metadata = AudioBookMetadata(title: "Garden", author: nil, language: "en", comment: "c")
+    private var readings: URL { root.appendingPathComponent("Readings", isDirectory: true) }
+    private var output: URL { root.appendingPathComponent("Garden.m4a") }
 
-    private func manifest(voice: String, output: URL) -> ReadingManifest {
+    private func manifest(voice: String, output: URL, source: String = "s", rate: Float? = nil,
+                          modelRevision: String? = nil) -> ReadingManifest {
         ReadingManifest(kind: ReadingManifest.readingKind, schemaVersion: ReadingManifest.currentSchemaVersion,
-                        sourceSHA256: "s", voiceIdentifier: voice, rate: nil, title: "Garden", author: nil,
+                        sourceSHA256: source, voiceIdentifier: voice, rate: rate, title: "Garden", author: nil,
                         language: "en", comment: "c", format: .current, output: output.path, outputSHA256: nil,
-                        duration: nil, chapters: [], status: "incomplete", parts: [])
+                        duration: nil, chapters: [], status: "incomplete", parts: [], modelRevision: modelRevision)
     }
 
-    private func save(_ manifest: ReadingManifest, in directory: URL) throws {
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        try JSONEncoder().encode(manifest).write(to: directory.appendingPathComponent(ReadingManifest.fileName))
+    /// Saves a reading's manifest where its cache would be for `output` (the folder name is the cache's, keyed by the
+    /// output and the reading's settings), changed at `changed`.
+    private func start(_ manifest: ReadingManifest, changed: Date = Date()) throws {
+        let (location, _) = try ReadingOutput.resolve(output: manifest.output, name: "Garden.m4a",
+                                                      identity: "\(manifest.voiceIdentifier)-\(manifest.sourceSHA256)"
+                                                          + "-\(String(describing: manifest.rate))",
+                                                      readingsRoot: readings)
+        try FileManager.default.createDirectory(at: location.workDirectory, withIntermediateDirectories: true)
+        let url = location.workDirectory.appendingPathComponent(ReadingManifest.fileName)
+        try JSONEncoder().encode(manifest).write(to: url)
+        try FileManager.default.setAttributes([.modificationDate: changed], ofItemAtPath: url.path)
     }
 
-    private func identity(_ voice: String) -> String { "identity-of-\(voice)" }
+    private func saved(rate: Float? = nil) -> ReadingManifest? {
+        ReadingResumeVoice.saved(output: output.path, name: "Garden.m4a", readingsRoot: readings, sourceSHA256: "s",
+                                 rate: rate, metadata: metadata)
+    }
 
-    @Test func anExplicitOutputResumesWithTheVoiceItsCacheWasMadeWith() throws {
-        let readings = root.appendingPathComponent("Readings", isDirectory: true)
-        let output = root.appendingPathComponent("Garden.m4a")
+    @Test func aReadingStartedWithAnyVoiceIsFound() throws {
         try FileManager.default.createDirectory(at: readings, withIntermediateDirectories: true)
-        // Started with the Apple voice, before natural voices were installed.
-        let (location, _) = try ReadingOutput.resolve(output: output.path, name: "Garden.m4a",
-                                                      identity: identity(apple), readingsRoot: readings)
-        try save(manifest(voice: apple, output: output), in: location.workDirectory)
-        // Now the natural voice would be the default: it comes first, and has no reading.
-        #expect(ReadingResumeVoice.saved(output: output.path, name: "Garden.m4a", readingsRoot: readings,
-                                         candidates: [natural, apple], identity: identity) == apple)
-        #expect(ReadingResumeVoice.saved(output: output.path, name: "Garden.m4a", readingsRoot: readings,
-                                         candidates: [natural], identity: identity) == nil)
+        #expect(saved() == nil)
+        // Started with a voice given by --voice, none of today's defaults.
+        let fred = "com.apple.speech.synthesis.voice.Fred"
+        try start(manifest(voice: fred, output: output))
+        #expect(saved()?.voiceIdentifier == fred)
+        // Readings of another file, of other text, or at another rate are not this one.
+        try start(manifest(voice: apple, output: root.appendingPathComponent("Other.m4a")),
+                  changed: Date(timeIntervalSinceNow: 60))
+        try start(manifest(voice: apple, output: output, source: "other text"), changed: Date(timeIntervalSinceNow: 60))
+        try start(manifest(voice: apple, output: output, rate: 0.6), changed: Date(timeIntervalSinceNow: 60))
+        #expect(saved()?.voiceIdentifier == fred)
+        #expect(saved(rate: 0.6)?.voiceIdentifier == apple)
     }
 
     @Test func theLatestOfSeveralReadingsOfTheSameOutputResumes() throws {
-        let readings = root.appendingPathComponent("Readings", isDirectory: true)
-        let output = root.appendingPathComponent("Garden.m4a")
         try FileManager.default.createDirectory(at: readings, withIntermediateDirectories: true)
-        func start(_ voice: String, changed: Date) throws {
-            let (location, _) = try ReadingOutput.resolve(output: output.path, name: "Garden.m4a",
-                                                          identity: identity(voice), readingsRoot: readings)
-            try save(manifest(voice: voice, output: output), in: location.workDirectory)
-            try FileManager.default.setAttributes(
-                [.modificationDate: changed],
-                ofItemAtPath: location.workDirectory.appendingPathComponent(ReadingManifest.fileName).path)
-        }
         // Started with Alba, stopped; Alba's pack removed; the same text started again with the Apple voice.
-        try start(natural, changed: Date(timeIntervalSinceNow: -3_600))
-        try start(apple, changed: Date())
-        // The natural voice is tried first, but the later reading, the Apple one, resumes.
-        #expect(ReadingResumeVoice.saved(output: output.path, name: "Garden.m4a", readingsRoot: readings,
-                                         candidates: [natural, apple], identity: identity) == apple)
+        try start(manifest(voice: natural, output: output, modelRevision: NaturalVoiceModels.revision),
+                  changed: Date(timeIntervalSinceNow: -3_600))
+        try start(manifest(voice: apple, output: output))
+        #expect(saved()?.voiceIdentifier == apple)
         // Had the natural reading been the later one, it would resume (and ask for its pack).
-        try start(natural, changed: Date(timeIntervalSinceNow: 60))
-        #expect(ReadingResumeVoice.saved(output: output.path, name: "Garden.m4a", readingsRoot: readings,
-                                         candidates: [natural, apple], identity: identity) == natural)
+        try start(manifest(voice: natural, output: output, modelRevision: NaturalVoiceModels.revision),
+                  changed: Date(timeIntervalSinceNow: 60))
+        #expect(saved()?.voiceIdentifier == natural)
     }
 
     @Test func aReadingsFolderResumesWithTheVoiceItsManifestSaved() throws {
-        let folder = root.appendingPathComponent("Readings/1234", isDirectory: true)
-        try save(manifest(voice: apple, output: folder.appendingPathComponent("Garden.m4a")), in: folder)
-        #expect(ReadingResumeVoice.saved(output: folder.path, name: "Garden.m4a",
-                                         readingsRoot: root.appendingPathComponent("Readings"),
-                                         candidates: [natural], identity: identity) == apple)
+        let folder = readings.appendingPathComponent("1234", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        try JSONEncoder().encode(manifest(voice: apple, output: folder.appendingPathComponent("Garden.m4a")))
+            .write(to: folder.appendingPathComponent(ReadingManifest.fileName))
+        #expect(ReadingResumeVoice.saved(output: folder.path, name: "Garden.m4a", readingsRoot: readings,
+                                         sourceSHA256: "s", rate: nil, metadata: metadata)?.voiceIdentifier == apple)
+    }
+
+    @Test func aNaturalReadingFromAnotherCommitIsRefusedBeforeAskingForItsPack() throws {
+        let old = manifest(voice: natural, output: output, modelRevision: "0000000000000000000000000000000000000000")
+        // Pack removed and the voices updated since: no use reinstalling (a 530 MB download) to be refused then.
+        let error = #expect(throws: HolosError.self) { try ReadingResumeVoice.voice(of: old, installed: []) }
+        #expect(error?.localizedDescription.contains("another version of the natural voices") == true)
+        #expect(error?.localizedDescription.contains("setup --natural-voices") == false)
+        #expect(throws: HolosError.self) { try ReadingResumeVoice.voice(of: old, installed: [.english]) }
+        // The same commit, pack removed: install it again.
+        let current = manifest(voice: natural, output: output, modelRevision: NaturalVoiceModels.revision)
+        let missing = #expect(throws: HolosError.self) { try ReadingResumeVoice.voice(of: current, installed: []) }
+        #expect(missing?.localizedDescription.contains("setup --natural-voices") == true)
+        #expect(try ReadingResumeVoice.voice(of: current, installed: [.english]) == natural)
+        #expect(try ReadingResumeVoice.voice(of: manifest(voice: apple, output: output), installed: []) == apple)
     }
 
     @Test func printTextNamesTheFileNotTheVoice() throws {
@@ -80,35 +101,9 @@ import Testing
         let text = try ReadingPreview.printed(
             script: script, metadata: AudioBookMetadata(title: "Garden", author: nil, language: "en"),
             voiceName: "Natural — Alba (English)", voiceID: natural, output: folder.path, fileName: "Garden.m4a",
-            identity: identity(natural), readingsRoot: root.appendingPathComponent("Readings"))
+            identity: "identity", readingsRoot: readings)
         let lines = text.components(separatedBy: "\n")
         #expect(lines.contains("Voice: Natural — Alba (English) (pocket:en:alba)"))
         #expect(lines.contains { $0.hasPrefix("File: ") && $0.hasSuffix("/Out/Garden.m4a") })
-    }
-}
-
-@Suite struct ReadingResumeCandidateTests {
-    @Test func theNaturalVoiceIsACandidateWhetherOrNotItsPackIsInstalled() throws {
-        #expect(ReadingResumeVoice.candidates(language: "en-CA", apple: "ava") == ["pocket:en:alba", "ava"])
-        #expect(ReadingResumeVoice.candidates(language: "fr", apple: "amelie") == ["pocket:fr:estelle", "amelie"])
-        #expect(ReadingResumeVoice.candidates(language: "de-DE", apple: "anna") == ["anna"])
-        // A reading started with Alba is found (its pack may have been removed since; that is told afterwards).
-        let root = FileManager.default.temporaryDirectory.appendingPathComponent("holos-candidates-\(UUID().uuidString)")
-        let readings = root.appendingPathComponent("Readings", isDirectory: true)
-        try FileManager.default.createDirectory(at: readings, withIntermediateDirectories: true)
-        let output = root.appendingPathComponent("Garden.m4a")
-        let identity = { (voice: String) in "identity-of-\(voice)" }
-        let (location, _) = try ReadingOutput.resolve(output: output.path, name: "Garden.m4a",
-                                                      identity: identity("pocket:en:alba"), readingsRoot: readings)
-        try FileManager.default.createDirectory(at: location.workDirectory, withIntermediateDirectories: true)
-        let manifest = ReadingManifest(
-            kind: ReadingManifest.readingKind, schemaVersion: ReadingManifest.currentSchemaVersion, sourceSHA256: "s",
-            voiceIdentifier: "pocket:en:alba", rate: nil, title: "Garden", author: nil, language: "en", comment: "c",
-            format: .current, output: output.path, outputSHA256: nil, duration: nil, chapters: [],
-            status: "incomplete", parts: [])
-        try JSONEncoder().encode(manifest).write(to: location.workDirectory.appendingPathComponent(ReadingManifest.fileName))
-        #expect(ReadingResumeVoice.saved(output: output.path, name: "Garden.m4a", readingsRoot: readings,
-                                         candidates: ReadingResumeVoice.candidates(language: "en", apple: "ava"),
-                                         identity: identity) == "pocket:en:alba")
     }
 }

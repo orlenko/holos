@@ -163,11 +163,12 @@ struct Read: AsyncParsableCommand {
         // A resume without --voice keeps the voice the reading was started with, which the default may no longer be
         // (natural voices installed since).
         let saved = request.resume && request.voice == nil
-            ? try ReadingResumeVoice.saved(output: request.output, name: name, readingsRoot: readings,
-                                           candidates: defaultVoiceCandidates(language: language),
-                                           identity: cacheIdentity)
+            ? ReadingResumeVoice.saved(output: request.output, name: name, readingsRoot: readings, script: script,
+                                       rate: request.rate, metadata: metadata)
             : nil
-        let selected = try saved.map(savedVoice) ?? resolveVoice(request.voice, language: language, explainDefault: true)
+        let selected = try saved.map {
+            try savedVoice(ReadingResumeVoice.voice(of: $0, installed: NaturalVoiceModels.installedPacks()))
+        } ?? resolveVoice(request.voice, language: language, explainDefault: true)
         let identity = cacheIdentity(selected.id)
         if request.printText {
             let voiceName = NaturalVoiceCatalog.voice(id: selected.id)?.title
@@ -254,28 +255,10 @@ let speechRateHelp = ArgumentHelp(
     }
 }
 
-/// The voices a reading in `language` may have been started with without `--voice` (see
-/// `ReadingResumeVoice.candidates`).
-@MainActor func defaultVoiceCandidates(language: String?) throws -> [String] {
-    ReadingResumeVoice.candidates(
-        language: language ?? Locale.preferredLanguages.first ?? "en-US",
-        apple: try resolveVoice(nil, language: language, explainDefault: false, allowNatural: false).id)
-}
-
-/// The voice a reading being resumed was started with, by identifier; it must still be there.
+/// The voice a reading being resumed was started with, by identifier (checked by `ReadingResumeVoice.voice(of:)`);
+/// an Apple voice must still be installed.
 @MainActor func savedVoice(_ id: String) throws -> VoiceDescriptor {
-    if NaturalVoiceCatalog.isNatural(id) {
-        // Found by its cache; whether its pack is still installed is told now, with how to get it back.
-        guard let voice = NaturalVoiceCatalog.voice(id: id) else {
-            throw HolosError.unavailable("The voice this reading was started with is not available: \(id)")
-        }
-        guard NaturalVoiceModels.installedPacks().contains(voice.pack) else {
-            throw HolosError.unavailable("This reading was started with \(voice.title), and the \(voice.pack.languageName) "
-                + "natural voices are no longer installed. Run voiceislocal setup --natural-voices"
-                + (voice.pack == .english ? "" : " --language \(voice.pack.languageCode)") + ", then resume.")
-        }
-        return voice.descriptor
-    }
+    if let natural = NaturalVoiceCatalog.voice(id: id) { return natural.descriptor }
     guard let voice = NativeSpeechRenderer.voices().first(where: { $0.id == id }) else {
         throw HolosError.unavailable("The voice this reading was started with is not installed any more: \(id)")
     }

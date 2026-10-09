@@ -1601,7 +1601,7 @@ enum ReadingCache {
     }
 }
 
-private func sha256(_ data: Data) -> String {
+func sha256(_ data: Data) -> String {
     hex(SHA256.hash(data: data))
 }
 
