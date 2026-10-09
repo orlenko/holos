@@ -595,7 +595,7 @@ public struct RecognitionResult: Codable, Sendable, Equatable {
 // MARK: - Timeline annotations for exports
 
 /// Why audio is missing for an interval. Open string code. The raw values are also the
-/// `reason` strings of `audioDiscontinuity` events (§3.2).
+/// `reason` strings of `audioDiscontinuity` events (`MeetingModels.swift`).
 public struct GapReason: OpenStringCode {
     public var rawValue: String
     public init(rawValue: String) { self.rawValue = rawValue }
