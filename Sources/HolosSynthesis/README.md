@@ -44,5 +44,5 @@ natural voices' catalog and pack install (their backend is in `HolosPocket`).
   when it is English, else en-US).
 
 **Tests:** `Tests/HolosSynthesisTests`. `NativeSpeechRendererTests` renders real speech to files and
-`AudioBookWriterTests` joins generated tones (both `.serialized`); `NaturalVoiceInstallTests` installs fake packs in
-temporary folders; `NaturalSpeechRenderingTests` uses a fake backend and checker. Nothing is played aloud.
+`AudioBookWriterTests` joins generated tones (both `.serialized`); `NaturalVoiceModelsTests` installs fake packs in
+temporary folders; `NaturalSpeechRendererTests` uses a fake backend and checker. Nothing is played aloud.

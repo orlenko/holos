@@ -6,8 +6,8 @@ import Synchronization
 
 /// Calls `onExit` once, on its own queue, when the process `pid` ends (a quit, a crash, a SIGKILL). `isAlive` says
 /// whether that process still runs: asked once the watch is registered, so a process that ended before (no exit event
-/// comes for it, and its pid may belong to another one by then) is seen too. `voiceislocal say` started by the app
-/// (`--parent-pid`) watches the app this way, with `getppid() == pid`: its parent is the app until the app ends.
+/// comes for it, and its pid may belong to another one by then) is seen too. `voiceislocal say --parent-pid` watches
+/// its parent this way, with `getppid() == pid`: its parent is that process until the process ends.
 ///
 /// Invariants:
 /// 1. `onExit` runs at most once: the exit event and the liveness check made after registering both go through
@@ -41,8 +41,8 @@ public final class ProcessExitWatch: @unchecked Sendable {
     public func cancel() { source.cancel() }
 }
 
-/// One `voiceislocal say` at a time writes a given output: a helper left running by an app that ended (a crash) holds
-/// the lock until it exits, and the helper the relaunched app starts for the same part waits for it. The lock files
+/// One `voiceislocal say --parent-pid` at a time writes a given output: one left running after its parent ended (a
+/// crash) holds the lock until it exits, and another started for the same output waits for it. The lock files
 /// live in a folder of the temporary directory (never beside the output, in a reading's folder), one per output path,
 /// and stay there: removing one while another process waits on it would let two hold it.
 public enum NaturalOutputLock {
@@ -63,13 +63,17 @@ public enum NaturalOutputLock {
     /// the lock is held by another. A cancellation ends the wait with `CancellationError`.
     public static func acquire(for output: URL, in folder: URL = folder, interval: Duration = .milliseconds(200),
                                waiting: @Sendable () -> Void = {}) async throws -> Int32 {
-        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true,
-                                                attributes: [.posixPermissions: 0o700])
         let url = file(for: output, in: folder)
-        let descriptor = open(url.path, O_RDWR | O_CREAT | O_CLOEXEC | O_NOFOLLOW, 0o600)
-        guard descriptor >= 0 else {
-            throw HolosError.io("Could not open \(url.path): \(String(cString: strerror(errno)))")
-        }
+        // The folder and the lock file are made off the caller's actor; the tries that follow never block.
+        let descriptor = try await Task.detached(priority: .userInitiated) { () throws -> Int32 in
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true,
+                                                    attributes: [.posixPermissions: 0o700])
+            let descriptor = open(url.path, O_RDWR | O_CREAT | O_CLOEXEC | O_NOFOLLOW, 0o600)
+            guard descriptor >= 0 else {
+                throw HolosError.io("Could not open \(url.path): \(String(cString: strerror(errno)))")
+            }
+            return descriptor
+        }.value
         var told = false
         while flock(descriptor, LOCK_EX | LOCK_NB) != 0 {
             guard errno == EWOULDBLOCK || errno == EINTR else {
@@ -97,15 +101,17 @@ public enum NaturalOutputLock {
     }
 }
 
-/// How `voiceislocal say` renders for the app (`--parent-pid`).
+/// How `voiceislocal say --parent-pid` renders: for as long as its parent runs.
 public enum NaturalHelperRun {
-    /// Runs `work` once no other process holds the lock of `output` (`NaturalOutputLock`: an earlier helper, left
-    /// running by an app that ended, is waited for; `waiting` says so once), and cancels it when the process `parent`
-    /// ends (`isAlive` false): `work`'s own cleanup runs, then `parentEnded`, and the error says the app quit.
+    /// Runs `work` once no other process holds the lock of `output` (`NaturalOutputLock`: an earlier one, left running
+    /// after its parent ended, is waited for; `waiting` says so once), and cancels it when the process `parent` ends
+    /// (`isAlive` false): `work`'s own cleanup runs, then `parentEnded` (off the main actor), and the error says the
+    /// parent quit.
     @MainActor public static func whileParentRuns<T: Sendable>(
         _ parent: Int32, isAlive: @escaping @Sendable () -> Bool, output: URL,
         lockFolder: URL = NaturalOutputLock.folder, interval: Duration = .milliseconds(200), waiting: @escaping @Sendable () -> Void = {},
-        parentEnded: () -> Void = {}, _ work: @escaping @MainActor () async throws -> T) async throws -> T {
+        parentEnded: @escaping @Sendable () -> Void = {}, _ work: @escaping @MainActor () async throws -> T)
+        async throws -> T {
         let task = Task { @MainActor in
             let lock = try await NaturalOutputLock.acquire(for: output, in: lockFolder, interval: interval,
                                                            waiting: waiting)
@@ -118,21 +124,21 @@ public enum NaturalHelperRun {
             return try await withTaskCancellationHandler { try await task.value } onCancel: { task.cancel() }
         } catch {
             guard watch.fired else { throw error }
-            parentEnded()
-            throw HolosError.incomplete("The app that started this render has quit.")
+            await Task.detached(priority: .userInitiated) { parentEnded() }.value
+            throw HolosError.incomplete("The process that started this render has quit.")
         }
     }
 }
 
-/// The folder the app makes for one `voiceislocal say` helper (`--scratch-directory`): `holos-natural-<UUID>` in the
-/// temporary folder, 0700, holding a marker file that names the app's pid. A helper whose app ended removes the folder
-/// only when it can tell it is that folder (`isMade`): `--scratch-directory` is a command-line option anyone can give,
-/// so any other folder is left alone.
+/// The folder a parent process makes for one `voiceislocal say --parent-pid` (its `--scratch-directory`):
+/// `holos-natural-<UUID>` in the temporary folder, 0700, holding a marker file that names the parent's pid. When the
+/// parent ends, `say` removes the folder only when it can tell it is that folder (`isMade`): `--scratch-directory` is a
+/// command-line option anyone can give, so any other folder is left alone.
 public enum NaturalHelperScratch {
     public static let prefix = "holos-natural-"
     public static let marker = ".holos-helper-owner"
 
-    /// Makes the folder for a helper of the app `owner` in `parent`.
+    /// Makes the folder for a `say` whose parent is `owner`, in `parent`.
     public static func create(in parent: URL = FileManager.default.temporaryDirectory,
                               owner: Int32 = getpid()) throws -> URL {
         let folder = parent.appendingPathComponent(prefix + UUID().uuidString, isDirectory: true)
@@ -149,7 +155,7 @@ public enum NaturalHelperScratch {
         return folder
     }
 
-    /// Whether `folder` is one `create` made in `temporaryRoot` for the app `owner`: named so, directly in that folder,
+    /// Whether `folder` is one `create` made in `temporaryRoot` for the parent `owner`: named so, directly in that folder,
     /// a real folder (not a link) of this user, holding the marker as a regular file (not a link) of this user that
     /// names `owner`.
     public static func isMade(_ folder: URL, for owner: Int32,

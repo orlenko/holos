@@ -68,8 +68,8 @@ struct Say: AsyncParsableCommand {
     @Option(help: ArgumentHelp("A natural voice: on or off, whether paragraphs are heard back.",
                                visibility: .hidden))
     var check: String?
-    @Option(help: ArgumentHelp("The app that started this: when it ends, the render stops and cleans up; another one "
-                               + "still writing the same output is waited for.", visibility: .hidden))
+    @Option(help: ArgumentHelp("The process that started this: when it ends, the render stops and cleans up; "
+                               + "another one still writing the same output is waited for.", visibility: .hidden))
     var parentPid: Int32?
     @Option(help: "Maximum seconds to wait for another Voice is Local playback.") var maxWait: Double = 10
 
@@ -132,9 +132,9 @@ struct Say: AsyncParsableCommand {
             let url = fileURL(output)
             let result: RenderedAudio
             if let parentPid {
-                // The app's helper: it waits for an earlier one still writing this part (left by an app that
-                // ended), and stops when the app ends, removing the app's folder for it: only a folder the app made
-                // for it (NaturalHelperScratch), never another one named with --scratch-directory.
+                // Started by a parent process: it waits for an earlier one still writing this output (left by a
+                // parent that ended), and stops when its parent ends, removing the folder the parent made for it
+                // (NaturalHelperScratch), never another one named with --scratch-directory.
                 let scratch = scratchDirectory.map(fileURL)
                 result = try await NaturalHelperRun.whileParentRuns(
                     parentPid, isAlive: { getppid() == parentPid }, output: url,

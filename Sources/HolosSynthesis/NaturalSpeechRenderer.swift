@@ -23,9 +23,9 @@ public protocol SpeechChunkChecker: Sendable {
 }
 
 /// What a natural rendering depends on besides its voice, text, and speed: the system voice a failed paragraph is
-/// read with, and whether paragraphs are checked. A caller that renders one text in several runs can keep them and
-/// give them back (`render(…settings:)`; `say --fallback-voice`, `--check`), so its runs do not mix fallback voices or
-/// check policies.
+/// read with, and whether paragraphs are checked. A reading keeps them in its manifest when it starts
+/// (`ReadingManifest.rendererSettings`) and gives them back for every part (`render(…settings:)`; the app's parts pass
+/// them as `say --fallback-voice`, `--check`), so a resumed reading does not mix fallback voices or check policies.
 public struct NaturalRenderSettings: Codable, Sendable, Equatable {
     public var fallbackVoice: String?
     public var checked: Bool
@@ -173,7 +173,8 @@ public struct NaturalSpeechStats: Sendable, Equatable {
     public var fallbacks = 0
 }
 
-/// Renders text with a natural voice into one audio file (`voiceislocal say`), paragraph by paragraph (see
+/// Renders text with a natural voice into one audio file (`voiceislocal say`, a part of `voiceislocal read`; the app's
+/// parts go through `say`), paragraph by paragraph (see
 /// `NaturalSpeechPlan`), each with the same fixed seed so the same text always sounds the same.
 /// Each paragraph is heard back (`SpeechChunkCheck`) when a checker is given: one that fails is rendered again with
 /// another seed, and one that fails again is read by a system voice (`ParagraphFallback`), and logged.

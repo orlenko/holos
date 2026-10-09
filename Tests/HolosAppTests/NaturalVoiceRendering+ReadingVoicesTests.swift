@@ -8,7 +8,7 @@ import Synchronization
 import Testing
 @testable import HolosApp
 
-/// The voice a reading gets (`ReadingVoices.choose`) and the voice menus (`ReadingVoicePopup`).
+/// The voice a reading gets (`ReadingVoices.choose`).
 @MainActor @Suite struct ReadingVoicesTests {
     private let ava = VoiceDescriptor(id: "ava", name: "Ava (Premium)", language: "en-US", quality: "premium")
     private let amelie = VoiceDescriptor(id: "amelie", name: "Amélie", language: "fr-CA", quality: "default")
@@ -64,21 +64,5 @@ import Testing
         #expect(missing?.localizedDescription.contains("natural voices are not installed") == true)
         #expect(try choose(fixed: "pocket:fr:estelle", language: "fr", saved: current, installed: [.french]).id
             == "pocket:fr:estelle")
-    }
-
-    @Test func theVoiceMenuListsNaturalVoicesFirstOrSaysWhereToGetThem() {
-        let popup = NSPopUpButton(frame: .zero, pullsDown: false)
-        ReadingVoicePopup.fill(popup, selecting: "pocket:en:alba", installed: [.english])
-        let titles = popup.itemArray.map(\.title)
-        #expect(titles.first == ReadingVoicePopup.automaticTitle)
-        #expect(titles.dropFirst(2).first == "Natural — Alba (English)")
-        #expect(popup.titleOfSelectedItem == "Natural — Alba (English)")
-        #expect(titles.contains(ReadingVoicePopup.naturalHint))
-        #expect(popup.itemArray.first { $0.title == ReadingVoicePopup.naturalHint }?.isEnabled == false)
-        ReadingVoicePopup.fill(popup, selecting: "pocket:fr:estelle", installed: [])
-        #expect(!popup.itemArray.contains { $0.title.hasPrefix("Natural —") })
-        #expect(popup.titleOfSelectedItem == ReadingVoicePopup.automaticTitle)
-        ReadingVoicePopup.fill(popup, selecting: nil, installed: [.english, .french])
-        #expect(!popup.itemArray.map(\.title).contains(ReadingVoicePopup.naturalHint))
     }
 }

@@ -17,7 +17,7 @@ enum NaturalVoicesCLI {
         return filter
     }()
 
-    /// The renderer `say` uses for natural voices. The check runs unless `HOLOS_NATURAL_CHECK=0` or `--check off` (the
+    /// The renderer `say` and `read` use for natural voices. The check runs unless `HOLOS_NATURAL_CHECK=0` or `--check off` (the
     /// checker is always made, so `--check on` is honoured either way). What it finds (a re-render, a paragraph read by
     /// a system voice) is said on stderr. `scratch`: the folder its temporary files go in (`--scratch-directory`); nil for
     /// the system's temporary folder. `installed`: the packs found installed (`installedPacks()`).

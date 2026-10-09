@@ -1,5 +1,6 @@
 import AppKit
 import Darwin
+import HolosContent
 import HolosCore
 import HolosMeeting
 import HolosSynthesis
@@ -7,6 +8,12 @@ import os
 
 /// Settings › Reading's natural voice downloads (docs/design.md "Natural voices"): each pack's state and this app's
 /// running `voiceislocal setup --natural-voices`.
+///
+/// Invariants:
+/// 1. `installed` and `statuses` change only when a look (`refresh`) ends, together, from one scan.
+/// 2. One look runs at a time; every `refresh` called during it gets its result.
+/// 3. `pids[pack]` and `outputs[pack]` are set while this app's download of `pack` runs, and cleared when it ends.
+/// 4. At most one install runs at a time (`mayStart`).
 @MainActor
 final class NaturalVoicesAppState {
     var downloads: [NaturalVoicePack: NaturalVoiceDownload] = Dictionary(
@@ -55,9 +62,11 @@ final class NaturalVoicesAppState {
         }
     }
 
-    /// Whether `pack`'s download may start: one download at a time, so two models are never set up together.
+    /// Whether `pack`'s download may start: one install at a time, this app's or another process's (`voiceislocal
+    /// setup` in Terminal, its install lock held), so two models are never set up together.
     func mayStart(_ pack: NaturalVoicePack) -> Bool {
-        !downloads.contains { $0.key != pack && $0.value.isRunning }
+        !downloads.contains { $0.key != pack && ($0.value.isRunning || $0.value.phase == .otherProcess) }
+            && !statuses.contains { $0.key != pack && $0.value == .downloading }
     }
 }
 
@@ -130,7 +139,8 @@ extension HolosAppDelegate {
         updateSettings()
         Task { [weak self] in
             while let self, self.naturalVoices.downloads[pack]?.isRunning == true {
-                if let line = Self.lastLine(output) {
+                // Read off the main actor: the output file is on disk.
+                if let line = try? await offMain({ ProcessSpawner.lastLine(of: output) }) {
                     self.naturalVoices.downloads[pack]?.said(line)
                     self.updateSettings()
                 }
@@ -142,10 +152,20 @@ extension HolosAppDelegate {
     private func naturalVoiceDownloadEnded(_ pack: NaturalVoicePack, code: Int32) {
         let state = naturalVoices
         let output = state.outputs.removeValue(forKey: pack)
-        let last = output.flatMap(Self.lastLine)
-        output.map(Self.removeFile)
         state.pids[pack] = nil
         Self.readingLog.notice("Natural voices download (\(pack.rawValue, privacy: .public)) ended with \(code, privacy: .public)")
+        Task { [weak self] in
+            // The output's last line is read, and the file removed, off the main actor.
+            let last = try? await offMain { () -> String? in
+                defer { output.map(ProcessSpawner.removeRegularFile) }
+                return output.flatMap { ProcessSpawner.lastLine(of: $0) }
+            }
+            self?.naturalVoiceDownloadFinished(pack, code: code, last: last ?? nil)
+        }
+    }
+
+    private func naturalVoiceDownloadFinished(_ pack: NaturalVoicePack, code: Int32, last: String?) {
+        let state = naturalVoices
         state.refresh { [weak self] in
             let installed = state.statuses[pack] == .installed
             state.downloads[pack]?.ended(code: code, lastLine: last, installed: installed)

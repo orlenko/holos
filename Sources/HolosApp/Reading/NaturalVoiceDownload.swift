@@ -5,6 +5,11 @@ import HolosSynthesis
 /// One natural voice pack's download as Settings › Reading shows it (docs/design.md "Natural voices"): the app runs
 /// `voiceislocal setup --natural-voices` and follows its last stderr line; Cancel sends it SIGTERM (what it downloaded
 /// is kept, so the next download resumes). Pure: the app feeds it what happens.
+///
+/// Invariants:
+/// 1. Only `start` enters `downloading`, and only from `notInstalled` or `failed`; only `cancel` enters `cancelling`.
+/// 2. While this app's download runs (`isRunning`), a look at the files (`checked`) changes nothing; its end (`ended`)
+///    decides the phase.
 struct NaturalVoiceDownload: Equatable {
     enum Phase: Equatable {
         case notInstalled
