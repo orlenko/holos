@@ -92,6 +92,7 @@ let package = Package(
         .testTarget(name: "HolosSpeakersTests", dependencies: ["HolosSpeakers", "HolosCore", "HolosTestSupport"]),
         .testTarget(name: "HolosMeetingTests", dependencies: [
             "HolosMeeting", "HolosCore", "HolosStorage", "HolosAudio", "HolosSpeakers", "HolosSynthesis",
+            "HolosTestSupport",
         ]),
         .testTarget(name: "HolosEvaluationTests", dependencies: [
             "HolosEvaluation", "HolosMeeting", "HolosCore", "HolosStorage", "HolosAudio", "HolosSpeakers",

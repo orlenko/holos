@@ -3,6 +3,7 @@ import Foundation
 import HolosAudio
 import HolosCore
 @testable import HolosMeeting
+import HolosTestSupport
 import Synchronization
 import Testing
 
@@ -46,7 +47,7 @@ private func renderedPhrase(_ text: String, in folder: URL) throws -> (frames: [
 
 @Test(.enabled(if: speechFixtureEnabled), .timeLimit(.minutes(2)))
 func speechFixtureTimesAreAbsolute() async throws {
-    let temp = try TemporaryDirectory("speech")
+    let temp = try TemporaryDirectory("speech", permissions: 0o700)
     defer { temp.remove() }
     let (frames, onset) = try renderedPhrase(
         "The council meeting is called to order, and the minutes of the last meeting are adopted.", in: temp.url)

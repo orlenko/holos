@@ -67,7 +67,6 @@ struct RecognitionOptions: ParsableArguments {
 
     /// The backend's supported locale closest to the user's preferred languages (`DictationLanguage.preferred`).
     static func defaultLocale(backend: SpeechBackend) async -> String {
-        DictationLanguage.preferredForSystem(
-            supported: await AppleSpeechEngine.capabilities(backend: backend).supportedLocales)
+        await AppleSpeechEngine.defaultLocale(backend: backend)
     }
 }

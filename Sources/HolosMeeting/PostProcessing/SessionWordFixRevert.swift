@@ -42,34 +42,30 @@ enum SessionWordFixRevert {
         let lease = try SessionArchive.acquireProcessingLease(at: session)
         defer { lease.release() }
         return try await lease.withUse(for: session) {
-            return try await SessionArchive.withMaintenanceArchive(at: session, lease: lease) { _ in
-                try await SessionArchive.withSpeakerLockAsync(at: session) { () async throws -> String? in
-                    // The current transcript is the one this revert published: the journal says it was reverted
-                    // from `expectedTranscriptID` (`revertedFrom`), as the word-edit repair asks of an edit. Any other
-                    // transcript, a Review revert mark or not, is never repaired onto.
-                    guard let current = try SessionFiles.currentTranscript(session: session),
-                          current.id != expectedTranscriptID,
-                          try revertedFrom(current.id, session: session) == expectedTranscriptID else {
-                        throw HolosError.invalidInput("The reverted transcript is no longer current.")
-                    }
-                    guard let head = try SpeakerAnalysis.headState(session: session, transcript: current) else {
-                        throw HolosError.invalidInput("The speaker head to repair is missing.")
-                    }
-                    if head.sameTranscript { return nil }
-                    guard head.runID == expectedRunID else {
-                        throw HolosError.invalidInput("The speaker labels changed while they were being repaired.")
-                    }
-                    let snapshot = try SpeakerSessionSnapshot.load(session: session)
-                    guard snapshot.transcript.id == expectedTranscriptID,
-                          let plan = try SpeakerTranscriptRetarget.plan(session: session, from: snapshot,
-                                                                       to: current, now: now) else {
-                        throw HolosError.invalidInput("The speaker labels cannot be repaired on the reverted words.")
-                    }
-                    try Task.checkCancellation()
-                    try SpeakerTranscriptRetarget.stage(plan, session: session)
-                    try SpeakerTranscriptRetarget.publishHead(plan, session: session, now: now)
-                    return plan.run.id
+            try await TranscriptPublisher.publish(session: session, lease: lease) {
+                () throws -> TranscriptPublisher.Decision<String?> in
+                // The current transcript is the one this revert published: the journal says it was reverted
+                // from `expectedTranscriptID` (`revertedFrom`), as the word-edit repair asks of an edit. Any other
+                // transcript, a Review revert mark or not, is never repaired onto.
+                guard let current = try SessionFiles.currentTranscript(session: session),
+                      current.id != expectedTranscriptID,
+                      try revertedFrom(current.id, session: session) == expectedTranscriptID else {
+                    throw HolosError.invalidInput("The reverted transcript is no longer current.")
                 }
+                guard let head = try SpeakerAnalysis.headState(session: session, transcript: current) else {
+                    throw HolosError.invalidInput("The speaker head to repair is missing.")
+                }
+                if head.sameTranscript { return .keep(nil) }
+                guard head.runID == expectedRunID else {
+                    throw HolosError.invalidInput("The speaker labels changed while they were being repaired.")
+                }
+                let snapshot = try SpeakerSessionSnapshot.load(session: session)
+                guard snapshot.transcript.id == expectedTranscriptID,
+                      let plan = try SpeakerTranscriptRetarget.plan(session: session, from: snapshot,
+                                                                   to: current, now: now) else {
+                    throw HolosError.invalidInput("The speaker labels cannot be repaired on the reverted words.")
+                }
+                return .repairHead(plan, now: now, plan.run.id)
             }
         }
     }
@@ -127,24 +123,24 @@ enum SessionWordFixRevert {
 
     private static func publish(session: URL, word: WordRef, expectedTranscriptID: String, expectedRunID: String,
                                 lease: ProcessingLease, now: Date) async throws -> Outcome {
-        return try await SessionArchive.withMaintenanceArchive(at: session, lease: lease) { archive in
-            try await SessionArchive.withSpeakerLockAsync(at: session) { () async throws -> Outcome in
-                let current = try SessionFiles.currentTranscript(session: session)
-                guard let current, current.id == expectedTranscriptID else {
-                    throw HolosError.invalidInput("The transcript changed outside this window; reload and try again.")
-                }
-                let snapshot = try SpeakerSessionSnapshot.load(session: session)
-                guard snapshot.run?.id == expectedRunID, snapshot.transcript.id == current.id else {
-                    throw HolosError.invalidInput("The speaker labels changed outside this window; reload and try again.")
-                }
-                let base = try current.fixedFrom.map { try SessionFiles.transcript(id: $0, session: session) }
-                let (reverted, move, plan) = try planned(word, in: current, to: base, snapshot: snapshot,
-                                                         session: session, now: now)
-                let published = Outcome(runID: plan.run.id, move: move, transcriptID: reverted.id)
-                try Task.checkCancellation()
-                try SpeakerTranscriptRetarget.stage(plan, session: session)
-                let counts = WordFixes.Counts(reverted)
-                try await archive.recordEvent(kind: MeetingEventKind.wordsFixed, details: [
+        try await TranscriptPublisher.publish(session: session, lease: lease) {
+            () throws -> TranscriptPublisher.Decision<Outcome> in
+            let current = try SessionFiles.currentTranscript(session: session)
+            guard let current, current.id == expectedTranscriptID else {
+                throw HolosError.invalidInput("The transcript changed outside this window; reload and try again.")
+            }
+            let snapshot = try SpeakerSessionSnapshot.load(session: session)
+            guard snapshot.run?.id == expectedRunID, snapshot.transcript.id == current.id else {
+                throw HolosError.invalidInput("The speaker labels changed outside this window; reload and try again.")
+            }
+            let base = try current.fixedFrom.map { try SessionFiles.transcript(id: $0, session: session) }
+            let (reverted, move, plan) = try planned(word, in: current, to: base, snapshot: snapshot,
+                                                     session: session, now: now)
+            let published = Outcome(runID: plan.run.id, move: move, transcriptID: reverted.id)
+            let counts = WordFixes.Counts(reverted)
+            let change = TranscriptPublisher.Change(
+                transcript: reverted,
+                event: .init(kind: MeetingEventKind.wordsFixed, details: [
                     "transcriptID": reverted.id,
                     // Never empty: `reverted` refuses a transcript with no unfixed revision.
                     "base": base?.id ?? "",
@@ -154,21 +150,18 @@ enum SessionWordFixRevert {
                     "reverted": "1",
                     // Made from `current`: a speaker head still owed after a crash is found and repaired from it.
                     SessionWordEdit.headFromKey: current.id,
-                ])
+                ]),
+                retarget: plan, now: now,
                 // Committed once the pointer names it, even when the save throws after that.
-                try await TranscriptPointerSave.save(reverted, archive: archive, session: session) { error in
+                committed: { error in
                     IncompletePublication(message: "The word fix was reverted, but saving it failed afterwards: "
                                           + error.localizedDescription, outcome: published)
-                }
-                do {
-                    try SpeakerTranscriptRetarget.publishHead(plan, session: session, now: now)
-                } catch {
-                    throw IncompletePublication(message: "The word fix was reverted, but the speaker head could "
-                                                + "not be published: \(error.localizedDescription)",
-                                                outcome: published)
-                }
-                return published
-            }
+                },
+                headFailed: { error in
+                    IncompletePublication(message: "The word fix was reverted, but the speaker head could not be "
+                                          + "published: \(error.localizedDescription)", outcome: published)
+                })
+            return .publish(change, published)
         }
     }
 }

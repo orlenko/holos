@@ -5,22 +5,29 @@ and voice profiles. `docs/meeting-design.md` section 4 is the spec; `docs/meetin
 recorder ↔ app protocol.
 
 **Owns** (by folder)
-- Recorder (top level): `RecordingWorkflow.run` (the recorder loop the `voiceislocal record start` child runs),
+- Recorder (top level): `RecordingWorkflow.run` (the recorder loop the `voiceislocal record start` child runs; its
+  `Recorder` is split by concern into `Recorder+Capture`, `+Power`, `+Status` and `+Stop`; `RecorderExitSequence`, with
+  `ExitRetry` and `ExitStatusWait`, is the one place that writes `exited` and lets go of the locks still held then;
+  `EpochPlan` and `EpochMonitor` have their own files),
   `RecorderMachine` (its pure state machine), `ControlInbox` (`control/<uuid>.json` requests), `StatusWriter`
   (`status.json`), `LiveTrack` / `LiveTranscript` / `LiveText` / `LiveHints`, `DiskPolicy`, `TrackReplayer`,
   seams `MeetingCapture`, `LiveSpeechSession`, `SessionClock`, `RecorderStopSource`.
 - App-side control: `MeetingController` (`@MainActor`) with the pure `MeetingReducer`; `RecorderChannel` (reads
-  status, sends requests); `RecorderLauncher` (`ChildProcessLauncher`, `InProcessLauncher`), `MaintenanceLauncher`,
+  status, sends requests); `RecorderLauncher` (`ChildProcessLauncher`, `InProcessLauncher`; both take their options
+  from `RecordingOptions(settings:…)`), `MaintenanceLauncher`,
   and `ProcessSpawner` (the one `posix_spawn` helper). `CommandRunner` runs a `voiceislocal` command for the app
   through `MaintenanceLauncher`, with its output in `TemporaryArtifact`s, decoded off the main actor into a
   `CommandResult`; `CommandHandle` stops it with SIGTERM until it is reaped. `DoctorReport` is what `doctor --json`
   prints and the app reads; the `Session*Command.Outcome` types play the same role for the session commands.
 - `PostProcessing/`: `MeetingPostProcessor` and its stages (render, echo, diarize, align, recognize, export), the
-  language, word-fix, live-hint and deep-transcription stages, `SessionExports`, `SpeakerSessionSnapshot`, and the
-  library side of the `voiceislocal session …` commands (`Session*Command`).
+  language, word-fix, live-hint and deep-transcription stages, `TranscriptPublisher` (the one path that makes a new
+  transcript current, used by those stages and Review's word edits), `SessionExports`, `SpeakerSessionSnapshot`, and
+  the library side of the `voiceislocal session …` commands (`Session*Command`).
 - `Review/`: `ReviewSession` (`@MainActor`), playback, learning, paragraphs, maintenance.
 - `Summary/`: titles and summaries (`MeetingSummarizer`, `SessionSummarizeCommand`, `SessionRenameCommand`).
-- People and sessions: `VoiceProfileService`, `SpeakerEditor`, `SessionCatalog`, `SessionLocator`,
+- People and sessions: `VoiceProfileService`, `SpeakerEditor`, `SpeakerEditCommand` (the library side of the
+  `voiceislocal speakers` edits: one change on a `LoadedSpeakers` view, then the exports rewritten and the voice
+  samples from the meeting brought in step), `SessionCatalog`, `SessionLocator`,
   `SessionImporter`, `SessionRecoveryCommand`, `DeepTranscriptionQueue`, `EchoCatchUp`.
 
 **Must not own:** AppKit or windows, FluidAudio or WhisperKit (diarization and deep transcription run in a
@@ -46,5 +53,5 @@ NaturalLanguage, CryptoKit.
 move code out first, in a moves-only PR.
 
 **Tests:** `Tests/HolosMeetingTests` (`./scripts/test-target.sh HolosMeetingTests`). Target-local helpers:
-`Fakes.swift` (its own `PollBudget` and `eventually`, fakes), `SessionFixtures.swift`, `RecorderTestSupport.swift`;
-this target has not moved to `HolosTestSupport` yet.
+`Fakes.swift` (its own `eventually`, which polls on the main actor, and fakes), `SessionFixtures.swift`,
+`RecorderTestSupport.swift`; `TemporaryDirectory` and `PollBudget` come from `HolosTestSupport`.

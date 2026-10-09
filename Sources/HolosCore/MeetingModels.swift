@@ -231,13 +231,26 @@ public struct MeetingInfo: Codable, Sendable, Equatable {
 }
 
 /// Contents of `vocabulary.json`: names and terms the recognizer should prefer (contextual strings).
-/// Written once when a recording or import starts; at most 1,000 entries of at most 100 characters.
+/// Written once when a recording or import starts, with the strings `cleaned` keeps.
 public struct MeetingVocabulary: Codable, Sendable, Equatable {
+    public static let maximumEntries = 1_000
+    public static let maximumLength = 100
+
     public var schemaVersion: Int
     public var strings: [String]
 
     public init(schemaVersion: Int = 1, strings: [String]) {
         self.schemaVersion = schemaVersion; self.strings = strings
+    }
+
+    /// The vocabulary rule of the app's hand-off file, the recorder and import (docs/meeting-design.md §4.12): each
+    /// string trimmed of whitespace and newlines; empty ones and ones over `maximumLength` characters dropped; the
+    /// first `maximumEntries` kept, in order, duplicates included.
+    public static func cleaned(_ strings: [String]) -> [String] {
+        Array(strings
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty && $0.count <= maximumLength }
+            .prefix(maximumEntries))
     }
 }
 

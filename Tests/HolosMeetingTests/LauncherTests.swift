@@ -4,6 +4,7 @@ import HolosAudio
 import HolosCore
 @testable import HolosMeeting
 import HolosStorage
+import HolosTestSupport
 import Testing
 
 // The recorder and maintenance launchers and their posix_spawn helper (docs/meeting-design.md §4.1, §1.7 rule 4).
@@ -121,7 +122,7 @@ private func launcherMode(_ url: URL) -> mode_t? {
 
 @Test(.timeLimit(.minutes(1))) @MainActor func childWatcherRetriesWhenTheExitEventComesBeforeTheChildIsWaitable()
     async throws {
-    let temp = try TemporaryDirectory("launcher")
+    let temp = try TemporaryDirectory("launcher", permissions: 0o700)
     defer { temp.remove() }
     // The exit event can be posted before the child can be waited for: the first reaps after it find nothing. The
     // child exits only once the watcher is set up (the gate opens), however late that is.
@@ -148,7 +149,7 @@ private final class ReaperProbe {
 }
 
 @Test func spawnedChildInheritsNoLocks() async throws {
-    let temp = try TemporaryDirectory("launcher")
+    let temp = try TemporaryDirectory("launcher", permissions: 0o700)
     defer { temp.remove() }
     let session = try await launcherSession(in: temp.url)
     // The worst case: the speaker lock held on a descriptor without close-on-exec.
@@ -169,7 +170,7 @@ private final class ReaperProbe {
 }
 
 @Test(.timeLimit(.minutes(1))) @MainActor func inProcessLeaseHandoffHasNoGap() async throws {
-    let temp = try TemporaryDirectory("launcher")
+    let temp = try TemporaryDirectory("launcher", permissions: 0o700)
     defer { temp.remove() }
     let session = try await launcherSession(in: temp.url)
     let lease = try SessionArchive.acquireProcessingLease(at: session)
@@ -214,7 +215,7 @@ private final class ReaperProbe {
 }
 
 @Test @MainActor func failedHandOffSpawnKeepsTheLeaseAndReportsIt() async throws {
-    let temp = try TemporaryDirectory("launcher")
+    let temp = try TemporaryDirectory("launcher", permissions: 0o700)
     defer { temp.remove() }
     let session = try await launcherSession(in: temp.url)
     let lease = try SessionArchive.acquireProcessingLease(at: session)
@@ -230,7 +231,7 @@ private final class ReaperProbe {
 /// A log folder that cannot be made, or a log that cannot be opened, is dropped: the labelling child still starts,
 /// with its stderr discarded, instead of the labelling being reported as failed because of the log.
 @Test @MainActor func unusableLabellingLogDoesNotStopTheLabelling() async throws {
-    let temp = try TemporaryDirectory("launcher")
+    let temp = try TemporaryDirectory("launcher", permissions: 0o700)
     defer { temp.remove() }
     // A regular file where the log folder should be: the folder cannot be made.
     let blocker = temp.url.appendingPathComponent("not-a-folder")
@@ -258,7 +259,7 @@ private final class ReaperProbe {
 /// A recording that has not reached labelling is not told.
 @Test(.timeLimit(.minutes(1))) @MainActor
 func quitLeavesLabellingToTheChildAndEndsTheRecording() async throws {
-    let temp = try TemporaryDirectory("launcher")
+    let temp = try TemporaryDirectory("launcher", permissions: 0o700)
     defer { temp.remove() }
     // The labelling child runs until the test opens the gate (the defer opens it however the test ends), or until the
     // test's folder is gone (a test that timed out removes it in teardown, and the time limit does not kill children).
@@ -317,7 +318,7 @@ private func exists(_ url: URL) -> Bool {
 }
 
 @Test @MainActor func childLauncherLogsAndReportsTheExit() async throws {
-    let temp = try TemporaryDirectory("launcher")
+    let temp = try TemporaryDirectory("launcher", permissions: 0o700)
     defer { temp.remove() }
     let script = try launcherScript("""
         echo "parent=$HOLOS_RECORDER_PARENT args=$*"
@@ -344,7 +345,7 @@ private func exists(_ url: URL) -> Bool {
 }
 
 @Test @MainActor func childLauncherTerminateIsAGracefulSignal() async throws {
-    let temp = try TemporaryDirectory("launcher")
+    let temp = try TemporaryDirectory("launcher", permissions: 0o700)
     defer { temp.remove() }
     let ready = temp.url.appendingPathComponent("ready")
     let script = try launcherScript("""
@@ -367,7 +368,7 @@ private func exists(_ url: URL) -> Bool {
 }
 
 @Test @MainActor func missingRecorderExecutableIsUnavailable() throws {
-    let temp = try TemporaryDirectory("launcher")
+    let temp = try TemporaryDirectory("launcher", permissions: 0o700)
     defer { temp.remove() }
     let launcher = ChildProcessLauncher(executable: temp.url.appendingPathComponent("holos"), logDirectory: temp.url)
     #expect(throws: HolosError.self) {
@@ -377,7 +378,7 @@ private func exists(_ url: URL) -> Bool {
 }
 
 @Test @MainActor func maintenanceLauncherWritesOutputAndReportsTheCode() async throws {
-    let temp = try TemporaryDirectory("launcher")
+    let temp = try TemporaryDirectory("launcher", permissions: 0o700)
     defer { temp.remove() }
     let script = try launcherScript("""
         echo "{\\"summary\\": \\"$*\\"}"

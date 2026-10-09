@@ -3,6 +3,7 @@ import HolosAudio
 import HolosCore
 @testable import HolosMeeting
 import HolosStorage
+import HolosTestSupport
 import Testing
 
 // A replay that fails after partial progress keeps what it already transcribed (docs/meeting-design.md §4.6).
@@ -38,7 +39,7 @@ private func incompleteReplay(_ archive: SessionArchive, _ speech: FakeSpeechFac
 
 @Test(.timeLimit(.minutes(1)))
 func replayKeepsEarlierSessionsWhenTheNextCannotStart() async throws {
-    let temp = try TemporaryDirectory()
+    let temp = try TemporaryDirectory("meeting", permissions: 0o700)
     defer { temp.remove() }
     let archive = try await gappedArchive(in: temp.url)
     let speech = FakeSpeechFactory([
@@ -54,7 +55,7 @@ func replayKeepsEarlierSessionsWhenTheNextCannotStart() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func replayKeepsReportedFinalsWhenAppendFails() async throws {
-    let temp = try TemporaryDirectory()
+    let temp = try TemporaryDirectory("meeting", permissions: 0o700)
     defer { temp.remove() }
     let archive = try await gappedArchive(in: temp.url)
     // "Roll call" is final after the first buffer; the third append fails.
@@ -72,7 +73,7 @@ func replayKeepsReportedFinalsWhenAppendFails() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func replayKeepsEarlierSessionsAndReportedFinalsWhenFinishFails() async throws {
-    let temp = try TemporaryDirectory()
+    let temp = try TemporaryDirectory("meeting", permissions: 0o700)
     defer { temp.remove() }
     let archive = try await gappedArchive(in: temp.url)
     let speech = FakeSpeechFactory([
@@ -89,7 +90,7 @@ func replayKeepsEarlierSessionsAndReportedFinalsWhenFinishFails() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func replayKeepsReportedFinalsWhenFinishTimesOut() async throws {
-    let temp = try TemporaryDirectory()
+    let temp = try TemporaryDirectory("meeting", permissions: 0o700)
     defer { temp.remove() }
     let archive = try await gappedArchive(in: temp.url)
     let speech = FakeSpeechFactory([
@@ -103,7 +104,7 @@ func replayKeepsReportedFinalsWhenFinishTimesOut() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func finishedReplayCountsFinalsOnce() async throws {
-    let temp = try TemporaryDirectory()
+    let temp = try TemporaryDirectory("meeting", permissions: 0o700)
     defer { temp.remove() }
     let archive = try await gappedArchive(in: temp.url)
     let speech = FakeSpeechFactory([

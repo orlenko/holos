@@ -4,6 +4,7 @@ import HolosCore
 @testable import HolosMeeting
 import HolosSpeakers
 import HolosStorage
+import HolosTestSupport
 import Testing
 
 // One meeting mode from the app (docs/status.md "Meeting recording"): the system default input and the computer's
@@ -311,7 +312,7 @@ extension RecorderEnvironmentLoopTests {
     /// filter is on.
     @Test(.timeLimit(.minutes(1)))
     func appMeetingIsSavedAsACallWithOthersInTheRoom() async throws {
-        let temp = try TemporaryDirectory()
+        let temp = try TemporaryDirectory("meeting", permissions: 0o700)
         defer { temp.remove() }
         let captures = FakeCaptureFactory([FakeCaptureScript(frames: recorderCallFrames(count: 2))])
         let stop = ManualStopSource()
@@ -337,7 +338,7 @@ extension RecorderEnvironmentLoopTests {
     /// the microphone is diarized.
     @Test(.timeLimit(.minutes(1)))
     func microphoneOnlyMeetingRecordsTheDefaultInput() async throws {
-        let temp = try TemporaryDirectory()
+        let temp = try TemporaryDirectory("meeting", permissions: 0o700)
         defer { temp.remove() }
         let captures = FakeCaptureFactory([FakeCaptureScript(frames: FakeFrame.run(count: 3))])
         let stop = ManualStopSource()
@@ -363,7 +364,7 @@ extension RecorderEnvironmentLoopTests {
     /// recorder refuses as it does for the built-in microphone chosen explicitly.
     @Test(.timeLimit(.minutes(1)))
     func microphoneOnlyDefaultBuiltInRefusesWithTheLidClosed() async throws {
-        let temp = try TemporaryDirectory()
+        let temp = try TemporaryDirectory("meeting", permissions: 0o700)
         defer { temp.remove() }
         let captures = FakeCaptureFactory()
         var dependencies = recorderDependencies(captures: captures, clock: ManualSessionClock(0))
@@ -400,7 +401,7 @@ extension RecorderEnvironmentLoopTests {
     /// An external default input is recorded with the lid closed, with nothing to warn about.
     @Test(.timeLimit(.minutes(1)))
     func callWithAnExternalMicrophoneIgnoresTheLid() async throws {
-        let temp = try TemporaryDirectory()
+        let temp = try TemporaryDirectory("meeting", permissions: 0o700)
         defer { temp.remove() }
         let captures = FakeCaptureFactory([FakeCaptureScript(frames: recorderCallFrames(count: 2))])
         let stop = ManualStopSource()
@@ -421,7 +422,7 @@ extension RecorderEnvironmentLoopTests {
     }
 
     private func recordCallWithTheLidClosed(microphone: MicrophoneSelection, devices: RecorderDevices) async throws {
-        let temp = try TemporaryDirectory()
+        let temp = try TemporaryDirectory("meeting", permissions: 0o700)
         defer { temp.remove() }
         let power = RecorderFakePower(lidOpen: false)
         let environment = AudioEnvironmentEvents.silent()
@@ -490,7 +491,7 @@ extension RecorderEnvironmentLoopTests {
     /// waits for the lid, then resumes.
     @Test(.timeLimit(.minutes(1)))
     func microphoneOnlyOnTheBuiltInMicrophoneWaitsWhenTheLidCloses() async throws {
-        let temp = try TemporaryDirectory()
+        let temp = try TemporaryDirectory("meeting", permissions: 0o700)
         defer { temp.remove() }
         let power = RecorderFakePower()
         let clock = ManualSessionClock(0)
@@ -534,7 +535,7 @@ extension RecorderEnvironmentLoopTests {
     /// unplugged on a Mac without a built-in one): it waits asking for a microphone, not for the lid.
     @Test(.timeLimit(.minutes(1)))
     func microphoneOnlyWithoutAnyInputAsksForAMicrophone() async throws {
-        let temp = try TemporaryDirectory()
+        let temp = try TemporaryDirectory("meeting", permissions: 0o700)
         defer { temp.remove() }
         // The microphone is there while the recording starts (the start check and epoch 0's two plans), then gone.
         let lookups = SharedValue(0)
@@ -562,7 +563,7 @@ extension RecorderEnvironmentLoopTests {
     /// An external default input keeps recording when the lid closes: nothing restarts or warns.
     @Test(.timeLimit(.minutes(1)))
     func callOnAnExternalMicrophoneIgnoresTheLidClosing() async throws {
-        let temp = try TemporaryDirectory()
+        let temp = try TemporaryDirectory("meeting", permissions: 0o700)
         defer { temp.remove() }
         let power = RecorderFakePower()
         let captures = FakeCaptureFactory([FakeCaptureScript(frames: recorderCallFrames(count: 2))])
@@ -589,7 +590,7 @@ extension RecorderEnvironmentLoopTests {
     }
 
     private func closeTheLidDuringACall(microphone: MicrophoneSelection, devices: RecorderDevices) async throws {
-        let temp = try TemporaryDirectory()
+        let temp = try TemporaryDirectory("meeting", permissions: 0o700)
         defer { temp.remove() }
         let power = RecorderFakePower()
         let clock = ManualSessionClock(0)
@@ -675,7 +676,7 @@ extension RecorderEnvironmentLoopTests {
 /// An in-person session from before the change (the built-in microphone, mic diarized) post-processes as before.
 @Test(.timeLimit(.minutes(1)))
 func inPersonSessionStillPostProcesses() async throws {
-    let temp = try TemporaryDirectory("postprocess")
+    let temp = try TemporaryDirectory("postprocess", permissions: 0o700)
     defer { temp.remove() }
     let session = try await SessionFixtures.makeSession(
         in: temp.url, source: .microphone, audioSeconds: ["mic": 20], mode: .inPerson, othersInRoom: false,

@@ -5,6 +5,7 @@ import HolosCore
 @testable import HolosMeeting
 import HolosSpeakers
 import HolosStorage
+import HolosTestSupport
 import Testing
 
 // TranscriptRebuilder and the `voiceislocal session recover` chain (docs/meeting-design.md §5.6 PR3).
@@ -115,7 +116,7 @@ private func isHolosError(_ error: HolosError?, _ kind: String) -> Bool {
 // MARK: - Journal
 
 @Test func rebuildUsesJournalWordsAndSegmentIDs() async throws {
-    let temp = try TemporaryDirectory("rebuild")
+    let temp = try TemporaryDirectory("rebuild", permissions: 0o700)
     defer { temp.remove() }
     let segments = [
         SessionFixtures.segment(["one", "two", "three"], track: "mic", start: 1),
@@ -144,7 +145,7 @@ private func isHolosError(_ error: HolosError?, _ kind: String) -> Bool {
 }
 
 @Test func legacyEventsProduceUntimedSegments() async throws {
-    let temp = try TemporaryDirectory("rebuild")
+    let temp = try TemporaryDirectory("rebuild", permissions: 0o700)
     defer { temp.remove() }
     let segments = [SessionFixtures.segment(["hello", "there"], track: "mic", start: 2),
                     SessionFixtures.segment(["again"], track: "mic", start: 6)]
@@ -160,7 +161,7 @@ private func isHolosError(_ error: HolosError?, _ kind: String) -> Bool {
 }
 
 @Test func tornJournalTailIsTolerated() async throws {
-    let temp = try TemporaryDirectory("rebuild")
+    let temp = try TemporaryDirectory("rebuild", permissions: 0o700)
     defer { temp.remove() }
     let segments = [SessionFixtures.segment(["kept"], track: "mic", start: 1),
                     SessionFixtures.segment(["also", "kept"], track: "mic", start: 4)]
@@ -184,7 +185,7 @@ private func isHolosError(_ error: HolosError?, _ kind: String) -> Bool {
 }
 
 @Test func corruptMiddleLineIsTolerated() async throws {
-    let temp = try TemporaryDirectory("rebuild")
+    let temp = try TemporaryDirectory("rebuild", permissions: 0o700)
     defer { temp.remove() }
     let first = SessionFixtures.segment(["before"], track: "mic", start: 1)
     let second = SessionFixtures.segment(["after"], track: "mic", start: 5)
@@ -205,7 +206,7 @@ private func isHolosError(_ error: HolosError?, _ kind: String) -> Bool {
 // MARK: - Coverage and replay
 
 @Test func coverageIsLastFinalizedEnd() async throws {
-    let temp = try TemporaryDirectory("rebuild")
+    let temp = try TemporaryDirectory("rebuild", permissions: 0o700)
     defer { temp.remove() }
     let segments = [rebuilderSegment([("a", 35.2), ("b", 39.5)], start: 35, end: 40.0),
                     rebuilderSegment([("c", 50.1), ("d", 54.8)], start: 50, end: 55.2)]
@@ -217,7 +218,7 @@ private func isHolosError(_ error: HolosError?, _ kind: String) -> Bool {
 }
 
 @Test func coverageStopsAtBehindEvent() async throws {
-    let temp = try TemporaryDirectory("rebuild")
+    let temp = try TemporaryDirectory("rebuild", permissions: 0o700)
     defer { temp.remove() }
     let segments = [rebuilderSegment([("a", 10.1)], start: 10, end: 12),
                     rebuilderSegment([("b", 50.1), ("c", 54.8)], start: 50, end: 55.2)]
@@ -233,7 +234,7 @@ private func isHolosError(_ error: HolosError?, _ kind: String) -> Bool {
 }
 
 @Test func uncoveredTailIsReplayedAtWordLevel() async throws {
-    let temp = try TemporaryDirectory("rebuild")
+    let temp = try TemporaryDirectory("rebuild", permissions: 0o700)
     defer { temp.remove() }
     let journal = [rebuilderSegment([("x", 40.2), ("y", 44.1)], start: 40, end: 45),
                    rebuilderSegment([("a", 50.2), ("b", 52.0), ("c", 54.8)], start: 50, end: 55.2)]
@@ -264,7 +265,7 @@ private func isHolosError(_ error: HolosError?, _ kind: String) -> Bool {
 }
 
 @Test func rebuildPassesTheSessionVocabulary() async throws {
-    let temp = try TemporaryDirectory("rebuild")
+    let temp = try TemporaryDirectory("rebuild", permissions: 0o700)
     defer { temp.remove() }
     let session = try await rebuilderSession(in: temp.url, audio: ["mic": 5])
     try AtomicFile.writeJSON(MeetingVocabulary(strings: ["Maria Chen"]), to: SessionPaths.vocabulary(session))
@@ -276,7 +277,7 @@ private func isHolosError(_ error: HolosError?, _ kind: String) -> Bool {
 }
 
 @Test func replayedSecondsCountOverlappingChunksOnce() async throws {
-    let temp = try TemporaryDirectory("rebuild")
+    let temp = try TemporaryDirectory("rebuild", permissions: 0o700)
     defer { temp.remove() }
     let journal = [SessionFixtures.segment(["early"], track: "mic", start: 11.5)]
     let session = try await rebuilderSession(in: temp.url, audio: ["mic": 60], events: try rebuilderFinals(journal))
@@ -302,7 +303,7 @@ private func isHolosError(_ error: HolosError?, _ kind: String) -> Bool {
 }
 
 @Test func failedReplayPublishesNothing() async throws {
-    let temp = try TemporaryDirectory("rebuild")
+    let temp = try TemporaryDirectory("rebuild", permissions: 0o700)
     defer { temp.remove() }
     let journal = [SessionFixtures.segment(["kept"], track: "mic", start: 1)]
     let session = try await rebuilderSession(in: temp.url, audio: ["mic": 4], events: try rebuilderFinals(journal))
@@ -320,7 +321,7 @@ private func isHolosError(_ error: HolosError?, _ kind: String) -> Bool {
 }
 
 @Test func rebuildAfterDeletedAudioUsesTheJournalOnly() async throws {
-    let temp = try TemporaryDirectory("rebuild")
+    let temp = try TemporaryDirectory("rebuild", permissions: 0o700)
     defer { temp.remove() }
     let journal = [SessionFixtures.segment(["only", "words"], track: "mic", start: 1)]
     let session = try await rebuilderSession(in: temp.url, audio: ["mic": 4], events: try rebuilderFinals(journal))
@@ -337,7 +338,7 @@ private func isHolosError(_ error: HolosError?, _ kind: String) -> Bool {
 // MARK: - Locks and idempotence
 
 @Test func rebuildSavesWhileHoldingItsOwnLease() async throws {
-    let temp = try TemporaryDirectory("rebuild")
+    let temp = try TemporaryDirectory("rebuild", permissions: 0o700)
     defer { temp.remove() }
     let session = try await rebuilderSession(in: temp.url, events: try rebuilderFinals(
         [SessionFixtures.segment(["hi"], track: "mic", start: 1)]))
@@ -351,7 +352,7 @@ private func isHolosError(_ error: HolosError?, _ kind: String) -> Bool {
 }
 
 @Test func recoveryIsIdempotent() async throws {
-    let temp = try TemporaryDirectory("rebuild")
+    let temp = try TemporaryDirectory("rebuild", permissions: 0o700)
     defer { temp.remove() }
     let session = try await rebuilderSession(in: temp.url, source: .microphoneAndSystem, events: try rebuilderFinals(
         [rebuilderSegment([("a", 1.1)], start: 1, end: 2)]))
@@ -381,7 +382,7 @@ private func isHolosError(_ error: HolosError?, _ kind: String) -> Bool {
 }
 
 @Test func rebuildWithoutTranscriptionIsNotReusedWhenTranscriptionIsAsked() async throws {
-    let temp = try TemporaryDirectory("rebuild")
+    let temp = try TemporaryDirectory("rebuild", permissions: 0o700)
     defer { temp.remove() }
     let session = try await rebuilderSession(in: temp.url, audio: ["mic": 4], events: try rebuilderFinals(
         [rebuilderSegment([("a", 1.1)], start: 1, end: 1.5)]))
@@ -400,7 +401,7 @@ private func isHolosError(_ error: HolosError?, _ kind: String) -> Bool {
 }
 
 @Test func rebuildRefusesActiveRecording() async throws {
-    let temp = try TemporaryDirectory("rebuild")
+    let temp = try TemporaryDirectory("rebuild", permissions: 0o700)
     defer { temp.remove() }
     let archive = try SessionArchive.create(root: temp.url, name: "Live", source: .microphone, locale: "en-CA",
                                             backend: .speech)
@@ -419,7 +420,7 @@ private func isHolosError(_ error: HolosError?, _ kind: String) -> Bool {
 }
 
 @Test func rebuildRefusesAnArchiveThatIsNotRecovered() async throws {
-    let temp = try TemporaryDirectory("rebuild")
+    let temp = try TemporaryDirectory("rebuild", permissions: 0o700)
     defer { temp.remove() }
     let session = try await rebuilderSession(in: temp.url, events: try rebuilderFinals(
         [SessionFixtures.segment(["hi"], track: "mic", start: 1)]), finish: nil)
@@ -461,7 +462,7 @@ private func rebuilderDiarizer() -> FakeDiarizer {
 
 @Test(.timeLimit(.minutes(1)))
 func recoverRebuildAndPostProcessUnderOneLease() async throws {
-    let temp = try TemporaryDirectory("rebuild")
+    let temp = try TemporaryDirectory("rebuild", permissions: 0o700)
     defer { temp.remove() }
     let session = try await rebuilderDeadMeeting(in: temp.url)
     let probes = SharedValue<[RecoveryProbe]>([])
@@ -502,7 +503,7 @@ func recoverRebuildAndPostProcessUnderOneLease() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func recoverTwiceChangesNothing() async throws {
-    let temp = try TemporaryDirectory("rebuild")
+    let temp = try TemporaryDirectory("rebuild", permissions: 0o700)
     defer { temp.remove() }
     let session = try await rebuilderDeadMeeting(in: temp.url)
     let request = SessionRecoveryCommand.Request(session: session)
@@ -527,7 +528,7 @@ func recoverTwiceChangesNothing() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func recoverRelabelsWhenTheSavedLabelsAreUnusable() async throws {
-    let temp = try TemporaryDirectory("rebuild")
+    let temp = try TemporaryDirectory("rebuild", permissions: 0o700)
     defer { temp.remove() }
     let session = try await rebuilderDeadMeeting(in: temp.url)
     let request = SessionRecoveryCommand.Request(session: session)
@@ -589,7 +590,7 @@ func recoverRelabelsWhenTheSavedLabelsAreUnusable() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func recoverLeavesACompleteSessionAlone() async throws {
-    let temp = try TemporaryDirectory("rebuild")
+    let temp = try TemporaryDirectory("rebuild", permissions: 0o700)
     defer { temp.remove() }
     let transcript = SessionFixtures.transcript(SessionFixtures.alternatingSegments(track: "mic"))
     let session = try await SessionFixtures.makeSession(in: temp.url, mode: .inPerson, transcript: transcript)
@@ -608,7 +609,7 @@ func recoverLeavesACompleteSessionAlone() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func recoverWithoutSpeakerModelsStillSucceeds() async throws {
-    let temp = try TemporaryDirectory("rebuild")
+    let temp = try TemporaryDirectory("rebuild", permissions: 0o700)
     defer { temp.remove() }
     let session = try await rebuilderDeadMeeting(in: temp.url)
     let outcome = try await SessionRecoveryCommand.run(SessionRecoveryCommand.Request(session: session, transcribe: false), voiceSamples: .none,
@@ -621,7 +622,7 @@ func recoverWithoutSpeakerModelsStillSucceeds() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func recoverTwiceWithoutSpeakerModelsChangesNothing() async throws {
-    let temp = try TemporaryDirectory("rebuild")
+    let temp = try TemporaryDirectory("rebuild", permissions: 0o700)
     defer { temp.remove() }
     let session = try await rebuilderDeadMeeting(in: temp.url)
     let request = SessionRecoveryCommand.Request(session: session, transcribe: false)
@@ -666,7 +667,7 @@ private func rebuilderTranscriptionIncomplete(in root: URL, saved: [TranscriptSe
 
 @Test(.timeLimit(.minutes(1)))
 func recoverKeepsTheTranscriptSavedAtStop() async throws {
-    let temp = try TemporaryDirectory("rebuild")
+    let temp = try TemporaryDirectory("rebuild", permissions: 0o700)
     defer { temp.remove() }
     let journal = [SessionFixtures.segment(["one", "two"], track: "mic", start: 1),
                    SessionFixtures.segment(["three"], track: "mic", start: 4)]
@@ -695,7 +696,7 @@ func recoverKeepsTheTranscriptSavedAtStop() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func recoverRebuildsATranscriptionIncompleteSessionWithoutATranscript() async throws {
-    let temp = try TemporaryDirectory("rebuild")
+    let temp = try TemporaryDirectory("rebuild", permissions: 0o700)
     defer { temp.remove() }
     let journal = [SessionFixtures.segment(["one", "two"], track: "mic", start: 1)]
     let session = try await rebuilderTranscriptionIncomplete(in: temp.url, saved: nil, journal: journal)
@@ -736,7 +737,7 @@ private func rebuilderDiedWhileProcessing(in root: URL, saveAll: Bool = true) as
 
 @Test(.timeLimit(.minutes(1)), arguments: [true, false])
 func recoverKeepsTheTranscriptSavedBeforeFinish(transcribe: Bool) async throws {
-    let temp = try TemporaryDirectory("rebuild")
+    let temp = try TemporaryDirectory("rebuild", permissions: 0o700)
     defer { temp.remove() }
     let (session, saved) = try await rebuilderDiedWhileProcessing(in: temp.url)
     let before = try rebuilderCurrent(session)
@@ -770,7 +771,7 @@ func recoverKeepsTheTranscriptSavedBeforeFinish(transcribe: Bool) async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func recoverLabelsTheTranscriptSavedBeforeFinish() async throws {
-    let temp = try TemporaryDirectory("rebuild")
+    let temp = try TemporaryDirectory("rebuild", permissions: 0o700)
     defer { temp.remove() }
     let (session, saved) = try await rebuilderDiedWhileProcessing(in: temp.url)
     let savedID = try #require(saved?.id)
@@ -795,7 +796,7 @@ func recoverLabelsTheTranscriptSavedBeforeFinish() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func recoverRebuildsAProcessingSessionWithoutATranscript() async throws {
-    let temp = try TemporaryDirectory("rebuild")
+    let temp = try TemporaryDirectory("rebuild", permissions: 0o700)
     defer { temp.remove() }
     let (session, _) = try await rebuilderDiedWhileProcessing(in: temp.url, saveAll: false)
     let outcome = try await SessionRecoveryCommand.run(
@@ -820,7 +821,7 @@ func recoverRebuildsAProcessingSessionWithoutATranscript() async throws {
 }
 
 @Test func rebuildThatCannotBeRecordedKeepsTheTranscript() async throws {
-    let temp = try TemporaryDirectory("rebuild")
+    let temp = try TemporaryDirectory("rebuild", permissions: 0o700)
     defer { temp.remove() }
     let journal = [SessionFixtures.segment(["kept"], track: "mic", start: 1)]
     let session = try await rebuilderSession(in: temp.url, events: try rebuilderFinals(journal))
@@ -872,7 +873,7 @@ private func rebuilderUnrecordedRebuild(_ session: URL) async throws -> RebuildR
 
 @Test(.timeLimit(.minutes(1)))
 func recoverFinishesRecordingARebuildOfAProcessingSession() async throws {
-    let temp = try TemporaryDirectory("rebuild")
+    let temp = try TemporaryDirectory("rebuild", permissions: 0o700)
     defer { temp.remove() }
     // The recorder stopped capturing and died before saving a transcript; the rebuild could not be recorded.
     let (session, _) = try await rebuilderDiedWhileProcessing(in: temp.url, saveAll: false)
@@ -904,7 +905,7 @@ func recoverFinishesRecordingARebuildOfAProcessingSession() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func recoverStillKeepsTheRecorderTranscriptAfterAnUnrecordedRebuildElsewhere() async throws {
-    let temp = try TemporaryDirectory("rebuild")
+    let temp = try TemporaryDirectory("rebuild", permissions: 0o700)
     defer { temp.remove() }
     // A rebuild event that names another transcript does not make the recorder's transcript a rebuild.
     let (session, saved) = try await rebuilderDiedWhileProcessing(in: temp.url)
@@ -926,7 +927,7 @@ func recoverStillKeepsTheRecorderTranscriptAfterAnUnrecordedRebuildElsewhere() a
 
 @Test(.timeLimit(.minutes(1)))
 func recoverRefusedWhileAnotherProcessHoldsTheLease() async throws {
-    let temp = try TemporaryDirectory("rebuild")
+    let temp = try TemporaryDirectory("rebuild", permissions: 0o700)
     defer { temp.remove() }
     let session = try await rebuilderDeadMeeting(in: temp.url)
     let lease = try SessionArchive.acquireProcessingLease(at: session)
@@ -976,7 +977,7 @@ private func rebuilderDamage(_ session: URL, transcriptID: String, _ damage: Str
 
 @Test(arguments: ["truncated", "garbage", "otherID"])
 func rebuildReplacesAnUnreadableCurrentRevision(damage: String) async throws {
-    let temp = try TemporaryDirectory("rebuild")
+    let temp = try TemporaryDirectory("rebuild", permissions: 0o700)
     defer { temp.remove() }
     let session = try await rebuilderSession(in: temp.url, events: try rebuilderFinals(
         [rebuilderSegment([("a", 1.1)], start: 1, end: 2)]))
@@ -996,7 +997,7 @@ func rebuildReplacesAnUnreadableCurrentRevision(damage: String) async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func recoverWithoutPostProcessingRepairsAnUnreadableRebuiltTranscript() async throws {
-    let temp = try TemporaryDirectory("rebuild")
+    let temp = try TemporaryDirectory("rebuild", permissions: 0o700)
     defer { temp.remove() }
     let session = try await rebuilderDeadMeeting(in: temp.url)
     let request = SessionRecoveryCommand.Request(session: session, transcribe: false, postProcess: false)
@@ -1013,7 +1014,7 @@ func recoverWithoutPostProcessingRepairsAnUnreadableRebuiltTranscript() async th
 
 @Test(arguments: ["pointer", "revision"], [false, true])
 func rebuildRefusesANewerCurrentTranscript(file: String, force: Bool) async throws {
-    let temp = try TemporaryDirectory("rebuild")
+    let temp = try TemporaryDirectory("rebuild", permissions: 0o700)
     defer { temp.remove() }
     let session = try await rebuilderSession(in: temp.url, events: try rebuilderFinals(
         [rebuilderSegment([("a", 1.1)], start: 1, end: 2)]))
@@ -1033,7 +1034,7 @@ func rebuildRefusesANewerCurrentTranscript(file: String, force: Bool) async thro
 }
 
 @Test func rebuildRefusesANewerVocabulary() async throws {
-    let temp = try TemporaryDirectory("rebuild")
+    let temp = try TemporaryDirectory("rebuild", permissions: 0o700)
     defer { temp.remove() }
     let session = try await rebuilderSession(in: temp.url, audio: ["mic": 5])
     try AtomicFile.writeJSON(MeetingVocabulary(strings: ["Maria Chen"]), to: SessionPaths.vocabulary(session))
@@ -1055,7 +1056,7 @@ func rebuildRefusesANewerCurrentTranscript(file: String, force: Bool) async thro
 
 @Test(.timeLimit(.minutes(1)), arguments: [false, true])
 func recoverRefusesANewerPostProcessingRecord(force: Bool) async throws {
-    let temp = try TemporaryDirectory("rebuild")
+    let temp = try TemporaryDirectory("rebuild", permissions: 0o700)
     defer { temp.remove() }
     let session = try await rebuilderDeadMeeting(in: temp.url)
     let first = try await SessionRecoveryCommand.run(
@@ -1084,7 +1085,7 @@ func recoverRefusesANewerPostProcessingRecord(force: Bool) async throws {
 
 @Test(.timeLimit(.minutes(1)), arguments: ["head", "run"], ["absent", "failed", "damaged", "noModels"])
 func recoverRefusesNewerSpeakerFilesBeforePostProcessing(file: String, record: String) async throws {
-    let temp = try TemporaryDirectory("rebuild")
+    let temp = try TemporaryDirectory("rebuild", permissions: 0o700)
     defer { temp.remove() }
     let session = try await rebuilderDeadMeeting(in: temp.url)
     let first = try await SessionRecoveryCommand.run(
@@ -1133,7 +1134,7 @@ func recoverRefusesNewerSpeakerFilesBeforePostProcessing(file: String, record: S
 
 @Test(.timeLimit(.minutes(1)))
 func recoverAndCatalogAgreeWhenTheHeadIsMissing() async throws {
-    let temp = try TemporaryDirectory("rebuild")
+    let temp = try TemporaryDirectory("rebuild", permissions: 0o700)
     defer { temp.remove() }
     let session = try await rebuilderDeadMeeting(in: temp.url)
     let request = SessionRecoveryCommand.Request(session: session)
@@ -1158,7 +1159,7 @@ func recoverAndCatalogAgreeWhenTheHeadIsMissing() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func postProcessingRefusesANewerRecordAndReplacesADamagedOne() async throws {
-    let temp = try TemporaryDirectory("rebuild")
+    let temp = try TemporaryDirectory("rebuild", permissions: 0o700)
     defer { temp.remove() }
     let transcript = SessionFixtures.transcript(SessionFixtures.alternatingSegments(track: "mic"))
     let session = try await SessionFixtures.makeSession(in: temp.url, mode: .inPerson, transcript: transcript)
@@ -1182,7 +1183,7 @@ func postProcessingRefusesANewerRecordAndReplacesADamagedOne() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func recoverRebuildsAnUnreadableTranscriptSavedBeforeFinish() async throws {
-    let temp = try TemporaryDirectory("rebuild")
+    let temp = try TemporaryDirectory("rebuild", permissions: 0o700)
     defer { temp.remove() }
     let (session, saved) = try await rebuilderDiedWhileProcessing(in: temp.url)
     try rebuilderDamage(session, transcriptID: try #require(saved?.id), "garbage")
@@ -1210,7 +1211,7 @@ func recoverRebuildsAnUnreadableTranscriptSavedBeforeFinish() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func recoverDoesNotReuseAPostProcessingRecordOfAnotherSession() async throws {
-    let temp = try TemporaryDirectory("rebuild")
+    let temp = try TemporaryDirectory("rebuild", permissions: 0o700)
     defer { temp.remove() }
     let session = try await rebuilderDeadMeeting(in: temp.url)
     let request = SessionRecoveryCommand.Request(session: session, transcribe: false)
@@ -1236,7 +1237,7 @@ func recoverDoesNotReuseAPostProcessingRecordOfAnotherSession() async throws {
 }
 
 @Test func rebuildReadsTheAudioDeletionMarker() async throws {
-    let temp = try TemporaryDirectory("rebuild")
+    let temp = try TemporaryDirectory("rebuild", permissions: 0o700)
     defer { temp.remove() }
     let journal = [SessionFixtures.segment(["early"], track: "mic", start: 0.5, wordSeconds: 0.3)]
     let session = try await rebuilderSession(in: temp.url, audio: ["mic": 4], events: try rebuilderFinals(journal))
@@ -1272,7 +1273,7 @@ func recoverDoesNotReuseAPostProcessingRecordOfAnotherSession() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func postProcessingRefusesANewerAudioDeletionMarker() async throws {
-    let temp = try TemporaryDirectory("rebuild")
+    let temp = try TemporaryDirectory("rebuild", permissions: 0o700)
     defer { temp.remove() }
     let transcript = SessionFixtures.transcript(SessionFixtures.alternatingSegments(track: "mic"))
     let session = try await SessionFixtures.makeSession(in: temp.url, mode: .inPerson, transcript: transcript)
@@ -1309,7 +1310,7 @@ func postProcessingRefusesANewerAudioDeletionMarker() async throws {
 }
 
 @Test func vocabularyOfVersionZeroIsIgnoredAsDamage() async throws {
-    let temp = try TemporaryDirectory("rebuild")
+    let temp = try TemporaryDirectory("rebuild", permissions: 0o700)
     defer { temp.remove() }
     let session = try await rebuilderSession(in: temp.url)
     try rebuilderReplace(SessionPaths.vocabulary(session), with: Data(#"{"schemaVersion":0,"strings":["x"]}"#.utf8))
