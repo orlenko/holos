@@ -46,6 +46,8 @@ extension ReviewWindow {
     /// of the earlier row's last word for forward Delete), where that word is after the word edits saved meanwhile
     /// (`joinBoundary`), so typing goes on there; asked from the menu, the joined row is selected. VoiceOver hears
     /// that the rows were joined. Nothing of that once the joins were dropped meanwhile (⌘Z pressed, say).
+    /// While the speaker change saves, with the field closed, typing is refused with a beep (`ReviewKeyWindow`,
+    /// `closeFieldForJoin`): never taken as the list's or playback's keys, and never kept to send again.
     func applyJoin(_ join: ReviewParagraphJoin, request: ReviewJoinRequest) {
         let runID = review.projection.runID
         // The rows the join was asked on: labelled again since, a turn or speaker ID may name another now.
@@ -82,10 +84,16 @@ extension ReviewWindow {
             finish()
             return
         }
+        // Asked from the field: it is closed until the speaker change saves, and typing is refused meanwhile.
+        let keyWindow = window
+        let closed = request.fromField ? keyWindow.closeFieldForJoin() : nil
+        keyWindow.fieldClosedWhile = { [weak self] in self?.turnList.editingWords == true }
         refresh()
         let cleared = joinsCleared
         let target: ReviewAssignTarget = join.speakerID.map { .speaker($0) } ?? .unknown
         perform { [weak self] review in
+            // However it ends: saved (the field opens again below), failed, dropped or cancelled.
+            defer { keyWindow.reopenFieldAfterJoin(closed) }
             // Checked again as the assignment is queued: a reload may have adopted a relabel since.
             guard sameLabels() else { throw HolosError.invalidInput(Self.joinRelabelled) }
             try await review.assign(join.reassign, to: target)
@@ -96,12 +104,20 @@ extension ReviewWindow {
         }
     }
 
-    /// Drops every join (Undo, a change that failed, a relabel): rows read as they group on their own again.
+    /// Drops every join (Undo, a change that failed, a relabel): rows read as they group on their own again
+    /// (`dropJoins`).
     func clearJoins() {
+        let joined = !paragraphBreaks.joins.isEmpty
+        dropJoins()
+        if joined { refresh() }
+    }
+
+    /// Drops every join without refreshing (`clearJoins`, or `refresh` when an undo was saved): a dropped join still
+    /// saving opens no field, so its closed field stops refusing typing at once.
+    func dropJoins() {
         joinsCleared += 1
-        guard !paragraphBreaks.joins.isEmpty else { return }
+        window.reopenFieldAfterJoin(window.fieldClosedForJoin)
         paragraphBreaks.clearJoins()
-        refresh()
     }
 
     /// Opens the field again where a join from it met the rows: `request.word`, followed through the word moves saved

@@ -83,6 +83,12 @@ struct ReviewWindowJoinTests {
 
     private static var retained: [ReviewWindow] = []
 
+    /// Closes the window, then removes the temporary folder `open` made for its meeting.
+    private func closeAndRemove(_ window: ReviewWindow, _ session: URL) async throws {
+        await window.closeAndWait()
+        try FileManager.default.removeItem(at: session.deletingLastPathComponent())
+    }
+
     /// Labels the meeting again elsewhere (a command): a new head run with the same turns, IDs and speakers.
     private func relabel(_ session: URL) throws {
         let snapshot = try SpeakerSessionSnapshot.load(session: session)
@@ -137,6 +143,92 @@ struct ReviewWindowJoinTests {
                                       charactersIgnoringModifiers: "z", isARepeat: false, keyCode: 6))
     }
 
+    /// A key typed as the window receives it (`characters`, with `flags`).
+    private func key(_ window: ReviewWindow, _ characters: String, code: UInt16,
+                     flags: NSEvent.ModifierFlags = []) throws -> NSEvent {
+        try #require(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: flags, timestamp: 0,
+                                      windowNumber: window.window.windowNumber, context: nil, characters: characters,
+                                      charactersIgnoringModifiers: characters, isARepeat: false, keyCode: code))
+    }
+
+    /// Backspace joins another speaker's row while its speaker change is held in its save; the refusals the window
+    /// makes meanwhile are counted (never a beep).
+    private func joinWithHeldSave(_ window: ReviewWindow) async -> (release: AsyncStream<Void>.Continuation,
+                                                                     refused: () -> Int) {
+        let (stream, release) = AsyncStream<Void>.makeStream()
+        let calls = Calls()
+        window.review.beforeEdit = {
+            if calls.next() == 1 { for await _ in stream {} }
+        }
+        var refused = 0
+        window.window.refuse = { refused += 1 }
+        window.setEditMode(true)
+        press(window, row: 1, word: 0, caret: 0, #selector(NSResponder.deleteBackward(_:)))
+        _ = await until { calls.peek() == 1 }
+        return (release, { refused })
+    }
+
+    /// Backspace joins another speaker's row and the speaker change takes a while to save: the field is closed until
+    /// it has, and keys pressed meanwhile (K, Space, J, L, ↓) are refused, never taken as playback's or the list's
+    /// (the selected row stays). The field opens again at the join as it was.
+    @Test(.timeLimit(.minutes(1))) func typingWhileTheJoinSavesIsRefused() async throws {
+        let (window, session) = try await open([Spec(speaker: "S1", start: 0, words: ["amber", "birch"]),
+                                                Spec(speaker: "S2", start: 2, words: ["cedar", "dune"]),
+                                                Spec(speaker: "S3", start: 12, words: ["elm", "fern"])])
+        let (release, refused) = await joinWithHeldSave(window)
+        #expect(await until { rows(window) == [["T1", "T2"], ["T3"]] })
+        #expect(window.turnList.wordEdit == nil, "Closed while the speaker change saves.")
+        window.turnList.select(["T1", "T2"], scroll: false)
+        let selected = window.turnList.selectedTurnIDs
+        for (characters, code) in [("k", UInt16(40)), (" ", 49), ("j", 38), ("l", 37)] {
+            window.window.sendEvent(try key(window, characters, code: code))
+        }
+        window.window.sendEvent(try key(window, "\u{F701}", code: 125, flags: [.numericPad, .function]))
+        #expect(refused() == 5)
+        #expect(window.turnList.selectedTurnIDs == selected, "↓ never reached the list.")
+        release.finish()
+        #expect(await until { journal(session).count == 1 && window.turnList.wordEdit != nil })
+        #expect(window.turnList.editField.stringValue == "cedar")
+        #expect(window.window.fieldClosedForJoin == nil)
+        window.turnList.cancelWordEdit()
+        try await closeAndRemove(window, session)
+    }
+
+    /// ⌘Z while the join saves undoes it: the field will not open again, so keys go where they always go at once.
+    @Test(.timeLimit(.minutes(1))) func undoingTheJoinWhileItSavesStopsRefusingKeys() async throws {
+        let (window, session) = try await open([Spec(speaker: "S1", start: 0, words: ["amber", "birch"]),
+                                                Spec(speaker: "S2", start: 2, words: ["cedar", "dune"])])
+        let (release, refused) = await joinWithHeldSave(window)
+        #expect(window.window.fieldClosedForJoin != nil)
+        #expect(window.handleKey(try commandZ(window)))
+        #expect(window.window.fieldClosedForJoin == nil)
+        window.window.sendEvent(try key(window, "j", code: 38))
+        #expect(refused() == 0)
+        release.finish()
+        #expect(await until { window.review.snapshot.journal.edits.count == 2 && speaker(window, "T2") == "S2" })
+        try await closeAndRemove(window, session)
+    }
+
+    /// An undo saved elsewhere drops every join as the window refreshes, while the join's speaker change still waits:
+    /// its field will not open again, so keys stop being refused then.
+    @Test(.timeLimit(.minutes(1))) func joinsDroppedByARefreshStopRefusingKeys() async throws {
+        let (window, session) = try await open([Spec(speaker: "S1", start: 0, words: ["amber", "birch"]),
+                                                Spec(speaker: "S2", start: 2, words: ["cedar", "dune"])])
+        try await window.review.apply([.rename(speakerID: "S1", name: "Ash")])
+        window.refresh()
+        // Undone elsewhere (a command), read by the review but not yet shown: the window refreshes at the join.
+        let view = try #require(try SpeakerSessionSnapshot.load(session: session).projection)
+        _ = try SpeakerEditor.undoLast(view: view, session: session, source: "cli", regenerateExports: false)
+        window.review.onChange = nil
+        await window.review.reload()
+        let (release, _) = await joinWithHeldSave(window)
+        #expect(window.paragraphJoins.isEmpty, "The refresh at the join dropped it.")
+        #expect(window.window.fieldClosedForJoin == nil)
+        release.finish()
+        #expect(await until { window.review.snapshot.journal.edits.count == 3 })
+        try await closeAndRemove(window, session)
+    }
+
     /// After Backspace joins another speaker's row, the field opens again at the join with nothing typed in it: ⌘Z
     /// there is the review's undo (the banner says so), which gives the row its speaker back, never the field's own
     /// typing undo. With something typed, ⌘Z undoes the typing.
@@ -157,7 +249,7 @@ struct ReviewWindowJoinTests {
         #expect(ReviewWindow.undoIsTyping(editingText: true, typingToUndo: true))
         #expect(!ReviewWindow.undoIsTyping(editingText: true, typingToUndo: false))
         #expect(!ReviewWindow.undoIsTyping(editingText: false, typingToUndo: true))
-        await window.closeAndWait()
+        try await closeAndRemove(window, session)
     }
 
     /// Typing put back in the field without its undo (a ⇧-click widening the field, a failed save handing the text
@@ -180,7 +272,7 @@ struct ReviewWindowJoinTests {
         #expect(journal(session).count == 1)
         #expect(ReviewWindow.undoIsTyping(editingText: true, typingToUndo: false, unsavedText: true))
         window.turnList.cancelWordEdit()
-        await window.closeAndWait()
+        try await closeAndRemove(window, session)
     }
 
     /// "cedar" typed over with "dune", then everything selected and "cedar" typed again: the field reads as it opened,
@@ -208,7 +300,7 @@ struct ReviewWindowJoinTests {
         #expect(journal(session) == [.reassignTurns(turnIDs: ["T2"], to: "S1"), .rename(speakerID: "S1", name: "Ash")])
         #expect(window.paragraphJoins == ["T2"] && rows(window) == [["T1", "T2"]])
         list.cancelWordEdit()
-        await window.closeAndWait()
+        try await closeAndRemove(window, session)
     }
 
     /// Closing by hand saves the field's typing first; that save fails (the transcript cannot be written): every join
@@ -235,7 +327,7 @@ struct ReviewWindowJoinTests {
         try? FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: transcripts.path)
         #expect(journal(session).isEmpty)
         list.cancelWordEdit()
-        await window.closeAndWait()
+        try await closeAndRemove(window, session)
     }
 
     /// Delete Audio starting while the field holds typing saves it first; when that save fails, every join is dropped,
@@ -263,7 +355,7 @@ struct ReviewWindowJoinTests {
         window.review.beforeEdit = nil
         try? FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: transcripts.path)
         await window.resumeAfterMaintenance(hold)
-        await window.closeAndWait()
+        try await closeAndRemove(window, session)
     }
 
     /// A word edit saved before the join's speaker change ("amber" became "am ber", moving "birch" one on): forward
@@ -289,7 +381,7 @@ struct ReviewWindowJoinTests {
         #expect(list.wordEdit?.words.first?.ref.word == 2)
         #expect(list.editField.currentEditor()?.selectedRange == NSRange(location: 5, length: 0))
         list.cancelWordEdit()
-        await window.closeAndWait()
+        try await closeAndRemove(window, session)
     }
 
     /// Return splits a turn and, while the split still saves (its second part has a temporary ID), Backspace joins
@@ -311,7 +403,7 @@ struct ReviewWindowJoinTests {
         let saved = window.review.resolvedTurnID(part)
         #expect(await until { rows(window) == [["T1", saved], ["T2"]] })
         window.turnList.cancelWordEdit()
-        await window.closeAndWait()
+        try await closeAndRemove(window, session)
     }
 
     /// A named speaker's row of a system-audio and a microphone turn, joined to the unknown speaker's row before it:
@@ -327,7 +419,7 @@ struct ReviewWindowJoinTests {
         window.turnList.joinChosen(offer.choice)
         #expect(await until { journal(session) == [.reassignTurns(turnIDs: ["T2", "T3"], to: nil)] })
         #expect(await until { speaker(window, "T3") == nil && rows(window) == [["T1", "T2", "T3"]] })
-        await window.closeAndWait()
+        try await closeAndRemove(window, session)
     }
 
     /// A change that fails drops every join, its own and any other: here the join's speaker change is refused (the
@@ -350,7 +442,7 @@ struct ReviewWindowJoinTests {
                 && rows(window) == [["T1"], ["T2"], ["T3"]]
         })
         #expect(journal(session) == [.reassignTurns(turnIDs: ["T2"], to: "S1")], "Only the change made elsewhere.")
-        await window.closeAndWait()
+        try await closeAndRemove(window, session)
     }
 
     /// Any ⌘Z drops every join, whatever it undoes: here an unrelated rename made after the joins. The same speaker
@@ -368,7 +460,7 @@ struct ReviewWindowJoinTests {
         #expect(await until { journal(session).count == 3 })
         // The join's own speaker change stays (only the rename was undone): T2 is S1's, past the gap, its own row.
         #expect(await until { speaker(window, "T2") == "S1" && rows(window) == [["T1"], ["T2"]] })
-        await window.closeAndWait()
+        try await closeAndRemove(window, session)
     }
 
     /// ⌘Z before the join's speaker change was saved drops that change: the join goes with it.
@@ -391,7 +483,7 @@ struct ReviewWindowJoinTests {
             speaker(window, "T2") == "S2" && window.paragraphJoins.isEmpty && rows(window) == [["T1"], ["T2"]]
         })
         #expect(!journal(session).contains(.reassignTurns(turnIDs: ["T2"], to: "S1")))
-        await window.closeAndWait()
+        try await closeAndRemove(window, session)
     }
 
     /// The meeting labelled again (a new run, read by a reload): every join goes.
@@ -407,7 +499,7 @@ struct ReviewWindowJoinTests {
             window.review.snapshot.run?.id != firstRun && window.paragraphJoins.isEmpty
                 && rows(window) == [["T1"], ["T2"]]
         })
-        await window.closeAndWait()
+        try await closeAndRemove(window, session)
     }
 
     /// Three speakers' rows, each past the gap: C joined to B, then B and C joined to A. Both saved, nothing undone:
@@ -426,7 +518,7 @@ struct ReviewWindowJoinTests {
         window.refresh()
         #expect(rows(window) == [["T1", "T2", "T3"]])
         #expect(window.paragraphJoins == ["T2", "T3"])
-        await window.closeAndWait()
+        try await closeAndRemove(window, session)
     }
 
     /// A row given to S2 (still saving), then joined back to the S1 row before it: the join follows its own
@@ -453,7 +545,7 @@ struct ReviewWindowJoinTests {
         window.refresh()
         #expect(rows(window) == [["T1", "T2"], ["T3"]])
         #expect(window.paragraphJoins == ["T2"])
-        await window.closeAndWait()
+        try await closeAndRemove(window, session)
     }
 
     /// Return splits a named turn and, while the split saves, its first part goes to the unknown speaker and Backspace
@@ -486,7 +578,7 @@ struct ReviewWindowJoinTests {
         #expect(await until {
             speaker(window, saved) == "S1" && window.paragraphJoins.isEmpty && rows(window) == [["T1"], [saved], ["T2"]]
         })
-        await window.closeAndWait()
+        try await closeAndRemove(window, session)
     }
 
     /// A join resolved on rows the meeting was labelled again under before it was made (a reload adopted a relabel in
@@ -509,7 +601,7 @@ struct ReviewWindowJoinTests {
         try await window.review.apply([.rename(speakerID: "S1", name: "Ash")])
         #expect(journal(session) == [.rename(speakerID: "S1", name: "Ash")])
         #expect(window.paragraphJoins.isEmpty && rows(window) == [["T1"], ["T2"]])
-        await window.closeAndWait()
+        try await closeAndRemove(window, session)
     }
 
     /// Backspace joins while another change saves, and ⌘Z drops the join's speaker change before it runs: the join
@@ -539,7 +631,7 @@ struct ReviewWindowJoinTests {
         #expect(window.turnList.wordEdit == nil, "No field opened for a join that was cancelled.")
         #expect(rows(window) == [["T1"], ["T2"]] && window.paragraphJoins.isEmpty)
         #expect(journal(session) == [.rename(speakerID: "S1", name: "Ash"), .rename(speakerID: "S2", name: "Birch")])
-        await window.closeAndWait()
+        try await closeAndRemove(window, session)
     }
 
     /// C joined to B, then B and C joined to A; both speaker changes undone elsewhere (a command) before the window
@@ -569,7 +661,7 @@ struct ReviewWindowJoinTests {
         #expect(await until { speaker(window, "T3") == "S2" })
         window.refresh()
         #expect(rows(window) == [["T1"], ["T2"], ["T3"]] && window.paragraphJoins.isEmpty)
-        await window.closeAndWait()
+        try await closeAndRemove(window, session)
     }
 
     /// Backspace joins, and ⌘Z is pressed while the join's speaker change saves: once it saves, the field does not
@@ -595,6 +687,6 @@ struct ReviewWindowJoinTests {
         window.review.beforeEdit = nil
         #expect(window.turnList.wordEdit == nil, "No field opened for a join undone while it saved.")
         #expect(journal(session).first == .reassignTurns(turnIDs: ["T2"], to: "S1"))
-        await window.closeAndWait()
+        try await closeAndRemove(window, session)
     }
 }
