@@ -8872,8 +8872,9 @@ genuinely local (the user, or people in the room) stays even while the call play
   is a new identity for the same frames: files written under an earlier rule (which recorded
   the SHA-256 alone) are out of date, and the echo catch-up (`needsAnalysis`, through
   `echoMaskIsCurrent`) runs `echo-analyze` on them, which keeps the saved analysis and rewrites
-  the files and the voice samples the new view changed; summaries already made are not
-  remade. A meeting whose audio was deleted keeps its analysis (Review uses it): the catch-up
+  the files and the voice samples the new view changed. A summary made under the earlier rule
+  is out of date when the rule hides different words (`MeetingSummaryKey` hashes every
+  rendered line), so with automatic summaries on it is made again, once, like after an edit. A meeting whose audio was deleted keeps its analysis (Review uses it): the catch-up
   looks at it too, and `echo-analyze` rewrites its transcript files from the saved analysis
   and removes a voice sample the new view changed (only a new analysis needs the audio; no
   sample can be computed again without it). Recover rewrites them whenever they are, whatever

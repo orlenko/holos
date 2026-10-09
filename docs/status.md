@@ -223,10 +223,13 @@ timeline and a larger local-model benchmark are follow-ups.
   only where it has speech of its own (25 ms fades; short local runs the call explains,
   echo cancelled poorly, stay muted), and as recorded otherwise
   (headphones, no analysis); the review shows a speaker's consecutive turns as paragraphs.
-  The labels trust the same local speech as playback: a microphone word counts as the
-  user's only through local frames in a stretch with at least 3 frames clearly above the
-  echo, so poorly cancelled echo no longer becomes microphone turns or "Unknown" rows, while
-  speech over the call and quiet speech stay yours. Transcript files written under the
+  The labels have their own, wider trust than playback: a microphone word counts as the
+  user's through local frames that have clear evidence nearby (at least 3 frames clearly
+  above the echo), sustained or short speech whose echo sits below the mic, or no echo
+  worth the name; playback still opens only on evidenced stretches, so a word can stay
+  yours while its microphone audio stays muted. Poorly cancelled echo no longer becomes
+  microphone turns or "Unknown" rows, while speech over the call and quiet speech stay
+  yours. Transcript files written under the
   earlier rule show as out of date and the background echo catch-up rewrites them (the
   saved analysis is kept). `voiceislocal session echo-label-stats <id>…` (hidden) prints
   counts of what the rule changed per call, no text.
