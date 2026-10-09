@@ -154,7 +154,7 @@ public actor SessionArchive {
             throw HolosError.invalidInput("A session ID must be an uppercase UUID, like \(UUID().uuidString).")
         }
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-        let directory = root.appendingPathComponent("\(id).holos", isDirectory: true)
+        let directory = SessionPaths.folder(for: id, in: root)
         guard mkdir(directory.path, 0o700) == 0 else {
             let code = errno
             if code == EEXIST { throw HolosError.invalidInput("A session with ID \(id) already exists.") }
@@ -178,9 +178,7 @@ public actor SessionArchive {
     /// first (`AtomicFile.pinSessionFolder`), as an import does. The caller fsyncs the folder holding `folder`.
     public static func create(inEmptyFolder folder: Int32, directory: URL, name: String, source: AudioSource,
                               locale: String, backend: SpeechBackend) throws -> SessionArchive {
-        let id = directory.deletingPathExtension().lastPathComponent
-        guard directory.isFileURL, directory.pathExtension == "holos",
-              UUID(uuidString: id)?.uuidString == id,
+        guard directory.isFileURL, let id = SessionPaths.parse(folderName: directory.lastPathComponent),
               !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, !locale.isEmpty else {
             throw HolosError.invalidInput("Invalid archive folder, name, or locale.")
         }
@@ -618,7 +616,7 @@ public actor SessionArchive {
         }
         let manifest = try HolosJSON.decoder().decode(SessionManifest.self, from: data)
         guard manifest.schemaVersion == 1, validToken(manifest.id),
-              directory.lastPathComponent == "\(manifest.id).holos",
+              directory.lastPathComponent == SessionPaths.folderName(for: manifest.id),
               !manifest.name.isEmpty, !manifest.locale.isEmpty, !manifest.status.isEmpty,
               Set(manifest.chunks.map(\.id)).count == manifest.chunks.count,
               Set(manifest.chunks.map(\.relativePath)).count == manifest.chunks.count,

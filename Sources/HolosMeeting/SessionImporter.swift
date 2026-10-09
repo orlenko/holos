@@ -407,7 +407,7 @@ final class ImportStaging {
     func createSession(name sessionTitle: String, locale: String, backend: SpeechBackend) throws -> SessionArchive {
         precondition(sessionFD < 0, "createSession is called once")
         Self.beforeSession?(url)
-        let sessionName = "\(UUID().uuidString).holos"
+        let sessionName = SessionPaths.folderName(for: UUID().uuidString)
         guard mkdirat(folderFD, sessionName, 0o700) == 0 else {
             throw HolosError.io("Cannot create the session folder: \(Self.errnoText()).")
         }

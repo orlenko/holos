@@ -1,6 +1,7 @@
 import Darwin
 import Foundation
 import HolosCore
+import HolosStorage
 
 /// Turns what a user typed for `<session>` in a command into a session folder (docs/meeting-design.md §5.7).
 public enum SessionLocator {
@@ -21,7 +22,7 @@ public enum SessionLocator {
         }
         if !looksLikePath(trimmed), let uuid = UUID(uuidString: trimmed) {
             let id = uuid.uuidString
-            let url = root.appendingPathComponent("\(id).holos", isDirectory: true).standardizedFileURL
+            let url = SessionPaths.folder(for: id, in: root).standardizedFileURL
             switch try kind(of: url) {
             case .folder:
                 return url
@@ -36,7 +37,7 @@ public enum SessionLocator {
         }
         let url = URL(fileURLWithPath: (trimmed as NSString).expandingTildeInPath, isDirectory: true)
             .standardizedFileURL
-        guard url.pathExtension == "holos" else {
+        guard SessionPaths.isSessionFolderName(url.lastPathComponent) else {
             throw HolosError.invalidInput(
                 "\(trimmed) is not a session: give the path to a .holos folder or a session ID.")
         }

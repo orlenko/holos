@@ -277,7 +277,7 @@ struct MeetingControllerTuning: Sendable {
 
     /// The session folder of `sessionID` under the root.
     public func sessionURL(_ sessionID: String) -> URL {
-        root.appendingPathComponent("\(sessionID).holos", isDirectory: true)
+        SessionPaths.folder(for: sessionID, in: root)
     }
 
     // MARK: - Start checks
@@ -382,7 +382,7 @@ struct MeetingControllerTuning: Sendable {
             // meeting cannot start meanwhile.
             guard let status = try? RecorderChannel.readStatus(session: session),
                   status.phase.isMeetingActive || status.phase == .transcribing || status.phase == .postprocessing,
-                  session.deletingPathExtension().lastPathComponent == status.sessionID else { continue }
+                  session.lastPathComponent == SessionPaths.folderName(for: status.sessionID) else { continue }
             let liveness = RecorderChannel.liveness(session: session, now: now)
             guard MeetingReducer.isFresh(status, liveness: liveness, at: now) else { continue }
             if status.phase.isMeetingActive { return status }
