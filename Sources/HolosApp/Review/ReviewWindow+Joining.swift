@@ -13,7 +13,7 @@ extension ReviewWindow {
         guard review.isEditable else {
             return .refused(review.pauseReason ?? review.reloadProblem ?? "This meeting cannot be changed right now.")
         }
-        if let seen = request.runID, seen != review.projection.runID,
+        if let seen = request.seen.runID, seen != review.projection.runID,
            !review.keepsTurns(of: seen, in: review.projection.runID) {
             return .refused(Self.joinRelabelled)
         }
@@ -49,7 +49,7 @@ extension ReviewWindow {
     func applyJoin(_ join: ReviewParagraphJoin, request: ReviewJoinRequest) {
         let runID = review.projection.runID
         // The rows the join was asked on: labelled again since, a turn or speaker ID may name another now.
-        let seenRun = request.runID ?? runID
+        let seenRun = request.seen.runID ?? runID
         let sameLabels = { [review] in
             seenRun == review.projection.runID || review.keepsTurns(of: seenRun, in: review.projection.runID)
         }
@@ -109,9 +109,9 @@ extension ReviewWindow {
     /// word deleted meanwhile, the start of the word after it, else the end of the one before. Nothing when the words
     /// were changed elsewhere since.
     private func reopenJoinField(_ request: ReviewJoinRequest, message: String) -> Bool {
-        guard request.wordsEpoch == review.wordsEpoch,
+        guard request.seen.wordsEpoch == review.wordsEpoch,
               let place = Self.joinBoundary(request.word, atEnd: request.forward,
-                                            through: review.shownWordMoves.dropFirst(request.movesSeen)) else {
+                                            through: review.shownWordMoves.dropFirst(request.seen.moves)) else {
             return false
         }
         let turnID = request.turnID.map(review.resolvedTurnID)

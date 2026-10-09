@@ -23,7 +23,9 @@ recorder ↔ app protocol.
   language, word-fix, live-hint and deep-transcription stages, `TranscriptPublisher` (the one path that makes a new
   transcript current, used by those stages and Review's word edits), `SessionExports`, `SpeakerSessionSnapshot`, and
   the library side of the `voiceislocal session …` commands (`Session*Command`).
-- `Review/`: `ReviewSession` (`@MainActor`), playback, learning, paragraphs, maintenance.
+- `Review/`: `ReviewSession` (`@MainActor`; its value types in `ReviewSessionTypes`, among them `ReviewRevision`,
+  what the window showed when the person acted; loading in `+Loading`; when `exports/` is rewritten in
+  `ReviewExportScheduler`), playback, learning, paragraphs, maintenance.
 - `Summary/`: titles and summaries (`MeetingSummarizer`, `SessionSummarizeCommand`, `SessionRenameCommand`).
 - People and sessions: `VoiceProfileService`, `SpeakerEditor`, `SpeakerEditCommand` (the library side of the
   `voiceislocal speakers` edits: one change on a `LoadedSpeakers` view, then the exports rewritten and the voice
@@ -59,7 +61,7 @@ NaturalLanguage, CryptoKit.
 - At most one background job of the app runs on this Mac (`BackgroundJobCoordinator` invariant 1): every one holds
   `DeepTranscriptionLock` while it runs, and the app starts none while the lock is held.
 
-**Known size debt:** `ReviewSession` (3,872 lines), `RecordingWorkflow`, `VoiceProfileService`. Do not grow them;
+**Known size debt:** `ReviewSession` (3,445 lines), `RecordingWorkflow`, `VoiceProfileService`. Do not grow them;
 move code out first, in a moves-only PR.
 
 **Tests:** `Tests/HolosMeetingTests` (`./scripts/test-target.sh HolosMeetingTests`). Target-local helpers:
