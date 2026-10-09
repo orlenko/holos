@@ -19,15 +19,17 @@ func transcriptPointerFilesReadAsTheyAlwaysHave(name: String, fileName: String) 
     }
     #expect(VersionedFileCorpus.outcome(read) == "nil")
 
-    let valid = try HolosJSON.encoder().encode(TranscriptPointer(transcriptID: "T1", updatedAt: TranscriptFixtures.date))
+    let valid = try HolosJSON.encoder().encode(TranscriptPointer(transcriptID: "T1",
+                                                                  updatedAt: TranscriptFixtures.date))
     let damaged = "invalidInput: \(name) is damaged or was not written by Voice is Local ("
+    let newer = "unavailable: \(name) was written by a newer version of Voice is Local; update Voice is Local to read it."
     let expected: [String: String] = [
         "valid": "value",
         "empty": damaged + "…",
         "truncated": damaged + "…",
         "garbled": damaged + "…",
-        "newer": "unavailable: \(name) was written by a newer version of Voice is Local; update Voice is Local to read it.",
-        "newerOnlyVersion": "unavailable: \(name) was written by a newer version of Voice is Local; update Voice is Local to read it.",
+        "newer": newer,
+        "newerOnlyVersion": newer,
         "versionZero": "invalidInput: \(name) has an unsupported schema version 0.",
         "missingVersion": damaged + "schemaVersion: missing).",
         "textVersion": damaged + "schemaVersion: …",

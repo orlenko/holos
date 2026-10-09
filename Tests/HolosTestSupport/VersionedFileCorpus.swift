@@ -4,9 +4,9 @@ import HolosCore
 /// Broken and foreign copies of one valid versioned JSON file, and what a reader made of each, for tests that pin how
 /// a reader treats every kind of file it can meet: `cases` gives the files, `outcome` names the result of one read.
 public enum VersionedFileCorpus {
-    /// `valid` (a JSON object with a top-level `schemaVersion`) and copies of it: empty, cut in half, not JSON, from a
-    /// newer version (`newerVersion`, with a field this build does not know; and holding nothing else), version 0, without `schemaVersion`, and
-    /// with `schemaVersion` as a string. A file too large to read is made by `writeOversized`.
+    /// `valid` (a JSON object with a top-level `schemaVersion`) and copies of it: empty, cut in half, not JSON, of a
+    /// newer version (`newerVersion`, with a field this build does not know), only a newer version, version 0, without
+    /// `schemaVersion`, and with `schemaVersion` as a string. A file too large to read is made by `writeOversized`.
     public static func cases(valid: Data, newerVersion: Int) throws -> [(name: String, data: Data)] {
         guard let object = try JSONSerialization.jsonObject(with: valid) as? [String: Any] else {
             throw HolosError.invalidInput("The valid file must hold a JSON object.")

@@ -33,7 +33,9 @@ private let uuid = "3F2A9C1E-7B4D-4E21-9A55-0C8D1B6F2E10"
 }
 
 @Test func anyNameEndingInHolosIsASessionFolderButListingsSkipHiddenOnes() {
-    for name in ["\(uuid).holos", "Budget review.holos", "a.holos", "a.b.holos", "..holos", ".a.holos", "\(uuid).holos.holos"] {
+    let sessionFolders = ["\(uuid).holos", "Budget review.holos", "a.holos", "a.b.holos", "..holos", ".a.holos",
+                          "\(uuid).holos.holos"]
+    for name in sessionFolders {
         #expect(SessionPaths.isSessionFolderName(name), "\(name)")
     }
     for name in [".holos", "holos", "", "a.HOLOS", "a.holos ", "a.holosx", uuid] {

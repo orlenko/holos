@@ -292,8 +292,8 @@ public enum SessionFiles {
     /// `invalidInput`, so a record copied or restored into the wrong session is never trusted.
     public static func postProcessingRecord(session: URL, manifest: SessionManifest? = nil) throws -> PostProcessingRecord? {
         let name = "postprocess.json"
-        guard let record: PostProcessingRecord = try file(name, maxBytes: 1 << 20).read(SessionPaths.postprocess(session))
-        else { return nil }
+        guard let record: PostProcessingRecord = try file(name, maxBytes: 1 << 20)
+            .read(SessionPaths.postprocess(session)) else { return nil }
         let sessionID = try manifest?.id ?? SessionArchive.readManifest(at: session).id
         guard record.sessionID == sessionID else {
             throw HolosError.invalidInput("\(name) belongs to another session.")
@@ -303,8 +303,8 @@ public enum SessionFiles {
 
     /// meeting.json, or `MeetingInfo.inferred` for archives from before it existed.
     public static func meetingInfo(session: URL, manifest: SessionManifest) throws -> MeetingInfo {
-        guard let info: MeetingInfo = try file("meeting.json", maxBytes: 1 << 20).read(SessionPaths.meetingInfo(session))
-        else {
+        guard let info: MeetingInfo = try file("meeting.json", maxBytes: 1 << 20)
+            .read(SessionPaths.meetingInfo(session)) else {
             return MeetingInfo.inferred(sessionID: manifest.id, source: manifest.source, createdAt: manifest.createdAt)
         }
         guard info.sessionID == manifest.id else {
