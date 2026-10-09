@@ -2,7 +2,7 @@ import Foundation
 import HolosCore
 import HolosStorage
 
-/// `voiceislocal eval cloud` (docs/reference-evaluation.md, "Cloud reference") as a library call: under the session's
+/// `voiceislocal eval cloud` (the cloud reference run, `CloudEvaluation`) as a library call: under the session's
 /// processing lease, prepares the run (`CloudEvaluation.prepare`), asks for consent through the caller, and uploads
 /// (`CloudEvaluation.upload`). The library never prompts: `consent` is the caller's question.
 ///

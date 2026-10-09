@@ -21,12 +21,17 @@ public enum EvalCompareCommand {
         }
     }
 
+    /// Where the report was written.
+    public struct Outcome: Sendable, Equatable {
+        public var markdown: URL
+        public var json: URL
+    }
+
     /// Notes about unreadable vocabulary files and the summary lines go to `report` as notes, then the report's
     /// Markdown path as output. Throws when another process holds the lease, a run cannot be resolved, or the
-    /// comparison fails. Returns where the report was written.
+    /// comparison fails.
     @discardableResult
-    public static func run(_ request: Request,
-                           report: (EvalCommandMessage) -> Void) throws -> (markdown: URL, json: URL) {
+    public static func run(_ request: Request, report: (EvalCommandMessage) -> Void) throws -> Outcome {
         let directory = request.session
         let lease = try SessionArchive.acquireProcessingLease(at: directory)
         defer { lease.release() }
@@ -39,7 +44,7 @@ public enum EvalCompareCommand {
         let written = try EvalCompare.write(compared, session: directory)
         for line in EvalCompare.summaryLines(compared) { report(.note(line)) }
         report(.output(written.markdown.path))
-        return written
+        return Outcome(markdown: written.markdown, json: written.json)
     }
 }
 
@@ -58,12 +63,19 @@ public enum EvalReviewCommand {
         }
     }
 
-    /// Returns the page, or nil when there is no comparison to show. `open` (nil: the page is not opened) runs after
-    /// the page's path is reported.
+    public struct Outcome: Sendable, Equatable {
+        /// The review page; nil when there is no comparison to show.
+        public var page: URL?
+        /// Passages the page asks about, and formatting-only ones it hides.
+        public var toReview = 0
+        public var formattingOnly = 0
+    }
+
+    /// `open` (nil: the page is not opened) runs after the page's path is reported.
     @discardableResult
     public static func run(_ request: Request, interruption: any EvalInterruption,
                            open: ((URL) throws -> Void)?,
-                           report: @escaping @Sendable (EvalCommandMessage) -> Void) async throws -> URL? {
+                           report: @escaping @Sendable (EvalCommandMessage) -> Void) async throws -> Outcome {
         let directory = request.session
         let lease = try SessionArchive.acquireProcessingLease(at: directory)
         defer { lease.release() }
@@ -77,7 +89,7 @@ public enum EvalReviewCommand {
             try EvalCompare.write(fresh, session: directory)
             compared = fresh
         }
-        guard let compared else { return nil }
+        guard let compared else { return Outcome(page: nil) }
         let page = try await interruption.run { () async throws in
             try EvalReview.build(session: directory, run: record, report: compared,
                                  progress: { report(.note($0)) })
@@ -88,7 +100,7 @@ public enum EvalReviewCommand {
             + (formatting > 0 ? " (\(formatting) formatting-only ones hidden; the page can show them)." : ".")))
         report(.output(page.path))
         try open?(page)
-        return page
+        return Outcome(page: page, toReview: count, formattingOnly: formatting)
     }
 }
 

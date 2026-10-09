@@ -50,11 +50,18 @@ public enum EvalLocalCommand {
         }
     }
 
-    /// Runs the local candidate (rules 1–2) and returns its record. Throws `VocabularyUnreadable`, what
+    public struct Outcome: Sendable, Equatable {
+        /// The finished run.
+        public var record: LocalRunRecord
+        /// eval/local/<run>/.
+        public var folder: URL
+    }
+
+    /// Runs the local candidate (rules 1–2). Throws `VocabularyUnreadable`, what
     /// `EvalLocal` refuses, a busy processing lease, and `CancellationError` (said first).
     @discardableResult
     public static func run(_ request: Request, dependencies: Dependencies, interruption: any EvalInterruption,
-                           report: @escaping @Sendable (EvalCommandMessage) -> Void) async throws -> LocalRunRecord {
+                           report: @escaping @Sendable (EvalCommandMessage) -> Void) async throws -> Outcome {
         let directory = request.session
         let languages = try EvalLocal.languages(session: directory, language: request.language)
         var vocabulary: [String]?
@@ -89,8 +96,9 @@ public enum EvalLocalCommand {
             }
             report(.note("Local run \(record.id) is complete. Next: voiceislocal eval compare "
                 + "\(request.sessionArgument) --local \(record.id)"))
-            report(.output(EvalPaths.localRun(record.id, in: directory).path))
-            return record
+            let folder = EvalPaths.localRun(record.id, in: directory)
+            report(.output(folder.path))
+            return Outcome(record: record, folder: folder)
         } catch {
             if error is CancellationError {
                 report(.note("Cancelled. What is saved is kept; run the same command again to resume."))

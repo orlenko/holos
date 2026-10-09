@@ -73,7 +73,7 @@ private func evalFlowHeldLease(_ session: URL) throws -> ProcessingLease {
     let (session, _) = try await evalFlowSession(temp)
     let collected = EvalCommandMessages()
     let opened = SharedValue<[URL]>([])
-    let page = try await EvalReviewCommand.run(
+    let outcome = try await EvalReviewCommand.run(
         EvalReviewCommand.Request(session: session, files: evalFlowFiles(temp)), interruption: EvalUninterrupted(),
         open: { page in
             opened.update { $0.append(page) }
@@ -81,7 +81,8 @@ private func evalFlowHeldLease(_ session: URL) throws -> ProcessingLease {
                 try SessionArchive.acquireProcessingLease(at: session).release()
             }
         }, report: collected.report)
-    let built = try #require(page)
+    let built = try #require(outcome.page)
+    #expect(outcome.toReview == 1)
     #expect(opened.value == [built])
     #expect(collected.all.first == .note("Comparing with the current transcript first…"))
     #expect(collected.all.last == .output(built.path))
@@ -186,9 +187,11 @@ private func evalFlowSpeech(_ speech: FakeSpeechFactory) -> EvalLocalCommand.Dep
         SessionFixtures.segment(["we", "ship", "Kubernetes"], track: nil, start: 0.5),
     ])])
     let collected = EvalCommandMessages()
-    let record = try await EvalLocalCommand.run(
+    let outcome = try await EvalLocalCommand.run(
         EvalLocalCommand.Request(session: session, sessionArgument: "the-session", files: files),
         dependencies: evalFlowSpeech(speech), interruption: EvalUninterrupted(), report: collected.report)
+    let record = outcome.record
+    #expect(outcome.folder == EvalPaths.localRun(record.id, in: session))
     #expect(record.completedAt != nil)
     #expect(record.vocabulary == ["Kubernetes"])
     #expect(speech.calls.map(\.contextualStrings) == [["Kubernetes"]])
@@ -228,13 +231,19 @@ private func evalFlowSpeech(_ speech: FakeSpeechFactory) -> EvalLocalCommand.Dep
     let temp = try TemporaryDirectory("eval-flow")
     defer { temp.remove() }
     let session = try await SessionFixtures.makeSession(in: temp.url, audioSeconds: ["mic": 4], transcript: nil)
+    let speech = FakeSpeechFactory([FakeSpeechScript(segments: [
+        SessionFixtures.segment(["we", "ship"], track: nil, start: 0.5),
+    ])])
     let collected = EvalCommandMessages()
     await #expect(throws: CancellationError.self) {
         _ = try await EvalLocalCommand.run(
             EvalLocalCommand.Request(session: session, sessionArgument: "s", noVocabulary: true,
                                      files: evalFlowFiles(temp)),
-            dependencies: evalFlowSpeech(FakeSpeechFactory()), interruption: EvalCommandStopping(stopAt: 1),
+            dependencies: evalFlowSpeech(speech), interruption: EvalCommandStopping(stopAfter: 1),
             report: collected.report)
     }
-    #expect(collected.all == [.note("Cancelled. What is saved is kept; run the same command again to resume.")])
+    // The signal came as the run ended: it says so instead of the next step, and the saved run is kept.
+    #expect(collected.all.last == .note("Cancelled. What is saved is kept; run the same command again to resume."))
+    #expect(!collected.all.contains { if case .output = $0 { true } else { false } })
+    #expect(EvalLocal.runIDs(in: session).count == 1)
 }
