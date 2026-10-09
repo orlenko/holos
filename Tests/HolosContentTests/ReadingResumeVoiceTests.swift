@@ -15,11 +15,11 @@ import Testing
     private var output: URL { root.appendingPathComponent("Garden.m4a") }
 
     private func manifest(voice: String, output: URL, source: String = "s", rate: Float? = nil,
-                          modelRevision: String? = nil) -> ReadingManifest {
+                          modelRevision: String? = nil, parts: [ReadingPart] = []) -> ReadingManifest {
         ReadingManifest(kind: ReadingManifest.readingKind, schemaVersion: ReadingManifest.currentSchemaVersion,
                         sourceSHA256: source, voiceIdentifier: voice, rate: rate, title: "Garden", author: nil,
                         language: "en", comment: "c", format: .current, output: output.path, outputSHA256: nil,
-                        duration: nil, chapters: [], status: "incomplete", parts: [], modelRevision: modelRevision)
+                        duration: nil, chapters: [], status: "incomplete", parts: parts, modelRevision: modelRevision)
     }
 
     /// Saves a reading's manifest where its cache would be for `output` (the folder name is the cache's, keyed by the
@@ -35,9 +35,9 @@ import Testing
         try FileManager.default.setAttributes([.modificationDate: changed], ofItemAtPath: url.path)
     }
 
-    private func saved(rate: Float? = nil) -> ReadingManifest? {
-        ReadingResumeVoice.saved(output: output.path, name: "Garden.m4a", readingsRoot: readings, sourceSHA256: "s",
-                                 rate: rate, metadata: metadata)
+    private func saved(rate: Float? = nil, plan: [ReadingPart] = [], voice: String? = nil) -> ReadingManifest? {
+        try? ReadingResumeVoice.saved(output: output.path, name: "Garden.m4a", readingsRoot: readings,
+                                      sourceSHA256: "s", plan: plan, rate: rate, metadata: metadata, voice: voice)
     }
 
     @Test func aReadingStartedWithAnyVoiceIsFound() throws {
@@ -74,8 +74,57 @@ import Testing
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         try JSONEncoder().encode(manifest(voice: apple, output: folder.appendingPathComponent("Garden.m4a")))
             .write(to: folder.appendingPathComponent(ReadingManifest.fileName))
-        #expect(ReadingResumeVoice.saved(output: folder.path, name: "Garden.m4a", readingsRoot: readings,
-                                         sourceSHA256: "s", rate: nil, metadata: metadata)?.voiceIdentifier == apple)
+        #expect(try ReadingResumeVoice.saved(output: folder.path, name: "Garden.m4a", readingsRoot: readings,
+                                             sourceSHA256: "s", plan: [], rate: nil, metadata: metadata)?
+            .voiceIdentifier == apple)
+    }
+
+    @Test func theSameTextSplitAnotherWayIsAnotherReading() async throws {
+        try FileManager.default.createDirectory(at: readings, withIntermediateDirectories: true)
+        // One text, in one section or in two (other parts and chapters): two readings with the same source checksum.
+        let paragraphs = ["The keeper planted a garden.", "Nobody expected it to survive."]
+        let one = ReadingScript(document: ReadableDocument(title: "Garden", sections: [.init(paragraphs: paragraphs)]))
+        let two = ReadingScript(document: ReadableDocument(title: "Garden", sections: [
+            .init(paragraphs: [paragraphs[0]]), .init(heading: "Later", level: 2, paragraphs: [paragraphs[1]]),
+        ]))
+        func plan(_ script: ReadingScript) -> [ReadingPart] {
+            ReadingPipeline.plan(script.parts(maxUTF16Units: ReadingPipeline.defaultMaxPartUTF16Units))
+        }
+        #expect(plan(one) != plan(two))
+        try start(manifest(voice: apple, output: output, parts: plan(one)))
+        try start(manifest(voice: natural, output: output, modelRevision: NaturalVoiceModels.revision,
+                           parts: plan(two)), changed: Date(timeIntervalSinceNow: 60))
+        #expect(saved(plan: plan(one))?.voiceIdentifier == apple)
+        #expect(saved(plan: plan(two))?.voiceIdentifier == natural)
+        // With --voice, only a reading made with it.
+        #expect(saved(plan: plan(one), voice: natural) == nil)
+        #expect(saved(plan: plan(one), voice: apple)?.voiceIdentifier == apple)
+    }
+
+    @Test func theSearchRunsOffTheMainActorFromAScript() async throws {
+        try FileManager.default.createDirectory(at: readings, withIntermediateDirectories: true)
+        let script = ReadingScript(document: ReadableDocument(title: "Garden", sections: [
+            .init(paragraphs: ["The keeper planted a garden."]),
+        ]))
+        let parts = ReadingPipeline.plan(script.parts(maxUTF16Units: ReadingPipeline.defaultMaxPartUTF16Units))
+        let source = ReadingManifest(
+            kind: ReadingManifest.readingKind, schemaVersion: ReadingManifest.currentSchemaVersion,
+            sourceSHA256: sha256(Data(script.text.utf8)), voiceIdentifier: apple, rate: nil, title: "Garden",
+            author: nil, language: "en", comment: "c", format: .current, output: output.path, outputSHA256: nil,
+            duration: nil, chapters: [], status: "incomplete", parts: parts)
+        try start(source)
+        let found = try await ReadingResumeVoice.saved(output: output.path, name: "Garden.m4a", readingsRoot: readings,
+                                                       script: script, rate: nil, metadata: metadata)
+        #expect(found?.voiceIdentifier == apple)
+    }
+
+    @Test func aStaleCommitIsRefusedWhateverVoiceIsAsked() throws {
+        let old = manifest(voice: natural, output: output, modelRevision: "0000000000000000000000000000000000000000")
+        let error = #expect(throws: HolosError.self) { try ReadingResumeVoice.checkRevision(old) }
+        #expect(error?.localizedDescription.contains("another version of the natural voices") == true)
+        try ReadingResumeVoice.checkRevision(manifest(voice: natural, output: output,
+                                                      modelRevision: NaturalVoiceModels.revision))
+        try ReadingResumeVoice.checkRevision(manifest(voice: apple, output: output))
     }
 
     @Test func aNaturalReadingFromAnotherCommitIsRefusedBeforeAskingForItsPack() throws {
