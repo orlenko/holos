@@ -10,7 +10,10 @@ list (docs/design.md "Reading section", "Text-to-speech").
 - `ReadingSourceParser`: what the user typed, pasted, dropped or chose, as sources to read.
 - `ReadingPipeline`: renders a `ReadingScript` part by part into a resumable cache, then joins the parts
   (`AudioBookWriter`) into one `.m4a`. `SemanticChunker`, `ReadingOutput` (output names and locations),
-  `ReadingPreview`.
+  `ReadingPreview`. `RoutingSpeechRenderer` (`ReadingAudioRenderer.swift`) sends natural voices to the natural
+  renderer and the rest to Apple's; a reading saves the renderer's settings and the natural voices' model commit in
+  its manifest (`ReadingPipeline+Plan.swift`). `ReadingResumeVoice` finds the saved reading a resume continues.
+- `DocumentText` (`DocumentText+Strict.swift`): strict reading of a text file for `voiceislocal say --text-file`.
 - `ReadingLibraryStore` / `ReadingLibrary`: the Reading list's index under `<supportRoot>/ReadingLibrary`, and the
   pure decisions about it. `ReadingWorkQueue` runs readings one at a time; `ReadingPlayer` plays a finished one.
 
@@ -24,6 +27,8 @@ AVFoundation, CryptoKit, NaturalLanguage. This target is not headless.
   never replaced. On volumes without an exclusive rename the publish is a copy, visible while it runs; the
   reading's manifest keeps `publishing` until it ends, so a copy cut off by a crash is found and removed when
   the reading is resumed.
+- A reading resumes only with the model commit, part plan and renderer settings it started with: a natural reading
+  from another commit is refused before any voice or pack is checked (`ReadingResumeVoice.checkRevision`).
 - All of its files live under `HolosPaths.supportRoot` or the user's chosen output folder; tests set
   `HOLOS_SUPPORT_DIR`.
 - `WebArticleExtractor` needs a running main run loop (the app, or the CLI's async `main`).
