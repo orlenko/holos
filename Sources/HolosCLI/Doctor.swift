@@ -6,6 +6,7 @@ import FoundationModels
 import HolosAudio
 import HolosCore
 import HolosDiarization
+import HolosMeeting
 import HolosSpeech
 import HolosSynthesis
 import HolosWhisper
@@ -36,7 +37,7 @@ struct Doctor: AsyncParsableCommand {
             speechAssetStatus: (try? await AppleSpeechEngine.assetStatus(locale: locale, backend: .speech)) ?? "unsupported",
             dictationAssetStatus: (try? await AppleSpeechEngine.assetStatus(locale: locale, backend: .dictation)) ?? "unsupported",
             sessionsDirectory: HolosPaths.sessions.path,
-            speakerModels: speakerModels, deepTranscriptionModel: whisperModel)
+            speakerModels: speakerModels.doctorValue, deepTranscriptionModel: whisperModel)
         if json { try Console.json(report); return }
         Console.output("Voice is Local — local capability report")
         Console.output("macOS: \(report.os)")
@@ -59,28 +60,6 @@ struct Doctor: AsyncParsableCommand {
             Console.output("Install the deep transcription model with: voiceislocal setup --whisper (about 1.6 GB)")
         }
     }
-}
-
-private struct DoctorReport: Encodable {
-    var os: String
-    var microphone: String
-    var systemAudioPermission: Bool
-    var accessibilityPermission: Bool
-    var foundationModel: String
-    var contextSize: Int?
-    var voiceCount: Int
-    var speech: SpeechCapabilities
-    var dictation: SpeechCapabilities
-    /// The locale `speechAssetStatus` and `dictationAssetStatus` describe: `--locale`, else the default one, which
-    /// depends on the Mac's preferred languages.
-    var locale: String
-    var speechAssetStatus: String
-    var dictationAssetStatus: String
-    var sessionsDirectory: String
-    /// Encodes as "verified", "notInstalled", or "damaged" (`ModelInstallStatus.doctorValue`).
-    var speakerModels: ModelInstallStatus
-    /// "installed", "downloading", or "notInstalled" (docs/meeting-design.md §4.16).
-    var deepTranscriptionModel: DeepModelStatus
 }
 
 struct Setup: AsyncParsableCommand {

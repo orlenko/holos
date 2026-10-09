@@ -3,22 +3,13 @@ import Foundation
 import Testing
 import HolosCore
 @testable import HolosStorage
+import HolosTestSupport
+import HolosSessionTestSupport
+
+private let handOffSession = SessionFixtureBuilder(name: "Hand-off")
 
 // The processing lease handed from one process to another (docs/meeting-design.md §4.1): `handOff` in the parent,
 // `adoptProcessingLease` in the child (`voiceislocal session diarize --lease-fd`), and `withUse`.
-
-private func handOffTemporaryRoot() throws -> URL {
-    let root = FileManager.default.temporaryDirectory.appendingPathComponent("holos-handoff-\(UUID().uuidString)")
-    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-    return root
-}
-
-private func handOffMakeSession(in root: URL) async throws -> URL {
-    let archive = try SessionArchive.create(root: root, name: "Hand-off", source: .microphone,
-                                            locale: "en-CA", backend: .speech)
-    try await archive.finish(status: ArchiveStatus.complete)
-    return archive.directory
-}
 
 private func handOffIsCloseOnExec(_ fd: Int32) -> Bool {
     let flags = fcntl(fd, F_GETFD)
@@ -45,9 +36,9 @@ private func handOffSpawnSleeper(seconds: String, descriptor: Int32) throws -> p
 }
 
 @Test func handedOffLeaseStaysLockedInTheChild() async throws {
-    let root = try handOffTemporaryRoot()
+    let root = try TemporaryDirectory("handoff").url
     defer { try? FileManager.default.removeItem(at: root) }
-    let session = try await handOffMakeSession(in: root)
+    let session = try await handOffSession.finished(in: root).session
     let lease = try SessionArchive.acquireProcessingLease(at: session)
     let pid = try lease.handOff { try handOffSpawnSleeper(seconds: "2", descriptor: $0) }
     // The parent has closed its descriptor; the child's copy keeps the lock.
@@ -63,9 +54,9 @@ private func handOffSpawnSleeper(seconds: String, descriptor: Int32) throws -> p
 @Test func handOffDescriptorNeverHasTheChildsNumber() async throws {
     // dup2 onto the number a descriptor already has keeps close-on-exec, so the child would lose the lock at exec;
     // the descriptor handed to `spawn` is a duplicate above every conventional number.
-    let root = try handOffTemporaryRoot()
+    let root = try TemporaryDirectory("handoff").url
     defer { try? FileManager.default.removeItem(at: root) }
-    let session = try await handOffMakeSession(in: root)
+    let session = try await handOffSession.finished(in: root).session
     let lease = try SessionArchive.acquireProcessingLease(at: session)
     let folder = Darwin.open(session.path, O_RDONLY | O_DIRECTORY | O_CLOEXEC)
     defer { Darwin.close(folder) }
@@ -82,9 +73,9 @@ private func handOffSpawnSleeper(seconds: String, descriptor: Int32) throws -> p
 }
 
 @Test func failedHandOffKeepsTheLease() async throws {
-    let root = try handOffTemporaryRoot()
+    let root = try TemporaryDirectory("handoff").url
     defer { try? FileManager.default.removeItem(at: root) }
-    let session = try await handOffMakeSession(in: root)
+    let session = try await handOffSession.finished(in: root).session
     let lease = try SessionArchive.acquireProcessingLease(at: session)
     #expect(throws: HolosError.self) {
         try lease.handOff { _ in throw HolosError.io("spawn failed") }
@@ -97,9 +88,9 @@ private func handOffSpawnSleeper(seconds: String, descriptor: Int32) throws -> p
 }
 
 @Test func adoptedLeaseIsTheInheritedLock() async throws {
-    let root = try handOffTemporaryRoot()
+    let root = try TemporaryDirectory("handoff").url
     defer { try? FileManager.default.removeItem(at: root) }
-    let session = try await handOffMakeSession(in: root)
+    let session = try await handOffSession.finished(in: root).session
     let lease = try SessionArchive.acquireProcessingLease(at: session)
     // A dup shares the open file description, as a descriptor inherited through posix_spawn does.
     let inherited = try lease.handOff { Darwin.dup($0) }
@@ -115,10 +106,10 @@ private func handOffSpawnSleeper(seconds: String, descriptor: Int32) throws -> p
 }
 
 @Test func adoptionRefusesAnotherSessionsLease() async throws {
-    let root = try handOffTemporaryRoot()
+    let root = try TemporaryDirectory("handoff").url
     defer { try? FileManager.default.removeItem(at: root) }
-    let first = try await handOffMakeSession(in: root)
-    let second = try await handOffMakeSession(in: root)
+    let first = try await handOffSession.finished(in: root).session
+    let second = try await handOffSession.finished(in: root).session
     let lease = try SessionArchive.acquireProcessingLease(at: first)
     let inherited = try lease.handOff { Darwin.dup($0) }
     defer { Darwin.close(inherited) }
@@ -138,9 +129,9 @@ private func handOffSpawnSleeper(seconds: String, descriptor: Int32) throws -> p
 }
 
 @Test func adoptionRefusesAnUnlockedCopyWhileSomeoneElseHoldsTheLease() async throws {
-    let root = try handOffTemporaryRoot()
+    let root = try TemporaryDirectory("handoff").url
     defer { try? FileManager.default.removeItem(at: root) }
-    let session = try await handOffMakeSession(in: root)
+    let session = try await handOffSession.finished(in: root).session
     let lease = try SessionArchive.acquireProcessingLease(at: session)
     defer { lease.release() }
     // Another open file description of the right lock file is not the holder's.
@@ -151,10 +142,10 @@ private func handOffSpawnSleeper(seconds: String, descriptor: Int32) throws -> p
 }
 
 @Test func withUseKeepsTheLockUntilTheBodyEnds() async throws {
-    let root = try handOffTemporaryRoot()
+    let root = try TemporaryDirectory("handoff").url
     defer { try? FileManager.default.removeItem(at: root) }
-    let session = try await handOffMakeSession(in: root)
-    let other = try await handOffMakeSession(in: root)
+    let session = try await handOffSession.finished(in: root).session
+    let other = try await handOffSession.finished(in: root).session
     let lease = try SessionArchive.acquireProcessingLease(at: session)
     let value = try await lease.withUse(for: session) { () async throws -> Int in
         lease.release()
