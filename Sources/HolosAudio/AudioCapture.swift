@@ -153,7 +153,7 @@ public final class AudioCapture {
     /// the origin is set, when nil): the host-time origin is `timelineOrigin(...)`, so a restarted capture continues a
     /// meeting's session timeline, setup time included (docs/meeting/session-format.md §2.3). System audio is captured mono.
     ///
-    /// `microphone` chooses the input the microphone track records (§4.12): `.builtIn` pins the built-in microphone
+    /// `microphone` chooses the input the microphone track records (docs/meeting/recorder.md §4.12): `.builtIn` pins the built-in microphone
     /// (AVAudioEngine's input unit is set to it before its format is read; ScreenCaptureKit gets its device ID), so
     /// connecting a headset does not move the recording; `.systemDefault` records the system default input. A
     /// `.builtIn` capture throws `HolosError.unavailable` when the Mac has no built-in microphone right now (lid closed

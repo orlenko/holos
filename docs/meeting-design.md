@@ -26,7 +26,7 @@ Status: implementation-ready design for PR1–PR11 of
 [meeting-recording-plan.md](meeting-recording-plan.md) (PR12, minutes, is out of scope).
 Written 2026-09-23 from the code on branch `meeting-plan`, FluidAudio 0.17.1 sources
 (`5c51c5c9`), and the user's decisions in plan §8. Revised 2026-09-24 after a three-lens
-design review (80 findings, §10) and spike S1 ([speaker-evaluation.md](speaker-evaluation.md)).
+design review (80 findings, meeting-design.md §10) and spike S1 ([speaker-evaluation.md](speaker-evaluation.md)).
 No product code exists for it yet.
 
 Several engineers build this in parallel, one PR each, without talking to each other.
@@ -1469,7 +1469,7 @@ existing file. Signatures are the contract; bodies are the implementer's. When t
 compiler demands a small annotation change (for example `Sendable` on a protocol),
 make it without changing names or shapes and say so in the PR description. Every PR
 description ends with a "Docs note" paragraph for the PR that writes the wave's
-`README.md` and `docs/status.md` updates (§6).
+`README.md` and `docs/status.md` updates (meeting-design.md §6).
 
 ### 5.1 PR6: Contracts and storage foundations (wave 0)
 
@@ -1642,7 +1642,7 @@ post-processing hand-off. No user-visible behaviour change (the only new CLI sur
   (`subcommands:` one per line), `Package.swift` (§1.2 wave 1), `docs/contracts.md`
   (ownership table: `HolosMeeting` replaces `HolosWorkflows`, add `HolosSpeakers` and
   `HolosDiarization`; the "local app/session control" paragraph points to
-  meeting-design §4.1).
+  meeting/recorder.md §4.1).
 - Add `Tests/HolosMeetingTests/RecordingWorkflowTests.swift`, `Tests/HolosMeetingTests/Fakes.swift`.
 - Docs: PR1 merges last in wave 1 and writes the wave-1 `README.md` and
   `docs/status.md` notes for PR1 and PR5a–c.

@@ -7,7 +7,7 @@ import HolosStorage
 
 /// `voiceislocal speakers …` (docs/meeting/exports.md §5.7, docs/meeting/people-voice.md §5.9): list a session's speakers, and correct them and link
 /// them to people through `SpeakerEditCommand`, which prints here what it says. Content goes to stdout; notes and
-/// warnings to stderr (§1.4).
+/// warnings to stderr (docs/conventions.md §1.4).
 struct Speakers: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         abstract: "List and correct the speaker labels of a session, and link speakers to people.",

@@ -12,7 +12,7 @@ import UniformTypeIdentifiers
 /// one- or two-line summary, and badges for what needs saying (Recording, Final transcript queued, Interrupted, …).
 /// A search field filters by title, summary and people. The actions on the selected meeting are buttons below the list
 /// and the row's menu. Recover, Label Speakers, and the deletions run `voiceislocal` commands through the app delegate,
-/// which also opens Review (PR9, §5.10); the rest (Show in Finder, the Quick Look preview, Save Transcript As…, Clean
+/// which also opens Review (PR9, docs/meeting-design.md §5.10); the rest (Show in Finder, the Quick Look preview, Save Transcript As…, Clean
 /// Up, Rename) happen here. The meeting being recorded or saved comes first, marked "● Recording". Double-click (or
 /// Return) opens what `MeetingOpenPolicy` says: the live transcript (`LiveMeetingViewController`, shown in place of the
 /// list until ‹ Meetings or Escape) for that meeting, Review for a labelled one, the preview otherwise; ⌫ (or ⌘⌫) is

@@ -456,7 +456,7 @@ private struct LoggingReporter: RecordingReporter {
 
 // MARK: - posix_spawn
 
-/// The one `posix_spawn` helper for every child the app starts (docs/conventions.md §1.7 rule 4, §4.1):
+/// The one `posix_spawn` helper for every child the app starts (docs/conventions.md §1.7 rule 4, docs/meeting/recorder.md §4.1):
 /// `POSIX_SPAWN_CLOEXEC_DEFAULT` so a child inherits no descriptor but fds 0–2 and the ones named, default signal
 /// handlers and an empty signal mask, and (by default) `POSIX_SPAWN_SETSID`, so the child gets no terminal SIGHUP and
 /// no signal sent to the app's process group. The file helpers are public for the app's command outputs.

@@ -10,7 +10,7 @@ Read first: the `README.md` of each module you touch, then the doc sections its 
 - The meeting design is split by topic into `docs/conventions.md` (section 1) and `docs/meeting/*.md` (session
   format, recorder, app controls, post-processing, speaker labels, people and voices, exports, retention). They
   mostly describe current behaviour (`docs/conventions.md §1.2` is a build plan, and some subsections still name
-  the PR that built them; their §5 subsections come from the build plan, which the code cites for behaviour).
+  the PR that built them; their 5.x subsections come from the build plan, which the code cites for behaviour).
   Sections keep their numbers, and `docs/meeting-design.md` lists the file each is in. It still holds sections
   4.14–4.17 (current behaviour) and the rest of the build plan and review log (sections 0, 5 and 6–10), where
   `docs/meeting-design.md §5.10` (Review window) and `docs/meeting-design.md §5.11` (online calls) still hold
@@ -226,9 +226,10 @@ entry point (`ReviewSession.submit(_:seen:)`), a lock-token type.
   `docs/architecture-roadmap.md`: a dated audit snapshot whose findings cite PRs and review rounds as evidence,
   and whose §6 Status column tracks steps by PR. Its guidance (what to do next, how to verify) stays current.
 - Cite specs as `docs/<file>.md §N.M`, or `docs/design.md "<Heading>"` for docs without numbers. A citation must
-  resolve to an existing heading: `scripts/check-doc-citations.py` checks every `<path>.md §N.M` citation in the
-  repository in under a second (`--self-test` runs its own cases). Run it before every PR that moves a section or
-  adds a citation.
+  resolve to an existing heading. A `§N.M` cites the last Markdown file named before it in its paragraph, list item,
+  table row or comment block, so after naming another file, name the cited one again.
+  `scripts/check-doc-citations.py` checks every citation in the repository in under a second (`--self-test` runs
+  its own cases). Run it before every PR that moves a section or adds a citation.
 - A PR that changes behaviour updates the cited section in the same PR.
 - Comments explain why and state rules; they do not narrate review rounds.
 

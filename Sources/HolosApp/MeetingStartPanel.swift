@@ -5,7 +5,7 @@ import HolosMeeting
 
 /// "New Meeting Recording" (docs/meeting/app-controls.md §5.8): name, what will be recorded (the system default input and
 /// the computer's audio, `MeetingStartSettings.app`), the disk estimate, the speaker models, the meeting language, up
-/// to two more languages to detect after the recording (§4.14), their speech models, and the consent reminder. Start
+/// to two more languages to detect after the recording (docs/meeting-design.md §4.14), their speech models, and the consent reminder. Start
 /// is disabled when the disk policy refuses, nothing could be recorded (no microphone, and no computer's audio), or
 /// the meeting language is not known yet. An ordinary window, like Setup.
 @MainActor

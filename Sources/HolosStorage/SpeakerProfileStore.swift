@@ -93,7 +93,7 @@ public struct ForgetRecord: Codable, Sendable, Equatable {
 /// `profiles.lock` (`update`), polled every 20 ms for up to 2 s; a read whose result is written elsewhere
 /// (recognition results, forget clean-up) holds it through that write (`withLockedDatabase`). The lock is not
 /// re-entrant: never call `update`, `withLockedDatabase`, or a journal method from inside either. When a caller also
-/// needs a session's speaker lock, it takes that lock first (§1.7 order: speakers → profiles), and nothing takes a
+/// needs a session's speaker lock, it takes that lock first (docs/conventions.md §1.7 order: speakers → profiles), and nothing takes a
 /// speaker lock while holding `profiles.lock`.
 public struct SpeakerProfileStore: Sendable {
     private static let log = Logger(subsystem: "ca.orlenko.holos.app", category: "storage")
