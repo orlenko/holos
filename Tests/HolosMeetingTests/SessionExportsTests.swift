@@ -33,7 +33,7 @@ private func exportsMakeWritableAndAppend(_ text: String, to url: URL) throws {
 }
 
 @Test func regenerateMovesHandEditedExportAside() async throws {
-    let temp = try TemporaryDirectory("exports")
+    let temp = try TemporaryDirectory("exports", permissions: 0o700)
     defer { temp.remove() }
     let session = try await exportsSession(in: temp.url)
     let first = try SessionExports.regenerate(session: session)
@@ -63,7 +63,7 @@ private func exportsMakeWritableAndAppend(_ text: String, to url: URL) throws {
 }
 
 @Test func regenerateLockedRunsInsideTheLock() async throws {
-    let temp = try TemporaryDirectory("exports")
+    let temp = try TemporaryDirectory("exports", permissions: 0o700)
     defer { temp.remove() }
     let session = try await exportsSession(in: temp.url)
     let result = try SessionArchive.withSpeakerLock(at: session) {
@@ -74,7 +74,7 @@ private func exportsMakeWritableAndAppend(_ text: String, to url: URL) throws {
 }
 
 @Test func legacyExportsAreReplacedWithoutMovingThemAside() async throws {
-    let temp = try TemporaryDirectory("exports")
+    let temp = try TemporaryDirectory("exports", permissions: 0o700)
     defer { temp.remove() }
     let session = try await exportsSession(in: temp.url, legacyExports: true)
     #expect(exportsListing(session) == ["transcript.md", "transcript.txt"])
@@ -85,7 +85,7 @@ private func exportsMakeWritableAndAppend(_ text: String, to url: URL) throws {
 }
 
 @Test func unknownExportsAreMovedAsideBeforeTheFirstGeneration() async throws {
-    let temp = try TemporaryDirectory("exports")
+    let temp = try TemporaryDirectory("exports", permissions: 0o700)
     defer { temp.remove() }
     let session = try await exportsSession(in: temp.url, legacyExports: true)
     try exportsMakeWritableAndAppend("Fixed a name by hand.\n", to: SessionPaths.export("txt", in: session))
@@ -95,7 +95,7 @@ private func exportsMakeWritableAndAppend(_ text: String, to url: URL) throws {
 }
 
 @Test func aFileWrittenBeforeACrashStillCountsAsGenerated() async throws {
-    let temp = try TemporaryDirectory("exports")
+    let temp = try TemporaryDirectory("exports", permissions: 0o700)
     defer { temp.remove() }
     let session = try await exportsSession(in: temp.url)
     try SessionExports.regenerate(session: session)
@@ -114,7 +114,7 @@ private func exportsMakeWritableAndAppend(_ text: String, to url: URL) throws {
 }
 
 @Test func filesFromTwoInterruptedRegenerationsStillCountAsGenerated() async throws {
-    let temp = try TemporaryDirectory("exports")
+    let temp = try TemporaryDirectory("exports", permissions: 0o700)
     defer { temp.remove() }
     let session = try await exportsSession(in: temp.url)
     try SessionExports.regenerate(session: session)
@@ -141,7 +141,7 @@ private func exportsMakeWritableAndAppend(_ text: String, to url: URL) throws {
 }
 
 @Test func legacyExportsSurviveAnInterruptedFirstGeneration() async throws {
-    let temp = try TemporaryDirectory("exports")
+    let temp = try TemporaryDirectory("exports", permissions: 0o700)
     defer { temp.remove() }
     let session = try await exportsSession(in: temp.url, legacyExports: true)
     // The first generation recorded its pending digests, then stopped before replacing the legacy files.
@@ -152,7 +152,7 @@ private func exportsMakeWritableAndAppend(_ text: String, to url: URL) throws {
 }
 
 @Test func exportsShowTheCurrentTranscriptAfterItChanged() async throws {
-    let temp = try TemporaryDirectory("exports")
+    let temp = try TemporaryDirectory("exports", permissions: 0o700)
     defer { temp.remove() }
     let session = try await exportsSession(in: temp.url)
     let revised = SessionFixtures.transcript([SessionFixtures.segment(["revisedword"], track: "mic", start: 1)])
@@ -167,7 +167,7 @@ private func exportsMakeWritableAndAppend(_ text: String, to url: URL) throws {
 }
 
 @Test func exportsReportWhatTheirSnapshotSkipped() async throws {
-    let temp = try TemporaryDirectory("exports")
+    let temp = try TemporaryDirectory("exports", permissions: 0o700)
     defer { temp.remove() }
     let session = try await exportsSession(in: temp.url)
     #expect(try SessionExports.regenerate(session: session).diagnostics?.notes == [])
@@ -198,7 +198,7 @@ private func exportsMakeWritableAndAppend(_ text: String, to url: URL) throws {
 }
 
 @Test func generatedRecordFromANewerHolosIsRefused() async throws {
-    let temp = try TemporaryDirectory("exports")
+    let temp = try TemporaryDirectory("exports", permissions: 0o700)
     defer { temp.remove() }
     let session = try await exportsSession(in: temp.url)
     try SessionExports.regenerate(session: session)
@@ -212,7 +212,7 @@ private func exportsMakeWritableAndAppend(_ text: String, to url: URL) throws {
 }
 
 @Test func renderReturnsOneFormatWithoutWriting() async throws {
-    let temp = try TemporaryDirectory("exports")
+    let temp = try TemporaryDirectory("exports", permissions: 0o700)
     defer { temp.remove() }
     let session = try await exportsSession(in: temp.url)
     let data = try SessionExports.render(.txt, session: session)

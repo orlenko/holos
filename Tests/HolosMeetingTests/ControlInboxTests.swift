@@ -14,7 +14,7 @@ private struct InboxFolder {
     let control: URL
 
     init() throws {
-        temp = try TemporaryDirectory("inbox")
+        temp = try TemporaryDirectory("inbox", permissions: 0o700)
         session = temp.url.appendingPathComponent("\(sessionID).holos", isDirectory: true)
         control = session.appendingPathComponent("control", isDirectory: true)
         try FileManager.default.createDirectory(at: control, withIntermediateDirectories: true,
@@ -127,7 +127,7 @@ private struct InboxFolder {
 }
 
 @Test func inboxWithoutAControlFolderIsEmpty() throws {
-    let temp = try TemporaryDirectory("inbox")
+    let temp = try TemporaryDirectory("inbox", permissions: 0o700)
     defer { temp.remove() }
     let id = UUID().uuidString
     var inbox = ControlInbox(session: temp.url.appendingPathComponent("\(id).holos"), sessionID: id)
@@ -139,7 +139,7 @@ private struct InboxFolder {
 /// is left in control/ at exit (§4.6).
 @Test(.timeLimit(.minutes(1))) @MainActor
 func commandsAfterStopAreIgnored() async throws {
-    let temp = try TemporaryDirectory()
+    let temp = try TemporaryDirectory("meeting", permissions: 0o700)
     defer { temp.remove() }
     let answer = SharedValue<ControlAck?>(nil)
     let leftAfterAck = SharedValue<[String]?>(nil)

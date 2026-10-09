@@ -22,7 +22,7 @@ private func timelineGap(_ track: String, _ start: Double, _ end: Double,
 }
 
 @Test func timelineReaderMapsEveryReason() async throws {
-    let temp = try TemporaryDirectory("timeline")
+    let temp = try TemporaryDirectory("timeline", permissions: 0o700)
     defer { temp.remove() }
     let session = try await timelineSession(in: temp.url, [
         timelineGap("mic", 10.0, 20.0, "paused"),
@@ -63,7 +63,7 @@ private func timelineGap(_ track: String, _ start: Double, _ end: Double,
 }
 
 @Test func timelineReaderSplitsGapAtPauseEvents() async throws {
-    let temp = try TemporaryDirectory("timeline")
+    let temp = try TemporaryDirectory("timeline", permissions: 0o700)
     defer { temp.remove() }
     let session = try await timelineSession(in: temp.url, [
         (MeetingEventKind.paused, ["at": "120.0"]),
@@ -93,7 +93,7 @@ private func timelineGap(_ track: String, _ start: Double, _ end: Double,
 }
 
 @Test func timelineReaderHandlesAnEmptyJournal() async throws {
-    let temp = try TemporaryDirectory("timeline")
+    let temp = try TemporaryDirectory("timeline", permissions: 0o700)
     defer { temp.remove() }
     let session = try await timelineSession(in: temp.url, [])
     let (gaps, markers) = try SessionTimelineReader.read(session: session)

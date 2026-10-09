@@ -29,7 +29,7 @@ private func sameNameSession(_ temp: TemporaryDirectory) async throws -> URL {
 
 @Test(.timeLimit(.minutes(1))) @MainActor
 func newSpeakerWithANameInTheMeetingGivesTheTurnsToThatSpeaker() async throws {
-    let temp = try TemporaryDirectory("review")
+    let temp = try TemporaryDirectory("review", permissions: 0o700)
     defer { temp.remove() }
     let session = try await sameNameSession(temp)
     let review = try await sameNameOpen(session)
@@ -53,7 +53,7 @@ func newSpeakerWithANameInTheMeetingGivesTheTurnsToThatSpeaker() async throws {
 
 @Test(.timeLimit(.minutes(1))) @MainActor
 func speakersSavedWithOneNameShowAsOneAndRenameAsOne() async throws {
-    let temp = try TemporaryDirectory("review")
+    let temp = try TemporaryDirectory("review", permissions: 0o700)
     defer { temp.remove() }
     let session = try await sameNameSession(temp)
     // Saved before the rule: "Alice" picked for T2 (a new speaker), and S1 renamed Alice too.
@@ -84,7 +84,7 @@ func speakersSavedWithOneNameShowAsOneAndRenameAsOne() async throws {
 
 @Test(.timeLimit(.minutes(1))) @MainActor
 func assigningAPersonCalledLikeASpeakerGivesTheTurnsToThatSpeakerAndLinksIt() async throws {
-    let temp = try TemporaryDirectory("review")
+    let temp = try TemporaryDirectory("review", permissions: 0o700)
     defer { temp.remove() }
     let store = sameNameStore(temp)
     let alice = SpeakerProfile(displayName: "Alice")
@@ -119,7 +119,7 @@ private func sameNameGate() -> (hook: @Sendable () async -> Void, entered: Share
 
 @Test(.timeLimit(.minutes(1))) @MainActor
 func linkingASpeakerShownJoinedShowsOneSpeakerWhileItSaves() async throws {
-    let temp = try TemporaryDirectory("review")
+    let temp = try TemporaryDirectory("review", permissions: 0o700)
     defer { temp.remove() }
     let store = sameNameStore(temp)
     let bob = SpeakerProfile(displayName: "Bob")
@@ -153,7 +153,7 @@ func linkingASpeakerShownJoinedShowsOneSpeakerWhileItSaves() async throws {
 
 @Test(.timeLimit(.minutes(1))) @MainActor
 func namingASpeakerAsAnotherIsNamedKeepsTheShownSpeakerWhenItCreatesThePerson() async throws {
-    let temp = try TemporaryDirectory("review")
+    let temp = try TemporaryDirectory("review", permissions: 0o700)
     defer { temp.remove() }
     let store = sameNameStore(temp)
     let session = try await sameNameSession(temp)
@@ -183,7 +183,7 @@ func namingASpeakerAsAnotherIsNamedKeepsTheShownSpeakerWhenItCreatesThePerson() 
 
 @Test(.timeLimit(.minutes(1))) @MainActor
 func renamingALinkedSpeakerToANewSpeakersNameKeepsItsRowForChangesQueuedMeanwhile() async throws {
-    let temp = try TemporaryDirectory("review")
+    let temp = try TemporaryDirectory("review", permissions: 0o700)
     defer { temp.remove() }
     let store = sameNameStore(temp)
     let bob = SpeakerProfile(displayName: "Bob")
@@ -214,7 +214,7 @@ func renamingALinkedSpeakerToANewSpeakersNameKeepsItsRowForChangesQueuedMeanwhil
 
 @Test(.timeLimit(.minutes(1))) @MainActor
 func thisIsMeOnASpeakerShownJoinedShowsOneSpeakerWhileItSaves() async throws {
-    let temp = try TemporaryDirectory("review")
+    let temp = try TemporaryDirectory("review", permissions: 0o700)
     defer { temp.remove() }
     let store = sameNameStore(temp)
     let session = try await sameNameSession(temp)
@@ -236,7 +236,7 @@ func thisIsMeOnASpeakerShownJoinedShowsOneSpeakerWhileItSaves() async throws {
 
 @Test(.timeLimit(.minutes(1))) @MainActor
 func assigningAPersonMakesTheirSpeakerAndLinksItInOneBatch() async throws {
-    let temp = try TemporaryDirectory("review")
+    let temp = try TemporaryDirectory("review", permissions: 0o700)
     defer { temp.remove() }
     let store = sameNameStore(temp)
     let alex = SpeakerProfile(displayName: "Alex")
@@ -272,7 +272,7 @@ func assigningAPersonMakesTheirSpeakerAndLinksItInOneBatch() async throws {
 
 @Test(.timeLimit(.minutes(1))) @MainActor
 func assigningAnotherPersonOfTheNameGivesThemASpeakerOfTheirOwn() async throws {
-    let temp = try TemporaryDirectory("review")
+    let temp = try TemporaryDirectory("review", permissions: 0o700)
     defer { temp.remove() }
     let store = sameNameStore(temp)
     let first = SpeakerProfile(displayName: "Alex")
@@ -299,7 +299,7 @@ func assigningAnotherPersonOfTheNameGivesThemASpeakerOfTheirOwn() async throws {
 
 @Test(.timeLimit(.minutes(1))) @MainActor
 func clearingTheNameOfASpeakerShownJoinedClearsEachStoredOne() async throws {
-    let temp = try TemporaryDirectory("review")
+    let temp = try TemporaryDirectory("review", permissions: 0o700)
     defer { temp.remove() }
     let store = sameNameStore(temp)
     let alex = SpeakerProfile(displayName: "Alex")
@@ -327,7 +327,7 @@ func clearingTheNameOfASpeakerShownJoinedClearsEachStoredOne() async throws {
 
 @Test(.timeLimit(.minutes(1))) @MainActor
 func newSpeakerWithANameShownForSeveralStoredSpeakersGivesTheTurnsToTheOneShown() async throws {
-    let temp = try TemporaryDirectory("review")
+    let temp = try TemporaryDirectory("review", permissions: 0o700)
     defer { temp.remove() }
     let session = try await sameNameSession(temp)
     // Saved before the rule: S1 and a new speaker (holding T3) both named Alice, shown as S1.
@@ -341,7 +341,7 @@ func newSpeakerWithANameShownForSeveralStoredSpeakersGivesTheTurnsToTheOneShown(
 
 @Test(.timeLimit(.minutes(1))) @MainActor
 func aRenameRacingAChangeToTheGroupIsRefusedNotSpread() async throws {
-    let temp = try TemporaryDirectory("review")
+    let temp = try TemporaryDirectory("review", permissions: 0o700)
     defer { temp.remove() }
     let session = try await sameNameSession(temp)
     try SessionFixtures.appendEdits([.rename(speakerID: "system:S2", name: "Alex"),
@@ -366,7 +366,7 @@ func aRenameRacingAChangeToTheGroupIsRefusedNotSpread() async throws {
 
 @Test(.timeLimit(.minutes(1))) @MainActor
 func namingASpeakerLikeAPersonIgnoresAccentsAndSpaces() async throws {
-    let temp = try TemporaryDirectory("review")
+    let temp = try TemporaryDirectory("review", permissions: 0o700)
     defer { temp.remove() }
     let store = sameNameStore(temp)
     let zoe = SpeakerProfile(displayName: "Zoë Smith")

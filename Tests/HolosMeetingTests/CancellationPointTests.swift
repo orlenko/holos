@@ -206,7 +206,7 @@ private func isIncomplete(_ error: Error) -> Bool {
 
 @Test(.timeLimit(.minutes(3)), arguments: PointCase.all) @MainActor
 private func cancellationAtEachAwaitPoint(_ c: PointCase) async throws {
-    let temp = try TemporaryDirectory()
+    let temp = try TemporaryDirectory("meeting", permissions: 0o700)
     defer { temp.remove() }
     let point = c.point
     let fault = Fault(c.mode)

@@ -75,7 +75,7 @@ private func exists(_ url: URL) -> Bool {
 }
 
 @Test @MainActor func controllerReattachesToLiveSession() async throws {
-    let temp = try TemporaryDirectory("controller")
+    let temp = try TemporaryDirectory("controller", permissions: 0o700)
     defer { temp.remove() }
     let archive = try liveSession(in: temp.url)
     let probe = ControllerProbe()
@@ -92,7 +92,7 @@ private func exists(_ url: URL) -> Bool {
 }
 
 @Test @MainActor func controllerIgnoresStaleOrFinishedSessions() async throws {
-    let temp = try TemporaryDirectory("controller")
+    let temp = try TemporaryDirectory("controller", permissions: 0o700)
     defer { temp.remove() }
     // A recorder that died long ago (no lock, old status) and one that exited.
     let dead = try SessionArchive.create(root: temp.url, name: "Old", source: .microphone, locale: "en-CA",
@@ -135,7 +135,7 @@ private final class ControllerHeartbeat {
 }
 
 @Test @MainActor func controllerFindsTerminalMeetingAfterLaunch() async throws {
-    let temp = try TemporaryDirectory("controller")
+    let temp = try TemporaryDirectory("controller", permissions: 0o700)
     defer { temp.remove() }
     let probe = ControllerProbe()
     let controller = makeController(root: temp.url, launcher: FakeRecorderLauncher(), probe: probe)
@@ -178,7 +178,7 @@ private final class ControllerHeartbeat {
 }
 
 @Test @MainActor func startFollowsATerminalMeetingNotYetRescanned() async throws {
-    let temp = try TemporaryDirectory("controller")
+    let temp = try TemporaryDirectory("controller", permissions: 0o700)
     defer { temp.remove() }
     let launcher = FakeRecorderLauncher()
     let probe = ControllerProbe()
@@ -199,7 +199,7 @@ private final class ControllerHeartbeat {
 }
 
 @Test @MainActor func startWhileAStoppedStartWaitsSaysItIsStopping() throws {
-    let temp = try TemporaryDirectory("controller")
+    let temp = try TemporaryDirectory("controller", permissions: 0o700)
     defer { temp.remove() }
     let launcher = FakeRecorderLauncher()
     let controller = makeController(root: temp.url, launcher: launcher, probe: ControllerProbe())
@@ -215,7 +215,7 @@ private final class ControllerHeartbeat {
 }
 
 @Test @MainActor func controllerWritesControlFiles() async throws {
-    let temp = try TemporaryDirectory("controller")
+    let temp = try TemporaryDirectory("controller", permissions: 0o700)
     defer { temp.remove() }
     let archive = try liveSession(in: temp.url)
     let controller = makeController(root: temp.url, launcher: FakeRecorderLauncher(), probe: ControllerProbe())
@@ -239,7 +239,7 @@ private final class ControllerHeartbeat {
 }
 
 @Test @MainActor func transcribingRecorderIsFollowedAfterRelaunch() async throws {
-    let temp = try TemporaryDirectory("controller")
+    let temp = try TemporaryDirectory("controller", permissions: 0o700)
     defer { temp.remove() }
     let archive = try liveSession(in: temp.url, phase: .transcribing)
     let probe = ControllerProbe()
@@ -256,7 +256,7 @@ private final class ControllerHeartbeat {
 }
 
 @Test @MainActor func undeliveredStopIsAnnouncedAndCanBeRetried() async throws {
-    let temp = try TemporaryDirectory("controller")
+    let temp = try TemporaryDirectory("controller", permissions: 0o700)
     defer { temp.remove() }
     let archive = try liveSession(in: temp.url)
     // A file where control/ belongs: no request can be published.
@@ -279,7 +279,7 @@ private final class ControllerHeartbeat {
 }
 
 @Test @MainActor func failedStopRequestIsSignalledToALaunchedRecorder() async throws {
-    let temp = try TemporaryDirectory("controller")
+    let temp = try TemporaryDirectory("controller", permissions: 0o700)
     defer { temp.remove() }
     let launcher = FakeRecorderLauncher()
     let probe = ControllerProbe()
@@ -300,7 +300,7 @@ private final class ControllerHeartbeat {
 }
 
 @Test @MainActor func startAfterTimedOutStartWaitsForItsRecorder() async throws {
-    let temp = try TemporaryDirectory("controller")
+    let temp = try TemporaryDirectory("controller", permissions: 0o700)
     defer { temp.remove() }
     let launcher = FakeRecorderLauncher()
     var clock = Date()
@@ -331,7 +331,7 @@ private final class ControllerHeartbeat {
 /// says dead) blocks a second recorder until the launcher reports that the first one exited, even after the failure
 /// was dismissed.
 @Test @MainActor func startAfterTimedOutStartWithoutAFolderWaitsForItsExit() throws {
-    let temp = try TemporaryDirectory("controller")
+    let temp = try TemporaryDirectory("controller", permissions: 0o700)
     defer { temp.remove() }
     let launcher = FakeRecorderLauncher()
     var clock = Date()
@@ -365,7 +365,7 @@ private final class ControllerHeartbeat {
 /// without a session folder: the relaunched app, which did not launch that recorder and cannot wait for it, finds it
 /// by its saved pid and start time and launches no second recorder until that process is gone.
 @Test @MainActor func timedOutRecorderStillBlocksAStartAfterARelaunch() throws {
-    let temp = try TemporaryDirectory("controller")
+    let temp = try TemporaryDirectory("controller", permissions: 0o700)
     defer { temp.remove() }
     let pid = getpid()
     let started = try #require(ProcessSpawner.startTime(of: pid))
@@ -409,7 +409,7 @@ private final class ControllerHeartbeat {
 
 /// The launcher reporting the recorder's exit forgets its saved pid.
 @Test @MainActor func recorderExitForgetsItsSavedPid() throws {
-    let temp = try TemporaryDirectory("controller")
+    let temp = try TemporaryDirectory("controller", permissions: 0o700)
     defer { temp.remove() }
     let launcher = FakeRecorderLauncher()
     launcher.pid = getpid()
@@ -424,7 +424,7 @@ private final class ControllerHeartbeat {
 }
 
 @Test @MainActor func startRefusedOnLowDisk() throws {
-    let temp = try TemporaryDirectory("controller")
+    let temp = try TemporaryDirectory("controller", permissions: 0o700)
     defer { temp.remove() }
     let launcher = FakeRecorderLauncher()
     let probe = ControllerProbe()
@@ -438,7 +438,7 @@ private final class ControllerHeartbeat {
 }
 
 @Test @MainActor func inPersonStartRefusedWithoutBuiltInMic() throws {
-    let temp = try TemporaryDirectory("controller")
+    let temp = try TemporaryDirectory("controller", permissions: 0o700)
     defer { temp.remove() }
     let launcher = FakeRecorderLauncher()
     let controller = makeController(root: temp.url, launcher: launcher, probe: ControllerProbe(),
@@ -451,7 +451,7 @@ private final class ControllerHeartbeat {
 }
 
 @Test @MainActor func callStartAllowedWithoutBuiltInMic() throws {
-    let temp = try TemporaryDirectory("controller")
+    let temp = try TemporaryDirectory("controller", permissions: 0o700)
     defer { temp.remove() }
     let launcher = FakeRecorderLauncher()
     let probe = ControllerProbe()
@@ -471,7 +471,7 @@ private final class ControllerHeartbeat {
 }
 
 @Test @MainActor func vocabularyIsAskedForTheMeetingLanguages() throws {
-    let temp = try TemporaryDirectory("controller")
+    let temp = try TemporaryDirectory("controller", permissions: 0o700)
     defer { temp.remove() }
     let launcher = FakeRecorderLauncher()
     var asked: [[String]] = []
@@ -485,7 +485,7 @@ private final class ControllerHeartbeat {
 }
 
 @Test @MainActor func vocabularyFileIsPrivate() throws {
-    let temp = try TemporaryDirectory("controller")
+    let temp = try TemporaryDirectory("controller", permissions: 0o700)
     defer { temp.remove() }
     let launcher = FakeRecorderLauncher()
     let controller = makeController(root: temp.url, launcher: launcher, probe: ControllerProbe(),
@@ -507,7 +507,7 @@ private final class ControllerHeartbeat {
 }
 
 @Test @MainActor func noVocabularyMeansNoFile() throws {
-    let temp = try TemporaryDirectory("controller")
+    let temp = try TemporaryDirectory("controller", permissions: 0o700)
     defer { temp.remove() }
     let launcher = FakeRecorderLauncher()
     let controller = makeController(root: temp.url, launcher: launcher, probe: ControllerProbe())
@@ -516,7 +516,7 @@ private final class ControllerHeartbeat {
 }
 
 @Test @MainActor func vocabularyFileRemovedOnLaunchFailure() throws {
-    let temp = try TemporaryDirectory("controller")
+    let temp = try TemporaryDirectory("controller", permissions: 0o700)
     defer { temp.remove() }
     let launcher = FakeRecorderLauncher()
     launcher.launchError = HolosError.io("Cannot start holos: spawn failed.")
@@ -533,7 +533,7 @@ private final class ControllerHeartbeat {
 }
 
 @Test @MainActor func vocabularyFileRemovedOnEarlyExit() async throws {
-    let temp = try TemporaryDirectory("controller")
+    let temp = try TemporaryDirectory("controller", permissions: 0o700)
     defer { temp.remove() }
     let launcher = FakeRecorderLauncher()
     let probe = ControllerProbe()
@@ -550,7 +550,7 @@ private final class ControllerHeartbeat {
 }
 
 @Test @MainActor func vocabularyFileRemovedOnFirstStatus() async throws {
-    let temp = try TemporaryDirectory("controller")
+    let temp = try TemporaryDirectory("controller", permissions: 0o700)
     defer { temp.remove() }
     let launcher = FakeRecorderLauncher()
     let controller = makeController(root: temp.url, launcher: launcher, probe: ControllerProbe(),
@@ -569,7 +569,7 @@ private final class ControllerHeartbeat {
 }
 
 @Test @MainActor func staleVocabularyFilesSwept() throws {
-    let temp = try TemporaryDirectory("controller")
+    let temp = try TemporaryDirectory("controller", permissions: 0o700)
     defer { temp.remove() }
     let folder = temp.url.appendingPathComponent("tmp", isDirectory: true)
     try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
@@ -608,7 +608,7 @@ private final class ControllerHeartbeat {
 }
 
 @Test @MainActor func launchedMeetingIsFollowedToTheEnd() async throws {
-    let temp = try TemporaryDirectory("controller")
+    let temp = try TemporaryDirectory("controller", permissions: 0o700)
     defer { temp.remove() }
     let launcher = FakeRecorderLauncher()
     let probe = ControllerProbe()
@@ -647,7 +647,7 @@ private final class ControllerHeartbeat {
 /// offered for naming.
 @Test(arguments: [PostProcessingState.succeeded, .partial]) @MainActor
 func finishedMeetingWithLabelsOffersNaming(postprocessing: PostProcessingState) async throws {
-    let temp = try TemporaryDirectory("controller")
+    let temp = try TemporaryDirectory("controller", permissions: 0o700)
     defer { temp.remove() }
     let labelled = try await SessionFixtures.labelledSession(in: temp.url)
     let manifest = try SessionArchive.readManifest(at: labelled.session)
@@ -687,7 +687,7 @@ func finishedMeetingWithLabelsOffersNaming(postprocessing: PostProcessingState) 
 /// reported without speakers and not offered for naming.
 @Test(arguments: [PostProcessingState.succeeded, .partial]) @MainActor
 func finishedMeetingWithoutLabelsOffersNothing(postprocessing: PostProcessingState) async throws {
-    let temp = try TemporaryDirectory("controller")
+    let temp = try TemporaryDirectory("controller", permissions: 0o700)
     defer { temp.remove() }
     let probe = ControllerProbe()
     let controller = makeController(root: temp.url, launcher: FakeRecorderLauncher(), probe: probe)
@@ -725,7 +725,7 @@ func finishedMeetingWithoutLabelsOffersNothing(postprocessing: PostProcessingSta
 /// alert whether the command ran to its end (0, or 3 with a warning) and left labels that load. The offer itself comes
 /// from the end of the command's use of the meeting (`endUsing`), once.
 @Test @MainActor func labellingCommandThatLeavesLabelsOffersNaming() async throws {
-    let temp = try TemporaryDirectory("controller")
+    let temp = try TemporaryDirectory("controller", permissions: 0o700)
     defer { temp.remove() }
     // Labels still being written while the command runs: the head is put back when it "ends".
     let labelled = try await SessionFixtures.labelledSession(in: temp.url)
@@ -765,7 +765,7 @@ func finishedMeetingWithoutLabelsOffersNothing(postprocessing: PostProcessingSta
 /// in a terminal) is offered on the next launch; the offer is not repeated by later refreshes, and once the user
 /// opens it the dismissal survives a relaunch. New labels for the meeting (another run) are offered again.
 @Test @MainActor func meetingLabelledWhileHolosWasNotRunningIsOfferedOnLaunch() async throws {
-    let temp = try TemporaryDirectory("controller")
+    let temp = try TemporaryDirectory("controller", permissions: 0o700)
     defer { temp.remove() }
     let labelled = try await SessionFixtures.labelledSession(in: temp.url)
     let manifest = try SessionArchive.readManifest(at: labelled.session)
@@ -812,7 +812,7 @@ func finishedMeetingWithoutLabelsOffersNothing(postprocessing: PostProcessingSta
 
 /// A meeting whose speakers were edited (named) is not offered, and one deleted meanwhile has its offer withdrawn.
 @Test @MainActor func namingOfferFollowsEditsAndDeletion() async throws {
-    let temp = try TemporaryDirectory("controller")
+    let temp = try TemporaryDirectory("controller", permissions: 0o700)
     defer { temp.remove() }
     let labelled = try await SessionFixtures.labelledSession(in: temp.url)
     let manifest = try SessionArchive.readManifest(at: labelled.session)
@@ -839,7 +839,7 @@ func finishedMeetingWithoutLabelsOffersNothing(postprocessing: PostProcessingSta
 /// One set of meetings in use: a second use of a meeting is turned down until the first ends, and each change is
 /// reported.
 @Test @MainActor func sessionsInUseTurnDownASecondUse() throws {
-    let temp = try TemporaryDirectory("controller")
+    let temp = try TemporaryDirectory("controller", permissions: 0o700)
     defer { temp.remove() }
     let controller = makeController(root: temp.url, launcher: FakeRecorderLauncher(), probe: ControllerProbe())
     var changes = 0
@@ -859,7 +859,7 @@ func finishedMeetingWithoutLabelsOffersNothing(postprocessing: PostProcessingSta
 /// missing) is not offered for naming and does not report speakers ready: the catalog calls those labels unreadable
 /// and the exports leave them out.
 @Test @MainActor func finishedMeetingWithUnusableLabelsIsNotOfferedForNaming() async throws {
-    let temp = try TemporaryDirectory("controller")
+    let temp = try TemporaryDirectory("controller", permissions: 0o700)
     defer { temp.remove() }
     let labelled = try await SessionFixtures.labelledSession(in: temp.url)
     let manifest = try SessionArchive.readManifest(at: labelled.session)
@@ -886,7 +886,7 @@ func finishedMeetingWithoutLabelsOffersNothing(postprocessing: PostProcessingSta
 }
 
 @Test func speakerLabelsReadyFollowsTheSharedValidation() async throws {
-    let temp = try TemporaryDirectory("controller")
+    let temp = try TemporaryDirectory("controller", permissions: 0o700)
     defer { temp.remove() }
     let labelled = try await SessionFixtures.labelledSession(in: temp.url)
     #expect(MeetingController.speakerLabelsReady(session: labelled.session))
@@ -901,7 +901,7 @@ func finishedMeetingWithoutLabelsOffersNothing(postprocessing: PostProcessingSta
 }
 
 @Test @MainActor func interruptedSessionsAreListedOnce() async throws {
-    let temp = try TemporaryDirectory("controller")
+    let temp = try TemporaryDirectory("controller", permissions: 0o700)
     defer { temp.remove() }
     // A recorder that died: manifest still recording, no lock.
     let id: String = try {
@@ -915,7 +915,7 @@ func finishedMeetingWithoutLabelsOffersNothing(postprocessing: PostProcessingSta
 }
 
 @Test @MainActor func automaticRelabelRunsDiarizeOnce() async throws {
-    let temp = try TemporaryDirectory("controller")
+    let temp = try TemporaryDirectory("controller", permissions: 0o700)
     defer { temp.remove() }
     let session = try await SessionFixtures.makeSession(
         in: temp.url, mode: .inPerson,
@@ -970,7 +970,7 @@ func finishedMeetingWithoutLabelsOffersNothing(postprocessing: PostProcessingSta
 /// A relabel whose command could not start (here the bundled tool is missing) uses up no attempt: once the tool is
 /// back, the meeting is still relabelled.
 @Test @MainActor func automaticRelabelThatCannotStartUsesNoAttempt() async throws {
-    let temp = try TemporaryDirectory("controller")
+    let temp = try TemporaryDirectory("controller", permissions: 0o700)
     defer { temp.remove() }
     let session = try await SessionFixtures.makeSession(
         in: temp.url, mode: .inPerson,
@@ -1004,7 +1004,7 @@ func finishedMeetingWithoutLabelsOffersNothing(postprocessing: PostProcessingSta
 /// the labelling ended with a warning (exit code 3); one the relabel did not label is not.
 @Test(arguments: [Int32(0), 3]) @MainActor
 func automaticRelabelThatLabelsOffersNamingOnce(code: Int32) async throws {
-    let temp = try TemporaryDirectory("controller")
+    let temp = try TemporaryDirectory("controller", permissions: 0o700)
     defer { temp.remove() }
     let labelled = try await SessionFixtures.labelledSession(in: temp.url)
     let session = labelled.session
@@ -1038,7 +1038,7 @@ func automaticRelabelThatLabelsOffersNamingOnce(code: Int32) async throws {
 }
 
 @Test @MainActor func automaticRelabelNamesTheMeetingWhileItRuns() async throws {
-    let temp = try TemporaryDirectory("controller")
+    let temp = try TemporaryDirectory("controller", permissions: 0o700)
     defer { temp.remove() }
     let session = try await SessionFixtures.makeSession(
         in: temp.url, mode: .inPerson,
@@ -1083,7 +1083,7 @@ func automaticRelabelThatLabelsOffersNamingOnce(code: Int32) async throws {
 /// meetings in use) cannot start on one still waiting its turn; each turn takes the reservation over, and nothing stays
 /// reserved once the run ended, whether a meeting was deleted, failed before its turn took over, or was never reached.
 @Test @MainActor func aDeletionOfSeveralReservesItsWaitingMeetings() async throws {
-    let temp = try TemporaryDirectory("controller")
+    let temp = try TemporaryDirectory("controller", permissions: 0o700)
     defer { temp.remove() }
     let controller = makeController(root: temp.url, launcher: FakeRecorderLauncher(), probe: ControllerProbe())
     var changes = 0

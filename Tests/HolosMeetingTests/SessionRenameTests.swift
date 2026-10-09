@@ -175,7 +175,7 @@ private func listed(name: String, source: MeetingNameSource, generated: String?)
 // MARK: - The command
 
 @Test func aRenameIsTheUsersAndHeadsTheTranscriptFiles() async throws {
-    let temp = try TemporaryDirectory("rename")
+    let temp = try TemporaryDirectory("rename", permissions: 0o700)
     defer { temp.remove() }
     let session = try await renameSession(in: temp.url)
     try writeSummary(session)
@@ -219,7 +219,7 @@ private func listed(name: String, source: MeetingNameSource, generated: String?)
 }
 
 @Test func theGeneratedTitleComesBack() async throws {
-    let temp = try TemporaryDirectory("rename")
+    let temp = try TemporaryDirectory("rename", permissions: 0o700)
     defer { temp.remove() }
     let session = try await renameSession(in: temp.url, name: "Weekly sync")
     try writeSummary(session)
@@ -240,7 +240,7 @@ private func listed(name: String, source: MeetingNameSource, generated: String?)
 }
 
 @Test func aSpecialOrLongNameIsSavedAsItIsShown() async throws {
-    let temp = try TemporaryDirectory("rename")
+    let temp = try TemporaryDirectory("rename", permissions: 0o700)
     defer { temp.remove() }
     let session = try await renameSession(in: temp.url)
     let special = "Q3 / Café — “Plan” #1 *draft* <b> 🎉"
@@ -260,7 +260,7 @@ private func listed(name: String, source: MeetingNameSource, generated: String?)
 }
 
 @Test func filesWrittenBeforeAnyWereGeneratedAreNotMovedAside() async throws {
-    let temp = try TemporaryDirectory("rename")
+    let temp = try TemporaryDirectory("rename", permissions: 0o700)
     defer { temp.remove() }
     let session = try await renameSession(in: temp.url, legacyExports: true)
     #expect(!SessionFixtures.exists(SessionPaths.generatedExports(session)))
@@ -271,7 +271,7 @@ private func listed(name: String, source: MeetingNameSource, generated: String?)
 }
 
 @Test func aMeetingWithoutTranscriptIsRenamedWithoutFiles() async throws {
-    let temp = try TemporaryDirectory("rename")
+    let temp = try TemporaryDirectory("rename", permissions: 0o700)
     defer { temp.remove() }
     let session = try await SessionFixtures.makeSession(in: temp.url, transcript: nil)
     let outcome = await rename(session, "Hallway chat")
@@ -284,7 +284,7 @@ private func listed(name: String, source: MeetingNameSource, generated: String?)
 }
 
 @Test func aRenameIsRefusedWhileTheMeetingIsHeld() async throws {
-    let temp = try TemporaryDirectory("rename")
+    let temp = try TemporaryDirectory("rename", permissions: 0o700)
     defer { temp.remove() }
     let session = try await renameSession(in: temp.url)
     let id = try SessionArchive.readManifest(at: session).id
@@ -341,7 +341,7 @@ private func listed(name: String, source: MeetingNameSource, generated: String?)
 }
 
 @Test func aRecordingIsRenamedOnlyOnceSaved() async throws {
-    let temp = try TemporaryDirectory("rename")
+    let temp = try TemporaryDirectory("rename", permissions: 0o700)
     defer { temp.remove() }
     let archive = try SessionArchive.create(root: temp.url, name: "Meeting 2026-10-03 14:00", source: .microphone,
                                             locale: "en-CA", backend: .speech)
@@ -357,7 +357,7 @@ private func listed(name: String, source: MeetingNameSource, generated: String?)
 }
 
 @Test func aMeetingJSONThatCannotBeReadIsNotRewritten() async throws {
-    let temp = try TemporaryDirectory("rename")
+    let temp = try TemporaryDirectory("rename", permissions: 0o700)
     defer { temp.remove() }
     let session = try await renameSession(in: temp.url)
     var object = try meetingJSON(session)
@@ -370,7 +370,7 @@ private func listed(name: String, source: MeetingNameSource, generated: String?)
 }
 
 @Test func theGeneratedTitleGivesBackTheDefaultNameOfAUserNameThatLooksLikeOne() async throws {
-    let temp = try TemporaryDirectory("rename")
+    let temp = try TemporaryDirectory("rename", permissions: 0o700)
     defer { temp.remove() }
     let session = try await renameSession(in: temp.url, name: "Meeting 2026-01-01 09:00")
     var object = try meetingJSON(session)
@@ -384,7 +384,7 @@ private func listed(name: String, source: MeetingNameSource, generated: String?)
 }
 
 @Test func aMeetingInterruptedAfterCaptureStoppedIsRecoveredFirst() async throws {
-    let temp = try TemporaryDirectory("rename")
+    let temp = try TemporaryDirectory("rename", permissions: 0o700)
     defer { temp.remove() }
     let archive = try SessionArchive.create(root: temp.url, name: "Meeting 2026-10-03 14:00", source: .microphone,
                                             locale: "en-CA", backend: .speech)
@@ -397,7 +397,7 @@ private func listed(name: String, source: MeetingNameSource, generated: String?)
 }
 
 @Test func aTranscriptThatCannotBeReadRefusesTheRename() async throws {
-    let temp = try TemporaryDirectory("rename")
+    let temp = try TemporaryDirectory("rename", permissions: 0o700)
     defer { temp.remove() }
     let session = try await renameSession(in: temp.url)
     let id = try #require(try SessionArchive.currentTranscriptID(at: session))
@@ -437,7 +437,7 @@ private func listed(name: String, source: MeetingNameSource, generated: String?)
 }
 
 @Test func filesThatCannotBePreparedLeaveTheNameAlone() async throws {
-    let temp = try TemporaryDirectory("rename")
+    let temp = try TemporaryDirectory("rename", permissions: 0o700)
     defer { temp.remove() }
     let session = try await renameSession(in: temp.url, legacyExports: true)
     struct Unreadable: Error {}
@@ -454,7 +454,7 @@ private func listed(name: String, source: MeetingNameSource, generated: String?)
 }
 
 @Test func aRenameWhoseFilesWereNotRewrittenIsFinishedByAskingAgain() async throws {
-    let temp = try TemporaryDirectory("rename")
+    let temp = try TemporaryDirectory("rename", permissions: 0o700)
     defer { temp.remove() }
     let session = try await renameSession(in: temp.url)
     try writeSummary(session)
@@ -508,7 +508,7 @@ private func listed(name: String, source: MeetingNameSource, generated: String?)
 }
 
 @Test func theSameLongNameAskedForAgainIsNotCut() async throws {
-    let temp = try TemporaryDirectory("rename")
+    let temp = try TemporaryDirectory("rename", permissions: 0o700)
     defer { temp.remove() }
     // A name given before names were cut, longer than 60 characters.
     let long = String(repeating: "Quarterly roadmap review ", count: 4).trimmingCharacters(in: .whitespaces)
@@ -525,7 +525,7 @@ private func listed(name: String, source: MeetingNameSource, generated: String?)
 // MARK: - Under the lease, records, failed writes
 
 @Test func whatARenameDecidesFromIsReadUnderTheLease() async throws {
-    let temp = try TemporaryDirectory("rename")
+    let temp = try TemporaryDirectory("rename", permissions: 0o700)
     defer { temp.remove() }
     let session = try await renameSession(in: temp.url, name: "Weekly sync")
     try writeSummary(session)
@@ -546,7 +546,7 @@ private func listed(name: String, source: MeetingNameSource, generated: String?)
 }
 
 @Test func filesWithADamagedRecordAreNotMovedAside() async throws {
-    let temp = try TemporaryDirectory("rename")
+    let temp = try TemporaryDirectory("rename", permissions: 0o700)
     defer { temp.remove() }
     let session = try await renameSession(in: temp.url, legacyExports: true)
     try AtomicFile.write(Data("{".utf8), to: SessionPaths.generatedExports(session))
@@ -558,7 +558,7 @@ private func listed(name: String, source: MeetingNameSource, generated: String?)
 }
 
 @Test func aNameSourceThatCannotBeWrittenLeavesTheMeetingAsItWas() async throws {
-    let temp = try TemporaryDirectory("rename")
+    let temp = try TemporaryDirectory("rename", permissions: 0o700)
     defer { temp.remove() }
     let session = try await renameSession(in: temp.url)
     try writeSummary(session)
@@ -655,7 +655,7 @@ private func listed(name: String, source: MeetingNameSource, generated: String?)
 }
 
 @Test func aSummaryOfAnEarlierTranscriptHeadsNeitherTheListNorTheFiles() async throws {
-    let temp = try TemporaryDirectory("rename")
+    let temp = try TemporaryDirectory("rename", permissions: 0o700)
     defer { temp.remove() }
     let session = try await renameSession(in: temp.url, name: "Weekly sync")
     try writeSummary(session)
@@ -673,7 +673,7 @@ private func listed(name: String, source: MeetingNameSource, generated: String?)
 }
 
 @Test func theTitleOfASummaryMadeWithOtherNamesStillHeadsTheFiles() async throws {
-    let temp = try TemporaryDirectory("rename")
+    let temp = try TemporaryDirectory("rename", permissions: 0o700)
     defer { temp.remove() }
     let session = try await renameSession(in: temp.url)
     try writeSummary(session)
@@ -693,7 +693,7 @@ private func listed(name: String, source: MeetingNameSource, generated: String?)
 }
 
 @Test func aGeneratedJSONFileAloneIsPreparedToo() async throws {
-    let temp = try TemporaryDirectory("rename")
+    let temp = try TemporaryDirectory("rename", permissions: 0o700)
     defer { temp.remove() }
     let session = try await renameSession(in: temp.url)
     try writeSummary(session)
@@ -720,7 +720,7 @@ private func listed(name: String, source: MeetingNameSource, generated: String?)
 }
 
 @Test func aMeetingJSONThatCannotBeReadTurnsRenameOff() async throws {
-    let temp = try TemporaryDirectory("rename")
+    let temp = try TemporaryDirectory("rename", permissions: 0o700)
     defer { temp.remove() }
     let session = try await renameSession(in: temp.url)
     #expect(SessionCatalog.summary(session: session).metadataProblem == nil)
@@ -734,7 +734,7 @@ private func listed(name: String, source: MeetingNameSource, generated: String?)
 }
 
 @Test func reviewReadsTheTranscriptAsTheListDoes() async throws {
-    let temp = try TemporaryDirectory("rename")
+    let temp = try TemporaryDirectory("rename", permissions: 0o700)
     defer { temp.remove() }
     let session = try await renameSession(in: temp.url)
     try writeSummary(session)
@@ -748,7 +748,7 @@ private func listed(name: String, source: MeetingNameSource, generated: String?)
 }
 
 @Test func theSameNameKeepsItsSourceAsItIs() async throws {
-    let temp = try TemporaryDirectory("rename")
+    let temp = try TemporaryDirectory("rename", permissions: 0o700)
     defer { temp.remove() }
     let session = try await renameSession(in: temp.url, name: "Weekly sync")
     // A source a newer build wrote: the user's to this build, never rewritten.
@@ -773,7 +773,7 @@ private func listed(name: String, source: MeetingNameSource, generated: String?)
     for record in [#"{"schemaVersion":1,"files":{"transcript.md":"x"}}"#,
                    #"{"schemaVersion":1,"files":{"notes.md":"\#(String(repeating: "a", count: 64))"}}"#,
                    #"{"schemaVersion":1,"files":{},"pending":{"transcript.md":"\#(String(repeating: "A", count: 64))"}}"#] {
-        let temp = try TemporaryDirectory("rename")
+        let temp = try TemporaryDirectory("rename", permissions: 0o700)
         defer { temp.remove() }
         let session = try await renameSession(in: temp.url, legacyExports: true)
         try AtomicFile.write(Data(record.utf8), to: SessionPaths.generatedExports(session))
@@ -785,7 +785,7 @@ private func listed(name: String, source: MeetingNameSource, generated: String?)
 }
 
 @Test func anExportRecordFromANewerBuildTurnsRenameOff() async throws {
-    let temp = try TemporaryDirectory("rename")
+    let temp = try TemporaryDirectory("rename", permissions: 0o700)
     defer { temp.remove() }
     let session = try await renameSession(in: temp.url)
     try writeSummary(session)
@@ -801,7 +801,7 @@ private func listed(name: String, source: MeetingNameSource, generated: String?)
 }
 
 @Test func transcriptFilesWithoutATranscriptRefuseTheRename() async throws {
-    let temp = try TemporaryDirectory("rename")
+    let temp = try TemporaryDirectory("rename", permissions: 0o700)
     defer { temp.remove() }
     let session = try await renameSession(in: temp.url)
     try writeSummary(session)
@@ -827,14 +827,14 @@ private func listed(name: String, source: MeetingNameSource, generated: String?)
     let digest = String(repeating: "a", count: 64)
     for record in [#"{"schemaVersion":1,"files":{}}"#,
                    #"{"schemaVersion":1,"files":{"transcript.md":"\#(digest)","transcript.txt":"\#(digest)"}}"#] {
-        let temp = try TemporaryDirectory("rename")
+        let temp = try TemporaryDirectory("rename", permissions: 0o700)
         defer { temp.remove() }
         let session = try await renameSession(in: temp.url, legacyExports: true)
         try AtomicFile.write(Data(record.utf8), to: SessionPaths.generatedExports(session))
         #expect(try !SessionExports.hasUsableRecord(session: session), "\(record)")
     }
     // Complete in files, or in pending (a regeneration interrupted): usable.
-    let temp = try TemporaryDirectory("rename")
+    let temp = try TemporaryDirectory("rename", permissions: 0o700)
     defer { temp.remove() }
     let session = try await renameSession(in: temp.url)
     let all = #""transcript.md":"\#(digest)","transcript.json":"\#(digest)","transcript.txt":"\#(digest)""#
@@ -846,7 +846,7 @@ private func listed(name: String, source: MeetingNameSource, generated: String?)
 }
 
 @Test func aFolderReplacedOnceTheLeaseIsTakenIsLeftAlone() async throws {
-    let temp = try TemporaryDirectory("rename")
+    let temp = try TemporaryDirectory("rename", permissions: 0o700)
     defer { temp.remove() }
     let session = try await renameSession(in: temp.url, name: "Weekly sync")
     _ = await rename(session, "Weekly sync")
@@ -866,7 +866,7 @@ private func listed(name: String, source: MeetingNameSource, generated: String?)
 }
 
 @Test func theListChecksEveryTranscriptFile() async throws {
-    let temp = try TemporaryDirectory("rename")
+    let temp = try TemporaryDirectory("rename", permissions: 0o700)
     defer { temp.remove() }
     let session = try await renameSession(in: temp.url)
     try writeSummary(session)
@@ -884,7 +884,7 @@ private func listed(name: String, source: MeetingNameSource, generated: String?)
 // MARK: - Jobs elsewhere, each write on the locked folder, people read at the write
 
 @Test func aSummaryOrFinalTranscriptRunningElsewhereTurnsRenameOff() async throws {
-    let temp = try TemporaryDirectory("rename")
+    let temp = try TemporaryDirectory("rename", permissions: 0o700)
     defer { temp.remove() }
     let session = try await renameSession(in: temp.url)
     let id = try SessionArchive.readManifest(at: session).id
@@ -912,7 +912,7 @@ private func listed(name: String, source: MeetingNameSource, generated: String?)
 
 @Test func eachWriteChecksTheLockedFolder() async throws {
     for (step, expectedCode) in [("prepare", Int32(1)), ("regenerate", Int32(3)), ("unchanged", Int32(1))] {
-        let temp = try TemporaryDirectory("rename")
+        let temp = try TemporaryDirectory("rename", permissions: 0o700)
         defer { temp.remove() }
         let session = try await renameSession(in: temp.url, name: "Weekly sync", legacyExports: step == "prepare")
         if step == "unchanged" { _ = await rename(session, "Weekly sync") }
@@ -933,7 +933,7 @@ private func listed(name: String, source: MeetingNameSource, generated: String?)
 }
 
 @Test func peopleAreReadWhenTheFilesAreWritten() async throws {
-    let temp = try TemporaryDirectory("rename")
+    let temp = try TemporaryDirectory("rename", permissions: 0o700)
     defer { temp.remove() }
     let session = try await renameSession(in: temp.url)
     let order = SharedValue<[String]>([])
@@ -966,7 +966,7 @@ private func listed(name: String, source: MeetingNameSource, generated: String?)
 // MARK: - Transcript files out of date, derived from the files
 
 @Test func theFilesAreCurrentOnlyWhenTheyShowTheTitleAndMatchTheirRecord() async throws {
-    let temp = try TemporaryDirectory("rename")
+    let temp = try TemporaryDirectory("rename", permissions: 0o700)
     defer { temp.remove() }
     #expect(SessionExports.filesState(
         session: try await SessionFixtures.makeSession(in: temp.url, transcript: nil), title: "x") == .none)
@@ -1009,7 +1009,7 @@ private func listed(name: String, source: MeetingNameSource, generated: String?)
 }
 
 @Test func updateTranscriptFilesRewritesThemForTheTitleShown() async throws {
-    let temp = try TemporaryDirectory("rename")
+    let temp = try TemporaryDirectory("rename", permissions: 0o700)
     defer { temp.remove() }
     let session = try await renameSession(in: temp.url)
     try writeSummary(session)
@@ -1027,7 +1027,7 @@ private func listed(name: String, source: MeetingNameSource, generated: String?)
 }
 
 @Test func filesStateIsCachedUntilAFileOrTheTitleChanges() async throws {
-    let temp = try TemporaryDirectory("rename")
+    let temp = try TemporaryDirectory("rename", permissions: 0o700)
     defer { temp.remove() }
     let session = try await renameSession(in: temp.url)
     try writeSummary(session)
@@ -1043,7 +1043,7 @@ private func listed(name: String, source: MeetingNameSource, generated: String?)
 }
 
 @Test func filesBehindTheSpeakerLabelsAreKnown() async throws {
-    let temp = try TemporaryDirectory("rename")
+    let temp = try TemporaryDirectory("rename", permissions: 0o700)
     defer { temp.remove() }
     let (session, _, run) = try await SessionFixtures.labelledSession(in: temp.url, track: "mic")
     try SessionExports.regenerate(session: session)
@@ -1056,7 +1056,7 @@ private func listed(name: String, source: MeetingNameSource, generated: String?)
 }
 
 @Test func eachTranscriptFileWriteChecksTheFolder() async throws {
-    let temp = try TemporaryDirectory("rename")
+    let temp = try TemporaryDirectory("rename", permissions: 0o700)
     defer { temp.remove() }
     let session = try await renameSession(in: temp.url)
     let calls = SharedValue(0)
@@ -1081,7 +1081,7 @@ private func listed(name: String, source: MeetingNameSource, generated: String?)
 }
 
 @Test func aNameSavedButNotConfirmedIsAPartialRename() async throws {
-    let temp = try TemporaryDirectory("rename")
+    let temp = try TemporaryDirectory("rename", permissions: 0o700)
     defer { temp.remove() }
     let session = try await renameSession(in: temp.url)
     var request = SessionRenameCommand.Request(session: session, name: "Weekly sync", voiceInputs: { voice },
@@ -1099,7 +1099,7 @@ private func listed(name: String, source: MeetingNameSource, generated: String?)
 // MARK: - Partial writes show what was asked
 
 @Test func aPublishedNameSourceIsAPartialRenameNotARollback() async throws {
-    let temp = try TemporaryDirectory("rename")
+    let temp = try TemporaryDirectory("rename", permissions: 0o700)
     defer { temp.remove() }
     let session = try await renameSession(in: temp.url)
     struct SyncFailed: Error {}
@@ -1119,7 +1119,7 @@ private func listed(name: String, source: MeetingNameSource, generated: String?)
 }
 
 @Test func aPendingMapMustBeCompleteWhateverFilesHolds() async throws {
-    let temp = try TemporaryDirectory("rename")
+    let temp = try TemporaryDirectory("rename", permissions: 0o700)
     defer { temp.remove() }
     let session = try await renameSession(in: temp.url)
     let digest = String(repeating: "a", count: 64)
@@ -1132,7 +1132,7 @@ private func listed(name: String, source: MeetingNameSource, generated: String?)
 // MARK: - Missing files, checks within the pending step, a job not yet named
 
 @Test func aTranscriptWithoutFilesNeedsThemWritten() async throws {
-    let temp = try TemporaryDirectory("rename")
+    let temp = try TemporaryDirectory("rename", permissions: 0o700)
     defer { temp.remove() }
     let session = try await renameSession(in: temp.url)
     try writeSummary(session)
@@ -1148,7 +1148,7 @@ private func listed(name: String, source: MeetingNameSource, generated: String?)
 }
 
 @Test func movingAnEditedFileAsideChecksTheFolderFirst() async throws {
-    let temp = try TemporaryDirectory("rename")
+    let temp = try TemporaryDirectory("rename", permissions: 0o700)
     defer { temp.remove() }
     let session = try await renameSession(in: temp.url)
     try SessionArchive.withSpeakerLock(at: session) { _ = try SessionExports.regenerateLocked(session: session) }
@@ -1176,7 +1176,7 @@ private func listed(name: String, source: MeetingNameSource, generated: String?)
 }
 
 @Test func aJobNotYetNamedHoldsEveryMeeting() async throws {
-    let temp = try TemporaryDirectory("rename")
+    let temp = try TemporaryDirectory("rename", permissions: 0o700)
     defer { temp.remove() }
     let session = try await renameSession(in: temp.url)
     let summary = SessionCatalog.summary(session: session, jobState: .held(nil))
@@ -1187,7 +1187,7 @@ private func listed(name: String, source: MeetingNameSource, generated: String?)
 // MARK: - The double failure, unreadable records, the name in the files, the preparation reported
 
 @Test func anExportRecordThatCannotBeReadTurnsRenameOff() async throws {
-    let temp = try TemporaryDirectory("rename")
+    let temp = try TemporaryDirectory("rename", permissions: 0o700)
     defer { temp.remove() }
     let session = try await renameSession(in: temp.url)
     try writeSummary(session)
@@ -1202,7 +1202,7 @@ private func listed(name: String, source: MeetingNameSource, generated: String?)
 }
 
 @Test func theNameInTheFilesIsCheckedToo() async throws {
-    let temp = try TemporaryDirectory("rename")
+    let temp = try TemporaryDirectory("rename", permissions: 0o700)
     defer { temp.remove() }
     let session = try await renameSession(in: temp.url)
     try writeSummary(session)
@@ -1221,7 +1221,7 @@ private func listed(name: String, source: MeetingNameSource, generated: String?)
 }
 
 @Test func filesRewrittenBeforeAFailedRenameAreReported() async throws {
-    let temp = try TemporaryDirectory("rename")
+    let temp = try TemporaryDirectory("rename", permissions: 0o700)
     defer { temp.remove() }
     let session = try await renameSession(in: temp.url, legacyExports: true)
     struct WriteFailed: Error {}
@@ -1235,7 +1235,7 @@ private func listed(name: String, source: MeetingNameSource, generated: String?)
 }
 
 @Test func filesOfAnEarlierTranscriptAreOutOfDate() async throws {
-    let temp = try TemporaryDirectory("rename")
+    let temp = try TemporaryDirectory("rename", permissions: 0o700)
     defer { temp.remove() }
     let session = try await renameSession(in: temp.url, name: "Weekly sync")
     _ = await rename(session, "Weekly sync")
@@ -1255,7 +1255,7 @@ private func listed(name: String, source: MeetingNameSource, generated: String?)
 // MARK: - Renamed or not, newer summaries, pending marks, the shown name
 
 @Test func theAlertSaysWhetherTheMeetingWasRenamed() async throws {
-    let temp = try TemporaryDirectory("rename")
+    let temp = try TemporaryDirectory("rename", permissions: 0o700)
     defer { temp.remove() }
     // Prepared under the old name, then the rename failed and was undone: exit 3, not renamed.
     let session = try await renameSession(in: temp.url, legacyExports: true)
@@ -1282,7 +1282,7 @@ private func listed(name: String, source: MeetingNameSource, generated: String?)
 }
 
 @Test func aSummaryFromANewerBuildRefusesTheRename() async throws {
-    let temp = try TemporaryDirectory("rename")
+    let temp = try TemporaryDirectory("rename", permissions: 0o700)
     defer { temp.remove() }
     let session = try await renameSession(in: temp.url)
     try writeSummary(session)
@@ -1317,7 +1317,7 @@ private func listed(name: String, source: MeetingNameSource, generated: String?)
 
 @Test func aPreparationStoppedAfterItsFirstWriteIsReported() async throws {
     for (failingCheck, expectedCode) in [(1, Int32(1)), (2, Int32(3))] {
-        let temp = try TemporaryDirectory("rename")
+        let temp = try TemporaryDirectory("rename", permissions: 0o700)
         defer { temp.remove() }
         let session = try await renameSession(in: temp.url, legacyExports: true)
         struct Full: Error {}
@@ -1349,7 +1349,7 @@ private func listed(name: String, source: MeetingNameSource, generated: String?)
 }
 
 @Test func aSummaryThatCannotBeReadRefusesTheRename() async throws {
-    let temp = try TemporaryDirectory("rename")
+    let temp = try TemporaryDirectory("rename", permissions: 0o700)
     defer { temp.remove() }
     let session = try await renameSession(in: temp.url)
     try writeSummary(session)
@@ -1376,7 +1376,7 @@ private func listed(name: String, source: MeetingNameSource, generated: String?)
 // MARK: - Writes that may land, the event on the locked folder, an unfinished switch, transcript-free meetings
 
 @Test func aFirstWriteThatFailsMayHaveLandedAndIsReported() async throws {
-    let temp = try TemporaryDirectory("rename")
+    let temp = try TemporaryDirectory("rename", permissions: 0o700)
     defer { temp.remove() }
     let session = try await renameSession(in: temp.url, legacyExports: true)
     let exports = SessionPaths.exports(session)
@@ -1391,7 +1391,7 @@ private func listed(name: String, source: MeetingNameSource, generated: String?)
 }
 
 @Test func theEventIsWrittenOnlyOnTheLockedFolder() async throws {
-    let temp = try TemporaryDirectory("rename")
+    let temp = try TemporaryDirectory("rename", permissions: 0o700)
     defer { temp.remove() }
     let session = try await renameSession(in: temp.url)
     let moved = temp.url.appendingPathComponent("moved", isDirectory: true)
@@ -1412,7 +1412,7 @@ private func listed(name: String, source: MeetingNameSource, generated: String?)
 }
 
 @Test func aTranscriptFreeMeetingIsRenamedWhateverItsExportRecord() async throws {
-    let temp = try TemporaryDirectory("rename")
+    let temp = try TemporaryDirectory("rename", permissions: 0o700)
     defer { temp.remove() }
     let session = try await SessionFixtures.makeSession(in: temp.url, transcript: nil)
     try AtomicFile.write(Data(#"{"schemaVersion":2,"files":{}}"#.utf8), to: SessionPaths.generatedExports(session))
@@ -1429,7 +1429,7 @@ private func listed(name: String, source: MeetingNameSource, generated: String?)
 // MARK: - Unfinished without a transcript, default-shaped names, the summary kept, the expected meeting
 
 @Test func theSummaryCheckedAtTheStartIsTheOneWritten() async throws {
-    let temp = try TemporaryDirectory("rename")
+    let temp = try TemporaryDirectory("rename", permissions: 0o700)
     defer { temp.remove() }
     let session = try await renameSession(in: temp.url)
     try writeSummary(session)
@@ -1445,7 +1445,7 @@ private func listed(name: String, source: MeetingNameSource, generated: String?)
 }
 
 @Test func theAppNamesTheMeetingItMeans() async throws {
-    let temp = try TemporaryDirectory("rename")
+    let temp = try TemporaryDirectory("rename", permissions: 0o700)
     defer { temp.remove() }
     let session = try await renameSession(in: temp.url)
     let id = try SessionArchive.readManifest(at: session).id
@@ -1466,7 +1466,7 @@ private func listed(name: String, source: MeetingNameSource, generated: String?)
 // MARK: - meeting.json is the commit point
 
 @Test func theNameAndItsSourceAreCommittedInOneWrite() async throws {
-    let temp = try TemporaryDirectory("rename")
+    let temp = try TemporaryDirectory("rename", permissions: 0o700)
     defer { temp.remove() }
     let session = try await renameSession(in: temp.url)
     let writes = SharedValue<[String]>([])
@@ -1493,7 +1493,7 @@ private func listed(name: String, source: MeetingNameSource, generated: String?)
 }
 
 @Test func aStaleManifestCopyIsRepairedByUpdateTranscriptFiles() async throws {
-    let temp = try TemporaryDirectory("rename")
+    let temp = try TemporaryDirectory("rename", permissions: 0o700)
     defer { temp.remove() }
     let session = try await renameSession(in: temp.url)
     try writeSummary(session)
@@ -1529,7 +1529,7 @@ private func listed(name: String, source: MeetingNameSource, generated: String?)
 }
 
 @Test func aTranscriptFreeMeetingIsToldToFinishTheRename() async throws {
-    let temp = try TemporaryDirectory("rename")
+    let temp = try TemporaryDirectory("rename", permissions: 0o700)
     defer { temp.remove() }
     let session = try await SessionFixtures.makeSession(in: temp.url, transcript: nil)
     var request = SessionRenameCommand.Request(session: session, name: "Hallway chat", voiceInputs: { voice },
@@ -1552,7 +1552,7 @@ private func listed(name: String, source: MeetingNameSource, generated: String?)
 }
 
 @Test func aMeetingNeverRenamedUsesTheManifestName() async throws {
-    let temp = try TemporaryDirectory("rename")
+    let temp = try TemporaryDirectory("rename", permissions: 0o700)
     defer { temp.remove() }
     // meeting.json without a name (every meeting before renames, and every one not renamed).
     let session = try await renameSession(in: temp.url, name: "Weekly sync")
@@ -1568,7 +1568,7 @@ private func listed(name: String, source: MeetingNameSource, generated: String?)
 }
 
 @Test func aRewriteWithTheSummaryClearsItsPendingFiles() async throws {
-    let temp = try TemporaryDirectory("rename")
+    let temp = try TemporaryDirectory("rename", permissions: 0o700)
     defer { temp.remove() }
     let session = try await renameSession(in: temp.url)
     try writeSummary(session)
@@ -1581,7 +1581,7 @@ private func listed(name: String, source: MeetingNameSource, generated: String?)
 }
 
 @Test func theCommitIsWrittenOnlyOnTheLockedFolder() async throws {
-    let temp = try TemporaryDirectory("rename")
+    let temp = try TemporaryDirectory("rename", permissions: 0o700)
     defer { temp.remove() }
     let session = try await renameSession(in: temp.url)
     let moved = temp.url.appendingPathComponent("moved", isDirectory: true)
@@ -1602,7 +1602,7 @@ private func listed(name: String, source: MeetingNameSource, generated: String?)
 }
 
 @Test func theRepairChecksTheFolderOnceTheArchiveIsOpen() async throws {
-    let temp = try TemporaryDirectory("rename")
+    let temp = try TemporaryDirectory("rename", permissions: 0o700)
     defer { temp.remove() }
     let session = try await renameSession(in: temp.url)
     var request = SessionRenameCommand.Request(session: session, name: "Weekly sync", voiceInputs: { voice },
@@ -1630,7 +1630,7 @@ private func listed(name: String, source: MeetingNameSource, generated: String?)
 }
 
 @Test func aFileReplacedWithTheSameSizeAndTimeIsReadAgain() async throws {
-    let temp = try TemporaryDirectory("rename")
+    let temp = try TemporaryDirectory("rename", permissions: 0o700)
     defer { temp.remove() }
     let session = try await renameSession(in: temp.url)
     try writeSummary(session)
@@ -1650,7 +1650,7 @@ private func listed(name: String, source: MeetingNameSource, generated: String?)
 }
 
 @Test func aFileOverwrittenInPlaceWithItsTimeSetBackIsReadAgain() async throws {
-    let temp = try TemporaryDirectory("rename")
+    let temp = try TemporaryDirectory("rename", permissions: 0o700)
     defer { temp.remove() }
     let session = try await renameSession(in: temp.url)
     try writeSummary(session)
@@ -1676,7 +1676,7 @@ private func listed(name: String, source: MeetingNameSource, generated: String?)
 }
 
 @Test func aTranscriptFreeMeetingIsRenamedWhateverItsSummary() async throws {
-    let temp = try TemporaryDirectory("rename")
+    let temp = try TemporaryDirectory("rename", permissions: 0o700)
     defer { temp.remove() }
     let session = try await SessionFixtures.makeSession(in: temp.url, transcript: nil)
     let id = try SessionArchive.readManifest(at: session).id

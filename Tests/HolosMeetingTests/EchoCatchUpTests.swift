@@ -54,7 +54,7 @@ private func meeting(in root: URL, tracks: [String], mode: MeetingMode = .call, 
 
 @Test(.timeLimit(.minutes(1)))
 func theScanFindsCallsWithBothTracksAndNoSavedAnalysis() async throws {
-    let temp = try TemporaryDirectory("echo-catch-up")
+    let temp = try TemporaryDirectory("echo-catch-up", permissions: 0o700)
     defer { temp.remove() }
     let needing = try await meeting(in: temp.url, tracks: ["mic", "system"])
     let analysed = try await meeting(in: temp.url, tracks: ["mic", "system"])
@@ -78,7 +78,7 @@ func theScanFindsCallsWithBothTracksAndNoSavedAnalysis() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func aCallWhoseFilesWereNotRewrittenForItsMaskIsFoundAgain() async throws {
-    let temp = try TemporaryDirectory("echo-catch-up")
+    let temp = try TemporaryDirectory("echo-catch-up", permissions: 0o700)
     defer { temp.remove() }
     // A call with a transcript and its files, then an echo mask saved by a run cut short before it rewrote them.
     let session = try await SessionFixtures.makeSession(in: temp.url, source: .microphoneAndSystem,
@@ -184,7 +184,7 @@ func aCallWhoseFilesWereNotRewrittenForItsMaskIsFoundAgain() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func anEchoAnalysisLeftRunningFromBeforeARelaunchHoldsTheNextOneBack() async throws {
-    let temp = try TemporaryDirectory("echo-catch-up")
+    let temp = try TemporaryDirectory("echo-catch-up", permissions: 0o700)
     defer { temp.remove() }
     let first = try await meeting(in: temp.url, tracks: ["mic", "system"])
     let second = try await meeting(in: temp.url, tracks: ["mic", "system"])

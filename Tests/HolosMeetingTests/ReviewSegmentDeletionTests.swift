@@ -123,7 +123,7 @@ func aTurnsFirstMiddleOrLastSegmentDeletedWholeLeavesTheRestAndUndoes() async th
     let expected = ["A": "Thanks, Right then.", "B": "That sounds fine? Right then.",
                     "C": "That sounds fine? Thanks,"]
     for segmentID in ["A", "B", "C"] {
-        let temp = try TemporaryDirectory("review")
+        let temp = try TemporaryDirectory("review", permissions: 0o700)
         defer { temp.remove() }
         let session = try await deletionSession(in: temp, deletionTurns)
         let original = try deletionCurrent(session)
@@ -162,7 +162,7 @@ func aTurnsFirstMiddleOrLastSegmentDeletedWholeLeavesTheRestAndUndoes() async th
 /// exports have neither. Speaker edits made before and after carry over, and the undo brings the turn back with them.
 @Test(.timeLimit(.minutes(1))) @MainActor
 func aTurnsOnlySegmentDeletedTakesTheTurnAwayUntilUndone() async throws {
-    let temp = try TemporaryDirectory("review")
+    let temp = try TemporaryDirectory("review", permissions: 0o700)
     defer { temp.remove() }
     let session = try await deletionSession(in: temp, deletionTurns)
     let original = try deletionCurrent(session)
@@ -202,7 +202,7 @@ func aTurnsOnlySegmentDeletedTakesTheTurnAwayUntilUndone() async throws {
 /// blocks around it as they were.
 @Test(.timeLimit(.minutes(1))) @MainActor
 func theExportsLeaveOutATurnWhoseOnlySegmentWasDeleted() async throws {
-    let temp = try TemporaryDirectory("review")
+    let temp = try TemporaryDirectory("review", permissions: 0o700)
     defer { temp.remove() }
     let session = try await deletionSession(in: temp, deletionTurns)
     let review = try await deletionOpen(session)
@@ -223,7 +223,7 @@ func theExportsLeaveOutATurnWhoseOnlySegmentWasDeleted() async throws {
 /// them; its undo deletes them again.
 @Test(.timeLimit(.minutes(1))) @MainActor
 func deletedWordsAreRestoredFromTheNearestTurnAndTheRestoreUndoes() async throws {
-    let temp = try TemporaryDirectory("review")
+    let temp = try TemporaryDirectory("review", permissions: 0o700)
     defer { temp.remove() }
     let session = try await deletionSession(in: temp, deletionTurns)
     let original = try deletionCurrent(session)
@@ -264,7 +264,7 @@ func deletedWordsAreRestoredFromTheNearestTurnAndTheRestoreUndoes() async throws
 @Test(.timeLimit(.minutes(1))) @MainActor
 func aDeletionAndItsUndoOrRestoreLeaveEveryTurnsTimesAsTheyWere() async throws {
     for segmentID in ["B", "D", "C"] {
-        let temp = try TemporaryDirectory("review")
+        let temp = try TemporaryDirectory("review", permissions: 0o700)
         defer { temp.remove() }
         let session = try await deletionSession(in: temp, deletionTurns)
         let before = try deletionTurnTimes(session)
@@ -288,7 +288,7 @@ func aDeletionAndItsUndoOrRestoreLeaveEveryTurnsTimesAsTheyWere() async throws {
 /// either. Every deleted segment can still be restored (Edit ▸ Restore Deleted Words lists them all).
 @Test(.timeLimit(.minutes(1))) @MainActor
 func wordsDeletedFromEveryTurnCanStillBeRestored() async throws {
-    let temp = try TemporaryDirectory("review")
+    let temp = try TemporaryDirectory("review", permissions: 0o700)
     defer { temp.remove() }
     let session = try await deletionSession(in: temp, deletionTurns)
     let original = try deletionCurrent(session)
@@ -329,7 +329,7 @@ func aTurnsDeletionsRestoredInAnyOrderGiveItsTimesBack() async throws {
         ("two, reverse order", ["A", "B"], false, ["B", "A"]),
     ]
     for order in orders {
-        let temp = try TemporaryDirectory("review")
+        let temp = try TemporaryDirectory("review", permissions: 0o700)
         defer { temp.remove() }
         let session = try await deletionSession(in: temp, deletionTurns)
         let before = try deletionTurnTimes(session)
@@ -353,7 +353,7 @@ func aTurnsDeletionsRestoredInAnyOrderGiveItsTimesBack() async throws {
 /// beside it still teaches its own.
 @Test(.timeLimit(.minutes(1))) @MainActor
 func aDeletedSegmentTeachesNothingWhenTheReviewCloses() async throws {
-    let temp = try TemporaryDirectory("review")
+    let temp = try TemporaryDirectory("review", permissions: 0o700)
     defer { temp.remove() }
     let session = try await deletionSession(in: temp, deletionTurns)
     let review = try await deletionOpen(session)
@@ -383,7 +383,7 @@ func aDeletedSegmentTeachesNothingWhenTheReviewCloses() async throws {
 /// field opens; and nothing typed is shown as “” in the message.
 @Test(.timeLimit(.minutes(1))) @MainActor
 func aSegmentWithALiveCorrectionIsNotDeletedWhole() async throws {
-    let temp = try TemporaryDirectory("review")
+    let temp = try TemporaryDirectory("review", permissions: 0o700)
     defer { temp.remove() }
     // "Cheers." was corrected while recording.
     let session = try await deletionSession(in: temp, deletionTurns, fixes: [
@@ -402,7 +402,7 @@ func aSegmentWithALiveCorrectionIsNotDeletedWhole() async throws {
 /// journal event records ("0-1" replaced by "0-0"), and so is a Restore's.
 @Test(.timeLimit(.minutes(1)))
 func aDeletionsOwedSpeakerHeadIsRepairedFromItsRecordedMove() async throws {
-    let temp = try TemporaryDirectory("review")
+    let temp = try TemporaryDirectory("review", permissions: 0o700)
     defer { temp.remove() }
     let session = try await deletionSession(in: temp, deletionTurns)
     let original = try deletionCurrent(session)

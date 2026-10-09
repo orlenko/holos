@@ -56,7 +56,7 @@ private func echoCall(in root: URL, othersInRoom: Bool) async throws
 /// the phrase once.
 @Test(.timeLimit(.minutes(1)))
 func callPostProcessingLeavesEchoOut() async throws {
-    let temp = try TemporaryDirectory("postprocess")
+    let temp = try TemporaryDirectory("postprocess", permissions: 0o700)
     defer { temp.remove() }
     let (session, echo, own) = try await echoCall(in: temp.url, othersInRoom: false)
     let diarizer = FakeDiarizer(outputs: ["system": SessionFixtures.alternatingOutput()])
@@ -83,7 +83,7 @@ func callPostProcessingLeavesEchoOut() async throws {
 /// the speakers is no speaker.
 @Test(.timeLimit(.minutes(1)))
 func hybridCallHidesTheEchoCluster() async throws {
-    let temp = try TemporaryDirectory("postprocess")
+    let temp = try TemporaryDirectory("postprocess", permissions: 0o700)
     defer { temp.remove() }
     let (session, echo, own) = try await echoCall(in: temp.url, othersInRoom: true)
     let mic = DiarizerOutput(

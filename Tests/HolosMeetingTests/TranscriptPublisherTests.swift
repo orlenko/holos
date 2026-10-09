@@ -119,7 +119,7 @@ private func expected(_ kind: PublisherKind, _ fault: PublisherFault, revision: 
 
 @Test(.timeLimit(.minutes(1)), arguments: PublisherCase.all)
 func publicationFailingAtEachStepStopsThereAndReportsWhatWasPublished(_ test: PublisherCase) async throws {
-    let temp = try TemporaryDirectory("publisher")
+    let temp = try TemporaryDirectory("publisher", permissions: 0o700)
     defer { temp.remove() }
     let (session, old, run) = try await SessionFixtures.labelledSession(in: temp.url)
     let new = SessionFixtures.transcript(old.segments)

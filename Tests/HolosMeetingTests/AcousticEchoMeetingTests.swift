@@ -163,7 +163,7 @@ private func moveMicrophoneAudio(_ session: URL, away: Bool) throws {
 
 @Test(.timeLimit(.minutes(2)))
 func postProcessingSavesTheMaskAndTheViewHidesTheEcho() async throws {
-    let temp = try TemporaryDirectory("echo")
+    let temp = try TemporaryDirectory("echo", permissions: 0o700)
     defer { temp.remove() }
     let call = CallTranscript()
     let session = try await callSession(in: temp.url, audio: CallAudio.tracks(echo: true), transcript: call.transcript)
@@ -200,7 +200,7 @@ func postProcessingSavesTheMaskAndTheViewHidesTheEcho() async throws {
 
 @Test(.timeLimit(.minutes(2)))
 func headphonesCallShowsEveryMicrophoneWord() async throws {
-    let temp = try TemporaryDirectory("echo")
+    let temp = try TemporaryDirectory("echo", permissions: 0o700)
     defer { temp.remove() }
     let call = CallTranscript()
     let session = try await callSession(in: temp.url, audio: CallAudio.tracks(echo: false), transcript: call.transcript)
@@ -218,7 +218,7 @@ func headphonesCallShowsEveryMicrophoneWord() async throws {
 
 @Test(.timeLimit(.minutes(2)))
 func aCallWithoutSystemAudioNeedsNoAnalysis() async throws {
-    let temp = try TemporaryDirectory("echo")
+    let temp = try TemporaryDirectory("echo", permissions: 0o700)
     defer { temp.remove() }
     let mic = SessionFixtures.segment(["only", "me", "here"], track: "mic", start: 2)
     let session = try await callSession(in: temp.url, audio: ["mic": CallAudio.tracks(echo: false)["mic"]!],
@@ -234,7 +234,7 @@ func aCallWithoutSystemAudioNeedsNoAnalysis() async throws {
 @Test(.timeLimit(.minutes(2)))
 func echoIsFoundWhenNoTrackNeedsDiarizing() async throws {
     // The microphone is "Me" and the system track has no words: no track is diarized, and the echo is still found.
-    let temp = try TemporaryDirectory("echo")
+    let temp = try TemporaryDirectory("echo", permissions: 0o700)
     defer { temp.remove() }
     let call = CallTranscript()
     let micOnly = SessionFixtures.transcript(call.echoSegments + call.ownSegments)
@@ -250,7 +250,7 @@ func echoIsFoundWhenNoTrackNeedsDiarizing() async throws {
 func anAnalysisThatFailedIsStillNeededAndTheNextPassMakesIt() async throws {
     // The microphone audio cannot be read: only the analysis fails, and nothing records that it is owed; the files
     // say so (no saved analysis), and the next pass makes it.
-    let temp = try TemporaryDirectory("echo")
+    let temp = try TemporaryDirectory("echo", permissions: 0o700)
     defer { temp.remove() }
     let call = CallTranscript()
     let session = try await callSession(in: temp.url, audio: CallAudio.tracks(echo: true), transcript: call.transcript)
@@ -275,7 +275,7 @@ func anAnalysisThatFailedIsStillNeededAndTheNextPassMakesIt() async throws {
 func editedLabelsKeepTheirFilesAndShowWithoutTheEcho() async throws {
     // Labels with an edit are kept by post-processing; the analysis is still made, and their view hides the echo
     // without a single stored file changing.
-    let temp = try TemporaryDirectory("echo")
+    let temp = try TemporaryDirectory("echo", permissions: 0o700)
     defer { temp.remove() }
     let call = CallTranscript()
     let session = try await callSession(in: temp.url, audio: CallAudio.tracks(echo: true), transcript: call.transcript)
@@ -298,7 +298,7 @@ func editedLabelsKeepTheirFilesAndShowWithoutTheEcho() async throws {
 
 @Test(.timeLimit(.minutes(2)))
 func aMaskOfOtherAudioOrAnOlderVersionIsNotUsedAndANewerOneIsKept() async throws {
-    let temp = try TemporaryDirectory("echo")
+    let temp = try TemporaryDirectory("echo", permissions: 0o700)
     defer { temp.remove() }
     let call = CallTranscript()
     let session = try await callSession(in: temp.url, audio: CallAudio.tracks(echo: true), transcript: call.transcript)
@@ -353,7 +353,7 @@ func aMaskOfOtherAudioOrAnOlderVersionIsNotUsedAndANewerOneIsKept() async throws
 
 @Test(.timeLimit(.minutes(2)))
 func damagedSummaryCountsInTheRecordAreNotTrusted() async throws {
-    let temp = try TemporaryDirectory("echo")
+    let temp = try TemporaryDirectory("echo", permissions: 0o700)
     defer { temp.remove() }
     let session = try await callSession(in: temp.url, audio: CallAudio.tracks(echo: true),
                                         transcript: CallTranscript().transcript)
@@ -381,7 +381,7 @@ func recoverMakesAMissingAnalysisOncePerRun() async throws {
     // A complete meeting labelled while its microphone audio could not be read, so its analysis is missing. A Recover
     // without disk space tries once and says why; the next one makes it and rewrites the transcript files; then
     // there is nothing to do.
-    let temp = try TemporaryDirectory("echo")
+    let temp = try TemporaryDirectory("echo", permissions: 0o700)
     defer { temp.remove() }
     let call = CallTranscript()
     let session = try await callSession(in: temp.url, audio: CallAudio.tracks(echo: true), transcript: call.transcript)
@@ -412,7 +412,7 @@ func recoverMakesAMissingAnalysisOncePerRun() async throws {
 func transcriptFilesWrittenWithAnotherMaskAreOutOfDateAndRecoverRewritesThem() async throws {
     // The meeting is labelled while its microphone audio cannot be read (files written without a mask); a mask is
     // then saved by a pass that did not get to rewrite the files.
-    let temp = try TemporaryDirectory("echo")
+    let temp = try TemporaryDirectory("echo", permissions: 0o700)
     defer { temp.remove() }
     let call = CallTranscript()
     let session = try await callSession(in: temp.url, audio: CallAudio.tracks(echo: true), transcript: call.transcript)
@@ -446,7 +446,7 @@ func transcriptFilesWrittenWithAnotherMaskAreOutOfDateAndRecoverRewritesThem() a
 func aMaskIsSavedOnlyUnderTheSpeakerLock() async throws {
     // While someone holds the speaker lock (a voice sample checking the labels and the echo files before publishing
     // it), no mask can land.
-    let temp = try TemporaryDirectory("echo")
+    let temp = try TemporaryDirectory("echo", permissions: 0o700)
     defer { temp.remove() }
     let call = CallTranscript()
     let session = try await callSession(in: temp.url, audio: CallAudio.tracks(echo: true), transcript: call.transcript)
@@ -504,7 +504,7 @@ private func expectSampleDropped(_ store: SpeakerProfileStore) throws {
 
 @Test(.timeLimit(.minutes(2)))
 func echoAnalyzeBringsTheMeetingsVoiceSamplesInStep() async throws {
-    let temp = try TemporaryDirectory("echo")
+    let temp = try TemporaryDirectory("echo", permissions: 0o700)
     defer { temp.remove() }
     let (session, store) = try await learnedBeforeTheEcho(in: temp)
     let outcome = try await SessionEchoAnalyzeCommand.run(.init(session: session), voiceSamples: fixedVoice,
@@ -518,7 +518,7 @@ func echoAnalyzeBringsTheMeetingsVoiceSamplesInStep() async throws {
 func postProcessingThatSavesAMaskForEditedLabelsBringsTheSamplesInStep() async throws {
     // `session diarize --keep-transcript` without --force: the edited labels are kept, the mask is saved, and the
     // sample is brought in step before anything else.
-    let temp = try TemporaryDirectory("echo")
+    let temp = try TemporaryDirectory("echo", permissions: 0o700)
     defer { temp.remove() }
     let (session, store) = try await learnedBeforeTheEcho(in: temp)
     let headBefore = try SessionSpeakerStore.readHead(session: session)?.runID
@@ -534,7 +534,7 @@ func postProcessingThatSavesAMaskForEditedLabelsBringsTheSamplesInStep() async t
 func aMaskSavedWithoutUpdatingSamplesIsCaughtUpByTheNextPass() async throws {
     // A pass saved the mask but did not bring the samples in step (no voice extractor). Freshness comes from the
     // files: a plain echo-analyze, which has no analysis to make, still catches the sample up, and so does Recover.
-    let temp = try TemporaryDirectory("echo")
+    let temp = try TemporaryDirectory("echo", permissions: 0o700)
     defer { temp.remove() }
     let (session, store) = try await learnedBeforeTheEcho(in: temp)
     _ = try await SessionDiarizeCommand.run(
@@ -548,7 +548,7 @@ func aMaskSavedWithoutUpdatingSamplesIsCaughtUpByTheNextPass() async throws {
     #expect(!outcome.analysed)
     try expectSampleDropped(store)
 
-    let second = try TemporaryDirectory("echo")
+    let second = try TemporaryDirectory("echo", permissions: 0o700)
     defer { second.remove() }
     let (other, otherStore) = try await learnedBeforeTheEcho(in: second)
     _ = try await SessionDiarizeCommand.run(
@@ -565,7 +565,7 @@ func aMaskSavedWithoutUpdatingSamplesIsCaughtUpByTheNextPass() async throws {
 func aPassThatKeepsTheLabelsStillChecksTheEchoAndTheSamples() async throws {
     // `session fix-words` with nothing to fix keeps the labels as they are (no labelling stages). It is still a pass
     // that ends with labels: the missing analysis is made and the sample brought in step.
-    let temp = try TemporaryDirectory("echo")
+    let temp = try TemporaryDirectory("echo", permissions: 0o700)
     defer { temp.remove() }
     let (session, store) = try await learnedBeforeTheEcho(in: temp)
     #expect(EchoAnalysisStage.needed(session: session))
@@ -581,7 +581,7 @@ func aPassThatKeepsTheLabelsStillChecksTheEchoAndTheSamples() async throws {
 @Test(.timeLimit(.minutes(2)))
 func anEditOnAViewShownWithAnotherMaskIsRefused() async throws {
     // The review loaded its view before echo-analyze saved a mask: the turns it shows are not the ones shown now.
-    let temp = try TemporaryDirectory("echo")
+    let temp = try TemporaryDirectory("echo", permissions: 0o700)
     defer { temp.remove() }
     let (session, _, run) = try await labelledOldCall(in: temp.url)
     let stale = try SessionFixtures.view(session)
@@ -608,7 +608,7 @@ func anEditOnAViewShownWithAnotherMaskIsRefused() async throws {
 func aCallWithNoTranscriptGetsItsAnalysisAndNoFailure() async throws {
     // Recorded (or imported) without a transcript: echo-analyze saves the analysis and says there are no labels yet;
     // Recover, with people who have voice samples from other meetings, does not fail on the sample check.
-    let temp = try TemporaryDirectory("echo")
+    let temp = try TemporaryDirectory("echo", permissions: 0o700)
     defer { temp.remove() }
     let session = try await callSession(in: temp.url, audio: CallAudio.tracks(echo: true), transcript: nil)
     let store = SpeakerProfileStore(directory: temp.url.appendingPathComponent("Support/Speakers", isDirectory: true))
@@ -638,7 +638,7 @@ func aCallWithNoTranscriptGetsItsAnalysisAndNoFailure() async throws {
 func echoAnalyzeRewritesSpeakerlessTranscriptFiles() async throws {
     // A transcript and its files, but no speaker labels (post-processed without speaker models): the files are
     // rewritten with the mask recorded, so they are not left out of date.
-    let temp = try TemporaryDirectory("echo")
+    let temp = try TemporaryDirectory("echo", permissions: 0o700)
     defer { temp.remove() }
     let session = try await callSession(in: temp.url, audio: CallAudio.tracks(echo: true),
                                         transcript: CallTranscript().transcript)
@@ -656,7 +656,7 @@ func echoAnalyzeRewritesSpeakerlessTranscriptFiles() async throws {
 
 @Test(.timeLimit(.minutes(2)))
 func echoAnalyzeExitsThreeWhenTheTranscriptFilesCannotBeRewritten() async throws {
-    let temp = try TemporaryDirectory("echo")
+    let temp = try TemporaryDirectory("echo", permissions: 0o700)
     defer { temp.remove() }
     let (session, _, _) = try await labelledOldCall(in: temp.url)
     // exports/ cannot be written: a file stands where the folder goes.
@@ -671,7 +671,7 @@ func echoAnalyzeExitsThreeWhenTheTranscriptFilesCannotBeRewritten() async throws
 
 @Test(.timeLimit(.minutes(2)))
 func aMissingOrDamagedFramesFileMakesTheCachedStatesOutOfDate() async throws {
-    let temp = try TemporaryDirectory("echo")
+    let temp = try TemporaryDirectory("echo", permissions: 0o700)
     defer { temp.remove() }
     let (session, _, _) = try await labelledOldCall(in: temp.url)
     _ = try await SessionEchoAnalyzeCommand.run(.init(session: session), voiceSamples: .none,
@@ -694,7 +694,7 @@ func aMissingOrDamagedFramesFileMakesTheCachedStatesOutOfDate() async throws {
 
 @Test(.timeLimit(.minutes(2)))
 func anOldFramesFileThatCannotBeDeletedDoesNotFailTheSave() async throws {
-    let temp = try TemporaryDirectory("echo")
+    let temp = try TemporaryDirectory("echo", permissions: 0o700)
     defer { temp.remove() }
     let session = try await callSession(in: temp.url, audio: CallAudio.tracks(echo: true),
                                         transcript: CallTranscript().transcript)
@@ -720,7 +720,7 @@ func anOldFramesFileThatCannotBeDeletedDoesNotFailTheSave() async throws {
 
 @Test(.timeLimit(.minutes(2)))
 func aNewMaskThatFailsBeforeItsRecordIsSwitchedLeavesTheOldOneInUse() async throws {
-    let temp = try TemporaryDirectory("echo")
+    let temp = try TemporaryDirectory("echo", permissions: 0o700)
     defer { temp.remove() }
     let session = try await callSession(in: temp.url, audio: CallAudio.tracks(echo: true),
                                         transcript: CallTranscript().transcript)
@@ -765,7 +765,7 @@ private struct BrokenVoice: VoiceSampleExtractor {
 func aSampleSyncThatFailsAfterTheMaskIsSavedIsRetriedByTheNextPass() async throws {
     // The pass that saves the mask cannot recompute the sample (its extraction fails); nothing records that, so the
     // next post-processing pass, which has no analysis left to make, brings the sample in step.
-    let temp = try TemporaryDirectory("echo")
+    let temp = try TemporaryDirectory("echo", permissions: 0o700)
     defer { temp.remove() }
     let (session, store) = try await learnedBeforeTheEcho(in: temp, ownTurn: true)
     let learned = try #require(try store.load().profiles.first?.samples.first)
@@ -807,7 +807,7 @@ func echoAnalyzeStoppedForAMeetingLeavesWhatItDidNotFinishForTheNextRun() async 
     // The app stops its run (SIGTERM, which cancels the command's task) when a meeting starts. On a long call the
     // voice samples are the long part: stopped there, the mask and the transcript files are saved, the sample is as
     // it was, the job lock is let go of, and the catch-up still finds the meeting, so the next run finishes it.
-    let temp = try TemporaryDirectory("echo")
+    let temp = try TemporaryDirectory("echo", permissions: 0o700)
     defer { temp.remove() }
     let (session, store) = try await learnedBeforeTheEcho(in: temp, ownTurn: true)
     let learned = try #require(try store.load().profiles.first?.samples.first)
@@ -855,7 +855,7 @@ func aSampleFromAnEarlierRunWhoseTurnsAreNowEchoIsNotKept() async throws {
     // The sample was learned from run R1. A forced relabel (R2) runs with no voice sample source, and saves the
     // mask. In R2 the user's turn is cut by echo, so R2 gives no sample; the R1 sample, seen through the mask, has
     // lost its turn too, so the next sync removes it instead of keeping it as an earlier run's.
-    let temp = try TemporaryDirectory("echo")
+    let temp = try TemporaryDirectory("echo", permissions: 0o700)
     defer { temp.remove() }
     let (session, store) = try await learnedBeforeTheEcho(in: temp)
     let firstRun = try SessionSpeakerStore.readHead(session: session)?.runID
@@ -880,7 +880,7 @@ func aSampleFromAnEarlierRunWhoseTurnsAreNowEchoIsNotKept() async throws {
 /// it is out of step (the catch-up's refresh acts), and with Remember voices off it is removed, not kept.
 @Test(.timeLimit(.minutes(2))) @MainActor
 func aSampleFromBeforeAWordEditWhoseTurnIsNowEchoIsRemovedEvenWithLearningOff() async throws {
-    let temp = try TemporaryDirectory("echo")
+    let temp = try TemporaryDirectory("echo", permissions: 0o700)
     defer { temp.remove() }
     let (session, store) = try await learnedBeforeTheEcho(in: temp, ownTurn: true)
     let learned = try #require(try store.load().profiles.first?.samples.first)
@@ -911,7 +911,7 @@ func aSampleFromBeforeAWordEditWhoseTurnIsNowEchoIsRemovedEvenWithLearningOff() 
 func aCallLongerThanAMaskIsKeptForIsSavedAsTooLongAndCountsAsDone() async throws {
     // One limit, made tiny here (100 frames, 1.6 s): the analysis does not write a frames file the reader would refuse
     // (and analyse again every pass); it saves `tooLong`, which hides nothing and is not analysed again.
-    let temp = try TemporaryDirectory("echo")
+    let temp = try TemporaryDirectory("echo", permissions: 0o700)
     defer { temp.remove() }
     let call = CallTranscript()
     let session = try await callSession(in: temp.url, audio: CallAudio.tracks(echo: true), transcript: call.transcript)
@@ -940,7 +940,7 @@ func aCallLongerThanAMaskIsKeptForIsSavedAsTooLongAndCountsAsDone() async throws
 
 @Test(.timeLimit(.minutes(2)))
 func renderTimesFarOutsideAMeetingThrowInsteadOfTrapping() async throws {
-    let temp = try TemporaryDirectory("echo")
+    let temp = try TemporaryDirectory("echo", permissions: 0o700)
     defer { temp.remove() }
     let call = CallTranscript()
     let session = try await callSession(in: temp.url, audio: CallAudio.tracks(echo: true), transcript: call.transcript)
@@ -964,7 +964,7 @@ func renderTimesFarOutsideAMeetingThrowInsteadOfTrapping() async throws {
 @Test(.timeLimit(.minutes(2)))
 func anInterruptedRewriteWithoutAMaskIsNotCurrentAndRecoverFinishesIt() async throws {
     // Headphones: no mask, so a pending record (which names no mask) matches "none" by its mask alone.
-    let temp = try TemporaryDirectory("echo")
+    let temp = try TemporaryDirectory("echo", permissions: 0o700)
     defer { temp.remove() }
     let call = CallTranscript()
     let session = try await callSession(in: temp.url, audio: CallAudio.tracks(echo: false), transcript: call.transcript)
@@ -987,7 +987,7 @@ func anInterruptedRewriteWithoutAMaskIsNotCurrentAndRecoverFinishesIt() async th
 
 @Test(.timeLimit(.minutes(2)))
 func anAnalysisPutOffForDiskSpaceIsMadeByRecover() async throws {
-    let temp = try TemporaryDirectory("echo")
+    let temp = try TemporaryDirectory("echo", permissions: 0o700)
     defer { temp.remove() }
     let call = CallTranscript()
     let micOnly = SessionFixtures.transcript(call.echoSegments + call.ownSegments)
@@ -1023,7 +1023,7 @@ private func labelledOldCall(in root: URL) async throws -> (session: URL, call: 
 
 @Test(.timeLimit(.minutes(2)))
 func echoAnalyzeChangesOnlyTheViewOfAnOldCall() async throws {
-    let temp = try TemporaryDirectory("echo")
+    let temp = try TemporaryDirectory("echo", permissions: 0o700)
     defer { temp.remove() }
     let (session, call, run) = try await labelledOldCall(in: temp.url)
     let ownTurn = try #require(run.turns.first { $0.spans.first?.segmentID == call.ownSegments[1].id })
@@ -1066,7 +1066,7 @@ func echoAnalyzeChangesOnlyTheViewOfAnOldCall() async throws {
 func theReviewSplitsAssignsAndUndoesATurnWithHiddenEchoAsItsStoredTurn() async throws {
     // One microphone turn ("Me") runs from the user's words (8 s) through the far end's echo (10–16 s) to the user
     // again (16.8 s): the review shows it as one turn, same ID, without the echo words.
-    let temp = try TemporaryDirectory("echo")
+    let temp = try TemporaryDirectory("echo", permissions: 0o700)
     defer { temp.remove() }
     let call = CallTranscript()
     let mixed = SessionFixtures.segment((0..<24).map { "mixw\($0)" }, track: "mic", start: 8.0, wordSeconds: 0.4)
@@ -1121,7 +1121,7 @@ func theReviewSplitsAssignsAndUndoesATurnWithHiddenEchoAsItsStoredTurn() async t
 @Test(.timeLimit(.minutes(2)))
 func recognitionDoesNotCompareAMicrophoneClusterThatIsEcho() async throws {
     // S1 on the microphone is the far end's echo: its voice must not take a person's match from the system speaker.
-    let temp = try TemporaryDirectory("echo")
+    let temp = try TemporaryDirectory("echo", permissions: 0o700)
     defer { temp.remove() }
     let (session, _, run) = try await labelledOldCall(in: temp.url)
     _ = try await SessionEchoAnalyzeCommand.run(.init(session: session), voiceSamples: .none, freeSpace: FixedFreeSpace(.max))
@@ -1140,7 +1140,7 @@ func recognitionDoesNotCompareAMicrophoneClusterThatIsEcho() async throws {
 }
 
 @Test func echoAnalyzeLeavesAnInPersonMeetingAlone() async throws {
-    let temp = try TemporaryDirectory("echo")
+    let temp = try TemporaryDirectory("echo", permissions: 0o700)
     defer { temp.remove() }
     let (session, _, run) = try await SessionFixtures.labelledSession(in: temp.url, track: "mic")
     let outcome = try await SessionEchoAnalyzeCommand.run(.init(session: session), voiceSamples: .none, freeSpace: FixedFreeSpace(.max))
@@ -1154,7 +1154,7 @@ func recognitionDoesNotCompareAMicrophoneClusterThatIsEcho() async throws {
 @Test(.timeLimit(.minutes(2)))
 func transcriptFilesWrittenUnderTheEarlierWordRuleAreOutOfDateAndEchoAnalyzeRewritesThem() async throws {
     // Files written before the word rule asked for evidence recorded the mask by the SHA-256 of its frames alone.
-    let temp = try TemporaryDirectory("echo")
+    let temp = try TemporaryDirectory("echo", permissions: 0o700)
     defer { temp.remove() }
     let call = CallTranscript()
     let session = try await callSession(in: temp.url, audio: CallAudio.tracks(echo: true), transcript: call.transcript)
@@ -1188,7 +1188,7 @@ func transcriptFilesWrittenUnderTheEarlierWordRuleAreOutOfDateAndEchoAnalyzeRewr
 
 @Test(.timeLimit(.minutes(2)))
 func echoLabelStatsCountACallAndLeaveOtherMeetingsOut() async throws {
-    let temp = try TemporaryDirectory("echo")
+    let temp = try TemporaryDirectory("echo", permissions: 0o700)
     defer { temp.remove() }
     let call = CallTranscript()
     let session = try await callSession(in: temp.url.appendingPathComponent("call"),
@@ -1232,7 +1232,7 @@ func echoLabelStatsCountACallAndLeaveOtherMeetingsOut() async throws {
 func echoLabelStatsReadEachArgumentOnItsOwnAndNameNoPath() async throws {
     // A real call between a missing folder, an unknown session ID, and a symbolic link to the call: the call is
     // measured, the others are listed by their place, and no path or reason is printed.
-    let temp = try TemporaryDirectory("echo")
+    let temp = try TemporaryDirectory("echo", permissions: 0o700)
     defer { temp.remove() }
     let call = CallTranscript()
     let root = temp.url.appendingPathComponent("Sessions", isDirectory: true)
@@ -1325,7 +1325,7 @@ func echoLabelStatsReadEachArgumentOnItsOwnAndNameNoPath() async throws {
 func aMeetingWithoutAudioHasItsTranscriptFilesRewrittenForItsSavedAnalysis() async throws {
     // A call analysed and labelled, its audio then deleted (echo/ stays), and its transcript files written under the
     // earlier word rule: the catch-up finds it, and echo-analyze rewrites the files from the saved analysis.
-    let temp = try TemporaryDirectory("echo")
+    let temp = try TemporaryDirectory("echo", permissions: 0o700)
     defer { temp.remove() }
     let call = CallTranscript()
     let session = try await callSession(in: temp.url, audio: CallAudio.tracks(echo: true), transcript: call.transcript)
@@ -1371,7 +1371,7 @@ func aMeetingWithoutAudioStillDropsASampleTheEchoChanged() async throws {
     // A sample learned before the echo was found; the analysis is then saved and the transcript files rewritten for it,
     // and the audio deleted. The sample still covers the echo: the catch-up is not done with the meeting, and
     // echo-analyze removes the sample (it cannot be computed again without audio).
-    let temp = try TemporaryDirectory("echo")
+    let temp = try TemporaryDirectory("echo", permissions: 0o700)
     defer { temp.remove() }
     let (session, store) = try await learnedBeforeTheEcho(in: temp)
     let manifest = try SessionArchive.readManifest(at: session)

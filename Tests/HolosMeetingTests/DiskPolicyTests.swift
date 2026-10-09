@@ -74,7 +74,7 @@ private func isStop(_ verdict: DiskVerdict) -> Bool { if case .stop = verdict { 
 /// A disk that refuses the start leaves no session behind.
 @Test(.timeLimit(.minutes(1))) @MainActor
 func refusedStartCreatesNoSession() async throws {
-    let temp = try TemporaryDirectory()
+    let temp = try TemporaryDirectory("meeting", permissions: 0o700)
     defer { temp.remove() }
     let captures = FakeCaptureFactory()
     var dependencies = RecordingDependencies.testing(captures: captures)

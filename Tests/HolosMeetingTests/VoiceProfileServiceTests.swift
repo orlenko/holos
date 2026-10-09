@@ -134,7 +134,7 @@ private func profileFilesContaining(_ texts: [String], in session: URL) -> [Stri
 
 @Test(.timeLimit(.minutes(1)))
 func rememberOffMeansNoVoiceDataAndNoRecognition() async throws {
-    let temp = try TemporaryDirectory("profiles")
+    let temp = try TemporaryDirectory("profiles", permissions: 0o700)
     defer { temp.remove() }
     let store = profileStore(temp)
     try store.update {
@@ -155,7 +155,7 @@ func rememberOffMeansNoVoiceDataAndNoRecognition() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func rememberOnWritesRecognitionOnly() async throws {
-    let temp = try TemporaryDirectory("profiles")
+    let temp = try TemporaryDirectory("profiles", permissions: 0o700)
     defer { temp.remove() }
     let store = profileStore(temp)
     try store.update {
@@ -185,7 +185,7 @@ func rememberOnWritesRecognitionOnly() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func enrollmentNeverFromAutomaticMatch() async throws {
-    let temp = try TemporaryDirectory("profiles")
+    let temp = try TemporaryDirectory("profiles", permissions: 0o700)
     defer { temp.remove() }
     let store = profileStore(temp)
     let calibrated = RecognitionThresholds(likelyMaxDistance: 0.25, likelyMinMargin: 0.10, possibleMaxDistance: 0.43,
@@ -214,7 +214,7 @@ func enrollmentNeverFromAutomaticMatch() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func enrollExtractsOnlyTheConfirmedSpeaker() async throws {
-    let temp = try TemporaryDirectory("profiles")
+    let temp = try TemporaryDirectory("profiles", permissions: 0o700)
     defer { temp.remove() }
     let store = profileStore(temp)
     try store.update { $0.rememberVoices = true }
@@ -248,7 +248,7 @@ func enrollExtractsOnlyTheConfirmedSpeaker() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func enrollWithoutAudioKeepsNameOnly() async throws {
-    let temp = try TemporaryDirectory("profiles")
+    let temp = try TemporaryDirectory("profiles", permissions: 0o700)
     defer { temp.remove() }
     let store = profileStore(temp)
     try store.update { $0.rememberVoices = true }
@@ -277,7 +277,7 @@ func enrollWithoutAudioKeepsNameOnly() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func linkWithoutRememberKeepsTheName() async throws {
-    let temp = try TemporaryDirectory("profiles")
+    let temp = try TemporaryDirectory("profiles", permissions: 0o700)
     defer { temp.remove() }
     let store = profileStore(temp)
     try store.update { $0.rememberVoices = false }
@@ -303,7 +303,7 @@ func linkWithoutRememberKeepsTheName() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func linkWithLearnVoiceCreatesSample() async throws {
-    let temp = try TemporaryDirectory("profiles")
+    let temp = try TemporaryDirectory("profiles", permissions: 0o700)
     defer { temp.remove() }
     let store = profileStore(temp)
     try store.update {
@@ -324,7 +324,7 @@ func linkWithLearnVoiceCreatesSample() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func footerToggleControlsSampleWrites() async throws {
-    let temp = try TemporaryDirectory("profiles")
+    let temp = try TemporaryDirectory("profiles", permissions: 0o700)
     defer { temp.remove() }
     let store = profileStore(temp)
     try store.update { $0.rememberVoices = true }
@@ -340,7 +340,7 @@ func footerToggleControlsSampleWrites() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func refusedLinkRemovesTheNewPerson() async throws {
-    let temp = try TemporaryDirectory("profiles")
+    let temp = try TemporaryDirectory("profiles", permissions: 0o700)
     defer { temp.remove() }
     let store = profileStore(temp)
     let (session, _) = try await profileSession(in: temp)
@@ -356,7 +356,7 @@ func refusedLinkRemovesTheNewPerson() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func confirmAllIsOneEdit() async throws {
-    let temp = try TemporaryDirectory("profiles")
+    let temp = try TemporaryDirectory("profiles", permissions: 0o700)
     defer { temp.remove() }
     let store = profileStore(temp)
     try store.update {
@@ -403,7 +403,7 @@ func confirmAllIsOneEdit() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func markSelfCreatesOneSelfProfile() async throws {
-    let temp = try TemporaryDirectory("profiles")
+    let temp = try TemporaryDirectory("profiles", permissions: 0o700)
     defer { temp.remove() }
     let store = profileStore(temp)
     let first = try await profileSession(in: temp)
@@ -425,7 +425,7 @@ func markSelfCreatesOneSelfProfile() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func markSelfHonoursLearnVoice() async throws {
-    let temp = try TemporaryDirectory("profiles")
+    let temp = try TemporaryDirectory("profiles", permissions: 0o700)
     defer { temp.remove() }
     let store = profileStore(temp)
     try store.update { $0.rememberVoices = true }
@@ -450,7 +450,7 @@ func markSelfHonoursLearnVoice() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func reassignAfterEnrollmentRecomputesSample() async throws {
-    let temp = try TemporaryDirectory("profiles")
+    let temp = try TemporaryDirectory("profiles", permissions: 0o700)
     defer { temp.remove() }
     let store = profileStore(temp)
     try store.update { $0.rememberVoices = true }
@@ -497,7 +497,7 @@ func reassignAfterEnrollmentRecomputesSample() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func rememberOffRemovesAnAffectedSampleInsteadOfRelearning() async throws {
-    let temp = try TemporaryDirectory("profiles")
+    let temp = try TemporaryDirectory("profiles", permissions: 0o700)
     defer { temp.remove() }
     let store = profileStore(temp)
     try store.update { $0.rememberVoices = true }
@@ -518,7 +518,7 @@ func rememberOffRemovesAnAffectedSampleInsteadOfRelearning() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func staleRefreshDoesNotOverwriteNewerSample() async throws {
-    let temp = try TemporaryDirectory("profiles")
+    let temp = try TemporaryDirectory("profiles", permissions: 0o700)
     defer { temp.remove() }
     let store = profileStore(temp)
     try store.update { $0.rememberVoices = true }
@@ -567,7 +567,7 @@ func staleRefreshDoesNotOverwriteNewerSample() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func refreshGivesUpAfterThreeChanges() async throws {
-    let temp = try TemporaryDirectory("profiles")
+    let temp = try TemporaryDirectory("profiles", permissions: 0o700)
     defer { temp.remove() }
     let store = profileStore(temp)
     try store.update { $0.rememberVoices = true }
@@ -605,7 +605,7 @@ func refreshGivesUpAfterThreeChanges() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func forgetDuringRefreshKeepsTheSampleForgotten() async throws {
-    let temp = try TemporaryDirectory("profiles")
+    let temp = try TemporaryDirectory("profiles", permissions: 0o700)
     defer { temp.remove() }
     let store = profileStore(temp)
     try store.update { $0.rememberVoices = true }
@@ -636,7 +636,7 @@ func forgetDuringRefreshKeepsTheSampleForgotten() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func refreshAfterAFailedSaveStillRecomputes() async throws {
-    let temp = try TemporaryDirectory("profiles")
+    let temp = try TemporaryDirectory("profiles", permissions: 0o700)
     defer { temp.remove() }
     let store = profileStore(temp)
     try store.update { $0.rememberVoices = true }
@@ -663,7 +663,7 @@ func refreshAfterAFailedSaveStillRecomputes() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func samplesOutOfStepSaysWhetherARefreshHasWork() async throws {
-    let temp = try TemporaryDirectory("profiles")
+    let temp = try TemporaryDirectory("profiles", permissions: 0o700)
     defer { temp.remove() }
     let store = profileStore(temp)
     try store.update { $0.rememberVoices = true }
@@ -687,7 +687,7 @@ func samplesOutOfStepSaysWhetherARefreshHasWork() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func sampleFromAnEarlierRunIsKeptWhenItCannotBeRelearned() async throws {
-    let temp = try TemporaryDirectory("profiles")
+    let temp = try TemporaryDirectory("profiles", permissions: 0o700)
     defer { temp.remove() }
     let store = profileStore(temp)
     let (session, _) = try await profileSession(in: temp)
@@ -721,7 +721,7 @@ func sampleFromAnEarlierRunIsKeptWhenItCannotBeRelearned() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func generationFollowsHeadAndJournal() async throws {
-    let temp = try TemporaryDirectory("profiles")
+    let temp = try TemporaryDirectory("profiles", permissions: 0o700)
     defer { temp.remove() }
     let (session, run) = try await profileSession(in: temp)
     let before = try SessionSpeakerStore.generation(session: session)
@@ -735,7 +735,7 @@ func generationFollowsHeadAndJournal() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func mergedPersonKeepsTheirMovedSample() async throws {
-    let temp = try TemporaryDirectory("profiles")
+    let temp = try TemporaryDirectory("profiles", permissions: 0o700)
     defer { temp.remove() }
     let store = profileStore(temp)
     try store.update { $0.rememberVoices = true }
@@ -773,7 +773,7 @@ func mergedPersonKeepsTheirMovedSample() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func renameAndSuggestionsChangeThePerson() throws {
-    let temp = try TemporaryDirectory("profiles")
+    let temp = try TemporaryDirectory("profiles", permissions: 0o700)
     defer { temp.remove() }
     let store = profileStore(temp)
     try store.update { $0.profiles = [SpeakerProfile(id: "JIM", displayName: "Jim")] }
@@ -812,7 +812,7 @@ private func profileForgetFixture(_ temp: TemporaryDirectory,
 
 @Test(.timeLimit(.minutes(1)))
 func forgetPersonRemovesSamplesAndVoiceEntries() async throws {
-    let temp = try TemporaryDirectory("profiles")
+    let temp = try TemporaryDirectory("profiles", permissions: 0o700)
     defer { temp.remove() }
     let store = profileStore(temp)
     let (session, runID, jim) = try await profileForgetFixture(temp, store: store)
@@ -857,7 +857,7 @@ private func profileTwoAlexes(_ temp: TemporaryDirectory,
 @Test(.timeLimit(.minutes(1)))
 func forgettingOneOfTwoPeopleOfOneNameRemovesOnlyTheirVoiceData() async throws {
     for (forgotten, kept, keptTurns) in [("ALEX-2", "mic:S1", ["T1", "T3"]), ("ALEX-1", "mic:S2", ["T2", "T4"])] {
-        let temp = try TemporaryDirectory("profiles")
+        let temp = try TemporaryDirectory("profiles", permissions: 0o700)
         defer { temp.remove() }
         let store = profileStore(temp)
         let (session, runID) = try await profileTwoAlexes(temp, store: store)
@@ -876,7 +876,7 @@ func forgettingOneOfTwoPeopleOfOneNameRemovesOnlyTheirVoiceData() async throws {
 func forgettingThePersonOfASpeakerShownJoinedRemovesOnlyTheLinkedStoredOnesVoice() async throws {
     // mic:S1 is linked to Alex; mic:S2 is only called Alex. Shown as one speaker with Alex's link, but only mic:S1's
     // voice is Alex's: forgetting Alex removes mic:S1's voice data and keeps mic:S2's.
-    let temp = try TemporaryDirectory("profiles")
+    let temp = try TemporaryDirectory("profiles", permissions: 0o700)
     defer { temp.remove() }
     let store = profileStore(temp)
     try store.update {
@@ -901,7 +901,7 @@ func forgettingThePersonOfASpeakerShownJoinedRemovesOnlyTheLinkedStoredOnesVoice
 
 @Test(.timeLimit(.minutes(1)))
 func forgetAllRemovesVoiceFilesKeepsNames() async throws {
-    let temp = try TemporaryDirectory("profiles")
+    let temp = try TemporaryDirectory("profiles", permissions: 0o700)
     defer { temp.remove() }
     let store = profileStore(temp)
     let (first, _, _) = try await profileForgetFixture(temp, store: store)
@@ -922,7 +922,7 @@ func forgetAllRemovesVoiceFilesKeepsNames() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func forgetSessionRemovesItsSamples() throws {
-    let temp = try TemporaryDirectory("profiles")
+    let temp = try TemporaryDirectory("profiles", permissions: 0o700)
     defer { temp.remove() }
     let store = profileStore(temp)
     let a = UUID().uuidString
@@ -942,7 +942,7 @@ func forgetSessionRemovesItsSamples() throws {
 
 @Test(.timeLimit(.minutes(1)))
 func forgetSampleRemovesOnlyThatSample() async throws {
-    let temp = try TemporaryDirectory("profiles")
+    let temp = try TemporaryDirectory("profiles", permissions: 0o700)
     defer { temp.remove() }
     let store = profileStore(temp)
     let (session, runID, jim) = try await profileForgetFixture(temp, store: store)
@@ -957,7 +957,7 @@ func forgetSampleRemovesOnlyThatSample() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func rememberOffWithForget() async throws {
-    let temp = try TemporaryDirectory("profiles")
+    let temp = try TemporaryDirectory("profiles", permissions: 0o700)
     defer { temp.remove() }
     let store = profileStore(temp)
     let (session, _, _) = try await profileForgetFixture(temp, store: store)
@@ -977,7 +977,7 @@ private func profileDamage(_ url: URL) throws {
 
 @Test(.timeLimit(.minutes(1)))
 func forgetFinishesOverUnreadableRecognitionAndVoiceFiles() async throws {
-    let temp = try TemporaryDirectory("profiles")
+    let temp = try TemporaryDirectory("profiles", permissions: 0o700)
     defer { temp.remove() }
     let store = profileStore(temp)
 
@@ -1012,7 +1012,7 @@ func forgetFinishesOverUnreadableRecognitionAndVoiceFiles() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func rememberOffWithForgetTurnsOffInTheSameWrite() async throws {
-    let temp = try TemporaryDirectory("profiles")
+    let temp = try TemporaryDirectory("profiles", permissions: 0o700)
     defer { temp.remove() }
     let store = profileStore(temp)
     let (session, _, _) = try await profileForgetFixture(temp, store: store)
@@ -1036,7 +1036,7 @@ func rememberOffWithForgetTurnsOffInTheSameWrite() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func forgetResumesAfterCrashBetweenStoreAndSessions() async throws {
-    let temp = try TemporaryDirectory("profiles")
+    let temp = try TemporaryDirectory("profiles", permissions: 0o700)
     defer { temp.remove() }
     let store = profileStore(temp)
     let (session, runID, jim) = try await profileForgetFixture(temp, store: store)
@@ -1063,7 +1063,7 @@ func forgetResumesAfterCrashBetweenStoreAndSessions() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func forgetJournalReplayIsIdempotent() async throws {
-    let temp = try TemporaryDirectory("profiles")
+    let temp = try TemporaryDirectory("profiles", permissions: 0o700)
     defer { temp.remove() }
     let store = profileStore(temp)
     let (session, _, jim) = try await profileForgetFixture(temp, store: store)
@@ -1088,7 +1088,7 @@ func forgetJournalReplayIsIdempotent() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func rememberOffForgetsSamplesLearnedAfterTheyWereListed() async throws {
-    let temp = try TemporaryDirectory("profiles")
+    let temp = try TemporaryDirectory("profiles", permissions: 0o700)
     defer { temp.remove() }
     let store = profileStore(temp)
     _ = try await profileForgetFixture(temp, store: store)
@@ -1116,7 +1116,7 @@ func rememberOffForgetsSamplesLearnedAfterTheyWereListed() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func forgetDeletesVoiceDataWhenTheEditJournalHasUnreadableLines() async throws {
-    let temp = try TemporaryDirectory("profiles")
+    let temp = try TemporaryDirectory("profiles", permissions: 0o700)
     defer { temp.remove() }
     let store = profileStore(temp)
 
@@ -1145,7 +1145,7 @@ func forgetDeletesVoiceDataWhenTheEditJournalHasUnreadableLines() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func forgetCleansMeetingsWhoseManifestCannotBeRead() async throws {
-    let temp = try TemporaryDirectory("profiles")
+    let temp = try TemporaryDirectory("profiles", permissions: 0o700)
     defer { temp.remove() }
     let store = profileStore(temp)
 
@@ -1179,7 +1179,7 @@ func forgetCleansMeetingsWhoseManifestCannotBeRead() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func forgetStaysPendingWhenTheMeetingsFolderCannotBeListed() async throws {
-    let temp = try TemporaryDirectory("profiles")
+    let temp = try TemporaryDirectory("profiles", permissions: 0o700)
     defer { temp.remove() }
     let store = profileStore(temp)
     try store.update { $0.profiles = [profilePerson("JIM", "Jim", vector: profileAxis(0))] }
@@ -1207,7 +1207,7 @@ func forgetStaysPendingWhenTheMeetingsFolderCannotBeListed() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func forgetPersonRemovesEntriesOfPeopleMergedIntoThem() async throws {
-    let temp = try TemporaryDirectory("profiles")
+    let temp = try TemporaryDirectory("profiles", permissions: 0o700)
     defer { temp.remove() }
     let store = profileStore(temp)
     let (session, runID, jim) = try await profileForgetFixture(temp, store: store)
@@ -1225,7 +1225,7 @@ func forgetPersonRemovesEntriesOfPeopleMergedIntoThem() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func forgetDeletesVoiceFoldersWithUnexpectedFiles() async throws {
-    let temp = try TemporaryDirectory("profiles")
+    let temp = try TemporaryDirectory("profiles", permissions: 0o700)
     defer { temp.remove() }
     let store = profileStore(temp)
     let (session, _, jim) = try await profileForgetFixture(temp, store: store)
@@ -1241,7 +1241,7 @@ func forgetDeletesVoiceFoldersWithUnexpectedFiles() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func recognitionDropsPeopleWhoseSuggestionsWereTurnedOffMeanwhile() async throws {
-    let temp = try TemporaryDirectory("profiles")
+    let temp = try TemporaryDirectory("profiles", permissions: 0o700)
     defer { temp.remove() }
     let store = profileStore(temp)
     let (session, record) = try await profileProcessedSession(in: temp, store: nil, forceVoiceData: true)
@@ -1284,7 +1284,7 @@ func recognitionDropsPeopleWhoseSuggestionsWereTurnedOffMeanwhile() async throws
 
 @Test(.timeLimit(.minutes(1)))
 func recognitionIsComparedAgainWithTheSamplesPresentWhenSaved() async throws {
-    let temp = try TemporaryDirectory("profiles")
+    let temp = try TemporaryDirectory("profiles", permissions: 0o700)
     defer { temp.remove() }
     let root = temp.url
     let store = profileStore(temp)
@@ -1330,7 +1330,7 @@ func recognitionIsComparedAgainWithTheSamplesPresentWhenSaved() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func refreshRedoesItsPlanWhenTheStoreChangedMeanwhile() async throws {
-    let temp = try TemporaryDirectory("profiles")
+    let temp = try TemporaryDirectory("profiles", permissions: 0o700)
     defer { temp.remove() }
     let root = temp.url
     let store = profileStore(temp)
@@ -1354,7 +1354,7 @@ func refreshRedoesItsPlanWhenTheStoreChangedMeanwhile() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func forgetSessionRemovesSamplesLearnedAfterTheListing() throws {
-    let temp = try TemporaryDirectory("profiles")
+    let temp = try TemporaryDirectory("profiles", permissions: 0o700)
     defer { temp.remove() }
     let store = profileStore(temp)
     let a = UUID().uuidString
@@ -1386,7 +1386,7 @@ func forgetSessionRemovesSamplesLearnedAfterTheListing() throws {
 
 @Test(.timeLimit(.minutes(1)))
 func forgetPersonRemovesEveryReferenceInRecognition() async throws {
-    let temp = try TemporaryDirectory("profiles")
+    let temp = try TemporaryDirectory("profiles", permissions: 0o700)
     defer { temp.remove() }
     let store = profileStore(temp)
     let (session, runID, jim) = try await profileForgetFixture(temp, store: store)
@@ -1418,7 +1418,7 @@ func forgetPersonRemovesEveryReferenceInRecognition() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func noVoiceIsLearnedOrSuggestedWhenEditsCannotAllBeRead() async throws {
-    let temp = try TemporaryDirectory("profiles")
+    let temp = try TemporaryDirectory("profiles", permissions: 0o700)
     defer { temp.remove() }
     let store = profileStore(temp)
     try store.update {
@@ -1492,7 +1492,7 @@ func noVoiceIsLearnedOrSuggestedWhenEditsCannotAllBeRead() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func applyCalibrationStoresItsModelAndRefusesMixedModels() throws {
-    let temp = try TemporaryDirectory("profiles")
+    let temp = try TemporaryDirectory("profiles", permissions: 0o700)
     defer { temp.remove() }
     let store = profileStore(temp)
     func person(_ id: String, _ samples: [(String, [Float])]) -> SpeakerProfile {
@@ -1532,7 +1532,7 @@ func applyCalibrationStoresItsModelAndRefusesMixedModels() throws {
 
 @Test(.timeLimit(.minutes(1)))
 func calibrationIsResetWhenTheSamplesItWasMeasuredOnChange() async throws {
-    let temp = try TemporaryDirectory("profiles")
+    let temp = try TemporaryDirectory("profiles", permissions: 0o700)
     defer { temp.remove() }
     let store = profileStore(temp)
     func person(_ id: String, _ samples: [(String, [Float])]) -> SpeakerProfile {
@@ -1605,7 +1605,7 @@ func calibrationIsResetWhenTheSamplesItWasMeasuredOnChange() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func recognitionIsWrittenWhileNoPeopleChangeCanLand() async throws {
-    let temp = try TemporaryDirectory("profiles")
+    let temp = try TemporaryDirectory("profiles", permissions: 0o700)
     defer { temp.remove() }
     let store = profileStore(temp)
     let (session, record) = try await profileProcessedSession(in: temp, store: nil, forceVoiceData: true)
@@ -1643,7 +1643,7 @@ func recognitionIsWrittenWhileNoPeopleChangeCanLand() async throws {
 // MARK: - Export
 
 @Test func peopleExportOmitsEmbeddingsByDefault() throws {
-    let temp = try TemporaryDirectory("profiles")
+    let temp = try TemporaryDirectory("profiles", permissions: 0o700)
     defer { temp.remove() }
     let store = profileStore(temp)
     try store.update {
@@ -1677,7 +1677,7 @@ private func profileExtractor(_ output: DiarizerOutput, temp: TemporaryDirectory
 
 @Test(.timeLimit(.minutes(1)))
 func extractorUsesOverlappingWindowsForShortTurns() async throws {
-    let temp = try TemporaryDirectory("profiles")
+    let temp = try TemporaryDirectory("profiles", permissions: 0o700)
     defer { temp.remove() }
     let session = try await profileAudioSession(in: temp)
     let output = DiarizerOutput(
@@ -1697,7 +1697,7 @@ func extractorUsesOverlappingWindowsForShortTurns() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func extractorIgnoresOtherSpeakerSlotInSharedWindow() async throws {
-    let temp = try TemporaryDirectory("profiles")
+    let temp = try TemporaryDirectory("profiles", permissions: 0o700)
     defer { temp.remove() }
     let session = try await profileAudioSession(in: temp)
     let output = DiarizerOutput(
@@ -1714,7 +1714,7 @@ func extractorIgnoresOtherSpeakerSlotInSharedWindow() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func extractorSkipsTurnsWithoutADominantSpeaker() async throws {
-    let temp = try TemporaryDirectory("profiles")
+    let temp = try TemporaryDirectory("profiles", permissions: 0o700)
     defer { temp.remove() }
     let session = try await profileAudioSession(in: temp)
     let output = DiarizerOutput(
@@ -1732,7 +1732,7 @@ func extractorSkipsTurnsWithoutADominantSpeaker() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func extractorRefusesAnotherEmbeddingModel() async throws {
-    let temp = try TemporaryDirectory("profiles")
+    let temp = try TemporaryDirectory("profiles", permissions: 0o700)
     defer { temp.remove() }
     let (session, _) = try await profileSession(in: temp)
     var other = DiarizationEngineInfo.fake
@@ -1767,7 +1767,7 @@ private func profileScript(_ temp: TemporaryDirectory, _ body: String) throws ->
 
 @Test(.timeLimit(.minutes(1)))
 func subprocessExtractorReadsEmbeddingsFromAPipe() async throws {
-    let temp = try TemporaryDirectory("profiles")
+    let temp = try TemporaryDirectory("profiles", permissions: 0o700)
     defer { temp.remove() }
     let output = TurnEmbeddingsOutput(turnEmbeddings: [
         TurnEmbedding(turnID: "T1", speechSeconds: 3, vector: FloatVector(profileAxis(0))),
@@ -1821,7 +1821,7 @@ func subprocessExtractorReadsEmbeddingsFromAPipe() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func aForgetThatCrashedBeforeItsStoreWriteStillTurnsRememberingOff() async throws {
-    let temp = try TemporaryDirectory("profiles")
+    let temp = try TemporaryDirectory("profiles", permissions: 0o700)
     defer { temp.remove() }
     let store = profileStore(temp)
     _ = try await profileForgetFixture(temp, store: store)
@@ -1844,7 +1844,7 @@ func aForgetThatCrashedBeforeItsStoreWriteStillTurnsRememberingOff() async throw
 
 @Test(.timeLimit(.minutes(1)))
 func aResumedForgetLeavesRememberingAndNewerSamplesAlone() async throws {
-    let temp = try TemporaryDirectory("profiles")
+    let temp = try TemporaryDirectory("profiles", permissions: 0o700)
     defer { temp.remove() }
     let store = profileStore(temp)
     _ = try await profileForgetFixture(temp, store: store)
@@ -1863,7 +1863,7 @@ func aResumedForgetLeavesRememberingAndNewerSamplesAlone() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func forgettingASampleFollowsItToThePersonItWasMergedInto() async throws {
-    let temp = try TemporaryDirectory("profiles")
+    let temp = try TemporaryDirectory("profiles", permissions: 0o700)
     defer { temp.remove() }
     let store = profileStore(temp)
     let (session, runID, jim) = try await profileForgetFixture(temp, store: store)
@@ -1892,7 +1892,7 @@ func forgettingASampleFollowsItToThePersonItWasMergedInto() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func forgetDeletesVoiceDataWhoseCentroidStillHoldsAReassignedTurn() async throws {
-    let temp = try TemporaryDirectory("profiles")
+    let temp = try TemporaryDirectory("profiles", permissions: 0o700)
     defer { temp.remove() }
     let store = profileStore(temp)
     let (session, runID, _) = try await profileForgetFixture(temp, store: store)
@@ -1915,7 +1915,7 @@ func forgetDeletesVoiceDataWhoseCentroidStillHoldsAReassignedTurn() async throws
 
 @Test(.timeLimit(.minutes(1)))
 func forgetStaysPendingUntilTheExportsAreRewritten() async throws {
-    let temp = try TemporaryDirectory("profiles")
+    let temp = try TemporaryDirectory("profiles", permissions: 0o700)
     defer { temp.remove() }
     let store = profileStore(temp)
     let (session, _, jim) = try await profileForgetFixture(temp, store: store)
@@ -1943,7 +1943,7 @@ func forgetStaysPendingUntilTheExportsAreRewritten() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func anEditIsRefusedWhenThePersonItLinksIsGone() async throws {
-    let temp = try TemporaryDirectory("profiles")
+    let temp = try TemporaryDirectory("profiles", permissions: 0o700)
     defer { temp.remove() }
     let store = profileStore(temp)
     let (session, _) = try await profileProcessedSession(in: temp, store: nil)
@@ -1975,7 +1975,7 @@ func anEditIsRefusedWhenThePersonItLinksIsGone() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func aLinkThatChangesNothingIsRefusedWhenAnotherWindowChangedIt() async throws {
-    let temp = try TemporaryDirectory("profiles")
+    let temp = try TemporaryDirectory("profiles", permissions: 0o700)
     defer { temp.remove() }
     let store = profileStore(temp)
     let (session, _) = try await profileProcessedSession(in: temp, store: nil)
@@ -1999,7 +1999,7 @@ func aLinkThatChangesNothingIsRefusedWhenAnotherWindowChangedIt() async throws {
 }
 
 @Test func aPersonAnotherLinkHasTakenUpIsNotRolledBack() throws {
-    let temp = try TemporaryDirectory("profiles")
+    let temp = try TemporaryDirectory("profiles", permissions: 0o700)
     defer { temp.remove() }
     let store = profileStore(temp)
     let made = Date(timeIntervalSince1970: 1_790_000_000)
@@ -2027,7 +2027,7 @@ func aLinkThatChangesNothingIsRefusedWhenAnotherWindowChangedIt() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func aLinkIsRefusedWhenThePersonWasRenamedMeanwhile() async throws {
-    let temp = try TemporaryDirectory("profiles")
+    let temp = try TemporaryDirectory("profiles", permissions: 0o700)
     defer { temp.remove() }
     let store = profileStore(temp)
     let (session, _) = try await profileProcessedSession(in: temp, store: nil)
@@ -2058,7 +2058,7 @@ func aLinkIsRefusedWhenThePersonWasRenamedMeanwhile() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func aRefusedNewPersonIsStillRemoved() async throws {
-    let temp = try TemporaryDirectory("profiles")
+    let temp = try TemporaryDirectory("profiles", permissions: 0o700)
     defer { temp.remove() }
     let store = profileStore(temp)
     let (session, _) = try await profileProcessedSession(in: temp, store: nil)
@@ -2077,7 +2077,7 @@ func aRefusedNewPersonIsStillRemoved() async throws {
 // MARK: - Leftover voice renders
 
 @Test func leftoverVoiceRendersAreSweptOnceTheyAreOldEnough() throws {
-    let temp = try TemporaryDirectory("profiles")
+    let temp = try TemporaryDirectory("profiles", permissions: 0o700)
     defer { temp.remove() }
     let renders = temp.url.appendingPathComponent("tmp", isDirectory: true)
     try FileManager.default.createDirectory(at: renders, withIntermediateDirectories: true)
@@ -2102,7 +2102,7 @@ func aRefusedNewPersonIsStillRemoved() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func mergePointsMeetingsAtThePersonTheyWereMergedInto() async throws {
-    let temp = try TemporaryDirectory("profiles")
+    let temp = try TemporaryDirectory("profiles", permissions: 0o700)
     defer { temp.remove() }
     let store = profileStore(temp)
     let (session, runID, jim) = try await profileForgetFixture(temp, store: store)
@@ -2122,7 +2122,7 @@ func mergePointsMeetingsAtThePersonTheyWereMergedInto() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func aMergeThatCouldNotReachAMeetingIsFinishedLater() async throws {
-    let temp = try TemporaryDirectory("profiles")
+    let temp = try TemporaryDirectory("profiles", permissions: 0o700)
     defer { temp.remove() }
     let store = profileStore(temp)
     let (session, runID, jim) = try await profileForgetFixture(temp, store: store)
@@ -2147,7 +2147,7 @@ func aMergeThatCouldNotReachAMeetingIsFinishedLater() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func aMergeWhoseStoreWriteNeverHappenedIsDroppedNotReplayed() async throws {
-    let temp = try TemporaryDirectory("profiles")
+    let temp = try TemporaryDirectory("profiles", permissions: 0o700)
     defer { temp.remove() }
     let store = profileStore(temp)
     let (session, runID, jim) = try await profileForgetFixture(temp, store: store)
@@ -2176,7 +2176,7 @@ func aMergeWhoseStoreWriteNeverHappenedIsDroppedNotReplayed() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func aMergeStaysPendingWhenAMeetingsRecognitionCannotBeRead() async throws {
-    let temp = try TemporaryDirectory("profiles")
+    let temp = try TemporaryDirectory("profiles", permissions: 0o700)
     defer { temp.remove() }
     let store = profileStore(temp)
     let (session, runID, jim) = try await profileForgetFixture(temp, store: store)
@@ -2201,7 +2201,7 @@ func aMergeStaysPendingWhenAMeetingsRecognitionCannotBeRead() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func aMergeStaysPendingUntilTheExportsAreRewritten() async throws {
-    let temp = try TemporaryDirectory("profiles")
+    let temp = try TemporaryDirectory("profiles", permissions: 0o700)
     defer { temp.remove() }
     let store = profileStore(temp)
     let (session, _, jim) = try await profileForgetFixture(temp, store: store)
@@ -2228,7 +2228,7 @@ func aMergeStaysPendingUntilTheExportsAreRewritten() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func keptSamplesAreNotUsedWhileRememberVoicesIsOff() async throws {
-    let temp = try TemporaryDirectory("profiles")
+    let temp = try TemporaryDirectory("profiles", permissions: 0o700)
     defer { temp.remove() }
     let store = profileStore(temp)
     let (session, _, _) = try await profileForgetFixture(temp, store: store)
@@ -2254,7 +2254,7 @@ func keptSamplesAreNotUsedWhileRememberVoicesIsOff() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func aMergeThatCommittedBeforeItsMarkerIsStillFinished() async throws {
-    let temp = try TemporaryDirectory("profiles")
+    let temp = try TemporaryDirectory("profiles", permissions: 0o700)
     defer { temp.remove() }
     let store = profileStore(temp)
     let (session, runID, jim) = try await profileForgetFixture(temp, store: store)
@@ -2281,7 +2281,7 @@ func aMergeThatCommittedBeforeItsMarkerIsStillFinished() async throws {
 }
 
 @Test func aPersonAMergeAdoptedIsNotRolledBack() throws {
-    let temp = try TemporaryDirectory("profiles")
+    let temp = try TemporaryDirectory("profiles", permissions: 0o700)
     defer { temp.remove() }
     let store = profileStore(temp)
     // Created for a link that has not been saved, as `link(to: .new)` creates one.
@@ -2302,7 +2302,7 @@ func aMergeThatCommittedBeforeItsMarkerIsStillFinished() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func forgettingAPersonFollowsTheirSamplesThroughAMerge() async throws {
-    let temp = try TemporaryDirectory("profiles")
+    let temp = try TemporaryDirectory("profiles", permissions: 0o700)
     defer { temp.remove() }
     let store = profileStore(temp)
     let (session, runID, jim) = try await profileForgetFixture(temp, store: store)
@@ -2332,7 +2332,7 @@ func forgettingAPersonFollowsTheirSamplesThroughAMerge() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func aRejectionThatChangesNothingIsDecidedOnTheCurrentLabels() async throws {
-    let temp = try TemporaryDirectory("profiles")
+    let temp = try TemporaryDirectory("profiles", permissions: 0o700)
     defer { temp.remove() }
     let store = profileStore(temp)
     let (session, _, jim) = try await profileForgetFixture(temp, store: store)
@@ -2353,7 +2353,7 @@ func aRejectionThatChangesNothingIsDecidedOnTheCurrentLabels() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func aVoiceForgottenWhileItWasLearnedIsNotPutBack() async throws {
-    let temp = try TemporaryDirectory("profiles")
+    let temp = try TemporaryDirectory("profiles", permissions: 0o700)
     defer { temp.remove() }
     let store = profileStore(temp)
     try store.update { $0.rememberVoices = true }
@@ -2378,7 +2378,7 @@ func aVoiceForgottenWhileItWasLearnedIsNotPutBack() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func aMergeFollowsItsTargetOnwards() async throws {
-    let temp = try TemporaryDirectory("profiles")
+    let temp = try TemporaryDirectory("profiles", permissions: 0o700)
     defer { temp.remove() }
     let store = profileStore(temp)
     let (session, runID, jim) = try await profileForgetFixture(temp, store: store)
@@ -2410,7 +2410,7 @@ func aMergeFollowsItsTargetOnwards() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func aMergeStaysPendingWhenAMeetingsManifestCannotBeRead() async throws {
-    let temp = try TemporaryDirectory("profiles")
+    let temp = try TemporaryDirectory("profiles", permissions: 0o700)
     defer { temp.remove() }
     let store = profileStore(temp)
     let (session, runID, jim) = try await profileForgetFixture(temp, store: store)
@@ -2434,7 +2434,7 @@ func aMergeStaysPendingWhenAMeetingsManifestCannotBeRead() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func recognitionIsNotUsedWhileAForgetIsUnfinished() async throws {
-    let temp = try TemporaryDirectory("profiles")
+    let temp = try TemporaryDirectory("profiles", permissions: 0o700)
     defer { temp.remove() }
     let store = profileStore(temp)
     _ = try await profileForgetFixture(temp, store: store)
@@ -2458,7 +2458,7 @@ func recognitionIsNotUsedWhileAForgetIsUnfinished() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func aMergeIsNotRecoveredWhenSomethingElseRemovedItsSource() async throws {
-    let temp = try TemporaryDirectory("profiles")
+    let temp = try TemporaryDirectory("profiles", permissions: 0o700)
     defer { temp.remove() }
     let store = profileStore(temp)
     let (session, runID, jim) = try await profileForgetFixture(temp, store: store)
@@ -2479,7 +2479,7 @@ func aMergeIsNotRecoveredWhenSomethingElseRemovedItsSource() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func aMergeChainFollowsOnlyCommittedMerges() async throws {
-    let temp = try TemporaryDirectory("profiles")
+    let temp = try TemporaryDirectory("profiles", permissions: 0o700)
     defer { temp.remove() }
     let store = profileStore(temp)
     let (session, runID, jim) = try await profileForgetFixture(temp, store: store)
@@ -2517,7 +2517,7 @@ func aMergeChainFollowsOnlyCommittedMerges() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func recognitionIsNotUsedWhileAForgetLineCannotBeRead() async throws {
-    let temp = try TemporaryDirectory("profiles")
+    let temp = try TemporaryDirectory("profiles", permissions: 0o700)
     defer { temp.remove() }
     let store = profileStore(temp)
     _ = try await profileForgetFixture(temp, store: store)
@@ -2534,7 +2534,7 @@ func recognitionIsNotUsedWhileAForgetLineCannotBeRead() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func aMergeStaysPendingWhenAMeetingHoldsUnknownRecognitionFiles() async throws {
-    let temp = try TemporaryDirectory("profiles")
+    let temp = try TemporaryDirectory("profiles", permissions: 0o700)
     defer { temp.remove() }
     let store = profileStore(temp)
     let (session, runID, jim) = try await profileForgetFixture(temp, store: store)
@@ -2558,7 +2558,7 @@ func aMergeStaysPendingWhenAMeetingHoldsUnknownRecognitionFiles() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func aMergeStaysPendingWhenAMeetingFolderCannotBeInspected() async throws {
-    let temp = try TemporaryDirectory("profiles")
+    let temp = try TemporaryDirectory("profiles", permissions: 0o700)
     defer { temp.remove() }
     let store = profileStore(temp)
     let (session, _, jim) = try await profileForgetFixture(temp, store: store)
@@ -2575,7 +2575,7 @@ func aMergeStaysPendingWhenAMeetingFolderCannotBeInspected() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func aMergeWaitsWhileOneOfItsPeopleIsBeingForgotten() async throws {
-    let temp = try TemporaryDirectory("profiles")
+    let temp = try TemporaryDirectory("profiles", permissions: 0o700)
     defer { temp.remove() }
     let store = profileStore(temp)
     let (_, _, jim) = try await profileForgetFixture(temp, store: store)
@@ -2599,7 +2599,7 @@ func aMergeWaitsWhileOneOfItsPeopleIsBeingForgotten() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func whatAMergeRemovedIsKeptForLaterChains() async throws {
-    let temp = try TemporaryDirectory("profiles")
+    let temp = try TemporaryDirectory("profiles", permissions: 0o700)
     defer { temp.remove() }
     let store = profileStore(temp)
     try store.update {
@@ -2618,7 +2618,7 @@ func whatAMergeRemovedIsKeptForLaterChains() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func anEditThatNeedsWholeLabelsIsRefusedUnderTheLock() async throws {
-    let temp = try TemporaryDirectory("profiles")
+    let temp = try TemporaryDirectory("profiles", permissions: 0o700)
     defer { temp.remove() }
     let store = profileStore(temp)
     let (session, _) = try await profileProcessedSession(in: temp, store: nil)
@@ -2652,7 +2652,7 @@ func anEditThatNeedsWholeLabelsIsRefusedUnderTheLock() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func forgettingOnePersonKeepsTheOtherAutomaticNames() async throws {
-    let temp = try TemporaryDirectory("profiles")
+    let temp = try TemporaryDirectory("profiles", permissions: 0o700)
     defer { temp.remove() }
     let store = profileStore(temp)
     try store.update { $0.rememberVoices = true }
@@ -2689,7 +2689,7 @@ func forgettingOnePersonKeepsTheOtherAutomaticNames() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func aForgetLeavesAnotherPendingMergeAlone() async throws {
-    let temp = try TemporaryDirectory("profiles")
+    let temp = try TemporaryDirectory("profiles", permissions: 0o700)
     defer { temp.remove() }
     let store = profileStore(temp)
     let (session, runID, jim) = try await profileForgetFixture(temp, store: store)
@@ -2719,7 +2719,7 @@ func aForgetLeavesAnotherPendingMergeAlone() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func whatAForgetListsAndItsTombstoneAreOneStep() async throws {
-    let temp = try TemporaryDirectory("profiles")
+    let temp = try TemporaryDirectory("profiles", permissions: 0o700)
     defer { temp.remove() }
     let store = profileStore(temp)
     let (_, _, jim) = try await profileForgetFixture(temp, store: store)
@@ -2741,7 +2741,7 @@ func whatAForgetListsAndItsTombstoneAreOneStep() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func aRepeatedLinkStillBringsTheSamplesInStep() async throws {
-    let temp = try TemporaryDirectory("profiles")
+    let temp = try TemporaryDirectory("profiles", permissions: 0o700)
     defer { temp.remove() }
     let store = profileStore(temp)
     try store.update { $0.rememberVoices = true }
@@ -2772,7 +2772,7 @@ func aRepeatedLinkStillBringsTheSamplesInStep() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func aPersonStaysUnfinishedUntilTheirLinkIsSaved() async throws {
-    let temp = try TemporaryDirectory("profiles")
+    let temp = try TemporaryDirectory("profiles", permissions: 0o700)
     defer { temp.remove() }
     let store = profileStore(temp)
     let (session, _) = try await profileProcessedSession(in: temp, store: nil)
@@ -2802,7 +2802,7 @@ func aPersonStaysUnfinishedUntilTheirLinkIsSaved() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func aPersonIsTakenUpEvenWhenTheLinkReportsAFailure() async throws {
-    let temp = try TemporaryDirectory("profiles")
+    let temp = try TemporaryDirectory("profiles", permissions: 0o700)
     defer { temp.remove() }
     let store = profileStore(temp)
     let (session, _) = try await profileProcessedSession(in: temp, store: nil)
@@ -2825,7 +2825,7 @@ func aPersonIsTakenUpEvenWhenTheLinkReportsAFailure() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func aForgetsExportsKeepNamesAnotherForgetHasNotReachedYet() async throws {
-    let temp = try TemporaryDirectory("profiles")
+    let temp = try TemporaryDirectory("profiles", permissions: 0o700)
     defer { temp.remove() }
     let store = profileStore(temp)
     try store.update { $0.rememberVoices = true }
@@ -2861,7 +2861,7 @@ func aForgetsExportsKeepNamesAnotherForgetHasNotReachedYet() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func aRelinkedSpeakerDoesNotKeepTheOldPersonsVoice() async throws {
-    let temp = try TemporaryDirectory("profiles")
+    let temp = try TemporaryDirectory("profiles", permissions: 0o700)
     defer { temp.remove() }
     let store = profileStore(temp)
     try store.update { $0.rememberVoices = true }
@@ -2890,7 +2890,7 @@ func aRelinkedSpeakerDoesNotKeepTheOldPersonsVoice() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func forgettingAPersonRemovesTheVoiceOfSpeakersOnlyAMatchNamed() async throws {
-    let temp = try TemporaryDirectory("profiles")
+    let temp = try TemporaryDirectory("profiles", permissions: 0o700)
     defer { temp.remove() }
     let store = profileStore(temp)
     try store.update { $0.rememberVoices = true }
@@ -2932,7 +2932,7 @@ func forgettingAPersonRemovesTheVoiceOfSpeakersOnlyAMatchNamed() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func aMergeWaitsForAForgetThisBuildCannotRead() async throws {
-    let temp = try TemporaryDirectory("profiles")
+    let temp = try TemporaryDirectory("profiles", permissions: 0o700)
     defer { temp.remove() }
     let store = profileStore(temp)
     let (_, _, jim) = try await profileForgetFixture(temp, store: store)
@@ -2949,7 +2949,7 @@ func aMergeWaitsForAForgetThisBuildCannotRead() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func forgettingAPersonLeavesASpeakerTheUserSaidIsNotThem() async throws {
-    let temp = try TemporaryDirectory("profiles")
+    let temp = try TemporaryDirectory("profiles", permissions: 0o700)
     defer { temp.remove() }
     let store = profileStore(temp)
     try store.update { $0.rememberVoices = true }

@@ -51,7 +51,7 @@ private func catalogSetCreated(_ session: URL, _ date: Date) throws {
 // MARK: - State
 
 @Test func catalogMarksDeadRecorderInterrupted() throws {
-    let temp = try TemporaryDirectory("catalog")
+    let temp = try TemporaryDirectory("catalog", permissions: 0o700)
     defer { temp.remove() }
     let session = try catalogDeadRecording(in: temp.url)
     let id = session.deletingPathExtension().lastPathComponent
@@ -70,7 +70,7 @@ private func catalogSetCreated(_ session: URL, _ date: Date) throws {
 }
 
 @Test func catalogShowsMaintenanceAsProcessing() async throws {
-    let temp = try TemporaryDirectory("catalog")
+    let temp = try TemporaryDirectory("catalog", permissions: 0o700)
     defer { temp.remove() }
     // A maintenance command holds the writer lock of a `processing` archive; status.json is a minute old.
     let archive = try SessionArchive.create(root: temp.url, name: "Council", source: .microphone, locale: "en-CA",
@@ -111,7 +111,7 @@ private func catalogSetCreated(_ session: URL, _ date: Date) throws {
 // MARK: - Sizes and speakers
 
 @Test func catalogReportsSavedDurationSizeAndSpeakerState() async throws {
-    let temp = try TemporaryDirectory("catalog")
+    let temp = try TemporaryDirectory("catalog", permissions: 0o700)
     defer { temp.remove() }
     let archive = try SessionArchive.create(root: temp.url, name: "Council", source: .microphoneAndSystem,
                                             locale: "en-CA", backend: .speech)
@@ -160,7 +160,7 @@ private func catalogSetCreated(_ session: URL, _ date: Date) throws {
 }
 
 @Test func catalogCountsATornOrUnreadableEditJournalAsEdited() throws {
-    let temp = try TemporaryDirectory("catalog")
+    let temp = try TemporaryDirectory("catalog", permissions: 0o700)
     defer { temp.remove() }
     let session = try catalogDeadRecording(in: temp.url)
     #expect(!SessionCatalog.hasSpeakerEdits(session), "No journal: no edits.")
@@ -179,7 +179,7 @@ private func catalogSetCreated(_ session: URL, _ date: Date) throws {
 
 @Test(.timeLimit(.minutes(1)))
 func catalogReportsNotLabelledWithMessage() async throws {
-    let temp = try TemporaryDirectory("catalog")
+    let temp = try TemporaryDirectory("catalog", permissions: 0o700)
     defer { temp.remove() }
     let transcript = SessionFixtures.transcript(SessionFixtures.alternatingSegments(track: "mic"))
     let session = try await SessionFixtures.makeSession(in: temp.url, mode: .inPerson, transcript: transcript)
@@ -224,7 +224,7 @@ func catalogReportsNotLabelledWithMessage() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func catalogReportsDeletedAudio() async throws {
-    let temp = try TemporaryDirectory("catalog")
+    let temp = try TemporaryDirectory("catalog", permissions: 0o700)
     defer { temp.remove() }
     let (session, _, _) = try await SessionFixtures.labelledSession(in: temp.url)
     try AtomicFile.ensurePrivateDirectory(SessionPaths.derived(session))
@@ -262,7 +262,7 @@ private func catalogNewer(_ data: Data) throws -> Data {
 
 @Test(.timeLimit(.minutes(1)))
 func catalogReportsUnreadableSpeakerFilesAndTranscripts() async throws {
-    let temp = try TemporaryDirectory("catalog")
+    let temp = try TemporaryDirectory("catalog", permissions: 0o700)
     defer { temp.remove() }
     let (session, transcript, run) = try await SessionFixtures.labelledSession(in: temp.url)
     let record = PostProcessingRecord(sessionID: try SessionArchive.readManifest(at: session).id, state: .succeeded,
@@ -351,7 +351,7 @@ private func catalogLabels(_ session: URL) -> (state: SpeakerLabelState, message
 
 @Test(.timeLimit(.minutes(1)))
 func catalogCallsLabelsLabelledOnlyWhenTheSnapshotLoadsThem() async throws {
-    let temp = try TemporaryDirectory("catalog")
+    let temp = try TemporaryDirectory("catalog", permissions: 0o700)
     defer { temp.remove() }
     let (session, transcript, run) = try await SessionFixtures.labelledSession(in: temp.url)
     // A newer transcript is current, so the snapshot has one to fall back to when the run's own cannot be used.
@@ -404,7 +404,7 @@ func catalogCallsLabelsLabelledOnlyWhenTheSnapshotLoadsThem() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func catalogTreatsAPostProcessingRecordOfAnotherSessionAsUnreadable() async throws {
-    let temp = try TemporaryDirectory("catalog")
+    let temp = try TemporaryDirectory("catalog", permissions: 0o700)
     defer { temp.remove() }
     let (session, transcript, run) = try await SessionFixtures.labelledSession(in: temp.url)
     let foreign = PostProcessingRecord(sessionID: UUID().uuidString, state: .failed, runID: UUID().uuidString,
@@ -420,7 +420,7 @@ func catalogTreatsAPostProcessingRecordOfAnotherSessionAsUnreadable() async thro
 
 @Test(.timeLimit(.minutes(1)))
 func catalogReadsTheAudioDeletionMarker() async throws {
-    let temp = try TemporaryDirectory("catalog")
+    let temp = try TemporaryDirectory("catalog", permissions: 0o700)
     defer { temp.remove() }
     let (session, _, _) = try await SessionFixtures.labelledSession(in: temp.url)
     let marker = SessionPaths.audioDeleted(session)
@@ -458,7 +458,7 @@ private func isDamageError(_ body: () throws -> Any?) -> Bool {
 // MARK: - Listing
 
 @Test func catalogListsNewestFirstAndReportsDamagedFolders() async throws {
-    let temp = try TemporaryDirectory("catalog")
+    let temp = try TemporaryDirectory("catalog", permissions: 0o700)
     defer { temp.remove() }
     let root = temp.url
     let older = try await SessionFixtures.makeSession(in: root, name: "Older", audioSeconds: ["mic": 1], transcript: nil)

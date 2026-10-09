@@ -20,7 +20,7 @@ func measureSpeechAndSilenceLevels() async throws {
     let session = URL(fileURLWithPath: try #require(measuredSession), isDirectory: true)
     let manifest = try SessionArchive.readManifest(at: session)
     let transcript = try #require(try SessionFiles.currentTranscript(session: session))
-    let temp = try TemporaryDirectory("deep-measure")
+    let temp = try TemporaryDirectory("deep-measure", permissions: 0o700)
     defer { temp.remove() }
     for track in Set(manifest.chunks.map(\.track)).sorted() {
         let rendered = try TrackRenderer.render(session: session, manifest: manifest, track: track,

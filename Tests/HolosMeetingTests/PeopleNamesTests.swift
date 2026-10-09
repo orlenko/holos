@@ -11,7 +11,7 @@ import Testing
 // caller's thread, so a person added, renamed or removed counts from a later dictation.
 
 @Test func peopleNamesFollowThePeopleStore() async throws {
-    let temp = try TemporaryDirectory("people-names")
+    let temp = try TemporaryDirectory("people-names", permissions: 0o700)
     defer { temp.remove() }
     let store = SpeakerProfileStore(directory: temp.url.appendingPathComponent("Speakers", isDirectory: true))
     let names = PeopleNames(store: store)

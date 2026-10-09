@@ -531,7 +531,7 @@ private func hint(_ segment: TranscriptSegment, words: Range<Int>, action: LiveH
 }
 
 @Test func liveHintStorePreservesHintsAndBindsThemToTheSession() async throws {
-    let temp = try TemporaryDirectory()
+    let temp = try TemporaryDirectory("meeting", permissions: 0o700)
     defer { temp.remove() }
     let transcript = SessionFixtures.transcript([])
     let session = try await SessionFixtures.makeSession(in: temp.url, transcript: transcript)
@@ -563,7 +563,7 @@ private func hint(_ segment: TranscriptSegment, words: Range<Int>, action: LiveH
 }
 
 @Test func appendingARepeatedEditReturnsItsPriorLearningWithoutAReaderRefresh() async throws {
-    let temp = try TemporaryDirectory()
+    let temp = try TemporaryDirectory("meeting", permissions: 0o700)
     defer { temp.remove() }
     let session = try await SessionFixtures.makeSession(
         in: temp.url, transcript: SessionFixtures.transcript([]))
@@ -594,7 +594,7 @@ private func hint(_ segment: TranscriptSegment, words: Range<Int>, action: LiveH
 }
 
 @Test func liveHintStoreRejectsATextReplacementWithNoWords() async throws {
-    let temp = try TemporaryDirectory()
+    let temp = try TemporaryDirectory("meeting", permissions: 0o700)
     defer { temp.remove() }
     let session = try await SessionFixtures.makeSession(in: temp.url, transcript: SessionFixtures.transcript([]))
     let segment = SessionFixtures.segment(["aside"], track: "mic", start: 1, id: "S1")
@@ -620,7 +620,7 @@ private func hint(_ segment: TranscriptSegment, words: Range<Int>, action: LiveH
 }
 
 @Test func speakerHintNamesTheMachineSpeakerAtItsWords() async throws {
-    let temp = try TemporaryDirectory()
+    let temp = try TemporaryDirectory("meeting", permissions: 0o700)
     defer { temp.remove() }
     let fixture = try await SessionFixtures.labelledSession(in: temp.url)
     let segment = fixture.transcript.segments[0]
@@ -633,7 +633,7 @@ private func hint(_ segment: TranscriptSegment, words: Range<Int>, action: LiveH
 }
 
 @Test func unmatchedSpeakerHintsStayPendingWhenAnotherNameApplies() async throws {
-    let temp = try TemporaryDirectory()
+    let temp = try TemporaryDirectory("meeting", permissions: 0o700)
     defer { temp.remove() }
     let fixture = try await SessionFixtures.labelledSession(in: temp.url)
     let segment = fixture.transcript.segments[0]
@@ -660,7 +660,7 @@ private func hint(_ segment: TranscriptSegment, words: Range<Int>, action: LiveH
 }
 
 @Test func laterExplicitSpeakerRenameWinsOverALiveHint() async throws {
-    let temp = try TemporaryDirectory()
+    let temp = try TemporaryDirectory("meeting", permissions: 0o700)
     defer { temp.remove() }
     let fixture = try await SessionFixtures.labelledSession(in: temp.url)
     let segment = fixture.transcript.segments[0]
@@ -682,7 +682,7 @@ private func hint(_ segment: TranscriptSegment, words: Range<Int>, action: LiveH
 
 @Test(.timeLimit(.minutes(1)))
 func liveTextCorrectionKeepsEditedLabelsOnUntimedWords() async throws {
-    let temp = try TemporaryDirectory()
+    let temp = try TemporaryDirectory("meeting", permissions: 0o700)
     defer { temp.remove() }
     let segment = TranscriptSegment(id: "S1", start: 0.5, end: 4.5, text: "send the deck",
                                     track: "mic")
@@ -711,7 +711,7 @@ func liveTextCorrectionKeepsEditedLabelsOnUntimedWords() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func aLaterPassRepairsLiveTextWhoseSpeakerHeadWasNotPublished() async throws {
-    let temp = try TemporaryDirectory()
+    let temp = try TemporaryDirectory("meeting", permissions: 0o700)
     defer { temp.remove() }
     let fixture = try await SessionFixtures.labelledSession(in: temp.url, track: "mic")
     let speakerID = try #require(fixture.run.turns.first?.speakerID)
@@ -747,7 +747,7 @@ func aLaterPassRepairsLiveTextWhoseSpeakerHeadWasNotPublished() async throws {
 }
 
 @Test(.timeLimit(.minutes(1))) func postProcessorAppliesLiveTextAndSpeakerHintsBeforeExport() async throws {
-    let temp = try TemporaryDirectory()
+    let temp = try TemporaryDirectory("meeting", permissions: 0o700)
     defer { temp.remove() }
     let segments = SessionFixtures.alternatingSegments(track: "mic")
     let transcript = SessionFixtures.transcript(segments)
@@ -788,7 +788,7 @@ func aLaterPassRepairsLiveTextWhoseSpeakerHeadWasNotPublished() async throws {
 }
 
 @Test(.timeLimit(.minutes(1))) func retryRebasesLiveHintsBeforeExistingAutomaticFixes() async throws {
-    let temp = try TemporaryDirectory()
+    let temp = try TemporaryDirectory("meeting", permissions: 0o700)
     defer { temp.remove() }
     let segment = SessionFixtures.segment(["alpha", "beta", "wrong"], track: "mic", start: 2, id: "S1")
     let original = SessionFixtures.transcript([segment], id: "original")
@@ -824,7 +824,7 @@ func aLaterPassRepairsLiveTextWhoseSpeakerHeadWasNotPublished() async throws {
 }
 
 @Test(.timeLimit(.minutes(1))) func lateLiveHintKeepsEarlierUntimedFixesWhenEditedLabelsBlockRecomputation() async throws {
-    let temp = try TemporaryDirectory()
+    let temp = try TemporaryDirectory("meeting", permissions: 0o700)
     defer { temp.remove() }
     let segment = TranscriptSegment(id: "S1", start: 0, end: 4, text: "wrong alpha beta tail", track: "mic")
     let original = SessionFixtures.transcript([segment], id: "original")
@@ -867,7 +867,7 @@ func aLaterPassRepairsLiveTextWhoseSpeakerHeadWasNotPublished() async throws {
 }
 
 @Test(.timeLimit(.minutes(1))) func lateLiveHintKeepsAnAcceptedTermWhenTheModelIsUnavailable() async throws {
-    let temp = try TemporaryDirectory()
+    let temp = try TemporaryDirectory("meeting", permissions: 0o700)
     defer { temp.remove() }
     let segment = SessionFixtures.segment(["send", "cloud", "now", "keep", "cloud", "later", "wrong"],
                                           track: "mic", start: 2, id: "S1")
@@ -920,7 +920,7 @@ func aLaterPassRepairsLiveTextWhoseSpeakerHeadWasNotPublished() async throws {
 }
 
 @Test(.timeLimit(.minutes(1))) func lateLiveHintKeepsAReviewRevertAndOtherAutomaticFixes() async throws {
-    let temp = try TemporaryDirectory()
+    let temp = try TemporaryDirectory("meeting", permissions: 0o700)
     defer { temp.remove() }
     let segment = SessionFixtures.segment(["bad", "wrong", "tail"], track: "mic", start: 2, id: "S1")
     let original = SessionFixtures.transcript([segment], id: "original")
@@ -959,7 +959,7 @@ func aLaterPassRepairsLiveTextWhoseSpeakerHeadWasNotPublished() async throws {
 @Test func aLiveNameNeverOverwritesANameGivenToASpeakerShownJoinedWithIt() async throws {
     // A call: the microphone's speaker ("Me", ordinal 1) and system S2, which the user named "me" by hand. They are
     // shown as one (the microphone's speaker). A live name given to the microphone's words must not rename S2.
-    let temp = try TemporaryDirectory()
+    let temp = try TemporaryDirectory("meeting", permissions: 0o700)
     defer { temp.remove() }
     let mic = SessionFixtures.segment(["hello", "there", "all"], track: "mic", start: 0.1, id: "M1")
     let system = SessionFixtures.alternatingSegments(track: "system")

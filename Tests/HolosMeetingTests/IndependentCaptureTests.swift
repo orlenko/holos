@@ -72,7 +72,7 @@ private let independentHungLimit = Duration.milliseconds(30)
 /// A failed system stream + failed restart cannot create a microphone discontinuity or a new mic instance.
 @Test(.timeLimit(.minutes(1))) @MainActor
 func systemFailureKeepsMicrophoneContinuous() async throws {
-    let temp = try TemporaryDirectory()
+    let temp = try TemporaryDirectory("meeting", permissions: 0o700)
     defer { temp.remove() }
     let mic = IndependentNativeCapture(), first = IndependentNativeCapture()
     let unavailable = IndependentNativeCapture(), resumed = IndependentNativeCapture()
@@ -303,7 +303,7 @@ func failedSystemCleanupRetriesTheSameHandleBeforeStartingAnother() async throws
 
 @Test(.timeLimit(.minutes(1)), arguments: ["stop", "pause", "sleep"]) @MainActor
 func neverHeardSystemTailIsSavedWithoutAnOutageWarning(action: String) async throws {
-    let temp = try TemporaryDirectory()
+    let temp = try TemporaryDirectory("meeting", permissions: 0o700)
     defer { temp.remove() }
     let mic = IndependentNativeCapture(), system = IndependentNativeCapture()
     let capture = isolatedCapture(IndependentNativeFactory([mic, system]))
@@ -341,7 +341,7 @@ func neverHeardSystemTailIsSavedWithoutAnOutageWarning(action: String) async thr
 
 @Test(.timeLimit(.minutes(1)), arguments: [true, false], [true, false]) @MainActor
 func knownSystemOutageDoesNotHideMicrophoneStallsOrSuggestSilence(micStalled: Bool, stallBeforeOutage: Bool) async throws {
-    let temp = try TemporaryDirectory()
+    let temp = try TemporaryDirectory("meeting", permissions: 0o700)
     defer { temp.remove() }
     let mic = IndependentNativeCapture(), system = IndependentNativeCapture(), failed = IndependentNativeCapture()
     failed.startError = HolosError.unavailable("Display unavailable.")
@@ -430,7 +430,7 @@ private final class IndependentDisplayAssertion: PowerAssertionHandle {
 
 @Test(.timeLimit(.minutes(1))) @MainActor
 func successfulDelayedSystemStartRecordsItsLeadingGapWithoutAWarning() async throws {
-    let temp = try TemporaryDirectory()
+    let temp = try TemporaryDirectory("meeting", permissions: 0o700)
     defer { temp.remove() }
     let mic = IndependentNativeCapture(), system = IndependentNativeCapture()
     system.startGate = true
@@ -473,7 +473,7 @@ private enum MissingSystemStop: CaseIterable, Sendable { case pause, sleep, paus
 @Test(.timeLimit(.minutes(1)), arguments: [GapReason.paused, .sleep, .captureRestarted, .deviceChanged], [true, false])
 @MainActor
 func resumedSystemPreservesOutageStateAndRecorderBoundary(reason: GapReason, unavailable: Bool) async throws {
-    let temp = try TemporaryDirectory()
+    let temp = try TemporaryDirectory("meeting", permissions: 0o700)
     defer { temp.remove() }
     let mic = IndependentNativeCapture(), system = IndependentNativeCapture(), failed = IndependentNativeCapture()
     failed.startError = HolosError.unavailable("Display unavailable.")
@@ -551,7 +551,7 @@ func resumedSystemPreservesOutageStateAndRecorderBoundary(reason: GapReason, una
 
 @Test(.timeLimit(.minutes(1)), arguments: MissingSystemStop.allCases) @MainActor
 private func missingSystemTailSurvivesPauseOrSleep(action: MissingSystemStop) async throws {
-    let temp = try TemporaryDirectory()
+    let temp = try TemporaryDirectory("meeting", permissions: 0o700)
     defer { temp.remove() }
     let mic = IndependentNativeCapture(), first = IndependentNativeCapture(), failed = IndependentNativeCapture()
     failed.startError = HolosError.unavailable("Display unavailable.")
@@ -616,7 +616,7 @@ private func missingSystemTailSurvivesPauseOrSleep(action: MissingSystemStop) as
 
 @Test(.timeLimit(.minutes(1)), arguments: [true, false]) @MainActor
 func initialSystemFailureMarksOnlyTheMissingSystemInterval(recovers: Bool) async throws {
-    let temp = try TemporaryDirectory()
+    let temp = try TemporaryDirectory("meeting", permissions: 0o700)
     defer { temp.remove() }
     let mic = IndependentNativeCapture(), failed = IndependentNativeCapture(), later = IndependentNativeCapture()
     failed.startError = HolosError.unavailable("Display unavailable.")
@@ -660,7 +660,7 @@ func initialSystemFailureMarksOnlyTheMissingSystemInterval(recovers: Bool) async
 
 @Test(.timeLimit(.minutes(1))) @MainActor
 func displayAssertionEndsOnPauseAndStop() async throws {
-    let temp = try TemporaryDirectory()
+    let temp = try TemporaryDirectory("meeting", permissions: 0o700)
     defer { temp.remove() }
     let takes = SharedValue<Int>(0), releases = SharedValue<Int>(0)
     let captures = FakeCaptureFactory([FakeCaptureScript(frames: FakeFrame.run(count: 3)),
@@ -686,7 +686,7 @@ func displayAssertionEndsOnPauseAndStop() async throws {
 
 @Test(.timeLimit(.minutes(1))) @MainActor
 func displayAssertionReleasesBeforeForcedSleepIsAllowed() async throws {
-    let temp = try TemporaryDirectory()
+    let temp = try TemporaryDirectory("meeting", permissions: 0o700)
     defer { temp.remove() }
     let releases = SharedValue<Int>(0)
     let releasedWhenAllowed = SharedValue<Int>(0)

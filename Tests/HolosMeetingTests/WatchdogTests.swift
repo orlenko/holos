@@ -195,7 +195,7 @@ extension RecorderEnvironmentLoopTests {
     /// scheduling delay a loaded machine adds between frames, and the startup longer than it.
     @Test(.timeLimit(.minutes(1)))
     func slowStartIsNotAStall() async throws {
-        let temp = try TemporaryDirectory()
+        let temp = try TemporaryDirectory("meeting", permissions: 0o700)
         defer { temp.remove() }
         let slow = FakeSpeechFactory()
         let speech: LiveSpeechFactory = { locale, backend, strings, onUpdate in
@@ -228,7 +228,7 @@ extension RecorderEnvironmentLoopTests {
     /// new epoch delivers.
     @Test(.timeLimit(.minutes(1)))
     func stalledMicrophoneRestartsThroughTheLoop() async throws {
-        let temp = try TemporaryDirectory()
+        let temp = try TemporaryDirectory("meeting", permissions: 0o700)
         defer { temp.remove() }
         let clock = ManualSessionClock(0)
         let captures = FakeCaptureFactory([FakeCaptureScript(frames: FakeFrame.run(count: 3)),
@@ -261,7 +261,7 @@ extension RecorderEnvironmentLoopTests {
     /// `starting`, warns after 3 s, and restarts the microphone in a new epoch after 10 s.
     @Test(.timeLimit(.minutes(1)))
     func firstFrameStallRestartsThroughTheLoop() async throws {
-        let temp = try TemporaryDirectory()
+        let temp = try TemporaryDirectory("meeting", permissions: 0o700)
         defer { temp.remove() }
         let clock = ManualSessionClock(0)
         let captures = FakeCaptureFactory([FakeCaptureScript(), FakeCaptureScript(frames: FakeFrame.run(count: 3))])

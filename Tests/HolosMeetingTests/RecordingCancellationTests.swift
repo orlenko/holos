@@ -128,7 +128,7 @@ private final class GatedStopCapture: MeetingCapture {
 /// returns a session, or throws `CancellationError`. Either way capture never starts.
 @Test(.timeLimit(.minutes(3)), arguments: [false, true]) @MainActor
 func cancelWhileCreatingLiveSpeechNeverStartsCapture(factoryThrows: Bool) async throws {
-    let temp = try TemporaryDirectory()
+    let temp = try TemporaryDirectory("meeting", permissions: 0o700)
     defer { temp.remove() }
     let makeStarted = SharedValue(false)
     let sessionCancelled = SharedValue(false)
@@ -164,7 +164,7 @@ func cancelWhileCreatingLiveSpeechNeverStartsCapture(factoryThrows: Bool) async 
 /// once the run is cancelled, so the cancellation always lands inside it.
 @Test(.timeLimit(.minutes(3))) @MainActor
 func cancelWhileCaptureStopsPublishesNoTranscript() async throws {
-    let temp = try TemporaryDirectory()
+    let temp = try TemporaryDirectory("meeting", permissions: 0o700)
     defer { temp.remove() }
     let captures = FakeCaptureFactory([FakeCaptureScript(frames: FakeFrame.run(count: 3))])
     let gated = SharedValue<GatedStopCapture?>(nil)
@@ -199,7 +199,7 @@ func cancelWhileCaptureStopsPublishesNoTranscript() async throws {
 /// as a cancellation and keeps the saved audio, instead of taking it for an audio outage and waiting to retry.
 @Test(.timeLimit(.minutes(3))) @MainActor
 func cancelledRestartStopsTheRunAsCancelled() async throws {
-    let temp = try TemporaryDirectory()
+    let temp = try TemporaryDirectory("meeting", permissions: 0o700)
     defer { temp.remove() }
     let captures = FakeCaptureFactory([
         FakeCaptureScript(frames: FakeFrame.run(count: 3), failAfterFrames: 3, failure: .io("Device lost.")),
@@ -235,7 +235,7 @@ func cancelledRestartStopsTheRunAsCancelled() async throws {
 /// cancellation can.
 @Test(.timeLimit(.minutes(3))) @MainActor
 func cancelWhileLiveSpeechFinishesCancelsTheSession() async throws {
-    let temp = try TemporaryDirectory()
+    let temp = try TemporaryDirectory("meeting", permissions: 0o700)
     defer { temp.remove() }
     let finishStarted = SharedValue(false)
     let sessionCancelled = SharedValue(false)
@@ -269,7 +269,7 @@ func cancelWhileLiveSpeechFinishesCancelsTheSession() async throws {
 /// wait: only the cancellation can.
 @Test(.timeLimit(.minutes(3))) @MainActor
 func cancelWhileReplayFinishesCancelsTheSession() async throws {
-    let temp = try TemporaryDirectory()
+    let temp = try TemporaryDirectory("meeting", permissions: 0o700)
     defer { temp.remove() }
     let finishStarted = SharedValue(false)
     let sessionCancelled = SharedValue(false)
@@ -301,7 +301,7 @@ func cancelWhileReplayFinishesCancelsTheSession() async throws {
 /// A replay cancelled before it finishes returns no segments, even for a track with no saved audio.
 @Test(.timeLimit(.minutes(1)))
 func cancelledReplayThrowsCancellation() async throws {
-    let temp = try TemporaryDirectory()
+    let temp = try TemporaryDirectory("meeting", permissions: 0o700)
     defer { temp.remove() }
     let archive = try SessionArchive.create(root: temp.url, name: "Empty", source: .microphone,
                                             locale: "en-CA", backend: .speech)
@@ -323,7 +323,7 @@ func cancelledReplayThrowsCancellation() async throws {
 /// Cancelled while waiting for the processing lease: the hook never runs and the lease is released.
 @Test(.timeLimit(.minutes(3))) @MainActor
 func cancelWhileTakingTheLeaseSkipsTheHook() async throws {
-    let temp = try TemporaryDirectory()
+    let temp = try TemporaryDirectory("meeting", permissions: 0o700)
     defer { temp.remove() }
     let hookCalls = SharedValue(0)
     let hook: PostProcessHook = { session, _, _ in
@@ -360,7 +360,7 @@ func cancelWhileTakingTheLeaseSkipsTheHook() async throws {
 /// Cancelled while the hook runs: the hook ends on its own terms, and the run still rethrows the cancellation.
 @Test(.timeLimit(.minutes(3))) @MainActor
 func cancelDuringTheHookRethrowsCancellation() async throws {
-    let temp = try TemporaryDirectory()
+    let temp = try TemporaryDirectory("meeting", permissions: 0o700)
     defer { temp.remove() }
     let hookStarted = SharedValue(false)
     let hookSawCancel = SharedValue(false)

@@ -428,7 +428,7 @@ private func run(_ session: URL, _ scripted: ScriptedSummaryModel, force: Bool =
 }
 
 @Test func theCommandWritesTheSummaryAndTheExports() async throws {
-    let temp = try TemporaryDirectory("summary")
+    let temp = try TemporaryDirectory("summary", permissions: 0o700)
     defer { temp.remove() }
     let session = try await summarizeSession(in: temp.url)
     let scripted = ScriptedSummaryModel()
@@ -455,7 +455,7 @@ private func run(_ session: URL, _ scripted: ScriptedSummaryModel, force: Bool =
 }
 
 @Test func aNamedMeetingKeepsItsNameInTheExports() async throws {
-    let temp = try TemporaryDirectory("summary")
+    let temp = try TemporaryDirectory("summary", permissions: 0o700)
     defer { temp.remove() }
     let session = try await summarizeSession(in: temp.url, name: "Weekly engineering sync")
     _ = await run(session, ScriptedSummaryModel())
@@ -465,7 +465,7 @@ private func run(_ session: URL, _ scripted: ScriptedSummaryModel, force: Bool =
 }
 
 @Test func theCommandKeepsACurrentSummaryUnlessForced() async throws {
-    let temp = try TemporaryDirectory("summary")
+    let temp = try TemporaryDirectory("summary", permissions: 0o700)
     defer { temp.remove() }
     let session = try await summarizeSession(in: temp.url)
     let scripted = ScriptedSummaryModel()
@@ -480,7 +480,7 @@ private func run(_ session: URL, _ scripted: ScriptedSummaryModel, force: Bool =
 }
 
 @Test func aNewTranscriptIsSummarizedAgain() async throws {
-    let temp = try TemporaryDirectory("summary")
+    let temp = try TemporaryDirectory("summary", permissions: 0o700)
     defer { temp.remove() }
     let session = try await summarizeSession(in: temp.url)
     let scripted = ScriptedSummaryModel()
@@ -498,7 +498,7 @@ private func run(_ session: URL, _ scripted: ScriptedSummaryModel, force: Bool =
 }
 
 @Test func anUnavailableModelWritesNothing() async throws {
-    let temp = try TemporaryDirectory("summary")
+    let temp = try TemporaryDirectory("summary", permissions: 0o700)
     defer { temp.remove() }
     let session = try await summarizeSession(in: temp.url)
     let outcome = await SessionSummarizeCommand.run(SessionSummarizeCommand.Request(session: session)) { _ in
@@ -511,7 +511,7 @@ private func run(_ session: URL, _ scripted: ScriptedSummaryModel, force: Bool =
 }
 
 @Test func aFailedSummaryWritesNothing() async throws {
-    let temp = try TemporaryDirectory("summary")
+    let temp = try TemporaryDirectory("summary", permissions: 0o700)
     defer { temp.remove() }
     let session = try await summarizeSession(in: temp.url)
     let outcome = await run(session, ScriptedSummaryModel(summary: { _ in throw MeetingSummaryModelError.refused }))
@@ -520,7 +520,7 @@ private func run(_ session: URL, _ scripted: ScriptedSummaryModel, force: Bool =
 }
 
 @Test func aSessionHeldByAnotherCommandIsTriedLater() async throws {
-    let temp = try TemporaryDirectory("summary")
+    let temp = try TemporaryDirectory("summary", permissions: 0o700)
     defer { temp.remove() }
     let session = try await summarizeSession(in: temp.url)
     let lease = try SessionArchive.acquireProcessingLease(at: session)
@@ -532,7 +532,7 @@ private func run(_ session: URL, _ scripted: ScriptedSummaryModel, force: Bool =
 }
 
 @Test func aSessionWithoutTranscriptHasNothingToSummarize() async throws {
-    let temp = try TemporaryDirectory("summary")
+    let temp = try TemporaryDirectory("summary", permissions: 0o700)
     defer { temp.remove() }
     let session = try await SessionFixtures.makeSession(in: temp.url, transcript: nil)
     let outcome = await run(session, ScriptedSummaryModel())
@@ -540,7 +540,7 @@ private func run(_ session: URL, _ scripted: ScriptedSummaryModel, force: Bool =
 }
 
 @Test func speakerNamesReachTheModel() async throws {
-    let temp = try TemporaryDirectory("summary")
+    let temp = try TemporaryDirectory("summary", permissions: 0o700)
     defer { temp.remove() }
     let (session, _, run) = try await SessionFixtures.labelledSession(in: temp.url, track: "mic")
     let first = try #require(run.speakers.first)
@@ -555,7 +555,7 @@ private func run(_ session: URL, _ scripted: ScriptedSummaryModel, force: Bool =
 }
 
 @Test func theRecordIsRefusedFromAnotherSessionOrANewerBuild() throws {
-    let temp = try TemporaryDirectory("summary")
+    let temp = try TemporaryDirectory("summary", permissions: 0o700)
     defer { temp.remove() }
     let folder = temp.url.appendingPathComponent("S.holos", isDirectory: true)
     try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
@@ -638,7 +638,7 @@ private func situation(enabled: Bool = true, available: Bool = true, busy: Bool 
 }
 
 @Test func theScanReadsPointersAndSummaries() async throws {
-    let temp = try TemporaryDirectory("summary")
+    let temp = try TemporaryDirectory("summary", permissions: 0o700)
     defer { temp.remove() }
     let session = try await summarizeSession(in: temp.url)
     var found = MeetingSummarySchedule.scan(root: temp.url)
@@ -684,7 +684,7 @@ private struct UnexpectedModelError: Error {}
         _ = try await MeetingSummarizer(model: failing.model(contextTokens: 400)).summarize(input(lines(30)))
     }
 
-    let temp = try TemporaryDirectory("summary")
+    let temp = try TemporaryDirectory("summary", permissions: 0o700)
     defer { temp.remove() }
     let session = try await summarizeSession(in: temp.url)
     _ = await run(session, ScriptedSummaryModel())
@@ -702,7 +702,7 @@ private struct UnexpectedModelError: Error {}
     let result = try await MeetingSummarizer(model: refusedFirst.model(contextTokens: 400)).summarize(input(lines(30)))
     #expect(result.stats.skippedParts == 1)
 
-    let temp = try TemporaryDirectory("summary")
+    let temp = try TemporaryDirectory("summary", permissions: 0o700)
     defer { temp.remove() }
     let session = try await summarizeSession(in: temp.url)
     let outcome = await run(session, ScriptedSummaryModel())
@@ -711,7 +711,7 @@ private struct UnexpectedModelError: Error {}
 }
 
 @Test func aCancelledRunWritesNothing() async throws {
-    let temp = try TemporaryDirectory("summary")
+    let temp = try TemporaryDirectory("summary", permissions: 0o700)
     defer { temp.remove() }
     let session = try await summarizeSession(in: temp.url)
     let scripted = ScriptedSummaryModel(summary: { _ in
@@ -749,7 +749,7 @@ private struct UnexpectedModelError: Error {}
 }
 
 @Test func summariesAndFinalTranscriptsShareOneLock() throws {
-    let temp = try TemporaryDirectory("summary")
+    let temp = try TemporaryDirectory("summary", permissions: 0o700)
     defer { temp.remove() }
     let url = temp.url.appendingPathComponent("deep-transcription.lock")
     let summary = DeepTranscriptionLock.Holder(pid: 42, sessionID: "S", force: false,
@@ -773,7 +773,7 @@ private struct UnexpectedModelError: Error {}
 }
 
 @Test func transcriptFilesThatFailedAreRewrittenWithoutAskingTheModelAgain() async throws {
-    let temp = try TemporaryDirectory("summary")
+    let temp = try TemporaryDirectory("summary", permissions: 0o700)
     defer { temp.remove() }
     let session = try await summarizeSession(in: temp.url)
     // A file where exports/ should be: the transcript files cannot be written.
@@ -848,7 +848,7 @@ private func trackDocument(source: AudioSource) -> ExportDocument {
 }
 
 @Test func unassignedTurnsAreSomeoneWithSpeakerLabelsToo() async throws {
-    let temp = try TemporaryDirectory("summary")
+    let temp = try TemporaryDirectory("summary", permissions: 0o700)
     defer { temp.remove() }
     let (session, _, _) = try await SessionFixtures.labelledSession(in: temp.url, track: "mic")
     try SessionFixtures.appendEdits([.reassignTurns(turnIDs: ["T1"], to: nil)], session: session)
@@ -901,7 +901,7 @@ private func trackDocument(source: AudioSource) -> ExportDocument {
 }
 
 @Test func aRunForARequestWritesItsID() async throws {
-    let temp = try TemporaryDirectory("summary")
+    let temp = try TemporaryDirectory("summary", permissions: 0o700)
     defer { temp.remove() }
     let session = try await summarizeSession(in: temp.url)
     var request = SessionSummarizeCommand.Request(session: session, force: true)
@@ -923,7 +923,7 @@ private func trackDocument(source: AudioSource) -> ExportDocument {
 }
 
 @Test func aMeetingWhoseFilesANewerBuildWroteIsLeftAlone() async throws {
-    let temp = try TemporaryDirectory("summary")
+    let temp = try TemporaryDirectory("summary", permissions: 0o700)
     defer { temp.remove() }
     let session = try await summarizeSession(in: temp.url)
     let transcriptID = try #require(try SessionArchive.currentTranscriptID(at: session))
@@ -940,7 +940,7 @@ private func trackDocument(source: AudioSource) -> ExportDocument {
 }
 
 @Test func aNameWhoseSourceCannotBeReadIsTheUsers() async throws {
-    let temp = try TemporaryDirectory("summary")
+    let temp = try TemporaryDirectory("summary", permissions: 0o700)
     defer { temp.remove() }
     // A default-looking name ("Meeting 2026-10-03 14:00") in a meeting saved before meeting.json: inferred.
     let session = try await summarizeSession(in: temp.url)
@@ -966,7 +966,7 @@ private func trackDocument(source: AudioSource) -> ExportDocument {
 }
 
 @Test func anUnfinishedSessionIsRefusedBeforeTheModel() async throws {
-    let temp = try TemporaryDirectory("summary")
+    let temp = try TemporaryDirectory("summary", permissions: 0o700)
     defer { temp.remove() }
     let session = try await summarizeSession(in: temp.url)
     for status in [ArchiveStatus.interrupted, ArchiveStatus.processing, ArchiveStatus.recording] {
@@ -1029,7 +1029,7 @@ private func trackDocument(source: AudioSource) -> ExportDocument {
 }
 
 @Test func aSummaryMadeWhileSpeakerLabelsChangedIsNotSaved() async throws {
-    let temp = try TemporaryDirectory("summary")
+    let temp = try TemporaryDirectory("summary", permissions: 0o700)
     defer { temp.remove() }
     let (session, _, run) = try await SessionFixtures.labelledSession(in: temp.url, track: "mic")
     let first = try #require(run.speakers.first)
@@ -1174,7 +1174,7 @@ private func trackDocument(source: AudioSource) -> ExportDocument {
 }
 
 @Test func aSummaryMadeWhileTheUsersNameChangedIsNotSaved() async throws {
-    let temp = try TemporaryDirectory("summary")
+    let temp = try TemporaryDirectory("summary", permissions: 0o700)
     defer { temp.remove() }
     // A call whose microphone is the user's channel: the user's own name is in the prompt.
     let transcript = SessionFixtures.transcript(
@@ -1203,7 +1203,7 @@ private func trackDocument(source: AudioSource) -> ExportDocument {
 }
 
 @Test func theExportsUseTheNamesCheckedAtTheSave() async throws {
-    let temp = try TemporaryDirectory("summary")
+    let temp = try TemporaryDirectory("summary", permissions: 0o700)
     defer { temp.remove() }
     let (session, _, _) = try await SessionFixtures.labelledSession(in: temp.url)
     try SpeakerEditor.apply([.linkProfile(speakerID: "system:S1", profileID: "P-LONG")],
@@ -1244,7 +1244,7 @@ private func trackDocument(source: AudioSource) -> ExportDocument {
 }
 
 @Test func aSummaryIsMadeAgainWhenTheNamesItUsesChange() async throws {
-    let temp = try TemporaryDirectory("summary")
+    let temp = try TemporaryDirectory("summary", permissions: 0o700)
     defer { temp.remove() }
     let (session, _, run) = try await SessionFixtures.labelledSession(in: temp.url, track: "mic")
     let first = try #require(run.speakers.first)
@@ -1275,7 +1275,7 @@ private func trackDocument(source: AudioSource) -> ExportDocument {
 }
 
 @Test func exportsLeaveOutASummaryMadeWithOtherNames() async throws {
-    let temp = try TemporaryDirectory("summary")
+    let temp = try TemporaryDirectory("summary", permissions: 0o700)
     defer { temp.remove() }
     let (session, _, run) = try await SessionFixtures.labelledSession(in: temp.url, track: "mic")
     let first = try #require(run.speakers.first)
@@ -1328,7 +1328,7 @@ private func trackDocument(source: AudioSource) -> ExportDocument {
 }
 
 @Test func aVeryLongNameIsCappedBeforeTheBudget() async throws {
-    let temp = try TemporaryDirectory("summary")
+    let temp = try TemporaryDirectory("summary", permissions: 0o700)
     defer { temp.remove() }
     let (session, _, run) = try await SessionFixtures.labelledSession(in: temp.url, track: "mic")
     let first = try #require(run.speakers.first)
@@ -1382,7 +1382,7 @@ private func trackDocument(source: AudioSource) -> ExportDocument {
 }
 
 @Test func pendingTranscriptFilesAreNotRewrittenWithOldNames() async throws {
-    let temp = try TemporaryDirectory("summary")
+    let temp = try TemporaryDirectory("summary", permissions: 0o700)
     defer { temp.remove() }
     let (session, _, run) = try await SessionFixtures.labelledSession(in: temp.url, track: "mic")
     let first = try #require(run.speakers.first)
@@ -1412,7 +1412,7 @@ private func trackDocument(source: AudioSource) -> ExportDocument {
 }
 
 @Test func renamingTheUserMakesTheirMeetingsSummaryStale() async throws {
-    let temp = try TemporaryDirectory("summary")
+    let temp = try TemporaryDirectory("summary", permissions: 0o700)
     defer { temp.remove() }
     // A call whose microphone is the user's channel ("Me" in the labels, the user's own name in the prompt).
     let transcript = SessionFixtures.transcript(
@@ -1449,7 +1449,7 @@ private func trackDocument(source: AudioSource) -> ExportDocument {
 }
 
 @Test func aTurnMovedBetweenNamedPeopleMakesTheSummaryStale() async throws {
-    let temp = try TemporaryDirectory("summary")
+    let temp = try TemporaryDirectory("summary", permissions: 0o700)
     defer { temp.remove() }
     let (session, _, run) = try await SessionFixtures.labelledSession(in: temp.url, track: "mic")
     let alex = try #require(run.speakers.first)
@@ -1521,7 +1521,7 @@ private func trackDocument(source: AudioSource) -> ExportDocument {
 }
 
 @Test func anIncompleteArchiveIsRefused() async throws {
-    let temp = try TemporaryDirectory("summary")
+    let temp = try TemporaryDirectory("summary", permissions: 0o700)
     defer { temp.remove() }
     let session = try await summarizeSession(in: temp.url)
     var manifest = try SessionArchive.readManifest(at: session)
@@ -1534,7 +1534,7 @@ private func trackDocument(source: AudioSource) -> ExportDocument {
 }
 
 @Test func aMeetingIsFoundByItsSessionIDWhateverItsFolderIsNamed() async throws {
-    let temp = try TemporaryDirectory("summary")
+    let temp = try TemporaryDirectory("summary", permissions: 0o700)
     defer { temp.remove() }
     let root = temp.url.appendingPathComponent("Sessions", isDirectory: true)
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
@@ -1553,7 +1553,7 @@ private func trackDocument(source: AudioSource) -> ExportDocument {
 }
 
 @Test func onlyRegularManifestsOfBoundedSizeAreProbed() async throws {
-    let temp = try TemporaryDirectory("summary")
+    let temp = try TemporaryDirectory("summary", permissions: 0o700)
     defer { temp.remove() }
     let root = temp.url.appendingPathComponent("Sessions", isDirectory: true)
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
@@ -1577,7 +1577,7 @@ private func trackDocument(source: AudioSource) -> ExportDocument {
 }
 
 @Test func aDamagedButDecodableSummaryIsMadeAgain() async throws {
-    let temp = try TemporaryDirectory("summary")
+    let temp = try TemporaryDirectory("summary", permissions: 0o700)
     defer { temp.remove() }
     let session = try await summarizeSession(in: temp.url)
     let scripted = ScriptedSummaryModel()
@@ -1612,7 +1612,7 @@ private func trackDocument(source: AudioSource) -> ExportDocument {
 }
 
 @Test func transcriptFilesANewerBuildOwnsAreLeftAlone() async throws {
-    let temp = try TemporaryDirectory("summary")
+    let temp = try TemporaryDirectory("summary", permissions: 0o700)
     defer { temp.remove() }
     let session = try await summarizeSession(in: temp.url)
     let scripted = ScriptedSummaryModel()
@@ -1640,7 +1640,7 @@ private func trackDocument(source: AudioSource) -> ExportDocument {
 }
 
 @Test func aSummaryANewerBuildWroteIsLeftAlone() async throws {
-    let temp = try TemporaryDirectory("summary")
+    let temp = try TemporaryDirectory("summary", permissions: 0o700)
     defer { temp.remove() }
     let session = try await summarizeSession(in: temp.url)
     try Data(#"{"schemaVersion": 99}"#.utf8).write(to: SessionPaths.summary(session))
@@ -1662,7 +1662,7 @@ private func trackDocument(source: AudioSource) -> ExportDocument {
 }
 
 @Test func aRecognitionResultChangesTheSpeakerRevision() async throws {
-    let temp = try TemporaryDirectory("summary")
+    let temp = try TemporaryDirectory("summary", permissions: 0o700)
     defer { temp.remove() }
     let (session, _, run) = try await SessionFixtures.labelledSession(in: temp.url)
     let before = SessionSummarizeCommand.speakerRevision(session)
@@ -1678,7 +1678,7 @@ private func trackDocument(source: AudioSource) -> ExportDocument {
 }
 
 @Test func aKeyThatCouldNotBeReadIsReadAgain() async throws {
-    let temp = try TemporaryDirectory("summary")
+    let temp = try TemporaryDirectory("summary", permissions: 0o700)
     defer { temp.remove() }
     let session = try await summarizeSession(in: temp.url)
     let manifest = try SessionArchive.readManifest(at: session)
@@ -1697,7 +1697,7 @@ private func trackDocument(source: AudioSource) -> ExportDocument {
 }
 
 @Test func aTranscriptTheCommandCannotReadIsTriedAgainLater() async throws {
-    let temp = try TemporaryDirectory("summary")
+    let temp = try TemporaryDirectory("summary", permissions: 0o700)
     defer { temp.remove() }
     let session = try await summarizeSession(in: temp.url)
     let transcriptID = try #require(try SessionArchive.currentTranscriptID(at: session))
@@ -1749,7 +1749,7 @@ private func trackDocument(source: AudioSource) -> ExportDocument {
 }
 
 @Test func peopleThatCouldNotBeReadAreReadAgain() async throws {
-    let temp = try TemporaryDirectory("summary")
+    let temp = try TemporaryDirectory("summary", permissions: 0o700)
     defer { temp.remove() }
     let (session, transcript, run) = try await SessionFixtures.labelledSession(in: temp.url, track: "mic")
     let first = try #require(run.speakers.first)
@@ -1780,7 +1780,7 @@ private func trackDocument(source: AudioSource) -> ExportDocument {
 }
 
 @Test func theSaveHoldsThePeopleStoreWhileItChecks() async throws {
-    let temp = try TemporaryDirectory("summary")
+    let temp = try TemporaryDirectory("summary", permissions: 0o700)
     defer { temp.remove() }
     let session = try await summarizeSession(in: temp.url)
     let store = SpeakerProfileStore(directory: temp.url.appendingPathComponent("Speakers", isDirectory: true))
@@ -1793,7 +1793,7 @@ private func trackDocument(source: AudioSource) -> ExportDocument {
 }
 
 @Test func aPeopleStoreANewerBuildWroteFailsTheSaveForGood() async throws {
-    let temp = try TemporaryDirectory("summary")
+    let temp = try TemporaryDirectory("summary", permissions: 0o700)
     defer { temp.remove() }
     let session = try await summarizeSession(in: temp.url)
     let store = SpeakerProfileStore(directory: temp.url.appendingPathComponent("Speakers", isDirectory: true))
@@ -1817,7 +1817,7 @@ private func trackDocument(source: AudioSource) -> ExportDocument {
     #expect(SessionSummarizeCommand.peopleStoreStatus(HolosError.io("Cannot read profiles.json")) == .unreadable)
     #expect(SessionSummarizeCommand.peopleStoreStatus(HolosError.invalidInput("damaged")) == .unreadable)
     #expect(SessionSummarizeCommand.peopleStoreStatus(HolosError.unavailable("newer")) == .failed)
-    let temp = try TemporaryDirectory("summary")
+    let temp = try TemporaryDirectory("summary", permissions: 0o700)
     defer { temp.remove() }
     let session = try await summarizeSession(in: temp.url)
     let store = SpeakerProfileStore(directory: temp.url.appendingPathComponent("Speakers", isDirectory: true))
@@ -1849,7 +1849,7 @@ private func trackDocument(source: AudioSource) -> ExportDocument {
 }
 
 @Test func aManifestTheCommandCannotReadIsTriedAgainLater() async throws {
-    let temp = try TemporaryDirectory("summary")
+    let temp = try TemporaryDirectory("summary", permissions: 0o700)
     defer { temp.remove() }
     let session = try await summarizeSession(in: temp.url)
     let manifest = SessionPaths.manifest(session)

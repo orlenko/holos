@@ -169,7 +169,7 @@ private final class WordEditLearner {
 
 @Test(.timeLimit(.minutes(1))) @MainActor
 func anEditIsSavedLearnedAndUndoneExactlyWithSpeakerEditsAround() async throws {
-    let temp = try TemporaryDirectory("review")
+    let temp = try TemporaryDirectory("review", permissions: 0o700)
     defer { temp.remove() }
     let session = try await wordEditSession(in: temp, [
         WordEditTurn(speaker: "system:S1", start: 0, words: ["ask", "cloud", "now"]),
@@ -226,7 +226,7 @@ func anEditIsSavedLearnedAndUndoneExactlyWithSpeakerEditsAround() async throws {
 
 @Test(.timeLimit(.minutes(1))) @MainActor
 func anEditInsideAParagraphKeepsItAndADeletionUndoes() async throws {
-    let temp = try TemporaryDirectory("review")
+    let temp = try TemporaryDirectory("review", permissions: 0o700)
     defer { temp.remove() }
     let session = try await wordEditSession(in: temp, [
         WordEditTurn(speaker: "system:S1", start: 0, words: ["first", "part"]),
@@ -256,7 +256,7 @@ func anEditInsideAParagraphKeepsItAndADeletionUndoes() async throws {
 
 @Test(.timeLimit(.minutes(1))) @MainActor
 func editsInARowAreUndoneOneAfterAnother() async throws {
-    let temp = try TemporaryDirectory("review")
+    let temp = try TemporaryDirectory("review", permissions: 0o700)
     defer { temp.remove() }
     let session = try await wordEditSession(in: temp, [
         WordEditTurn(speaker: "system:S1", start: 0, words: ["ask", "cloud", "now"]),
@@ -281,7 +281,7 @@ func editsInARowAreUndoneOneAfterAnother() async throws {
 
 @Test(.timeLimit(.minutes(1))) @MainActor
 func anEditAskedForWhileAnEarlierOneOfItsSegmentSavesFollowsItsWords() async throws {
-    let temp = try TemporaryDirectory("review")
+    let temp = try TemporaryDirectory("review", permissions: 0o700)
     defer { temp.remove() }
     let session = try await wordEditSession(in: temp, [
         WordEditTurn(speaker: "system:S1", start: 0, words: ["I", "um", "think", "so"]),
@@ -313,7 +313,7 @@ func anEditAskedForWhileAnEarlierOneOfItsSegmentSavesFollowsItsWords() async thr
 
 @Test(.timeLimit(.minutes(1))) @MainActor
 func anEditQueuedBehindADeletionInAnAppleTranscriptFindsTheMergedWord() async throws {
-    let temp = try TemporaryDirectory("review")
+    let temp = try TemporaryDirectory("review", permissions: 0o700)
     defer { temp.remove() }
     let session = try await wordEditSession(in: temp, [
         WordEditTurn(speaker: "system:S1", start: 0, words: ["I", "um", "think", "so"]),
@@ -342,7 +342,7 @@ func anEditQueuedBehindADeletionInAnAppleTranscriptFindsTheMergedWord() async th
 
 @Test(.timeLimit(.minutes(1)))
 func aSaveThatFailsAfterTheTranscriptBecameCurrentIsAPublicationStillOwed() async throws {
-    let temp = try TemporaryDirectory("review")
+    let temp = try TemporaryDirectory("review", permissions: 0o700)
     defer { temp.remove() }
     let session = try await wordEditSession(in: temp, [
         WordEditTurn(speaker: "system:S1", start: 0, words: ["ask", "cloud", "now"]),
@@ -418,7 +418,7 @@ private func wordEditHeadSpans(_ session: URL) throws -> [String: [WordSpan]] {
 
 @Test(.timeLimit(.minutes(1))) @MainActor
 func anEditKeepsEveryWordsOwnerWhenRecognizerTimingsOverlapAcrossSpeakers() async throws {
-    let temp = try TemporaryDirectory("review")
+    let temp = try TemporaryDirectory("review", permissions: 0o700)
     defer { temp.remove() }
     // S1's "there" (0.6–1.2 s) overlaps S2's "yes" (1.1–1.7 s).
     let session = try await wordEditSharedSession(in: temp, ["hello", "there", "yes", "indeed"],
@@ -473,7 +473,7 @@ func anEditKeepsEveryWordsOwnerWhenRecognizerTimingsOverlapAcrossSpeakers() asyn
 
 @Test(.timeLimit(.minutes(1))) @MainActor
 func wordsOfOverlappingTurnsAreNotEditedTogether() async throws {
-    let temp = try TemporaryDirectory("review")
+    let temp = try TemporaryDirectory("review", permissions: 0o700)
     defer { temp.remove() }
     let session = try await wordEditSharedSession(in: temp, ["hello", "there", "yes", "now"],
                                                   times: [(0, 0.8), (1, 1.8), (2, 2.8), (3, 3.8)], split: 2)
@@ -507,7 +507,7 @@ func wordsOfOverlappingTurnsAreNotEditedTogether() async throws {
 
 @Test(.timeLimit(.minutes(1))) @MainActor
 func theOwnersCheckedBeforeAFieldOpensAreThoseOfEveryWordTheEditTakesIn() async throws {
-    let temp = try TemporaryDirectory("review")
+    let temp = try TemporaryDirectory("review", permissions: 0o700)
     defer { temp.remove() }
     let session = try await wordEditSharedSession(in: temp, ["hello", "there", "yes", "now"],
                                                   times: [(0, 0.8), (1, 1.8), (2, 2.8), (3, 3.8)], split: 3)
@@ -538,7 +538,7 @@ func theOwnersCheckedBeforeAFieldOpensAreThoseOfEveryWordTheEditTakesIn() async 
 
 @Test(.timeLimit(.minutes(1))) @MainActor
 func aRelabelSavedBeforeAnEditsRereadIsAChangeMadeElsewhere() async throws {
-    let temp = try TemporaryDirectory("review")
+    let temp = try TemporaryDirectory("review", permissions: 0o700)
     defer { temp.remove() }
     let session = try await wordEditSession(in: temp, [
         WordEditTurn(speaker: "system:S1", start: 0, words: ["ask", "cloud", "now"]),
@@ -572,7 +572,7 @@ func aRelabelSavedBeforeAnEditsRereadIsAChangeMadeElsewhere() async throws {
 
 @Test(.timeLimit(.minutes(1))) @MainActor
 func wordsEditedTogetherThatARelabelPutInTwoTurnsAreNotRevertible() async throws {
-    let temp = try TemporaryDirectory("review")
+    let temp = try TemporaryDirectory("review", permissions: 0o700)
     defer { temp.remove() }
     let session = try await wordEditSession(in: temp, [
         WordEditTurn(speaker: "system:S1", start: 0, words: ["ask", "more", "cloud", "now"]),
@@ -620,7 +620,7 @@ func wordsEditedTogetherThatARelabelPutInTwoTurnsAreNotRevertible() async throws
 
 @Test(.timeLimit(.minutes(1))) @MainActor
 func aHeadThatCouldNotBePublishedHoldsTheReviewUntilAReloadRepairsIt() async throws {
-    let temp = try TemporaryDirectory("review")
+    let temp = try TemporaryDirectory("review", permissions: 0o700)
     defer { temp.remove() }
     let session = try await wordEditSession(in: temp, [
         WordEditTurn(speaker: "system:S1", start: 0, words: ["ask", "cloud", "now"]),
@@ -661,7 +661,7 @@ func aHeadThatCouldNotBePublishedHoldsTheReviewUntilAReloadRepairsIt() async thr
 
 @Test(.timeLimit(.minutes(1))) @MainActor
 func anEditSavedBeforeItsRereadFailedStillReachesTheCallerAndIsLearnedWithContextAtClose() async throws {
-    let temp = try TemporaryDirectory("review")
+    let temp = try TemporaryDirectory("review", permissions: 0o700)
     defer { temp.remove() }
     let session = try await wordEditSession(in: temp, [
         WordEditTurn(speaker: "system:S1", start: 0, words: ["I", "right", "now"]),
@@ -686,7 +686,7 @@ func anEditSavedBeforeItsRereadFailedStillReachesTheCallerAndIsLearnedWithContex
 
 @Test(.timeLimit(.minutes(1))) @MainActor
 func anEditsUndoGoesOnceAnotherProcessReplacedTheTranscriptAndUndoReachesTheChangeBefore() async throws {
-    let temp = try TemporaryDirectory("review")
+    let temp = try TemporaryDirectory("review", permissions: 0o700)
     defer { temp.remove() }
     let session = try await wordEditSession(in: temp, [
         WordEditTurn(speaker: "system:S1", start: 0, words: ["ask", "cloud", "now"]),
@@ -710,7 +710,7 @@ func anEditsUndoGoesOnceAnotherProcessReplacedTheTranscriptAndUndoReachesTheChan
 
 @Test(.timeLimit(.minutes(1))) @MainActor
 func anEditWhoseLabelsCannotBeRereadCanStillBeUndone() async throws {
-    let temp = try TemporaryDirectory("review")
+    let temp = try TemporaryDirectory("review", permissions: 0o700)
     defer { temp.remove() }
     let session = try await wordEditSession(in: temp, [
         WordEditTurn(speaker: "system:S1", start: 0, words: ["ask", "cloud", "now"]),
@@ -741,7 +741,7 @@ func anEditWhoseLabelsCannotBeRereadCanStillBeUndone() async throws {
 
 @Test(.timeLimit(.minutes(1))) @MainActor
 func anEditIsNeverSavedOverAWordChangedElsewhereInItsPlace() async throws {
-    let temp = try TemporaryDirectory("review")
+    let temp = try TemporaryDirectory("review", permissions: 0o700)
     defer { temp.remove() }
     let session = try await wordEditSession(in: temp, [
         WordEditTurn(speaker: "system:S1", start: 0, words: ["ask", "cloud", "now"]),
@@ -791,7 +791,7 @@ func anEditIsNeverSavedOverAWordChangedElsewhereInItsPlace() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func aWordEditEventWithADamagedMoveIsDamagedNeverReadAnotherWay() async throws {
-    let temp = try TemporaryDirectory("review")
+    let temp = try TemporaryDirectory("review", permissions: 0o700)
     defer { temp.remove() }
     let session = try await wordEditSession(in: temp, [
         WordEditTurn(speaker: "system:S1", start: 0, words: ["ask", "cloud", "now"]),
@@ -823,7 +823,7 @@ func aWordEditEventWithADamagedMoveIsDamagedNeverReadAnotherWay() async throws {
 
 @Test(.timeLimit(.minutes(1))) @MainActor
 func aVoiceLearnedBeforeAWordEditIsTheLabellingsOwnNeverAnEarlierOnes() async throws {
-    let temp = try TemporaryDirectory("review")
+    let temp = try TemporaryDirectory("review", permissions: 0o700)
     defer { temp.remove() }
     let session = try await wordEditSession(in: temp, [
         WordEditTurn(speaker: "system:S1", start: 0, words: ["ask", "cloud", "now"]),
@@ -866,7 +866,7 @@ private struct WordEditVoice: VoiceSampleExtractor {
 @Test(.timeLimit(.minutes(1))) @MainActor
 func aWordEditAfterTheAudioIsDeletedKeepsTheVoicesItDidNotChange() async throws {
     for (reassign, undigested) in [(false, false), (true, false), (true, true)] {
-        let temp = try TemporaryDirectory("review")
+        let temp = try TemporaryDirectory("review", permissions: 0o700)
         defer { temp.remove() }
         let session = try await wordEditSession(in: temp, [
             WordEditTurn(speaker: "system:S1", start: 0, words: ["ask", "cloud", "now"]),
@@ -913,7 +913,7 @@ func aWordEditAfterTheAudioIsDeletedKeepsTheVoicesItDidNotChange() async throws 
 /// same audio: with the audio deleted, the voice learned from it is kept. A turn moved by 50 ms is other audio.
 @Test(.timeLimit(.minutes(1))) @MainActor
 func roundOffInATurnsTimesIsTheSameAudioAndKeepsItsVoice() async throws {
-    let temp = try TemporaryDirectory("review")
+    let temp = try TemporaryDirectory("review", permissions: 0o700)
     defer { temp.remove() }
     let session = try await wordEditSession(in: temp, [
         WordEditTurn(speaker: "system:S1", start: 0, words: ["ask", "cloud", "now"]),
@@ -960,7 +960,7 @@ func roundOffInATurnsTimesIsTheSameAudioAndKeepsItsVoice() async throws {
 
 @Test(.timeLimit(.minutes(1))) @MainActor
 func aDamagedWordMoveFromTheJournalIsRefusedNeverCounted() async throws {
-    let temp = try TemporaryDirectory("review")
+    let temp = try TemporaryDirectory("review", permissions: 0o700)
     defer { temp.remove() }
     let session = try await wordEditSession(in: temp, [
         WordEditTurn(speaker: "system:S1", start: 0, words: ["ask", "cloud", "now"]),
@@ -989,7 +989,7 @@ func aDamagedWordMoveFromTheJournalIsRefusedNeverCounted() async throws {
 
 @Test(.timeLimit(.minutes(1))) @MainActor
 func aWordMoveAcrossTwoTurnsIsRefusedWhereverItIsRead() async throws {
-    let temp = try TemporaryDirectory("review")
+    let temp = try TemporaryDirectory("review", permissions: 0o700)
     defer { temp.remove() }
     // One segment of four words, two turns of two words each.
     let segment = SessionFixtures.segment(["one", "two", "three", "four"], track: "system", start: 0, wordSeconds: 1,
@@ -1060,7 +1060,7 @@ func aWordMoveAcrossTwoTurnsIsRefusedWhereverItIsRead() async throws {
 
 @Test(.timeLimit(.minutes(1))) @MainActor
 func anEditMadeOnTheWordsShownBeforeARereadEditsTheWordShown() async throws {
-    let temp = try TemporaryDirectory("review")
+    let temp = try TemporaryDirectory("review", permissions: 0o700)
     defer { temp.remove() }
     let session = try await wordEditSession(in: temp, [
         WordEditTurn(speaker: "system:S1", start: 0, words: ["one", "go", "go"]),
@@ -1089,7 +1089,7 @@ func anEditMadeOnTheWordsShownBeforeARereadEditsTheWordShown() async throws {
 
 @Test(.timeLimit(.minutes(1))) @MainActor
 func aRevertAskedBeforeAnEditsRereadRevertsTheWordShown() async throws {
-    let temp = try TemporaryDirectory("review")
+    let temp = try TemporaryDirectory("review", permissions: 0o700)
     defer { temp.remove() }
     // "we met Claude", "Claude" an automatic fix of "cloud".
     let session = try await wordEditFixedCloudSession(temp, words: ["we", "met", "cloud"])
@@ -1110,7 +1110,7 @@ func aRevertAskedBeforeAnEditsRereadRevertsTheWordShown() async throws {
 
 @Test(.timeLimit(.minutes(1))) @MainActor
 func aSplitChosenBeforeAWordEditSavedFollowsItsWord() async throws {
-    let temp = try TemporaryDirectory("review")
+    let temp = try TemporaryDirectory("review", permissions: 0o700)
     defer { temp.remove() }
     let session = try await wordEditSession(in: temp, [
         WordEditTurn(speaker: "system:S1", start: 0, words: ["one", "two", "three", "four"]),
@@ -1137,7 +1137,7 @@ func aSplitChosenBeforeAWordEditSavedFollowsItsWord() async throws {
 
 @Test(.timeLimit(.minutes(1))) @MainActor
 func aLongSegmentsWordsAreReadInOnePass() async throws {
-    let temp = try TemporaryDirectory("review")
+    let temp = try TemporaryDirectory("review", permissions: 0o700)
     defer { temp.remove() }
     // 40,000 words in one segment and one turn, a hundredth of a second each: each word's shown text and fix are read
     // without walking the whole segment again (which made a long segment take hours).
@@ -1177,7 +1177,7 @@ func aLongSegmentsWordsAreReadInOnePass() async throws {
 
 @Test(.timeLimit(.minutes(1))) @MainActor
 func aWordMoveTooLargeForAnyEditIsRefusedNeverMapped() async throws {
-    let temp = try TemporaryDirectory("review")
+    let temp = try TemporaryDirectory("review", permissions: 0o700)
     defer { temp.remove() }
     // 1,001 words: a move whose every replacement word is owned by every replaced word would be over a million pairs.
     let session = try await wordEditSession(in: temp, [
@@ -1203,7 +1203,7 @@ func aWordMoveTooLargeForAnyEditIsRefusedNeverMapped() async throws {
 
 @Test(.timeLimit(.minutes(1))) @MainActor
 func fixCountsThatAddUpButPutAFixElsewhereNeverMoveLabels() async throws {
-    let temp = try TemporaryDirectory("review")
+    let temp = try TemporaryDirectory("review", permissions: 0o700)
     defer { temp.remove() }
     // The unfixed revision "one two three four"; the fixed one "Alpha Beta" ("one two" and "three four").
     let session = try await wordEditSession(in: temp, [
@@ -1247,7 +1247,7 @@ func fixCountsThatAddUpButPutAFixElsewhereNeverMoveLabels() async throws {
 
 @Test(.timeLimit(.minutes(1))) @MainActor
 func aWordMoveIsWhereTheEditsMarkIsNeverOnRepeatedTextElsewhere() async throws {
-    let temp = try TemporaryDirectory("review")
+    let temp = try TemporaryDirectory("review", permissions: 0o700)
     defer { temp.remove() }
     // One segment "go go": the first spoken by S1, the second by S2.
     let segment = SessionFixtures.segment(["go", "go"], track: "system", start: 0, wordSeconds: 1, id: "S1")
@@ -1303,7 +1303,7 @@ func aWordMoveIsWhereTheEditsMarkIsNeverOnRepeatedTextElsewhere() async throws {
 
 @Test(.timeLimit(.minutes(1))) @MainActor
 func wordsChangedElsewhereAreCountedAndNeverFollowed() async throws {
-    let temp = try TemporaryDirectory("review")
+    let temp = try TemporaryDirectory("review", permissions: 0o700)
     defer { temp.remove() }
     let session = try await wordEditSession(in: temp, [
         WordEditTurn(speaker: "system:S1", start: 0, words: ["one", "go", "go"]),
@@ -1348,7 +1348,7 @@ func wordsChangedElsewhereAreCountedAndNeverFollowed() async throws {
 
 @Test(.timeLimit(.minutes(1))) @MainActor
 func anEditIsNeverSavedOverAWordWhosePunctuationChangedElsewhere() async throws {
-    let temp = try TemporaryDirectory("review")
+    let temp = try TemporaryDirectory("review", permissions: 0o700)
     defer { temp.remove() }
     let session = try await wordEditSession(in: temp, [
         WordEditTurn(speaker: "system:S1", start: 0, words: ["ask", "cloud", "now"]),
@@ -1383,7 +1383,7 @@ func anEditIsNeverSavedOverAWordWhosePunctuationChangedElsewhere() async throws 
 
 @Test(.timeLimit(.minutes(1))) @MainActor
 func anEditTakingInAnEarlierDeletionOffersNoHeardAs() async throws {
-    let temp = try TemporaryDirectory("review")
+    let temp = try TemporaryDirectory("review", permissions: 0o700)
     defer { temp.remove() }
     let session = try await wordEditSession(in: temp, [
         WordEditTurn(speaker: "system:S1", start: 0, words: ["um", "cloud", "now"]),
@@ -1408,7 +1408,7 @@ func anEditTakingInAnEarlierDeletionOffersNoHeardAs() async throws {
 
 @Test(.timeLimit(.minutes(1))) @MainActor
 func anUndoThatFailsAfterTheEditItWaitedForCanBeAskedAgain() async throws {
-    let temp = try TemporaryDirectory("review")
+    let temp = try TemporaryDirectory("review", permissions: 0o700)
     defer { temp.remove() }
     let session = try await wordEditSession(in: temp, [
         WordEditTurn(speaker: "system:S1", start: 0, words: ["ask", "cloud", "now"]),
@@ -1452,7 +1452,7 @@ func anUndoThatFailsAfterTheEditItWaitedForCanBeAskedAgain() async throws {
 
 @Test(.timeLimit(.minutes(1))) @MainActor
 func anEditsUndoThatCanNoLongerBeMadeNeverBlocksTheUndosBeforeIt() async throws {
-    let temp = try TemporaryDirectory("review")
+    let temp = try TemporaryDirectory("review", permissions: 0o700)
     defer { temp.remove() }
     // "ask more Claude now", "Claude" an automatic fix of "cloud". A rename, then "ask" edited to "Ask".
     let session = try await wordEditFixedCloudSession(temp)
@@ -1485,7 +1485,7 @@ func anEditsUndoThatCanNoLongerBeMadeNeverBlocksTheUndosBeforeIt() async throws 
 
 @Test(.timeLimit(.minutes(1))) @MainActor
 func anEditWhoseHeadIsReplacedBeforeItsRereadGetsNoUndo() async throws {
-    let temp = try TemporaryDirectory("review")
+    let temp = try TemporaryDirectory("review", permissions: 0o700)
     defer { temp.remove() }
     let session = try await wordEditSession(in: temp, [
         WordEditTurn(speaker: "system:S1", start: 0, words: ["ask", "cloud", "now"]),
@@ -1511,7 +1511,7 @@ func anEditWhoseHeadIsReplacedBeforeItsRereadGetsNoUndo() async throws {
 
 @Test(.timeLimit(.minutes(1))) @MainActor
 func aFieldKeptWhenTheRereadFailedIsQueuedAndSavedAtTheReread() async throws {
-    let temp = try TemporaryDirectory("review")
+    let temp = try TemporaryDirectory("review", permissions: 0o700)
     defer { temp.remove() }
     let session = try await wordEditSession(in: temp, [
         WordEditTurn(speaker: "system:S1", start: 0, words: ["ask", "cloud", "now"]),
@@ -1542,7 +1542,7 @@ func aFieldKeptWhenTheRereadFailedIsQueuedAndSavedAtTheReread() async throws {
 
 @Test(.timeLimit(.minutes(1))) @MainActor
 func aQueuedEditWaitsForTheRereadAnEarlierEditsFailureNeeds() async throws {
-    let temp = try TemporaryDirectory("review")
+    let temp = try TemporaryDirectory("review", permissions: 0o700)
     defer { temp.remove() }
     let session = try await wordEditSession(in: temp, [
         WordEditTurn(speaker: "system:S1", start: 0, words: ["I", "um", "think", "so"]),
@@ -1589,7 +1589,7 @@ private func wordEditCloudSession(_ temp: TemporaryDirectory) async throws -> UR
 
 @Test(.timeLimit(.minutes(1))) @MainActor
 func anEditStillThereWhenTheReviewClosesIsLearned() async throws {
-    let temp = try TemporaryDirectory("review")
+    let temp = try TemporaryDirectory("review", permissions: 0o700)
     defer { temp.remove() }
     let session = try await wordEditCloudSession(temp)
     let review = try await wordEditOpen(session)
@@ -1607,7 +1607,7 @@ func anEditStillThereWhenTheReviewClosesIsLearned() async throws {
 @Test(.timeLimit(.minutes(1))) @MainActor
 func anEditUndoneOrRevertedBeforeCloseTeachesNothing() async throws {
     for revert in [false, true] {
-        let temp = try TemporaryDirectory("review")
+        let temp = try TemporaryDirectory("review", permissions: 0o700)
         defer { temp.remove() }
         let session = try await wordEditCloudSession(temp)
         let review = try await wordEditOpen(session)
@@ -1627,7 +1627,7 @@ func anEditUndoneOrRevertedBeforeCloseTeachesNothing() async throws {
 
 @Test(.timeLimit(.minutes(1))) @MainActor
 func learningAgainAtTheNextCloseChangesNothingAndASecondOccurrenceIsAdded() async throws {
-    let temp = try TemporaryDirectory("review")
+    let temp = try TemporaryDirectory("review", permissions: 0o700)
     defer { temp.remove() }
     let session = try await wordEditCloudSession(temp)
     let learner = WordEditLearner(contextual: true)
@@ -1703,7 +1703,7 @@ func learningAgainAtTheNextCloseChangesNothingAndASecondOccurrenceIsAdded() asyn
 /// refusal, with the same message, as the split itself; nil where it can be made. It splits, and Undo joins it again.
 @Test(.timeLimit(.minutes(1))) @MainActor
 func aSplitIsCheckedBeforeItIsOfferedAsItIsWhenMade() async throws {
-    let temp = try TemporaryDirectory("review")
+    let temp = try TemporaryDirectory("review", permissions: 0o700)
     defer { temp.remove() }
     let session = try await wordEditSession(in: temp, [
         WordEditTurn(speaker: "system:S1", start: 0, words: ["ask", "the", "cloud", "now", "please"]),
@@ -1735,7 +1735,7 @@ func aSplitIsCheckedBeforeItIsOfferedAsItIsWhenMade() async throws {
 /// published from it keeps its turns, so the split stands.
 @Test(.timeLimit(.minutes(1))) @MainActor
 func aSplitChosenOnAnotherLabelsRunIsRefused() async throws {
-    let temp = try TemporaryDirectory("review")
+    let temp = try TemporaryDirectory("review", permissions: 0o700)
     defer { temp.remove() }
     let session = try await wordEditSession(in: temp, [
         WordEditTurn(speaker: "system:S1", start: 0, words: ["ask", "the", "cloud", "now", "please"]),
@@ -1761,7 +1761,7 @@ func aSplitChosenOnAnotherLabelsRunIsRefused() async throws {
 /// turn's start or end; refused when an edit replaced the word, or the words changed elsewhere.
 @Test(.timeLimit(.minutes(1))) @MainActor
 func aSplitPlaceFollowsTheWordThroughEditsSavedSince() async throws {
-    let temp = try TemporaryDirectory("review")
+    let temp = try TemporaryDirectory("review", permissions: 0o700)
     defer { temp.remove() }
     let session = try await wordEditSession(in: temp, [
         WordEditTurn(speaker: "system:S1", start: 0, words: ["ask", "the", "cloud", "now"]),
@@ -1800,7 +1800,7 @@ func aSplitPlaceFollowsTheWordThroughEditsSavedSince() async throws {
 /// Overlapping turns (T1 holds words 0–2, T2 words 1–3): a split at a word both hold is the turn's it was chosen in.
 @Test(.timeLimit(.minutes(1))) @MainActor
 func aSplitAtAWordTwoTurnsHoldIsTheTurnsItWasChosenIn() async throws {
-    let temp = try TemporaryDirectory("review")
+    let temp = try TemporaryDirectory("review", permissions: 0o700)
     defer { temp.remove() }
     let session = try await wordEditSharedSession(in: temp, ["hello", "there", "yes", "indeed"],
                                                   times: [(0, 0.8), (1, 1.8), (2, 2.8), (3, 3.8)], split: 2)
@@ -1830,7 +1830,7 @@ func aSplitAtAWordTwoTurnsHoldIsTheTurnsItWasChosenIn() async throws {
 /// asked in its words is the stored turn's, and splits it as stored; at its first word, the place is its own start.
 @Test(.timeLimit(.minutes(1))) @MainActor
 func aSplitInAnAttachedInterjectionSplitsTheStoredTurn() async throws {
-    let temp = try TemporaryDirectory("review")
+    let temp = try TemporaryDirectory("review", permissions: 0o700)
     defer { temp.remove() }
     let session = try await wordEditSession(in: temp, [
         WordEditTurn(speaker: "system:S1", start: 0, words: ["we", "will", "meet"]),
@@ -1866,7 +1866,7 @@ func aSplitInAnAttachedInterjectionSplitsTheStoredTurn() async throws {
 /// A turn over two segments: a split at the first word of the later segment is a split like any other.
 @Test(.timeLimit(.minutes(1))) @MainActor
 func aTurnSplitsAtTheFirstWordOfItsLaterSegment() async throws {
-    let temp = try TemporaryDirectory("review")
+    let temp = try TemporaryDirectory("review", permissions: 0o700)
     defer { temp.remove() }
     let session = try await wordEditSession(in: temp, [
         WordEditTurn(speaker: "system:S1", start: 0, words: ["ask", "the", "cloud"]),
@@ -1977,7 +1977,7 @@ func aTurnSplitsAtTheFirstWordOfItsLaterSegment() async throws {
 
 @Test(.timeLimit(.minutes(1))) @MainActor
 func aSegmentWithADamagedMarkIsRefusedBeforeAnyFieldOpens() async throws {
-    let temp = try TemporaryDirectory("review")
+    let temp = try TemporaryDirectory("review", permissions: 0o700)
     defer { temp.remove() }
     // A damaged but decodable transcript: a mark from word 0 to Int.max. Walking it (taking it in, listing its words)
     // would never end.
@@ -2006,7 +2006,7 @@ func aSegmentWithADamagedMarkIsRefusedBeforeAnyFieldOpens() async throws {
 
 @Test(.timeLimit(.minutes(1))) @MainActor
 func aSegmentWithOverlappingMarksIsRefusedBeforeAnyFieldOpens() async throws {
-    let temp = try TemporaryDirectory("review")
+    let temp = try TemporaryDirectory("review", permissions: 0o700)
     defer { temp.remove() }
     let session = try await wordEditSession(in: temp, [
         WordEditTurn(speaker: "system:S1", start: 0, words: ["ask", "cloud", "now"]),
@@ -2094,7 +2094,7 @@ func aSegmentWithOverlappingMarksIsRefusedBeforeAnyFieldOpens() async throws {
 
 @Test(.timeLimit(.minutes(1))) @MainActor
 func anEditOfPunctuationAloneKeepsItsMarkAndRevert() async throws {
-    let temp = try TemporaryDirectory("review")
+    let temp = try TemporaryDirectory("review", permissions: 0o700)
     defer { temp.remove() }
     // "Hello. there", timed as "Hello" and "there": the period is not timed.
     var segment = SessionFixtures.segment(["Hello", "there"], track: "system", start: 0, wordSeconds: 1)
@@ -2132,7 +2132,7 @@ func anEditOfPunctuationAloneKeepsItsMarkAndRevert() async throws {
 
 @Test(.timeLimit(.minutes(1))) @MainActor
 func aWordBesideAnAutomaticFixIsLearnedAgainstWhatTheRecognizerWrote() async throws {
-    let temp = try TemporaryDirectory("review")
+    let temp = try TemporaryDirectory("review", permissions: 0o700)
     defer { temp.remove() }
     let session = try await wordEditFixedCloudSession(temp, words: ["as", "cloud", "now"])
     let review = try await wordEditOpen(session)
@@ -2147,7 +2147,7 @@ func aWordBesideAnAutomaticFixIsLearnedAgainstWhatTheRecognizerWrote() async thr
 
 @Test(.timeLimit(.minutes(1))) @MainActor
 func aRelabelWaitsBehindChangesQueuedBeforeItWhileTheLabelsAreUnread() async throws {
-    let temp = try TemporaryDirectory("review")
+    let temp = try TemporaryDirectory("review", permissions: 0o700)
     defer { temp.remove() }
     let session = try await wordEditSession(in: temp, [
         WordEditTurn(speaker: "system:S1", start: 0, words: ["ask", "cloud", "now"]),
@@ -2198,7 +2198,7 @@ func aRelabelWaitsBehindChangesQueuedBeforeItWhileTheLabelsAreUnread() async thr
 @Test(.timeLimit(.minutes(1))) @MainActor
 func aMeetingsLaterEditReplacesWhatItTaughtButNeverAValueSetElsewhere() async throws {
     for external in [false, true] {
-        let temp = try TemporaryDirectory("review")
+        let temp = try TemporaryDirectory("review", permissions: 0o700)
         defer { temp.remove() }
         let session = try await wordEditCloudSession(temp)
         let learner = WordEditLearner()
@@ -2226,7 +2226,7 @@ func aMeetingsLaterEditReplacesWhatItTaughtButNeverAValueSetElsewhere() async th
 
 @Test(.timeLimit(.minutes(1))) @MainActor
 func anEditOfPartOfAFixSaysWhatWasTypedApartFromTheWordsItTookIn() async throws {
-    let temp = try TemporaryDirectory("review")
+    let temp = try TemporaryDirectory("review", permissions: 0o700)
     defer { temp.remove() }
     let session = try await wordEditFixedCloudSession(temp, words: ["we", "knew", "work", "here"],
                                                       correction: Correction(heard: "knew work", meant: "New York"))
@@ -2246,7 +2246,7 @@ func anEditOfPartOfAFixSaysWhatWasTypedApartFromTheWordsItTookIn() async throws 
 
 @Test(.timeLimit(.minutes(1))) @MainActor
 func aDeletionTeachesNothingNorDoesAnEditTakingItIn() async throws {
-    let temp = try TemporaryDirectory("review")
+    let temp = try TemporaryDirectory("review", permissions: 0o700)
     defer { temp.remove() }
     // "um cloud now please", whose "cloud" a correction made "Claude".
     let session = try await wordEditFixedCloudSession(temp, words: ["um", "cloud", "now", "please"])
@@ -2275,7 +2275,7 @@ func aDeletionTeachesNothingNorDoesAnEditTakingItIn() async throws {
 
 @Test(.timeLimit(.minutes(1))) @MainActor
 func aCorrectionTheListAlreadyHadIsNeverTheMeetingsToReplace() async throws {
-    let temp = try TemporaryDirectory("review")
+    let temp = try TemporaryDirectory("review", permissions: 0o700)
     defer { temp.remove() }
     let session = try await wordEditCloudSession(temp)
     // The list already has "cloud" → "Claude" (set elsewhere); the meeting's edit teaches the same.
@@ -2296,7 +2296,7 @@ func aCorrectionTheListAlreadyHadIsNeverTheMeetingsToReplace() async throws {
 
 @Test(.timeLimit(.minutes(1))) @MainActor
 func editsSideBySideAreLearnedAsOnePhraseFromWhatTheRecognizerWrote() async throws {
-    let temp = try TemporaryDirectory("review")
+    let temp = try TemporaryDirectory("review", permissions: 0o700)
     defer { temp.remove() }
     let session = try await wordEditSession(in: temp, [
         WordEditTurn(speaker: "system:S1", start: 0, words: ["we", "bull", "requested", "it"]),
@@ -2324,7 +2324,7 @@ func editsSideBySideAreLearnedAsOnePhraseFromWhatTheRecognizerWrote() async thro
 
 @Test(.timeLimit(.minutes(1))) @MainActor
 func learningTakesContextOnlyFromTheEditedWordsOwnTurnAsShown() async throws {
-    let temp = try TemporaryDirectory("review")
+    let temp = try TemporaryDirectory("review", permissions: 0o700)
     defer { temp.remove() }
     // One segment, two speakers: S1 says "say cloud", S2 "yes please"; then S1's "um cloud echo now", whose "echo"
     // is hidden.
@@ -2372,7 +2372,7 @@ func learningTakesContextOnlyFromTheEditedWordsOwnTurnAsShown() async throws {
 
 @Test(.timeLimit(.minutes(1))) @MainActor
 func whatTheOpenFieldHoldsAtCloseIsSavedAndLearned() async throws {
-    let temp = try TemporaryDirectory("review")
+    let temp = try TemporaryDirectory("review", permissions: 0o700)
     defer { temp.remove() }
     let session = try await wordEditSession(in: temp, [
         WordEditTurn(speaker: "system:S1", start: 0, words: ["ask", "more", "cloud", "now"]),
@@ -2394,7 +2394,7 @@ func whatTheOpenFieldHoldsAtCloseIsSavedAndLearned() async throws {
 
 @Test(.timeLimit(.minutes(1))) @MainActor
 func whatWasTypedIsKnownUntilTheEditOpenAtCloseIsSaved() async throws {
-    let temp = try TemporaryDirectory("review")
+    let temp = try TemporaryDirectory("review", permissions: 0o700)
     defer { temp.remove() }
     let session = try await wordEditSession(in: temp, [
         WordEditTurn(speaker: "system:S1", start: 0, words: ["ask", "cloud", "now"]),
@@ -2423,7 +2423,7 @@ func whatWasTypedIsKnownUntilTheEditOpenAtCloseIsSaved() async throws {
 /// typed. Nothing sits in a task of the window's between the field and the queue.
 @Test(.timeLimit(.minutes(1))) @MainActor
 func anEditHandedOverIsQueuedBeforeTheCallReturnsSoACloseRightAfterSavesIt() async throws {
-    let temp = try TemporaryDirectory("review")
+    let temp = try TemporaryDirectory("review", permissions: 0o700)
     defer { temp.remove() }
     let session = try await wordEditSession(in: temp, [
         WordEditTurn(speaker: "system:S1", start: 0, words: ["ask", "cloud", "now"]),
@@ -2447,7 +2447,7 @@ func anEditHandedOverIsQueuedBeforeTheCallReturnsSoACloseRightAfterSavesIt() asy
 /// footer that is going away.
 @Test(.timeLimit(.minutes(1))) @MainActor
 func wordEditsThatFailWhileClosingAreKnownWithWhatWasTyped() async throws {
-    let temp = try TemporaryDirectory("review")
+    let temp = try TemporaryDirectory("review", permissions: 0o700)
     defer { temp.remove() }
     let session = try await wordEditSession(in: temp, [
         WordEditTurn(speaker: "system:S1", start: 0, words: ["ask", "cloud", "now", "please"]),
@@ -2481,7 +2481,7 @@ func wordEditsThatFailWhileClosingAreKnownWithWhatWasTyped() async throws {
 /// two handed over and the one the field held at the close), so a quit that cannot wait logs them all.
 @Test(.timeLimit(.minutes(1))) @MainActor
 func everyWordEditNotSavedYetIsKnownWithWhatWasTyped() async throws {
-    let temp = try TemporaryDirectory("review")
+    let temp = try TemporaryDirectory("review", permissions: 0o700)
     defer { temp.remove() }
     let session = try await wordEditSession(in: temp, [
         WordEditTurn(speaker: "system:S1", start: 0, words: ["ask", "cloud", "now", "please"]),
@@ -2511,7 +2511,7 @@ func everyWordEditNotSavedYetIsKnownWithWhatWasTyped() async throws {
 
 @Test(.timeLimit(.minutes(1))) @MainActor
 func anExistingCorrectionIsKeptAndAFailedWriteIsMadeAtTheNextClose() async throws {
-    let temp = try TemporaryDirectory("review")
+    let temp = try TemporaryDirectory("review", permissions: 0o700)
     defer { temp.remove() }
     let session = try await wordEditCloudSession(temp)
     let learner = WordEditLearner()
@@ -2535,7 +2535,7 @@ func anExistingCorrectionIsKeptAndAFailedWriteIsMadeAtTheNextClose() async throw
 
 @Test(.timeLimit(.minutes(1))) @MainActor
 func anEditBesideAnOlderUnspacedFixIsRefusedSayingWhy() async throws {
-    let temp = try TemporaryDirectory("review")
+    let temp = try TemporaryDirectory("review", permissions: 0o700)
     defer { temp.remove() }
     // "你好世界 再见", timed as "你好", "世界", "再见".
     var segment = SessionFixtures.segment(["你好", "世界", "再见"], track: "system", start: 0, wordSeconds: 1)
@@ -2615,7 +2615,7 @@ private func wordEditFixedCloudSession(_ temp: TemporaryDirectory,
 
 @Test(.timeLimit(.minutes(1))) @MainActor
 func wordsAreReadOnlyWhileTheRevisionTheTranscriptWasFixedFromCannotBeRead() async throws {
-    let temp = try TemporaryDirectory("review")
+    let temp = try TemporaryDirectory("review", permissions: 0o700)
     defer { temp.remove() }
     let session = try await wordEditFixedCloudSession(temp)
     let fixed = try wordEditCurrent(session)
@@ -2647,7 +2647,7 @@ func wordsAreReadOnlyWhileTheRevisionTheTranscriptWasFixedFromCannotBeRead() asy
 /// background), never per click.
 @Test(.timeLimit(.minutes(2))) @MainActor
 func theChecksBeforeAFieldOpensReadNoFileAndMakeNoPlanOnALargeMeeting() async throws {
-    let temp = try TemporaryDirectory("review")
+    let temp = try TemporaryDirectory("review", permissions: 0o700)
     defer { temp.remove() }
     let specs = (0..<1_000).map { turn in
         WordEditTurn(speaker: turn % 2 == 0 ? "system:S1" : "system:S2", start: Double(turn) * 0.4,
@@ -2685,7 +2685,7 @@ func theChecksBeforeAFieldOpensReadNoFileAndMakeNoPlanOnALargeMeeting() async th
 /// is cancelled.
 @Test(.timeLimit(.minutes(1))) @MainActor
 func rereadingTheLabelsInABurstReadsTheWordChecksAtMostTwiceMore() async throws {
-    let temp = try TemporaryDirectory("review")
+    let temp = try TemporaryDirectory("review", permissions: 0o700)
     defer { temp.remove() }
     let session = try await wordEditSession(in: temp, [
         WordEditTurn(speaker: "system:S1", start: 0, words: ["ask", "cloud", "now"]),
@@ -2780,7 +2780,7 @@ func theChecksBeforeAnEditOrRevertRefuseWhatTheSaveRefuses() async throws {
         }, words: [0], editRefused: false),
     ]
     for item in cases {
-        let temp = try TemporaryDirectory("review")
+        let temp = try TemporaryDirectory("review", permissions: 0o700)
         defer { temp.remove() }
         let session = try await wordEditFixedCloudSession(temp)
         var current = try wordEditCurrent(session)
@@ -2822,7 +2822,7 @@ func theChecksBeforeAnEditOrRevertRefuseWhatTheSaveRefuses() async throws {
 @Test(.timeLimit(.minutes(1))) @MainActor
 func anUntrustworthyUnfixedRevisionIsRefusedBeforeAFieldOpens() async throws {
     for repeated in [true, false] {
-        let temp = try TemporaryDirectory("review")
+        let temp = try TemporaryDirectory("review", permissions: 0o700)
         defer { temp.remove() }
         let session = try await wordEditFixedCloudSession(temp)
         let fixed = try wordEditCurrent(session)
@@ -2852,7 +2852,7 @@ func anUntrustworthyUnfixedRevisionIsRefusedBeforeAFieldOpens() async throws {
 
 @Test(.timeLimit(.minutes(1))) @MainActor
 func aWordCorrectedWhileRecordingIsKnownNotEditableBeforeAFieldOpens() async throws {
-    let temp = try TemporaryDirectory("review")
+    let temp = try TemporaryDirectory("review", permissions: 0o700)
     defer { temp.remove() }
     let session = try await wordEditSession(in: temp, [
         WordEditTurn(speaker: "system:S1", start: 0, words: ["ask", "cloud", "now"]),
@@ -2885,7 +2885,7 @@ func aWordCorrectedWhileRecordingIsKnownNotEditableBeforeAFieldOpens() async thr
 
 @Test(.timeLimit(.minutes(1))) @MainActor
 func anEditQueuedWhileARevertSavesFollowsItsWordsAndNeverLosesWhatWasTyped() async throws {
-    let temp = try TemporaryDirectory("review")
+    let temp = try TemporaryDirectory("review", permissions: 0o700)
     defer { temp.remove() }
     let session = try await wordEditFixedCloudSession(temp)
     let review = try await wordEditOpen(session)
@@ -2919,7 +2919,7 @@ func anEditQueuedWhileARevertSavesFollowsItsWordsAndNeverLosesWhatWasTyped() asy
 
 @Test(.timeLimit(.minutes(1))) @MainActor
 func wordsCannotBeEditedWhileSpeakerChangesCannotAllBeRead() async throws {
-    let temp = try TemporaryDirectory("review")
+    let temp = try TemporaryDirectory("review", permissions: 0o700)
     defer { temp.remove() }
     let session = try await wordEditFixedCloudSession(temp)
     // A damaged line in the speaker-change journal.
@@ -2941,7 +2941,7 @@ func wordsCannotBeEditedWhileSpeakerChangesCannotAllBeRead() async throws {
 
 @Test(.timeLimit(.minutes(1)))
 func aRevertWhoseSaveFailsAfterItBecameCurrentIsAPublicationStillOwed() async throws {
-    let temp = try TemporaryDirectory("review")
+    let temp = try TemporaryDirectory("review", permissions: 0o700)
     defer { temp.remove() }
     let session = try await wordEditFixedCloudSession(temp)
     let fixed = try wordEditCurrent(session)
@@ -2969,7 +2969,7 @@ func aRevertWhoseSaveFailsAfterItBecameCurrentIsAPublicationStillOwed() async th
 
 @Test(.timeLimit(.minutes(1))) @MainActor
 func aRevertWhoseHeadWasWrittenThenFailedStaysTheWindowsOwnChange() async throws {
-    let temp = try TemporaryDirectory("review")
+    let temp = try TemporaryDirectory("review", permissions: 0o700)
     defer { temp.remove() }
     let session = try await wordEditFixedCloudSession(temp)
     let review = try await wordEditOpen(session)
@@ -3005,7 +3005,7 @@ func aRevertWhoseHeadWasWrittenThenFailedStaysTheWindowsOwnChange() async throws
 
 @Test(.timeLimit(.minutes(1))) @MainActor
 func aTranscriptReplacedWhileLearningTeachesNothingAtThisClose() async throws {
-    let temp = try TemporaryDirectory("review")
+    let temp = try TemporaryDirectory("review", permissions: 0o700)
     defer { temp.remove() }
     let session = try await wordEditCloudSession(temp)
     let review = try await wordEditOpen(session)
@@ -3029,7 +3029,7 @@ func aTranscriptReplacedWhileLearningTeachesNothingAtThisClose() async throws {
 
 @Test(.timeLimit(.minutes(1))) @MainActor
 func aRelabelSavedWhileLearningTeachesNothingAtThisClose() async throws {
-    let temp = try TemporaryDirectory("review")
+    let temp = try TemporaryDirectory("review", permissions: 0o700)
     defer { temp.remove() }
     let session = try await wordEditCloudSession(temp)
     let review = try await wordEditOpen(session)
@@ -3069,7 +3069,7 @@ func aRelabelSavedWhileLearningTeachesNothingAtThisClose() async throws {
 
 @Test(.timeLimit(.minutes(1))) @MainActor
 func aSpeakerChangeSavedWhileLearningTeachesNothingAtThisClose() async throws {
-    let temp = try TemporaryDirectory("review")
+    let temp = try TemporaryDirectory("review", permissions: 0o700)
     defer { temp.remove() }
     let session = try await wordEditSession(in: temp, [
         WordEditTurn(speaker: "system:S1", start: 0, words: ["ask", "cloud", "now"]),
@@ -3102,7 +3102,7 @@ func aSpeakerChangeSavedWhileLearningTeachesNothingAtThisClose() async throws {
 
 @Test(.timeLimit(.minutes(1))) @MainActor
 func aRuleTheMeetingTaughtThenDeletedInCorrectionsIsNeverTaughtAgain() async throws {
-    let temp = try TemporaryDirectory("review")
+    let temp = try TemporaryDirectory("review", permissions: 0o700)
     defer { temp.remove() }
     let session = try await wordEditCloudSession(temp)
     let claude = Correction(heard: "cloud", meant: "Claude")
@@ -3180,7 +3180,7 @@ func aRuleTheMeetingTaughtThenDeletedInCorrectionsIsNeverTaughtAgain() async thr
 
 @Test(.timeLimit(.minutes(1))) @MainActor
 func pausingForACommandSavesWhatTheOpenFieldHolds() async throws {
-    let temp = try TemporaryDirectory("review")
+    let temp = try TemporaryDirectory("review", permissions: 0o700)
     defer { temp.remove() }
     let session = try await wordEditSession(in: temp, [
         WordEditTurn(speaker: "system:S1", start: 0, words: ["ask", "cloud", "now"]),
@@ -3210,7 +3210,7 @@ func pausingForACommandSavesWhatTheOpenFieldHolds() async throws {
 
 @Test(.timeLimit(.minutes(1))) @MainActor
 func aRevertWhoseHeadCouldNotBePublishedHoldsTheReviewUntilAReloadRepairsIt() async throws {
-    let temp = try TemporaryDirectory("review")
+    let temp = try TemporaryDirectory("review", permissions: 0o700)
     defer { temp.remove() }
     let session = try await wordEditFixedCloudSession(temp)
     let fixed = try wordEditCurrent(session)
@@ -3236,7 +3236,7 @@ func aRevertWhoseHeadCouldNotBePublishedHoldsTheReviewUntilAReloadRepairsIt() as
 }
 
 @Test func whatAMeetingTaughtIsMergedSoTwoClosesKeepBothEntries() throws {
-    let temp = try TemporaryDirectory("review")
+    let temp = try TemporaryDirectory("review", permissions: 0o700)
     defer { temp.remove() }
     let url = temp.url.appendingPathComponent("corrections.json")
     let cloud = Correction(heard: "cloud", meant: "Claude")
@@ -3257,7 +3257,7 @@ func aRevertWhoseHeadCouldNotBePublishedHoldsTheReviewUntilAReloadRepairsIt() as
 
 @Test(.timeLimit(.minutes(1))) @MainActor
 func aCorrectionDeletedInCorrectionsIsNotTaughtAgainByTheMeeting() async throws {
-    let temp = try TemporaryDirectory("review")
+    let temp = try TemporaryDirectory("review", permissions: 0o700)
     defer { temp.remove() }
     let session = try await wordEditCloudSession(temp)
     let learner = WordEditLearner()
@@ -3278,7 +3278,7 @@ func aCorrectionDeletedInCorrectionsIsNotTaughtAgainByTheMeeting() async throws 
 
 @Test(.timeLimit(.minutes(1))) @MainActor
 func nothingIsLearnedOnLabelsNotOnTheCurrentTranscriptUntilALaterClose() async throws {
-    let temp = try TemporaryDirectory("review")
+    let temp = try TemporaryDirectory("review", permissions: 0o700)
     defer { temp.remove() }
     let session = try await wordEditCloudSession(temp)
     let original = try wordEditCurrent(session)
@@ -3304,7 +3304,7 @@ func nothingIsLearnedOnLabelsNotOnTheCurrentTranscriptUntilALaterClose() async t
 
 @Test(.timeLimit(.minutes(1))) @MainActor
 func aQueuedRevertOfAnAutomaticFixFollowsAnEditBeforeIt() async throws {
-    let temp = try TemporaryDirectory("review")
+    let temp = try TemporaryDirectory("review", permissions: 0o700)
     defer { temp.remove() }
     let session = try await wordEditSession(in: temp, [
         WordEditTurn(speaker: "system:S1", start: 0, words: ["ask", "more", "cloud", "now"]),
@@ -3347,7 +3347,7 @@ func aQueuedRevertOfAnAutomaticFixFollowsAnEditBeforeIt() async throws {
 
 @Test(.timeLimit(.minutes(1))) @MainActor
 func wordsCannotBeEditedOnceTheTranscriptChangedAfterLabelling() async throws {
-    let temp = try TemporaryDirectory("review")
+    let temp = try TemporaryDirectory("review", permissions: 0o700)
     defer { temp.remove() }
     let session = try await wordEditSession(in: temp, [
         WordEditTurn(speaker: "system:S1", start: 0, words: ["ask", "cloud", "now"]),
@@ -3366,7 +3366,7 @@ func wordsCannotBeEditedOnceTheTranscriptChangedAfterLabelling() async throws {
 
 @Test(.timeLimit(.minutes(1))) @MainActor
 func aSpeakerChangeQueuedBehindAnEditWhoseRereadFailedWaitsForTheReread() async throws {
-    let temp = try TemporaryDirectory("review")
+    let temp = try TemporaryDirectory("review", permissions: 0o700)
     defer { temp.remove() }
     let session = try await wordEditSession(in: temp, [
         WordEditTurn(speaker: "system:S1", start: 0, words: ["ask", "cloud", "now"]),
@@ -3403,7 +3403,7 @@ func aSpeakerChangeQueuedBehindAnEditWhoseRereadFailedWaitsForTheReread() async 
 
 @Test(.timeLimit(.minutes(1))) @MainActor
 func anEditAndItsUndoKeepTheTurnsForParagraphBreaks() async throws {
-    let temp = try TemporaryDirectory("review")
+    let temp = try TemporaryDirectory("review", permissions: 0o700)
     defer { temp.remove() }
     let session = try await wordEditSession(in: temp, [
         WordEditTurn(speaker: "system:S1", start: 0, words: ["first", "part"]),
@@ -3427,7 +3427,7 @@ func anEditAndItsUndoKeepTheTurnsForParagraphBreaks() async throws {
 
 @Test(.timeLimit(.minutes(1))) @MainActor
 func wordsEditedTogetherAreNeverSplitApart() async throws {
-    let temp = try TemporaryDirectory("review")
+    let temp = try TemporaryDirectory("review", permissions: 0o700)
     defer { temp.remove() }
     let session = try await wordEditSession(in: temp, [
         WordEditTurn(speaker: "system:S1", start: 0, words: ["we", "knew", "work", "here"]),
@@ -3446,7 +3446,7 @@ func wordsEditedTogetherAreNeverSplitApart() async throws {
 
 @Test(.timeLimit(.minutes(1))) @MainActor
 func postProcessingFinishesAnEditWhoseSpeakerHeadWasNeverPublished() async throws {
-    let temp = try TemporaryDirectory("review")
+    let temp = try TemporaryDirectory("review", permissions: 0o700)
     defer { temp.remove() }
     let session = try await wordEditSession(in: temp, [
         WordEditTurn(speaker: "system:S1", start: 0, words: ["ask", "cloud", "now", "please"]),
@@ -3481,7 +3481,7 @@ func postProcessingFinishesAnEditWhoseSpeakerHeadWasNeverPublished() async throw
 
 @Test(.timeLimit(.minutes(1))) @MainActor
 func postProcessingPublishesTheHeadARevertStillOwes() async throws {
-    let temp = try TemporaryDirectory("review")
+    let temp = try TemporaryDirectory("review", permissions: 0o700)
     defer { temp.remove() }
     let session = try await wordEditFixedCloudSession(temp)
     let fixed = try wordEditCurrent(session)
@@ -3511,7 +3511,7 @@ func postProcessingPublishesTheHeadARevertStillOwes() async throws {
 
 @Test(.timeLimit(.minutes(1))) @MainActor
 func editsAcrossTurnsSegmentsOrHiddenWordsAreRefused() async throws {
-    let temp = try TemporaryDirectory("review")
+    let temp = try TemporaryDirectory("review", permissions: 0o700)
     defer { temp.remove() }
     let session = try await wordEditSession(in: temp, [
         WordEditTurn(speaker: "system:S1", start: 0, words: ["one", "two", "echo", "three"], hidden: [2]),
@@ -3542,7 +3542,7 @@ func editsAcrossTurnsSegmentsOrHiddenWordsAreRefused() async throws {
 
 @Test(.timeLimit(.minutes(1))) @MainActor
 func wordFixesMadeAgainKeepAnEdit() async throws {
-    let temp = try TemporaryDirectory("review")
+    let temp = try TemporaryDirectory("review", permissions: 0o700)
     defer { temp.remove() }
     let session = try await wordEditSession(in: temp, [
         WordEditTurn(speaker: "system:S1", start: 0, words: ["ask", "cloud", "now", "please"]),

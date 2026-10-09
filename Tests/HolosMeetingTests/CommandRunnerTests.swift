@@ -34,7 +34,7 @@ private func echoOutcome() -> SessionEchoAnalyzeCommand.Outcome {
 }
 
 @Test(.timeLimit(.minutes(1))) @MainActor func commandRunnerDecodesTheOutcomeAndRemovesItsFiles() async throws {
-    let temp = try TemporaryDirectory("command")
+    let temp = try TemporaryDirectory("command", permissions: 0o700)
     defer { temp.remove() }
     let printed = temp.url.appendingPathComponent("outcome.json")
     try HolosJSON.encoder().encode(echoOutcome()).write(to: printed)
@@ -55,7 +55,7 @@ private func echoOutcome() -> SessionEchoAnalyzeCommand.Outcome {
 }
 
 @Test(.timeLimit(.minutes(1))) @MainActor func commandRunnerReportsAFailedCommand() async throws {
-    let temp = try TemporaryDirectory("command")
+    let temp = try TemporaryDirectory("command", permissions: 0o700)
     defer { temp.remove() }
     let script = try commandScript("""
         echo "Working…" >&2
@@ -79,7 +79,7 @@ private func echoOutcome() -> SessionEchoAnalyzeCommand.Outcome {
 }
 
 @Test(.timeLimit(.minutes(1))) @MainActor func theHandleSignalsNothingOnceTheChildIsReaped() async throws {
-    let temp = try TemporaryDirectory("command")
+    let temp = try TemporaryDirectory("command", permissions: 0o700)
     defer { temp.remove() }
     let script = try commandScript(#"echo '{"lines": []}'"#, in: temp.url)
     let (runner, _) = try commandRunner(script, in: temp)
@@ -105,7 +105,7 @@ private func echoOutcome() -> SessionEchoAnalyzeCommand.Outcome {
 }
 
 @Test(.timeLimit(.minutes(1))) @MainActor func theHandleStopsARunningCommand() async throws {
-    let temp = try TemporaryDirectory("command")
+    let temp = try TemporaryDirectory("command", permissions: 0o700)
     defer { temp.remove() }
     let ready = temp.url.appendingPathComponent("ready")
     let script = try commandScript("""
@@ -125,7 +125,7 @@ private func echoOutcome() -> SessionEchoAnalyzeCommand.Outcome {
 }
 
 @Test(.timeLimit(.minutes(1))) @MainActor func commandRunnerGivesNoOutcomeForMalformedOutput() async throws {
-    let temp = try TemporaryDirectory("command")
+    let temp = try TemporaryDirectory("command", permissions: 0o700)
     defer { temp.remove() }
     let script = try commandScript(#"echo '{"summary": "half'"#, in: temp.url)
     let (runner, folder) = try commandRunner(script, in: temp)
@@ -139,7 +139,7 @@ private func echoOutcome() -> SessionEchoAnalyzeCommand.Outcome {
 }
 
 @Test(.timeLimit(.minutes(1))) @MainActor func cancellingARunStopsTheCommandAndRemovesItsFiles() async throws {
-    let temp = try TemporaryDirectory("command")
+    let temp = try TemporaryDirectory("command", permissions: 0o700)
     defer { temp.remove() }
     let ready = temp.url.appendingPathComponent("ready")
     let script = try commandScript("""
@@ -164,7 +164,7 @@ private func echoOutcome() -> SessionEchoAnalyzeCommand.Outcome {
 }
 
 @Test @MainActor func aRunCancelledBeforeItStartsSpawnsNothing() async throws {
-    let temp = try TemporaryDirectory("command")
+    let temp = try TemporaryDirectory("command", permissions: 0o700)
     defer { temp.remove() }
     let ran = temp.url.appendingPathComponent("ran")
     let script = try commandScript("touch '\(ran.path)'", in: temp.url)
@@ -181,7 +181,7 @@ private func echoOutcome() -> SessionEchoAnalyzeCommand.Outcome {
 }
 
 @Test @MainActor func aCommandThatCannotStartLeavesNoFiles() throws {
-    let temp = try TemporaryDirectory("command")
+    let temp = try TemporaryDirectory("command", permissions: 0o700)
     defer { temp.remove() }
     let (runner, folder) = try commandRunner(temp.url.appendingPathComponent("voiceislocal"), in: temp)
     #expect(throws: HolosError.self) {
@@ -197,7 +197,7 @@ private struct LargeOutcome: Decodable, Sendable {
 }
 
 @Test(.timeLimit(.minutes(1))) @MainActor func largeOutputIsDecodedOffTheMainActor() async throws {
-    let temp = try TemporaryDirectory("command")
+    let temp = try TemporaryDirectory("command", permissions: 0o700)
     defer { temp.remove() }
     // About 8 MiB of JSON.
     let lines = (0..<80_000).map { "line \($0) " + String(repeating: "x", count: 90) }

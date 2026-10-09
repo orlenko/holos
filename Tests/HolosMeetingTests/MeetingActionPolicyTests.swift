@@ -118,7 +118,7 @@ private func actionSummary(state: SessionState = .complete, manifestStatus: Stri
 /// transcriptionIncomplete meeting whose transcript is unreadable (the revision is missing) enables Recover, and the
 /// command rebuilds it; a readable transcript is kept by both; one from a newer version of Voice is Local is refused by both.
 @Test func recoverButtonAgreesWithTheCommandOnSavedSessions() async throws {
-    let temp = try TemporaryDirectory("actions")
+    let temp = try TemporaryDirectory("actions", permissions: 0o700)
     defer { temp.remove() }
     let transcript = SessionFixtures.transcript(SessionFixtures.alternatingSegments(track: "mic"))
     let session = try await SessionFixtures.makeSession(in: temp.url, transcript: transcript)
