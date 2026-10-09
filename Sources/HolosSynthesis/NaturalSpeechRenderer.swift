@@ -323,6 +323,9 @@ public struct NaturalSpeechStats: Sendable, Equatable {
     /// Called on the main actor for each check, re-render, and fallback.
     public var onEvent: ((NaturalSpeechEvent) -> Void)?
     public private(set) var lastStats = NaturalSpeechStats()
+    /// Languages found to have no recognizer: not checked again for this renderer's life (a book's hundreds of parts
+    /// probe and say so once).
+    private var uncheckable: Set<String> = []
 
     public init(backend: any NaturalSpeechBackend, checker: (any SpeechChunkChecker)?, fallback: any ParagraphFallback,
                 installedPacks: @escaping @Sendable () -> Set<NaturalVoicePack> = {
@@ -370,7 +373,7 @@ public struct NaturalSpeechStats: Sendable, Equatable {
         try SpeechRate.validate(rate)
         let speed = NaturalSpeechSpeed.factor(rate: rate)
         var stats = NaturalSpeechStats()
-        var checking = checker != nil
+        var checking = checker != nil && !uncheckable.contains(voice.pack.languageCode)
         // Each paragraph goes to the file as soon as it is made, so a long text never holds more than one paragraph's
         // samples; the file is written beside the output and published once whole.
         let temporary = output.deletingLastPathComponent()
@@ -444,6 +447,7 @@ public struct NaturalSpeechStats: Sendable, Equatable {
             stats.checkSeconds += seconds
             guard let heard else {
                 checking = false
+                uncheckable.insert(voice.pack.languageCode)
                 onEvent?(.checkUnavailable(language: voice.pack.languageCode))
                 return speech
             }

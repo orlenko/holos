@@ -431,3 +431,31 @@ private actor CountingBackend: NaturalSpeechBackend {
     }
 }
 
+@MainActor @Suite struct NaturalSpeechUncheckableTests {
+    /// Says no recognizer is installed, counting how often it is asked.
+    private final class NoRecognizer: SpeechChunkChecker, Sendable {
+        let asked = Mutex(0)
+        func transcript(of samples: [Float], sampleRate: Double, language: String) async throws -> String? {
+            asked.withLock { $0 += 1 }
+            return nil
+        }
+    }
+
+    @Test func aMissingRecognizerIsFoundAndSaidOnceForAllParts() async throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("holos-parts-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let checker = NoRecognizer()
+        let renderer = NaturalSpeechRenderer(backend: CountingBackend(), checker: checker, fallback: NoFallback(),
+                                             installedPacks: { [.english] })
+        var events: [NaturalSpeechEvent] = []
+        renderer.onEvent = { events.append($0) }
+        // A reading's parts, one renderer (as `voiceislocal read` renders them).
+        for part in 1...5 {
+            _ = try await renderer.render(text: "Part \(part).\n\nMore words here.", voiceIdentifier: "pocket:en:alba",
+                                          rate: nil, to: folder.appendingPathComponent("part\(part).caf"))
+        }
+        #expect(checker.asked.withLock { $0 } == 1)
+        #expect(events == [.checkUnavailable(language: "en")])
+    }
+}
+
