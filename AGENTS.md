@@ -227,7 +227,8 @@ entry point (`ReviewSession.submit(_:seen:)`), a lock-token type.
 - Cite specs as `docs/<file>.md §N.M`, or `docs/design.md "<Heading>"` for docs without numbers. A citation must
   resolve to an existing heading. A `§N.M` cites the last Markdown file named before it in its paragraph, list item,
   table row or comment block, so after naming another file, name the cited one again. In docs, a `§N.M` with no
-  file named before it names a heading of its own file; cite another file's section by its path relative to the
+  file named before it names a heading of its own file (between `<!-- citations: <file>.md -->` and
+  `<!-- /citations -->`, of that file); cite another file's section by its path relative to the
   citing file (`../<file>.md §<N.M>`). `scripts/check-doc-citations.py` checks all of this in under a second
   (`--self-test` runs its own cases). Run it before every PR that moves a section or adds a citation.
 - A PR that changes behaviour updates the cited section in the same PR.

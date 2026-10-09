@@ -37,8 +37,7 @@ agree, gave 37.5 % WER against 46.5 % for French alone; 19.8 % on turns that mix
 against 34.9 %; an English-only control meeting stayed at 10.9 % with no window chosen
 French. Choosing per turn gave 41.8 %; splitting at pauses did not help.
 
-**Contract additions** (session-format.md §3.0 allows new optional fields and open-code constants; the
-digests describe the wave-0 text):
+**Contract additions** (session-format.md §3.0 allows new optional fields and open-code constants):
 
 - `MeetingInfo.languages: [String]?` (meeting.json), the recording's own locale first,
   written only when there are several; nil in older sessions and for one language.
