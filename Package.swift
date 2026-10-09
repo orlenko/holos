@@ -36,6 +36,10 @@ let package = Package(
         .target(name: "HolosMeeting", dependencies: [
             "HolosCore", "HolosStorage", "HolosAudio", "HolosSpeech", "HolosSpeakers",
         ]),
+        // The reference evaluation (docs/reference-evaluation.md): only the command-line tool links it.
+        .target(name: "HolosEvaluation", dependencies: [
+            "HolosCore", "HolosStorage", "HolosAudio", "HolosSpeakers", "HolosMeeting",
+        ], exclude: ["README.md"]),
         .target(name: "HolosDiarization", dependencies: [
             "HolosCore", .product(name: "FluidAudio", package: "FluidAudio"),
         ]),
@@ -50,15 +54,25 @@ let package = Package(
         ]),
         .executableTarget(name: "HolosCLI", dependencies: [
             "HolosCore", "HolosSpeech", "HolosSynthesis", "HolosStorage", "HolosAudio", "HolosContent",
-            "HolosMeeting", "HolosSpeakers", "HolosDiarization", "HolosDictation", "HolosWhisper",
+            "HolosMeeting", "HolosSpeakers", "HolosDiarization", "HolosDictation", "HolosWhisper", "HolosEvaluation",
             .product(name: "ArgumentParser", package: "swift-argument-parser"),
         ], linkerSettings: [.unsafeFlags([
             "-Xlinker", "-sectcreate", "-Xlinker", "__TEXT", "-Xlinker", "__info_plist", "-Xlinker", cliInfoPlist,
         ])]),
+        // Helpers only test targets depend on (Tests/HolosTestSupport/README.md).
+        .target(name: "HolosTestSupport", dependencies: ["HolosCore"], path: "Tests/HolosTestSupport",
+                exclude: ["README.md"]),
+        .target(name: "HolosSessionTestSupport", dependencies: ["HolosCore", "HolosStorage"],
+                path: "Tests/HolosSessionTestSupport"),
         .testTarget(name: "HolosCoreTests", dependencies: ["HolosCore"]),
         .testTarget(name: "HolosAppTests", dependencies: ["HolosApp", "HolosContent", "HolosCore", "HolosMeeting",
                                                          "HolosStorage"]),
-        .testTarget(name: "HolosStorageTests", dependencies: ["HolosStorage", "HolosCore"]),
+        .testTarget(name: "HolosStorageTests", dependencies: [
+            "HolosStorage", "HolosCore", "HolosTestSupport", "HolosSessionTestSupport",
+        ]),
+        .testTarget(name: "HolosTestSupportTests", dependencies: [
+            "HolosTestSupport", "HolosSessionTestSupport", "HolosMeeting", "HolosStorage", "HolosCore",
+        ]),
         .testTarget(name: "HolosSpeechTests", dependencies: ["HolosSpeech", "HolosCore"]),
         .testTarget(name: "HolosSynthesisTests", dependencies: ["HolosSynthesis", "HolosCore"]),
         .testTarget(name: "HolosAudioTests", dependencies: ["HolosAudio", "HolosCore", "HolosStorage"]),
@@ -71,9 +85,13 @@ let package = Package(
         .testTarget(name: "HolosMeetingTests", dependencies: [
             "HolosMeeting", "HolosCore", "HolosStorage", "HolosAudio", "HolosSpeakers", "HolosSynthesis",
         ]),
+        .testTarget(name: "HolosEvaluationTests", dependencies: [
+            "HolosEvaluation", "HolosMeeting", "HolosCore", "HolosStorage", "HolosAudio", "HolosSpeakers",
+            "HolosSynthesis", "HolosTestSupport",
+        ]),
         .testTarget(name: "HolosWhisperTests", dependencies: [
-            "HolosWhisper", "HolosMeeting", "HolosCore", "HolosSynthesis", "HolosAudio", "HolosStorage",
-            .product(name: "WhisperKit", package: "WhisperKit"),
+            "HolosWhisper", "HolosMeeting", "HolosEvaluation", "HolosCore", "HolosSynthesis", "HolosAudio",
+            "HolosStorage", .product(name: "WhisperKit", package: "WhisperKit"),
         ]),
         .testTarget(name: "HolosDiarizationTests", dependencies: [
             "HolosDiarization", "HolosSpeakers", "HolosSynthesis", "HolosAudio", "HolosCore",

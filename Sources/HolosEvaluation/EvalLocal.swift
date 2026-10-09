@@ -2,6 +2,7 @@ import CryptoKit
 import Foundation
 import HolosAudio
 import HolosCore
+import HolosMeeting
 import HolosSpeakers
 import HolosStorage
 
@@ -9,7 +10,7 @@ import HolosStorage
 public struct LocalRunRecord: Codable, Sendable, Equatable {
     public struct Track: Codable, Sendable, Equatable {
         public var track: String
-        /// `EvalStore.audioFingerprint`: a resumed run transcribes the same audio only if it is unchanged.
+        /// `SessionManifest.audioFingerprint`: a resumed run transcribes the same audio only if it is unchanged.
         public var audioFingerprint: String
         /// SHA-256 of the track's chunk files' bytes, in order: the chunk list could stay while a file's contents
         /// change, and a resumed run never joins transcriptions of different audio.
@@ -336,8 +337,7 @@ public enum EvalLocal {
         guard !trackNames.isEmpty else { throw HolosError.invalidInput("This session has no saved audio.") }
         progress("Checking the saved audio…")
         let tracks = try trackNames.map { track in
-            LocalRunRecord.Track(track: track, audioFingerprint: EvalStore.audioFingerprint(manifest: manifest,
-                                                                                            track: track),
+            LocalRunRecord.Track(track: track, audioFingerprint: manifest.audioFingerprint(track: track),
                                  contentSHA256: try contentDigest(session: session, manifest: manifest, track: track),
                                  seconds: manifest.audioSeconds(track: track))
         }

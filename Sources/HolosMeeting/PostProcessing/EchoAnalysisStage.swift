@@ -17,7 +17,7 @@ public struct EchoMaskRecord: Codable, Sendable, Equatable {
     public var sessionID: String
     /// `EchoAnalysis.version` of the analysis that made it.
     public var analysisVersion: Int
-    /// The audio it was computed from: `EvalStore.audioFingerprint` of the "mic" and "system" tracks (a track without
+    /// The audio it was computed from: `audioFingerprint(track:)` of the "mic" and "system" tracks (a track without
     /// saved audio is absent). A record whose key is not the meeting's now is out of date.
     public var audio: [String: String]
     public var createdAt: Date
@@ -115,7 +115,7 @@ public enum EchoMaskStore {
     static func audioKey(manifest: SessionManifest) -> [String: String] {
         var key: [String: String] = [:]
         for track in EchoAnalysisStage.tracks where manifest.chunks.contains(where: { $0.track == track }) {
-            key[track] = EvalStore.audioFingerprint(manifest: manifest, track: track)
+            key[track] = manifest.audioFingerprint(track: track)
         }
         return key
     }

@@ -1,6 +1,7 @@
 import ArgumentParser
 import Foundation
 import HolosCore
+import HolosEvaluation
 import HolosMeeting
 import HolosStorage
 

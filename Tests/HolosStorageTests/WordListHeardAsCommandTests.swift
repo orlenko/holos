@@ -2,6 +2,7 @@ import Foundation
 import Testing
 import HolosCore
 @testable import HolosStorage
+import HolosTestSupport
 
 // `voiceislocal words add … --heard-as` and `voiceislocal words heard-as` as library calls (WordListCommand), on a
 // words.json in a temporary folder.
@@ -9,8 +10,7 @@ import HolosCore
 private let heardAsCommandDate = Date(timeIntervalSince1970: 1_790_000_000)
 
 private func heardAsStore() throws -> (WordListStore, URL) {
-    let root = FileManager.default.temporaryDirectory.appendingPathComponent("holos-heard-as-\(UUID().uuidString)")
-    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    let root = try TemporaryDirectory("heard-as").url
     return (WordListStore(url: root.appendingPathComponent(WordListStore.fileName)), root)
 }
 

@@ -3,34 +3,16 @@ import AVFoundation
 import Testing
 import HolosCore
 @testable import HolosStorage
+import HolosTestSupport
+import HolosSessionTestSupport
 
-private func temporaryRoot() throws -> URL {
-    let root = FileManager.default.temporaryDirectory.appendingPathComponent("holos-storage-\(UUID().uuidString)")
-    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-    return root
-}
-
-private func archive(in root: URL) throws -> SessionArchive {
-    try SessionArchive.create(root: root, name: "A safe display name / with punctuation",
-                              source: .microphoneAndSystem, locale: "en-CA", backend: .speech)
-}
-
-private func writeCAF(at url: URL, frames: Int = 64, sampleRate: Double = 48_000) throws {
-    guard let format = AVAudioFormat(standardFormatWithSampleRate: sampleRate, channels: 1),
-          let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(frames)),
-          let samples = buffer.floatChannelData else { throw HolosError.invalidInput("Test audio allocation failed.") }
-    buffer.frameLength = AVAudioFrameCount(frames)
-    for index in 0..<frames { samples[0][index] = 0.1 }
-    var file: AVAudioFile? = try AVAudioFile(forWriting: url, settings: format.settings,
-                                            commonFormat: .pcmFormatFloat32, interleaved: false)
-    try file?.write(from: buffer)
-    file = nil
-}
+private let punctuatedSession = SessionFixtureBuilder(name: "A safe display name / with punctuation",
+                                                   source: .microphoneAndSystem)
 
 @Test func archiveRoundTripAndRecoveryInspection() async throws {
-    let root = try temporaryRoot()
+    let root = try TemporaryDirectory("storage").url
     defer { try? FileManager.default.removeItem(at: root) }
-    let writer = try archive(in: root)
+    let writer = try punctuatedSession.create(in: root)
     let directory = writer.directory
     #expect(directory.lastPathComponent == "\(writer.id).holos")
     #expect(FileManager.default.fileExists(atPath: directory.appendingPathComponent("audio/mic").path))
@@ -68,9 +50,9 @@ private func writeCAF(at url: URL, frames: Int = 64, sampleRate: Double = 48_000
 }
 
 @Test func refusesTraversalDuplicateSnapshotsAndConcurrentWriter() async throws {
-    let root = try temporaryRoot()
+    let root = try TemporaryDirectory("storage").url
     defer { try? FileManager.default.removeItem(at: root) }
-    let writer = try archive(in: root)
+    let writer = try punctuatedSession.create(in: root)
     #expect(throws: Error.self) { try SessionArchive.open(at: writer.directory) }
     let traversal = AudioChunkRecord(track: "mic", relativePath: "audio/mic/../secret.caf",
                                      start: 0, end: 1, sampleRate: 48_000,
@@ -85,9 +67,9 @@ private func writeCAF(at url: URL, frames: Int = 64, sampleRate: Double = 48_000
 }
 
 @Test func interruptedManifestAndTornJournalAreReportedWithoutMutation() async throws {
-    let root = try temporaryRoot()
+    let root = try TemporaryDirectory("storage").url
     defer { try? FileManager.default.removeItem(at: root) }
-    let writer = try archive(in: root)
+    let writer = try punctuatedSession.create(in: root)
     let directory = writer.directory
     let orphan = directory.appendingPathComponent("audio/system/000002.caf")
     try Data([1, 2, 3]).write(to: orphan)
@@ -111,9 +93,9 @@ private func writeCAF(at url: URL, frames: Int = 64, sampleRate: Double = 48_000
 }
 
 @Test func missingAndCorruptChunksAreReported() async throws {
-    let root = try temporaryRoot()
+    let root = try TemporaryDirectory("storage").url
     defer { try? FileManager.default.removeItem(at: root) }
-    let writer = try archive(in: root)
+    let writer = try punctuatedSession.create(in: root)
     let first = writer.directory.appendingPathComponent("audio/mic/first.caf")
     let second = writer.directory.appendingPathComponent("audio/mic/second.caf")
     try Data([1, 2, 3]).write(to: first)
@@ -135,9 +117,9 @@ private func writeCAF(at url: URL, frames: Int = 64, sampleRate: Double = 48_000
 }
 
 @Test func unsafeManifestPathIsRejectedWithoutReadingOutsideArchive() throws {
-    let root = try temporaryRoot()
+    let root = try TemporaryDirectory("storage").url
     defer { try? FileManager.default.removeItem(at: root) }
-    let writer = try archive(in: root)
+    let writer = try punctuatedSession.create(in: root)
     var manifest = try SessionArchive.readManifest(at: writer.directory)
     manifest.chunks = [.init(track: "mic", relativePath: "audio/mic/../../outside.caf",
                              start: 0, end: 1, sampleRate: 1, channels: 1, frameCount: 1)]
@@ -151,9 +133,9 @@ private func writeCAF(at url: URL, frames: Int = 64, sampleRate: Double = 48_000
 }
 
 @Test func activeLockAndProcessingStatus() async throws {
-    let root = try temporaryRoot()
+    let root = try TemporaryDirectory("storage").url
     defer { try? FileManager.default.removeItem(at: root) }
-    let writer = try archive(in: root)
+    let writer = try punctuatedSession.create(in: root)
     #expect(try SessionArchive.isActive(at: writer.directory))
     await #expect(throws: Error.self) { try await SessionArchive.recover(at: writer.directory) }
     try await writer.setStatus("processing")
@@ -164,21 +146,21 @@ private func writeCAF(at url: URL, frames: Int = 64, sampleRate: Double = 48_000
 }
 
 private func makeStaleArchive(in root: URL) async throws -> URL {
-    let writer = try archive(in: root)
+    let writer = try punctuatedSession.create(in: root)
     let directory = writer.directory
     let path = "audio/mic/000001.caf"
     try await writer.recordEvent(kind: "chunkOpened", details: [
         "track": "mic", "relativePath": path, "start": "2.5",
         "sampleRate": "48000", "channels": "1",
     ])
-    try writeCAF(at: directory.appendingPathComponent(path))
-    try writeCAF(at: directory.appendingPathComponent("audio/mic/no-metadata.caf"))
+    try AudioFixtures.writeCAF(at: directory.appendingPathComponent(path))
+    try AudioFixtures.writeCAF(at: directory.appendingPathComponent("audio/mic/no-metadata.caf"))
     try await writer.setStatus("processing")
     return directory
 }
 
 @Test func recoveryPreservesJournalAndReconstructsTimedCAFOnly() async throws {
-    let root = try temporaryRoot()
+    let root = try TemporaryDirectory("storage").url
     defer { try? FileManager.default.removeItem(at: root) }
     let directory = try await makeStaleArchive(in: root)
     #expect(try !SessionArchive.isActive(at: directory))
@@ -217,9 +199,9 @@ private func makeStaleArchive(in root: URL) async throws -> URL {
 }
 
 @Test func markdownExportPreservesSegmentTimeTrackAndSpeakerLabel() async throws {
-    let root = try temporaryRoot()
+    let root = try TemporaryDirectory("storage").url
     defer { try? FileManager.default.removeItem(at: root) }
-    let writer = try archive(in: root)
+    let writer = try punctuatedSession.create(in: root)
     let transcript = Transcript(source: "meeting", locale: "en-CA", backend: .speech,
         segments: [
             .init(start: 1.25, end: 2.5, text: "First phrase", track: "mic", speakerID: "spk-1"),
@@ -251,17 +233,12 @@ private func fileSize(_ url: URL) throws -> Int {
     try #require(FileManager.default.attributesOfItem(atPath: url.path)[.size] as? NSNumber).intValue
 }
 
-private func isInvalidInput(_ error: HolosError?) -> Bool {
-    if case .invalidInput? = error { return true }
-    return false
-}
-
 /// `finish(status:keepingLock: true)` writes the final status and refuses later writes, but the writer lock stays held
 /// until `releaseLock()`; releasing twice is harmless.
 @Test func finishCanKeepTheWriterLockUntilReleased() async throws {
-    let root = try temporaryRoot()
+    let root = try TemporaryDirectory("storage").url
     defer { try? FileManager.default.removeItem(at: root) }
-    let writer = try archive(in: root)
+    let writer = try punctuatedSession.create(in: root)
     let directory = writer.directory
     try await writer.recordEvent(kind: MeetingEventKind.captureStopped, details: [:])
     try await writer.finish(status: ArchiveStatus.complete, keepingLock: true)
@@ -276,7 +253,7 @@ private func isInvalidInput(_ error: HolosError?) -> Bool {
     #expect(try SessionArchive.readEvents(at: directory).events.map(\.kind) == [MeetingEventKind.captureStopped])
 
     // An unfinished writer released this way keeps its manifest status and lets go of the lock.
-    let abandoned = try archive(in: root)
+    let abandoned = try punctuatedSession.create(in: root)
     await abandoned.releaseLock()
     #expect(try !SessionArchive.isActive(at: abandoned.directory))
     #expect(try SessionArchive.readManifest(at: abandoned.directory).status == ArchiveStatus.recording)
@@ -285,9 +262,9 @@ private func isInvalidInput(_ error: HolosError?) -> Bool {
 
 /// A finished archive with one registered chunk and two events.
 private func finishedArchive(in root: URL) async throws -> URL {
-    let writer = try archive(in: root)
+    let writer = try punctuatedSession.create(in: root)
     let path = "audio/mic/000001.caf"
-    try writeCAF(at: writer.directory.appendingPathComponent(path))
+    try AudioFixtures.writeCAF(at: writer.directory.appendingPathComponent(path))
     try await writer.registerChunk(.init(track: "mic", relativePath: path, start: 0, end: 64.0 / 48_000,
                                          sampleRate: 48_000, channels: 1, frameCount: 64))
     try await writer.recordEvent(kind: MeetingEventKind.chunkOpened, details: ["track": "mic", "relativePath": path])
@@ -298,15 +275,15 @@ private func finishedArchive(in root: URL) async throws -> URL {
 
 /// An archive left `recording` with events written and no live writer (the process "exited").
 private func abandonedRecording(in root: URL, events: Int) async throws -> URL {
-    let writer = try archive(in: root)
+    let writer = try punctuatedSession.create(in: root)
     for index in 1...events { try await writer.recordEvent(kind: "tick", details: ["index": "\(index)"]) }
     return writer.directory
 }
 
 @Test func failedAppendLeavesNoPartialLine() async throws {
-    let root = try temporaryRoot()
+    let root = try TemporaryDirectory("storage").url
     defer { try? FileManager.default.removeItem(at: root) }
-    let writer = try archive(in: root)
+    let writer = try punctuatedSession.create(in: root)
     let journal = SessionPaths.events(writer.directory)
     try await writer.recordEvent(kind: "first", details: [:])
     let size = try fileSize(journal)
@@ -326,7 +303,7 @@ private func abandonedRecording(in root: URL, events: Int) async throws -> URL {
 }
 
 @Test func corruptMiddleEventLineIsSkippedAndCounted() async throws {
-    let root = try temporaryRoot()
+    let root = try TemporaryDirectory("storage").url
     defer { try? FileManager.default.removeItem(at: root) }
     let directory = try await abandonedRecording(in: root, events: 1)
     let journal = SessionPaths.events(directory)
@@ -353,7 +330,7 @@ private func abandonedRecording(in root: URL, events: Int) async throws -> URL {
 }
 
 @Test func outOfOrderEventLinesAreSkipped() async throws {
-    let root = try temporaryRoot()
+    let root = try TemporaryDirectory("storage").url
     defer { try? FileManager.default.removeItem(at: root) }
     let directory = try await abandonedRecording(in: root, events: 2)
     let journal = SessionPaths.events(directory)
@@ -369,7 +346,7 @@ private func abandonedRecording(in root: URL, events: Int) async throws -> URL {
 }
 
 @Test func repeatedSequenceFromAnOlderBuildIsKept() async throws {
-    let root = try temporaryRoot()
+    let root = try TemporaryDirectory("storage").url
     defer { try? FileManager.default.removeItem(at: root) }
     let directory = try await abandonedRecording(in: root, events: 1)
     let journal = SessionPaths.events(directory)
@@ -390,7 +367,7 @@ private func abandonedRecording(in root: URL, events: Int) async throws -> URL {
 
 /// A journal whose only line is one event with `sequence`, in an archive left `recording`.
 private func abandonedRecording(in root: URL, onlySequence sequence: Int) throws -> URL {
-    let directory = try archive(in: root).directory
+    let directory = try punctuatedSession.create(in: root).directory
     let line = try HolosJSON.line(ArchiveEvent(sequence: sequence, at: Date(timeIntervalSince1970: 0),
                                                kind: "tick", details: [:]))
     try AtomicFile.write(line, to: SessionPaths.events(directory))
@@ -400,7 +377,7 @@ private func abandonedRecording(in root: URL, onlySequence sequence: Int) throws
 @Test func exhaustedSequenceIsUnreadableAndDoesNotTrap() async throws {
     // A damaged journal starting at Int.max used to be readable, and every opener trapped on `last + 1`.
     for opener in ["open", "maintenance", "recover"] {
-        let root = try temporaryRoot()
+        let root = try TemporaryDirectory("storage").url
         defer { try? FileManager.default.removeItem(at: root) }
         let directory = try abandonedRecording(in: root, onlySequence: Int.max)
         let read = try SessionArchive.readEvents(at: directory)
@@ -428,7 +405,7 @@ private func abandonedRecording(in root: URL, onlySequence sequence: Int) throws
 }
 
 @Test func lastSequenceNumberIsNeverAssigned() async throws {
-    let root = try temporaryRoot()
+    let root = try TemporaryDirectory("storage").url
     defer { try? FileManager.default.removeItem(at: root) }
     let directory = try abandonedRecording(in: root, onlySequence: Int.max - 1)
     #expect(try SessionArchive.readEvents(at: directory).events.map(\.sequence) == [Int.max - 1])
@@ -440,7 +417,7 @@ private func abandonedRecording(in root: URL, onlySequence sequence: Int) throws
 }
 
 @Test func recoveryOfAnExhaustedJournalSkipsItsEvent() async throws {
-    let root = try temporaryRoot()
+    let root = try TemporaryDirectory("storage").url
     defer { try? FileManager.default.removeItem(at: root) }
     let directory = try abandonedRecording(in: root, onlySequence: Int.max - 1)
     let report = try await SessionArchive.recover(at: directory)
@@ -453,9 +430,9 @@ private func abandonedRecording(in root: URL, onlySequence sequence: Int) throws
 private func journalSyncs(_ counter: FileSyncCounter) -> Int { counter.count("events.jsonl") }
 
 @Test func groupCommitSyncsOnlyWhenDue() async throws {
-    let root = try temporaryRoot()
+    let root = try TemporaryDirectory("storage").url
     defer { try? FileManager.default.removeItem(at: root) }
-    let writer = try archive(in: root)
+    let writer = try punctuatedSession.create(in: root)
     let counter = FileSyncCounter()
     try await AtomicFile.$fileSyncCounter.withValue(counter) {
         await writer.setJournalSync(.interval(seconds: 60))
@@ -476,9 +453,9 @@ private func journalSyncs(_ counter: FileSyncCounter) -> Int { counter.count("ev
 }
 
 @Test func everyEventModeSyncsEachEvent() async throws {
-    let root = try temporaryRoot()
+    let root = try TemporaryDirectory("storage").url
     defer { try? FileManager.default.removeItem(at: root) }
-    let writer = try archive(in: root)
+    let writer = try punctuatedSession.create(in: root)
     let counter = FileSyncCounter()
     try await AtomicFile.$fileSyncCounter.withValue(counter) {
         for index in 1...3 { try await writer.recordEvent(kind: "tick", details: ["index": "\(index)"]) }
@@ -489,9 +466,9 @@ private func journalSyncs(_ counter: FileSyncCounter) -> Int { counter.count("ev
 }
 
 @Test func groupCommitSyncsAfterTheInterval() async throws {
-    let root = try temporaryRoot()
+    let root = try TemporaryDirectory("storage").url
     defer { try? FileManager.default.removeItem(at: root) }
-    let writer = try archive(in: root)
+    let writer = try punctuatedSession.create(in: root)
     let counter = FileSyncCounter()
     try await AtomicFile.$fileSyncCounter.withValue(counter) {
         // An interval no machine reaches between two events: the second is always deferred. (The real timer firing
@@ -512,9 +489,9 @@ private func journalSyncs(_ counter: FileSyncCounter) -> Int { counter.count("ev
 }
 
 @Test func shorterGroupCommitIntervalReschedulesThePendingFlush() async throws {
-    let root = try temporaryRoot()
+    let root = try TemporaryDirectory("storage").url
     defer { try? FileManager.default.removeItem(at: root) }
-    let writer = try archive(in: root)
+    let writer = try punctuatedSession.create(in: root)
     let counter = FileSyncCounter()
     try await AtomicFile.$fileSyncCounter.withValue(counter) {
         await writer.setJournalSync(.interval(seconds: 3_600))
@@ -539,12 +516,12 @@ private func journalSyncs(_ counter: FileSyncCounter) -> Int { counter.count("ev
 /// misses it (seen as the earlier flush already done) gets a fresh archive and another try, so it never fails the test.
 /// Missing it twenty times in a row is reported.
 @Test(.timeLimit(.minutes(1))) func longerGroupCommitIntervalDropsTheEarlierFlush() async throws {
-    let root = try temporaryRoot()
+    let root = try TemporaryDirectory("storage").url
     defer { try? FileManager.default.removeItem(at: root) }
     for _ in 0..<20 {
         let attempt = root.appendingPathComponent(UUID().uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: attempt, withIntermediateDirectories: true)
-        let writer = try archive(in: attempt)
+        let writer = try punctuatedSession.create(in: attempt)
         let counter = FileSyncCounter()
         let checked = try await AtomicFile.$fileSyncCounter.withValue(counter) { () async throws -> Bool in
             await writer.setJournalSync(.interval(seconds: 0.2))
@@ -574,9 +551,9 @@ private func journalSyncs(_ counter: FileSyncCounter) -> Int { counter.count("ev
 }
 
 @Test func hugeGroupCommitIntervalIsClamped() async throws {
-    let root = try temporaryRoot()
+    let root = try TemporaryDirectory("storage").url
     defer { try? FileManager.default.removeItem(at: root) }
-    let writer = try archive(in: root)
+    let writer = try punctuatedSession.create(in: root)
     let counter = FileSyncCounter()
     try await AtomicFile.$fileSyncCounter.withValue(counter) {
         await writer.setJournalSync(.interval(seconds: 1e300))
@@ -610,9 +587,9 @@ private func journalInvariantViolation(_ state: SessionArchive.JournalSchedule) 
 }
 
 @Test func groupCommitSchedulerKeepsItsInvariant() async throws {
-    let root = try temporaryRoot()
+    let root = try TemporaryDirectory("storage").url
     defer { try? FileManager.default.removeItem(at: root) }
-    let writer = try archive(in: root)
+    let writer = try punctuatedSession.create(in: root)
     let journal = SessionPaths.events(writer.directory)
     let moved = journal.appendingPathExtension("moved")
     // Hides the journal from `AtomicFile.sync` (it opens the file by name), so a sync fails as an I/O error would.
@@ -690,9 +667,9 @@ private func journalInvariantViolation(_ state: SessionArchive.JournalSchedule) 
 }
 
 @Test func saveTranscriptCanBeRetriedAfterThePointerFails() async throws {
-    let root = try temporaryRoot()
+    let root = try TemporaryDirectory("storage").url
     defer { try? FileManager.default.removeItem(at: root) }
-    let writer = try archive(in: root)
+    let writer = try punctuatedSession.create(in: root)
     let first = Transcript(source: "mic", locale: "en-CA", backend: .speech)
     try await writer.saveTranscript(first, writeLegacyExports: false)
     let pointer = SessionPaths.transcriptPointer(writer.directory)
@@ -714,9 +691,9 @@ private func journalInvariantViolation(_ state: SessionArchive.JournalSchedule) 
 }
 
 @Test func saveTranscriptCanBeRetriedAfterALegacyExportFails() async throws {
-    let root = try temporaryRoot()
+    let root = try TemporaryDirectory("storage").url
     defer { try? FileManager.default.removeItem(at: root) }
-    let writer = try archive(in: root)
+    let writer = try punctuatedSession.create(in: root)
     let first = Transcript(source: "mic", locale: "en-CA", backend: .speech,
                            segments: [.init(start: 0, end: 1, text: "First")])
     try await writer.saveTranscript(first)
@@ -741,7 +718,7 @@ private func journalInvariantViolation(_ state: SessionArchive.JournalSchedule) 
 }
 
 @Test func interruptedSessionWithDeletedAudioRecovers() async throws {
-    let root = try temporaryRoot()
+    let root = try TemporaryDirectory("storage").url
     defer { try? FileManager.default.removeItem(at: root) }
     let directory = try await abandonedRecording(in: root, events: 1)
     try FileManager.default.removeItem(at: directory.appendingPathComponent("audio"))
@@ -757,16 +734,16 @@ private func journalInvariantViolation(_ state: SessionArchive.JournalSchedule) 
 }
 
 @Test func recoverLeavesNoLockFileInAFolderThatIsNotASession() async throws {
-    let root = try temporaryRoot()
+    let root = try TemporaryDirectory("storage").url
     defer { try? FileManager.default.removeItem(at: root) }
     await #expect(throws: HolosError.self) { try await SessionArchive.recover(at: root) }
     #expect(try FileManager.default.contentsOfDirectory(atPath: root.path).isEmpty)
 }
 
 @Test func groupCommitKeepsEveryEvent() async throws {
-    let root = try temporaryRoot()
+    let root = try TemporaryDirectory("storage").url
     defer { try? FileManager.default.removeItem(at: root) }
-    let writer = try archive(in: root)
+    let writer = try punctuatedSession.create(in: root)
     await writer.setJournalSync(.interval(seconds: 1))
     for index in 1...3 { try await writer.recordEvent(kind: "tick", details: ["index": "\(index)"]) }
     try await writer.recordEvent(kind: MeetingEventKind.captureStopped, details: [:])
@@ -781,9 +758,9 @@ private func journalInvariantViolation(_ state: SessionArchive.JournalSchedule) 
 }
 
 @Test func groupCommitFlushesAfterTheInterval() async throws {
-    let root = try temporaryRoot()
+    let root = try TemporaryDirectory("storage").url
     defer { try? FileManager.default.removeItem(at: root) }
-    let writer = try archive(in: root)
+    let writer = try punctuatedSession.create(in: root)
     await writer.setJournalSync(.interval(seconds: 0.05))
     try await writer.recordEvent(kind: "first", details: [:])
     try await writer.recordEvent(kind: "second", details: [:])
@@ -796,7 +773,7 @@ private func journalInvariantViolation(_ state: SessionArchive.JournalSchedule) 
 }
 
 @Test func maintenanceOpenNeedsMatchingLease() async throws {
-    let root = try temporaryRoot()
+    let root = try TemporaryDirectory("storage").url
     defer { try? FileManager.default.removeItem(at: root) }
     let first = try await finishedArchive(in: root)
     let second = try await finishedArchive(in: root)
@@ -825,7 +802,7 @@ private func journalInvariantViolation(_ state: SessionArchive.JournalSchedule) 
 }
 
 @Test func maintenanceOpenRefusesARecordingArchive() async throws {
-    let root = try temporaryRoot()
+    let root = try TemporaryDirectory("storage").url
     defer { try? FileManager.default.removeItem(at: root) }
     let directory = try await abandonedRecording(in: root, events: 1)
     let lease = try SessionArchive.acquireProcessingLease(at: directory)
@@ -836,7 +813,7 @@ private func journalInvariantViolation(_ state: SessionArchive.JournalSchedule) 
 }
 
 @Test func maintenanceOpenRepairsTornTail() async throws {
-    let root = try temporaryRoot()
+    let root = try TemporaryDirectory("storage").url
     defer { try? FileManager.default.removeItem(at: root) }
     let directory = try await finishedArchive(in: root)
     let journal = SessionPaths.events(directory)
@@ -862,7 +839,7 @@ private func journalInvariantViolation(_ state: SessionArchive.JournalSchedule) 
 }
 
 @Test func recoverRefusedWhileLeaseHeldElsewhere() async throws {
-    let root = try temporaryRoot()
+    let root = try TemporaryDirectory("storage").url
     defer { try? FileManager.default.removeItem(at: root) }
     let directory = try await makeStaleArchive(in: root)
     let manifest = try Data(contentsOf: SessionPaths.manifest(directory))
@@ -882,7 +859,7 @@ private func journalInvariantViolation(_ state: SessionArchive.JournalSchedule) 
 }
 
 @Test func recoverUnderTheCallersLease() async throws {
-    let root = try temporaryRoot()
+    let root = try TemporaryDirectory("storage").url
     defer { try? FileManager.default.removeItem(at: root) }
     let directory = try await makeStaleArchive(in: root)
     let lease = try SessionArchive.acquireProcessingLease(at: directory)
@@ -896,9 +873,9 @@ private func journalInvariantViolation(_ state: SessionArchive.JournalSchedule) 
 }
 
 @Test func oldArchiveInspectsClean() async throws {
-    let root = try temporaryRoot()
+    let root = try TemporaryDirectory("storage").url
     defer { try? FileManager.default.removeItem(at: root) }
-    let writer = try archive(in: root)
+    let writer = try punctuatedSession.create(in: root)
     let directory = writer.directory
     try Data([1, 2, 3]).write(to: directory.appendingPathComponent("audio/mic/000001.caf"))
     try await writer.registerChunk(.init(track: "mic", relativePath: "audio/mic/000001.caf",
@@ -934,7 +911,7 @@ private func journalInvariantViolation(_ state: SessionArchive.JournalSchedule) 
 }
 
 @Test func newFoldersDoNotAffectIntegrity() async throws {
-    let root = try temporaryRoot()
+    let root = try TemporaryDirectory("storage").url
     defer { try? FileManager.default.removeItem(at: root) }
     let directory = try await finishedArchive(in: root)
     let manifest = try SessionArchive.readManifest(at: directory)
@@ -976,7 +953,7 @@ private func journalInvariantViolation(_ state: SessionArchive.JournalSchedule) 
 }
 
 @Test func deletedAudioIsExpected() async throws {
-    let root = try temporaryRoot()
+    let root = try TemporaryDirectory("storage").url
     defer { try? FileManager.default.removeItem(at: root) }
     let directory = try await finishedArchive(in: root)
     try FileManager.default.removeItem(at: directory.appendingPathComponent("audio"))
@@ -1009,7 +986,7 @@ private func journalInvariantViolation(_ state: SessionArchive.JournalSchedule) 
 }
 
 @Test func createWithExplicitID() async throws {
-    let root = try temporaryRoot()
+    let root = try TemporaryDirectory("storage").url
     defer { try? FileManager.default.removeItem(at: root) }
     let id = UUID().uuidString
     let writer = try SessionArchive.create(root: root, name: "Explicit", source: .microphone,
@@ -1022,7 +999,7 @@ private func journalInvariantViolation(_ state: SessionArchive.JournalSchedule) 
 }
 
 @Test func createRefusesExistingOrInvalidID() async throws {
-    let root = try temporaryRoot()
+    let root = try TemporaryDirectory("storage").url
     defer { try? FileManager.default.removeItem(at: root) }
     let id = UUID().uuidString
     let first = try SessionArchive.create(root: root, name: "First", source: .microphone,
@@ -1042,7 +1019,7 @@ private func journalInvariantViolation(_ state: SessionArchive.JournalSchedule) 
 }
 
 @Test func readEventsSkipsHashing() async throws {
-    let root = try temporaryRoot()
+    let root = try TemporaryDirectory("storage").url
     defer { try? FileManager.default.removeItem(at: root) }
     let directory = try await finishedArchive(in: root)
     try Data([9, 9, 9]).write(to: directory.appendingPathComponent("audio/mic/000001.caf"))
@@ -1054,9 +1031,9 @@ private func journalInvariantViolation(_ state: SessionArchive.JournalSchedule) 
 }
 
 @Test func openReadsTheManifestOnlyAfterTheWriterLockIsFree() async throws {
-    let root = try temporaryRoot()
+    let root = try TemporaryDirectory("storage").url
     defer { try? FileManager.default.removeItem(at: root) }
-    var first: SessionArchive? = try archive(in: root)
+    var first: SessionArchive? = try punctuatedSession.create(in: root)
     let directory = try #require(first).directory
     let path = "audio/mic/000001.caf"
     try Data([1, 2, 3]).write(to: directory.appendingPathComponent(path))
@@ -1084,19 +1061,19 @@ private func journalInvariantViolation(_ state: SessionArchive.JournalSchedule) 
 }
 
 @Test func createPublishesTheSessionFolderDurably() throws {
-    let root = try temporaryRoot()
+    let root = try TemporaryDirectory("storage").url
     defer { try? FileManager.default.removeItem(at: root) }
     let counter = FileSyncCounter()
-    let writer = try AtomicFile.$fileSyncCounter.withValue(counter) { try archive(in: root) }
+    let writer = try AtomicFile.$fileSyncCounter.withValue(counter) { try punctuatedSession.create(in: root) }
     #expect(counter.count(root.lastPathComponent + "/") == 1)
     #expect(counter.count("audio/") == 1)
     #expect(counter.count(writer.directory.lastPathComponent + "/") >= 1)
 }
 
 @Test func saveTranscriptRefusesExportsSwappedForASymbolicLink() async throws {
-    let root = try temporaryRoot()
+    let root = try TemporaryDirectory("storage").url
     defer { try? FileManager.default.removeItem(at: root) }
-    let writer = try archive(in: root)
+    let writer = try punctuatedSession.create(in: root)
     let outside = root.appendingPathComponent("outside", isDirectory: true)
     try FileManager.default.createDirectory(at: outside, withIntermediateDirectories: false)
     let exports = SessionPaths.exports(writer.directory)
