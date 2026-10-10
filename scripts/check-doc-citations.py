@@ -311,10 +311,11 @@ def classify(lines):
     """The one reading of a Markdown file's lines that every pass uses: ([(kind, content, quote depth, region)],
     problems). `content` is the line without its block quote markers. Kinds: "fence" (a fence line), "code" (inside
     fenced code), "html" (an HTML comment block, after any block quote and list markers, or the lines after a line
-    that leaves an inline comment open; it runs to the line holding `-->`), "marker" (a `<!-- citations: ... -->` or `<!-- /citations -->` line), "blank", "heading", "row" (a table
-    row: a header row followed by a delimiter row, that delimiter row, and the rows after it), "text". `region` is the
-    path of the innermost open citations region (regions nest; an unclosed region or a stray close is a problem).
-    Nothing inside fenced code or an HTML comment is a marker, a heading, a row or a reference definition."""
+    that leaves an inline comment open; it runs to the line holding `-->`), "marker" (a `<!-- citations: ... -->` or
+    `<!-- /citations -->` line), "blank", "heading", "row" (a table row: a header row followed by a delimiter row,
+    that delimiter row, and the rows after it), "text". `region` is the path of the innermost open citations region
+    (regions nest; an unclosed region or a stray close is a problem). Nothing inside fenced code or an HTML comment
+    is a marker, a heading, a row or a reference definition."""
     infos, problems, stack, fence, comment = [], [], [], None, False
     for number, line in enumerate(lines, 1):
         quote = QUOTE_PREFIX.match(line)
