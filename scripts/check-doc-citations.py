@@ -307,6 +307,36 @@ def sections(text):
     return found
 
 
+def line_kind(line):
+    """A line's kind on its own, as if outside fenced code and HTML comments: (kind, content, inner, quote depth).
+    `content` is the line without its block quote markers, `inner` without its block quote and list markers."""
+    quote = QUOTE_PREFIX.match(line)
+    content = line[quote.end():] if quote else line
+    container = CONTAINER_PREFIX.match(line)
+    inner = line[container.end():] if container else line
+    depth = quote.group(0).count(">") if quote else 0
+    if opens(line):
+        kind = "fence"
+    elif REGION_OPEN.match(inner) or REGION_CLOSE.match(inner):
+        kind = "marker"
+    elif re.match(r"^ {0,3}<!--", inner):
+        kind = "html"
+    elif not content.strip():
+        kind = "blank"
+    elif HEADING.match(content):
+        kind = "heading"
+    else:
+        kind = "text"
+    return kind, content, inner, depth
+
+
+def breaks_paragraph(kind, content, quotes, depth):
+    """Whether a line ends the paragraph before it (at block quote depth `depth`): any kind but text (a fence, HTML
+    comment, region marker, blank line, heading or table row), a list item, or a block quote line at another depth.
+    `markdown_paragraphs` and the code-span lookahead in `classify` both split paragraphs with it."""
+    return kind != "text" or LIST_ITEM.match(content) is not None or bool(quotes and quotes != depth)
+
+
 def classify(lines):
     """The one reading of a Markdown file's lines that every pass uses: ([(kind, content, quote depth, region)],
     problems). `content` is the line without its block quote markers. Kinds: "fence" (a fence line), "code" (inside
@@ -317,16 +347,25 @@ def classify(lines):
     row, and the rows after it), "text". `region` is the path of the innermost open citations region (regions nest;
     an unclosed region or a stray close is a problem). Nothing inside fenced code or an HTML comment is a marker, a
     heading, a row or a reference definition."""
-    infos, problems, stack, fence, comment, span = [], [], [], None, False, 0
+    infos, problems, stack, fence, comment, span, table = [], [], [], None, False, 0, False
 
-    def closes_later(after, run):
-        """Whether a code span's run of `run` backticks closes on a line of the paragraph after line `after`."""
-        for later in lines[after:]:
-            quote = QUOTE_PREFIX.match(later)
-            rest = later[quote.end():] if quote else later
-            if not rest.strip() or opens(later) or HEADING.match(rest):
+    def delimiter_after(index, quotes):
+        """Whether the line after `lines[index]` is a table delimiter row at the same block quote depth."""
+        if index + 1 >= len(lines):
+            return False
+        kind, content, _, depth = line_kind(lines[index + 1])
+        return kind == "text" and depth == quotes and TABLE_DELIMITER.match(content) is not None
+
+    def closes_later(after, run, depth):
+        """Whether a code span's run of `run` backticks closes on a later line of the paragraph that holds line
+        `after`, the paragraph ending where `breaks_paragraph` says (a table row is a paragraph of its own)."""
+        for index in range(after, len(lines)):
+            kind, content, _, quotes = line_kind(lines[index])
+            if kind == "text" and "|" in content and (TABLE_DELIMITER.match(content) or delimiter_after(index, quotes)):
+                kind = "row"
+            if breaks_paragraph(kind, content, quotes, depth):
                 return False
-            if backtick_run(run).search(rest):
+            if backtick_run(run).search(content):
                 return True
         return False
 
@@ -369,9 +408,12 @@ def classify(lines):
             kind = "heading"
         else:
             kind = "text"
+        table = kind == "text" and "|" in content and (table or delimiter_after(number - 1, depth))
         if kind in ("text", "heading"):
-            later = (lambda run: closes_later(number, run)) if kind == "text" else (lambda run: False)
-            comment, span = opens_comment(content, span if kind == "text" else 0, later)
+            single = kind == "heading" or table
+            later = (lambda run: False) if single else (lambda run: closes_later(number, run, depth))
+            comment, span = opens_comment(content, 0 if single else span, later)
+            span = 0 if single else span
         else:
             span = 0
         infos.append([kind, content, depth, stack[-1][0] if stack and kind != "marker" else None])
@@ -412,15 +454,12 @@ def markdown_paragraphs(lines):
         if kind in ("fence", "html", "marker", "blank"):
             flush()
             continue
-        if quotes and quotes != depth:
+        if breaks_paragraph(kind, content, quotes, depth):
             flush()
         depth = quotes
         if kind in ("heading", "row"):
-            flush()
             paragraphs.append([(number, line)])
         else:
-            if LIST_ITEM.match(content):
-                flush()
             current.append((number, line))
     flush()
     return paragraphs
@@ -867,6 +906,9 @@ SELF_TEST_FILES = {
                             "<!--\nhidden [old](missing2.md) --> docs/conventions.md §99.7\n",
     "docs/span-comment.md": "A span `starts here\nand holds <!-- literally` and ends.\n\nThen docs/missing.md §9.9.\n\n"
                             "An unmatched ` backtick\nthen <!-- a real comment\n\n[x](missing.md) §9.8\n-->\n",
+    "docs/span-boundaries.md": "- An unmatched ` backtick\n- next item <!-- a real comment ` here\n\n[x](missing.md) §9.7\n-->\n\n"
+                               "> quoted ` backtick\n>> deeper <!-- a real comment ` here\n\n[y](missing.md) §9.6\n-->\n\n"
+                               "Text with ` backtick <!-- a real comment\n| a ` | b |\n|---|---|\n\n[z](missing.md) §9.5\n-->\n",
     "docs/inline-comment.md": "Text <!-- [old](missing.md) or §9.9 --> and `<!-- code -->` stay; docs/a.md §1.3.\n",
     "docs/typo.md": "See desgin.md, README.md and exports/transcript.md.\n",
     "docs/index2.md": "<!-- citations: docs/index2.md -->\n| Sections | File |\n|---|---|\n| §1.1 One | [sub/b.md](sub/b.md) |\n| §1.2–1.3 Stale | "
