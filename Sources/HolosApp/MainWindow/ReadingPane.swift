@@ -7,6 +7,10 @@ import HolosSynthesis
 /// with Preview, a speed, Make Audio) over the list of readings, each made into one `.m4a` in the output folder and
 /// played, shared, shown in Finder, or deleted from its row. Links and files can be dropped anywhere on the section
 /// or pasted with ⌘V.
+///
+/// Invariants:
+/// 1. Inventory refreshes retain the card's requested voice and speed, including during a natural pack reinstall.
+/// 2. Only an explicit voice choice or a preferences change replaces the requested voice.
 @MainActor
 final class ReadingPane: NSViewController, MainSectionContent, NSTableViewDataSource, NSTableViewDelegate,
     NSTextFieldDelegate, NSMenuItemValidation {
@@ -17,7 +21,7 @@ final class ReadingPane: NSViewController, MainSectionContent, NSTableViewDataSo
     private var previewProblem: String?
     private let field = NSTextField()
     private let chooseButton = NSButton(title: "Choose File…", target: nil, action: nil)
-    let voicePopup = NSPopUpButton(frame: .zero, pullsDown: false)
+    let voicePopup = ReadingVoicePopup(frame: .zero)
     private let previewButton = NSButton(title: "▶ Preview", target: nil, action: nil)
     let speedSlider = NSSlider(value: ReadingSpeed.standard, minValue: ReadingSpeed.range.lowerBound,
                                        maxValue: ReadingSpeed.range.upperBound, target: nil, action: nil)
@@ -107,9 +111,8 @@ final class ReadingPane: NSViewController, MainSectionContent, NSTableViewDataSo
         chooseButton.toolTip = "Choose one or more documents to read"
 
         voicePopup.setAccessibilityLabel("Voice")
-        voicePopup.target = self
-        voicePopup.action = #selector(voiceChosen)
-        // Wide enough for "Ava (Premium) — English (United States)", narrower when the section is.
+        voicePopup.onChoose = { [weak self] in self?.chosenVoice = $0 }
+        // The full choice remains accessible when this button narrows with the section.
         let voiceWidth = voicePopup.widthAnchor.constraint(equalToConstant: 340)
         voiceWidth.priority = .defaultLow
         voiceWidth.isActive = true
@@ -254,8 +257,7 @@ final class ReadingPane: NSViewController, MainSectionContent, NSTableViewDataSo
     }
 
     // MARK: - New reading
-
-    private var selectedVoice: String? { voicePopup.selectedItem?.representedObject as? String }
+    private var selectedVoice: String? { voicePopup.selectedID }
 
     /// The card's voice and speed follow Settings › Reading.
     private func applyPreferences() {
@@ -271,13 +273,11 @@ final class ReadingPane: NSViewController, MainSectionContent, NSTableViewDataSo
             + "the only things fetched are the page you paste and, when you download them, the natural voices."
     }
 
-    /// Rebuilds the voice menu (voices can be installed while it runs), selecting `id`, else the card's chosen voice.
+    /// Refreshes the picker while retaining the card's choice (invariant 1).
     private func refreshVoices(selecting id: String?? = nil) {
         if let id { chosenVoice = id }
         ReadingVoicePopup.fill(voicePopup, selecting: chosenVoice, installed: installedPacks())
     }
-
-    @objc private func voiceChosen() { chosenVoice = selectedVoice }
 
     func controlTextDidChange(_ notification: Notification) {
         inputGeneration += 1

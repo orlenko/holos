@@ -8,6 +8,8 @@ natural voices' catalog and pack install (their backend is in `HolosPocket`).
   `RenderedAudio`, `SpeechRate`).
 - `VoiceSelection` and `ReadingVoiceMenu` / `ReadingSpeed`: finding and ranking installed voices. Pure: callers pass
   the installed voices and the user's languages.
+- `ReadingVoiceList`: alphabetical browsing and search by name, language, region and quality, with a language
+  filter covering every region; includes the installed natural voices and omits novelty voices.
 - `SpeechPlayback`: plays one file at a time under a per-user playback lock (`voiceislocal say`).
 - `AudioBookWriter`: joins rendered parts into one AAC `.m4a` with metadata and chapters.
 - `NaturalVoiceCatalog` (`NaturalVoices.swift`): the Pocket TTS voices and their recordings' licences; only voices

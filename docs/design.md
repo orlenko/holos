@@ -462,7 +462,7 @@ their finalized run supplies the durable identity and timing first.
 
 Reading (⌘5, `ReadingPane`) makes the same file as `voiceislocal read` from inside the
 app. A **New reading** card holds one field ("Paste a link, or drop a PDF, Word, HTML,
-Markdown or text file here") with **Choose File…**, a row with the Voice pop-up and
+Markdown or text file here") with **Choose File…**, a row with the Voice picker and
 **▶ Preview**, and a row with the Speed slider and **Make Audio** (Return), so it fits
 the section's narrowest width. The field takes an `https://` link with any host (an intranet
 name or an IP address included; a bare "example.com/page", which must look like a site, gets
@@ -473,13 +473,23 @@ pasted with ⌘V outside a field, go through the same parser: file URLs first, t
 then each line of text; one source fills the field, several are all added at once, and the
 ones that cannot be read are named under the card.
 
-The Voice pop-up lists "Automatic — best voice for the text's language" and then the
-installed voices without the novelty ones (`ReadingVoiceMenu`, HolosSynthesis): those that
-speak one of the user's languages first, each group Premium, Enhanced, then default, then
-by the user's language order, language, and name; Premium and Enhanced are marked in the
-title. Automatic resolves once the text is loaded, as `voiceislocal read` does (the
-declared or detected language, `NativeSpeechRenderer.bestVoice`). Natural voices, once downloaded, come first and
-are what Automatic picks for English and French (see "Natural voices"). Preview speaks a
+The Voice picker opens a compact popover, shared with Settings › Reading: **Search voices**,
+a **Language** filter, **Automatic**, and a scrolling list (`ReadingVoiceList`, HolosSynthesis).
+The list is alphabetical by voice name across natural and system voices, then by region; versions
+of the same voice in one region show Premium before Enhanced before System. Every row separates
+the voice's name from its language, region and quality. Novelty voices are omitted. Search matches
+every typed word across the name, language, region and quality, ignoring case and accents; a language
+filter includes every region of that language. The list shows the match count and an explanation when
+there are no matches. Up/Down moves the highlight, Return chooses it, a row click chooses immediately,
+and Escape dismisses without changing the voice. Automatic is available regardless of filters; a
+download hint points to Settings › Reading when a natural pack is missing. Installing voices refreshes
+an open picker while keeping its search and an available language filter; browsing and refreshing do
+not change the chosen voice or saved preferences. The button shows the chosen voice and quality,
+with the full language and region in its tooltip and accessible value.
+
+Automatic resolves once the text is loaded, as `voiceislocal read` does (the declared or detected
+language, `NativeSpeechRenderer.bestVoice`). Natural voices, once downloaded, are what Automatic
+picks for English and French (see "Natural voices"). Preview speaks a
 sentence in the voice's language (English for languages without one) with
 `AVSpeechSynthesizer.speak`; a second press stops it. Speed is 0.8×–1.4× in steps of 0.1
 (`ReadingSpeed`): 1× passes no rate (the renderer's default, as the CLI without
@@ -661,8 +671,8 @@ them with the licence of the recording each voice prompt was made from (the Pock
 recordings; https://huggingface.co/kyutai/tts-voices gives their licences). Only voices whose recording allows
 commercial use are offered: 19 English voices (Alba, CC BY 4.0; twelve VCTK voices, CC BY 4.0; six CC0 voices) and
 Estelle in French (Kyutai's own recording, CC0). `cosette` (Expresso) and `jean` (EARS) are CC BY-NC 4.0 and are
-listed but never offered; voices not offered are deleted from the downloaded packs. Menus title them "Natural —
-Alba (English)", the CLI "Alba (Natural)" with quality `natural`. Preview with a natural voice has the tool
+listed but never offered; voices not offered are deleted from the downloaded packs. The picker shows "Alba"
+with "English · Natural" below it, the CLI "Alba (Natural)" with quality `natural`. Preview with a natural voice has the tool
 render the sample sentence (a few seconds), then plays it.
 
 **Where it runs.** The app does not link FluidAudio (as for speaker labels and deep transcription): a part of a

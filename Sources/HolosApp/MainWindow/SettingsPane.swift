@@ -9,6 +9,10 @@ import HolosSynthesis
 /// every second while the section is on screen (TCC has no change notification), and reports each change through its
 /// callbacks. The sidebar lists the cards as chapters (`show(chapter:animated:)`, `onChapterChange`), and a search
 /// field above the page shows only the settings that match (`SettingsSearch`).
+///
+/// Invariants:
+/// 1. Searching changes which settings are shown, never their values.
+/// 2. Refreshing the voice inventory changes the choices offered, never the saved reading preference.
 @MainActor
 final class SettingsPane: NSViewController, MainSectionContent, NSSearchFieldDelegate {
     enum Mark { case done, pending, problem }
@@ -86,7 +90,7 @@ final class SettingsPane: NSViewController, MainSectionContent, NSSearchFieldDel
         target: nil, action: nil)
     private static let meetingSummariesTitle = "Title and summarize meetings with Apple Intelligence (on-device)"
     private let meetingSummariesToggle = NSButton(checkboxWithTitle: meetingSummariesTitle, target: nil, action: nil)
-    let readingVoicePopup = NSPopUpButton(frame: .zero, pullsDown: false)
+    let readingVoicePopup = ReadingVoicePopup(frame: .zero)
     private let readingSpeedSlider = NSSlider(value: ReadingSpeed.standard, minValue: ReadingSpeed.range.lowerBound,
                                               maxValue: ReadingSpeed.range.upperBound, target: nil, action: nil)
     private let readingSpeedLabel = NSTextField(labelWithString: "")
@@ -416,8 +420,7 @@ final class SettingsPane: NSViewController, MainSectionContent, NSSearchFieldDel
     /// Settings › Reading: what new readings in the Reading section start with, and where their files go.
     private func readingCard() -> NSView {
         let grid = makeGrid()
-        readingVoicePopup.target = self
-        readingVoicePopup.action = #selector(readingVoiceChosen(_:))
+        readingVoicePopup.onChoose = { ReadingPreferences.voice = $0 }
         readingVoicePopup.setAccessibilityLabel("Default reading voice")
         addControlRow(.reading, "person.wave.2", "Voice", Self.readingVoiceHint, keywords: Self.readingVoiceKeywords,
                       control: readingVoicePopup, to: grid)
@@ -496,10 +499,6 @@ final class SettingsPane: NSViewController, MainSectionContent, NSSearchFieldDel
 
     func sectionDidShow() {
         refreshReadingCard()
-    }
-
-    @objc private func readingVoiceChosen(_ sender: NSPopUpButton) {
-        ReadingPreferences.voice = sender.selectedItem?.representedObject as? String
     }
 
     @objc private func readingSpeedChanged(_ sender: NSSlider) {
