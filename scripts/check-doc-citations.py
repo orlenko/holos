@@ -63,6 +63,7 @@ Prints each problem as `file:line: ...` and a summary; exits 1 when there is any
 import fnmatch
 import os
 import re
+import string
 import subprocess
 import sys
 
@@ -591,53 +592,59 @@ def backtick_run(n):
     return re.compile(r"(?<!`)" + "`" * n + r"(?!`)")
 
 
-def opens_comment(text, span=0, closes_later=lambda n: False):
-    """Read one line of a paragraph for inline HTML comments, outside code spans: (whether it leaves a comment open
-    at its end, the length of a code span's backtick run it leaves open). `span` is the run an earlier line of the
-    paragraph left open; `closes_later(n)` says whether a run of `n` backticks closes on a later line of the
-    paragraph (a run that never closes is literal backticks, as in CommonMark)."""
-    j = 0
+def inline_scan(text, span=0, closes_later=lambda n: False):
+    """The one scan of inline Markdown for HTML comments and code spans, which `opens_comment` and
+    `without_comments` share: ([(start, end or None while still open)] of each inline comment, the length of a code
+    span's backtick run left open at the end). A backslash-escaped punctuation character is text: `\\<!--` opens no
+    comment and `` \\` `` no code span. Inside a comment, as in CommonMark, backslashes are text, and `-->` ends it.
+    `span` is the run an earlier line of the paragraph left open; `closes_later(n)` says whether a run of `n`
+    backticks closes on a later line of the paragraph (a run that never closes is literal backticks)."""
+    comments, j = [], 0
     if span:
         match = backtick_run(span).search(text)
         if not match:
-            return False, span
+            return comments, span
         j = match.end()
     while j < len(text):
+        if text[j] == "\\" and j + 1 < len(text) and text[j + 1] in string.punctuation:
+            j += 2
+            continue
         if text[j] == "`":
             run = len(text[j:]) - len(text[j:].lstrip("`"))
             match = backtick_run(run).search(text, j + run)
             if match:
                 j = match.end()
             elif closes_later(run):
-                return False, run
+                return comments, run
             else:
                 j += run
             continue
         if text.startswith("<!--", j):
             end = text.find("-->", j + 4)
             if end < 0:
-                return True, 0
+                comments.append((j, None))
+                return comments, 0
+            comments.append((j, end + 3))
             j = end + 3
             continue
         j += 1
-    return False, 0
+    return comments, 0
+
+
+def opens_comment(text, span=0, closes_later=lambda n: False):
+    """Read one line of a paragraph (`inline_scan`): (whether it leaves an inline HTML comment open at its end, the
+    length of a code span's backtick run it leaves open)."""
+    comments, run = inline_scan(text, span, closes_later)
+    return bool(comments) and comments[-1][1] is None, run
 
 
 def without_comments(text):
-    """`text` with its inline HTML comments (`<!-- ... -->`, outside code spans) blanked out, offsets and line breaks
-    kept, so a commented-out link, path or section is not read."""
-    out, j = list(text), 0
-    while j < len(text):
-        if text[j] == "`":
-            j = code_span_end(text, j)
-            continue
-        if text.startswith("<!--", j):
-            end = text.find("-->", j + 4)
-            end = len(text) if end < 0 else end + 3
-            out[j:end] = [c if c == "\n" else " " for c in text[j:end]]
-            j = end
-            continue
-        j += 1
+    """`text` with its inline HTML comments (`inline_scan`) blanked out, offsets and line breaks kept, so a
+    commented-out link, path or section is not read."""
+    out = list(text)
+    for start, end in inline_scan(text)[0]:
+        end = len(text) if end is None else end
+        out[start:end] = [c if c == "\n" else " " for c in text[start:end]]
     return "".join(out)
 
 
@@ -909,6 +916,8 @@ SELF_TEST_FILES = {
     "docs/span-boundaries.md": "- An unmatched ` backtick\n- next item <!-- a real comment ` here\n\n[x](missing.md) §9.7\n-->\n\n"
                                "> quoted ` backtick\n>> deeper <!-- a real comment ` here\n\n[y](missing.md) §9.6\n-->\n\n"
                                "Text with ` backtick <!-- a real comment\n| a ` | b |\n|---|---|\n\n[z](missing.md) §9.5\n-->\n",
+    "docs/escaped.md": "An escaped \\<!-- is text, so docs/missing.md §9.4 is read.\n\n"
+                       "An escaped \\` is text and <!-- a real comment ` opens\n\n[x](missing.md) §9.3\n-->\n",
     "docs/inline-comment.md": "Text <!-- [old](missing.md) or §9.9 --> and `<!-- code -->` stay; docs/a.md §1.3.\n",
     "docs/typo.md": "See desgin.md, README.md and exports/transcript.md.\n",
     "docs/index2.md": "<!-- citations: docs/index2.md -->\n| Sections | File |\n|---|---|\n| §1.1 One | [sub/b.md](sub/b.md) |\n| §1.2–1.3 Stale | "
@@ -964,6 +973,7 @@ SELF_TEST_PROBLEMS = [
     "docs/sub/plain.md:1: spec.md: no such file",
     "docs/folder2.md:1: missing/status.md: no such file",
     "docs/typo.md:1: desgin.md: no such file",
+    "docs/escaped.md:1: docs/missing.md: no such file",
     "docs/span-comment.md:4: docs/missing.md: no such file",
     "docs/inline-close.md:2: docs/conventions.md §99.9: no heading 99.9 in docs/conventions.md",
     "docs/inline-close.md:6: missing.md: no such file",
