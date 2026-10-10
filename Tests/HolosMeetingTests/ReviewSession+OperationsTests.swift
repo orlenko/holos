@@ -88,6 +88,11 @@ struct ReviewSessionOperationsTests {
         }
         let (stream, release) = AsyncStream<Void>.makeStream()
         let saves = SharedValue(0)
+        /// What a save hook could not set up (it cannot throw): checked once the scenario ran.
+        let hookFailures = SharedValue<[String]>([])
+        let inHook = { @Sendable (setUp: () throws -> Void) in
+            do { try setUp() } catch { hookFailures.update { $0.append("\(error)") } }
+        }
         /// Holds the first save back until `release`.
         let holdFirstSave: @Sendable () async -> Void = {
             if saves.update({ $0 += 1; return $0 }) == 1 { for await _ in stream {} }
@@ -122,9 +127,9 @@ struct ReviewSessionOperationsTests {
             review.beforeEdit = {
                 let call = saves.update { $0 += 1; return $0 }
                 if call == 1 { for await _ in stream {} }
-                if call == 2 { Self.setWritable(journal, false) }
+                if call == 2 { inHook { try Self.setWritable(journal, false) } }
             }
-            defer { Self.setWritable(journal, true) }
+            defer { Self.cleanUp { try Self.setWritable(journal, true) } }
             let first = rename("system:S1", "Ash")
             #expect(await eventually { saves.value == 1 })
             let undo = Task { @MainActor in try await review.undo() }
@@ -150,15 +155,16 @@ struct ReviewSessionOperationsTests {
             _ = try? await first.value
             _ = try? await second.value
         case .savedButNotReread:
-            review.beforeEdit = { Self.blockRereads(session, true) }
-            defer { Self.blockRereads(session, false) }
+            review.beforeEdit = { inHook { try Self.blockRereads(session, true) } }
+            defer { Self.cleanUp { try Self.blockRereads(session, false) } }
             _ = try? await review.apply([.rename(speakerID: "system:S1", name: "Ash")])
             review.beforeEdit = nil
             await review.reload()
-            Self.blockRereads(session, false)
+            try Self.blockRereads(session, false)
             await review.reload()
         }
         review.beforeEdit = nil
+        #expect(hookFailures.value.isEmpty, "A save hook could not set up the scenario: \(hookFailures.value)")
         let actual = finished.map { ($0.atFinish, Self.states($0.op)) }
         let wanted = Self.expected[scenario] ?? []
         #expect(actual.map(\.0) == wanted.map(\.atFinish), "\(scenario) at finish")
@@ -166,29 +172,34 @@ struct ReviewSessionOperationsTests {
         await review.close()
     }
 
-    private nonisolated static func setWritable(_ url: URL, _ writable: Bool) {
-        try? FileManager.default.setAttributes([.posixPermissions: writable ? 0o600 : 0o400], ofItemAtPath: url.path)
+    private nonisolated static func setWritable(_ url: URL, _ writable: Bool) throws {
+        try FileManager.default.setAttributes([.posixPermissions: writable ? 0o600 : 0o400], ofItemAtPath: url.path)
     }
 
     /// Makes the session's event journal unreadable (read when labels are loaded, not when a change is saved), or
     /// readable again.
-    private nonisolated static func blockRereads(_ session: URL, _ blocked: Bool) {
+    private nonisolated static func blockRereads(_ session: URL, _ blocked: Bool) throws {
         let events = SessionPaths.events(session)
         var isFolder: ObjCBool = false
         let exists = FileManager.default.fileExists(atPath: events.path, isDirectory: &isFolder)
         if blocked {
             if exists {
-                try? FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: events.path)
+                try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: events.path)
             } else {
-                try? FileManager.default.createDirectory(at: events, withIntermediateDirectories: false)
+                try FileManager.default.createDirectory(at: events, withIntermediateDirectories: false)
             }
         } else if exists {
             if isFolder.boolValue {
-                try? FileManager.default.removeItem(at: events)
+                try FileManager.default.removeItem(at: events)
             } else {
-                try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: events.path)
+                try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: events.path)
             }
         }
+    }
+
+    /// Runs a cleanup step in a `defer` (which cannot throw): a failure is recorded as an issue, never ignored.
+    private static func cleanUp(_ step: () throws -> Void) {
+        do { try step() } catch { Issue.record(error, "Cleanup failed") }
     }
 
     /// Labels the meeting again elsewhere (a command): a new head run with the same turns.
