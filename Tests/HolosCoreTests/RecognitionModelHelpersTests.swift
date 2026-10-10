@@ -2,7 +2,7 @@ import Foundation
 import HolosCore
 import Testing
 
-// The PR10 helpers on the recognition types (Sources/HolosCore/RecognitionModelHelpers.swift), kept out of the
+// The helpers on the recognition types (Sources/HolosCore/RecognitionModelHelpers.swift), kept out of the
 // contract file SpeakerModels.swift (docs/meeting-design.md §3.0).
 
 @Test func thresholdProblemNamesEachBrokenRule() {
