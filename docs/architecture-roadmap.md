@@ -199,14 +199,14 @@ unless another file is named), not the audit's line numbers.
 
 All low risk and pure moves unless noted. Line ranges [M], risk [J].
 
-- **DocumentLoader:**
+- **DocumentLoader:** done; each reader is in its own file, `HTMLReader`'s parts in `HTMLReader+*.swift`.
   - `HTMLEncodingDetector` (318–647)
   - `HTMLPreparation` (648–880)
   - `HTMLWalker` (918–1156)
   - `HTMLInlineStyle` (1157–1462)
   - `PDFReader` (1470–1673)
   - Markdown, plain-text and DocumentText readers
-- **ReadingPipeline:**
+- **ReadingPipeline:** done; split into files by the parts below, and `ReadingPipeline.swift` keeps the render.
   - Manifest (7–151)
   - `ReadingOutputReservation` (834–1150)
   - Locks and path identity (741–807, 1162–1263)
