@@ -214,7 +214,7 @@ All low risk and pure moves unless noted. Line ranges [M], risk [J].
   - Cache (1429–1551)
   - File I/O (1553–1673)
   - `SemanticChunker` (1675–1726)
-- **ReadingLibrary:**
+- **ReadingLibrary:** done (`ReadingLibrary+<Part>.swift`; the formatters in HolosApp).
   - Split into `extension ReadingLibrary` files: launch policy, ownership, file status, deletion (925–1242), sharing.
   - The UI formatters (1242–1257) belong in the app.
 - **WebArticleExtractor:** about 470 lines of JavaScript in Swift strings (397–831). Move it to `Resources/*.js` with `embedInCode`, as `Readability.js` already is. Medium risk: the strings are concatenated at 787.
