@@ -66,7 +66,7 @@ public enum SpeakerEditor {
     /// - A head run that cannot be used (missing or damaged, or its transcript is) refuses the edit (`unavailable`).
     /// - Once the lines are appended, a failure to load the result or to regenerate the exports throws
     ///   `HolosError.incomplete` saying the change was saved.
-    /// - With `profiles` (PR10), the result's `needsSampleRefresh` says whether the batch changed what a person's
+    /// - With `profiles`, the result's `needsSampleRefresh` says whether the batch changed what a person's
     ///   voice sample from this meeting is built from (the speakers linked to them and those speakers' qualifying
     ///   turns); the caller then awaits `VoiceProfileService.refreshSamples(session:extractor:store:)`. Without it,
     ///   `needsSampleRefresh` is false.

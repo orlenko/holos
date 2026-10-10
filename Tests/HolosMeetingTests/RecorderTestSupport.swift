@@ -7,7 +7,7 @@ import HolosTestSupport
 import Synchronization
 import Testing
 
-// Helpers for the PR2a recorder tests. Shared test helpers (Fakes.swift) belong to another PR in this wave
+// Helpers for the recorder tests. Shared test helpers (Fakes.swift) live elsewhere
 // (docs/conventions.md §1.8), so every name here starts with `recorder`.
 
 /// A fast loop: control requests every 10 ms, ticks and heartbeats every 50 ms.

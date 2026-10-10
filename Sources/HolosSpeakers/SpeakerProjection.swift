@@ -128,7 +128,7 @@ public struct StaleEdit: Sendable, Equatable {
 
 // MARK: - Projection
 
-/// The run with its edit journal applied: the one view of speakers and turns that exports (PR7b), the CLI (PR8),
+/// The run with its edit journal applied: the one view of speakers and turns that exports, the CLI,
 /// the review window, and enrollment use (docs/meeting/speaker-labels.md §4.9). A pure value; build it with
 /// `make` and extend it with `applying`.
 ///

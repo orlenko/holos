@@ -141,7 +141,7 @@ public enum SessionRecoveryCommand {
     /// is kept). A post-processing failure does not throw: it is reported in `warnings` with exit code 3. A file that
     /// the chain would read or replace and that a newer Holos wrote (the current transcript pointer or revision,
     /// vocabulary.json, postprocess.json, the speaker head or run) throws `unavailable` (schema rule 3, §1.6), with
-    /// the archive recovery kept. `profiles` is passed to the post-processor (voice suggestions, PR10), and
+    /// the archive recovery kept. `profiles` is passed to the post-processor (voice suggestions), and
     /// `languages` (a meeting in several languages, §4.14) and `wordFixes` (docs/design.md "Meeting word fixes") too.
     /// With `profiles`, `voiceSamples` brings the voice samples from this meeting in step with what the labels show
     /// (docs/meeting-design.md §5.11: an echo mask saved now or by an earlier pass changes which turns they may use).
