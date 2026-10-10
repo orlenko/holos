@@ -9,8 +9,8 @@ Read first: the `README.md` of each module you touch, then the doc sections its 
 
 - In `docs/meeting-design.md`, sections 1 (conventions), 2 (session folder) and 4 (integration seams) mostly
   describe current behaviour (`docs/meeting-design.md §1.2` is a build plan, and some subsections still name the
-  PR that built them). `docs/meeting-design.md §3.3` is a code copy that has drifted from `SpeakerModels.swift`;
-  sections 0 and 5–10 are the build plan and review log, but `docs/meeting-design.md §5.10`
+  PR that built them); section 3 points at the contract source files and shows their JSON. Sections 0 and 5–10
+  are the build plan and review log, but `docs/meeting-design.md §5.10`
   (Review window) and `docs/meeting-design.md §5.11` (online calls) still hold behaviour the code cites, so read
   the cited subsection, not the whole plan.
 - `docs/design.md` describes the user-facing tools, one heading per feature. `docs/contracts.md` lists the

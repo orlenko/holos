@@ -1,6 +1,6 @@
 import Foundation
 
-// Contract file added by PR6 in wave 0 (docs/meeting-design.md §3.3). Speaker value types, the diarizer
+// Contract file (docs/meeting-design.md §3.0). Speaker value types, the diarizer
 // boundary, the edit journal record, and per-session voice data. No FluidAudio types.
 // Adding a case to an enum persisted in runs (LabelProvenance, TrackPolicy, WordTimingQuality,
 // RecognitionTier) requires DiarizationRun.schemaVersion 2.
