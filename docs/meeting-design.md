@@ -15,7 +15,7 @@ No product code exists for it yet.
 
 Several engineers build this in parallel, one PR each, without talking to each other.
 Everything they must agree on is fixed here: target graph, file formats, the contract
-files (§3, copy verbatim), the seams between PRs (§4), and each PR's file list and
+files (§3; the Swift sources are the contract), the seams between PRs (§4), and each PR's file list and
 "does not touch" list (§5). If a PR needs a contract change beyond what §3.0 allows, it
 stops and reports it; it does not edit a file owned by another PR.
 
@@ -3835,8 +3835,7 @@ agree, gave 37.5 % WER against 46.5 % for French alone; 19.8 % on turns that mix
 against 34.9 %; an English-only control meeting stayed at 10.9 % with no window chosen
 French. Choosing per turn gave 41.8 %; splitting at pauses did not help.
 
-**Contract additions** (§3.0 allows new optional fields and open-code constants; the
-digests describe the wave-0 text):
+**Contract additions** (§3.0 allows new optional fields and open-code constants):
 
 - `MeetingInfo.languages: [String]?` (meeting.json), the recording's own locale first,
   written only when there are several; nil in older sessions and for one language.
@@ -5178,7 +5177,7 @@ journal lines, a transcript pointer, maintenance opens under a lease).
 **Files.**
 
 - Add `Sources/HolosCore/HolosJSON.swift`, `MeetingModels.swift`, `SpeakerModels.swift`
-  (§3, byte-identical), and `Sources/HolosCore/SupportPaths.swift`
+  (the contract, §3.0), and `Sources/HolosCore/SupportPaths.swift`
   (`extension HolosPaths { public static var supportRoot: URL }`: `$HOLOS_SUPPORT_DIR`
   if set and non-empty, else `applicationSupport`).
 - Add `Sources/HolosStorage/AtomicFile.swift` (§1.7), `SessionPaths.swift` (§2.1),
@@ -5299,8 +5298,7 @@ or voice data whose `sessionID` differs from the folder's manifest ID.
 | `atomicCreateRefusesExisting` / `atomicWriteLeavesNoTemporaryFiles` / `atomicWriteHonoursPermissions` | — | as named (0400 file readable, not writable) |
 | `supportRootHonoursEnvironment` | `HOLOS_SUPPORT_DIR` set in a child process environment | `supportRoot` equals it |
 
-**Acceptance.** `shasum -a 256` of the three contract files matches §3.0; `swift build`
-and `./scripts/test.sh` pass; the suite writes nothing under the real
+**Acceptance.** `swift build` and `./scripts/test.sh` pass; the suite writes nothing under the real
 `~/Library/Application Support/Holos`.
 
 **Does not touch.** HolosAudio, HolosSpeech, HolosDictation, HolosDesktop, HolosApp,
@@ -8593,8 +8591,7 @@ Conflict rules:
 
 - Subcommand arrays and dependency lists: keep both sides, one item per line, and
   compare with the final text in this document.
-- A contract file (§3) that differs from its §3.0 digest without an allowed addition is
-  a bug: stop and report it.
+- A contract file (§3) changed beyond what §3.0 allows is a bug: stop and report it.
 - Never resolve a conflict by deleting another PR's tests.
 - Final subcommand lists after wave 5:
   - `holos`: `Doctor, Setup, Transcribe, Record, Session, Speakers, People, Voices, Say, Read`
@@ -8624,7 +8621,6 @@ Documentation ownership:
 | Area | Check |
 |---|---|
 | Build | `swift build` of all targets after every PR; `swift build --target HolosSpeakers` has no FluidAudio |
-| Contracts | `shasum -a 256 Sources/HolosCore/{HolosJSON,MeetingModels,SpeakerModels}.swift` matches §3.0 after wave 0 |
 | Unit tests | every test in §5, via `./scripts/test.sh --filter <Target>Tests` and the full suite, with `HOLOS_DATA_DIR` and `HOLOS_SUPPORT_DIR` in a temporary folder |
 | Recorder logic | state machine (restarts, waiting, sleep, dark wake, pause limit), disk policy, control inbox ordering, liveness, status heartbeat, epochs, frame continuity, capture pump, stop-path timeouts, coverage-based replay, lease hand-off, all with fakes |
 | Storage | locks, lease, close-on-exec, atomic writes, failed appends, corrupt journal lines, transcript pointer, old archives inspect clean, Int16 round trip, deletion |
@@ -8886,9 +8882,9 @@ reprocessing" in `docs/contracts.md`).
 | `markSelf` had no consent flag for voice learning | Accepted. `learnVoice:` added to `VoiceProfileService.markSelf`; `ReviewSession.markSelf` passes `learnVoices` (§4.10, PR10). Test `markSelfHonoursLearnVoice`. |
 | (second pass) Voice data for every diarized speaker was persisted before anyone was confirmed | Accepted. Post-processing never persists embeddings; recognition uses them in memory. Samples are extracted on demand for the confirmed speaker only (`VoiceSampleExtractor`, hidden `holos speakers embed`) (§4.10). Tests `rememberOnStoresNoVoiceData`, `enrollExtractsOnlyTheConfirmedSpeaker`, `enrollWithoutAudioKeepsNameOnly`. This also settles open question Q9 (retention of unnamed speakers' voice data): there is none. |
 | (second pass) A crash during Forget could strand voice data with no way to retry | Accepted. Forget writes a tombstone to `forget-journal.jsonl` before touching the store; `resumePendingForgets` finishes pending work at app launch and CLI start (§4.10). Tests `forgetResumesAfterCrashBetweenStoreAndSessions`, `forgetJournalReplayIsIdempotent`. |
-| (second pass) note | The contract file comment on `SessionVoiceData` (§3) still says "written only while Remember voices is on". Contract files are frozen by their §3.0 digests and wave 0 already copied them, so the comment is left as is; the rules in §4.10 govern. |
+| (second pass) note | The contract file comment on `SessionVoiceData` (§3) still says "written only while Remember voices is on". The comment is left as is (a contract file changes only as §3.0 allows); the rules in §4.10 govern. |
 | (second pass) The diarize command did not accept the inherited lease | Accepted. Hidden `--lease-fd N` with descriptor validation (§5.5 PR7b CLI). Tests `diarizeAdoptsInheritedLease`, `diarizeRefusesForeignLeaseFd`. |
-| (third pass) A PR10 test and the initializer note still required voice files when Remember voices is on | Accepted. Test renamed `rememberOnWritesRecognitionOnly` (no voice file); initializer note corrected; §3.0 notes the frozen contract comment is superseded by §4.10. |
+| (third pass) A PR10 test and the initializer note still required voice files when Remember voices is on | Accepted. Test renamed `rememberOnWritesRecognitionOnly` (no voice file); initializer note corrected; §3.0 notes the contract comment is superseded by §4.10. |
 | (third pass) Most edit actions had no fingerprint, so stale edits could act on split or reassigned turns | Accepted. Fingerprints for reject, merge, split, newSpeaker, and excludeFromEnrollment (§4.9 table). Tests `staleExcludeAfterSplitIsRefused`, `staleMergeAfterReassignIsRefused`, `staleRejectAfterRelinkIsRefused`. |
 | (third pass) On-demand extraction kept only windows contained in a turn, so short turns never enrolled | Accepted. Overlap-weighted selection as in `TurnEmbeddings.compute` (§4.10). Test `extractorUsesOverlappingWindowsForShortTurns`. |
 | (third pass) A zero `likelyMaxDistance` still allowed `likely` at distance 0 | Accepted. `likely` requires `calibratedThresholds != nil` (§4.10 step 4–5). Test `identicalVectorIsOnlyPossibleUntilCalibrated`. |
