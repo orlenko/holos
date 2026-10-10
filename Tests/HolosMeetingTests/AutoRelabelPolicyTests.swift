@@ -3,7 +3,7 @@ import HolosCore
 @testable import HolosMeeting
 import Testing
 
-// Which meeting is labelled again by itself (docs/meeting-design.md §5.8 "Automatic relabel").
+// Which meeting is labelled again by itself (docs/meeting/app-controls.md §5.8 "Automatic relabel").
 
 private let relabelNow = Date(timeIntervalSince1970: 1_790_000_000)
 

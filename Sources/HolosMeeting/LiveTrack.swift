@@ -16,11 +16,11 @@ struct LiveTrackResult: Sendable, Equatable {
     var behindFrom: Double?
 }
 
-/// Live transcription of one track while it records (docs/meeting-design.md §4.6).
+/// Live transcription of one track while it records (docs/meeting/recorder.md §4.6).
 ///
 /// Frames and epoch boundaries wait in a queue bounded by duration (30 s of audio); a speech task feeds them to one
 /// `LiveSpeechSession` at a time. Every session sees frame times that start at 0, and its results get the session
-/// time of its first frame added back (§2.3). A new session starts with every capture epoch (made by
+/// time of its first frame added back (docs/meeting/session-format.md §2.3). A new session starts with every capture epoch (made by
 /// `prepareSession` for that epoch before its capture starts, so frames never wait for it) and at every gap over 1 s. A
 /// session is finished in the background, with a timeout of 30 s + 0.05 × the seconds it was fed, while the next one
 /// is fed; the segments of one that fails or hangs are the ones it already finalized.

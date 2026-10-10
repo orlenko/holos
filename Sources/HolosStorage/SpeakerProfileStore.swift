@@ -4,14 +4,14 @@ import HolosCore
 import os
 
 extension HolosPaths {
-    /// `<supportRoot>/Speakers`: the people store (docs/meeting-design.md §2.2). Tests point `supportRoot` at a
+    /// `<supportRoot>/Speakers`: the people store (docs/meeting/session-format.md §2.2). Tests point `supportRoot` at a
     /// temporary folder (`HOLOS_SUPPORT_DIR`).
     public static var speakerProfiles: URL {
         supportRoot.appendingPathComponent("Speakers", isDirectory: true)
     }
 }
 
-/// One line of `forget-journal.jsonl` (docs/meeting-design.md §4.10). A forget first appends a `pending` tombstone
+/// One line of `forget-journal.jsonl` (docs/meeting/people-voice.md §4.10). A forget first appends a `pending` tombstone
 /// that lists what it removes, then updates the profile store, then appends a `stored` line for the same ID, then
 /// cleans each affected session, then appends a `done` line; a crash anywhere leaves the tombstone for the next run
 /// to finish.
@@ -86,14 +86,14 @@ public struct ForgetRecord: Codable, Sendable, Equatable {
     public static func done(_ id: String) -> ForgetRecord { ForgetRecord(id: id, kind: nil, state: done) }
 }
 
-/// The global people store (docs/meeting-design.md §2.2, §4.10): `profiles.json` (0600) in a private folder
+/// The global people store (docs/meeting/session-format.md §2.2, docs/meeting/people-voice.md §4.10): `profiles.json` (0600) in a private folder
 /// (0700) that is excluded from Time Machine, `profiles.lock`, and `forget-journal.jsonl` (0600).
 ///
 /// Reads take no lock (`profiles.json` is replaced atomically). Every write is a read-modify-write under
 /// `profiles.lock` (`update`), polled every 20 ms for up to 2 s; a read whose result is written elsewhere
 /// (recognition results, forget clean-up) holds it through that write (`withLockedDatabase`). The lock is not
 /// re-entrant: never call `update`, `withLockedDatabase`, or a journal method from inside either. When a caller also
-/// needs a session's speaker lock, it takes that lock first (§1.7 order: speakers → profiles), and nothing takes a
+/// needs a session's speaker lock, it takes that lock first (docs/conventions.md §1.7 order: speakers → profiles), and nothing takes a
 /// speaker lock while holding `profiles.lock`.
 public struct SpeakerProfileStore: Sendable {
     private static let log = Logger(subsystem: "ca.orlenko.holos.app", category: "storage")

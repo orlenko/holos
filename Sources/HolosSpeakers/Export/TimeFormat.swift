@@ -1,6 +1,6 @@
 import Foundation
 
-/// Session-time layouts used by the exports (docs/meeting-design.md §4.11). Inputs are seconds on the session
+/// Session-time layouts used by the exports (docs/meeting/exports.md §4.11). Inputs are seconds on the session
 /// timeline. A non-finite or negative value shows as zero and values are capped at 99,999 hours, so formatting never
 /// traps on corrupt data.
 public enum TimeFormat {

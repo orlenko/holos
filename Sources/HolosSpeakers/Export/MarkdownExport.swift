@@ -1,7 +1,7 @@
 import Foundation
 import HolosCore
 
-/// `exports/transcript.md` (docs/meeting-design.md §4.11): a header, then speaker blocks, gap lines, and marker lines
+/// `exports/transcript.md` (docs/meeting/exports.md §4.11): a header, then speaker blocks, gap lines, and marker lines
 /// in time order.
 ///
 /// ```
@@ -27,7 +27,7 @@ import HolosCore
 /// ```
 ///
 /// Date and start time are `metadata.createdAt` in `metadata.timeZone`. The Languages line appears only for a
-/// transcript merged from several languages (§4.14). Participants are the projection's speakers
+/// transcript merged from several languages (docs/meeting-design.md §4.14). Participants are the projection's speakers
 /// with turns, by talk time descending (ties in speaker order); the line is left out without a projection. A gap or
 /// marker line at the same time as a block comes before it; repeated identical lines print once, adjacent or not.
 /// Names, labels, the title, and a block's text are kept on one line with every character that can start inline

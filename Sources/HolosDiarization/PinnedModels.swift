@@ -2,7 +2,7 @@ import Foundation
 
 /// Every file FluidAudio 0.17.1 downloads for the offline diarizer from
 /// `FluidInference/speaker-diarization-coreml` at revision `df2625ac79a7ac6b65ad868fee6d80f320da4232`, relative to
-/// `FluidModels.repoFolder(in:)` (docs/meeting-design.md §4.8).
+/// `FluidModels.repoFolder(in:)` (docs/meeting/post-processing.md §4.8).
 ///
 /// Recorded on 2026-09-24 with `HOLOS_RECORD_MODEL_MANIFEST=1 voiceislocal setup --speakers`. The 22 model artifacts match
 /// the SHA-256 and size the repo's own `provenance.json` lists for them; all 24 files, including `config.json` and

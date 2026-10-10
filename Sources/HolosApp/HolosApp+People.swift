@@ -4,7 +4,7 @@ import HolosStorage
 import os
 
 extension HolosAppDelegate {
-    /// People in the main window (docs/meeting-design.md §5.9).
+    /// People in the main window (docs/meeting/people-voice.md §5.9).
     @objc func showPeople() {
         showMainWindow(.people)
     }

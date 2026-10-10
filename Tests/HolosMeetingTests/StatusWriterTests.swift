@@ -6,7 +6,7 @@ import HolosStorage
 import HolosTestSupport
 import Testing
 
-// status.json (docs/meeting-design.md §4.1, §4.6).
+// status.json (docs/meeting/recorder.md §4.1, §4.6).
 
 private func initialStatus(_ sessionID: String) -> RecorderStatus {
     RecorderStatus(sessionID: sessionID, name: "Council", pid: getpid(), phase: .starting, sequence: 0,

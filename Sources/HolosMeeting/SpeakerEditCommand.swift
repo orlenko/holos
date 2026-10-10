@@ -33,8 +33,8 @@ public struct LoadedSpeakers: Sendable {
     }
 }
 
-/// What `voiceislocal speakers rename|merge|assign|split|exclude|undo|link|me|reject` do (docs/meeting-design.md
-/// §5.7, §5.9), as a library call: one change saved on the loaded view through `SpeakerEditor` or
+/// What `voiceislocal speakers rename|merge|assign|split|exclude|undo|link|me|reject` do (docs/meeting/exports.md
+/// §5.7, docs/meeting/people-voice.md §5.9), as a library call: one change saved on the loaded view through `SpeakerEditor` or
 /// `VoiceProfileService`, then the exports rewritten and the voice samples learned from this meeting brought in step.
 ///
 /// Rules every change follows:

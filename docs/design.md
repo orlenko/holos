@@ -1110,7 +1110,7 @@ that place: terms the recognizer should expect (names, products, jargon), kept i
   contextual strings, as a correction does. A dictation already listening keeps the
   strings it started with. Run Again and `voiceislocal history rerun` use today's list.
 - Meetings: the list is part of the vocabulary handed to the recorder at start and
-  saved in the meeting as `vocabulary.json` (§4.12 of meeting-design.md). Replays,
+  saved in the meeting as `vocabulary.json` (docs/meeting/recorder.md §4.12). Replays,
   rebuilds and `session languages` use that saved vocabulary, never today's list: it is
   part of what makes a meeting's transcript reproducible. `voiceislocal session recover
   --current-vocabulary` is the one way to ask for today's list (with names and
@@ -1448,7 +1448,7 @@ ambiguous transfers of existing human edits instead of silently discarding them.
 Within a meeting, the same name is the same person (ignoring case, accents and extra
 spaces): speakers of one name are shown and exported as one, an edit of that speaker
 reaches each of them, and nothing is merged behind the user's back, so each keeps its
-own link and voice (meeting-design §4.9, "Speakers with the same name").
+own link and voice (docs/meeting/speaker-labels.md §4.9, "Speakers with the same name").
 
 Optionally capture the screen during a meeting (Settings › Meetings, off by default;
 the start panel's "Capture screen" for one meeting), so text on slides and shared
@@ -1633,7 +1633,7 @@ without deliberate selection.
 
 This reverses the earlier rule "No inferred cross-meeting voiceprint database" (user
 decision 2 in the [meeting-recording plan](meeting-recording-plan.md); details in
-[meeting-design.md](meeting-design.md) §4.10). People and voices are kept apart:
+[meeting/people-voice.md](meeting/people-voice.md) §4.10). People and voices are kept apart:
 
 - **Names are not biometric.** Linking a speaker to a person creates or reuses that
   person whatever the settings, so names carry across meetings; each meeting also keeps

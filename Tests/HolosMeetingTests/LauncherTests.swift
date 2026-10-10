@@ -7,7 +7,7 @@ import HolosStorage
 import HolosTestSupport
 import Testing
 
-// The recorder and maintenance launchers and their posix_spawn helper (docs/meeting-design.md §4.1, §1.7 rule 4).
+// The recorder and maintenance launchers and their posix_spawn helper (docs/meeting/recorder.md §4.1, docs/conventions.md §1.7 rule 4).
 
 /// A finished session in `root`, for lock tests.
 private func launcherSession(in root: URL) async throws -> URL {

@@ -1,7 +1,7 @@
 import Foundation
 
 /// Which `voiceislocal` commands first finish a forget of voices that a crash left pending and sweep leftover voice
-/// renders (docs/meeting-design.md §4.10; the CLI's `ForgetResume`). That work deletes files and can rewrite people,
+/// renders (docs/meeting/people-voice.md §4.10; the CLI's `ForgetResume`). That work deletes files and can rewrite people,
 /// speaker data and transcript files, so a command that promises to only read is left out of it.
 public enum ForgetResumeScope {
     /// The command groups that read or write people and speaker data.

@@ -3,7 +3,7 @@ import Foundation
 import HolosCore
 import HolosStorage
 
-/// Turns what a user typed for `<session>` in a command into a session folder (docs/meeting-design.md §5.7).
+/// Turns what a user typed for `<session>` in a command into a session folder (docs/meeting/exports.md §5.7).
 public enum SessionLocator {
     /// A path to a .holos folder, or a session UUID under `root`.
     ///

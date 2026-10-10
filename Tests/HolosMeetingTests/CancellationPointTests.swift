@@ -9,7 +9,7 @@ import Testing
 // Table-driven: every await point of `RecordingWorkflow.run`, with a fake that, at that point, (a) cancels the
 // run and throws `CancellationError`, (b) throws `CancellationError` without the run being cancelled, or (c)
 // fails with an ordinary error. (a) and (b) must follow the cancellation contract; (c) the failure statuses.
-// One exception since PR2a (docs/meeting-design.md §4.2): a frame stream that ends with an error of its own,
+// One exception (docs/meeting/recorder.md §4.2): a frame stream that ends with an error of its own,
 // `CancellationError` included, is a capture failure, and capture restarts in a new epoch.
 
 // MARK: - Table

@@ -2,7 +2,7 @@ import CoreAudio
 import HolosAudio
 import Testing
 
-// The built-in microphone is found by its transport type and input streams (docs/meeting-design.md §4.12). Only the
+// The built-in microphone is found by its transport type and input streams (docs/meeting/recorder.md §4.12). Only the
 // pure classification is tested: the default suite never looks up real CoreAudio devices.
 
 @Test func builtInClassification() {

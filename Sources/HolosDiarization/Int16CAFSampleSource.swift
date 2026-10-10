@@ -6,7 +6,7 @@ import Foundation
 import HolosCore
 
 /// FluidAudio's audio input over a rendered track (`derived/<track>-16k.caf`): a memory map of a CAF file holding
-/// 16 kHz mono 16-bit little-endian integer PCM, converted to Float in `copySamples` (docs/meeting-design.md §4.8).
+/// 16 kHz mono 16-bit little-endian integer PCM, converted to Float in `copySamples` (docs/meeting/post-processing.md §4.8).
 /// A 3 h render stays a 346 MB mapping instead of a 690 MB Float32 copy on disk or in memory.
 ///
 /// The file must not be truncated or rewritten while a source over it exists (reads past a truncation fault); the

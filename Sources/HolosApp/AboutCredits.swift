@@ -2,7 +2,7 @@ import AppKit
 import HolosAppModel
 import HolosCore
 
-/// The credits of the About panel (docs/meeting-design.md §4.8): the app has no resource bundle, so the text of
+/// The credits of the About panel (docs/meeting/post-processing.md §4.8): the app has no resource bundle, so the text of
 /// THIRD_PARTY_NOTICES.md's speaker-model section and the FluidAudio and Readability lines are embedded here.
 enum AboutCredits {
     /// The notice GPLv3 §5(d) asks an interactive program to show. It points to the LICENSE.txt and TRADEMARKS.md

@@ -7,7 +7,7 @@ import HolosTestSupport
 import Testing
 
 // `RecordingOptions(settings:…)`: a meeting from the app gets the same options whether it records in process or as
-// the `voiceislocal record start` child (docs/meeting-design.md §4.1).
+// the `voiceislocal record start` child (docs/meeting/recorder.md §4.1).
 
 private let mappingRoot = URL(fileURLWithPath: "/tmp/sessions", isDirectory: true)
 private let mappingID = "3F2A9C1E-0000-4000-8000-000000000001"

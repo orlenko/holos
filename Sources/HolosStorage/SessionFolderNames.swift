@@ -1,6 +1,6 @@
 import Foundation
 
-/// Session folder names (`<SESSION-ID>.holos`, docs/meeting-design.md §2.1), so no code builds or reads one by hand.
+/// Session folder names (`<SESSION-ID>.holos`, docs/meeting/session-format.md §2.1), so no code builds or reads one by hand.
 ///
 /// Two rules answer two questions:
 /// - Which session is a folder named after (`parse(folderName:)`): only `<ID>.holos` where ID is an uppercase UUID

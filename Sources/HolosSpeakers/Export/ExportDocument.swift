@@ -3,7 +3,7 @@ import HolosCore
 
 // MARK: - Document
 
-/// Session facts for the export headers (docs/meeting-design.md §4.11).
+/// Session facts for the export headers (docs/meeting/exports.md §4.11).
 public struct ExportMetadata: Sendable, Equatable {
     public var sessionID: String
     public var name: String
@@ -76,7 +76,7 @@ public struct ExportSummary: Sendable, Equatable {
 }
 
 /// The document keeps transcript text, names, and marker labels. Printing, `dump`, and test-failure output show only
-/// IDs and counts (docs/meeting-design.md §1.5, §1.9).
+/// IDs and counts (docs/conventions.md §1.5, §1.9).
 extension ExportDocument: CustomStringConvertible, CustomDebugStringConvertible, CustomReflectable {
     public var description: String {
         "ExportDocument(sessionID: \(metadata.sessionID), transcriptID: \(transcript.id), "
@@ -127,7 +127,7 @@ public struct ExportBlock: Sendable, Equatable {
 
 // MARK: - Exporter
 
-/// Renders an `ExportDocument` as Markdown, plain text, or JSON (docs/meeting-design.md §4.11). Pure: no file IO.
+/// Renders an `ExportDocument` as Markdown, plain text, or JSON (docs/meeting/exports.md §4.11). Pure: no file IO.
 ///
 /// Common rules: turns in `(start, track)` order, as the Review list shows them (`SpeakerProjection.shownTurns`: short
 /// interjections of the unknown speaker attached to a neighbour or left out); the speaker shown is the projection's

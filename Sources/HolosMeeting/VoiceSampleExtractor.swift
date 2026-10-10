@@ -6,7 +6,7 @@ import HolosSpeakers
 import HolosStorage
 import os
 
-/// Extracts voice embeddings for exactly the turns it is asked about (docs/meeting-design.md §4.10, "Voice sample
+/// Extracts voice embeddings for exactly the turns it is asked about (docs/meeting/people-voice.md §4.10, "Voice sample
 /// extraction on demand"). `VoiceProfileService` asks only about the qualifying turns of a speaker the user confirmed
 /// as a person with voice learning on, and is the only code that turns the result into a stored sample.
 public protocol VoiceSampleExtractor: Sendable {

@@ -1,7 +1,7 @@
 import Foundation
 
 /// One speaker turn of a reference transcript. The text is counted, never kept, so evaluation code can hold
-/// references without holding what was said (docs/meeting-design.md §1.9).
+/// references without holding what was said (docs/conventions.md §1.9).
 public struct ReferenceTurn: Sendable, Equatable {
     public var speaker: String
     /// Seconds from the start of the recording.
@@ -17,7 +17,7 @@ public struct ReferenceTurn: Sendable, Equatable {
 }
 
 /// The speaker name is private reference data: printing, `dump`, and test-failure output show times and the word
-/// count only (docs/meeting-design.md §1.9).
+/// count only (docs/conventions.md §1.9).
 extension ReferenceTurn: CustomStringConvertible, CustomDebugStringConvertible, CustomReflectable {
     public var description: String {
         "ReferenceTurn(start: \(start), end: \(end.map { "\($0)" } ?? "nil"), wordCount: \(wordCount))"

@@ -6,7 +6,7 @@ import Synchronization
 import Testing
 import HolosTestSupport
 
-// Delete Audio and Delete Meeting (docs/meeting-design.md §4.13, §5.6 PR3). The catalog side of Delete Audio
+// Delete Audio and Delete Meeting (docs/meeting/retention-deletion.md §4.13, docs/meeting/recorder.md §5.6). The catalog side of Delete Audio
 // (`SessionSummary.audioDeleted`) is checked in HolosMeetingTests/SessionCatalogTests, where the catalog lives.
 
 private let deletionDate = Date(timeIntervalSince1970: 1_790_000_000)

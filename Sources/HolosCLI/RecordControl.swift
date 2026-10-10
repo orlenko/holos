@@ -45,7 +45,7 @@ extension Record {
     }
 }
 
-/// Sends one control request to a running recorder (docs/meeting-design.md §4.1) and reports its answer.
+/// Sends one control request to a running recorder (docs/meeting/recorder.md §4.1) and reports its answer.
 enum RecorderControl {
     static let ackTimeout: Duration = .seconds(3)
 

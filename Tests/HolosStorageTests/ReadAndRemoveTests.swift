@@ -5,7 +5,7 @@ import HolosCore
 @testable import HolosStorage
 import HolosTestSupport
 
-// `AtomicFile.readAndRemove` (the vocabulary hand-off file, docs/meeting-design.md §4.12) and `removeTree` on a
+// `AtomicFile.readAndRemove` (the vocabulary hand-off file, docs/meeting/recorder.md §4.12) and `removeTree` on a
 // Holos-created folder in the temporary folder (`voiceislocal say`): a path that is not a verified regular file, or a link
 // inside a Holos folder, is never followed or removed recursively.
 

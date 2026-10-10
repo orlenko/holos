@@ -73,7 +73,7 @@ extension Session {
                                                                                after: after ?? nil))
                 throw ExitCode(EvalInterrupt.lastExitCode)
             }
-            // Stdout carries the result; a warning or failure is explained on stderr (docs/meeting-design.md §1.4).
+            // Stdout carries the result; a warning or failure is explained on stderr (docs/conventions.md §1.4).
             if json {
                 try Console.json(outcome.record)
                 if outcome.exitCode != 0 { Console.error(outcome.summary) }

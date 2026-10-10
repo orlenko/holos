@@ -5,7 +5,7 @@ import Foundation
 import HolosCore
 import os
 
-/// One downloaded model file pinned by size and content (docs/meeting-design.md §4.8).
+/// One downloaded model file pinned by size and content (docs/meeting/post-processing.md §4.8).
 public struct PinnedFile: Sendable, Equatable {
     /// Relative to `FluidModels.repoFolder(in:)`, e.g. "Embedding.mlmodelc/coremldata.bin".
     public let relativePath: String

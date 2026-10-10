@@ -1,6 +1,6 @@
 import Foundation
 
-/// `exports/transcript.txt` (docs/meeting-design.md §4.11), in Otter's layout: per `ExportBlock`, the header
+/// `exports/transcript.txt` (docs/meeting/exports.md §4.11), in Otter's layout: per `ExportBlock`, the header
 /// `"<label>  <time>"` (two spaces; `mm:ss` below one hour, `h:mm:ss` from one hour, with as many hour digits as
 /// needed), the text on one line, and a blank line. No gap or marker lines and no footer, so `OtterTranscriptParser`
 /// and the evaluator's header regex `^\s*\S.*\s{2,}(?:\d+:\d{2}:\d{2}|\d{1,2}:\d{2})\s*$` read it.

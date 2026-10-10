@@ -6,7 +6,7 @@ import HolosTestSupport
 import Synchronization
 
 // Shared test helpers for HolosMeetingTests. Only the first-merged PR of each wave edits this file
-// (docs/meeting-design.md §1.8); other PRs declare their helpers `fileprivate`, or in
+// (docs/conventions.md §1.8); other PRs declare their helpers `fileprivate`, or in
 // `<Component>TestSupport.swift` with names prefixed by the component.
 
 // MARK: - General helpers

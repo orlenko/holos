@@ -128,7 +128,7 @@ struct Setup: AsyncParsableCommand {
     }
 }
 
-/// `voiceislocal setup --speakers` (docs/meeting-design.md §5.5 PR7a).
+/// `voiceislocal setup --speakers` (docs/meeting/speaker-labels.md §5.5).
 enum SpeakerModelSetup {
     static func run(force: Bool) async throws {
         let directory = FluidModels.defaultDirectory

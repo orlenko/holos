@@ -4,7 +4,7 @@ import HolosStorage
 import os
 import Synchronization
 
-/// The only writer of a recorder's `status.json` (docs/meeting-design.md §4.1, §4.6). Every write is atomic, bumps
+/// The only writer of a recorder's `status.json` (docs/meeting/recorder.md §4.1, §4.6). Every write is atomic, bumps
 /// `sequence`, and sets `updatedAt`; a heartbeat rewrites the file every second from launch until `finish`, so the
 /// status stays fresh through transcription and post-processing. After a successful `finish` the file says `exited`
 /// and later updates are ignored.

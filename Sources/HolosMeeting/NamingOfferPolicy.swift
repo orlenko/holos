@@ -1,7 +1,7 @@
 import Foundation
 import HolosCore
 
-/// The "Name Speakers — <name>…" offer (docs/meeting-design.md §5.8), derived from saved state alone, so it does not
+/// The "Name Speakers — <name>…" offer (docs/meeting/app-controls.md §5.8), derived from saved state alone, so it does not
 /// depend on which path labelled the meeting (a recorder that finished, perhaps after Holos quit, the automatic
 /// relabel, Recover, Label Speakers, a command run in a terminal) or on whether Holos was running then. Pure.
 public enum NamingOfferPolicy {

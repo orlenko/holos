@@ -5,7 +5,7 @@ import HolosCore
 @testable import HolosStorage
 import HolosTestSupport
 
-// SpeakerProfileStore (docs/meeting-design.md §2.2, §4.10): the people store and its forget journal.
+// SpeakerProfileStore (docs/meeting/session-format.md §2.2, docs/meeting/people-voice.md §4.10): the people store and its forget journal.
 
 private let profileDate = Date(timeIntervalSince1970: 1_790_000_000)
 private let profileModel = EmbeddingModelID(id: "fake", revision: "1")

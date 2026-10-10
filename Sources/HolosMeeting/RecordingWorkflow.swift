@@ -173,7 +173,7 @@ public struct RecordingDependencies: Sendable {
     }
 }
 
-/// How often the recorder loop runs and how much it queues (docs/meeting-design.md §4.2, §4.3, §4.6).
+/// How often the recorder loop runs and how much it queues (docs/meeting/recorder.md §4.2, §4.3, §4.6).
 struct RecorderTuning: Sendable {
     /// Control requests, the stop source, `stop.request`, and the duration are checked this often while capturing.
     var poll: Duration = .milliseconds(100)
@@ -353,7 +353,7 @@ public enum RecordingWorkflow {
 
 // MARK: - Recorder
 
-/// One recording from its first status write to `exited` (docs/meeting-design.md §4.2, §4.6). Its work is split by
+/// One recording from its first status write to `exited` (docs/meeting/recorder.md §4.2, §4.6). Its work is split by
 /// concern: `Recorder+Capture` (epochs), `+Power`, `+Status` (status.json and the journal) and `+Stop` (the stop
 /// path); `RecorderExitSequence` writes the exited status and lets go of the locks still held at the end.
 ///

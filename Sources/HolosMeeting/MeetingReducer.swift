@@ -2,7 +2,7 @@ import Foundation
 import HolosAudio
 import HolosCore
 
-// The menu bar's meeting state machine (docs/meeting-design.md §5.8 PR4). Pure: every input is an event, every output
+// The menu bar's meeting state machine (docs/meeting/app-controls.md §5.8). Pure: every input is an event, every output
 // an effect that `MeetingController` executes or hands to the app.
 
 /// What the start panel asks the recorder to do.
@@ -144,7 +144,7 @@ public enum MeetingEffect: Sendable, Equatable {
     case clearNamingOffer(sessionID: String)
 }
 
-/// The meeting the menu bar follows: the one the app launched, or a live one it found (docs/meeting-design.md §5.8
+/// The meeting the menu bar follows: the one the app launched, or a live one it found (docs/meeting/app-controls.md §5.8
 /// "Reducer rules").
 public struct MeetingReducer: Sendable, Equatable {
     public private(set) var state: MeetingState = .idle

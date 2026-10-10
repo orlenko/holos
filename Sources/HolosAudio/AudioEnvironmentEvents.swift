@@ -4,7 +4,7 @@ import Foundation
 import os
 import Synchronization
 
-/// Changes after which a recorder that is waiting for audio retries at once (docs/meeting-design.md §4.2): the
+/// Changes after which a recorder that is waiting for audio retries at once (docs/meeting/recorder.md §4.2): the
 /// CoreAudio device list or default input changed (`kAudioHardwarePropertyDevices`,
 /// `kAudioHardwarePropertyDefaultInputDevice`), or the screen was unlocked (the
 /// `com.apple.screenIsUnlocked` distributed notification). Reasons are buffered in a `Mutex` until the recorder loop

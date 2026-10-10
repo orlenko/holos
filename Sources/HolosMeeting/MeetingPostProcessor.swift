@@ -83,11 +83,11 @@ public struct VoiceSampleSource: Sendable {
     }
 }
 
-/// Speaker labelling and exports for a finished session (docs/meeting-design.md §4.7).
+/// Speaker labelling and exports for a finished session (docs/meeting/post-processing.md §4.7).
 ///
 /// Stages, in order: 0 checks and `postprocess.json` `running`; 1 `transcript` (the current revision); 1b
 /// `languages` for a meeting in several languages: the audio transcribed again in each language and the transcript
-/// merged passage by passage, which becomes current (§4.14; nothing is recorded for one language); 1b′
+/// merged passage by passage, which becomes current (docs/meeting-design.md §4.14; nothing is recorded for one language); 1b′
 /// `deepTranscription`, only when asked for by name: the saved audio transcribed again with the local Whisper model,
 /// which becomes current (§4.16); 1c live text
 /// hints; 1d `wordFixes`: learned corrections and the word list's "often heard as" terms applied to that transcript,
@@ -97,7 +97,7 @@ public struct VoiceSampleSource: Sendable {
 /// in `echo/` (§5.11; the run never holds it, the labels' view hides the echo); 5 `diarize` them one at a time and
 /// map the times back to the
 /// session; 6 `align`: build and publish the run (no voice embeddings; `speakers/voice/` only with
-/// `forceVoiceData`) with names carried over; 7 `recognize` (PR10), then live speaker-name hints; 8 `export`; 9 delete `derived/` and write the
+/// `forceVoiceData`) with names carried over; 7 `recognize`, then live speaker-name hints; 8 `export`; 9 delete `derived/` and write the
 /// final record.
 public struct MeetingPostProcessor: Sendable {
     private static let log = Logger(subsystem: "ca.orlenko.holos.app", category: "postprocess")

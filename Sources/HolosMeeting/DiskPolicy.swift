@@ -9,7 +9,7 @@ public enum DiskVerdict: Sendable, Equatable {
     case stop(String)
 }
 
-/// Free-space rules for recording and post-processing (docs/meeting-design.md §4.5). Pure functions; sizes are
+/// Free-space rules for recording and post-processing (docs/meeting/recorder.md §4.5). Pure functions; sizes are
 /// decimal (1 GB = 10⁹ bytes), matching the UI.
 public enum DiskPolicy {
     /// 48 kHz mono Int16 capture: 345.6 MB per hour per track.

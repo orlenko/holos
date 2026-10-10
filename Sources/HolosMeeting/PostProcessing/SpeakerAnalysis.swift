@@ -4,7 +4,7 @@ import HolosSpeakers
 import HolosStorage
 import os
 
-/// Stages 2–6 of the post-processor (docs/meeting-design.md §4.7): track policies, the head decision, the disk
+/// Stages 2–6 of the post-processor (docs/meeting/post-processing.md §4.7): track policies, the head decision, the disk
 /// check, and building and publishing the run. `MeetingPostProcessor` runs them in order; rendering and diarization
 /// are driven from there because they report progress.
 public enum SpeakerAnalysis {

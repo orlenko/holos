@@ -9,7 +9,7 @@ import HolosSpeakers
 import HolosTestSupport
 import Testing
 
-// `voiceislocal session import` and `voiceislocal session score` (docs/meeting-design.md §5.5 PR7c), with generated audio and
+// `voiceislocal session import` and `voiceislocal session score` (docs/meeting/speaker-labels.md §5.5), with generated audio and
 // FakeSpeech; no speech assets or diarization models.
 
 // MARK: - Helpers

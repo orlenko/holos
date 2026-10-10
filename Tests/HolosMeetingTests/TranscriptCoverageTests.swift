@@ -3,7 +3,7 @@ import HolosCore
 @testable import HolosMeeting
 import Testing
 
-// Joining live transcription with a replay of what it missed (docs/meeting-design.md §4.6).
+// Joining live transcription with a replay of what it missed (docs/meeting/recorder.md §4.6).
 
 /// A segment whose words start at `starts`, each 0.2 s long, spelled "w0", "w1", …
 private func timed(_ starts: [Double], id: String = UUID().uuidString, end: Double? = nil,

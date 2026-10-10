@@ -5,7 +5,7 @@ import HolosCore
 import HolosStorage
 import os
 
-/// How often `MeetingController` looks at the recorder (docs/meeting-design.md §5.8); tests shorten them.
+/// How often `MeetingController` looks at the recorder (docs/meeting/app-controls.md §5.8); tests shorten them.
 struct MeetingControllerTuning: Sendable {
     /// The followed session's status and liveness are read this often.
     var poll: Duration = .seconds(1)
@@ -17,7 +17,7 @@ struct MeetingControllerTuning: Sendable {
     var ackTimeout: Duration = .seconds(3)
 }
 
-/// The app's side of a meeting, without AppKit (docs/meeting-design.md §5.8): starts the recorder, follows its
+/// The app's side of a meeting, without AppKit (docs/meeting/app-controls.md §5.8): starts the recorder, follows its
 /// `status.json`, sends control requests, finds meetings started elsewhere,
 /// cleans up the vocabulary hand-off file, and relabels meetings whose labelling was interrupted.
 ///

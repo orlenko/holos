@@ -7,7 +7,7 @@ import HolosMeeting
 import HolosStorage
 import os
 
-/// What the menu bar keeps about meetings (docs/meeting-design.md §5.8).
+/// What the menu bar keeps about meetings (docs/meeting/app-controls.md §5.8).
 @MainActor
 final class MeetingAppState {
     static let modeKey = "meetingRecorderMode"

@@ -3,7 +3,7 @@ import Foundation
 import HolosCore
 import os
 
-/// Contents of `audio-deleted.json` (docs/meeting-design.md §2.1, §4.13): written by Delete Audio, so the chunks the
+/// Contents of `audio-deleted.json` (docs/meeting/session-format.md §2.1, docs/meeting/retention-deletion.md §4.13): written by Delete Audio, so the chunks the
 /// manifest still lists are known to be absent on purpose.
 public struct AudioDeletedRecord: Codable, Sendable, Equatable {
     public var schemaVersion: Int
@@ -84,7 +84,7 @@ extension SessionManifest {
     }
 }
 
-/// Delete Audio and Delete Meeting (docs/meeting-design.md §4.13). Both run under the caller's processing lease and
+/// Delete Audio and Delete Meeting (docs/meeting/retention-deletion.md §4.13). Both run under the caller's processing lease and
 /// hold the session's writer lock from the start to the end, so they refuse while a recorder holds it and no
 /// recorder can reopen the session (`SessionArchive.open(at:)`, which does not consult the lease) while they run.
 /// Locks are taken in the order processing → writer → speakers.

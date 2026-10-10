@@ -20,7 +20,7 @@ import os
 /// is saved at once. Nothing here logs transcript text, names, or voice data.
 ///
 /// With `analyseVoices`, the window also works out every turn's voice once, in the background, into an in-memory
-/// `MeetingVoiceCache` (docs/meeting-design.md §4.10, "Voices within one meeting"): it serves voice learning, and
+/// `MeetingVoiceCache` (docs/meeting/people-voice.md §4.10, "Voices within one meeting"): it serves voice learning, and
 /// `voiceMatches` compares the meeting's unnamed speakers and turns with the people named in it.
 ///
 /// Invariants:

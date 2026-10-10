@@ -6,7 +6,7 @@ import HolosStorage
 import HolosTestSupport
 import Testing
 
-// A replay that fails after partial progress keeps what it already transcribed (docs/meeting-design.md §4.6).
+// A replay that fails after partial progress keeps what it already transcribed (docs/meeting/recorder.md §4.6).
 
 /// A finished archive with mic audio at 0–2 s and 4–6 s (two chunks, a 2 s gap between them, so replay uses two speech
 /// sessions). At 8 kHz a replay buffer is 0.512 s.

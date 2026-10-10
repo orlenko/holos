@@ -1,6 +1,6 @@
 import Foundation
 
-// Contract file (docs/meeting-design.md §3.0). Speaker value types, the diarizer
+// Contract file (docs/meeting/session-format.md §3.0). Speaker value types, the diarizer
 // boundary, the edit journal record, and per-session voice data. No FluidAudio types.
 // Adding a case to an enum persisted in runs (LabelProvenance, TrackPolicy, WordTimingQuality,
 // RecognitionTier) requires DiarizationRun.schemaVersion 2.
@@ -515,7 +515,7 @@ public struct SpeakerEdit: Codable, Sendable, Equatable, Identifiable {
     /// "app", "cli", or "carry" (carried over from an earlier run, §4.9).
     public var source: String
     public var action: SpeakerEditAction
-    /// Fingerprint of the prior value in the editor's view (docs/meeting-design.md §4.9);
+    /// Fingerprint of the prior value in the editor's view (docs/meeting/speaker-labels.md §4.9);
     /// a mismatch at write time refuses the edit, and at projection time makes it stale.
     public var expected: String?
     /// Edits appended by one `SpeakerEditor.apply` share this ID; undo reverts the whole batch.

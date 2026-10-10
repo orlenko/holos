@@ -1,7 +1,7 @@
 import Foundation
 import HolosCore
 
-/// Which finished meeting to label again by itself (docs/meeting-design.md §5.8 "Automatic relabel"): a Mac shut down
+/// Which finished meeting to label again by itself (docs/meeting/app-controls.md §5.8 "Automatic relabel"): a Mac shut down
 /// or put to sleep while labelling leaves a meeting whose labelling never finished. Pure.
 public enum AutoRelabelPolicy {
     /// Only meetings created this recently are relabelled.

@@ -6,7 +6,7 @@ import HolosStorage
 import HolosTestSupport
 import Testing
 
-// Capture epochs and the session timeline (docs/meeting-design.md §2.3, §4.2, §4.3).
+// Capture epochs and the session timeline (docs/meeting/session-format.md §2.3, docs/meeting/recorder.md §4.2, §4.3).
 
 @Test(.timeLimit(.minutes(1))) @MainActor
 func epochsRecordDiscontinuityWithReason() async throws {

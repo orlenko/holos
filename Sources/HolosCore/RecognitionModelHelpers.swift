@@ -1,6 +1,6 @@
 import Foundation
 
-// Helpers on the recognition types of the contract file SpeakerModels.swift (docs/meeting-design.md
+// Helpers on the recognition types of the contract file SpeakerModels.swift (docs/meeting/session-format.md
 // §3.0 allows only new optional fields and new constants there, so these live in an extension here).
 
 extension RecognitionThresholds {

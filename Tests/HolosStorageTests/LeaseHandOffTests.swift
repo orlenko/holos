@@ -8,7 +8,7 @@ import HolosSessionTestSupport
 
 private let handOffSession = SessionFixtureBuilder(name: "Hand-off")
 
-// The processing lease handed from one process to another (docs/meeting-design.md §4.1): `handOff` in the parent,
+// The processing lease handed from one process to another (docs/meeting/recorder.md §4.1): `handOff` in the parent,
 // `adoptProcessingLease` in the child (`voiceislocal session diarize --lease-fd`), and `withUse`.
 
 private func handOffIsCloseOnExec(_ fd: Int32) -> Bool {

@@ -51,7 +51,7 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
     private let overlay = DictationOverlay()
     private var monitor: GlobalHotkeyMonitor?
     private var controller: DictationController!
-    /// Meeting recording controls (HolosApp+Meeting.swift, docs/meeting-design.md §5.8).
+    /// Meeting recording controls (HolosApp+Meeting.swift, docs/meeting/app-controls.md §5.8).
     let meeting = MeetingAppState()
     private(set) var enabled = false
     /// Session suspension belongs to dictation, not to a meeting; deferred setup cannot clear it.

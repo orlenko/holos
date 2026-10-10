@@ -7,7 +7,7 @@ import HolosTestSupport
 import Testing
 
 // Sleep, wake, lid, power, and the environment events that retry a waiting recorder
-// (docs/meeting-design.md §4.2, §4.4).
+// (docs/meeting/recorder.md §4.2, §4.4).
 
 private func warning(_ code: RecorderWarningCode, _ message: String) -> RecorderEffect {
     .warn(RecorderWarning(code: code, message: message, since: RecorderMachine.placeholderDate))
