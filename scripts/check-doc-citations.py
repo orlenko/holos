@@ -648,6 +648,11 @@ def without_comments(text):
     return "".join(out)
 
 
+def link_file(dest):
+    """The file part of a link destination: without its query string or fragment."""
+    return re.split(r"[?#]", dest, maxsplit=1)[0]
+
+
 def tokens(text, in_docs, refs):
     """The files named and the sections cited in one paragraph, in order: (offset, kind, value, is a link). Inline
     HTML comments are not read."""
@@ -655,7 +660,7 @@ def tokens(text, in_docs, refs):
     found, spans = [], []
     for start, end, label_start, label_end, dest in links(text, refs):
         spans.append((start, end))
-        dest = dest.split("#", 1)[0]
+        dest = link_file(dest)
         if dest.endswith(".md") and "://" not in dest:
             found.append((start, "file", dest, True))
     for match in PATH.finditer(text):
@@ -694,7 +699,7 @@ def row_sections(line, refs):
     cells = row_cells(line)
     dests = []
     for start, end in cells:
-        found = [link[4].split("#", 1)[0] for link in links(line[start:end], refs)]
+        found = [link_file(link[4]) for link in links(line[start:end], refs)]
         dests.append([dest for dest in found if dest.endswith(".md") and "://" not in dest])
     rows = []
     for number, offset in sections(line):
@@ -854,6 +859,7 @@ SELF_TEST_FILES = {
     "link-text.md": "[docs/a.md](missing.md) §4.10 and [docs/a.md §1.3](missing.md) cite the destination.\n",
     "link-chain.md": "[Concurrency §1.3](docs/meeting-design.md), §3.2\n",
     "wrapped-label.swift": "/// [docs/meeting-design.md\n/// §1.3](missing.md)\n",
+    "link-query.md": "[spec](missing.md?raw=1) §1.2 is checked; [spec](docs/spec.md?plain=1#two) §1.2 resolves.\n",
     "link-forms.md": '[label](<docs/spec.md>) §1.2 and [label](docs/spec.md "title") §1.2, §9.1\n',
     "qualifier.swift": "// docs/conventions.md §1.7 rule 4, §4.1\n",
     "wrapped.swift": "/// (docs/a.md §1.3\n/// and §3.2)\n",
@@ -947,6 +953,7 @@ SELF_TEST_PROBLEMS = [
     "docs/region7.md:2: docs/index7.md §1.2: no heading 1.2 in docs/index7.md or the file its index maps it to",
     "link-target.md:1: docs/a.md §3.2: no heading 3.2 in docs/a.md",
     "link-text.md:1: missing.md §4.10: no such file",
+    "link-query.md:1: missing.md §1.2: no such file",
     "link-text.md:1: missing.md §1.3: no such file",
     "link-chain.md:1: docs/meeting-design.md §3.2: no heading 3.2 in docs/meeting-design.md",
     "wrapped-label.swift:2: missing.md §1.3: no such file",
