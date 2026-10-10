@@ -317,7 +317,19 @@ def classify(lines):
     row, and the rows after it), "text". `region` is the path of the innermost open citations region (regions nest;
     an unclosed region or a stray close is a problem). Nothing inside fenced code or an HTML comment is a marker, a
     heading, a row or a reference definition."""
-    infos, problems, stack, fence, comment = [], [], [], None, False
+    infos, problems, stack, fence, comment, span = [], [], [], None, False, 0
+
+    def closes_later(after, run):
+        """Whether a code span's run of `run` backticks closes on a line of the paragraph after line `after`."""
+        for later in lines[after:]:
+            quote = QUOTE_PREFIX.match(later)
+            rest = later[quote.end():] if quote else later
+            if not rest.strip() or opens(later) or HEADING.match(rest):
+                return False
+            if backtick_run(run).search(rest):
+                return True
+        return False
+
     for number, line in enumerate(lines, 1):
         quote = QUOTE_PREFIX.match(line)
         content = line[quote.end():] if quote else line
@@ -357,8 +369,11 @@ def classify(lines):
             kind = "heading"
         else:
             kind = "text"
-        if kind in ("text", "heading") and opens_comment(content):
-            comment = True
+        if kind in ("text", "heading"):
+            later = (lambda run: closes_later(number, run)) if kind == "text" else (lambda run: False)
+            comment, span = opens_comment(content, span if kind == "text" else 0, later)
+        else:
+            span = 0
         infos.append([kind, content, depth, stack[-1][0] if stack and kind != "marker" else None])
     problems += [(number, f"<!-- citations: {path} --> is never closed") for path, number in stack]
     table = False
@@ -533,22 +548,40 @@ def resolve(tree, cited, citing, link):
     return candidate if inside(candidate) and tree.isfile(candidate) else None
 
 
-def opens_comment(text):
-    """Whether a line leaves an inline HTML comment open at its end (outside code spans): the lines after it are in
-    the comment until one holds `-->`."""
+def backtick_run(n):
+    return re.compile(r"(?<!`)" + "`" * n + r"(?!`)")
+
+
+def opens_comment(text, span=0, closes_later=lambda n: False):
+    """Read one line of a paragraph for inline HTML comments, outside code spans: (whether it leaves a comment open
+    at its end, the length of a code span's backtick run it leaves open). `span` is the run an earlier line of the
+    paragraph left open; `closes_later(n)` says whether a run of `n` backticks closes on a later line of the
+    paragraph (a run that never closes is literal backticks, as in CommonMark)."""
     j = 0
+    if span:
+        match = backtick_run(span).search(text)
+        if not match:
+            return False, span
+        j = match.end()
     while j < len(text):
         if text[j] == "`":
-            j = code_span_end(text, j)
+            run = len(text[j:]) - len(text[j:].lstrip("`"))
+            match = backtick_run(run).search(text, j + run)
+            if match:
+                j = match.end()
+            elif closes_later(run):
+                return False, run
+            else:
+                j += run
             continue
         if text.startswith("<!--", j):
             end = text.find("-->", j + 4)
             if end < 0:
-                return True
+                return True, 0
             j = end + 3
             continue
         j += 1
-    return False
+    return False, 0
 
 
 def without_comments(text):
@@ -832,6 +865,8 @@ SELF_TEST_FILES = {
     "docs/inline-close.md": "See <!-- note\n--> docs/conventions.md §99.9.\n\n<!--\nblock\n--> [spec](missing.md) §9.9\n\n"
                             "<!-- one line --> docs/conventions.md §99.8\n\n"
                             "<!--\nhidden [old](missing2.md) --> docs/conventions.md §99.7\n",
+    "docs/span-comment.md": "A span `starts here\nand holds <!-- literally` and ends.\n\nThen docs/missing.md §9.9.\n\n"
+                            "An unmatched ` backtick\nthen <!-- a real comment\n\n[x](missing.md) §9.8\n-->\n",
     "docs/inline-comment.md": "Text <!-- [old](missing.md) or §9.9 --> and `<!-- code -->` stay; docs/a.md §1.3.\n",
     "docs/typo.md": "See desgin.md, README.md and exports/transcript.md.\n",
     "docs/index2.md": "<!-- citations: docs/index2.md -->\n| Sections | File |\n|---|---|\n| §1.1 One | [sub/b.md](sub/b.md) |\n| §1.2–1.3 Stale | "
@@ -887,6 +922,7 @@ SELF_TEST_PROBLEMS = [
     "docs/sub/plain.md:1: spec.md: no such file",
     "docs/folder2.md:1: missing/status.md: no such file",
     "docs/typo.md:1: desgin.md: no such file",
+    "docs/span-comment.md:4: docs/missing.md: no such file",
     "docs/inline-close.md:2: docs/conventions.md §99.9: no heading 99.9 in docs/conventions.md",
     "docs/inline-close.md:6: missing.md: no such file",
     "docs/inline-close.md:8: docs/conventions.md §99.8: no heading 99.8 in docs/conventions.md",
