@@ -311,11 +311,12 @@ def classify(lines):
     """The one reading of a Markdown file's lines that every pass uses: ([(kind, content, quote depth, region)],
     problems). `content` is the line without its block quote markers. Kinds: "fence" (a fence line), "code" (inside
     fenced code), "html" (an HTML comment block, after any block quote and list markers, or the lines after a line
-    that leaves an inline comment open; it runs to the line holding `-->`), "marker" (a `<!-- citations: ... -->` or
-    `<!-- /citations -->` line), "blank", "heading", "row" (a table row: a header row followed by a delimiter row,
-    that delimiter row, and the rows after it), "text". `region` is the path of the innermost open citations region
-    (regions nest; an unclosed region or a stray close is a problem). Nothing inside fenced code or an HTML comment
-    is a marker, a heading, a row or a reference definition."""
+    that leaves an inline comment open; it runs to the line holding `-->`, and text after the `-->` on that line is
+    read as a text line with the comment part blanked), "marker" (a `<!-- citations: ... -->` or `<!-- /citations
+    -->` line), "blank", "heading", "row" (a table row: a header row followed by a delimiter row, that delimiter
+    row, and the rows after it), "text". `region` is the path of the innermost open citations region (regions nest;
+    an unclosed region or a stray close is a problem). Nothing inside fenced code or an HTML comment is a marker, a
+    heading, a row or a reference definition."""
     infos, problems, stack, fence, comment = [], [], [], None, False
     for number, line in enumerate(lines, 1):
         quote = QUOTE_PREFIX.match(line)
@@ -327,7 +328,14 @@ def classify(lines):
             kind = "fence" if closes(line, fence) else "code"
             fence = None if kind == "fence" else fence
         elif comment:
-            kind, comment = "html", "-->" not in content
+            if "-->" in content:
+                # The comment ends here; what follows `-->` on the line is read (the comment part is blanked).
+                end = content.index("-->")
+                comment = False
+                kind = "text" if content[end + 3:].strip() else "html"
+                content = " " * end + content[end:] if kind == "text" else content
+            else:
+                kind = "html"
         elif opens(line):
             kind, fence = "fence", opens(line)
         elif REGION_OPEN.match(inner):
@@ -340,7 +348,9 @@ def classify(lines):
             else:
                 problems.append((number, "<!-- /citations --> with no region open"))
         elif re.match(r"^ {0,3}<!--", inner):
-            kind, comment = "html", "-->" not in inner[inner.index("<!--") + 4:]
+            end = inner.find("-->", inner.index("<!--") + 4)
+            comment = end < 0
+            kind = "text" if end >= 0 and inner[end + 3:].strip() else "html"
         elif not content.strip():
             kind = "blank"
         elif HEADING.match(content):
@@ -376,7 +386,8 @@ def markdown_paragraphs(lines):
             paragraphs.append(current)
         current = []
 
-    for number, (line, (kind, content, quotes, _)) in enumerate(zip(lines, infos), 1):
+    for number, (raw, (kind, content, quotes, _)) in enumerate(zip(lines, infos), 1):
+        line = raw[:len(raw) - len(content)] + content
         if kind == "code":
             if content.strip():
                 current.append((number, line))
@@ -653,7 +664,7 @@ def must_exist(cited, link):
     not in NOT_DOCS."""
     if link:
         return True
-    cited = os.path.normpath(cited)
+    cited = re.sub(r"^(?:\.\.?/)+", "", os.path.normpath(cited))  # the artifact path, after any relative prefix
     folder, name = os.path.split(cited)
     if folder and not cited.startswith(NOT_DOC_FOLDERS):
         return True
@@ -818,6 +829,9 @@ SELF_TEST_FILES = {
     "docs/sub/plain.md": 'See b.md, spec.md "Word list", README.md and exports/transcript.md.\n```\nread ./x.md\n```\n',
     "docs/folder2.md": "See missing/status.md, sub/none.md and exports/transcript.md.\n",
     "docs/inline-open.md": "Text <!--\n- [old](missing.md) §9.9\n-->\n\nAfter the comment, docs/a.md §1.3.\n",
+    "docs/inline-close.md": "See <!-- note\n--> docs/conventions.md §99.9.\n\n<!--\nblock\n--> [spec](missing.md) §9.9\n\n"
+                            "<!-- one line --> docs/conventions.md §99.8\n\n"
+                            "<!--\nhidden [old](missing2.md) --> docs/conventions.md §99.7\n",
     "docs/inline-comment.md": "Text <!-- [old](missing.md) or §9.9 --> and `<!-- code -->` stay; docs/a.md §1.3.\n",
     "docs/typo.md": "See desgin.md, README.md and exports/transcript.md.\n",
     "docs/index2.md": "<!-- citations: docs/index2.md -->\n| Sections | File |\n|---|---|\n| §1.1 One | [sub/b.md](sub/b.md) |\n| §1.2–1.3 Stale | "
@@ -825,7 +839,8 @@ SELF_TEST_FILES = {
                       "| §1.1 Two links | [b](sub/b.md), [spec](spec.md) |\n| §1.2 Next cell | [spec](spec.md) | [b](sub/b.md) |\n"
                       "| §1.2 Commented link | <!-- [b](sub/b.md) --> [spec](spec.md) |\n"
                       "<!-- /citations -->\n",
-    "docs/not-docs.md": "Plain README.md, exports/transcript.md and ./exports/transcript.md need not exist; Sources/HolosCor/README.md and "
+    "docs/not-docs.md": "Plain README.md, exports/transcript.md, ./exports/transcript.md and ../exports/transcript.md need not "
+                        "exist; Sources/HolosCor/README.md and "
                         "missing/report.md must.\n",
     "docs/region.md": "<!-- citations: docs/index.md -->\n| §1.1 | §1.2 | §1.3 | §7.7 |\n<!-- /citations -->\n§7.7\n\n"
                       "```\n<!-- citations: docs/index.md -->\n```\n| §7.6 | outside any region: the marker above is in a fence |\n",
@@ -872,6 +887,10 @@ SELF_TEST_PROBLEMS = [
     "docs/sub/plain.md:1: spec.md: no such file",
     "docs/folder2.md:1: missing/status.md: no such file",
     "docs/typo.md:1: desgin.md: no such file",
+    "docs/inline-close.md:2: docs/conventions.md §99.9: no heading 99.9 in docs/conventions.md",
+    "docs/inline-close.md:6: missing.md: no such file",
+    "docs/inline-close.md:8: docs/conventions.md §99.8: no heading 99.8 in docs/conventions.md",
+    "docs/inline-close.md:11: docs/conventions.md §99.7: no heading 99.7 in docs/conventions.md",
     "docs/index2.md:5: §1.3: no heading 1.3 in docs/spec.md, the file its row links to",
     "docs/index2.md:6: §1.1: no heading 1.1 in docs/spec.md, the file its row links to",
     "docs/index2.md:7: §1.1: its row has 2 links in the cell after it, not one",
