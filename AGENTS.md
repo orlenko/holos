@@ -183,8 +183,7 @@ Exist today:
 
 Planned, see the [architecture roadmap](docs/architecture-roadmap.md) (`docs/architecture-roadmap.md §3` and
 `docs/architecture-roadmap.md §6`; none of these exist yet, so do not reference them as if they did):
-`SessionGeneration` (derived-data stamps), `Drainable` (pending work at close and quit), one revision-stamped Review
-entry point (`ReviewSession.submit(_:seen:)`), a lock-token type.
+`SessionGeneration` (derived-data stamps), `Drainable` (pending work at close and quit), a lock-token type.
 
 ## Tests
 
