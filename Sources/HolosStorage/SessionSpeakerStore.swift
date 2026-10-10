@@ -170,7 +170,7 @@ public enum SessionSpeakerStore {
 
     // MARK: - Generation
 
-    /// The session's speaker generation (docs/meeting/people-voice.md §4.10, PR10): the head run ID and the edit journal's
+    /// The session's speaker generation (docs/meeting/people-voice.md §4.10): the head run ID and the edit journal's
     /// byte length, as "<runID>:<bytes>"; nil without a head. The journal only grows under one head, so any edit or
     /// relabel changes it. Read it under the speaker lock to compare it with a later reading.
     public static func generation(session: URL) throws -> String? {

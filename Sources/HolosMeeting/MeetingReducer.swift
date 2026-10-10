@@ -2,7 +2,7 @@ import Foundation
 import HolosAudio
 import HolosCore
 
-// The menu bar's meeting state machine (docs/meeting/app-controls.md §5.8 PR4). Pure: every input is an event, every output
+// The menu bar's meeting state machine (docs/meeting/app-controls.md §5.8). Pure: every input is an event, every output
 // an effect that `MeetingController` executes or hands to the app.
 
 /// What the start panel asks the recorder to do.

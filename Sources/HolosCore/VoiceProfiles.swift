@@ -1,6 +1,6 @@
 import Foundation
 
-// People and their voiceprints (docs/meeting/people-voice.md §4.10, PR10). Names are not biometric; voiceprints are.
+// People and their voiceprints (docs/meeting/people-voice.md §4.10). Names are not biometric; voiceprints are.
 // A person (`SpeakerProfile`) exists whether or not "Remember voices" is on, so names carry across meetings; a
 // voiceprint reaches disk only as a `VoiceprintSample` of a person the user confirmed with voice learning on.
 // Stored in `<support>/Speakers/profiles.json` by `SpeakerProfileStore` (HolosStorage).

@@ -6,7 +6,7 @@ import HolosStorage
 import Synchronization
 
 extension Session {
-    /// `voiceislocal session diarize` (docs/meeting/speaker-labels.md §5.5 PR7b).
+    /// `voiceislocal session diarize` (docs/meeting/speaker-labels.md §5.5).
     struct Diarize: AsyncParsableCommand {
         static let configuration = CommandConfiguration(
             abstract: "Label the speakers of a finished session and rewrite its transcript exports.",

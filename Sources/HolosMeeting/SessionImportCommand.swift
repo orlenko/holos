@@ -3,7 +3,7 @@ import HolosCore
 import HolosSpeakers
 import HolosStorage
 
-/// What `voiceislocal session import` does (docs/meeting/speaker-labels.md §5.5 PR7c), as a library call: the CLI parses its
+/// What `voiceislocal session import` does (docs/meeting/speaker-labels.md §5.5), as a library call: the CLI parses its
 /// arguments, prints, and handles signals; the import, the labelling under the import's lease, and the exit status
 /// are tested here (as `SessionDiarizeCommand` is for `voiceislocal session diarize`).
 public enum SessionImportCommand {
