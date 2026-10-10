@@ -206,7 +206,7 @@ All low risk and pure moves unless noted. Line ranges [M], risk [J].
   - `HTMLInlineStyle` (1157–1462)
   - `PDFReader` (1470–1673)
   - Markdown, plain-text and DocumentText readers
-- **ReadingPipeline:**
+- **ReadingPipeline:** done; split into files by the parts below, and `ReadingPipeline.swift` keeps the render.
   - Manifest (7–151)
   - `ReadingOutputReservation` (834–1150)
   - Locks and path identity (741–807, 1162–1263)
