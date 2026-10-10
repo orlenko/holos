@@ -10,7 +10,7 @@ Status: implementation-ready design for PR1–PR11 of
 [meeting-recording-plan.md](meeting-recording-plan.md) (PR12, minutes, is out of scope).
 Written 2026-09-23 from the code on branch `meeting-plan`, FluidAudio 0.17.1 sources
 (`5c51c5c9`), and the user's decisions in plan §8. Revised 2026-09-24 after a three-lens
-design review (80 findings, §10) and spike S1 ([speaker-evaluation.md](speaker-evaluation.md)).
+design review (80 findings, docs/meeting-design.md §10) and spike S1 ([speaker-evaluation.md](speaker-evaluation.md)).
 No product code exists for it yet.
 
 Several engineers build this in parallel, one PR each, without talking to each other.
@@ -263,7 +263,7 @@ vocabulary, or embeddings. Log user paths only as `privacy: .private`.
 
 ### 1.6 Files, JSON, IDs, schema versions
 
-- Encode and decode every JSON file with `HolosJSON` (§3.1): ISO 8601 dates (second
+- Encode and decode every JSON file with `HolosJSON` (`HolosJSON.swift`): ISO 8601 dates (second
   precision), sorted keys, pretty whole files, compact `\n`-terminated journal lines.
   Keys are the Swift property names (lowerCamelCase).
 - **Nothing is ordered or chosen by a date.** Dates have one-second precision. Use the
@@ -287,7 +287,7 @@ vocabulary, or embeddings. Log user paths only as `privacy: .private`.
      requirement). New session facts go into new files (`meeting.json`, `status.json`,
      `postprocess.json`, `speakers/…`, `transcripts/current.json`).
   5. Sets that may grow and are read across processes of different builds are open
-     string codes (`OpenStringCode`, §3.1): `RecorderWarningCode`, `StopReason`,
+     string codes (`OpenStringCode`, `HolosJSON.swift`): `RecorderWarningCode`, `StopReason`,
      `GapReason`, `PostProcessingStage`, `PostProcessingState`, `StageResult`,
      `TranscriptionState`. An older reader never fails on a new value. `RecorderPhase`
      is an enum that decodes unknown values as `.unknown` (treated as an active
@@ -464,7 +464,7 @@ extension SessionArchive {
 ```
 <SESSION-UUID>.holos/                      owner                        notes
   manifest.json                            SessionArchive               schema v1, unchanged
-  events.jsonl                             SessionArchive               new kinds: §3.2; failed appends leave no partial line
+  events.jsonl                             SessionArchive               new kinds: `MeetingModels.swift`; failed appends leave no partial line
   .writer.lock .processing.lock .speakers.lock  PR6                     flock files
   meeting.json                             PR2a (record), PR7c (import) MeetingInfo; absent in old archives
   vocabulary.json                          PR2a (record), PR7c (import) MeetingVocabulary; absent means none
@@ -630,573 +630,23 @@ diarization times (after the render time map, §4.7), markers, and gaps. An expo
   or undo, the diagnostics merge the journal as read before the append, since the append
   repairs a torn last line (`SpeakerSnapshotDiagnostics.merging`).
 
-## 3. Contract files (wave 0; copy verbatim)
+## 3. Contract files
 
 ### 3.0 Rules
 
-- PR6 adds all three files, byte-identical to the blocks below, in wave 0. Every later
-  PR builds on them. They were type-checked together with the current HolosCore sources
-  (`swiftc -typecheck -swift-version 6`), and the §3.4 examples were produced by
-  encoding these types with `HolosJSON`, on 2026-09-24.
-- Copy each block's contents exactly and end the file with one newline. The resulting
-  files have these SHA-256 digests (check with `shasum -a 256 Sources/HolosCore/<file>`):
-
-  | File | SHA-256 |
-  |---|---|
-  | `HolosJSON.swift` | `721b80c44e897f7f7c1d3b9323628972043e2d11db02774124041630c38c43c1` |
-  | `MeetingModels.swift` | `cd48ccea4f0f22068f8974411706ef8b52951239cfe1bbe37db19e2443e0903e` |
-  | `SpeakerModels.swift` | `da49758f5582b0fe112fb1c2dbb2e35bdd0faee411eae5453009d6823f0510ef` |
-
-  One way to extract them:
-
-  ```sh
-  python3 - <<'PY'
-  import re, pathlib
-  doc = pathlib.Path("docs/meeting-design.md").read_text()
-  for name in ["HolosJSON.swift", "MeetingModels.swift", "SpeakerModels.swift"]:
-      body = re.search(r"### 3\.\d `Sources/HolosCore/" + re.escape(name) + r"`\n\n```swift\n(.*?)\n```\n", doc, re.S).group(1)
-      pathlib.Path("Sources/HolosCore/" + name).write_text(body + "\n")
-  PY
-  ```
-
+- The contract types are defined in `Sources/HolosCore/HolosJSON.swift` (`HolosJSON`, `OpenStringCode`),
+  `Sources/HolosCore/MeetingModels.swift` (recorder, status, control and post-processing records) and
+  `Sources/HolosCore/SpeakerModels.swift` (diarization runs, the edit journal, voice data and recognition).
+  Read those files; this document does not copy them. §3.3 is an old copy of `SpeakerModels.swift` that has
+  drifted from it: the source file wins.
+- The §3.4 examples show the JSON these types encode with `HolosJSON`.
 - The `// MARK: - Voice data` comment in `SpeakerModels.swift` says voice data is
-  "written only while Remember voices is on". That comment predates the privacy fix and is
-  kept only to preserve the frozen digest. §4.10 governs: normal post-processing never
+  "written only while Remember voices is on". §4.10 governs: normal post-processing never
   writes `speakers/voice/`; only hidden evaluation runs (`forceVoiceData`) do.
-- After wave 0 a contract file changes only additively: a new optional field (with a
-  default in the initializer) or a new static constant of an open code, made by the PR
-  that needs it and stated in its description. Anything else is a design change: stop
-  and report it. The digests describe the wave-0 text.
-- Types a PR needs beyond these go into that PR's own target, not into these files.
-
-### 3.1 `Sources/HolosCore/HolosJSON.swift`
-
-```swift
-import Foundation
-
-/// JSON conventions shared by every Holos file: ISO 8601 dates, sorted keys, unescaped slashes.
-/// Whole files are pretty-printed; journal lines are compact and end with a newline.
-/// Decoders ignore unknown keys, so a newer writer may add optional fields within a schema version.
-/// Dates have one-second precision: never order records by a date (use sequence numbers or pointers).
-public enum HolosJSON {
-    /// Encoder for whole files (`pretty == true`) or single journal lines (`pretty == false`).
-    public static func encoder(pretty: Bool = true) -> JSONEncoder {
-        let encoder = JSONEncoder()
-        encoder.dateEncodingStrategy = .iso8601
-        encoder.outputFormatting = pretty
-            ? [.sortedKeys, .prettyPrinted, .withoutEscapingSlashes]
-            : [.sortedKeys, .withoutEscapingSlashes]
-        return encoder
-    }
-
-    /// Decoder matching `encoder(pretty:)`.
-    public static func decoder() -> JSONDecoder {
-        let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
-        return decoder
-    }
-
-    /// Encodes `value` as one compact JSON object followed by "\n", for append-only journals.
-    public static func line<T: Encodable>(_ value: T) throws -> Data {
-        var data = try encoder(pretty: false).encode(value)
-        data.append(0x0A)
-        return data
-    }
-}
-
-/// A string code that tolerates values written by a newer Holos: it is encoded as a bare JSON string,
-/// and any string decodes (compare with the type's static constants; unknown values compare unequal).
-public protocol OpenStringCode: RawRepresentable, Codable, Sendable, Hashable where RawValue == String {
-    init(rawValue: String)
-}
-
-extension OpenStringCode {
-    public init(_ rawValue: String) { self.init(rawValue: rawValue) }
-
-    public init(from decoder: any Decoder) throws {
-        self.init(rawValue: try decoder.singleValueContainer().decode(String.self))
-    }
-
-    public func encode(to encoder: any Encoder) throws {
-        var container = encoder.singleValueContainer()
-        try container.encode(rawValue)
-    }
-}
-```
-
-### 3.2 `Sources/HolosCore/MeetingModels.swift`
-
-```swift
-import Foundation
-
-// Contract file added by PR6 in wave 0 (docs/meeting-design.md §3.2). Value types shared by the recorder
-// process, the CLI, and the menu bar app. No logic beyond trivial derived properties.
-
-// MARK: - Open string codes
-
-/// Recorder warnings shown in the menu and `holos record status`. Open string code.
-public struct RecorderWarningCode: OpenStringCode {
-    public var rawValue: String
-    public init(rawValue: String) { self.rawValue = rawValue }
-
-    /// Free space fell below 2 GB.
-    public static let diskLow = RecorderWarningCode("diskLow")
-    /// A track delivered no audio for more than 3 seconds.
-    public static let trackStalled = RecorderWarningCode("trackStalled")
-    /// Capture resumed after a system sleep shorter than 15 minutes; the gap is marked.
-    public static let resumedAfterSleep = RecorderWarningCode("resumedAfterSleep")
-    /// Capture restarted after an audio configuration change.
-    public static let deviceChanged = RecorderWarningCode("deviceChanged")
-    /// Live transcription fell behind; the rest is transcribed from saved audio after stop.
-    public static let transcriptionBehind = RecorderWarningCode("transcriptionBehind")
-    /// Laptop speakers are the output during a call, so remote voices reach the microphone (PR11).
-    public static let echoRisk = RecorderWarningCode("echoRisk")
-    /// Audio capture is not running and the recorder is retrying (phase `waiting`).
-    public static let audioUnavailable = RecorderWarningCode("audioUnavailable")
-    /// A call recording continues without the microphone because no input device is available.
-    public static let microphoneUnavailable = RecorderWarningCode("microphoneUnavailable")
-    /// The disk could not keep up, so some audio was dropped; the gap is marked.
-    public static let audioDropped = RecorderWarningCode("audioDropped")
-}
-
-/// Why capture ended. Open string code.
-public struct StopReason: OpenStringCode {
-    public var rawValue: String
-    public init(rawValue: String) { self.rawValue = rawValue }
-
-    /// A stop control request (app, `holos record stop`, or legacy stop.request).
-    public static let requested = StopReason("requested")
-    /// SIGINT or SIGTERM.
-    public static let signal = StopReason("signal")
-    /// `--duration` elapsed.
-    public static let duration = StopReason("duration")
-    /// Free space fell below 500 MB.
-    public static let diskLow = StopReason("diskLow")
-    /// The system slept for 15 minutes or more while recording; the recording ends at the sleep point.
-    public static let sleepTimeout = StopReason("sleepTimeout")
-    /// Audio stayed unavailable for 10 minutes (phase `waiting`).
-    public static let captureFailed = StopReason("captureFailed")
-    /// Capture never started.
-    public static let startFailed = StopReason("startFailed")
-    /// The meeting stayed paused (including sleep while paused) for 6 hours.
-    public static let pauseTimeout = StopReason("pauseTimeout")
-    /// Written by a maintenance command into the status of a recorder that died.
-    public static let interrupted = StopReason("interrupted")
-}
-
-// MARK: - Archive status strings (manifest.json "status")
-
-/// Values of `SessionManifest.status`. The manifest keeps a String for schema-v1 compatibility.
-public enum ArchiveStatus {
-    public static let recording = "recording"
-    public static let processing = "processing"
-    public static let complete = "complete"
-    public static let audioOnly = "audioOnly"
-    public static let transcriptionIncomplete = "transcriptionIncomplete"
-    public static let incomplete = "incomplete"
-    public static let failed = "failed"
-    public static let interrupted = "interrupted"
-    /// Interrupted, then recovered with a rebuilt transcript (PR3).
-    public static let recovered = "recovered"
-}
-
-// MARK: - Event kinds (events.jsonl "kind"); details are [String: String]
-
-/// Event kinds. Details keys are listed per kind; numbers are written with `String(Double)`.
-public enum MeetingEventKind {
-    /// track, relativePath, start, sampleRate, channels
-    public static let chunkOpened = "chunkOpened"
-    /// hostTimeOrigin; from PR2 also epoch, timelineOffset
-    public static let captureStarted = "captureStarted"
-    /// track, text, start, end; from PR2 also segmentID and words (compact JSON array of TimedWord)
-    public static let transcriptFinalized = "transcriptFinalized"
-    /// track, previousEnd, nextStart, reason (a GapReason raw value, or timestampGap | formatChanged)
-    public static let audioDiscontinuity = "audioDiscontinuity"
-    /// track, previousEnd, nextStart, droppedSeconds: leading samples that would overlap the previous chunk were dropped
-    public static let timestampOverlap = "timestampOverlap"
-    /// error
-    public static let startFailed = "startFailed"
-    /// error; from PR2 also epoch
-    public static let captureFailed = "captureFailed"
-    /// at, reason, attempt, retryInSeconds: capture is not running and will be retried
-    public static let captureWaiting = "captureWaiting"
-    /// transcriptionErrors; from PR2 also reason (StopReason)
-    public static let captureStopped = "captureStopped"
-    /// chunks, unrecovered, previousStatus
-    public static let archiveRecovered = "archiveRecovered"
-    /// at
-    public static let paused = "paused"
-    /// at, epoch
-    public static let resumed = "resumed"
-    /// at, requestID, label (optional)
-    public static let marker = "marker"
-    /// at, phaseBeforeSleep (recording | paused | waiting)
-    public static let systemWillSleep = "systemWillSleep"
-    /// at, sleptSeconds, action (resume | wait | finalize)
-    public static let didWake = "didWake"
-    /// track, at, reason
-    public static let deviceChanged = "deviceChanged"
-    /// epoch, at, reason, timelineOffset
-    public static let captureRestarted = "captureRestarted"
-    /// freeBytes, action (warn | stop)
-    public static let diskLow = "diskLow"
-    /// track, silentSeconds
-    public static let trackStalled = "trackStalled"
-    /// track
-    public static let trackResumed = "trackResumed"
-    /// track, from: session time of the first audio that live transcription did not receive
-    public static let transcriptionBehind = "transcriptionBehind"
-    /// id, command, result
-    public static let controlHandled = "controlHandled"
-    /// file, reason
-    public static let controlRejected = "controlRejected"
-    /// transcriptID, journalSegments, replayedSeconds (PR3)
-    public static let transcriptRebuilt = "transcriptRebuilt"
-}
-
-// MARK: - Meeting setup (meeting.json, vocabulary.json)
-
-public enum MeetingMode: String, Codable, Sendable, CaseIterable {
-    /// Microphone only (the built-in microphone); the microphone track is diarized.
-    case inPerson
-    /// Microphone (the system default input) and system audio; the system track is diarized.
-    case call
-}
-
-public enum MeetingOrigin: String, Codable, Sendable {
-    case recorded
-    case imported
-}
-
-/// How a meeting was set up. Written once to `meeting.json` when a recording or import starts.
-public struct MeetingInfo: Codable, Sendable, Equatable {
-    public var schemaVersion: Int
-    public var sessionID: String
-    public var mode: MeetingMode
-    /// In a call, also diarize the microphone track because other people share the room.
-    /// `holos session diarize --others-in-room | --no-others-in-room` overrides it per run.
-    public var othersInRoom: Bool
-    /// Bundle ID whose audio the system track captures, when filtered with `--app`.
-    public var applicationBundleID: String?
-    public var origin: MeetingOrigin
-    /// Original file name for `holos session import`; nil for recordings.
-    public var importedFileName: String?
-    /// Number of people the user expects, passed to the diarizer as a hint (optional).
-    public var expectedSpeakers: Int?
-    public var createdAt: Date
-
-    public init(schemaVersion: Int = 1, sessionID: String, mode: MeetingMode, othersInRoom: Bool,
-                applicationBundleID: String? = nil, origin: MeetingOrigin = .recorded,
-                importedFileName: String? = nil, expectedSpeakers: Int? = nil, createdAt: Date = Date()) {
-        self.schemaVersion = schemaVersion; self.sessionID = sessionID; self.mode = mode
-        self.othersInRoom = othersInRoom; self.applicationBundleID = applicationBundleID
-        self.origin = origin; self.importedFileName = importedFileName
-        self.expectedSpeakers = expectedSpeakers; self.createdAt = createdAt
-    }
-
-    /// Settings assumed for archives created before meeting.json existed.
-    public static func inferred(sessionID: String, source: AudioSource, createdAt: Date) -> MeetingInfo {
-        MeetingInfo(sessionID: sessionID, mode: source == .microphone ? .inPerson : .call,
-                    othersInRoom: false, createdAt: createdAt)
-    }
-}
-
-/// Contents of `vocabulary.json`: names and terms the recognizer should prefer (contextual strings).
-/// Written once when a recording or import starts; at most 1,000 entries of at most 100 characters.
-public struct MeetingVocabulary: Codable, Sendable, Equatable {
-    public var schemaVersion: Int
-    public var strings: [String]
-
-    public init(schemaVersion: Int = 1, strings: [String]) {
-        self.schemaVersion = schemaVersion; self.strings = strings
-    }
-}
-
-// MARK: - Control requests (control/<id>.json)
-
-public enum ControlCommand: String, Codable, Sendable, CaseIterable {
-    case stop, pause, resume, marker
-}
-
-/// One request from the app or CLI to a running recorder. Published atomically as
-/// `control/<id>.json`; the recorder applies it at most once and deletes the file.
-public struct ControlRequest: Codable, Sendable, Equatable, Identifiable {
-    public var schemaVersion: Int
-    /// UUID string; also the file name.
-    public var id: String
-    /// Must equal the session folder's ID or the request is rejected.
-    public var sessionID: String
-    public var command: ControlCommand
-    /// Marker label, at most 200 characters; ignored for other commands.
-    public var label: String?
-    public var createdAt: Date
-    /// `mach_continuous_time` in nanoseconds when the request was written. The recorder applies
-    /// requests in (sentAtNanos, id) order; the value is comparable across processes on one Mac.
-    public var sentAtNanos: UInt64?
-    /// "app" or "cli".
-    public var sender: String
-
-    public init(schemaVersion: Int = 1, id: String = UUID().uuidString, sessionID: String,
-                command: ControlCommand, label: String? = nil, createdAt: Date = Date(),
-                sentAtNanos: UInt64? = nil, sender: String) {
-        self.schemaVersion = schemaVersion; self.id = id; self.sessionID = sessionID
-        self.command = command; self.label = label; self.createdAt = createdAt
-        self.sentAtNanos = sentAtNanos; self.sender = sender
-    }
-}
-
-public enum ControlResult: String, Codable, Sendable {
-    /// The command changed recorder state (or added a marker).
-    case applied
-    /// Valid but had no effect, e.g. pause while paused, or any command after capture stopped.
-    case ignored
-    /// Invalid for this session or phase; `message` says why.
-    case rejected
-}
-
-public struct ControlAck: Codable, Sendable, Equatable {
-    public var id: String
-    public var command: ControlCommand
-    public var result: ControlResult
-    public var message: String?
-    public var handledAt: Date
-
-    public init(id: String, command: ControlCommand, result: ControlResult, message: String? = nil,
-                handledAt: Date = Date()) {
-        self.id = id; self.command = command; self.result = result
-        self.message = message; self.handledAt = handledAt
-    }
-}
-
-// MARK: - Post-processing (postprocess.json; mirrored in status.json)
-
-/// Post-processing stage. Open string code.
-public struct PostProcessingStage: OpenStringCode {
-    public var rawValue: String
-    public init(rawValue: String) { self.rawValue = rawValue }
-
-    public static let transcript = PostProcessingStage("transcript")
-    public static let render = PostProcessingStage("render")
-    public static let diarize = PostProcessingStage("diarize")
-    public static let align = PostProcessingStage("align")
-    public static let recognize = PostProcessingStage("recognize")
-    public static let export = PostProcessingStage("export")
-}
-
-public struct PostProcessingProgress: Codable, Sendable, Equatable {
-    public var stage: PostProcessingStage
-    public var track: String?
-    /// 0...1 within the stage (and track), when known.
-    public var fraction: Double?
-    /// Short user-facing text, e.g. "Labelling speakers (system audio)…". Never transcript text.
-    public var message: String
-
-    public init(stage: PostProcessingStage, track: String? = nil, fraction: Double? = nil, message: String) {
-        self.stage = stage; self.track = track; self.fraction = fraction; self.message = message
-    }
-}
-
-/// Result of one stage. Open string code.
-public struct StageResult: OpenStringCode {
-    public var rawValue: String
-    public init(rawValue: String) { self.rawValue = rawValue }
-
-    public static let succeeded = StageResult("succeeded")
-    public static let skipped = StageResult("skipped")
-    public static let failed = StageResult("failed")
-}
-
-public struct StageOutcome: Codable, Sendable, Equatable {
-    public var stage: PostProcessingStage
-    public var result: StageResult
-    public var message: String?
-    public var seconds: Double
-
-    public init(stage: PostProcessingStage, result: StageResult, message: String? = nil, seconds: Double = 0) {
-        self.stage = stage; self.result = result; self.message = message; self.seconds = seconds
-    }
-}
-
-/// Overall post-processing state. Open string code.
-public struct PostProcessingState: OpenStringCode {
-    public var rawValue: String
-    public init(rawValue: String) { self.rawValue = rawValue }
-
-    public static let running = PostProcessingState("running")
-    /// Every applicable stage succeeded (expected skips allowed, §4.7).
-    public static let succeeded = PostProcessingState("succeeded")
-    /// Exports were written but a speaker stage was skipped or failed.
-    public static let partial = PostProcessingState("partial")
-    public static let failed = PostProcessingState("failed")
-    /// Nothing to do (e.g. audio-only session with no transcript).
-    public static let skipped = PostProcessingState("skipped")
-}
-
-/// Contents of `postprocess.json`, and the value `MeetingPostProcessor.run` returns.
-public struct PostProcessingRecord: Codable, Sendable, Equatable {
-    public var schemaVersion: Int
-    public var sessionID: String
-    public var state: PostProcessingState
-    public var progress: PostProcessingProgress?
-    public var stages: [StageOutcome]
-    /// The run that became `speakers/head.json`, if any.
-    public var runID: String?
-    /// The transcript the run was built from.
-    public var transcriptID: String?
-    /// The microphone-track choice used for this run (from meeting.json unless overridden).
-    public var othersInRoom: Bool?
-    public var pid: Int32
-    public var startedAt: Date
-    public var updatedAt: Date
-    public var message: String?
-
-    public init(schemaVersion: Int = 1, sessionID: String, state: PostProcessingState,
-                progress: PostProcessingProgress? = nil, stages: [StageOutcome] = [], runID: String? = nil,
-                transcriptID: String? = nil, othersInRoom: Bool? = nil, pid: Int32, startedAt: Date,
-                updatedAt: Date, message: String? = nil) {
-        self.schemaVersion = schemaVersion; self.sessionID = sessionID; self.state = state
-        self.progress = progress; self.stages = stages; self.runID = runID
-        self.transcriptID = transcriptID; self.othersInRoom = othersInRoom; self.pid = pid
-        self.startedAt = startedAt; self.updatedAt = updatedAt; self.message = message
-    }
-}
-
-// MARK: - Recorder status (status.json)
-
-public enum RecorderPhase: String, Codable, Sendable, CaseIterable {
-    case starting, recording, paused, waiting, sleeping, stopping, transcribing, postprocessing, exited
-    /// A phase written by a newer Holos. Decoded from any unrecognized value; never written.
-    case unknown
-
-    public init(from decoder: any Decoder) throws {
-        let raw = try decoder.singleValueContainer().decode(String.self)
-        self = RecorderPhase(rawValue: raw) ?? .unknown
-    }
-
-    /// True from launch until capture has stopped. Independent of dictation availability.
-    public var isMeetingActive: Bool {
-        switch self {
-        case .starting, .recording, .paused, .waiting, .sleeping, .stopping, .unknown: true
-        case .transcribing, .postprocessing, .exited: false
-        }
-    }
-}
-
-/// Live transcription state of one track. Open string code.
-public struct TranscriptionState: OpenStringCode {
-    public var rawValue: String
-    public init(rawValue: String) { self.rawValue = rawValue }
-
-    /// Live transcription is keeping up.
-    public static let live = TranscriptionState("live")
-    /// Live transcription stopped; the rest is transcribed from saved audio after stop.
-    public static let behind = TranscriptionState("behind")
-    /// `--record-only`, or live transcription could not start.
-    public static let off = TranscriptionState("off")
-}
-
-public struct TrackStatus: Codable, Sendable, Equatable {
-    /// "mic" or "system".
-    public var track: String
-    public var transcription: TranscriptionState
-    /// Session time of the end of the last captured frame.
-    public var lastFrameSeconds: Double?
-    /// Session time of the end of the last finalized phrase.
-    public var lastFinalizedSeconds: Double?
-    public var sampleRate: Double?
-    public var channels: Int?
-    public var stalled: Bool
-    /// Seconds of captured audio waiting to be written to disk.
-    public var backlogSeconds: Double?
-
-    public init(track: String, transcription: TranscriptionState, lastFrameSeconds: Double? = nil,
-                lastFinalizedSeconds: Double? = nil, sampleRate: Double? = nil, channels: Int? = nil,
-                stalled: Bool = false, backlogSeconds: Double? = nil) {
-        self.track = track; self.transcription = transcription; self.lastFrameSeconds = lastFrameSeconds
-        self.lastFinalizedSeconds = lastFinalizedSeconds; self.sampleRate = sampleRate
-        self.channels = channels; self.stalled = stalled; self.backlogSeconds = backlogSeconds
-    }
-}
-
-public struct RecorderWarning: Codable, Sendable, Equatable {
-    public var code: RecorderWarningCode
-    /// Short user-facing text; never transcript text.
-    public var message: String
-    public var since: Date
-
-    public init(code: RecorderWarningCode, message: String, since: Date = Date()) {
-        self.code = code; self.message = message; self.since = since
-    }
-}
-
-public struct RecorderExit: Codable, Sendable, Equatable {
-    /// The manifest status written at finish (see `ArchiveStatus`).
-    public var archiveStatus: String
-    public var reason: StopReason
-    public var message: String?
-    /// nil when post-processing did not run.
-    public var postprocessing: PostProcessingState?
-    /// The post-processing record's message, e.g. "No speaker labels: speaker models are not installed."
-    public var postprocessingMessage: String?
-
-    public init(archiveStatus: String, reason: StopReason, message: String? = nil,
-                postprocessing: PostProcessingState? = nil, postprocessingMessage: String? = nil) {
-        self.archiveStatus = archiveStatus; self.reason = reason; self.message = message
-        self.postprocessing = postprocessing; self.postprocessingMessage = postprocessingMessage
-    }
-}
-
-/// Contents of `status.json`, rewritten atomically by the recorder at least once per second
-/// (a heartbeat from launch until exit) and on every phase change. Kept after exit with `phase == .exited`.
-public struct RecorderStatus: Codable, Sendable, Equatable {
-    public var schemaVersion: Int
-    public var sessionID: String
-    public var name: String
-    public var pid: Int32
-    public var phase: RecorderPhase
-    /// Increments on every write, so a reader can detect a stalled writer.
-    public var sequence: Int
-    public var startedAt: Date
-    public var updatedAt: Date
-    public var source: AudioSource
-    /// Name of the input device recorded on the microphone track, for display.
-    public var microphoneName: String?
-    /// True when the microphone track records the system default input, false for the built-in microphone
-    /// chosen whatever the default is; nil without a microphone track, or from an older recorder.
-    public var microphoneIsSystemDefault: Bool?
-    /// Session time now: time since capture first started, including pauses and sleep.
-    public var elapsedSeconds: Double
-    /// Audio actually captured on the longest track.
-    public var recordedSeconds: Double
-    public var bytesWritten: Int64
-    public var freeBytes: Int64?
-    public var tracks: [TrackStatus]
-    /// Last finalized phrase, at most 200 characters. The session folder is private (0700).
-    public var lastPhrase: String?
-    public var warnings: [RecorderWarning]
-    public var markers: Int
-    public var progress: PostProcessingProgress?
-    /// The 32 most recent acknowledgements, newest last.
-    public var handledRequests: [ControlAck]
-    /// Set only when `phase == .exited`.
-    public var exit: RecorderExit?
-
-    public init(schemaVersion: Int = 1, sessionID: String, name: String, pid: Int32, phase: RecorderPhase,
-                sequence: Int, startedAt: Date, updatedAt: Date, source: AudioSource,
-                microphoneName: String? = nil, elapsedSeconds: Double = 0, recordedSeconds: Double = 0,
-                bytesWritten: Int64 = 0, freeBytes: Int64? = nil, tracks: [TrackStatus] = [],
-                lastPhrase: String? = nil, warnings: [RecorderWarning] = [], markers: Int = 0,
-                progress: PostProcessingProgress? = nil, handledRequests: [ControlAck] = [],
-                exit: RecorderExit? = nil) {
-        self.schemaVersion = schemaVersion; self.sessionID = sessionID; self.name = name; self.pid = pid
-        self.phase = phase; self.sequence = sequence; self.startedAt = startedAt; self.updatedAt = updatedAt
-        self.source = source; self.microphoneName = microphoneName; self.elapsedSeconds = elapsedSeconds
-        self.recordedSeconds = recordedSeconds; self.bytesWritten = bytesWritten; self.freeBytes = freeBytes
-        self.tracks = tracks; self.lastPhrase = lastPhrase; self.warnings = warnings; self.markers = markers
-        self.progress = progress; self.handledRequests = handledRequests; self.exit = exit
-    }
-}
-```
+- A contract file changes only additively: a new optional field (with a default in the
+  initializer) or a new static constant of an open code, made by the change that needs it
+  and stated in its description. Anything else is a design change.
+- Types a feature needs beyond these go into its own target, not into these files.
 
 ### 3.3 `Sources/HolosCore/SpeakerModels.swift`
 
@@ -1761,7 +1211,7 @@ public struct RecognitionResult: Codable, Sendable, Equatable {
 // MARK: - Timeline annotations for exports
 
 /// Why audio is missing for an interval. Open string code. The raw values are also the
-/// `reason` strings of `audioDiscontinuity` events (§3.2).
+/// `reason` strings of `audioDiscontinuity` events (`MeetingModels.swift`).
 public struct GapReason: OpenStringCode {
     public var rawValue: String
     public init(rawValue: String) { self.rawValue = rawValue }
@@ -2899,7 +2349,7 @@ stage 1d `wordFixes` (learned corrections and the word list's "often heard as" t
 to the live-corrected transcript, which becomes a new current revision; docs/design.md
 "Meeting word fixes"). Text-changing stages are skipped with `keepTranscript`; speaker-name
 hints are still applied. A live-hint or word-fix problem makes the record `partial` too.
-Stage 1b′ `deepTranscription` (§4.16) runs between 1b and 1c, only when asked for by name
+Stage 1b′ `deepTranscription` (docs/meeting-design.md §4.16) runs between 1b and 1c, only when asked for by name
 (`PostProcessingOptions.deepTranscribe`).
 
 **Render time map** (PR7b, in `TrackRenderer`). A meeting left paused for hours would
@@ -5716,7 +5166,7 @@ existing file. Signatures are the contract; bodies are the implementer's. When t
 compiler demands a small annotation change (for example `Sendable` on a protocol),
 make it without changing names or shapes and say so in the PR description. Every PR
 description ends with a "Docs note" paragraph for the PR that writes the wave's
-`README.md` and `docs/status.md` updates (§6).
+`README.md` and `docs/status.md` updates (docs/meeting-design.md §6).
 
 ### 5.1 PR6: Contracts and storage foundations (wave 0)
 
@@ -5889,7 +5339,7 @@ post-processing hand-off. No user-visible behaviour change (the only new CLI sur
   (`subcommands:` one per line), `Package.swift` (§1.2 wave 1), `docs/contracts.md`
   (ownership table: `HolosMeeting` replaces `HolosWorkflows`, add `HolosSpeakers` and
   `HolosDiarization`; the "local app/session control" paragraph points to
-  meeting-design §4.1).
+  docs/meeting-design.md §4.1).
 - Add `Tests/HolosMeetingTests/RecordingWorkflowTests.swift`, `Tests/HolosMeetingTests/Fakes.swift`.
 - Docs: PR1 merges last in wave 1 and writes the wave-1 `README.md` and
   `docs/status.md` notes for PR1 and PR5a–c.
@@ -6333,7 +5783,7 @@ selection, and the environment events that retry a waiting recorder.
   exit codes); add `RecordControl.swift` (`pause`, `resume`, `marker`, registered in
   `Record`'s `subcommands:`).
 - Docs: append a "Long recordings" section to `docs/hardware-validation.md` (H4–H10
-  procedures from §7.2).
+  procedures from docs/meeting-design.md §7.2).
 - Tests: `Tests/HolosAudioTests/{Int16ChunkTests, FrameContinuityTests, ChunkWriterPumpTests}.swift`;
   `Tests/HolosMeetingTests/{RecorderMachineTests, DiskPolicyTests, ControlInboxTests, RecorderChannelTests, StatusWriterTests, RecorderEpochTests, LiveTrackTests, TranscriptCoverageTests, StopPathTests, SpeechFixtureTests}.swift`,
   helpers in `RecorderTestSupport.swift` (`fileprivate` or prefixed `recorder…`, §1.8).
@@ -6661,7 +6111,7 @@ reader, and `holos session diarize`, all tested with `FakeDiarizer`. PR7c (after
   `Sources/HolosCLI/Doctor.swift` (model status line; `"speakerModels": "verified" |
   "notInstalled" | "damaged"` in `--json`; `setup --speakers`), `Package.swift` (§1.2
   wave 2).
-- Add `THIRD_PARTY_NOTICES.md` (§4.8).
+- Add `THIRD_PARTY_NOTICES.md` (docs/meeting-design.md §4.8).
 - Tests: `Tests/HolosDiarizationTests/{ModelVerificationTests, SampleSourceTests, FluidDiarizerFixtureTests}.swift`.
 
 **API:** §4.8.
@@ -6917,7 +6367,7 @@ holos session score <path> --otter <transcript.txt> [--collar 0.25] [--json]    
 above and the calibration run; numbers recorded in `speaker-evaluation.md` and the PR
 description (counts and metrics only): runtime, peak RSS (`/usr/bin/time -l`),
 agreement confusion per configuration, speaker counts, track offsets, and calibration
-percentiles. The `exclusiveSegments` default follows §4.8. Temporary sessions and audio
+percentiles. The `exclusiveSegments` default follows docs/meeting-design.md §4.8. Temporary sessions and audio
 are deleted.
 
 **Does not touch.** HolosDiarization, `MeetingPostProcessor.swift`, HolosAudio,
@@ -7516,7 +6966,7 @@ commands behind the buttons: Recover when `SessionRecoveryCommand.rebuilds` woul
 meeting whose transcript cannot be read qualifies) or the meeting is interrupted, never for a
 damaged manifest or a transcript from a newer Holos; Label Speakers for speaker state none,
 notLabelled, failed, or interrupted, or (any state but unreadable) while a missed language of
-a meeting in several can be detected now (`LanguageWork.ready`, §4.14 step 5), with a
+a meeting in several can be detected now (`LanguageWork.ready`, docs/meeting-design.md §4.14 step 5), with a
 readable transcript and audio, not interrupted. No
 lease-taking action while the app uses the meeting or another process holds it (liveness
 capturing, processing, maintenance).

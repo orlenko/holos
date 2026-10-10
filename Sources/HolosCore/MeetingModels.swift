@@ -1,6 +1,6 @@
 import Foundation
 
-// Contract file added by PR6 in wave 0 (docs/meeting-design.md §3.2). Value types shared by the recorder
+// Contract file (docs/meeting-design.md §3.0). Value types shared by the recorder
 // process, the CLI, and the menu bar app. No logic beyond trivial derived properties.
 
 // MARK: - Open string codes

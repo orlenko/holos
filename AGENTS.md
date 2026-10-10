@@ -9,8 +9,8 @@ Read first: the `README.md` of each module you touch, then the doc sections its 
 
 - In `docs/meeting-design.md`, sections 1 (conventions), 2 (session folder) and 4 (integration seams) mostly
   describe current behaviour (`docs/meeting-design.md §1.2` is a build plan, and some subsections still name the
-  PR that built them). `docs/meeting-design.md §3.1` to `docs/meeting-design.md §3.3` are code copies that have
-  drifted from the code; sections 0 and 5–10 are the build plan and review log, but `docs/meeting-design.md §5.10`
+  PR that built them). `docs/meeting-design.md §3.3` is a code copy that has drifted from `SpeakerModels.swift`;
+  sections 0 and 5–10 are the build plan and review log, but `docs/meeting-design.md §5.10`
   (Review window) and `docs/meeting-design.md §5.11` (online calls) still hold behaviour the code cites, so read
   the cited subsection, not the whole plan.
 - `docs/design.md` describes the user-facing tools, one heading per feature. `docs/contracts.md` lists the
@@ -224,7 +224,10 @@ entry point (`ReviewSession.submit(_:seen:)`), a lock-token type.
   `docs/architecture-roadmap.md`: a dated audit snapshot whose findings cite PRs and review rounds as evidence,
   and whose §6 Status column tracks steps by PR. Its guidance (what to do next, how to verify) stays current.
 - Cite specs as `docs/<file>.md §N.M`, or `docs/design.md "<Heading>"` for docs without numbers. A citation must
-  resolve to an existing heading.
+  resolve to an existing heading. A `§N.M` cites the last Markdown file named before it in its paragraph, list item,
+  table row or comment block, so after naming another file, name the cited one again.
+  `scripts/check-doc-citations.py` checks every citation in the repository in under a second (`--self-test` runs
+  its own cases). Run it before every PR that moves a section or adds a citation.
 - A PR that changes behaviour updates the cited section in the same PR.
 - Comments explain why and state rules; they do not narrate review rounds.
 

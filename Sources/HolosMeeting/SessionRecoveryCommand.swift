@@ -144,7 +144,7 @@ public enum SessionRecoveryCommand {
     /// the archive recovery kept. `profiles` is passed to the post-processor (voice suggestions, PR10), and
     /// `languages` (a meeting in several languages, §4.14) and `wordFixes` (docs/design.md "Meeting word fixes") too.
     /// With `profiles`, `voiceSamples` brings the voice samples from this meeting in step with what the labels show
-    /// (§5.11: an echo mask saved now or by an earlier pass changes which turns they may use).
+    /// (docs/meeting-design.md §5.11: an echo mask saved now or by an earlier pass changes which turns they may use).
     public static func run(_ request: Request, voiceSamples: VoiceSampleSource, diarizer: (any SpeakerDiarizer)?,
                            makeSpeech: LiveSpeechFactory? = nil,
                            freeSpace: any FreeSpaceProvider = VolumeFreeSpace(),
