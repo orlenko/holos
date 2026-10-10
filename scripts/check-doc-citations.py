@@ -31,7 +31,8 @@ heading `3. ...` or `3 ...`. A range (`§<A>–<B>` or `§<A>–§<B>`, with an 
 it, counting up the last component (`§4.1–4.3` is 4.1, 4.2 and 4.3; `§8–§10` is 8, 9 and 10). Fences follow
 CommonMark, also after list markers and block quote markers in any order: a block closes at a fence of the same
 character, at least as long as the opening one, inside the same block quotes, and indented at most 3 spaces more
-than the opening fence's container. Files are found like this:
+than the opening fence's container. Nothing outside the repository is ever read: a path that normalizes above its
+root is no file, and a region or a file to check that lies there is a problem. Files are found like this:
 
 - a link destination: from the citing file's folder (from the repository root when it starts with `/`);
 - a path starting with `./` or `../`: from the citing file's folder;
@@ -75,11 +76,19 @@ QUOTE_PREFIX = re.compile(r"^(?:[ \t]{0,3}>[ \t]?)+")
 CONTAINER_PREFIX = re.compile(r"^(?:[ \t]{0,3}>[ \t]?|[ \t]*(?:[-*+]|\d+[.)])[ \t]+)+")
 SWIFT_CODE = re.compile(r'//|/\*|(#*)"("")?')
 SWIFT_COMMENT = re.compile(r"/\*|\*/")
-TABLE_DELIMITER = re.compile(r"^[ \t]*\|?[ \t]*:?-+:?[ \t]*(?:\|[ \t]*:?-+:?[ \t]*)+\|?[ \t]*$|^[ \t]*\|[ \t]*:?-+:?[ \t]*\|[ \t]*$")
+# A table's delimiter row: cells of at least three hyphens, each with an optional colon on either side.
+TABLE_DELIMITER = re.compile(
+    r"^[ \t]*\|?[ \t]*:?-{3,}:?[ \t]*(?:\|[ \t]*:?-{3,}:?[ \t]*)+\|?[ \t]*$|^[ \t]*\|[ \t]*:?-{3,}:?[ \t]*\|[ \t]*$")
+
+
+def inside(rel):
+    """Whether a normalized repository path stays inside the repository (nothing outside it is ever read)."""
+    return not os.path.isabs(rel) and rel != ".." and not rel.startswith("../")
 
 
 class Tree:
-    """The files the checker reads: the repository, or the self-test's files in memory."""
+    """The files the checker reads: the repository, or the self-test's files in memory. A path outside the
+    repository is never a file or a folder here, and reading one fails."""
 
     def __init__(self, root, files=None):
         self.root = root
@@ -89,16 +98,22 @@ class Tree:
         return os.path.relpath(os.path.normpath(os.path.join(self.root, rel)), self.root)
 
     def isfile(self, rel):
+        if not inside(os.path.normpath(rel)):
+            return False
         if self.files is not None:
             return rel in self.files
         return os.path.isfile(os.path.join(self.root, rel))
 
     def isdir(self, rel):
+        if not inside(os.path.normpath(rel)):
+            return False
         if self.files is not None:
             return any(name.startswith(rel + "/") for name in self.files)
         return os.path.isdir(os.path.join(self.root, rel))
 
     def read(self, rel):
+        if not inside(os.path.normpath(rel)):
+            raise OSError(f"{rel} is outside the repository")
         if self.files is not None:
             return self.files[rel]
         with open(os.path.join(self.root, rel), encoding="utf-8") as handle:
@@ -480,7 +495,7 @@ def resolve(tree, cited, citing, link):
     else:
         candidate = os.path.join(here, cited)
     candidate = os.path.normpath(candidate)
-    return candidate if not candidate.startswith("..") and tree.isfile(candidate) else None
+    return candidate if inside(candidate) and tree.isfile(candidate) else None
 
 
 def tokens(text, in_docs, refs):
@@ -550,8 +565,9 @@ def index_map(tree, rel, cache):
             for number, _, dests in row_sections(content, refs):
                 if len(dests) == 1:
                     dest = dests[0]
-                    path = dest.lstrip("/") if dest.startswith("/") else os.path.join(os.path.dirname(rel), dest)
-                    mapping.setdefault(number, os.path.normpath(path))
+                    path = os.path.normpath(dest.lstrip("/") if dest.startswith("/")
+                                            else os.path.join(os.path.dirname(rel), dest))
+                    mapping.setdefault(number, path)
         cache[key] = mapping
     return cache[key]
 
@@ -580,6 +596,9 @@ def check(paths, tree):
     count = 0
     for given in paths:
         rel = tree.normalize(given)
+        if not inside(rel):
+            problems.append(f"{given}: outside the repository")
+            continue
         try:
             text = tree.read(rel)
         except (OSError, UnicodeDecodeError, KeyError) as error:
@@ -616,7 +635,9 @@ def check(paths, tree):
                     if region:
                         count += 1
                         target = os.path.normpath(region)
-                        if not tree.isfile(target):
+                        if not inside(target):
+                            problems.append(f"{rel}:{line_of(position)}: {region} §{value}: outside the repository")
+                        elif not tree.isfile(target):
                             problems.append(f"{rel}:{line_of(position)}: {region} §{value}: no such file")
                         elif not region_resolves(tree, target, value, cache):
                             problems.append(f"{rel}:{line_of(position)}: {region} §{value}: no heading {value} in "
@@ -686,6 +707,11 @@ SELF_TEST_FILES = {
     "docs/index6.md": "# I\n\nProse: §1.1 | then [spec](spec.md), a pipe in a sentence, not a row.\n\n| Sections | File |\n|---|---|\n"
                       "| §1.1 One | [b](/docs/sub/b.md) |\n",
     "docs/region6.md": "<!-- citations: docs/index6.md -->\n§1.1\n<!-- /citations -->\n",
+    "docs/index7.md": "# I\n\n| Sections | File |\n| - | - |\n| §1.1 | [spec](spec.md) |\n\n"
+                      "| Sections | File |\n|---|---|\n| §1.1 | [b](sub/b.md) |\n| §1.2 | [out](../../outside.md) |\n",
+    "docs/region7.md": "<!-- citations: docs/index7.md -->\n§1.1 resolves; §1.2 maps outside and does not\n<!-- /citations -->\n",
+    "../outside.md": "# A file outside the repository, which the checker must never read\n\n## 1.1 Out\n\n## 1.2 Out\n",
+    "docs/outside.md": "<!-- citations: ../outside.md -->\n§1.2\n<!-- /citations -->\n\n[x](../../outside.md) §1.1\n",
     "docs/marker.md": "<!-- citations: docs/index.md -->\n§1.1 resolves through the index, not as a citation of the marker\n"
                       "<!-- /citations -->\n",
     "reference2.md": "```\n[t]: docs/a.md\n```\n[x][t] §9.9 is bare: the definition is in a fence\n",
@@ -699,12 +725,15 @@ SELF_TEST_FILES = {
     "docs/bare.md": "# Bare\n\n## 2.1 Here\n\nSee §2.1 and §2.2; docs/a.md §1.3, §2.1 is a citation.\n\n- §2.3 is bare\n",
     "bare.swift": "// §7.7 is not checked outside docs/; nor is https://example.com/README.md §2.\n",
 }
-SELF_TEST_PATHS = [name for name in SELF_TEST_FILES if name not in ("docs/a.md", "docs/c.md", "docs/sub/b.md",
-                                                                     "docs/spec.md", "docs/conventions.md",
-                                                                     "docs/fenced.md", "docs/index.md", "docs/r.md",
-                                                                     "docs/index3.md", "docs/index5.md",
-                      "docs/index6.md")]
+SELF_TEST_FIXTURES = ("docs/a.md", "docs/c.md", "docs/sub/b.md", "docs/spec.md", "docs/conventions.md", "docs/fenced.md",
+                      "docs/index.md", "docs/r.md", "docs/index3.md", "docs/index5.md", "docs/index6.md", "docs/index7.md",
+                      "../outside.md")
+SELF_TEST_PATHS = [name for name in SELF_TEST_FILES if name not in SELF_TEST_FIXTURES] + ["../outside.md"]
 SELF_TEST_PROBLEMS = [
+    "../outside.md: outside the repository",
+    "docs/outside.md:2: ../outside.md §1.2: outside the repository",
+    "docs/outside.md:5: ../../outside.md §1.1: no such file",
+    "docs/region7.md:2: docs/index7.md §1.2: no heading 1.2 in docs/index7.md or the file its index maps it to",
     "link-target.md:1: docs/a.md §3.2: no heading 3.2 in docs/a.md",
     "link-text.md:1: missing.md §4.10: no such file",
     "link-text.md:1: missing.md §1.3: no such file",
