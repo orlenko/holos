@@ -3,21 +3,48 @@ import HolosSynthesis
 import Testing
 @testable import HolosApp
 
-/// The voice menus (`ReadingVoicePopup`): natural voices first, or where to get them.
 @MainActor @Suite struct ReadingVoicePopupTests {
-    @Test func theVoiceMenuListsNaturalVoicesFirstOrSaysWhereToGetThem() {
-        let popup = NSPopUpButton(frame: .zero, pullsDown: false)
-        ReadingVoicePopup.fill(popup, selecting: "pocket:en:alba", installed: [.english])
-        let titles = popup.itemArray.map(\.title)
-        #expect(titles.first == ReadingVoicePopup.automaticTitle)
-        #expect(titles.dropFirst(2).first == "Natural — Alba (English)")
-        #expect(popup.titleOfSelectedItem == "Natural — Alba (English)")
-        #expect(titles.contains(ReadingVoicePopup.naturalHint))
-        #expect(popup.itemArray.first { $0.title == ReadingVoicePopup.naturalHint }?.isEnabled == false)
-        ReadingVoicePopup.fill(popup, selecting: "pocket:fr:estelle", installed: [])
-        #expect(!popup.itemArray.contains { $0.title.hasPrefix("Natural —") })
-        #expect(popup.titleOfSelectedItem == ReadingVoicePopup.automaticTitle)
-        ReadingVoicePopup.fill(popup, selecting: nil, installed: [.english, .french])
-        #expect(!popup.itemArray.map(\.title).contains(ReadingVoicePopup.naturalHint))
+    private let voices = [
+        VoiceDescriptor(id: "fr.amelie", name: "Amélie", language: "fr-FR", quality: "enhanced"),
+        VoiceDescriptor(id: "en.ava", name: "Ava", language: "en-US", quality: "premium"),
+    ]
+
+    @Test func aMissingVoiceFallsBackWithoutCommittingAnotherPreference() {
+        let popup = ReadingVoicePopup(frame: .zero)
+        var choices: [String?] = []
+        popup.onChoose = { choices.append($0) }
+        ReadingVoicePopup.fill(popup, selecting: "pocket:en:alba", installed: [.english], voices: voices)
+        #expect(popup.selectedID == "pocket:en:alba")
+        #expect(popup.title == "Alba (Natural)")
+        ReadingVoicePopup.fill(popup, selecting: "pocket:en:alba", installed: [], voices: voices)
+        #expect(popup.selectedID == nil)
+        #expect(popup.title == ReadingVoicePopup.automaticTitle)
+        popup.choose("pocket:en:alba")
+        #expect(choices.isEmpty)
+        ReadingVoicePopup.fill(popup, selecting: "pocket:en:alba", installed: [.english], voices: voices)
+        #expect(popup.selectedID == "pocket:en:alba")
+        popup.choose(nil)
+        #expect(choices.count == 1 && choices[0] == nil)
+    }
+
+    @Test func refreshingAnOpenPickerKeepsItsQueryAndLanguageWithoutChangingItsChoice() throws {
+        let popup = ReadingVoicePopup(frame: .zero)
+        ReadingVoicePopup.fill(popup, selecting: "en.ava", installed: [], voices: voices)
+        let browser = popup.makeBrowser()
+        browser.search.stringValue = "amelie"
+        let language = try #require(browser.languagePopup.itemArray.first { $0.representedObject as? String == "fr" })
+        browser.languagePopup.select(language)
+        browser.refreshResults()
+        var choices: [String?] = []
+        popup.onChoose = { choices.append($0) }
+        ReadingVoicePopup.fill(popup, selecting: "en.ava", installed: [.french], voices: voices)
+        #expect(browser.search.stringValue == "amelie")
+        #expect(browser.languagePopup.selectedItem?.representedObject as? String == "fr")
+        #expect(browser.visibleItems.map(\.id) == ["fr.amelie"])
+        #expect(popup.selectedID == "en.ava")
+        #expect(choices.isEmpty)
+        browser.chooseHighlighted()
+        #expect(choices == ["fr.amelie"])
+        #expect(popup.selectedID == "fr.amelie")
     }
 }

@@ -11,7 +11,8 @@ wiring between them and the library controllers (docs/design.md "Main window").
   `BackgroundJobCoordinator`, which runs final transcripts, echo analyses and summaries.
 - `MainWindow/`: `MainWindowController` (sidebar window) and the panes (History, Meetings, People, Corrections,
   Reading, Settings, live meeting view). `ReadingLibrary+Formatting` holds the Reading pane's duration and position
-  texts.
+  texts. `ReadingVoicePopup` and `ReadingVoiceBrowser` share the searchable, language-filtered voice picker between
+  Reading and Settings.
 - `Review/`: `ReviewWindow` (+Layout, +Joining, +WordEdits; its close types in `ReviewClosing`), its word edits'
   saves, refusals and close by hand in `ReviewWordEditCoordinator` (no AppKit; the window is its
   `ReviewWordEditHost`), `TurnListView` (+WordEditing, +Splitting, +Joining) with its `TurnTableView`,

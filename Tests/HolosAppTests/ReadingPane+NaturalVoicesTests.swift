@@ -15,19 +15,15 @@ import Testing
         let pane = ReadingPane(controller: ReadingController())
         let popup = pane.voicePopup
         // A voice and a speed other than Settings' defaults, as if just chosen on the card.
-        let chosen = try #require(popup.itemArray.last { item in
-            item.isEnabled && (item.representedObject as? String).map { $0 != ReadingPreferences.voice } == true
-        })
-        popup.select(chosen)
-        _ = popup.sendAction(popup.action, to: popup.target)
+        let chosen = try #require(popup.catalog.items.last { $0.id != ReadingPreferences.voice })
+        popup.choose(chosen.id)
         let speed = ReadingPreferences.speed == 1.3 ? 0.9 : 1.3
         pane.speedSlider.doubleValue = speed
-        let before = popup.itemArray.first
+        let browser = popup.makeBrowser()
+        browser.search.stringValue = "no matching voice"
         ReadingVoices.announceInstalled()
-        // The menu is filled again (new items), on the main queue.
-        #expect(await eventually { popup.itemArray.first !== before })
-        #expect(popup.itemArray.first !== before)
-        #expect(popup.selectedItem?.representedObject as? String == chosen.representedObject as? String)
+        #expect(await eventually { browser.visibleItems.isEmpty })
+        #expect(popup.selectedID == chosen.id)
         #expect(abs(pane.speedSlider.doubleValue - speed) < 0.001, "\(pane.speedSlider.doubleValue) vs \(speed)")
     }
 
@@ -37,21 +33,21 @@ import Testing
         var installed: Set<NaturalVoicePack> = [.english]
         pane.installedPacks = { installed }
         func announced() async {
-            let before = popup.itemArray.first
             ReadingVoices.announceInstalled()
-            _ = await eventually { popup.itemArray.first !== before }
+            _ = await eventually {
+                popup.catalog.items.contains { $0.id == "pocket:en:alba" } == installed.contains(.english)
+            }
         }
         await announced()
-        let alba = try #require(popup.itemArray.first { $0.representedObject as? String == "pocket:en:alba" })
-        popup.select(alba)
-        _ = popup.sendAction(popup.action, to: popup.target)
+        let alba = try #require(popup.catalog.items.first { $0.id == "pocket:en:alba" })
+        popup.choose(alba.id)
         // A reinstall: the pack is missing for a moment, and the menu shows Automatic meanwhile.
         installed = []
         await announced()
-        #expect(popup.selectedItem?.representedObject == nil)
+        #expect(popup.selectedID == nil)
         installed = [.english]
         await announced()
-        #expect(popup.selectedItem?.representedObject as? String == "pocket:en:alba")
+        #expect(popup.selectedID == "pocket:en:alba")
     }
 
     @Test func aNewPreviewClearsTheLastOnesFailure() async throws {
@@ -59,12 +55,10 @@ import Testing
         pane.installedPacks = { [.english] }
         pane.preview.installedPacks = { [.english] }
         let popup = pane.voicePopup
-        let before = popup.itemArray.first
         ReadingVoices.announceInstalled()
-        #expect(await eventually { popup.itemArray.first !== before })
-        let alba = try #require(popup.itemArray.first { $0.representedObject as? String == "pocket:en:alba" })
-        popup.select(alba)
-        _ = popup.sendAction(popup.action, to: popup.target)
+        #expect(await eventually { popup.catalog.items.contains { $0.id == "pocket:en:alba" } })
+        let alba = try #require(popup.catalog.items.first { $0.id == "pocket:en:alba" })
+        popup.choose(alba.id)
         pane.preview.renderNatural = { _, _, _, _ in throw HolosError.io("The sample could not be made.") }
         pane.togglePreview()
         #expect(await eventually { pane.message?.contains("could not be made") == true })
