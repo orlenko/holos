@@ -23,8 +23,8 @@ Sections keep their numbers from the meeting design; a bare `§N.M` names one of
   postprocess.json                         PR7b                         PostProcessingRecord
   audio/{mic,system}/NNNNNN.caf            AudioChunkWriter             Int16 from PR2a, system audio mono; Float32 still readable
   audio-deleted.json                       PR3                          written by Delete Audio; chunks are intentionally absent
-  summary.json                             §4.17 session summarize      MeetingSummaryRecord: generated title and summary of one transcript
-  transcripts/<TRANSCRIPT-UUID>.json       SessionArchive               immutable revisions (also one per language, never current, §4.14)
+  summary.json                             docs/meeting/titles-summaries.md §4.17 session summarize      MeetingSummaryRecord: generated title and summary of one transcript
+  transcripts/<TRANSCRIPT-UUID>.json       SessionArchive               immutable revisions (also one per language, never current, docs/meeting/languages.md §4.14)
   transcripts/current.json                 PR6 (saveTranscript)         TranscriptPointer: which revision is current
   transcripts/current.pending              PR6 (saveTranscript)         TranscriptPointer: the revision a save is publishing; removed when done
   speakers/runs/<RUN-UUID>.json            PR6 API, PR7b writes         immutable DiarizationRun; no voice embeddings
@@ -36,8 +36,8 @@ Sections keep their numbers from the meeting design; a bare `§N.M` names one of
   exports/transcript.{md,json,txt}         PR7b SessionExports          generated, mode 0400, never contain vectors
   exports/.generated.json                  PR7b                         SHA-256 of each generated file
   exports/edited-<YYYYMMDD-HHMMSS>.<ext>   PR7b                         a hand-edited export, moved aside before regeneration
-  echo/mask.json                           §5.11 EchoMaskStore          EchoMaskRecord: a call's acoustic echo analysis, keyed to its audio
-  echo/frames-<sha>.bin                    §5.11 EchoMaskStore          AcousticEchoMask bytes (2 per 16 ms frame); only when echo was found
+  echo/mask.json                           docs/meeting/online-calls-echo.md §5.11 EchoMaskStore          EchoMaskRecord: a call's acoustic echo analysis, keyed to its audio
+  echo/frames-<sha>.bin                    docs/meeting/online-calls-echo.md §5.11 EchoMaskStore          AcousticEchoMask bytes (2 per 16 ms frame); only when echo was found
   derived/<track>-16k.caf                  PR7b TrackRenderer           deletable cache; cleared at the start and end of post-processing
 ```
 
@@ -55,7 +55,7 @@ public enum SessionPaths {
     public static func controlDirectory(_ session: URL) -> URL  // control/
     public static func postprocess(_ session: URL) -> URL       // postprocess.json
     public static func audioDeleted(_ session: URL) -> URL      // audio-deleted.json
-    public static func summary(_ session: URL) -> URL           // summary.json (§4.17)
+    public static func summary(_ session: URL) -> URL           // summary.json (docs/meeting/titles-summaries.md §4.17)
     public static func transcripts(_ session: URL) -> URL       // transcripts/
     public static func transcript(_ id: String, in session: URL) -> URL
     public static func transcriptPointer(_ session: URL) -> URL // transcripts/current.json
@@ -69,7 +69,7 @@ public enum SessionPaths {
     public static func exports(_ session: URL) -> URL           // exports/
     public static func export(_ fileExtension: String, in session: URL) -> URL // exports/transcript.<ext>
     public static func generatedExports(_ session: URL) -> URL  // exports/.generated.json
-    public static func echoDirectory(_ session: URL) -> URL     // echo/ (§5.11)
+    public static func echoDirectory(_ session: URL) -> URL     // echo/ (docs/meeting/online-calls-echo.md §5.11)
     public static func echoMask(_ session: URL) -> URL          // echo/mask.json
     // echo/frames-<first 16 hex digits of its SHA-256>.bin: EchoMaskStore.framesURL(session, sha256:)
     public static func derived(_ session: URL) -> URL           // derived/
@@ -102,7 +102,7 @@ in `Models.swift`). `HolosPaths.models` (PR7a, in HolosDiarization) and
 ### 2.3 Session time
 
 One timeline for everything: chunk times, transcript segment and word times,
-diarization times (after the render time map, §4.7), markers, and gaps. An exported
+diarization times (after the render time map, docs/meeting/post-processing.md §4.7), markers, and gaps. An exported
 `[01:12:03]` is 1 h 12 min after the first captured audio.
 
 - **Origin.** Session time 0 is epoch 0's capture origin: `AudioCapture` sets
@@ -132,7 +132,7 @@ diarization times (after the render time map, §4.7), markers, and gaps. An expo
     own time is ignored. Drift above 10 ms is logged (category `capture`) at most once a
     minute per track.
   - `start ≥ expected + 0.05`: a gap. The writer closes the chunk and records
-    `audioDiscontinuity` with the pending reason (§4.3) or `timestampGap`.
+    `audioDiscontinuity` with the pending reason (docs/meeting/recorder.md §4.3) or `timestampGap`.
   - `start ≤ expected − 0.05`: an overlap. The leading samples up to `expected` are
     dropped (the whole frame if it lies entirely before `expected`) and
     `timestampOverlap {track, previousEnd, nextStart, droppedSeconds}` is recorded.
@@ -147,7 +147,7 @@ diarization times (after the render time map, §4.7), markers, and gaps. An expo
   real speech. A new speech session starts at every epoch boundary and at every gap over
   1 s (resolution R19).
 - **Watchdog time** is the session-clock time at which the consumer received a frame,
-  not the frame's media time (§4.2).
+  not the frame's media time (docs/meeting/recorder.md §4.2).
 - **Markers** use the session time at which the recorder handles the request (≤ 100 ms
   after it is written; R32).
 
@@ -166,7 +166,7 @@ diarization times (after the render time map, §4.7), markers, and gaps. An expo
   `run.transcriptID`, so `SpeakerSessionSnapshot` loads **that** transcript, not the
   current one. If they differ, the snapshot reports `transcriptChanged` and the UI says
   "The transcript changed after speakers were labelled. Label speakers again to update
-  them." The post-processor relabels in that case (§4.7 stage 3).
+  them." The post-processor relabels in that case (docs/meeting/post-processing.md §4.7 stage 3).
 - On load, every turn span is validated (the segment exists and
   `0 ≤ first < end ≤ effectiveWords.count`). A run with any invalid span is reported as
   unusable (`runProblem`), exports fall back to speaker-less output, and nothing traps.
@@ -189,7 +189,7 @@ diarization times (after the render time map, §4.7), markers, and gaps. An expo
   Read those files; this document does not copy them.
 - The §3.4 examples show the JSON these types encode with `HolosJSON`.
 - The `// MARK: - Voice data` comment in `SpeakerModels.swift` says voice data is
-  "written only while Remember voices is on". §4.10 governs: normal post-processing never
+  "written only while Remember voices is on". docs/meeting/people-voice.md §4.10 governs: normal post-processing never
   writes `speakers/voice/`; only hidden evaluation runs (`forceVoiceData`) do.
 - A contract file changes only additively: a new optional field (with a default in the
   initializer) or a new static constant of an open code, made by the change that needs it
@@ -216,7 +216,7 @@ JSONEncoder's `"key" : value` spacing). Real embeddings are 256-dimensional.
 }
 ```
 
-`nameSource` (§4.17) is written since the meeting titles; older files have none.
+`nameSource` (docs/meeting/titles-summaries.md §4.17) is written since the meeting titles; older files have none.
 
 #### vocabulary.json
 

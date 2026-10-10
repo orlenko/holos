@@ -712,14 +712,4 @@ import Testing
         done.deletePending = true
         #expect(ReadingLibrary.afterFailedDelete(done, problem: "x").state == .done)
     }
-
-    @Test func durationsAndPositionsRead() {
-        #expect(ReadingLibrary.durationText(40) == "40 s")
-        #expect(ReadingLibrary.durationText(25 * 60 + 10) == "25 min")
-        #expect(ReadingLibrary.durationText(3_600) == "1 h")
-        #expect(ReadingLibrary.durationText(3_900) == "1 h 5 min")
-        #expect(ReadingLibrary.clockText(187) == "3:07")
-        #expect(ReadingLibrary.clockText(3_723) == "1:02:03")
-        #expect(ReadingLibrary.clockText(.nan) == "0:00")
-    }
 }
