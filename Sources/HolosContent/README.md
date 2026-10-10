@@ -22,7 +22,10 @@ list (docs/design.md "Reading section", "Text-to-speech").
   `ReadingResumeVoice` finds the saved reading a resume continues.
 - `DocumentText` (`DocumentText+Strict.swift`): strict reading of a text file for `voiceislocal say --text-file`.
 - `ReadingLibraryStore` / `ReadingLibrary`: the Reading list's index under `<supportRoot>/ReadingLibrary`, and the
-  pure decisions about it. `ReadingWorkQueue` runs readings one at a time; `ReadingPlayer` plays a finished one.
+  decisions about it and its readings' files, in `ReadingLibrary+<Part>.swift` extensions (LaunchPolicy, Location,
+  Ownership, FileStatus, Sharing, Deletion, Saved). The list's duration and position texts are the app's
+  (`ReadingLibrary+Formatting.swift` in HolosApp). `ReadingWorkQueue` runs readings one at a time; `ReadingPlayer`
+  plays a finished one.
 
 **Must not own:** speech recognition, meetings, session folders. Voice rendering stays in `HolosSynthesis`.
 
@@ -40,9 +43,9 @@ WebKit (`WebArticleExtractor`), AVFoundation, CryptoKit, NaturalLanguage. This t
   `HOLOS_SUPPORT_DIR`.
 - `WebArticleExtractor` needs a running main run loop (the app, or the CLI's async `main`).
 
-**Known size debt:** `ReadingLibrary` and `WebArticleExtractor` are each over 1,000 lines (`scripts/check-size.sh`
-keeps them from growing). Move a self-contained part into its own file (as each of `DocumentLoader`'s readers has
-one) before adding features there.
+**Known size debt:** `WebArticleExtractor` is over 1,000 lines (`scripts/check-size.sh` keeps it from growing).
+Move a self-contained part into its own file (as each of `DocumentLoader`'s readers has one) before adding features
+there.
 
 **Tests:** `Tests/HolosContentTests` (`ReadingPipelineTests`, `DocumentReaderTests`, `WebArticleTests` with no
 network, `ReadingLibraryTests`, …).
