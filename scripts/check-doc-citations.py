@@ -72,7 +72,7 @@ SUFFIXES = (".swift", ".md", ".sh", ".py")
 SELF = "scripts/check-doc-citations.py"
 
 REFERENCE = re.compile(r"^ {0,3}\[(?P<label>(?:[^\[\]\\]|\\.)+)\]:[ \t]*(?:<(?P<angle>[^<>\n]*)>|(?P<plain>\S+))")
-PATH = re.compile(r"(?<![\w./:>-])(?P<path>(?:\.{1,2}/)*[A-Za-z0-9_][A-Za-z0-9_./-]*\.md)(?![\w/-])")
+PATH = re.compile(r"(?<![\w./:>-])(?P<path>(?:\.{1,2}/)*\.?[A-Za-z0-9_][A-Za-z0-9_./-]*\.md)(?![\w/-])")
 HEADING = re.compile(r"^ {0,3}#{1,6}[ \t]+(.*?)[ \t#]*$")
 # A fence's container: up to 3 spaces, then block quote markers and list markers, each with the spaces after it.
 FENCE_OPEN = re.compile(
@@ -573,8 +573,8 @@ def has_section(texts, number):
     return any(pattern.match(text) for text in texts)
 
 
-def resolve(tree, cited, citing, link):
-    """The repository path of a named file, or None when it does not exist."""
+def candidate(tree, cited, citing, link):
+    """Where a named file would be, normalized; it may lie outside the repository."""
     here = os.path.dirname(citing)
     if link and cited.startswith("/"):
         candidate = cited.lstrip("/")
@@ -584,8 +584,13 @@ def resolve(tree, cited, citing, link):
         candidate = cited
     else:
         candidate = os.path.join(here, cited)
-    candidate = os.path.normpath(candidate)
-    return candidate if inside(candidate) and tree.isfile(candidate) else None
+    return os.path.normpath(candidate)
+
+
+def resolve(tree, cited, citing, link):
+    """The repository path of a named file, or None when it does not exist."""
+    path = candidate(tree, cited, citing, link)
+    return path if inside(path) and tree.isfile(path) else None
 
 
 def backtick_run(n):
@@ -757,7 +762,7 @@ def must_exist(cited, link):
 
 def root_form(tree, cited):
     """Whether a path is written from the repository root (`docs/...`, `Sources/...`)."""
-    return "/" in cited and not cited.startswith(".") and tree.isdir(cited.split("/", 1)[0])
+    return "/" in cited and not cited.startswith(("./", "../")) and tree.isdir(cited.split("/", 1)[0])
 
 
 def check(paths, tree):
@@ -801,9 +806,13 @@ def check(paths, tree):
             for position, kind, value, link in found:
                 if kind == "file":
                     named = (value, resolve(tree, value, rel, link), link, False)
-                    if in_docs and not fenced and named[1] is None and must_exist(value, link):
-                        problems.append(f"{rel}:{line_of(position)}: {value}: no such file")
-                        named = (value, None, link, True)
+                    if in_docs and not fenced and named[1] is None:
+                        if not inside(candidate(tree, value, rel, link)):
+                            problems.append(f"{rel}:{line_of(position)}: {value}: outside the repository")
+                            named = (value, None, link, True)
+                        elif must_exist(value, link):
+                            problems.append(f"{rel}:{line_of(position)}: {value}: no such file")
+                            named = (value, None, link, True)
                     continue
                 if named is None:
                     region = region_of.get(line_of(position))
@@ -860,6 +869,8 @@ SELF_TEST_FILES = {
     "link-chain.md": "[Concurrency §1.3](docs/meeting-design.md), §3.2\n",
     "wrapped-label.swift": "/// [docs/meeting-design.md\n/// §1.3](missing.md)\n",
     "link-query.md": "[spec](missing.md?raw=1) §1.2 is checked; [spec](docs/spec.md?plain=1#two) §1.2 resolves.\n",
+    "docs/escape.md": "Recordings go to ../../exports/transcript.md, which is outside.\n",
+    "docs/dotdir.md": "See .github/missing.md and ../.github/missing.md.\n",
     "link-forms.md": '[label](<docs/spec.md>) §1.2 and [label](docs/spec.md "title") §1.2, §9.1\n',
     "qualifier.swift": "// docs/conventions.md §1.7 rule 4, §4.1\n",
     "wrapped.swift": "/// (docs/a.md §1.3\n/// and §3.2)\n",
@@ -949,7 +960,10 @@ SELF_TEST_PATHS = [name for name in SELF_TEST_FILES if name not in SELF_TEST_FIX
 SELF_TEST_PROBLEMS = [
     "../outside.md: outside the repository",
     "docs/outside.md:2: ../outside.md §1.2: outside the repository",
-    "docs/outside.md:5: ../../outside.md: no such file",
+    "docs/outside.md:5: ../../outside.md: outside the repository",
+    "docs/escape.md:1: ../../exports/transcript.md: outside the repository",
+    "docs/dotdir.md:1: .github/missing.md: no such file",
+    "docs/dotdir.md:1: ../.github/missing.md: no such file",
     "docs/region7.md:2: docs/index7.md §1.2: no heading 1.2 in docs/index7.md or the file its index maps it to",
     "link-target.md:1: docs/a.md §3.2: no heading 3.2 in docs/a.md",
     "link-text.md:1: missing.md §4.10: no such file",
