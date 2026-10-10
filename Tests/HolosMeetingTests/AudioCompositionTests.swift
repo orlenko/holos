@@ -7,7 +7,7 @@ import HolosStorage
 import HolosTestSupport
 import Testing
 
-// SessionAudioComposition (docs/meeting/review-window.md §5.10, PR9): the review window's playback of a session's chunks on
+// SessionAudioComposition (docs/meeting/review-window.md §5.10): the review window's playback of a session's chunks on
 // the session timeline. Chunks are generated 8 kHz Int16 CAF files. Helpers are prefixed `composition`.
 
 private let compositionRate = 8_000.0

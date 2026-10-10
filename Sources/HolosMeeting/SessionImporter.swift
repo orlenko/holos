@@ -7,7 +7,7 @@ import HolosStorage
 import os
 import Synchronization
 
-/// `voiceislocal session import` (docs/meeting/speaker-labels.md §5.5 PR7c): turns an audio file into a finished session, so a meeting
+/// `voiceislocal session import` (docs/meeting/speaker-labels.md §5.5): turns an audio file into a finished session, so a meeting
 /// recorded elsewhere (or a reference recording for evaluation) can be transcribed, labelled, and exported like one
 /// Holos recorded.
 public enum SessionImporter {
