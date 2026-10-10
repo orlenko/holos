@@ -7,7 +7,7 @@ import HolosMeeting
 import HolosStorage
 
 extension Session {
-    /// `voiceislocal session summarize` (docs/meeting-design.md §4.17).
+    /// `voiceislocal session summarize` (docs/meeting/titles-summaries.md §4.17).
     struct Summarize: AsyncParsableCommand {
         static let configuration = CommandConfiguration(
             abstract: "Write a finished session's title, summary, key points and action items with Apple Intelligence.",
@@ -69,7 +69,7 @@ extension Session {
 
         /// The summary under the background-job lock, cancelled by Ctrl-C or SIGTERM. One expensive background job at
         /// a time on this Mac, held for the command's whole life: a final transcript waits for it and it waits for
-        /// one, also across an app relaunch (docs/meeting-design.md §4.17).
+        /// one, also across an app relaunch (docs/meeting/titles-summaries.md §4.17).
         private func summarize(_ session: URL, sessionID: String, voice: SessionSummarizeCommand.VoiceInputs)
             async throws -> SessionSummarizeCommand.Outcome {
             var asked = SessionSummarizeCommand.Request(

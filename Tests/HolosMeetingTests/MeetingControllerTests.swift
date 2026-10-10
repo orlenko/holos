@@ -7,7 +7,7 @@ import HolosStorage
 import HolosTestSupport
 import Testing
 
-// The app's side of a meeting without AppKit (docs/meeting-design.md §5.8, §4.1 "Reattach", §4.12).
+// The app's side of a meeting without AppKit (docs/meeting/app-controls.md §5.8, docs/meeting/recorder.md §4.1 "Reattach", §4.12).
 
 private let controllerBuiltIn = InputDevice(id: 1, uid: "BuiltInMicrophoneDevice", name: "MacBook Pro Microphone")
 private let controllerAirPods = InputDevice(id: 2, uid: "AirPods", name: "AirPods Pro")

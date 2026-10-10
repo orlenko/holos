@@ -1,6 +1,6 @@
 import Foundation
 
-// Contract file added by PR6 in wave 0 (docs/meeting-design.md §3.3). Speaker value types, the diarizer
+// Contract file (docs/meeting/session-format.md §3.0). Speaker value types, the diarizer
 // boundary, the edit journal record, and per-session voice data. No FluidAudio types.
 // Adding a case to an enum persisted in runs (LabelProvenance, TrackPolicy, WordTimingQuality,
 // RecognitionTier) requires DiarizationRun.schemaVersion 2.
@@ -375,7 +375,7 @@ public struct DroppedWords: Codable, Sendable, Equatable {
 }
 
 /// A segment whose every word a Review edit deleted (`TranscriptSegment.removed`), with the turns that held its words
-/// then (docs/meeting-design.md §5.10, "Editing words"): an undo or a Restore gives the words back to those turns.
+/// then (docs/meeting/review-window.md §5.10, "Editing words"): an undo or a Restore gives the words back to those turns.
 public struct RemovedSegmentTurns: Codable, Sendable, Equatable {
     public var segmentID: String
     public var turnIDs: [String]
@@ -515,7 +515,7 @@ public struct SpeakerEdit: Codable, Sendable, Equatable, Identifiable {
     /// "app", "cli", or "carry" (carried over from an earlier run, §4.9).
     public var source: String
     public var action: SpeakerEditAction
-    /// Fingerprint of the prior value in the editor's view (docs/meeting-design.md §4.9);
+    /// Fingerprint of the prior value in the editor's view (docs/meeting/speaker-labels.md §4.9);
     /// a mismatch at write time refuses the edit, and at projection time makes it stale.
     public var expected: String?
     /// Edits appended by one `SpeakerEditor.apply` share this ID; undo reverts the whole batch.
@@ -595,7 +595,7 @@ public struct RecognitionResult: Codable, Sendable, Equatable {
 // MARK: - Timeline annotations for exports
 
 /// Why audio is missing for an interval. Open string code. The raw values are also the
-/// `reason` strings of `audioDiscontinuity` events (§3.2).
+/// `reason` strings of `audioDiscontinuity` events (`MeetingModels.swift`).
 public struct GapReason: OpenStringCode {
     public var rawValue: String
     public init(rawValue: String) { self.rawValue = rawValue }

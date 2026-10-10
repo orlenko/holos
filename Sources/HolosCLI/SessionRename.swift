@@ -4,7 +4,7 @@ import HolosCore
 import HolosMeeting
 
 extension Session {
-    /// `voiceislocal session rename` (docs/meeting-design.md §4.17).
+    /// `voiceislocal session rename` (docs/meeting/titles-summaries.md §4.17).
     struct Rename: AsyncParsableCommand {
         static let configuration = CommandConfiguration(
             abstract: "Rename a finished session, or give it back its generated title.",

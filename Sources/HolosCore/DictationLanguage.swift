@@ -57,7 +57,7 @@ public enum DictationLanguage {
         return dictation.map { [$0] }
     }
 
-    // MARK: - Meeting languages (docs/meeting-design.md §4.14)
+    // MARK: - Meeting languages (docs/meeting/languages.md §4.14)
 
     /// At most this many meeting languages: the one the meeting is transcribed in live, and two more that
     /// post-processing transcribes the audio in again and chooses from.

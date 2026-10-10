@@ -7,7 +7,7 @@ import HolosTestSupport
 import os
 import Testing
 
-// Editing words through the review's model (docs/meeting-design.md §5.10, "Editing words"): `ReviewSession.editWords`
+// Editing words through the review's model (docs/meeting/review-window.md §5.10, "Editing words"): `ReviewSession.editWords`
 // on fixture sessions, with its undo, learning, speaker edits, and paragraphs. Helpers are prefixed `wordEdit`.
 
 private struct WordEditTurn {

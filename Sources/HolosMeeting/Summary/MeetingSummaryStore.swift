@@ -5,7 +5,7 @@ import HolosSpeakers
 import HolosStorage
 import os
 
-/// Contents of `summary.json` (docs/meeting-design.md §4.17): the generated title, summary, key points and action
+/// Contents of `summary.json` (docs/meeting/titles-summaries.md §4.17): the generated title, summary, key points and action
 /// items of one transcript revision. Written by `voiceislocal session summarize` (the app runs it after a meeting's
 /// transcript is final); replaced when the current transcript changes or on request.
 public struct MeetingSummaryRecord: Codable, Sendable, Equatable {
@@ -86,7 +86,7 @@ public struct MeetingSummaryRecord: Codable, Sendable, Equatable {
 }
 
 /// The record holds what the meeting was about. Printing, `dump`, and test-failure output show only IDs and counts
-/// (docs/meeting-design.md §1.5, §1.9).
+/// (docs/conventions.md §1.5, §1.9).
 extension MeetingSummaryRecord: CustomStringConvertible, CustomDebugStringConvertible, CustomReflectable {
     public var description: String {
         "MeetingSummaryRecord(sessionID: \(sessionID), transcriptID: \(transcriptID), points: \(points.count), "
@@ -101,7 +101,7 @@ extension MeetingSummaryRecord: CustomStringConvertible, CustomDebugStringConver
     }
 }
 
-/// What a summary is of: the transcript and the speakers' names as the exports show them (docs/meeting-design.md
+/// What a summary is of: the transcript and the speakers' names as the exports show them (docs/meeting/titles-summaries.md
 /// §4.17). A summary is current only while its stored key is the meeting's; then the exports carry it, and it is not
 /// made again. Computed the same way everywhere (the command, the exports, the app's scan), without the model.
 public struct MeetingSummaryKey: Sendable, Equatable {
@@ -221,7 +221,7 @@ public enum MeetingSummaryStore {
     }
 }
 
-/// A meeting's name, where it came from, and the title shown for it (docs/meeting-design.md §4.17).
+/// A meeting's name, where it came from, and the title shown for it (docs/meeting/titles-summaries.md §4.17).
 public enum MeetingNaming {
     /// Names Voice is Local gives on its own: the start panel's and `record start`'s "Meeting 2026-10-03 14:00", the
     /// bare "Meeting" of older command-line recordings, and "Imported meeting".

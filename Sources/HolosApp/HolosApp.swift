@@ -51,7 +51,7 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
     private let overlay = DictationOverlay()
     private var monitor: GlobalHotkeyMonitor?
     private var controller: DictationController!
-    /// Meeting recording controls (HolosApp+Meeting.swift, docs/meeting-design.md §5.8).
+    /// Meeting recording controls (HolosApp+Meeting.swift, docs/meeting/app-controls.md §5.8).
     let meeting = MeetingAppState()
     private(set) var enabled = false
     /// Session suspension belongs to dictation, not to a meeting; deferred setup cannot clear it.
@@ -203,7 +203,7 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
                                             supported: supportedLocales)
     }
     /// The meeting languages chosen in the meeting start panel (the recorder transcribes live in the first; the others,
-    /// at most two, are detected after the recording, docs/meeting-design.md §4.14); until then, the dictation
+    /// at most two, are detected after the recording, docs/meeting/languages.md §4.14); until then, the dictation
     /// language. Nil while that is not known yet (`resolvedLocale`): the start panel keeps Start off until it is.
     var meetingLocales: [String]? {
         get {

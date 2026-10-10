@@ -6,7 +6,7 @@ import HolosStorage
 import HolosTestSupport
 import Testing
 
-// The stall watchdog (docs/meeting-design.md §4.2).
+// The stall watchdog (docs/meeting/recorder.md §4.2).
 
 private func warning(_ code: RecorderWarningCode, _ message: String) -> RecorderEffect {
     .warn(RecorderWarning(code: code, message: message, since: RecorderMachine.placeholderDate))

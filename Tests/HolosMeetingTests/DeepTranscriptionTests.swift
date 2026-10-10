@@ -7,7 +7,7 @@ import HolosStorage
 import HolosTestSupport
 import Testing
 
-// The deep transcription pass (docs/meeting-design.md §4.16) with a scripted transcriber: no model is downloaded or
+// The deep transcription pass (docs/meeting/deep-transcription.md §4.16) with a scripted transcriber: no model is downloaded or
 // loaded, no speech assets are used. Every sentence is invented.
 
 // MARK: - Helpers

@@ -2,7 +2,7 @@
 
 The contracts between targets and processes as the code implements them. Ownership (what each target owns, must
 not own, and may import) is the module map in [AGENTS.md](../AGENTS.md#module-map), with details in each
-`Sources/<Module>/README.md`. The full meeting design is [meeting-design.md](meeting-design.md), sections 1–4.
+`Sources/<Module>/README.md`. The meeting design is [conventions.md](conventions.md) and the files in [meeting/](meeting/).
 
 Prefer concrete structs, enums and actors; add a protocol only at a real seam (an engine, the hardware, a child
 process, a clock). Do not build a plugin framework.
@@ -34,7 +34,7 @@ The main protocols that exist, and what implements them (not exhaustive; search 
   in-process recorder mode is on) and maintenance commands (`session diarize`, `deep-transcribe`, `summarize`,
   `echo-analyze`, `recover`, `delete`, `rename`; `setup --speakers`, `setup --whisper`, `doctor --json`).
 - App ↔ recorder talk through files in the private session folder, not sockets or XPC
-  (`docs/meeting-design.md §4.1`): the app or CLI writes one allowlisted, versioned request (`stop`, `pause`,
+  (`docs/meeting/recorder.md §4.1`): the app or CLI writes one allowlisted, versioned request (`stop`, `pause`,
   `resume`, `marker`) for an exact session ID as `control/<UUID>.json`; the recorder applies it at most once and
   acknowledges it in `status.json`, which it rewrites as a heartbeat. SIGINT and SIGTERM stop gracefully.
 - The recorder owns the archive's writer lock and hands the processing lease to post-processing; a child it starts
@@ -63,7 +63,7 @@ The main protocols that exist, and what implements them (not exhaustive; search 
   recorder's `StatusWriter` for `status.json`, the app's live-transcript corrections in `live-hints.json`).
   HolosStorage writes through `AtomicFile` (write, fsync, rename, folder fsync). Event sequence numbers never
   decrease; a failed append is truncated back, and a damaged line is skipped and counted. Details and lock
-  rules: `docs/meeting-design.md §1.6`, `docs/meeting-design.md §1.7`.
+  rules: `docs/conventions.md §1.6`, `docs/conventions.md §1.7`.
 - Encoding: session files and the HolosStorage stores (speaker data, profiles, dictation history, word list) use
   `HolosJSON`. Exceptions today: `corrections.json` (`CorrectionList`, plain `JSONEncoder`); the reading
   pipeline's files (`ReadingManifest`, the output reservation's `.holos-output-*.lock` and `.takeover` records) and
@@ -75,7 +75,7 @@ The main protocols that exist, and what implements them (not exhaustive; search 
   review maintenance entries, the meeting-source notice, the Summarize Again queue
   (`MeetingSummarySchedule.Request`). Growable code sets read across builds are `OpenStringCode`s;
   `RecorderPhase` is an enum that decodes unknown values as `.unknown`.
-- A version newer than the reader knows is handled per file (the rule is `docs/meeting-design.md §1.6`, rule 3):
+- A version newer than the reader knows is handled per file (the rule is `docs/conventions.md §1.6`, rule 3):
   - Whole files are refused with `HolosError.unavailable` by the readers that need them: the transcript pointer
     and revisions, `meeting.json`, `status.json`, `postprocess.json`, the speaker head and runs, `summary.json`,
     `audio-deleted.json`, `exports/.generated.json`, `live-hints.json`, `words.json`, the people store. A reader
@@ -122,11 +122,11 @@ The main protocols that exist, and what implements them (not exhaustive; search 
 - Throw `HolosError` (`invalidInput`, `unavailable`, `permissionDenied`, `incomplete`, `io`) with a message that
   says what to do next. Do not add cases; machine-readable reasons travel in data (`StopReason`, `ControlResult`,
   `PostProcessingState`).
-- The rule for new code is that `CancellationError` passes through unchanged (`docs/meeting-design.md §1.4`).
+- The rule for new code is that `CancellationError` passes through unchanged (`docs/conventions.md §1.4`).
   Known exception: `ReadingPipeline` turns any failure while rendering or joining parts, cancellation included,
   into `HolosError.incomplete` after a best-effort save of its manifest, so a stopped reading reports "Reading
   stopped at part …".
 - Transcription failure after a successful recording keeps and names the saved audio.
-- CLIs put content and JSON on stdout and progress on stderr; exit codes are in `docs/meeting-design.md §1.4`.
+- CLIs put content and JSON on stdout and progress on stderr; exit codes are in `docs/conventions.md §1.4`.
 - Logs use `Logger(subsystem: "ca.orlenko.holos.app", …)`. Never log transcript text, names, vocabulary or
-  embeddings; user paths only as `.private` (`docs/meeting-design.md §1.5`).
+  embeddings; user paths only as `.private` (`docs/conventions.md §1.5`).

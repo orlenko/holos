@@ -6,7 +6,7 @@ import HolosStorage
 import Synchronization
 
 extension Session {
-    /// `voiceislocal session diarize` (docs/meeting-design.md §5.5 PR7b).
+    /// `voiceislocal session diarize` (docs/meeting/speaker-labels.md §5.5).
     struct Diarize: AsyncParsableCommand {
         static let configuration = CommandConfiguration(
             abstract: "Label the speakers of a finished session and rewrite its transcript exports.",
@@ -71,7 +71,7 @@ extension Session {
                 profiles: SpeakerProfileStore(),
                 wordFixes: makeWordFixDependencies(),
                 progress: progressPrinter())
-            // Stdout carries the result; a warning or failure is explained on stderr (docs/meeting-design.md §1.4).
+            // Stdout carries the result; a warning or failure is explained on stderr (docs/conventions.md §1.4).
             if json {
                 try Console.json(outcome.record)
                 if outcome.exitCode != 0, let message = outcome.record.message { Console.error(message) }

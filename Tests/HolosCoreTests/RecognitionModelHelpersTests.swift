@@ -2,8 +2,8 @@ import Foundation
 import HolosCore
 import Testing
 
-// The PR10 helpers on the recognition types (Sources/HolosCore/RecognitionModelHelpers.swift), kept out of the frozen
-// contract file SpeakerModels.swift (docs/meeting-design.md §3.0).
+// The helpers on the recognition types (Sources/HolosCore/RecognitionModelHelpers.swift), kept out of the
+// contract file SpeakerModels.swift (docs/meeting/session-format.md §3.0).
 
 @Test func thresholdProblemNamesEachBrokenRule() {
     func thresholds(likely: Double = 0.2, margin: Double = 0.1, possible: Double = 0.4,

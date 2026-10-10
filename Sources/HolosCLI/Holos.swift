@@ -28,7 +28,7 @@ struct Holos: AsyncParsableCommand {
     )
 
     /// Installs the system spell checker (for the fix and Run Again); before any `people`, `speakers`, or `session`
-    /// command, finishes a forget of voices that a crash left pending (docs/meeting-design.md §4.10); then runs the
+    /// command, finishes a forget of voices that a crash left pending (docs/meeting/people-voice.md §4.10); then runs the
     /// command.
     static func main() async {
         SystemSpelling.install(SystemSpellChecker())

@@ -5,7 +5,7 @@ import HolosSpeech
 import HolosStorage
 import os
 
-/// What the language stage uses outside the session folder (docs/meeting-design.md §4.14): speech recognition, the
+/// What the language stage uses outside the session folder (docs/meeting/languages.md §4.14): speech recognition, the
 /// speech-model check, and language identification. Only `live` touches speech assets; tests pass fakes.
 public struct LanguageDetectionDependencies: Sendable {
     /// Transcribes saved audio in one language (`TrackReplayer`).
@@ -42,7 +42,7 @@ public struct LanguageDetectionDependencies: Sendable {
     }
 }
 
-/// Stage 1b of the post-processor, `languages` (docs/meeting-design.md §4.14): for a meeting in several languages,
+/// Stage 1b of the post-processor, `languages` (docs/meeting/languages.md §4.14): for a meeting in several languages,
 /// the saved audio is transcribed again in each language with final results only (the live transcript's fast results
 /// measured about 3 points of word error rate worse), each transcription is kept as a revision that is not current
 /// (`languagePass`), and the transcript merged from them (`LanguageMerge`) becomes current (`languagesDetected`, then

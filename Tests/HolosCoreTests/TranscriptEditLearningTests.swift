@@ -2,7 +2,7 @@ import Foundation
 @testable import HolosCore
 import Testing
 
-// What an edit of a meeting's words in Review teaches (docs/meeting-design.md §5.10, "Editing words").
+// What an edit of a meeting's words in Review teaches (docs/meeting/review-window.md §5.10, "Editing words").
 
 /// A small dictionary: these words, in lowercase, are real words.
 private let dictionary: Set<String> = ["ask", "the", "now", "pull", "bull", "request", "apple", "so", "think", "we",

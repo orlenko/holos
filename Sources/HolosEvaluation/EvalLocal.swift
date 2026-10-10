@@ -191,7 +191,7 @@ public enum EvalLocal {
     public enum Backend: String, Sendable, CaseIterable {
         /// Apple's speech recognition, as the languages stage runs it.
         case apple
-        /// The deep transcription pass's local Whisper model (docs/meeting-design.md §4.16), with its prompt and guards.
+        /// The deep transcription pass's local Whisper model (docs/meeting/deep-transcription.md §4.16), with its prompt and guards.
         case whisper
     }
 

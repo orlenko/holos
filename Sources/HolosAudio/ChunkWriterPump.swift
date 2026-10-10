@@ -3,7 +3,7 @@ import HolosCore
 import os
 import Synchronization
 
-/// Takes disk latency out of the capture path (docs/meeting-design.md §4.3): the frame consumer pushes captured audio
+/// Takes disk latency out of the capture path (docs/meeting/recorder.md §4.3): the frame consumer pushes captured audio
 /// here without ever waiting, and one writer task (`run()`) writes it to an `AudioChunkWriter` in order.
 ///
 /// Each track may queue up to `capacitySeconds` of audio. When a track's queue is full the frame is dropped (`push`

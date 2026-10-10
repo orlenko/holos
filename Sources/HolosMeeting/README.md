@@ -1,7 +1,7 @@
 # HolosMeeting
 
 Meetings end to end, without AppKit: recording, the app's controllers, everything after the stop, Review, people
-and voice profiles. `docs/meeting-design.md` section 4 is the spec; `docs/meeting-design.md §4.1` is the
+and voice profiles. The files in `docs/meeting/` are the spec; `docs/meeting/recorder.md §4.1` is the
 recorder ↔ app protocol.
 
 **Owns** (by folder)
@@ -53,10 +53,10 @@ NaturalLanguage, CryptoKit.
 
 **Invariants**
 - The recorder holds the session's writer lock while it records and hands the processing lease to
-  post-processing (`docs/meeting-design.md §4.6`). `status.json` says `exited` before the recorder lets go of its
+  post-processing (`docs/meeting/recorder.md §4.6`). `status.json` says `exited` before the recorder lets go of its
   last lock.
 - Post-processing writes its files through `AtomicFile` (atomic rename). The rule that cancelled work publishes
-  nothing partial is `docs/meeting-design.md §1.3`; lock rules are `docs/meeting-design.md §1.7`.
+  nothing partial is `docs/conventions.md §1.3`; lock rules are `docs/conventions.md §1.7`.
 - `ReviewSession`, `MeetingController` and `BackgroundJobCoordinator` are `@MainActor` and testable without a window.
 - At most one background job of the app runs on this Mac (`BackgroundJobCoordinator` invariant 1): every one holds
   `DeepTranscriptionLock` while it runs, and the app starts none while the lock is held.

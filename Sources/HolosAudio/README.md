@@ -15,7 +15,7 @@ staying awake while recording.
   long lead-in) shrink to 5 s by default, so render time is not session time. `RenderedTrack.timeMap` lists the
   spans, and consumers map render times back with `RenderTimeMap.sessionTime` or `RenderTimeMap.map`.
 - `MeetingScreenCapture` (`@MainActor`): optional display capture for screen context
-  (`docs/meeting-design.md §4.15`), with the pure `ScreenCapturePlan`, `ScreenFrameDifference`,
+  (`docs/meeting/screen-context.md §4.15`), with the pure `ScreenCapturePlan`, `ScreenFrameDifference`,
   `ScreenStoragePolicy`.
 - Power: `SystemPowerMonitor` (`SystemPowerEvents`), `PowerAssertion`.
 
@@ -23,7 +23,7 @@ staying awake while recording.
 
 **Depends on:** HolosCore, HolosStorage. AVFoundation, CoreAudio, AudioToolbox, ScreenCaptureKit, CoreImage, IOKit.
 
-**Invariants** (`docs/meeting-design.md §1.3`, `docs/meeting-design.md §2.3`, `docs/meeting-design.md §4.3`)
+**Invariants** (`docs/conventions.md §1.3`, `docs/meeting/session-format.md §2.3`, `docs/meeting/recorder.md §4.3`)
 - `AudioCapture` callbacks copy samples into a `PCMFrame` and yield it to a bounded stream: no `await`, file I/O or
   resampling in them, and only short `Mutex` sections (the microphone timeline, drop counts).
 - `AudioChunkWriter` records a gap as a discontinuity event, never as fabricated audio, and drops samples that

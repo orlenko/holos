@@ -2,7 +2,7 @@ import Foundation
 import HolosAudio
 import HolosCore
 
-// The one mapping from the start settings of a meeting from the app to the recorder's options (docs/meeting-design.md
+// The one mapping from the start settings of a meeting from the app to the recorder's options (docs/meeting/recorder.md
 // §4.1): the in-process recorder builds its options with it, and `ChildProcessLauncher.arguments` hands the same
 // values to `voiceislocal record start`, which reads an option it is not given the same way (its default language is
 // `AppleSpeechEngine.defaultLocale`, its default microphone `RecordingOptions.microphone(for:)`).

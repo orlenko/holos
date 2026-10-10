@@ -26,11 +26,11 @@ public enum CaptureOverflow: Sendable, Equatable {
     /// End the stream with an error, so a short capture (dictation) never has a silent hole.
     case fail
     /// Drop the buffer, count it (`droppedBuffers`), mark the next delivered frame of the track `followsDrop`, and
-    /// keep capturing (meeting recordings, docs/meeting-design.md §4.3).
+    /// keep capturing (meeting recordings, docs/meeting/recorder.md §4.3).
     case dropAndCount
 }
 
-/// Which input device a meeting's microphone track records (docs/meeting-design.md §4.12).
+/// Which input device a meeting's microphone track records (docs/meeting/recorder.md §4.12).
 /// Saved in the app's last start settings, so the raw values are stable.
 public enum MicrophoneSelection: String, Sendable, Equatable, Codable {
     /// The system default input (meetings started from the app; `mic+system` from the CLI; dictation).
@@ -98,7 +98,7 @@ public final class AudioCapture {
     /// `bufferCapacity` buffers wait for the consumer. When the queue is full, `.fail` (dictation's default) ends the
     /// stream with an error; `.dropAndCount` drops the buffer, counts it (`droppedBuffers`), and continues.
     ///
-    /// With `reportsConfigurationChanges` (meeting recordings, docs/meeting-design.md §4.2), the stream ends with
+    /// With `reportsConfigurationChanges` (meeting recordings, docs/meeting/recorder.md §4.2), the stream ends with
     /// `CaptureInterruption.configurationChanged` when AVAudioEngine reports a configuration change, or when the system
     /// default input changes while ScreenCaptureKit records it, so the recorder restarts on the new configuration.
     /// Without it (dictation) a configuration change is not reported, as before.
@@ -140,7 +140,7 @@ public final class AudioCapture {
     public nonisolated static func hostSeconds() -> Double { CMClockGetTime(CMClockGetHostTimeClock()).seconds }
 
     /// The host-time origin of a capture whose frames continue a session timeline at `timelineOffset`
-    /// (docs/meeting-design.md §2.3). `offsetHostTime` is the host time at which the session clock read
+    /// (docs/meeting/session-format.md §2.3). `offsetHostTime` is the host time at which the session clock read
     /// `timelineOffset`; the origin is anchored there, so the time the capture then takes to set up is part of the
     /// timeline (and of the gap before its first frame). Nil anchors it at `now` (epoch 0, and dictation). An anchor
     /// after `now` is taken as `now`, so no frame is stamped before the offset.
@@ -151,9 +151,9 @@ public final class AudioCapture {
 
     /// Starts capture. Frame times are `timelineOffset` plus the host seconds since `timelineOffsetHostTime` (since
     /// the origin is set, when nil): the host-time origin is `timelineOrigin(...)`, so a restarted capture continues a
-    /// meeting's session timeline, setup time included (docs/meeting-design.md §2.3). System audio is captured mono.
+    /// meeting's session timeline, setup time included (docs/meeting/session-format.md §2.3). System audio is captured mono.
     ///
-    /// `microphone` chooses the input the microphone track records (§4.12): `.builtIn` pins the built-in microphone
+    /// `microphone` chooses the input the microphone track records (docs/meeting/recorder.md §4.12): `.builtIn` pins the built-in microphone
     /// (AVAudioEngine's input unit is set to it before its format is read; ScreenCaptureKit gets its device ID), so
     /// connecting a headset does not move the recording; `.systemDefault` records the system default input. A
     /// `.builtIn` capture throws `HolosError.unavailable` when the Mac has no built-in microphone right now (lid closed
@@ -220,7 +220,7 @@ public final class AudioCapture {
                 // The engine stops itself on a configuration change (a device came or went, a format changed).
                 // AVAudioEngine also reports changes that change nothing (for example just after it starts on a
                 // selected input); those restart the same engine in place instead of the whole capture, which would
-                // only report the same change again (docs/meeting-design.md §4.2).
+                // only report the same change again (docs/meeting/recorder.md §4.2).
                 let sampleRate = format.sampleRate, channels = format.channelCount
                 configurationObserver = NotificationCenter.default.addObserver(
                     forName: .AVAudioEngineConfigurationChange, object: audioEngine, queue: .main) { [weak self] _ in
@@ -403,7 +403,7 @@ private final class CaptureReceiver: NSObject, SCStreamOutput, SCStreamDelegate,
 
     /// On a full queue, `.fail` ends the stream; `.dropAndCount` drops and counts the buffer, and the next frame of the
     /// track that is delivered carries `followsDrop`, so the consumer marks the gap right before it
-    /// (docs/meeting-design.md §4.3). Callbacks of one track arrive in order, never concurrently.
+    /// (docs/meeting/recorder.md §4.3). Callbacks of one track arrive in order, never concurrently.
     func emit(track: String, frame: PCMFrame) {
         guard !ended.withLock({ $0 }) else { return }
         let followsDrop = drops.withLock { $0.pending.contains(track) }

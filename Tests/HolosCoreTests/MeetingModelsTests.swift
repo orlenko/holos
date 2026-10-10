@@ -3,7 +3,7 @@ import HolosCore
 import Testing
 
 // `MeetingVocabulary.cleaned`: the one vocabulary rule of the app's hand-off file, the recorder and import
-// (docs/meeting-design.md §4.12).
+// (docs/meeting/recorder.md §4.12).
 
 @Test func meetingVocabularyTrimsAndDropsEmptyAndOverlongEntries() {
     let longest = String(repeating: "x", count: MeetingVocabulary.maximumLength)

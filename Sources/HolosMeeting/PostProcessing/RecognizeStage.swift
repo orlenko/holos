@@ -4,7 +4,7 @@ import HolosSpeakers
 import HolosStorage
 import os
 
-/// Stage 7 of the post-processor (docs/meeting-design.md §4.7, §4.10): with "Remember voices" on and some person's
+/// Stage 7 of the post-processor (docs/meeting/post-processing.md §4.7, docs/meeting/people-voice.md §4.10): with "Remember voices" on and some person's
 /// voice samples to compare, `SpeakerRecognizer` matches the new run's speakers using the run's in-memory voice data,
 /// and only the distances are saved (`speakers/recognition/<runID>.json`). The voice data itself is never written
 /// here; it is dropped when post-processing ends.
@@ -82,7 +82,7 @@ enum RecognizeStage {
     }
 
     /// `voiceData` with only the centroids of clusters whose speaker the labels' view lists with the acoustic echo
-    /// `mask` hidden (docs/meeting-design.md §5.11): a microphone cluster that is mostly echo, or whose turns are all
+    /// `mask` hidden (docs/meeting/online-calls-echo.md §5.11): a microphone cluster that is mostly echo, or whose turns are all
     /// echo, sounds like the far end and must not take a person's one-to-one match from the real system speaker.
     /// Unchanged without a mask or voice data.
     static func withoutEcho(_ voiceData: SessionVoiceData?, run: DiarizationRun, transcript: Transcript,

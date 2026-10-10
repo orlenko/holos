@@ -1110,7 +1110,7 @@ that place: terms the recognizer should expect (names, products, jargon), kept i
   contextual strings, as a correction does. A dictation already listening keeps the
   strings it started with. Run Again and `voiceislocal history rerun` use today's list.
 - Meetings: the list is part of the vocabulary handed to the recorder at start and
-  saved in the meeting as `vocabulary.json` (§4.12 of meeting-design.md). Replays,
+  saved in the meeting as `vocabulary.json` (docs/meeting/recorder.md §4.12). Replays,
   rebuilds and `session languages` use that saved vocabulary, never today's list: it is
   part of what makes a meeting's transcript reproducible. `voiceislocal session recover
   --current-vocabulary` is the one way to ask for today's list (with names and
@@ -1247,7 +1247,7 @@ words with the on-device model:
    transcript pointer is saved but publishing its mapped speaker head fails, Review retries
    that publication from the still-current old head; a later automatic pass does the same
    before it may relabel or export. Words the person types in Review's edit mode are a
-   `reviewEdit` fix made in the unfixed base as well (docs/meeting-design.md §5.10, "Editing
+   `reviewEdit` fix made in the unfixed base as well (docs/meeting/review-window.md §5.10, "Editing
    words"), so every later pass keeps them and never replaces them; their Revert is another
    edit back to what the recognizer wrote. Deleting every word of a segment there empties the
    segment in both revisions and keeps what it held beside it (`TranscriptSegment.removed`): a
@@ -1318,7 +1318,7 @@ Face) uses the network.
   transcription as a candidate, so `eval compare --local latest` measures it against a
   cloud run without changing the meeting.
 
-docs/meeting-design.md §4.16 has the stage, files, thresholds and measurements.
+docs/meeting/deep-transcription.md §4.16 has the stage, files, thresholds and measurements.
 
 ### Meetings list
 
@@ -1363,7 +1363,7 @@ replaces it, in the background, one meeting at a time, never while a meeting rec
 (Settings › Meetings › "Title and summarize meetings with Apple Intelligence", on by default).
 Without Apple Intelligence the rows show the date, length and people, with no error. The
 transcript files get the summary, key points and action items (Markdown and JSON);
-`voiceislocal session summarize` makes them from Terminal. docs/meeting-design.md §4.17 has the
+`voiceislocal session summarize` makes them from Terminal. docs/meeting/titles-summaries.md §4.17 has the
 method, files and measurements.
 
 Every action stays: double-click or Return opens (the live transcript, Review, or the
@@ -1448,11 +1448,11 @@ ambiguous transfers of existing human edits instead of silently discarding them.
 Within a meeting, the same name is the same person (ignoring case, accents and extra
 spaces): speakers of one name are shown and exported as one, an edit of that speaker
 reaches each of them, and nothing is merged behind the user's back, so each keeps its
-own link and voice (meeting-design §4.9, "Speakers with the same name").
+own link and voice (docs/meeting/speaker-labels.md §4.9, "Speakers with the same name").
 
 Optionally capture the screen during a meeting (Settings › Meetings, off by default;
 the start panel's "Capture screen" for one meeting), so text on slides and shared
-screens can help the transcript (meeting-design §4.15). It is the whole main display,
+screens can help the transcript (docs/meeting/screen-context.md §4.15). It is the whole main display,
 not a chosen window: picking a window in every meeting proved impractical, and since
 no online model is involved the images never leave the Mac. Voice is Local's own
 windows are excluded, so the live transcript is not read back into the context. Only
@@ -1633,7 +1633,7 @@ without deliberate selection.
 
 This reverses the earlier rule "No inferred cross-meeting voiceprint database" (user
 decision 2 in the [meeting-recording plan](meeting-recording-plan.md); details in
-[meeting-design.md](meeting-design.md) §4.10). People and voices are kept apart:
+[meeting/people-voice.md](meeting/people-voice.md) §4.10). People and voices are kept apart:
 
 - **Names are not biometric.** Linking a speaker to a person creates or reuses that
   person whatever the settings, so names carry across meetings; each meeting also keeps

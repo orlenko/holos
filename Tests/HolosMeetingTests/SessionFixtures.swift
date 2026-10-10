@@ -6,7 +6,7 @@ import HolosSpeakers
 import HolosStorage
 
 // Finished sessions for post-processing, export, and speaker-editing tests. Only the first-merged PR of each wave
-// edits this file (docs/meeting-design.md §1.8; PR7b in wave 2, PR8 in wave 3); other PRs add prefixed helpers in
+// edits this file (docs/conventions.md §1.8); other PRs add prefixed helpers in
 // their own files.
 
 enum SessionFixtures {

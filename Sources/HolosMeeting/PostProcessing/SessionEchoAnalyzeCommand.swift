@@ -4,7 +4,7 @@ import HolosSpeakers
 import HolosStorage
 import os
 
-/// What `voiceislocal session echo-analyze` does (docs/meeting-design.md §5.11), as a library call: a call's acoustic
+/// What `voiceislocal session echo-analyze` does (docs/meeting/online-calls-echo.md §5.11), as a library call: a call's acoustic
 /// echo analysis is saved in `echo/`, and the transcript files are written again from the labels as they now show
 /// (the projection hides the echo). Nothing else changes: the speaker labels, their edits, the transcript and its word
 /// fixes stay as they are on disk.

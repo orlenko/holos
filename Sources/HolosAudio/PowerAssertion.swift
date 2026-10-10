@@ -4,7 +4,7 @@ import IOKit.pwr_mgt
 import os
 import Synchronization
 
-/// Prevents idle system or display sleep (docs/meeting-design.md §4.4), never lid close or forced sleep.
+/// Prevents idle system or display sleep (docs/meeting/recorder.md §4.4), never lid close or forced sleep.
 /// System assertions span processing; display assertions are held only while capture is active.
 public protocol PowerAssertionHandle: Sendable {
     func release()

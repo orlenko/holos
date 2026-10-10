@@ -4,7 +4,7 @@ import HolosStorage
 import Testing
 @testable import HolosAudio
 
-// docs/meeting-design.md §4.3: disk latency never reaches the capture path.
+// docs/meeting/recorder.md §4.3: disk latency never reaches the capture path.
 
 private let pumpRate = 16_000.0
 

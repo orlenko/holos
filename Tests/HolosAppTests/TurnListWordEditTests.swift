@@ -6,7 +6,7 @@ import HolosSpeakers
 import Testing
 @testable import HolosApp
 
-/// Edit mode of the review's turn list (docs/meeting-design.md §5.10, "Editing words"), laid out offscreen (the window
+/// Edit mode of the review's turn list (docs/meeting/review-window.md §5.10, "Editing words"), laid out offscreen (the window
 /// is never shown) with `TurnListViewTests`' synthetic turns: row 0 is T1 "alpha beta" and T2 "gamma delta", row 1 T3
 /// "epsilon zeta"; every turn is a segment of its own.
 @MainActor

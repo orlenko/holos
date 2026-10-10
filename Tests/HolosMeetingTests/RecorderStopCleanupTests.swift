@@ -6,7 +6,7 @@ import HolosStorage
 import HolosTestSupport
 import Testing
 
-// A capture stop after the frame stream already ended is cleanup (docs/meeting-design.md §4.2, §4.6 step 1): its
+// A capture stop after the frame stream already ended is cleanup (docs/meeting/recorder.md §4.2, §4.6 step 1): its
 // error never turns a finished recording into a capture failure. A stop of a running capture still reports one.
 
 /// A capture that delivers `audio` when started, then ends its stream with `end` (nil: runs until stopped).

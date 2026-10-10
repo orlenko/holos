@@ -4,7 +4,7 @@ import Synchronization
 import HolosCore
 
 /// The one way Holos opens a folder inside a session (`<id>.holos`) without following a symbolic link
-/// (docs/meeting-design.md §1.7). Every session-local file operation (reads, writes, appends, locks, listings,
+/// (docs/conventions.md §1.7). Every session-local file operation (reads, writes, appends, locks, listings,
 /// folder creation, deletes) starts from a descriptor this returns, then works with `openat`/`mkdirat`/`fstatat`
 /// relative to it, so a folder swapped for a link during the call cannot redirect it.
 extension AtomicFile {

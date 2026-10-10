@@ -3,7 +3,7 @@ import HolosCore
 import HolosSpeakers
 import HolosStorage
 
-/// What `voiceislocal session deep-transcribe` does (docs/meeting-design.md §4.16), as a library call: the CLI parses
+/// What `voiceislocal session deep-transcribe` does (docs/meeting/deep-transcription.md §4.16), as a library call: the CLI parses
 /// its arguments and prints the outcome. It checks first that the pass can run at all (`precheck`), then runs the
 /// post-processor with the deep transcription pass asked for by name, so the saved audio is transcribed again with the
 /// local Whisper model, live corrections and word fixes are applied to the new text, speakers are labelled again on

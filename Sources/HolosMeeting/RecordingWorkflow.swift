@@ -34,14 +34,14 @@ public struct RecordingOptions: Sendable, Equatable {
     /// and the system default input for `mic+system` (the device the call app uses). Meetings from the app record
     /// the system default input either way (`MeetingStartSettings.app`, `--microphone default`).
     public var microphone: MicrophoneSelection
-    /// The meeting's languages, `locale` first (docs/meeting-design.md §4.14). Live transcription uses `locale` only;
+    /// The meeting's languages, `locale` first (docs/meeting/languages.md §4.14). Live transcription uses `locale` only;
     /// with more than one, meeting.json records them and post-processing transcribes the audio again in each and
     /// merges the transcript. Empty: `locale` only.
     public var languages: [String]
-    /// Capture the screen while recording, for on-device OCR after the recording (docs/meeting-design.md §4.15);
+    /// Capture the screen while recording, for on-device OCR after the recording (docs/meeting/screen-context.md §4.15);
     /// nil: no screen capture.
     public var screen: ScreenCaptureTarget?
-    /// Where `name` came from (docs/meeting-design.md §4.17): `user` when the user gave it (the start panel's field,
+    /// Where `name` came from (docs/meeting/titles-summaries.md §4.17): `user` when the user gave it (the start panel's field,
     /// `--name`), whatever it looks like; `default` for a name Voice is Local made up.
     public var nameSource: MeetingNameSource
 
@@ -173,7 +173,7 @@ public struct RecordingDependencies: Sendable {
     }
 }
 
-/// How often the recorder loop runs and how much it queues (docs/meeting-design.md §4.2, §4.3, §4.6).
+/// How often the recorder loop runs and how much it queues (docs/meeting/recorder.md §4.2, §4.3, §4.6).
 struct RecorderTuning: Sendable {
     /// Control requests, the stop source, `stop.request`, and the duration are checked this often while capturing.
     var poll: Duration = .milliseconds(100)
@@ -353,7 +353,7 @@ public enum RecordingWorkflow {
 
 // MARK: - Recorder
 
-/// One recording from its first status write to `exited` (docs/meeting-design.md §4.2, §4.6). Its work is split by
+/// One recording from its first status write to `exited` (docs/meeting/recorder.md §4.2, §4.6). Its work is split by
 /// concern: `Recorder+Capture` (epochs), `+Power`, `+Status` (status.json and the journal) and `+Stop` (the stop
 /// path); `RecorderExitSequence` writes the exited status and lets go of the locks still held at the end.
 ///

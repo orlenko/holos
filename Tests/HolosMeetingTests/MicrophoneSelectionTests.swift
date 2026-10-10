@@ -6,7 +6,7 @@ import HolosStorage
 import HolosTestSupport
 import Testing
 
-// Which microphone a meeting records (decision 9, docs/meeting-design.md §4.12).
+// Which microphone a meeting records (decision 9, docs/meeting/recorder.md §4.12).
 
 private func hasWarning(_ session: URL, _ code: RecorderWarningCode) -> Bool {
     recorderStatus(session)?.warnings.contains { $0.code == code } == true

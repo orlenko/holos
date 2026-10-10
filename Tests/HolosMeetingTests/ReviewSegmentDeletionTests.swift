@@ -6,7 +6,7 @@ import HolosStorage
 import HolosTestSupport
 import Testing
 
-// Deleting every word of a segment in Review (docs/meeting-design.md §5.10, "Editing words"): the segment loses its
+// Deleting every word of a segment in Review (docs/meeting/review-window.md §5.10, "Editing words"): the segment loses its
 // words, the turn its text, an emptied turn goes, and the deletion is undone or restored exactly. Helpers are prefixed
 // `deletion`; the text is made up.
 

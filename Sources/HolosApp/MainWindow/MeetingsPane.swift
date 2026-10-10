@@ -6,19 +6,19 @@ import HolosStorage
 import Quartz
 import UniformTypeIdentifiers
 
-/// The saved meetings (docs/meeting-design.md §5.8, §4.13; docs/design.md "Meetings list"): a list of rich rows grouped
+/// The saved meetings (docs/meeting/app-controls.md §5.8, docs/meeting/retention-deletion.md §4.13; docs/design.md "Meetings list"): a list of rich rows grouped
 /// by day (Today, Yesterday, This Week, then by month), each with the meeting's title (the user's name, else the title
 /// Apple Intelligence wrote, else the default name), when it was and how long, the people its speaker labels name, a
 /// one- or two-line summary, and badges for what needs saying (Recording, Final transcript queued, Interrupted, …).
 /// A search field filters by title, summary and people. The actions on the selected meeting are buttons below the list
 /// and the row's menu. Recover, Label Speakers, and the deletions run `voiceislocal` commands through the app delegate,
-/// which also opens Review (PR9, §5.10); the rest (Show in Finder, the Quick Look preview, Save Transcript As…, Clean
+/// which also opens Review (docs/meeting/review-window.md §5.10); the rest (Show in Finder, the Quick Look preview, Save Transcript As…, Clean
 /// Up, Rename) happen here. The meeting being recorded or saved comes first, marked "● Recording". Double-click (or
 /// Return) opens what `MeetingOpenPolicy` says: the live transcript (`LiveMeetingViewController`, shown in place of the
 /// list until ‹ Meetings or Escape) for that meeting, Review for a labelled one, the preview otherwise; ⌫ (or ⌘⌫) is
 /// Delete Meeting…. Rename… (the menu, ⌘R, or a double-click on the title's text) edits the name in the row: Return
 /// saves it as the user's (an empty name gives back the generated title), Escape cancels (`SessionRenameCommand`,
-/// §4.17). Several meetings can be selected (⇧-click, ⌘-click, ⌘A, ⇧↑/↓; never a day header): the line under the
+/// docs/meeting/titles-summaries.md §4.17). Several meetings can be selected (⇧-click, ⌘-click, ⌘A, ⇧↑/↓; never a day header): the line under the
 /// buttons sums them up, Delete Meeting…, Delete Audio… and Show in Finder act on all of them (`MeetingBulkPlan`;
 /// `performBulk`), and the other actions are off. The selection is kept by meeting ID across refreshes. The main
 /// window's Meetings section; it refreshes every 2 s while on screen, reading the listing off the main actor.

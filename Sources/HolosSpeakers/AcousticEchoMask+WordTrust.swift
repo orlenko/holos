@@ -1,8 +1,8 @@
 import Foundation
 
-/// Which local frames the word rule (`AcousticEchoMask.isEcho`, docs/meeting-design.md §5.11) counts as the
+/// Which local frames the word rule (`AcousticEchoMask.isEcho`, docs/meeting/online-calls-echo.md §5.11) counts as the
 /// microphone's own speech: each local frame is judged by the frames within a fixed reach of it, never through runs or
-/// stretches that can grow without bound. Review playback keeps #108's local stretches with evidence
+/// stretches that can grow without bound. Review playback keeps its local stretches with evidence
 /// (`localSpeechIntervals`) and none of this.
 extension AcousticEchoMask {
     /// (a) A local frame whose predicted echo is at least this many decibels below the microphone (1 % of its power),

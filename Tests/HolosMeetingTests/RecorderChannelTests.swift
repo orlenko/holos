@@ -6,7 +6,7 @@ import HolosStorage
 import HolosTestSupport
 import Testing
 
-// The app's and the CLI's side of the recorder protocol (docs/meeting-design.md §4.1).
+// The app's and the CLI's side of the recorder protocol (docs/meeting/recorder.md §4.1).
 
 private func channelStatus(_ sessionID: String, phase: RecorderPhase, updatedAt: Date = Date(),
                            pid: Int32 = getpid()) -> RecorderStatus {
@@ -268,7 +268,7 @@ private final class ExitingRecorder {
 
 /// Every way to place the recorder's exit steps (close requests, last poll, answers, exited, leftover sweep, marker
 /// removal) around `send`'s steps: a send that succeeds is answered by the recorder, a refused one is never handled,
-/// and nothing is left in `control/` (docs/meeting-design.md §4.6).
+/// and nothing is left in `control/` (docs/meeting/recorder.md §4.6).
 @Test func sendAndRecorderExitAgreeInEveryInterleaving() async throws {
     let temp = try TemporaryDirectory("channel", permissions: 0o700)
     defer { temp.remove() }

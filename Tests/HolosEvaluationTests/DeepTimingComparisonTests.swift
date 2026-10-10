@@ -6,7 +6,7 @@ import HolosSpeakers
 import HolosStorage
 import Testing
 
-// Opt-in measurement (docs/meeting-design.md §4.16): HOLOS_DEEP_COMPARE_SESSION=<a copy of a .holos folder that
+// Opt-in measurement (docs/meeting/deep-transcription.md §4.16): HOLOS_DEEP_COMPARE_SESSION=<a copy of a .holos folder that
 // `session deep-transcribe` ran on> compares, per track, the word times of the deep transcript with the recorded
 // transcript's where the two wrote the same word (aligned by text in 5-minute windows). Prints numbers only.
 

@@ -7,7 +7,7 @@ import HolosStorage
 import Testing
 @testable import HolosApp
 
-/// A Restore of deleted words is a word edit like any other for closing (docs/meeting-design.md §5.10, "Editing
+/// A Restore of deleted words is a word edit like any other for closing (docs/meeting/review-window.md §5.10, "Editing
 /// words"): queued in the review at once and tracked by the window, so a close right after waits for it (by hand) or
 /// closes the review with it queued (a quit), and a failure is reported. The text is made up.
 @MainActor

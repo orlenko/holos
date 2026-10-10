@@ -1,6 +1,6 @@
 import Foundation
 
-/// The review window's playback speeds (docs/meeting-design.md §5.10): 1×, 1.25×, 1.5×, and 2×, remembered across
+/// The review window's playback speeds (docs/meeting/review-window.md §5.10): 1×, 1.25×, 1.5×, and 2×, remembered across
 /// windows and launches.
 public enum ReviewPlaybackSpeed {
     public static let rates: [Double] = [1, 1.25, 1.5, 2]
@@ -33,7 +33,7 @@ public enum ReviewPlaybackSpeed {
     }
 }
 
-/// Where playback is in a meeting's turns and words, and where ⌘← and ⌘→ go (docs/meeting-design.md §5.10). Pure.
+/// Where playback is in a meeting's turns and words, and where ⌘← and ⌘→ go (docs/meeting/review-window.md §5.10). Pure.
 public enum ReviewTimeline {
     /// A word counts as reached this much before its start: a seek to a word's start lands on a millisecond, which
     /// may round just below it.
@@ -127,7 +127,7 @@ public enum ReviewWordRanges {
     }
 }
 
-/// Whether the turn list follows playback (docs/meeting-design.md §5.10): it does, except for `resumeAfter` seconds
+/// Whether the turn list follows playback (docs/meeting/review-window.md §5.10): it does, except for `resumeAfter` seconds
 /// after the reader last scrolled it themselves; playing, clicking a word or a timestamp, or ⌘← / ⌘→ follow again at
 /// once. Times are any monotonic clock in seconds. Pure.
 public struct ReviewFollow: Sendable, Equatable {

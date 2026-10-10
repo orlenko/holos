@@ -40,7 +40,7 @@ cp LICENSE "$holos_app_bundle/Contents/Resources/LICENSE.txt"
 cp TRADEMARKS.md "$holos_app_bundle/Contents/Resources/TRADEMARKS.md"
 cp THIRD_PARTY_NOTICES.md "$holos_app_bundle/Contents/Resources/THIRD_PARTY_NOTICES.md"
 cp "$holos_app_bin_dir/HolosApp" "$holos_app_bundle/Contents/MacOS/HolosApp"
-# The recorder and maintenance commands the app starts (docs/meeting-design.md §4.1): signed on its own first,
+# The recorder and maintenance commands the app starts (docs/meeting/recorder.md §4.1): signed on its own first,
 # then sealed into the bundle's signature.
 cp "$holos_app_bin_dir/voiceislocal" "$holos_app_bundle/Contents/MacOS/voiceislocal"
 codesign --force --sign - --identifier ca.orlenko.holos.cli "$holos_app_bundle/Contents/MacOS/voiceislocal"

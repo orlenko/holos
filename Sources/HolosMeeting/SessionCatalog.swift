@@ -4,7 +4,7 @@ import HolosCore
 import HolosStorage
 import os
 
-/// What a session is, as the Meetings window and `voiceislocal session list` show it (docs/meeting-design.md §5.6).
+/// What a session is, as the Meetings window and `voiceislocal session list` show it (docs/meeting/recorder.md §5.6).
 public enum SessionState: String, Codable, Sendable {
     case recording, processing, interrupted, complete, audioOnly, transcriptionIncomplete,
          incomplete, failed, recovered, damaged
@@ -25,7 +25,7 @@ public enum SpeakerLabelState: String, Codable, Sendable {
 }
 
 /// meeting.json's languages that the current transcript of a meeting in several languages misses, or that the
-/// recorded transcript stands in for, which Label Speakers would detect again (docs/meeting-design.md §4.14).
+/// recorded transcript stands in for, which Label Speakers would detect again (docs/meeting/languages.md §4.14).
 public struct LanguageWork: Codable, Sendable, Equatable {
     /// The languages missed or stood in for, in meeting.json's order ("en-CA").
     public var languages: [String]
@@ -177,7 +177,7 @@ public struct SessionSummary: Codable, Sendable, Equatable, Identifiable {
 /// `SessionSummary` is Codable, so its liveness is too (encoded as its raw value).
 extension RecorderLiveness: Codable {}
 
-/// The sessions under a folder and their state (docs/meeting-design.md §5.6). Every read is lock-free and
+/// The sessions under a folder and their state (docs/meeting/recorder.md §5.6). Every read is lock-free and
 /// tolerant: a file that cannot be read makes its part of the summary unknown, never the listing fail.
 public enum SessionCatalog {
     private static let log = Logger(subsystem: "ca.orlenko.holos.app", category: "meeting")

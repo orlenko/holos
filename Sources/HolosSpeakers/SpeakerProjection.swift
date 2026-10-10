@@ -4,7 +4,7 @@ import HolosCore
 // MARK: - Projected values
 
 /// A speaker as the UI and every export show it: the run's speaker with the edit journal and recognition applied
-/// (docs/meeting-design.md §4.9).
+/// (docs/meeting/speaker-labels.md §4.9).
 public struct ProjectedSpeaker: Sendable, Equatable, Identifiable {
     public let id: String
     /// N in "Speaker N": the run's ordinal, or max + 1 for a speaker created by `newSpeaker`. Edits never renumber.
@@ -36,7 +36,7 @@ public struct ProjectedSpeaker: Sendable, Equatable, Identifiable {
     public let talkSeconds: Double
     public let turnCount: Int
     /// The stored speakers shown as this one: `id` first, then speakers with the same name joined into it (same
-    /// name, same person: `SameNameSpeakers`, docs/meeting-design.md §4.9), whose turns `turns` gives to `id` and
+    /// name, same person: `SameNameSpeakers`, docs/meeting/speaker-labels.md §4.9), whose turns `turns` gives to `id` and
     /// whose talk time, turns and clusters this speaker counts. Just `[id]` for a speaker nobody shares a name with.
     public let memberIDs: [String]
 
@@ -55,7 +55,7 @@ public struct ProjectedSpeaker: Sendable, Equatable, Identifiable {
 
 /// A turn after the edit journal is applied. Text and timing stay in the transcript; spans reference words.
 ///
-/// With an acoustic echo mask (docs/meeting-design.md §5.11), a turn keeps its ID and speaker and simply leaves out
+/// With an acoustic echo mask (docs/meeting/online-calls-echo.md §5.11), a turn keeps its ID and speaker and simply leaves out
 /// the microphone words the mask calls echo: its spans skip them, and its start, end and timing are its remaining
 /// words'. A turn with no word left is not shown. Edits name turns as always: a split goes before one of the words
 /// shown (a `WordRef` names the same word in the stored turn).
@@ -128,8 +128,8 @@ public struct StaleEdit: Sendable, Equatable {
 
 // MARK: - Projection
 
-/// The run with its edit journal applied: the one view of speakers and turns that exports (PR7b), the CLI (PR8),
-/// the review window (PR9), and enrollment (PR10) use (docs/meeting-design.md §4.9). A pure value; build it with
+/// The run with its edit journal applied: the one view of speakers and turns that exports, the CLI,
+/// the review window, and enrollment use (docs/meeting/speaker-labels.md §4.9). A pure value; build it with
 /// `make` and extend it with `applying`.
 ///
 /// Every journal line of this run ends up in exactly one of: `appliedEditIDs` (in effect), `revertedEditIDs`
@@ -156,7 +156,7 @@ public struct SpeakerProjection: Sendable, Equatable {
     /// rejected that profile nor been linked to another. Speaker IDs in list order; groups by first speaker.
     public let mergeSuggestions: [MergeSuggestion]
     /// Short turns of the unknown speaker the Review list and the exports show with a neighbour's speaker or leave out
-    /// (`ShortInterjections`, docs/meeting-design.md §5.10), by turn ID. Presentation only: `turns` keeps them as they
+    /// (`ShortInterjections`, docs/meeting/review-window.md §5.10), by turn ID. Presentation only: `turns` keeps them as they
     /// are, and edits, voice learning and voice matching read `turns`.
     public let interjections: [String: ShortInterjection]
     /// `turns` as the Review list and every export show them: attached interjections with their neighbour's speaker,
@@ -210,7 +210,7 @@ public struct SpeakerProjection: Sendable, Equatable {
     ///    start with "user:", …). Stale edits change nothing.
     /// 5. Derive names and provenance: explicit name → `userRenamed`; linked profile → `userConfirmed`; automatic
     ///    likely match not rejected → `recognized`; channel → `channelAssumption`; else `diarizer`.
-    /// 6. With `acousticEcho` (a call's mask, docs/meeting-design.md §5.11): the microphone words it flags
+    /// 6. With `acousticEcho` (a call's mask, docs/meeting/online-calls-echo.md §5.11): the microphone words it flags
     ///    (`EchoFilter.acousticEchoSpans`, not judging words the run already dropped) are in no turn. A turn that loses
     ///    some keeps its ID and speaker without them (`ProjectedTurn`); one that loses all is not shown. A diarized
     ///    microphone cluster
@@ -220,7 +220,7 @@ public struct SpeakerProjection: Sendable, Equatable {
     ///    turns in steps 1–4, so the stored journal keeps naming stored turns whatever mask is shown.
     ///    A turn with no words at all (every one deleted in Review with its segment: `DiarizationRun.removedSegments`)
     ///    is not shown either, whether or not there is a mask; edits still name it.
-    /// 7. Short interjections (`ShortInterjections`, docs/meeting-design.md §5.10) are decided on the turns of step 6:
+    /// 7. Short interjections (`ShortInterjections`, docs/meeting/review-window.md §5.10) are decided on the turns of step 6:
     ///    `shownTurns` shows them with a neighbour's speaker or leaves them out. `turns` and `speakers` are unchanged.
     ///
     /// Listed speakers: every speaker with at least one turn shown, plus speakers created by `newSpeaker`. Speakers
@@ -438,7 +438,7 @@ public struct SpeakerProjection: Sendable, Equatable {
 // MARK: - Printing
 
 /// The projection keeps the whole transcript for `applying`. Printing, `dump`, and test-failure output show only the
-/// public fields (IDs, times, names), never transcript text (docs/meeting-design.md §1.5, §1.9).
+/// public fields (IDs, times, names), never transcript text (docs/conventions.md §1.5, §1.9).
 extension SpeakerProjection: CustomStringConvertible, CustomDebugStringConvertible, CustomReflectable {
     public var description: String {
         "SpeakerProjection(runID: \(runID), transcriptID: \(transcriptID), speakers: \(speakers.count), "
@@ -1196,7 +1196,7 @@ extension SpeakerProjection {
 // MARK: - SHA-256
 
 /// SHA-256 (FIPS 180-4) for long fingerprints. HolosSpeakers imports only Foundation and HolosCore
-/// (docs/meeting-design.md §5.3), so it cannot use CryptoKit.
+/// (docs/meeting/speaker-labels.md §5.3), so it cannot use CryptoKit.
 enum FingerprintSHA256 {
     static func hexDigest(_ message: [UInt8]) -> String {
         let hexDigits = Array("0123456789abcdef".utf8)

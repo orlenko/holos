@@ -1,8 +1,8 @@
 import Foundation
 import os
 
-/// Runs the app's background jobs on meetings, one at a time on this Mac (docs/meeting-design.md §4.16 "App",
-/// §4.17, §5.11 "Catching up in the app"): final transcripts (`DeepTranscriptionJobs`), echo analyses
+/// Runs the app's background jobs on meetings, one at a time on this Mac (docs/meeting/deep-transcription.md §4.16 "App",
+/// docs/meeting/titles-summaries.md §4.17, docs/meeting/online-calls-echo.md §5.11 "Catching up in the app"): final transcripts (`DeepTranscriptionJobs`), echo analyses
 /// (`EchoCatchUpJobs`) and summaries (`MeetingSummaryJobs`). Each kind keeps its queue and says what runs next and what
 /// an exit comes to; the coordinator probes the background job lock, applies the holds, orders the kinds' picks
 /// (`BackgroundJobOrder`), takes the meeting, starts the command through `BackgroundJobRunner`, stops it when a meeting

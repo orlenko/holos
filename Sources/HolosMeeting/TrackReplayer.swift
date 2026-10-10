@@ -8,7 +8,7 @@ import HolosStorage
 /// `voiceislocal session retranscribe`.
 public enum TrackReplayer {
     static let bufferFrames: AVAudioFrameCount = 4096
-    /// A gap between chunks longer than this starts a new speech session (docs/meeting-design.md §2.3, R19).
+    /// A gap between chunks longer than this starts a new speech session (docs/meeting/session-format.md §2.3, R19).
     static let sessionGapSeconds = 1.0
 
     /// Transcribes a track's finalized chunks from disk, starting at session time `from` (seeking inside the
@@ -18,7 +18,7 @@ public enum TrackReplayer {
     /// the segments it returns. A new session starts at every gap over 1 s. Samples that would overlap audio already
     /// fed (overlapping chunks in an older archive) are skipped.
     ///
-    /// With `timeouts` (the recorder's stop path, docs/meeting-design.md §1.3, §4.6), creating a session and each
+    /// With `timeouts` (the recorder's stop path, docs/conventions.md §1.3, docs/meeting/recorder.md §4.6), creating a session and each
     /// `append` may take at most `speechFinishBase`, and each `finish` at most `speechFinish(audioSeconds:)` of the audio
     /// that session was fed. When one does not return in time, the session is cancelled.
     ///
@@ -76,7 +76,7 @@ public enum TrackReplayer {
             for chunk in chunks {
                 try Task.checkCancellation()
                 // TODO: open chunks through HolosStorage (a descriptor from the folder chain) instead of by path, so
-                // a symlink in place of `audio/<track>` is never followed (meeting-design §1.7).
+                // a symlink in place of `audio/<track>` is never followed (docs/conventions.md §1.7).
                 let file = try AVAudioFile(forReading: directory.appendingPathComponent(chunk.relativePath))
                 let sampleRate = file.processingFormat.sampleRate
                 let firstNeeded = max(from, expected ?? 0)

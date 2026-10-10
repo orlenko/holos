@@ -2,7 +2,7 @@ import Foundation
 import HolosAudio
 import HolosCore
 
-// The menu bar's meeting state machine (docs/meeting-design.md §5.8 PR4). Pure: every input is an event, every output
+// The menu bar's meeting state machine (docs/meeting/app-controls.md §5.8). Pure: every input is an event, every output
 // an effect that `MeetingController` executes or hands to the app.
 
 /// What the start panel asks the recorder to do.
@@ -20,14 +20,14 @@ public struct MeetingStartSettings: Codable, Sendable, Equatable {
     public var microphone: MicrophoneSelection? = nil
     /// The meeting's languages, as locale identifiers ("fr-CA"): the recorder transcribes live in the first
     /// (`locale`); after the recording, post-processing transcribes the audio again in each and keeps, passage
-    /// by passage, the language that fits (docs/meeting-design.md §4.14). The start panel's Language pop-up chooses
+    /// by passage, the language that fits (docs/meeting/languages.md §4.14). The start panel's Language pop-up chooses
     /// the first, "Also detect" up to two more. Empty: the recorder's default, the supported language closest to the
     /// user's (`AppleSpeechEngine.defaultLocale`), in process or as a child (`RecordingOptions(settings:…)`).
     public var locales: [String]
-    /// The start panel's "Capture screen" (docs/meeting-design.md §4.15); nil: no screen capture.
+    /// The start panel's "Capture screen" (docs/meeting/screen-context.md §4.15); nil: no screen capture.
     public var screen: ScreenCaptureTarget?
     /// The name is the one Voice is Local suggested (the start panel's untouched field, or an empty one): the Meetings
-    /// list may show a generated title instead (docs/meeting-design.md §4.17). Any name the user typed is theirs.
+    /// list may show a generated title instead (docs/meeting/titles-summaries.md §4.17). Any name the user typed is theirs.
     public var nameIsDefault = false
 
     /// The language the recorder transcribes in, or nil for the recorder's default.
@@ -144,7 +144,7 @@ public enum MeetingEffect: Sendable, Equatable {
     case clearNamingOffer(sessionID: String)
 }
 
-/// The meeting the menu bar follows: the one the app launched, or a live one it found (docs/meeting-design.md §5.8
+/// The meeting the menu bar follows: the one the app launched, or a live one it found (docs/meeting/app-controls.md §5.8
 /// "Reducer rules").
 public struct MeetingReducer: Sendable, Equatable {
     public private(set) var state: MeetingState = .idle

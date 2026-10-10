@@ -101,7 +101,7 @@ add a row when a step is split. The working rules that came out of this audit ar
 | L8 | Duplicated helpers | `InstallLock` (`WhisperModels.swift:255`, `FluidModels.swift:447`); `ProgressMeter` (Audio and Meeting); 3 one-shot gates (`OutcomeGate`, `RaceGate`, `OneShot`); flock hand-written in 11 files across 8 targets | M |
 | L9 | Dependency cycle inside Meeting | VoiceProfileService calls SpeakerEditor and SessionExports, which call back into it | M |
 | L10 | HolosAppTests depends on the executable target | 16 files `@testable import HolosApp`, so every focused test run builds the whole app | M |
-| L11 | Ownership docs are stale | `contracts.md:21-42` lists HolosCorrections and SQLite. `docs/meeting-design.md §1.1` says "HolosApp keeps AppKit views only", but the app holds scheduler logic | M |
+| L11 | Ownership docs are stale | `contracts.md:21-42` lists HolosCorrections and SQLite. `docs/conventions.md §1.1` says "HolosApp keeps AppKit views only", but the app holds scheduler logic | M |
 
 ### 1.3 CLI and app duplication [M]
 
@@ -272,23 +272,28 @@ the plan for step 2.
 
 Keep the `§N.M` numbers as headings so all 686 existing citations still resolve. Section sizes of `docs/meeting-design.md` [M]: section 3 = 1,640 lines, section 4 = 3,420, section 5 = 3,299.
 
-| New file | Sections from `docs/meeting-design.md` |
+<!-- citations: docs/meeting-design.md -->
+
+| Sections from `docs/meeting-design.md` | New file |
 |---|---|
-| `docs/conventions.md` | §1 |
-| `docs/meeting/session-format.md` | §2 and §3.4. Delete §3.1–3.3 (1,550 lines of stale code copies) |
-| `docs/meeting/recorder.md` | §4.1–4.6, §4.12 (concurrent dictation, microphone selection, vocabulary), behaviour from §5.4 |
-| `docs/meeting/retention-deletion.md` | §4.13 |
-| `docs/meeting/post-processing.md` | §4.7–4.8 |
-| `docs/meeting/speaker-labels.md` | §4.9, §5.3, §5.5 |
-| `docs/meeting/people-voice.md` | §4.10, §5.9 |
-| `docs/meeting/exports.md` | §4.11, §5.7 |
-| `docs/meeting/languages.md` | §4.14 |
-| `docs/meeting/screen-context.md` | §4.15 |
-| `docs/meeting/deep-transcription.md` | §4.16 |
-| `docs/meeting/titles-summaries.md` | §4.17 |
-| `docs/meeting/review-window.md` | §5.10 (885 lines; rewrite as behaviour) |
-| `docs/meeting/online-calls-echo.md` | §5.11 |
-| `docs/archive/meeting-plan-2026-09.md` | §0.2–0.3, §5.1–5.2, §6, §8–§10 |
+| §1 | `docs/conventions.md` |
+| §2 and §3.4. Delete sections 3.1–3.3 (1,550 lines of stale code copies) | `docs/meeting/session-format.md` |
+| §4.1–4.6, §4.12 (concurrent dictation, microphone selection, vocabulary), §5.4, §5.6 (recovery, session catalog, deletion) | `docs/meeting/recorder.md` |
+| §5.8 (menu bar meeting controls; the code cites it for behaviour) | `docs/meeting/app-controls.md` |
+| §4.13 | `docs/meeting/retention-deletion.md` |
+| §4.7–4.8 | `docs/meeting/post-processing.md` |
+| §4.9, §5.3, §5.5 | `docs/meeting/speaker-labels.md` |
+| §4.10, §5.9 | `docs/meeting/people-voice.md` |
+| §4.11, §5.7 | `docs/meeting/exports.md` |
+| §4.14 | `docs/meeting/languages.md` |
+| §4.15 | `docs/meeting/screen-context.md` |
+| §4.16 | `docs/meeting/deep-transcription.md` |
+| §4.17 | `docs/meeting/titles-summaries.md` |
+| §5.10 (885 lines; rewrite as behaviour) | `docs/meeting/review-window.md` |
+| §5.11 | `docs/meeting/online-calls-echo.md` |
+| §0, §5.1–5.2, §6–§10 (§7.2 is the hardware checklist the validation docs use), and the introductions of §4 and §5 | `docs/archive/meeting-plan-2026-09.md` |
+
+<!-- /citations -->
 
 Also:
 - Rewrite `docs/contracts.md` as the current ownership table.
@@ -360,7 +365,7 @@ All steps preserve behaviour unless marked. Sizes are non-test lines, with moved
 | # | Lane | Step | Files | Approach | Verify | Size | Status |
 |---|---|---|---|---|---|---|---|
 | 1 | D | AGENTS.md + module READMEs + size ratchet | `AGENTS.md`, `Sources/*/README.md`, `scripts/check-size.sh`, `contracts.md` | Rules from the audit; ratchet baseline | Script clean on main | about 600 docs, 0 Swift | merged (#125) |
-| 2 | D | Delete §3.1–3.3; split meeting-design | `docs/` | First PR deletes, then 2 split PRs keeping §N.M; every citation of a moved section is rewritten to its new file in the same PR | Every `docs/meeting-design.md §` citation anywhere in the repository (Sources, Tests, `AGENTS.md`, module READMEs, `docs/`) resolves to a heading in the file it names | 3 docs PRs | not started (the broken citation was fixed in #125) |
+| 2 | D | Delete §3.1–3.3; split meeting-design | `docs/` | First PR deletes, then 2 split PRs keeping §N.M; every citation of a moved section is rewritten to its new file in the same PR | Every `docs/meeting-design.md §` citation anywhere in the repository (Sources, Tests, `AGENTS.md`, module READMEs, `docs/`) resolves to a heading in the file it names | 3 docs PRs | in progress, stacked PRs (the deletion is over the size cap in one): 2a deletes sections 3.1–3.2 and adds `scripts/check-doc-citations.py`; 2a2 (stacked) hardens the checker and removes the copy and digest rules left in the plan; 2b (stacked) deletes section 3.3; 2c (stacked) moves sections 1–3, 4.1–4.13 and 5.3–5.9 into `docs/conventions.md` and `docs/meeting/`; 2d (stacked) moves sections 4.14–4.17, 5.10–5.11 and the archive, leaving `docs/meeting-design.md` as an index |
 | 3 | T | HolosTestSupport + test-target.sh | Package test targets, `Tests/HolosTestSupport` | Migrate Storage and Speakers tests first; others when touched | Same test count | about 60 non-test, about 800 test | merged (#119); HolosStorageTests moved, other targets move when touched |
 | 4 | M | Extract HolosEvaluation target | `Evaluation/*` → `Sources/HolosEvaluation`; move `EvalStore.audioFingerprint` | `git mv` whole files; widen access; CLI-only dependency | Both products build; `nm` on HolosApp shows no Cloud symbols | about 150 | merged (#127) |
 | 5 | P | `SessionPaths.folder`/`parse` + `VersionedFile<T>` | SessionPaths, TranscriptPointer, SpeakerSessionSnapshot; the 7 build and 5 parse sites | One builder and parser; unify the two schema decoders. **Changes behaviour:** the five parsers accepted different names, so one rule changes what some callers accept; pick the strictest rule that accepts all existing folders and test each caller | New parse tests | about 350 | merged (#128); the two CLI sites that still built `<id>.holos` directly (`RecordControl`, `People`) use `SessionPaths.folder` since step 7a (#130) |
@@ -369,7 +374,7 @@ All steps preserve behaviour unless marked. Sizes are non-test lines, with moved
 | 8 | R | Review file splits (moves only) | ReviewSession → Types/+Loading; TurnListView → one class per file; ReviewWindow → +Layout, SplitSheet, helper types | Moves plus access modifiers | `--color-moved` shows moves only | 3 × about 450 moved + about 60 | merged: `SplitSheet` and `TurnCellView` in their own files and `ReviewWindow+Joining` (#110); 8a `ReviewSession` types and loading (#141); 8b `TurnListView` one class per file (#142); 8c `ReviewWindow` layout and helper types (#143) |
 | 9 | R | `ReviewRevision` token + pure `ReviewJournalClaim` + `ReviewExportScheduler` | `ReviewSession`: `wordMoves`/`movesRead`, `wordsEpoch` and the labels run (`projection.runID`), the claim in `adopt`, the "Exports" section; `WordEditTarget`, `ReviewJoinRequest`, `ReviewSplitRequest`, `FailedWordEdit`; `TurnListView.onEditWords` and `onKeepWordEdit` | Bundle the 3 counters into one value (`ReviewSession.revision`, carried as `seen`); pure claim function; the export timer and its state in one type. The session's own entry points keep their `seenMoves`/`seenEpoch`/`seenRun` parameters until step 11's `submit` | New claim tests; scheduler tests | about 500 | in review (#148) |
 | 10 | R | `ReviewWordEditCoordinator` (no AppKit) | `ReviewWindow.swift` "Editing words" section (`editWords`, `trackWordChange`, `saveEdit`, `editUnsavedAgain`, `dismissUnsaved`) and "Window" section (`windowShouldClose`, `saveBeforeClose`, `keepAfterFailedClose`, `saveTypedEdit`, `beginClosing`); `ReviewClosing.swift` (`ReviewCloseGate`, `FailedWordEdit`, `ReviewCloseRecovery`, `UnsavedWordEdits`) | Pending edits, refusals and close gate behind a protocol; statics forward | Existing tests plus coordinator tests without a window | about 550 | in review (#151): `ReviewWordEditCoordinator` in HolosApp (an app-only model; its `FailedWordEdit`/`UnsavedWordEdits`/`ReviewCloseGate` stay in `ReviewClosing.swift`), the window its `ReviewWordEditHost` (`ReviewWindow+WordEdits`) |
-| 11 | R | Operation lifecycle + `mutateQueue {}`, then `submit(command, seen:)` | `Operation` (`ReviewSessionTypes.swift`); `ReviewSession` "Queue" section (`enqueue`, `queued`, `drain`, `run(_:)`), `adopt` | The six flags are not one exclusive phase: `adopt` can mark a running operation both `superseded` and `overtaken` before `finish`, and `undone` / `savedUnreloaded` are independent. Use a lifecycle enum (queued, running, finished) plus separate fields for the combinable states; one mutation helper always recomputes and notifies | The 104 word-edit and 42 session tests, plus a table test of every flag combination `adopt` and undo produce today | 2 × about 400 | 11a in review (#157): `Operation.lifecycle` (queued, running, finished) plus the combinable `undone`, `superseded`, `overtaken`, `savedUnreloaded`; `mutateQueue`; table test `ReviewSession+OperationsTests`. 11b in review (#158, stacked on 11a): the session's `editWords`, `queueWordEdit`, `split`, `splitPlace` and `TypedEdit` take `seen: ReviewRevision` instead of `seenMoves`/`seenEpoch`/`seenRun`; one `submit(_:seen:)` entry point not made |
+| 11 | R | Operation lifecycle + `mutateQueue {}`, then `submit(command, seen:)` | `Operation` (`ReviewSessionTypes.swift`); `ReviewSession` "Queue" section (`enqueue`, `queued`, `drain`, `run(_:)`), `adopt` | The six flags are not one exclusive phase: `adopt` can mark a running operation both `superseded` and `overtaken` before `finish`, and `undone` / `savedUnreloaded` are independent. Use a lifecycle enum (queued, running, finished) plus separate fields for the combinable states; one mutation helper always recomputes and notifies | The 104 word-edit and 42 session tests, plus a table test of every flag combination `adopt` and undo produce today | 2 × about 400 | 11a merged (#157): `Operation.lifecycle` (queued, running, finished) plus the combinable `undone`, `superseded`, `overtaken`, `savedUnreloaded`; `mutateQueue`; table test `ReviewSession+OperationsTests`. 11b in review (#158): the session's `editWords`, `queueWordEdit`, `split`, `splitPlace` and `TypedEdit` take `seen: ReviewRevision` instead of `seenMoves`/`seenEpoch`/`seenRun`; one `submit(_:seen:)` entry point not made |
 | 12 | W | RecordingWorkflow split + `RecorderExit` + one options mapping | RecordingWorkflow; MeetingController 32–33, 648–656; RecorderLauncher 59–78, 147–160; SessionImporter 311 | 12a moves, 12b exit owner (replaces 9 sites), 12c `MeetingVocabulary` and a single `RecordingOptions(settings:)`. **12c changes behaviour:** it removes the locale and mic divergence | Recorder tests with injected capture (`MeetingCapture`, `LiveSpeechSession` fakes); the user does a real record/stop after merge | 3 PRs: 450 moved / 450 / 200 | 12a moves (#133) and 12b `RecorderExitSequence` (#134) merged; 12c in review (#135) |
 | 13 | M | Core cleanup | 9 app-only files → HolosAppModel; Core `DictationRerun.swift` → `DictationTextPipeline.swift`; Corrections I/O → Storage. `Lexicon` stays in Core: `TranscriptFixer` (Core) builds it and takes it in its signatures, and Dictation depends on Core, so moving it would make a cycle; to drop AppKit from Core, put its `NSSpellChecker` lookup behind a protocol injected from an upper target | `git mv`, imports | Build and suite | 2 × about 300 | in review: 13a `HolosAppModel` (the 8 whole app-only files; the audit's ninth was not a whole file) and Core's `DictationTextPipeline.swift`; 13b (stacked on 13a) `corrections.json` I/O and `FolderWatcher` into HolosStorage, and `NSSpellChecker` behind Core's `SpellChecking` in a new HolosSpelling target that the app and `voiceislocal` install at launch |
 | 14 | A | BackgroundJobCoordinator | +DeepTranscription 176–487, +EchoCatchUp 63–287; then +MeetingSummary 146–372 and MeetingController 673–735 | One coordinator: lock probe, holds, preemption, retry, order; **add tests in the same PR** (none today) | Coordinator tests with a fake runner, including post-meeting job order; the user checks the order in the app after merge | 2 × about 800 | 14a merged: `BackgroundJobCoordinator` and final transcripts (#139), the echo catch-up (#140); 14b in review (#146): summaries on it. MeetingController's relabel stays on its own scheduler: it takes no lock and runs beside the jobs, so one-at-a-time would change it |

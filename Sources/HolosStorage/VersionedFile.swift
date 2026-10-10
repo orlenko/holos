@@ -13,7 +13,7 @@ extension ValidatedDecodable {
     public func validate(file: String) throws {}
 }
 
-/// One versioned JSON file format, read as schema rule 3 says (docs/meeting-design.md §1.6): at most `maxBytes` of a
+/// One versioned JSON file format, read as schema rule 3 says (docs/conventions.md §1.6): at most `maxBytes` of a
 /// regular file, never a link (`AtomicFile.readIfPresent`); a `schemaVersion` above `current` refused before the
 /// whole file is decoded (`SchemaVersion.decode`), so a newer file is `unavailable` even when it uses values this build
 /// does not know; then decoded with `HolosJSON` and `validate`d. A file over `maxBytes`, a version below 1, data that
@@ -56,7 +56,7 @@ extension Transcript: ValidatedDecodable {}
 extension MeetingInfo: ValidatedDecodable {}
 extension PostProcessingRecord: ValidatedDecodable {}
 
-/// Schema rule 3 (docs/meeting-design.md §1.6): a reader refuses a file from a newer Holos.
+/// Schema rule 3 (docs/conventions.md §1.6): a reader refuses a file from a newer Holos.
 ///
 /// Each file type has its own current version, so raising one (for example runs to 2) never makes the
 /// other files, or older lines of the edit journal, unreadable. Readers accept `1...current`.

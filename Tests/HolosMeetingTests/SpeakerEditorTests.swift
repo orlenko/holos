@@ -6,7 +6,7 @@ import HolosStorage
 import HolosTestSupport
 import Testing
 
-// SpeakerEditor (docs/meeting-design.md §4.9, §5.7): compare-and-append edits, undo, and export regeneration.
+// SpeakerEditor (docs/meeting/speaker-labels.md §4.9, docs/meeting/exports.md §5.7): compare-and-append edits, undo, and export regeneration.
 // Fixture text is synthetic ("systemt1w1", …); failures print IDs and counts only.
 
 private func editorJournal(_ session: URL) throws -> [SpeakerEdit] {
@@ -716,7 +716,7 @@ private func tearJournal(_ session: URL) throws {
     #expect(earlier.merging(SpeakerSnapshotDiagnostics(session: session)) == earlier)
 }
 
-// MARK: - Same name, same person (docs/meeting-design.md §4.9)
+// MARK: - Same name, same person (docs/meeting/speaker-labels.md §4.9)
 
 /// Appends `actions` as an editor without the same-name rule did: each line with its fingerprint, no merges added.
 func appendWithoutJoining(_ actions: [SpeakerEditAction], session: URL) throws {

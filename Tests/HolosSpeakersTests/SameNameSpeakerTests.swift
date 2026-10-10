@@ -4,7 +4,7 @@ import HolosCore
 import HolosTestSupport
 @testable import HolosSpeakers
 
-// Same name, same person (docs/meeting-design.md §4.9, "Speakers with the same name"). Names are made up.
+// Same name, same person (docs/meeting/speaker-labels.md §4.9, "Speakers with the same name"). Names are made up.
 
 // MARK: - Fixture
 

@@ -5,7 +5,7 @@ import HolosSpeakers
 import Testing
 @testable import HolosApp
 
-/// The review player's audio mix (docs/meeting-design.md §5.10): the microphone's echo-free volume is on the player
+/// The review player's audio mix (docs/meeting/review-window.md §5.10): the microphone's echo-free volume is on the player
 /// item when the playback has one, and nothing otherwise. A composition of empty tracks; nothing is played, and no
 /// audio goes out.
 @MainActor

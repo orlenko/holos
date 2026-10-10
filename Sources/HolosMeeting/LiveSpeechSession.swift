@@ -10,7 +10,7 @@ public protocol LiveSpeechSession: Sendable {
 
 extension AppleSpeechSession: LiveSpeechSession {}
 
-/// Creates one speech session. `contextualStrings` is the meeting vocabulary (docs/meeting-design.md §4.12);
+/// Creates one speech session. `contextualStrings` is the meeting vocabulary (docs/meeting/recorder.md §4.12);
 /// `onUpdate` receives volatile and final results from any thread.
 public typealias LiveSpeechFactory = @Sendable (_ locale: String, _ backend: SpeechBackend,
     _ contextualStrings: [String],

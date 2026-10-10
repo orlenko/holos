@@ -3,7 +3,7 @@ import HolosCore
 @testable import HolosSpeakers
 import Testing
 
-// Exports of a transcript merged from several languages (docs/meeting-design.md §4.14): the Markdown header names
+// Exports of a transcript merged from several languages (docs/meeting/languages.md §4.14): the Markdown header names
 // them, the JSON export names each turn's, and the text carries no language marks.
 
 private let languageExportDate = Date(timeIntervalSince1970: 1_790_172_000)

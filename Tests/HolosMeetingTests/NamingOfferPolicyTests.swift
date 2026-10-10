@@ -3,7 +3,7 @@ import HolosCore
 @testable import HolosMeeting
 import Testing
 
-// The "Name Speakers" offer, derived from saved state (docs/meeting-design.md §5.8).
+// The "Name Speakers" offer, derived from saved state (docs/meeting/app-controls.md §5.8).
 
 private let offerNow = Date(timeIntervalSince1970: 1_790_000_000)
 

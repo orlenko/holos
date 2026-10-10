@@ -1,7 +1,7 @@
 # People and voice profiles: manual validation
 
 These are manual acceptance steps on the user's Mac, not checks the automated suite performs
-(docs/meeting-design.md §7.2, PR10). Record the date, the Voice is Local build, and the result under each
+(docs/archive/meeting-plan-2026-09.md §7.2, PR10). Record the date, the Voice is Local build, and the result under each
 check. Voiceprints are biometric data about the people in a recording: only remember the voices of
 people who agreed to it, and use your own voice or willing colleagues for these checks.
 

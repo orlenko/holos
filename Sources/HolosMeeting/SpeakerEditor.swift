@@ -24,12 +24,12 @@ public struct SpeakerEditResult: Sendable {
     }
 }
 
-/// The only writer of a session's speaker edit journal for people's edits (docs/meeting-design.md §4.9, §5.7): the
+/// The only writer of a session's speaker edit journal for people's edits (docs/meeting/speaker-labels.md §4.9, docs/meeting/exports.md §5.7): the
 /// CLI now, the review window later. A real compare-and-append: the caller passes the projection it showed the user
 /// (`view`), and a batch made on a view that no longer matches the session is refused, writing nothing, instead of
 /// editing a different turn or overwriting a newer name.
 ///
-/// Locking (§1.7): the journal is appended under the session's speaker lock, which is held only to read the head and
+/// Locking (docs/conventions.md §1.7): the journal is appended under the session's speaker lock, which is held only to read the head and
 /// the journal, compare, and append (milliseconds). The run and its transcript are immutable files, so they are read
 /// before the lock is taken. Exports are regenerated after the lock is released (they take it themselves).
 public enum SpeakerEditor {
@@ -53,7 +53,7 @@ public enum SpeakerEditor {
     ///   the newer changes first).
     /// - Names in `rename` and `newSpeaker` are saved as `cleanName` returns them (one line, no control
     ///   characters), so every name can be typed back as the exports show it.
-    /// - Same name, same person (docs/meeting-design.md §4.9): same-named speakers are only shown as one; nothing is
+    /// - Same name, same person (docs/meeting/speaker-labels.md §4.9): same-named speakers are only shown as one; nothing is
     ///   merged automatically. The batch saved is `fanningOut(actions)` worked out under the lock on the current
     ///   labels (not on `view`, which may not show another window's speaker of the same name): an edit of a speaker
     ///   shown joined also made to each stored speaker it shows. The lines it adds carry the current fingerprints; the
@@ -66,12 +66,12 @@ public enum SpeakerEditor {
     /// - A head run that cannot be used (missing or damaged, or its transcript is) refuses the edit (`unavailable`).
     /// - Once the lines are appended, a failure to load the result or to regenerate the exports throws
     ///   `HolosError.incomplete` saying the change was saved.
-    /// - With `profiles` (PR10), the result's `needsSampleRefresh` says whether the batch changed what a person's
+    /// - With `profiles`, the result's `needsSampleRefresh` says whether the batch changed what a person's
     ///   voice sample from this meeting is built from (the speakers linked to them and those speakers' qualifying
     ///   turns); the caller then awaits `VoiceProfileService.refreshSamples(session:extractor:store:)`. Without it,
     ///   `needsSampleRefresh` is false.
     /// - `requirePeople` (with `profiles`) maps each person this batch links to the name it is saving for them.
-    ///   In one locked step right before the append (§1.7 order: this speaker lock, then `profiles.lock`), each
+    ///   In one locked step right before the append (docs/conventions.md §1.7 order: this speaker lock, then `profiles.lock`), each
     ///   must still be in the store under that name; then they are marked used and no longer provisional. A person
     ///   another window forgot or merged away is refused with `unavailable` instead of being linked to by nobody,
     ///   and so is one another window renamed, because the batch's lines and the caller's view were both made from

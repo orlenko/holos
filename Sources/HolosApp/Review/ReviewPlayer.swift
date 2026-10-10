@@ -4,7 +4,7 @@ import HolosMeeting
 import HolosStorage
 import os
 
-/// Plays a meeting's saved audio in the review window (docs/meeting-design.md §5.10): from a time (a turn's
+/// Plays a meeting's saved audio in the review window (docs/meeting/review-window.md §5.10): from a time (a turn's
 /// timestamp, a word), play/pause, seeking, a speed, and a speaker's sample clips one after the other. Playing from a
 /// time goes on through the meeting until paused or the audio ends; only sample clips stop by themselves. The audio
 /// is a `SessionAudioComposition` of the chunk files, built off the main actor when the window opens; nothing is

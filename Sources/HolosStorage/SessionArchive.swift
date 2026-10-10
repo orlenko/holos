@@ -66,7 +66,7 @@ public struct EventJournal: Sendable, Equatable {
     }
 }
 
-/// When the archive fsyncs `events.jsonl` (docs/meeting-design.md §4.3).
+/// When the archive fsyncs `events.jsonl` (docs/meeting/recorder.md §4.3).
 public enum JournalSync: Sendable, Equatable {
     /// Every event is fsync'd before `recordEvent` returns (the default).
     case everyEvent
@@ -424,7 +424,7 @@ public actor SessionArchive {
     }
 
     /// Saves an immutable transcript revision without making it current: one transcription of the session in another
-    /// language, kept so the merged transcript can be made from it again (docs/meeting-design.md §4.14). An archive
+    /// language, kept so the merged transcript can be made from it again (docs/meeting/languages.md §4.14). An archive
     /// saved before `transcripts/current.json` existed first gets the pointer, naming the revision that is current
     /// now, so the new revision never becomes current by being the newest. Refuses an existing revision, and an
     /// archive with no current transcript (the new revision would be the only one, and so current).
@@ -510,7 +510,7 @@ public actor SessionArchive {
         manifest = updated
     }
 
-    /// Replaces the meeting's name in the manifest, keeping its status (a rename, docs/meeting-design.md §4.17;
+    /// Replaces the meeting's name in the manifest, keeping its status (a rename, docs/meeting/titles-summaries.md §4.17;
     /// maintenance only: a finished archive opened with `openForMaintenance`). The name must not be blank.
     public func setName(_ name: String) throws {
         try ensureOpen()
@@ -670,7 +670,7 @@ public actor SessionArchive {
         return EventJournal(events: events, tornTail: torn, unreadableLines: unreadable)
     }
 
-    /// The ID of the current transcript revision (docs/meeting-design.md §2.4): the one named by
+    /// The ID of the current transcript revision (docs/meeting/session-format.md §2.4): the one named by
     /// `transcripts/current.json`, else, for archives saved before the pointer existed, the revision with the
     /// newest `createdAt`. Nil when the archive has no transcript.
     public nonisolated static func currentTranscriptID(at directory: URL) throws -> String? {

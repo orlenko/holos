@@ -4,7 +4,7 @@ import HolosSpeakers
 import HolosStorage
 import os
 
-/// The review window's model (docs/meeting-design.md §5.10): one meeting's speaker labels, edited through
+/// The review window's model (docs/meeting/review-window.md §5.10): one meeting's speaker labels, edited through
 /// `SpeakerEditor` and `VoiceProfileService`, with the window's undo, playback clips, previews, and search. No AppKit.
 ///
 /// Edits are optimistic and serial. Each change is shown at once in `projection` (`SpeakerProjection.applying` on
@@ -20,7 +20,7 @@ import os
 /// is saved at once. Nothing here logs transcript text, names, or voice data.
 ///
 /// With `analyseVoices`, the window also works out every turn's voice once, in the background, into an in-memory
-/// `MeetingVoiceCache` (docs/meeting-design.md §4.10, "Voices within one meeting"): it serves voice learning, and
+/// `MeetingVoiceCache` (docs/meeting/people-voice.md §4.10, "Voices within one meeting"): it serves voice learning, and
 /// `voiceMatches` compares the meeting's unnamed speakers and turns with the people named in it.
 ///
 /// Invariants:
@@ -64,7 +64,7 @@ import os
         didSet { checks.removeAll() }
     }
     /// Review's "Show Short Interjections": the turn list and Next Uncertain show the short interjections
-    /// `projection.shownTurns` leaves out (docs/meeting-design.md §5.10). The exports never show them.
+    /// `projection.shownTurns` leaves out (docs/meeting/review-window.md §5.10). The exports never show them.
     public var showsShortInterjections = false
     /// The turns the window lists, in time order: `projection.shownTurns`, with the hidden interjections when
     /// `showsShortInterjections`.
@@ -1193,7 +1193,7 @@ import os
         "(restore of deleted words, segment \(segmentID))"
     }
 
-    /// Replaces shown words with `text` (docs/meeting-design.md §5.10, "Editing words"): `words` are consecutive words
+    /// Replaces shown words with `text` (docs/meeting/review-window.md §5.10, "Editing words"): `words` are consecutive words
     /// of one segment, all shown in one turn (never a word the echo mask hides); `text` may have more or fewer words,
     /// or none (a deletion). Publishes new transcript revisions and a speaker head with every speaker edit carried
     /// over; one undo takes it back. What it teaches is learned when the window closes, if it is still there. Returns
@@ -1626,7 +1626,7 @@ import os
 
     /// `session diarize <path> --keep-transcript [--force] [--min-speakers N] [--others-in-room | --no-others-in-room]
     /// --json`. The review window's relabels label the speakers of the transcript under review: `--keep-transcript`
-    /// keeps a meeting's languages from being detected again (docs/meeting-design.md §4.14), which would transcribe
+    /// keeps a meeting's languages from being detected again (docs/meeting/languages.md §4.14), which would transcribe
     /// the meeting again and replace that transcript.
     nonisolated static func relabelArguments(session: URL, force: Bool, minimumSpeakers: Int?,
                                              othersInRoom: Bool?) -> [String] {

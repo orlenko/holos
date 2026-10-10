@@ -1,7 +1,7 @@
 import Foundation
 import HolosCore
 
-/// "Same name, same person" (docs/meeting-design.md §4.9, "Speakers with the same name"): within one meeting, two
+/// "Same name, same person" (docs/meeting/speaker-labels.md §4.9, "Speakers with the same name"): within one meeting, two
 /// speakers whose names compare equal under `key(_:)` are shown as one speaker, unless the journal links them to two
 /// or more different people (then they are those people, shown apart).
 ///

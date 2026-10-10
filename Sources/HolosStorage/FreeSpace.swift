@@ -2,7 +2,7 @@ import Foundation
 import Darwin
 import HolosCore
 
-/// Free space on a volume, injectable for tests (docs/meeting-design.md §4.5).
+/// Free space on a volume, injectable for tests (docs/meeting/recorder.md §4.5).
 public protocol FreeSpaceProvider: Sendable {
     /// Bytes available to this user on the volume that holds `url`. A path that does not exist yet is
     /// measured on the volume of its nearest existing ancestor.

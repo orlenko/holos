@@ -5,7 +5,7 @@ import HolosSpeakers
 /// Who an edit names as a turn's speaker: a listed speaker, or the unknown speaker.
 public enum SpeakerTarget: Sendable, Equatable { case speaker(String), unknown }
 
-/// Resolves what a user typed for a speaker, a turn, or a time against one projection (docs/meeting-design.md §5.7).
+/// Resolves what a user typed for a speaker, a turn, or a time against one projection (docs/meeting/exports.md §5.7).
 /// Every CLI edit command resolves its selectors against the projection it then passes to `SpeakerEditor` as the
 /// view, so a relabel in between is refused rather than applied to a different turn.
 ///

@@ -22,7 +22,7 @@ public final class DeferredSamples: Sendable {
     public var linkedPeople: Set<String>? { state.withLock { $0 } }
 }
 
-/// People and their voices (docs/meeting-design.md §4.10, PR10). The only code that writes profiles and samples.
+/// People and their voices (docs/meeting/people-voice.md §4.10). The only code that writes profiles and samples.
 ///
 /// Enrollment is asynchronous and the extractor is injected: its real implementations live in
 /// HolosDiarization (CLI) or spawn the bundled `voiceislocal` (app), and HolosMeeting cannot import FluidAudio.

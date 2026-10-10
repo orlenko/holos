@@ -7,7 +7,7 @@ import HolosTestSupport
 import Synchronization
 import Testing
 
-// Live transcription of one track (docs/meeting-design.md §2.3, §4.6).
+// Live transcription of one track (docs/meeting/session-format.md §2.3, docs/meeting/recorder.md §4.6).
 
 /// Events a live track journals, and a way to hold the journal back like a stalled disk.
 private final class LiveEventLog: Sendable {

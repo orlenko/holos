@@ -22,7 +22,7 @@ the library so the app and tests can use it.
 **Depends on:** every library except HolosDesktop, including HolosDiarization, HolosWhisper and HolosEvaluation
 (of the products, only this target links them). ArgumentParser, FoundationModels (`doctor`, `session summarize`).
 
-**Conventions** (`docs/meeting-design.md §1.4`)
+**Conventions** (`docs/conventions.md §1.4`)
 - Stdout carries content and `--json` output; progress and messages go to stderr.
 - Exit codes: `0` success; `1` failure; `3` the command did its main job but with a warning (for `record`: audio
   saved, but an automatic stop or post-processing partial or failed; `session` commands such as `import`,

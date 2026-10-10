@@ -2,7 +2,7 @@ import Foundation
 import HolosCore
 
 /// What the evidence requirement of the word rule (`AcousticEchoMask.isEcho`, `wordRuleVersion` 2,
-/// docs/meeting-design.md §5.11) changes in one call's labels, against the rule before it
+/// docs/meeting/online-calls-echo.md §5.11) changes in one call's labels, against the rule before it
 /// (`AcousticEchoMask.countingEveryLocalFrame()`): counts only, for `voiceislocal session echo-label-stats`. It holds
 /// no transcript text, names or word times, so it can be printed and shared.
 public struct EchoLabelStats: Sendable, Equatable, Encodable {

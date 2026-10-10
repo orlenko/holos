@@ -32,7 +32,7 @@ protocol ReviewWordEditHost: AnyObject {
     func closeWindow()
 }
 
-/// The Review window's word edits once the field hands them over (docs/meeting-design.md §5.10, "Editing words"):
+/// The Review window's word edits once the field hands them over (docs/meeting/review-window.md §5.10, "Editing words"):
 /// each one queued and followed until it saves (`track`), refused edits opened again or kept with what was typed
 /// (`unsaved`), and a close by hand that saves them all first (`shouldClose`). No AppKit; the window is its `host`.
 ///

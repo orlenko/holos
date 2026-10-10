@@ -8,7 +8,7 @@ import HolosStorage
 import Testing
 @testable import HolosWhisper
 
-// Opt-in probe (docs/meeting-design.md §4.16): HOLOS_DEEP_PIECE_SESSION=<a copy of a .holos folder>, with the model
+// Opt-in probe (docs/meeting/deep-transcription.md §4.16): HOLOS_DEEP_PIECE_SESSION=<a copy of a .holos folder>, with the model
 // installed (HOLOS_WHISPER_MODELS_DIR), cuts one track (HOLOS_DEEP_PIECE_TRACK, default system) into pieces as the
 // pass does, transcribes the piece holding HOLOS_DEEP_PIECE_AT seconds with the prompt of a local run
 // (HOLOS_DEEP_PIECE_RUN, its run.json `prompt`; none without), and prints each chunk's start, length, and word counts

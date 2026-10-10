@@ -5,7 +5,7 @@ import HolosCore
 import HolosTestSupport
 @testable import HolosSpeakers
 
-// Acoustic microphone echo in calls (docs/meeting-design.md §5.11): EchoAnalysis on synthetic signals only, the mask's
+// Acoustic microphone echo in calls (docs/meeting/online-calls-echo.md §5.11): EchoAnalysis on synthetic signals only, the mask's
 // word rule and playback intervals, and the projection that hides the echo (stored runs never hold it).
 
 // MARK: - Synthetic call

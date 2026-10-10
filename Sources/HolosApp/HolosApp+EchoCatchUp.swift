@@ -4,7 +4,7 @@ import HolosMeeting
 import HolosStorage
 import os
 
-/// The echo catch-up in the app (docs/meeting-design.md §5.11, "Catching up in the app"): calls recorded before the
+/// The echo catch-up in the app (docs/meeting/online-calls-echo.md §5.11, "Catching up in the app"): calls recorded before the
 /// acoustic echo analysis existed, or whose analysis failed, get `voiceislocal session echo-analyze` in the background,
 /// newest first, one meeting at a time. The queue (`EchoCatchUpJobs`, `meeting.echo`) is read from the meetings' files
 /// at launch and after each meeting is saved, never saved; `BackgroundJobCoordinator` runs it. No setting: it takes

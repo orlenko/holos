@@ -4,7 +4,7 @@ import HolosMeeting
 import HolosSpeakers
 import Testing
 
-// The review's paragraphs (docs/meeting-design.md §5.10): consecutive turns of one speaker shown as one row. Pure;
+// The review's paragraphs (docs/meeting/review-window.md §5.10): consecutive turns of one speaker shown as one row. Pure;
 // synthetic turns. Edits on paragraphs saved and undone through ReviewSession are in ReviewSessionTests.
 
 /// A turn of `speaker` (nil: unknown) from `start` to `end`, with one span of `words` words in segment `id`.

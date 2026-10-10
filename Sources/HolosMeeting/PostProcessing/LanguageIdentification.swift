@@ -3,7 +3,7 @@ import HolosCore
 import NaturalLanguage
 
 /// `LanguageMerge.Scorer` over Apple's `NLLanguageRecognizer`, constrained to the candidates' languages
-/// (docs/meeting-design.md §4.14). On device; no text leaves the process. One instance serves one merge, from one task:
+/// (docs/meeting/languages.md §4.14). On device; no text leaves the process. One instance serves one merge, from one task:
 /// the recognizer is reset for every text.
 final class NaturalLanguageScorer {
     private let recognizer = NLLanguageRecognizer()

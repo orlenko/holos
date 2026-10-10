@@ -3,7 +3,7 @@
 Durable files: the session folder (`<id>.holos`), its locks, and the global stores under Application Support.
 
 **Owns**
-- Paths inside a session: `SessionPaths` (one function per file; `docs/meeting-design.md §2.1`), plus
+- Paths inside a session: `SessionPaths` (one function per file; `docs/meeting/session-format.md §2.1`), plus
   `ScreenContextStore`'s `screen/` paths.
 - Session folder names (`SessionFolderNames.swift`): `SessionPaths.folder(for:in:)` / `folderName(for:)` build
   `<id>.holos`; `parse(folderName:)` reads the ID back only from an `<uppercase UUID>.holos` name, the only form
@@ -32,7 +32,7 @@ Durable files: the session folder (`<id>.holos`), its locks, and the global stor
 
 **Depends on:** HolosCore. Darwin, Synchronization, CryptoKit, AudioToolbox.
 
-**Invariants** (`docs/meeting-design.md §1.6`, `docs/meeting-design.md §1.7`)
+**Invariants** (`docs/conventions.md §1.6`, `docs/conventions.md §1.7`)
 - This target writes its data files through `AtomicFile`: a write is atomic (temporary file, fsync, rename, folder
   fsync). A failed append tries to truncate back to the old size, but if that truncation fails too it only logs
   and rethrows, and a crash mid-append can also leave a partial line, so every journal reader tolerates a torn
@@ -44,7 +44,7 @@ Durable files: the session folder (`<id>.holos`), its locks, and the global stor
 - Locks are `flock`, one open file description per holder, **not re-entrant**. Waited-on locks are taken in the
   order speakers → profiles. `…Locked` functions document "caller holds the … lock".
 - HolosStorage opens folders inside a session through `AtomicFile.openFolder`, which follows no symbolic link
-  (threat model: `docs/meeting-design.md §1.7`). One listing by path remains: `SessionDeletion` lists
+  (threat model: `docs/conventions.md §1.7`). One listing by path remains: `SessionDeletion` lists
   `eval/review` with `FileManager`, then removes through `removeTree`. Code outside this target that opens session
   files by path (such as `AVAudioFile` readers) does not get this guarantee.
 - Whole-file readers refuse a `schemaVersion` newer than they know (`VersionedFile`, `SchemaVersion.decode`, the

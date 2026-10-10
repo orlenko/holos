@@ -7,7 +7,7 @@ import HolosStorage
 import HolosTestSupport
 import Testing
 
-// The post-processor's `languages` stage and `voiceislocal session languages` (docs/meeting-design.md §4.14), on
+// The post-processor's `languages` stage and `voiceislocal session languages` (docs/meeting/languages.md §4.14), on
 // generated audio with scripted speech and a scripted language scorer; no speech assets.
 //
 // The fixture meeting is 20 s long: English for 9 s, then French for 9 s. The recording's transcript is English

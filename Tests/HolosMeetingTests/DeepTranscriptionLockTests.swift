@@ -4,7 +4,7 @@ import HolosCore
 @testable import HolosMeeting
 import Testing
 
-// The lock the deep transcription pass holds for its whole life (docs/meeting-design.md §4.16, "App"). Each open
+// The lock the deep transcription pass holds for its whole life (docs/meeting/deep-transcription.md §4.16, "App"). Each open
 // file description holds its own flock, so one process can play both sides.
 
 private func lockFile() throws -> (URL, URL) {

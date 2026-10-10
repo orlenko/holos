@@ -6,7 +6,7 @@ import HolosSpeakers
 import HolosStorage
 import os
 
-/// What the deep transcription pass uses outside the session folder (docs/meeting-design.md §4.16): the local model
+/// What the deep transcription pass uses outside the session folder (docs/meeting/deep-transcription.md §4.16): the local model
 /// and the prompt's sources. `none` (the default everywhere in HolosMeeting) has no model; the command-line tool
 /// passes WhisperKit's (`HolosWhisper`), and tests pass fakes.
 public struct DeepTranscriptionDependencies: Sendable {
@@ -38,7 +38,7 @@ public struct DeepTranscriptionDependencies: Sendable {
         wordList: { [] }, names: { [] })
 }
 
-/// The deep transcription pass of the post-processor, stage `deepTranscription` (docs/meeting-design.md §4.16), run
+/// The deep transcription pass of the post-processor, stage `deepTranscription` (docs/meeting/deep-transcription.md §4.16), run
 /// only when asked for by name (`voiceislocal session deep-transcribe`, the app's queue after a meeting): every
 /// track's saved audio is rendered to 16 kHz (long gaps shortened, as for speaker labels) and transcribed again with a
 /// local Whisper model, prompted with the meeting's name, the word list, and people's names; the segments are mapped

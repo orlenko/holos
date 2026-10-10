@@ -3,7 +3,7 @@ import Testing
 import HolosCore
 @testable import HolosSpeakers
 
-// MeetingVoiceMatcher (docs/meeting-design.md §4.10, "Voices within one meeting"), on synthetic runs and embeddings.
+// MeetingVoiceMatcher (docs/meeting/people-voice.md §4.10, "Voices within one meeting"), on synthetic runs and embeddings.
 
 // MARK: - Fixture
 

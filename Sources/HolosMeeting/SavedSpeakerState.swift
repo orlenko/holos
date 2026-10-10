@@ -4,7 +4,7 @@ import HolosStorage
 
 /// The files that hold a session's speaker labels, read and validated one way for both the catalog
 /// (`SessionCatalog.speakerLabels`) and recovery (`SessionRecoveryCommand.currentLabels`), so the two never disagree
-/// about whether the saved labels can be used (docs/meeting-design.md §5.6).
+/// about whether the saved labels can be used (docs/meeting/recorder.md §5.6).
 ///
 /// Reads postprocess.json (versioned, and of this session) and speakers/head.json. When a head exists, the labels are
 /// usable exactly when `SpeakerSessionSnapshot.load`, the loader the exports and speaker commands use, loads the

@@ -1,7 +1,7 @@
 import Foundation
 import HolosCore
 
-/// How close two voices of one meeting must be for the review window to say so (docs/meeting-design.md §4.10,
+/// How close two voices of one meeting must be for the review window to say so (docs/meeting/people-voice.md §4.10,
 /// "Voices within one meeting"). Cosine distances between speech-weighted mean turn embeddings of the same pass.
 public struct MeetingVoiceThresholds: Sendable, Equatable {
     /// A speaker whose voice is this close to a named person's voice in the same meeting is suggested as them.
@@ -127,7 +127,7 @@ public struct MeetingVoiceMatches: Sendable, Equatable {
     }
 }
 
-/// Compares the voices of one meeting's speakers with the people named in it (docs/meeting-design.md §4.10, "Voices
+/// Compares the voices of one meeting's speakers with the people named in it (docs/meeting/people-voice.md §4.10, "Voices
 /// within one meeting"). Pure: the turn embeddings come from the review window's in-memory cache, and nothing here
 /// is stored.
 ///

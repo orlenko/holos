@@ -2,7 +2,7 @@ import Foundation
 import HolosCore
 import HolosSpeakers
 
-/// One row of the review's turn list (docs/meeting-design.md §5.10): consecutive turns of one speaker, read as one
+/// One row of the review's turn list (docs/meeting/review-window.md §5.10): consecutive turns of one speaker, read as one
 /// paragraph. It is only how the turns are shown: edits still name its turns, which it lists in time order.
 public struct ReviewParagraph: Sendable, Equatable, Identifiable {
     /// Never empty.
@@ -167,7 +167,7 @@ public struct ReviewParagraphBreaks: Sendable, Equatable {
     }
 }
 
-/// How the review shows turns as paragraphs (docs/meeting-design.md §5.10). Pure.
+/// How the review shows turns as paragraphs (docs/meeting/review-window.md §5.10). Pure.
 ///
 /// A turn joins the paragraph before it when it has the same speaker and starts less than `gapSeconds` after the
 /// latest end of the paragraph's turns; an unknown speaker's turns join only on the same track (as in the exports), so

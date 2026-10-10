@@ -6,7 +6,7 @@ import HolosStorage
 import Synchronization
 
 extension Session {
-    /// `voiceislocal session echo-analyze` (docs/meeting-design.md §5.11).
+    /// `voiceislocal session echo-analyze` (docs/meeting/online-calls-echo.md §5.11).
     struct EchoAnalyze: AsyncParsableCommand {
         static let configuration = CommandConfiguration(
             commandName: "echo-analyze",
@@ -30,7 +30,7 @@ extension Session {
         mutating func run() async throws {
             let session = try SessionLocator.resolve(path)
             // Under the background-job lock for its whole life, as final transcripts and summaries: one job at a time
-            // on this Mac, also across an app relaunch (docs/meeting-design.md §5.11).
+            // on this Mac, also across an app relaunch (docs/meeting/online-calls-echo.md §5.11).
             let request = SessionEchoAnalyzeCommand.Request(session: session, force: force,
                                                             jobLock: DeepTranscriptionLock.url)
             // Ctrl-C or SIGTERM (the app, when a meeting starts) stops it; the next run finishes what was left.

@@ -3,7 +3,7 @@ import Foundation
 import HolosMeeting
 
 extension Session {
-    /// `voiceislocal session echo-label-stats` (hidden; docs/meeting-design.md §5.11).
+    /// `voiceislocal session echo-label-stats` (hidden; docs/meeting/online-calls-echo.md §5.11).
     struct EchoLabelCounts: ParsableCommand {
         static let configuration = CommandConfiguration(
             commandName: "echo-label-stats",

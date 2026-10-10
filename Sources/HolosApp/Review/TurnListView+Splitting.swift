@@ -36,7 +36,7 @@ final class SplitChoice: NSObject {
     init(_ request: ReviewSplitRequest) { self.request = request }
 }
 
-/// Splitting a turn where its words are (docs/meeting-design.md §5.10): in edit mode, Return with the caret at the
+/// Splitting a turn where its words are (docs/meeting/review-window.md §5.10): in edit mode, Return with the caret at the
 /// start of the field's words and nothing changed splits the turn before them (at the end: after them); outside it, a
 /// word's context menu offers Split Turn Here. The place is the word as the list showed it, with the word moves and
 /// words epoch it was chosen under: the window has the review find where it is now (`resolveSplit`), so a word edit

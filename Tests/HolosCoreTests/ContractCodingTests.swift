@@ -2,7 +2,7 @@ import Foundation
 import Testing
 @testable import HolosCore
 
-// Contract coding tests (docs/meeting-design.md §3). The JSON examples below are copied verbatim from §3.4.
+// Contract coding tests (docs/meeting/session-format.md §3). The JSON examples below are copied verbatim from §3.4.
 
 @Test func openCodesDecodeUnknownValues() throws {
     let stages = try HolosJSON.decoder().decode([PostProcessingStage].self, from: Data(#"["minutes"]"#.utf8))

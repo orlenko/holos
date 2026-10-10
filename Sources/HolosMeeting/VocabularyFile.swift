@@ -2,7 +2,7 @@ import Foundation
 import HolosCore
 import HolosStorage
 
-/// The vocabulary hand-off file the app writes for `voiceislocal record start --vocabulary-file` (docs/meeting-design.md
+/// The vocabulary hand-off file the app writes for `voiceislocal record start --vocabulary-file` (docs/meeting/recorder.md
 /// §4.12).
 public enum VocabularyFile {
     /// Reads the vocabulary from `url` and deletes the file, since it holds private names: once it is opened and

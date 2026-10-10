@@ -1,7 +1,7 @@
 # Meeting recording: manual validation
 
 These are manual acceptance steps on the user's Mac, not checks the automated suite performs
-(docs/meeting-design.md §7.2). Each check names its hardware-checklist ID. Record the date, the
+(docs/archive/meeting-plan-2026-09.md §7.2). Each check names its hardware-checklist ID. Record the date, the
 Voice is Local build, and the result under each check. Use short private test recordings first; recording
 other people requires the notice or consent your situation calls for.
 
@@ -127,7 +127,7 @@ process); **Cancel** changes nothing. A meeting started with `voiceislocal recor
 not recorded by Voice is Local in either mode, so quitting during it offers all three buttons, as in child
 mode.
 
-Pass: each choice behaves as docs/meeting-design.md §5.8 says.
+Pass: each choice behaves as docs/meeting/app-controls.md §5.8 says.
 
 Result: Pending.
 
@@ -162,7 +162,7 @@ Result: Pending.
 
 ### Meeting languages: French and English in one meeting
 
-docs/meeting-design.md §4.14. Use a real meeting where people switch between French and English,
+docs/meeting/languages.md §4.14. Use a real meeting where people switch between French and English,
 some of them within a turn, at least 10 minutes long, with the consent it needs.
 
 1. Open the start panel. Set Language to French (Canada) and, under **Also detect**, check English

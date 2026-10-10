@@ -5,7 +5,7 @@ import HolosMeeting
 import HolosStorage
 
 extension Session {
-    /// `voiceislocal session list` (docs/meeting-design.md §5.6).
+    /// `voiceislocal session list` (docs/meeting/recorder.md §5.6).
     struct List: ParsableCommand {
         static let configuration = CommandConfiguration(
             abstract: "List sessions, newest first, with their state, saved audio, size, and speaker labels.",

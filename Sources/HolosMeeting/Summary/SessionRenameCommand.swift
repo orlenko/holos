@@ -103,7 +103,7 @@ public enum MeetingRenameRun {
     }
 }
 
-/// `voiceislocal session rename` and the Meetings list's Rename… (docs/meeting-design.md §4.17): gives a finished
+/// `voiceislocal session rename` and the Meetings list's Rename… (docs/meeting/titles-summaries.md §4.17): gives a finished
 /// meeting the user's name (`MeetingNameSource.user`, which no generated title replaces), or gives it back its
 /// generated title (`default`, the name Voice is Local made up). The name is the manifest's; where it came from is
 /// meeting.json's `nameSource`. Then the transcript files are rewritten, so the Markdown heading follows, without the

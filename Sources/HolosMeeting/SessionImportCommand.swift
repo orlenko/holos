@@ -3,7 +3,7 @@ import HolosCore
 import HolosSpeakers
 import HolosStorage
 
-/// What `voiceislocal session import` does (docs/meeting-design.md §5.5 PR7c), as a library call: the CLI parses its
+/// What `voiceislocal session import` does (docs/meeting/speaker-labels.md §5.5), as a library call: the CLI parses its
 /// arguments, prints, and handles signals; the import, the labelling under the import's lease, and the exit status
 /// are tested here (as `SessionDiarizeCommand` is for `voiceislocal session diarize`).
 public enum SessionImportCommand {
@@ -17,7 +17,7 @@ public enum SessionImportCommand {
         public var transcribe: Bool
         /// Label speakers after the import; ignored without `transcribe`.
         public var postprocess: Bool
-        /// The meeting's languages, `locale` first, when there are several (docs/meeting-design.md §4.14): recorded in
+        /// The meeting's languages, `locale` first, when there are several (docs/meeting/languages.md §4.14): recorded in
         /// meeting.json, and post-processing merges the transcript from one transcription in each. Empty: `locale`
         /// only.
         public var languages: [String]

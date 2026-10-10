@@ -1,7 +1,7 @@
 import Foundation
 import HolosCore
 
-/// One effective word with its speaker label (docs/meeting-design.md §5.3, alignment steps 1–4).
+/// One effective word with its speaker label (docs/meeting/speaker-labels.md §5.3, alignment steps 1–4).
 public struct AlignedWord: Sendable, Equatable {
     public let ref: WordRef
     public let track: String

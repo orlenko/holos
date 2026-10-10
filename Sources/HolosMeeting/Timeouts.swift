@@ -1,7 +1,7 @@
 import Foundation
 import Synchronization
 
-/// Limits on the platform awaits of the stop path (docs/meeting-design.md §4.6), so a hung capture stop or speech
+/// Limits on the platform awaits of the stop path (docs/meeting/recorder.md §4.6), so a hung capture stop or speech
 /// finish never keeps a recording from being saved.
 public struct StopTimeouts: Sendable, Equatable {
     /// Stopping capture: 5 s.
@@ -87,7 +87,7 @@ public func waitAtMost(_ limit: Duration, for task: Task<Void, Never>) async -> 
 }
 
 /// A deadline that may be set after the waits it limits have begun: the stop deadline of a live track's `finish()`,
-/// which also cuts short the session finishes already running (docs/meeting-design.md §4.6).
+/// which also cuts short the session finishes already running (docs/meeting/recorder.md §4.6).
 public final class SharedDeadline: Sendable {
     private struct State {
         var instant: ContinuousClock.Instant?

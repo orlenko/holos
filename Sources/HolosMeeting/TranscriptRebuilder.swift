@@ -27,7 +27,7 @@ public struct RebuildReport: Sendable, Equatable {
 }
 
 /// Rebuilds the transcript of an interrupted session from the phrases live transcription journaled
-/// (`transcriptFinalized` events), and transcribes only the audio they do not cover (docs/meeting-design.md §5.6).
+/// (`transcriptFinalized` events), and transcribes only the audio they do not cover (docs/meeting/recorder.md §5.6).
 public enum TranscriptRebuilder {
     private static let log = Logger(subsystem: "ca.orlenko.holos.app", category: "recorder")
     /// Audio that ends no more than this after a track's coverage is not transcribed again.
@@ -292,9 +292,9 @@ public enum TranscriptRebuilder {
     }
 
     /// The transcript that stands for `transcriptID` in the rebuild's bookkeeping: for a transcript merged from the
-    /// meeting's languages (docs/meeting-design.md §4.14; its `languagesDetected` event names it), the recorded
+    /// meeting's languages (docs/meeting/languages.md §4.14; its `languagesDetected` event names it), the recorded
     /// transcript it was merged from (`base`), which the merge replaced as current without undoing the rebuild; for a
-    /// deep transcript (§4.16, or one fixed from it), the recorded transcript it replaced (its `deepTranscribed`
+    /// deep transcript (docs/meeting/deep-transcription.md §4.16, or one fixed from it), the recorded transcript it replaced (its `deepTranscribed`
     /// event's `base`), each followed back again through any further merges and deep transcripts; else
     /// `transcriptID` itself, or for a transcript whose words were fixed (`WordFixStage`) the one it was fixed from.
     static func recordedTranscriptID(_ transcriptID: String, events: [ArchiveEvent]) -> String {
@@ -313,7 +313,7 @@ public enum TranscriptRebuilder {
         return recordedTranscriptID(base, events: events, seen: seen)
     }
 
-    /// Whether `transcriptID` is a transcript merged from the meeting's languages (docs/meeting-design.md §4.14) that
+    /// Whether `transcriptID` is a transcript merged from the meeting's languages (docs/meeting/languages.md §4.14) that
     /// holds all of the saved audio: its `languagesDetected` event names a `base` (the rebuild's transcript), and each
     /// `source.<language>` is a transcription of the saved audio (`languagePass`) made after the last recovery, or the
     /// base itself, which the stage lets stand in only when it leaves no audio out. Such a merge re-transcribed the
@@ -441,7 +441,7 @@ public enum TranscriptRebuilder {
     }
 }
 
-/// The phrases live transcription journaled, per track (docs/meeting-design.md §4.6 `LiveTrack`).
+/// The phrases live transcription journaled, per track (docs/meeting/recorder.md §4.6 `LiveTrack`).
 struct JournalTranscript {
     /// `transcriptFinalized` events in journal order, exact duplicates `(track, start, end, text)` dropped. Events with
     /// `words` keep their timed words and `segmentID`; older events give untimed segments.

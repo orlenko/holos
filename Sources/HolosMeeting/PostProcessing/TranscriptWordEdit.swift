@@ -4,7 +4,7 @@ import HolosSpeakers
 
 /// How a word edit (or its undo) moved a segment's words: `replaced`, word indices before it, became `replacement`;
 /// words after them shift by the difference, words before stay. The review's edit field follows its words through
-/// these, since a merged or untimed word's time and text may change (docs/meeting-design.md §5.10, "Editing words").
+/// these, since a merged or untimed word's time and text may change (docs/meeting/review-window.md §5.10, "Editing words").
 public struct ReviewWordMove: Sendable, Equatable {
     public var segmentID: String
     public var replaced: Range<Int>
@@ -31,7 +31,7 @@ public struct ReviewWordMove: Sendable, Equatable {
     }
 }
 
-/// The pure part of editing words in Review (docs/meeting-design.md §5.10, "Editing words"): a run of words of one
+/// The pure part of editing words in Review (docs/meeting/review-window.md §5.10, "Editing words"): a run of words of one
 /// segment replaced by any text, made both in the current transcript and in the unfixed base it was fixed from, so
 /// automatic word fixes made again later keep it. The edit is a word fix of kind `reviewEdit`, whose `heard` is what
 /// the recognizer wrote over the whole edited span. Nothing here reads or writes files (`SessionWordEdit` publishes).
@@ -353,7 +353,7 @@ public enum TranscriptWordEdit {
                       labelsMove: labelsMove, holdsDeleted: deleted == true)
     }
 
-    /// Every word of segment `index` of `current` deleted (docs/meeting-design.md §5.10, "Editing words"): the segment
+    /// Every word of segment `index` of `current` deleted (docs/meeting/review-window.md §5.10, "Editing words"): the segment
     /// stays, with its ID and times, but with no text, words, or fixes, and what it held is kept beside it
     /// (`TranscriptSegment.removed`) so an undo or a Restore brings it back exactly. Made in the unfixed revision too
     /// (`current.fixedFrom`, `base`), with the words that one holds there, so automatic word fixes made again later keep
@@ -678,7 +678,7 @@ public enum TranscriptWordEdit {
         "Words corrected while the meeting was recording cannot be edited here yet.")
 
     /// An edit refused because its segment has an automatic word fix saved by an earlier version whose replaced words
-    /// cannot be told (docs/meeting-design.md §5.10, "Editing words").
+    /// cannot be told (docs/meeting/review-window.md §5.10, "Editing words").
     public static let olderFix = HolosError.invalidInput(
         "This segment has a word fix made by an earlier version of Voice is Local, which edits cannot work around yet. "
             + "Its words were not changed.")

@@ -2,7 +2,7 @@ import CoreML
 import Foundation
 @preconcurrency import WhisperKit
 
-/// Whisper's timestamp rules for a decoding that starts with a prompt (docs/meeting-design.md §4.16).
+/// Whisper's timestamp rules for a decoding that starts with a prompt (docs/meeting/deep-transcription.md §4.16).
 ///
 /// WhisperKit 1.1.0's `TimestampRulesFilter`, for a multilingual model, looks for the `<|transcribe|>` token among the
 /// first three tokens to know where sampling begins, and applies no rule at all when it is not there. With a prompt

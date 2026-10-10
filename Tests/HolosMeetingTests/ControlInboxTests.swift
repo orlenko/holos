@@ -5,7 +5,7 @@ import HolosStorage
 import HolosTestSupport
 import Testing
 
-// The recorder's side of control/ (docs/meeting-design.md §4.1).
+// The recorder's side of control/ (docs/meeting/recorder.md §4.1).
 
 private struct InboxFolder {
     let temp: TemporaryDirectory

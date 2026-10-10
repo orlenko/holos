@@ -8,7 +8,7 @@ import Synchronization
 import Testing
 
 // Opt-in (HOLOS_SPEECH_FIXTURE=1): installed speech assets, no microphone. Checks with real speech that rebased
-// speech sessions give absolute word times (docs/meeting-design.md §2.3, review finding C6), whether SpeechAnalyzer
+// speech sessions give absolute word times (docs/meeting/session-format.md §2.3, review finding C6), whether SpeechAnalyzer
 // reports times from the AVAudioTime it is given or from its first buffer.
 
 private let speechFixtureEnabled = ProcessInfo.processInfo.environment["HOLOS_SPEECH_FIXTURE"] == "1"

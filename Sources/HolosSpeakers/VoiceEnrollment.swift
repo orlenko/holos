@@ -16,7 +16,7 @@ public struct TurnRef: Codable, Sendable, Equatable {
     }
 }
 
-/// Voice samples from confirmed speakers (docs/meeting-design.md §4.10, "Enrollment"). Pure: the embeddings come from
+/// Voice samples from confirmed speakers (docs/meeting/people-voice.md §4.10, "Enrollment"). Pure: the embeddings come from
 /// a `VoiceSampleExtractor` (HolosMeeting), which is asked only about the turns `candidateTurns` returns.
 public enum VoiceEnrollment {
     /// Turns shorter than this never qualify.

@@ -1,7 +1,7 @@
 import Foundation
 import HolosCore
 
-/// Which actions the Meetings window offers for the selected meeting (docs/meeting-design.md §5.8). Each rule is the
+/// Which actions the Meetings window offers for the selected meeting (docs/meeting/app-controls.md §5.8). Each rule is the
 /// one the command behind the button applies, so a button is never enabled for a meeting its command refuses, nor
 /// disabled for one its command would repair. Pure.
 public enum MeetingActionPolicy {
@@ -119,7 +119,7 @@ public enum MeetingActionPolicy {
     /// `voiceislocal session diarize` labels the meeting: its speaker state is none, notLabelled, failed, or
     /// interrupted, or (for labelled speakers too) a language of a meeting in several was missed and can be detected
     /// now (`LanguageWork.ready`: `session diarize` detects it first, also without speaker models,
-    /// docs/meeting-design.md §4.14); it has a readable transcript and its audio, and it is not an interrupted
+    /// docs/meeting/languages.md §4.14); it has a readable transcript and its audio, and it is not an interrupted
     /// recording (Recover rebuilds and labels that). Speaker files that cannot be read (`unreadable`) are left to
     /// Recover.
     public static func labels(_ summary: SessionSummary) -> Bool {
