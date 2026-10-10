@@ -55,8 +55,7 @@ extension ReviewSession.TypedEdit {
     /// The open field's edit (`TurnListView.takeOpenWordEdit`) as the review takes it at a pause or a close: checked
     /// against the revision its field opened under.
     init(_ open: (words: [ReviewWord], text: String, seen: ReviewRevision)) {
-        self.init(words: open.words.map(\.ref), text: open.text, seenMoves: open.seen.moves,
-                  expected: open.words.map(\.shown), seenEpoch: open.seen.wordsEpoch)
+        self.init(words: open.words.map(\.ref), text: open.text, seen: open.seen, expected: open.words.map(\.shown))
     }
 }
 

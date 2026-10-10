@@ -19,9 +19,8 @@ extension ReviewWindow: ReviewWordEditHost {
 
     func saveTypedEdit(_ edit: ReviewWordEditCoordinator.OpenEdit,
                        committed: @escaping (ReviewWordEdit) -> Void) async throws {
-        _ = try await review.editWords(edit.words.map(\.ref), to: edit.text, seenMoves: edit.seen.moves,
-                                       whileUnread: true, expecting: edit.words.map(\.shown),
-                                       seenEpoch: edit.seen.wordsEpoch, committed: committed)
+        _ = try await review.editWords(edit.words.map(\.ref), to: edit.text, seen: edit.seen, whileUnread: true,
+                                       expecting: edit.words.map(\.shown), committed: committed)
     }
 
     func wordChangeFailed() {

@@ -175,7 +175,8 @@ Exist today:
   (HolosMeeting; the checks run under the writer and speaker locks, then one write order and its repair).
 - Exports: `SessionExports.regenerate(session:people:)`. Reading files: `ExclusivePublisher.publish`.
 - What the Review window showed when the person acted (word moves followed, words epoch, labels run):
-  `ReviewRevision`, from `ReviewSession.revision`. Edit fields, splits and joins carry it as one value; do not add
+  `ReviewRevision`, from `ReviewSession.revision`. Edit fields, splits and joins carry it as one value, and the
+  session's `editWords`, `queueWordEdit`, `split`, `splitPlace` and `TypedEdit` take it as `seen`; do not add
   another loose counter beside it.
 - Logging: `Logger(subsystem: "ca.orlenko.holos.app", category: …)`; categories and privacy rules in
   `docs/conventions.md §1.5`.
