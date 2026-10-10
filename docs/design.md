@@ -1264,7 +1264,7 @@ words with the on-device model:
    for the transcript a fixed one stands for, so a later fix keeps answering them.
 9. *Known race (shared with the languages stage and `fix-words --force`).* A speaker edit
    saved to the old head while the new transcript's speakers are being labelled is an edit
-   of the replaced labels: names carry over, turn-level changes do not (§4.14 step 6).
+   of the replaced labels: names carry over, turn-level changes do not (docs/meeting/languages.md §4.14 step 6).
 
 ### Deep transcription after meetings
 

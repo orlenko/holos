@@ -39,19 +39,31 @@ root is no file, and a region or a file to check that lies there is a problem. F
 - a path whose first folder is a top-level folder of the repository (`docs/...`, `Sources/...`): from the root;
 - any other path: from the citing file's folder.
 
-A `§<N.M>` with no file named before it in its paragraph is bare and is not checked: it names a section of the file
-it appears in, or, in older code comments, of the meeting design, whose section numbers are unique. Between the
-lines `<!-- citations: <file>.md -->` and `<!-- /citations -->` of a Markdown file (outside fenced code; regions
-nest, the innermost counts, and each must be closed), a bare `§<N.M>` cites that file (from the repository root). It
-resolves to a heading of that file or, when that file is an index, to a heading of the file its table maps the
-number to: a row names `§<N.M>`, or a range `§<N.M>–<N.K>` that holds it, and the first cell after it with a link
-has exactly one (inline or by reference); a number not listed is looked up by its parents: `§0.2` by `§0`.
+A `§<N.M>` with no file named before it in its paragraph is bare. In a Markdown file under `docs/` it names a
+section of that file and must resolve to one of its own headings. Elsewhere (code comments, AGENTS.md) a bare
+`§<N.M>` is not checked; in older code comments it names a section of the meeting design, whose section numbers are
+unique. Between the lines `<!-- citations: <file>.md -->` and `<!-- /citations -->` of a Markdown file (outside
+fenced code; regions nest, the innermost counts, and each must be closed), a bare `§<N.M>` cites that file (from the
+repository root). It resolves to a heading of that file or, when that file is an index, to a heading of the file its
+table maps the number to: a row names `§<N.M>`, or a range `§<N.M>–<N.K>` that holds it, and the first cell after it
+with a link has exactly one (inline or by reference); a number not listed is looked up by its parents: `§0.2` by
+`§0`.
+
+In Markdown files under `docs/`, outside fenced code (where paths are examples), every file a link or a path names
+must exist, with or without a section after it, except files whose name is in NOT_DOCS: files that are not docs of
+this repository (a module's `README.md`, the root `TRADEMARKS.md`, a session's `exports/transcript.md`, a model's
+`NOTICE.md`), named plainly or under one of NOT_DOC_FOLDERS; any other path with a folder must exist. The index
+`docs/meeting-design.md` wraps its table in a citations region of itself, so each row's numbers must be headings of
+the file that same row links to. Inline HTML comments (`<!-- ... -->` after text on a line) are not read, in prose
+or in rows.
 
 Prints each problem as `file:line: ...` and a summary; exits 1 when there is any.
 """
 
+import fnmatch
 import os
 import re
+import string
 import subprocess
 import sys
 
@@ -60,7 +72,7 @@ SUFFIXES = (".swift", ".md", ".sh", ".py")
 SELF = "scripts/check-doc-citations.py"
 
 REFERENCE = re.compile(r"^ {0,3}\[(?P<label>(?:[^\[\]\\]|\\.)+)\]:[ \t]*(?:<(?P<angle>[^<>\n]*)>|(?P<plain>\S+))")
-PATH = re.compile(r"(?<![\w./:>-])(?P<path>(?:\.{1,2}/)*[A-Za-z0-9_][A-Za-z0-9_./-]*\.md)(?![\w/-])")
+PATH = re.compile(r"(?<![\w./:>-])(?P<path>(?:\.{1,2}/)*\.?[A-Za-z0-9_][A-Za-z0-9_./-]*\.md)(?![\w/-])")
 HEADING = re.compile(r"^ {0,3}#{1,6}[ \t]+(.*?)[ \t#]*$")
 # A fence's container: up to 3 spaces, then block quote markers and list markers, each with the spaces after it.
 FENCE_OPEN = re.compile(
@@ -69,6 +81,16 @@ FENCE_CLOSE = re.compile(r"^(?P<lead>[ \t>]*)(?P<marks>`{3,}|~{3,})[ \t]*$")
 REGION_OPEN = re.compile(r"^[ \t]*<!--[ \t]*citations:[ \t]*(?P<path>\S+\.md)[ \t]*-->[ \t]*$")
 REGION_CLOSE = re.compile(r"^[ \t]*<!--[ \t]*/citations[ \t]*-->[ \t]*$")
 # A section number or a range of them: `§4.1`, `§4.1–4.6`, `§4.1-§4.6`, `§8–§10`.
+# File names that docs mention but that are not docs of this repository, so need not resolve from the doc.
+NOT_DOCS = (
+    "README.md", "AGENTS.md", "CLAUDE.md", "TRADEMARKS.md", "THIRD_PARTY_NOTICES.md",  # root and module files
+    "NOTICE.md", "PROVENANCE.md", "*-LICENSE.md",  # files inside downloaded model packages
+    "transcript.md", "edited-*.md", "summary.md", "report.md",  # session exports and evaluation reports
+    "GettingStarted.md", "SpeakerManager.md", "Benchmarks.md",  # FluidAudio's own documentation
+)
+# Folders whose files are not docs of this repository: a session's exports, local evaluation output, and folders
+# of FluidAudio's repository.
+NOT_DOC_FOLDERS = ("exports/", ".local/", "Documentation/", "ThirdPartyLicenses/")  # the last two: FluidAudio's
 SECTION_RUN = re.compile(r"§(\d+(?:\.\d+)*)(?:[–-]§?(\d+(?:\.\d+)*))?(?!\d)")
 LIST_ITEM = re.compile(r"^[ \t]*(?:[-*+]|\d+[.)])[ \t]+")
 QUOTE_PREFIX = re.compile(r"^(?:[ \t]{0,3}>[ \t]?)+")
@@ -286,15 +308,68 @@ def sections(text):
     return found
 
 
+def line_kind(line):
+    """A line's kind on its own, as if outside fenced code and HTML comments: (kind, content, inner, quote depth).
+    `content` is the line without its block quote markers, `inner` without its block quote and list markers."""
+    quote = QUOTE_PREFIX.match(line)
+    content = line[quote.end():] if quote else line
+    container = CONTAINER_PREFIX.match(line)
+    inner = line[container.end():] if container else line
+    depth = quote.group(0).count(">") if quote else 0
+    if opens(line):
+        kind = "fence"
+    elif REGION_OPEN.match(inner) or REGION_CLOSE.match(inner):
+        kind = "marker"
+    elif re.match(r"^ {0,3}<!--", inner):
+        kind = "html"
+    elif not content.strip():
+        kind = "blank"
+    elif HEADING.match(content):
+        kind = "heading"
+    else:
+        kind = "text"
+    return kind, content, inner, depth
+
+
+def breaks_paragraph(kind, content, quotes, depth):
+    """Whether a line ends the paragraph before it (at block quote depth `depth`): any kind but text (a fence, HTML
+    comment, region marker, blank line, heading or table row), a list item, or a block quote line at another depth.
+    `markdown_paragraphs` and the code-span lookahead in `classify` both split paragraphs with it."""
+    return kind != "text" or LIST_ITEM.match(content) is not None or bool(quotes and quotes != depth)
+
+
 def classify(lines):
     """The one reading of a Markdown file's lines that every pass uses: ([(kind, content, quote depth, region)],
     problems). `content` is the line without its block quote markers. Kinds: "fence" (a fence line), "code" (inside
-    fenced code), "html" (an HTML comment block, after any block quote and list markers; it runs to the line holding
-    `-->`), "marker" (a `<!-- citations: ... -->` or `<!-- /citations -->` line), "blank", "heading", "row" (a table
-    row: a header row followed by a delimiter row, that delimiter row, and the rows after it), "text". `region` is the
-    path of the innermost open citations region (regions nest; an unclosed region or a stray close is a problem).
-    Nothing inside fenced code or an HTML comment is a marker, a heading, a row or a reference definition."""
-    infos, problems, stack, fence, comment = [], [], [], None, False
+    fenced code), "html" (an HTML comment block, after any block quote and list markers, or the lines after a line
+    that leaves an inline comment open; it runs to the line holding `-->`, and text after the `-->` on that line is
+    read as a text line with the comment part blanked), "marker" (a `<!-- citations: ... -->` or `<!-- /citations
+    -->` line), "blank", "heading", "row" (a table row: a header row followed by a delimiter row, that delimiter
+    row, and the rows after it), "text". `region` is the path of the innermost open citations region (regions nest;
+    an unclosed region or a stray close is a problem). Nothing inside fenced code or an HTML comment is a marker, a
+    heading, a row or a reference definition."""
+    infos, problems, stack, fence, comment, span, table = [], [], [], None, False, 0, False
+
+    def delimiter_after(index, quotes):
+        """Whether the line after `lines[index]` is a table delimiter row at the same block quote depth."""
+        if index + 1 >= len(lines):
+            return False
+        kind, content, _, depth = line_kind(lines[index + 1])
+        return kind == "text" and depth == quotes and TABLE_DELIMITER.match(content) is not None
+
+    def closes_later(after, run, depth):
+        """Whether a code span's run of `run` backticks closes on a later line of the paragraph that holds line
+        `after`, the paragraph ending where `breaks_paragraph` says (a table row is a paragraph of its own)."""
+        for index in range(after, len(lines)):
+            kind, content, _, quotes = line_kind(lines[index])
+            if kind == "text" and "|" in content and (TABLE_DELIMITER.match(content) or delimiter_after(index, quotes)):
+                kind = "row"
+            if breaks_paragraph(kind, content, quotes, depth):
+                return False
+            if backtick_run(run).search(content):
+                return True
+        return False
+
     for number, line in enumerate(lines, 1):
         quote = QUOTE_PREFIX.match(line)
         content = line[quote.end():] if quote else line
@@ -305,7 +380,14 @@ def classify(lines):
             kind = "fence" if closes(line, fence) else "code"
             fence = None if kind == "fence" else fence
         elif comment:
-            kind, comment = "html", "-->" not in content
+            if "-->" in content:
+                # The comment ends here; what follows `-->` on the line is read (the comment part is blanked).
+                end = content.index("-->")
+                comment = False
+                kind = "text" if content[end + 3:].strip() else "html"
+                content = " " * end + content[end:] if kind == "text" else content
+            else:
+                kind = "html"
         elif opens(line):
             kind, fence = "fence", opens(line)
         elif REGION_OPEN.match(inner):
@@ -318,13 +400,23 @@ def classify(lines):
             else:
                 problems.append((number, "<!-- /citations --> with no region open"))
         elif re.match(r"^ {0,3}<!--", inner):
-            kind, comment = "html", "-->" not in inner[inner.index("<!--") + 4:]
+            end = inner.find("-->", inner.index("<!--") + 4)
+            comment = end < 0
+            kind = "text" if end >= 0 and inner[end + 3:].strip() else "html"
         elif not content.strip():
             kind = "blank"
         elif HEADING.match(content):
             kind = "heading"
         else:
             kind = "text"
+        table = kind == "text" and "|" in content and (table or delimiter_after(number - 1, depth))
+        if kind in ("text", "heading"):
+            single = kind == "heading" or table
+            later = (lambda run: False) if single else (lambda run: closes_later(number, run, depth))
+            comment, span = opens_comment(content, 0 if single else span, later)
+            span = 0 if single else span
+        else:
+            span = 0
         infos.append([kind, content, depth, stack[-1][0] if stack and kind != "marker" else None])
     problems += [(number, f"<!-- citations: {path} --> is never closed") for path, number in stack]
     table = False
@@ -352,7 +444,8 @@ def markdown_paragraphs(lines):
             paragraphs.append(current)
         current = []
 
-    for number, (line, (kind, content, quotes, _)) in enumerate(zip(lines, infos), 1):
+    for number, (raw, (kind, content, quotes, _)) in enumerate(zip(lines, infos), 1):
+        line = raw[:len(raw) - len(content)] + content
         if kind == "code":
             if content.strip():
                 current.append((number, line))
@@ -362,15 +455,12 @@ def markdown_paragraphs(lines):
         if kind in ("fence", "html", "marker", "blank"):
             flush()
             continue
-        if quotes and quotes != depth:
+        if breaks_paragraph(kind, content, quotes, depth):
             flush()
         depth = quotes
         if kind in ("heading", "row"):
-            flush()
             paragraphs.append([(number, line)])
         else:
-            if LIST_ITEM.match(content):
-                flush()
             current.append((number, line))
     flush()
     return paragraphs
@@ -483,8 +573,8 @@ def has_section(texts, number):
     return any(pattern.match(text) for text in texts)
 
 
-def resolve(tree, cited, citing, link):
-    """The repository path of a named file, or None when it does not exist."""
+def candidate(tree, cited, citing, link):
+    """Where a named file would be, normalized; it may lie outside the repository."""
     here = os.path.dirname(citing)
     if link and cited.startswith("/"):
         candidate = cited.lstrip("/")
@@ -494,16 +584,88 @@ def resolve(tree, cited, citing, link):
         candidate = cited
     else:
         candidate = os.path.join(here, cited)
-    candidate = os.path.normpath(candidate)
-    return candidate if inside(candidate) and tree.isfile(candidate) else None
+    return os.path.normpath(candidate)
+
+
+def resolve(tree, cited, citing, link):
+    """The repository path of a named file, or None when it does not exist."""
+    path = candidate(tree, cited, citing, link)
+    return path if inside(path) and tree.isfile(path) else None
+
+
+def backtick_run(n):
+    return re.compile(r"(?<!`)" + "`" * n + r"(?!`)")
+
+
+def inline_scan(text, span=0, closes_later=lambda n: False):
+    """The one scan of inline Markdown for HTML comments and code spans, which `opens_comment` and
+    `without_comments` share: ([(start, end or None while still open)] of each inline comment, the length of a code
+    span's backtick run left open at the end). A backslash-escaped punctuation character is text: `\\<!--` opens no
+    comment and `` \\` `` no code span. Inside a comment, as in CommonMark, backslashes are text, and `-->` ends it.
+    `span` is the run an earlier line of the paragraph left open; `closes_later(n)` says whether a run of `n`
+    backticks closes on a later line of the paragraph (a run that never closes is literal backticks)."""
+    comments, j = [], 0
+    if span:
+        match = backtick_run(span).search(text)
+        if not match:
+            return comments, span
+        j = match.end()
+    while j < len(text):
+        if text[j] == "\\" and j + 1 < len(text) and text[j + 1] in string.punctuation:
+            j += 2
+            continue
+        if text[j] == "`":
+            run = len(text[j:]) - len(text[j:].lstrip("`"))
+            match = backtick_run(run).search(text, j + run)
+            if match:
+                j = match.end()
+            elif closes_later(run):
+                return comments, run
+            else:
+                j += run
+            continue
+        if text.startswith("<!--", j):
+            end = text.find("-->", j + 4)
+            if end < 0:
+                comments.append((j, None))
+                return comments, 0
+            comments.append((j, end + 3))
+            j = end + 3
+            continue
+        j += 1
+    return comments, 0
+
+
+def opens_comment(text, span=0, closes_later=lambda n: False):
+    """Read one line of a paragraph (`inline_scan`): (whether it leaves an inline HTML comment open at its end, the
+    length of a code span's backtick run it leaves open)."""
+    comments, run = inline_scan(text, span, closes_later)
+    return bool(comments) and comments[-1][1] is None, run
+
+
+def without_comments(text):
+    """`text` with its inline HTML comments (`inline_scan`) blanked out, offsets and line breaks kept, so a
+    commented-out link, path or section is not read."""
+    out = list(text)
+    for start, end in inline_scan(text)[0]:
+        end = len(text) if end is None else end
+        out[start:end] = [c if c == "\n" else " " for c in text[start:end]]
+    return "".join(out)
+
+
+def link_file(dest):
+    """The file part of a link destination: without its query string or fragment."""
+    return re.split(r"[?#]", dest, maxsplit=1)[0]
 
 
 def tokens(text, in_docs, refs):
-    """The files named and the sections cited in one paragraph, in order: (offset, kind, value, is a link)."""
+    """The files named and the sections cited in one paragraph, in order: (offset, kind, value, is a link). Inline
+    HTML comments are not read."""
+    text = without_comments(text)
     found, spans = [], []
     for start, end, label_start, label_end, dest in links(text, refs):
         spans.append((start, end))
-        dest = dest.split("#", 1)[0]
+        dest = link_file(dest)
         if dest.endswith(".md") and "://" not in dest:
             found.append((start, "file", dest, True))
     for match in PATH.finditer(text):
@@ -538,10 +700,11 @@ def row_cells(line):
 def row_sections(line, refs):
     """The section numbers of an index row with the `.md` links they map to: [(number, offset, [destinations])].
     A number maps to the links of the first cell after its own that has any; a well-formed row has exactly one."""
+    line = without_comments(line)
     cells = row_cells(line)
     dests = []
     for start, end in cells:
-        found = [link[4].split("#", 1)[0] for link in links(line[start:end], refs)]
+        found = [link_file(link[4]) for link in links(line[start:end], refs)]
         dests.append([dest for dest in found if dest.endswith(".md") and "://" not in dest])
     rows = []
     for number, offset in sections(line):
@@ -585,9 +748,21 @@ def region_resolves(tree, rel, number, cache):
     return False
 
 
+def must_exist(cited, link):
+    """Whether a file a doc names must exist: a link, a path with a folder outside NOT_DOC_FOLDERS, or a plain name
+    not in NOT_DOCS."""
+    if link:
+        return True
+    cited = re.sub(r"^(?:\.\.?/)+", "", os.path.normpath(cited))  # the artifact path, after any relative prefix
+    folder, name = os.path.split(cited)
+    if folder and not cited.startswith(NOT_DOC_FOLDERS):
+        return True
+    return not any(fnmatch.fnmatchcase(name, pattern) for pattern in NOT_DOCS)
+
+
 def root_form(tree, cited):
     """Whether a path is written from the repository root (`docs/...`, `Sources/...`)."""
-    return "/" in cited and not cited.startswith(".") and tree.isdir(cited.split("/", 1)[0])
+    return "/" in cited and not cited.startswith(("./", "../")) and tree.isdir(cited.split("/", 1)[0])
 
 
 def check(paths, tree):
@@ -613,6 +788,7 @@ def check(paths, tree):
         refs = references(text) if markdown else {}
         paragraphs = markdown_paragraphs(lines) if markdown else source_paragraphs(lines, rel.endswith(".swift"))
         for paragraph in paragraphs:
+            fenced = markdown and infos[paragraph[0][0] - 1][0] == "code"
             joined = "\n".join(line for _, line in paragraph)
             starts = []
             offset = 0
@@ -626,9 +802,17 @@ def check(paths, tree):
             named = None
             if "§" not in joined and not (in_docs and ".md" in joined):
                 continue
-            for position, kind, value, link in tokens(joined, in_docs, refs):
+            found = tokens(joined, in_docs, refs)
+            for position, kind, value, link in found:
                 if kind == "file":
-                    named = (value, resolve(tree, value, rel, link), link)
+                    named = (value, resolve(tree, value, rel, link), link, False)
+                    if in_docs and not fenced and named[1] is None:
+                        if not inside(candidate(tree, value, rel, link)):
+                            problems.append(f"{rel}:{line_of(position)}: {value}: outside the repository")
+                            named = (value, None, link, True)
+                        elif must_exist(value, link):
+                            problems.append(f"{rel}:{line_of(position)}: {value}: no such file")
+                            named = (value, None, link, True)
                     continue
                 if named is None:
                     region = region_of.get(line_of(position))
@@ -639,17 +823,33 @@ def check(paths, tree):
                             problems.append(f"{rel}:{line_of(position)}: {region} §{value}: outside the repository")
                         elif not tree.isfile(target):
                             problems.append(f"{rel}:{line_of(position)}: {region} §{value}: no such file")
+                        elif target == rel:
+                            # A row of an index's own table: its numbers are headings of the one file linked in the
+                            # first cell after the number's own cell that has a link.
+                            dests = {offset: found for _, offset, found in row_sections(joined, refs)}[position]
+                            row = resolve(tree, dests[0], rel, True) if len(dests) == 1 else None
+                            if len(dests) != 1:
+                                problems.append(f"{rel}:{line_of(position)}: §{value}: its row has {len(dests)} links "
+                                                f"in the cell after it, not one")
+                            elif row is None or not has_section(headings(tree, row, cache), value):
+                                problems.append(f"{rel}:{line_of(position)}: §{value}: no heading {value} in "
+                                                f"{row or dests[0]}, the file its row links to")
                         elif not region_resolves(tree, target, value, cache):
                             problems.append(f"{rel}:{line_of(position)}: {region} §{value}: no heading {value} in "
                                             f"{target} or the file its index maps it to")
+                    elif in_docs:
+                        count += 1
+                        if not has_section(headings(tree, rel, cache), value):
+                            problems.append(f"{rel}:{line_of(position)}: §{value}: no heading {value} in this file")
                     continue
                 count += 1
-                cited, target, linked = named
+                cited, target, linked, reported = named
                 if not linked and not root_form(tree, cited):
                     problems.append(f"{rel}:{line_of(position)}: {cited} §{value}: cite by the path from the repository "
                                     f"root (AGENTS.md)")
                 if target is None:
-                    problems.append(f"{rel}:{line_of(position)}: {cited} §{value}: no such file")
+                    if not reported:
+                        problems.append(f"{rel}:{line_of(position)}: {cited} §{value}: no such file")
                 elif not has_section(headings(tree, target, cache), value):
                     problems.append(f"{rel}:{line_of(position)}: {cited} §{value}: no heading {value} in {target}")
     return count, problems
@@ -663,11 +863,14 @@ SELF_TEST_FILES = {
     "docs/sub/b.md": "# B\n\n## 1.1 One\n",
     "docs/spec.md": "# Spec\n\n## 1.2 Two\n\n> ## 1.4 A heading in a block quote\n",
     "docs/conventions.md": "# Conventions\n\n### 1.7 Locks\n",
-    "docs/meeting-design.md": "# Index\n\n## 1.3 Concurrency\n\n§4.1 is in another file.\n",
+    "docs/meeting-design.md": "# Index\n\n## 1.3 Concurrency\n",
     "link-target.md": "[design](docs/a.md) §1.3 resolves; [design](docs/a.md) §3.2 does not.\n",
     "link-text.md": "[docs/a.md](missing.md) §4.10 and [docs/a.md §1.3](missing.md) cite the destination.\n",
     "link-chain.md": "[Concurrency §1.3](docs/meeting-design.md), §3.2\n",
     "wrapped-label.swift": "/// [docs/meeting-design.md\n/// §1.3](missing.md)\n",
+    "link-query.md": "[spec](missing.md?raw=1) §1.2 is checked; [spec](docs/spec.md?plain=1#two) §1.2 resolves.\n",
+    "docs/escape.md": "Recordings go to ../../exports/transcript.md, which is outside.\n",
+    "docs/dotdir.md": "See .github/missing.md and ../.github/missing.md.\n",
     "link-forms.md": '[label](<docs/spec.md>) §1.2 and [label](docs/spec.md "title") §1.2, §9.1\n',
     "qualifier.swift": "// docs/conventions.md §1.7 rule 4, §4.1\n",
     "wrapped.swift": "/// (docs/a.md §1.3\n/// and §3.2)\n",
@@ -718,6 +921,30 @@ SELF_TEST_FILES = {
     "docs/regions2.md": "<!-- citations: docs/index.md -->\n<!-- citations: docs/a.md -->\n| §1.3 |\n<!-- /citations -->\n"
                         "| §7.7 |\n<!-- /citations -->\n<!-- /citations -->\n<!-- citations: docs/a.md -->\n",
     "docs/index.md": "# Index\n\n| Sections | File |\n|---|---|\n| §1.1 One | [sub/b.md](sub/b.md#11-one) |\n| §1.2–1.3 Two | [spec.md](spec.md) |\n",
+    "docs/example.md": "# Example\n\n§5.5 is bare. See [the spec](spec.md) and ../MISSING.md.\n",
+    "docs/sub/plain.md": 'See b.md, spec.md "Word list", README.md and exports/transcript.md.\n```\nread ./x.md\n```\n',
+    "docs/folder2.md": "See missing/status.md, sub/none.md and exports/transcript.md.\n",
+    "docs/inline-open.md": "Text <!--\n- [old](missing.md) §9.9\n-->\n\nAfter the comment, docs/a.md §1.3.\n",
+    "docs/inline-close.md": "See <!-- note\n--> docs/conventions.md §99.9.\n\n<!--\nblock\n--> [spec](missing.md) §9.9\n\n"
+                            "<!-- one line --> docs/conventions.md §99.8\n\n"
+                            "<!--\nhidden [old](missing2.md) --> docs/conventions.md §99.7\n",
+    "docs/span-comment.md": "A span `starts here\nand holds <!-- literally` and ends.\n\nThen docs/missing.md §9.9.\n\n"
+                            "An unmatched ` backtick\nthen <!-- a real comment\n\n[x](missing.md) §9.8\n-->\n",
+    "docs/span-boundaries.md": "- An unmatched ` backtick\n- next item <!-- a real comment ` here\n\n[x](missing.md) §9.7\n-->\n\n"
+                               "> quoted ` backtick\n>> deeper <!-- a real comment ` here\n\n[y](missing.md) §9.6\n-->\n\n"
+                               "Text with ` backtick <!-- a real comment\n| a ` | b |\n|---|---|\n\n[z](missing.md) §9.5\n-->\n",
+    "docs/escaped.md": "An escaped \\<!-- is text, so docs/missing.md §9.4 is read.\n\n"
+                       "An escaped \\` is text and <!-- a real comment ` opens\n\n[x](missing.md) §9.3\n-->\n",
+    "docs/inline-comment.md": "Text <!-- [old](missing.md) or §9.9 --> and `<!-- code -->` stay; docs/a.md §1.3.\n",
+    "docs/typo.md": "See desgin.md, README.md and exports/transcript.md.\n",
+    "docs/index2.md": "<!-- citations: docs/index2.md -->\n| Sections | File |\n|---|---|\n| §1.1 One | [sub/b.md](sub/b.md) |\n| §1.2–1.3 Stale | "
+                      "[spec.md](spec.md) |\n| §1.1–1.2 Wrong file | [spec.md](spec.md) |\n"
+                      "| §1.1 Two links | [b](sub/b.md), [spec](spec.md) |\n| §1.2 Next cell | [spec](spec.md) | [b](sub/b.md) |\n"
+                      "| §1.2 Commented link | <!-- [b](sub/b.md) --> [spec](spec.md) |\n"
+                      "<!-- /citations -->\n",
+    "docs/not-docs.md": "Plain README.md, exports/transcript.md, ./exports/transcript.md and ../exports/transcript.md need not "
+                        "exist; Sources/HolosCor/README.md and "
+                        "missing/report.md must.\n",
     "docs/region.md": "<!-- citations: docs/index.md -->\n| §1.1 | §1.2 | §1.3 | §7.7 |\n<!-- /citations -->\n§7.7\n\n"
                       "```\n<!-- citations: docs/index.md -->\n```\n| §7.6 | outside any region: the marker above is in a fence |\n",
     "fence-indent.md": "docs/c.md §7.1\n",
@@ -726,16 +953,21 @@ SELF_TEST_FILES = {
     "bare.swift": "// §7.7 is not checked outside docs/; nor is https://example.com/README.md §2.\n",
 }
 SELF_TEST_FIXTURES = ("docs/a.md", "docs/c.md", "docs/sub/b.md", "docs/spec.md", "docs/conventions.md", "docs/fenced.md",
-                      "docs/index.md", "docs/r.md", "docs/index3.md", "docs/index5.md", "docs/index6.md", "docs/index7.md",
-                      "../outside.md")
-SELF_TEST_PATHS = [name for name in SELF_TEST_FILES if name not in SELF_TEST_FIXTURES] + ["../outside.md"]
+                      "docs/index.md", "docs/r.md", "docs/example.md", "docs/index3.md", "docs/index5.md",
+                      "docs/index6.md", "docs/index7.md", "../outside.md")
+SELF_TEST_PATHS = [name for name in SELF_TEST_FILES if name not in SELF_TEST_FIXTURES] + ["./docs/example.md",
+                                                                                         "../outside.md"]
 SELF_TEST_PROBLEMS = [
     "../outside.md: outside the repository",
     "docs/outside.md:2: ../outside.md §1.2: outside the repository",
-    "docs/outside.md:5: ../../outside.md §1.1: no such file",
+    "docs/outside.md:5: ../../outside.md: outside the repository",
+    "docs/escape.md:1: ../../exports/transcript.md: outside the repository",
+    "docs/dotdir.md:1: .github/missing.md: no such file",
+    "docs/dotdir.md:1: ../.github/missing.md: no such file",
     "docs/region7.md:2: docs/index7.md §1.2: no heading 1.2 in docs/index7.md or the file its index maps it to",
     "link-target.md:1: docs/a.md §3.2: no heading 3.2 in docs/a.md",
     "link-text.md:1: missing.md §4.10: no such file",
+    "link-query.md:1: missing.md §1.2: no such file",
     "link-text.md:1: missing.md §1.3: no such file",
     "link-chain.md:1: docs/meeting-design.md §3.2: no heading 3.2 in docs/meeting-design.md",
     "wrapped-label.swift:2: missing.md §1.3: no such file",
@@ -744,7 +976,7 @@ SELF_TEST_PROBLEMS = [
     "wrapped.swift:2: docs/a.md §3.2: no heading 3.2 in docs/a.md",
     "comma-and.swift:1: docs/a.md §3.2: no heading 3.2 in docs/a.md",
     "subheading.swift:2: docs/a.md §5.11: no heading 5.11 in docs/a.md",
-    "docs/sub/relative.md:1: ./a.md §1.3: no such file",
+    "docs/sub/relative.md:1: ./a.md: no such file",
     "docs/sub/relative.md:1: ./b.md §1.1: cite by the path from the repository root (AGENTS.md)",
     "docs/sub/relative.md:1: ../a.md §1.3: cite by the path from the repository root (AGENTS.md)",
     "docs/sub/relative.md:1: ./a.md §1.3: cite by the path from the repository root (AGENTS.md)",
@@ -754,7 +986,28 @@ SELF_TEST_PROBLEMS = [
     "fence.md:1: docs/a.md §9.9: no heading 9.9 in docs/a.md",
     "fence-indent.md:1: docs/c.md §7.1: no heading 7.1 in docs/c.md",
     "prefix.md:1: docs/a.md §4.1: no heading 4.1 in docs/a.md",
+    "docs/bare.md:5: §2.2: no heading 2.2 in this file",
     "docs/bare.md:5: docs/a.md §2.1: no heading 2.1 in docs/a.md",
+    "docs/bare.md:7: §2.3: no heading 2.3 in this file",
+    "docs/example.md:3: §5.5: no heading 5.5 in this file",
+    "docs/example.md:3: ../MISSING.md: no such file",
+    "docs/sub/plain.md:1: spec.md: no such file",
+    "docs/folder2.md:1: missing/status.md: no such file",
+    "docs/typo.md:1: desgin.md: no such file",
+    "docs/escaped.md:1: docs/missing.md: no such file",
+    "docs/span-comment.md:4: docs/missing.md: no such file",
+    "docs/inline-close.md:2: docs/conventions.md §99.9: no heading 99.9 in docs/conventions.md",
+    "docs/inline-close.md:6: missing.md: no such file",
+    "docs/inline-close.md:8: docs/conventions.md §99.8: no heading 99.8 in docs/conventions.md",
+    "docs/inline-close.md:11: docs/conventions.md §99.7: no heading 99.7 in docs/conventions.md",
+    "docs/index2.md:5: §1.3: no heading 1.3 in docs/spec.md, the file its row links to",
+    "docs/index2.md:6: §1.1: no heading 1.1 in docs/spec.md, the file its row links to",
+    "docs/index2.md:7: §1.1: its row has 2 links in the cell after it, not one",
+    "docs/not-docs.md:1: Sources/HolosCor/README.md: no such file",
+    "docs/not-docs.md:1: missing/report.md: no such file",
+    "docs/folder2.md:1: sub/none.md: no such file",
+    "docs/region.md:4: §7.7: no heading 7.7 in this file",
+    "docs/region.md:9: §7.6: no heading 7.6 in this file",
     "fence-containers.md:1: docs/fenced.md §8.1: no heading 8.1 in docs/fenced.md",
     "fence-containers.md:1: docs/fenced.md §8.2: no heading 8.2 in docs/fenced.md",
     "fence-containers.md:1: docs/fenced.md §8.3: no heading 8.3 in docs/fenced.md",
@@ -767,7 +1020,7 @@ SELF_TEST_PROBLEMS = [
     "block.swift:2: docs/spec.md §99.9: no heading 99.9 in docs/spec.md",
     "block.swift:5: docs/spec.md §9.9: no heading 9.9 in docs/spec.md",
     "docs/sub/deep.md:1: ../../docs/spec.md §99.9: no heading 99.9 in docs/spec.md",
-    "docs/folder.md:1: missing/status.md §1.1: no such file",
+    "docs/folder.md:1: missing/status.md: no such file",
     "nested-label.md:1: missing.md §99.9: no such file",
     "deep-label.md:1: missing.md §9.9: no such file",
     "deep-label.md:3: missing.md §9.8: no such file",

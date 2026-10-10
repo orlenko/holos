@@ -3,6 +3,8 @@
 The meeting design is split by topic. Its sections keep their numbers in these files, so a citation or a bare
 `§N.M` in older text can be followed from here.
 
+<!-- citations: docs/meeting-design.md -->
+
 | Sections | File |
 |---|---|
 | §1 Conventions | [conventions.md](conventions.md) |
@@ -21,3 +23,5 @@ The meeting design is split by topic. Its sections keep their numbers in these f
 | §5.10 Transcript review window | [meeting/review-window.md](meeting/review-window.md) |
 | §5.11 Online-call refinements | [meeting/online-calls-echo.md](meeting/online-calls-echo.md) |
 | §0 Overview; §4 and §5 introductions; §5.1–5.2 PR6, PR1; §6 Waves; §7 Verification and hardware checklist; §8 Resolutions log; §9 Open questions; §10 Design review log | [archive/meeting-plan-2026-09.md](archive/meeting-plan-2026-09.md) |
+
+<!-- /citations -->
