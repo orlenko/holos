@@ -213,7 +213,7 @@ extension ReviewSession {
         enum Lifecycle: Equatable {
             /// Waiting in the queue.
             case queued
-            /// The queue's first, running now.
+            /// Running now (the one operation that does: `ReviewSession` invariant 2).
             case running
             /// Out of the queue; `ran`: it had started.
             case finished(ran: Bool)

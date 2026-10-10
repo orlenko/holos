@@ -27,7 +27,8 @@ import os
 /// 1. Labels read from disk after the review opened replace `snapshot` only through `adopt`, which claims this
 ///    window's own new journal lines (`ReviewJournalClaim`); any other new line, or a head run made elsewhere, is a
 ///    change made elsewhere (`externalVersion`), and queued changes made on older labels are refused.
-/// 2. Only `queue.first` can be running (`Operation.lifecycle`); changes run one at a time, in queue order.
+/// 2. At most one operation runs (`Operation.lifecycle`), in queue order: `queue.first`, except while the labels could
+///    not be reread (`reloadProblem`), when a reread or the transcript files run ahead of held changes (`runsAhead`).
 /// 3. `movesRead` never passes `wordMoves.count`, and `wordsEpoch` only grows: by one for each transcript read that
 ///    this window's own word changes did not make. `revision` hands out both, with the labels run shown, as one value.
 /// 4. `exportsPending` is true from a change saved until `exports/` is rewritten (`ReviewExportScheduler`).
@@ -1665,9 +1666,8 @@ import os
         return op
     }
 
-    /// The one way `queue` changes (invariant 5): `change`, then the projection worked out again with every queued
-    /// change shown, the activity (idle: nil; else what the first queued task is doing, though a running one may say
-    /// more, such as updating a voice sample), and the window notified.
+    /// The one way `queue` changes (invariant 5): `change`, then the projection with every queued change shown, the
+    /// activity (idle: nil; else the first queued task's, a running one saying more itself), and a notification.
     private func mutateQueue(_ change: () -> Void) {
         change()
         recomputeProjection()
