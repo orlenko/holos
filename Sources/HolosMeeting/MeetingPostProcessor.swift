@@ -97,7 +97,7 @@ public struct VoiceSampleSource: Sendable {
 /// in `echo/` (docs/meeting/online-calls-echo.md §5.11; the run never holds it, the labels' view hides the echo); 5 `diarize` them one at a time and
 /// map the times back to the
 /// session; 6 `align`: build and publish the run (no voice embeddings; `speakers/voice/` only with
-/// `forceVoiceData`) with names carried over; 7 `recognize` (PR10), then live speaker-name hints; 8 `export`; 9 delete `derived/` and write the
+/// `forceVoiceData`) with names carried over; 7 `recognize`, then live speaker-name hints; 8 `export`; 9 delete `derived/` and write the
 /// final record.
 public struct MeetingPostProcessor: Sendable {
     private static let log = Logger(subsystem: "ca.orlenko.holos.app", category: "postprocess")

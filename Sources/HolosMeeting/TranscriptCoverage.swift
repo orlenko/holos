@@ -2,7 +2,7 @@ import Foundation
 import HolosCore
 
 /// Joins live transcription with a replay of only the audio it missed (docs/meeting/recorder.md §4.6). Pure; the stop
-/// path uses it after a recording, and recovery (PR3) after a crash, so one dropped frame never throws away hours of
+/// path uses it after a recording, and recovery after a crash, so one dropped frame never throws away hours of
 /// live words.
 public enum TranscriptCoverage {
     /// End of the last live segment, capped at `behindFrom` (the earliest transcriptionBehind.from for the
