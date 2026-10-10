@@ -1,7 +1,7 @@
 import Foundation
 import HolosCore
 
-/// Microphone echo of system audio in calls (docs/meeting/online-calls-echo.md §5.11, PR11). When the laptop speakers play a
+/// Microphone echo of system audio in calls (docs/meeting/online-calls-echo.md §5.11). When the laptop speakers play a
 /// call, the microphone hears the other people too, so speech recognition writes their words twice: on the system
 /// track and, a moment later, on the microphone track. The filter finds the microphone copies; `SpeakerRunBuilder`
 /// leaves them out of every turn and lists them in `DiarizationRun.droppedWords` with reason `echo`.

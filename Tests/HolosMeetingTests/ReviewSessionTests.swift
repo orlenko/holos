@@ -6,7 +6,7 @@ import HolosStorage
 import HolosTestSupport
 import Testing
 
-// The review window's model (docs/meeting/review-window.md §5.10, PR9): ReviewSession on fixture sessions, with the people
+// The review window's model (docs/meeting/review-window.md §5.10): ReviewSession on fixture sessions, with the people
 // store in the test's temporary folder. Helpers are prefixed `review`.
 
 // MARK: - Helpers

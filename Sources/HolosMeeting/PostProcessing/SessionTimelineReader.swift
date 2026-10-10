@@ -2,7 +2,7 @@ import Foundation
 import HolosCore
 import HolosStorage
 
-/// Gaps and markers for exports, read from a session's event journal (docs/meeting/exports.md §4.11, docs/meeting/speaker-labels.md §5.5 PR7b).
+/// Gaps and markers for exports, read from a session's event journal (docs/meeting/exports.md §4.11, docs/meeting/speaker-labels.md §5.5).
 public enum SessionTimelineReader {
     /// A discontinuity must be longer than this to be a gap.
     static let minimumGapSeconds = 0.05

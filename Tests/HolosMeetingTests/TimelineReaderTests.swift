@@ -5,7 +5,7 @@ import HolosStorage
 import HolosTestSupport
 import Testing
 
-// SessionTimelineReader (docs/meeting/speaker-labels.md §5.5 PR7b): gaps and markers for exports from events.jsonl.
+// SessionTimelineReader (docs/meeting/speaker-labels.md §5.5): gaps and markers for exports from events.jsonl.
 
 private func timelineSession(in root: URL, _ events: [(kind: String, details: [String: String])]) async throws -> URL {
     let archive = try SessionArchive.create(root: root, name: "Timeline", source: .microphoneAndSystem,

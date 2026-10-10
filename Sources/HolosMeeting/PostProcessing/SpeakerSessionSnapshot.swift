@@ -5,7 +5,7 @@ import HolosStorage
 import os
 
 /// Everything the exports, the CLI, and the review window show about a session's speakers, loaded at once
-/// (docs/meeting/session-format.md §2.4, docs/meeting/speaker-labels.md §5.5 PR7b). Reads take no lock: every file is replaced atomically and the edit
+/// (docs/meeting/session-format.md §2.4, docs/meeting/speaker-labels.md §5.5). Reads take no lock: every file is replaced atomically and the edit
 /// journal only grows. Callers that must see a consistent state across a write (the editor, `SessionExports`) load
 /// it under the speaker lock.
 public struct SpeakerSessionSnapshot: Sendable {
