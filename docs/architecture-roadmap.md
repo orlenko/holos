@@ -199,7 +199,7 @@ unless another file is named), not the audit's line numbers.
 
 All low risk and pure moves unless noted. Line ranges [M], risk [J].
 
-- **DocumentLoader:**
+- **DocumentLoader:** done; each reader is in its own file, `HTMLReader`'s parts in `HTMLReader+*.swift`.
   - `HTMLEncodingDetector` (318–647)
   - `HTMLPreparation` (648–880)
   - `HTMLWalker` (918–1156)
