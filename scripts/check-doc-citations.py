@@ -7,11 +7,13 @@
 
 Each file is split into paragraphs: in Markdown, a paragraph, a list item, a table row (with or without a leading
 pipe) or a heading, read through block quote markers (a blank quoted line ends a paragraph, a change of quote depth
-starts one; inside fenced code, each run of non-blank lines); in Swift, a run of `//` lines or a whole `/* ... */`
-block, nested to any depth, with string literals (escapes, interpolations, raw and multiline strings) lexed so a
-comment marker inside one is text; in shell and Python, a run of `#` lines; every other source line on its own.
-Within a paragraph, every `§<N.M>` cites the last Markdown file named before it in that paragraph. A file is named
-by
+starts one; inside fenced code, each run of non-blank lines; HTML comments and citation region markers belong to
+none); in Swift, a run of `//` lines or a whole `/* ... */` block, nested to any depth, with string literals
+(escapes, interpolations, raw and multiline strings) lexed so a comment marker inside one is text; in shell and
+Python, a run of `#` lines; every other source line on its own. Paragraphs, headings, index rows, regions and
+reference definitions all come from one reading of each Markdown line (`classify`), so fences, block quotes, HTML
+comments and markers mean the same in each. Within a paragraph, every `§<N.M>` cites the last Markdown file named
+before it in that paragraph. A file is named by
 
 - a Markdown link to it: inline (`[label](<file>.md)`, `[label](<<file>.md>)`, a title in quotes or parentheses,
   a destination with balanced parentheses) or by reference (`[label][ref]`, `[ref][]`, `[ref]` with
@@ -198,10 +200,12 @@ def destination(text, i):
 
 
 def references(text):
-    """The link reference definitions of a Markdown text: {normalized label: destination}."""
+    """The link reference definitions of a Markdown text, outside fenced code and HTML comments: {normalized label:
+    destination}."""
     found = {}
-    for line in text.split("\n"):
-        match = REFERENCE.match(QUOTE_PREFIX.sub("", line))
+    lines = text.split("\n")
+    for (kind, content, _, _) in classify(lines)[0]:
+        match = REFERENCE.match(content) if kind == "text" else None
         if match:
             found.setdefault(" ".join(match.group("label").lower().split()),
                              match.group("angle") if match.group("angle") is not None else match.group("plain"))
@@ -284,11 +288,54 @@ def sections(text):
     return found
 
 
+def classify(lines):
+    """The one reading of a Markdown file's lines that every pass uses: ([(kind, content, quote depth, region)],
+    problems). `content` is the line without its block quote markers. Kinds: "fence" (a fence line), "code" (inside
+    fenced code), "html" (an HTML comment block, read through quote markers; it runs to the line holding `-->`),
+    "marker" (a `<!-- citations: ... -->` or `<!-- /citations -->` line), "blank", "heading", "text". `region` is the
+    path of the innermost open citations region (regions nest; an unclosed region or a stray close is a problem).
+    Nothing inside fenced code or an HTML comment is a marker, a heading, a row or a reference definition."""
+    infos, problems, stack, fence, comment = [], [], [], None, False
+    for number, line in enumerate(lines, 1):
+        quote = QUOTE_PREFIX.match(line)
+        content = line[quote.end():] if quote else line
+        depth = quote.group(0).count(">") if quote else 0
+        if fence:
+            kind = "fence" if closes(line, fence) else "code"
+            fence = None if kind == "fence" else fence
+        elif comment:
+            kind, comment = "html", "-->" not in content
+        elif opens(line):
+            kind, fence = "fence", opens(line)
+        elif REGION_OPEN.match(content):
+            kind = "marker"
+            stack.append((REGION_OPEN.match(content).group("path"), number))
+        elif REGION_CLOSE.match(content):
+            kind = "marker"
+            if stack:
+                stack.pop()
+            else:
+                problems.append((number, "<!-- /citations --> with no region open"))
+        elif re.match(r"^ {0,3}<!--", content):
+            kind, comment = "html", "-->" not in content[content.index("<!--") + 4:]
+        elif not content.strip():
+            kind = "blank"
+        elif HEADING.match(content):
+            kind = "heading"
+        else:
+            kind = "text"
+        infos.append((kind, content, depth, stack[-1][0] if stack and kind != "marker" else None))
+    problems += [(number, f"<!-- citations: {path} --> is never closed") for path, number in stack]
+    return infos, problems
+
+
 def markdown_paragraphs(lines):
-    """Paragraphs of a Markdown file as lists of (line number, text). Block quote markers are read through: a blank
-    quoted line ends a paragraph, and a change of quote depth starts one. Each table row is its own paragraph, with or
-    without a leading pipe."""
-    paragraphs, current, fence, depth, table = [], [], None, 0, False
+    """Paragraphs of a Markdown file as lists of (line number, text), from `classify`. Block quote markers are read
+    through: a blank quoted line ends a paragraph, and a change of quote depth starts one. Each table row is its own
+    paragraph, with or without a leading pipe; inside fenced code, each run of non-blank lines is one. Fence lines,
+    HTML comments and region markers are boundaries and belong to no paragraph."""
+    infos, _ = classify(lines)
+    paragraphs, current, depth, table = [], [], 0, False
 
     def flush():
         nonlocal current
@@ -296,41 +343,32 @@ def markdown_paragraphs(lines):
             paragraphs.append(current)
         current = []
 
-    for number, line in enumerate(lines, 1):
-        if fence:
-            if closes(line, fence):
-                flush()
-                fence = None
-            elif line.strip(" \t>"):
+    for number, (line, (kind, content, quotes, _)) in enumerate(zip(lines, infos), 1):
+        if kind == "code":
+            if content.strip():
                 current.append((number, line))
             else:
                 flush()
             continue
-        if opens(line):
-            flush()
-            fence, table = opens(line), False
-            continue
-        quote = QUOTE_PREFIX.match(line)
-        content = line[quote.end():] if quote else line
-        quotes = quote.group(0).count(">") if quote else 0
-        if not content.strip():
+        if kind in ("fence", "html", "marker", "blank"):
             flush()
             table = False
             continue
         if quotes and quotes != depth:
             flush()
         depth = quotes
-        if TABLE_DELIMITER.match(content) and current and "|" in current[-1][1]:
+        if kind == "heading":
+            flush()
+            table = False
+            paragraphs.append([(number, line)])
+        elif TABLE_DELIMITER.match(content) and current and "|" in current[-1][1]:
             header = current.pop()
             flush()
             paragraphs.append([header])
             paragraphs.append([(number, line)])
             table = True
-        elif table and "|" in content:
-            paragraphs.append([(number, line)])
-        elif HEADING.match(content) or content.lstrip().startswith("|"):
+        elif (table and "|" in content) or content.lstrip().startswith("|"):
             flush()
-            table = False
             paragraphs.append([(number, line)])
         else:
             table = False
@@ -434,42 +472,12 @@ def source_paragraphs(lines, swift):
     return paragraphs
 
 
-def fenced_lines(lines):
-    """The line numbers inside fenced code blocks (not the fences themselves)."""
-    found, fence = set(), None
-    for number, line in enumerate(lines, 1):
-        if fence:
-            if closes(line, fence):
-                fence = None
-            else:
-                found.add(number)
-        elif opens(line):
-            fence = opens(line)
-    return found
-
-
 def headings(tree, rel, cache):
-    """The headings of a Markdown file, outside fenced code and HTML comments."""
+    """The headings of a Markdown file, from `classify`: outside fenced code and HTML comments, possibly in a block
+    quote."""
     if rel not in cache:
-        texts, fence, comment = [], None, False
-        for line in tree.read(rel).split("\n"):
-            if fence:
-                if closes(line, fence):
-                    fence = None
-                continue
-            if comment:
-                comment = "-->" not in line
-                continue
-            if opens(line):
-                fence = opens(line)
-                continue
-            if line.lstrip(" ").startswith("<!--"):
-                comment = "-->" not in line[line.index("<!--") + 4:]
-                continue
-            match = HEADING.match(QUOTE_PREFIX.sub("", line))
-            if match:
-                texts.append(match.group(1).strip().strip("*`"))
-        cache[rel] = texts
+        cache[rel] = [HEADING.match(content).group(1).strip().strip("*`")
+                      for kind, content, _, _ in classify(tree.read(rel).split("\n"))[0] if kind == "heading"]
     return cache[rel]
 
 
@@ -546,18 +554,17 @@ def row_sections(line, refs):
 
 
 def index_map(tree, rel, cache):
-    """What an index's table rows map each listed section number to: {number: file}. Reference links resolve
-    through the index's own definitions."""
+    """What an index's table rows map each listed section number to: {number: file}. Rows come from `classify`
+    (none in fenced code or HTML comments); reference links resolve through the index's own definitions."""
     key = ("index", rel)
     if key not in cache:
         mapping = {}
         text = tree.read(rel)
         refs = references(text)
-        for line in text.split("\n"):
-            line = QUOTE_PREFIX.sub("", line)
-            if "|" not in line:
+        for kind, content, _, _ in classify(text.split("\n"))[0]:
+            if kind != "text" or "|" not in content:
                 continue
-            for number, _, dests in row_sections(line, refs):
+            for number, _, dests in row_sections(content, refs):
                 if len(dests) == 1:
                     mapping.setdefault(number, os.path.normpath(os.path.join(os.path.dirname(rel), dests[0])))
         cache[key] = mapping
@@ -575,33 +582,6 @@ def region_resolves(tree, rel, number, cache):
             return tree.isfile(target) and has_section(headings(tree, target, cache), number)
         parts.pop()
     return False
-
-
-def regions(lines):
-    """The file each line's bare sections cite through `<!-- citations: ... -->` regions, which nest (the innermost
-    counts): ({line number: path}, [(line number, problem)]). Markers inside fenced code are examples and open or
-    close nothing; a region that is never closed, or a close with no region open, is a problem."""
-    found, problems, stack, fence = {}, [], [], None
-    for number, line in enumerate(lines, 1):
-        marker = False
-        if fence:
-            if closes(line, fence):
-                fence = None
-        elif opens(line):
-            fence = opens(line)
-        elif REGION_OPEN.match(line):
-            stack.append((REGION_OPEN.match(line).group("path"), number))
-            marker = True
-        elif REGION_CLOSE.match(line):
-            marker = True
-            if stack:
-                stack.pop()
-            else:
-                problems.append((number, "<!-- /citations --> with no region open"))
-        if stack and not marker:
-            found[number] = stack[-1][0]
-    problems += [(number, f"<!-- citations: {path} --> is never closed") for path, number in stack]
-    return found, problems
 
 
 def must_exist(cited, link):
@@ -634,13 +614,13 @@ def check(paths, tree):
         markdown = rel.endswith(".md")
         in_docs = markdown and rel.startswith("docs/")
         lines = text.split("\n")
-        region_of, region_problems = regions(lines) if markdown else ({}, [])
+        infos, region_problems = classify(lines) if markdown else ([], [])
+        region_of = {number: info[3] for number, info in enumerate(infos, 1) if info[3]}
         problems += [f"{rel}:{number}: {problem}" for number, problem in region_problems]
         refs = references(text) if markdown else {}
         paragraphs = markdown_paragraphs(lines) if markdown else source_paragraphs(lines, rel.endswith(".swift"))
-        fenced_at = fenced_lines(lines) if markdown else set()
         for paragraph in paragraphs:
-            fenced = paragraph[0][0] in fenced_at
+            fenced = markdown and infos[paragraph[0][0] - 1][0] == "code"
             joined = "\n".join(line for _, line in paragraph)
             starts = []
             offset = 0
@@ -703,7 +683,7 @@ def check(paths, tree):
 
 SELF_TEST_FILES = {
     "docs/a.md": "# A\n\n## 1.3 Three\n\n### 4.10 Ten\n\n````md\n```\n## 9.9 Inside a fence\n```\n````\n\n"
-                 "<!--\n## 9.1 Inside an HTML comment\n-->\n",
+                 "<!--\n## 9.1 Inside an HTML comment\n-->\n\n> <!--\n> ## 1.5 Inside an HTML comment in a block quote\n> -->\n",
     "docs/c.md": "# C\n\n```\n    ```\n## 7.1 Still fenced: that closing fence is indented 4 spaces\n```\n",
     "docs/sub/b.md": "# B\n\n## 1.1 One\n",
     "docs/spec.md": "# Spec\n\n## 1.2 Two\n\n> ## 1.4 A heading in a block quote\n",
@@ -745,7 +725,12 @@ SELF_TEST_FILES = {
                     "not a link.\n",
     "quote.md": "> see docs/a.md\n>\n> §9.3 is bare: a blank quoted line ends the paragraph\n",
     "table.md": "a | b\n--- | ---\ndocs/a.md §1.3 | x\n§9.2 | bare in its own row\n",
-    "heading-forms.md": "docs/a.md §9.1, docs/spec.md §1.4\n",
+    "heading-forms.md": "docs/a.md §9.1, docs/spec.md §1.4, docs/a.md §1.5\n",
+    "docs/index5.md": "# I\n\n```\n| §1.1 A sample row | [spec](spec.md) |\n```\n| §1.1 One | [b](sub/b.md) |\n",
+    "docs/region5.md": "<!-- citations: docs/index5.md -->\n| §1.1 |\n<!-- /citations -->\n",
+    "docs/marker.md": "<!-- citations: docs/index.md -->\n§1.1 resolves through the index, not as a citation of the marker\n"
+                      "<!-- /citations -->\n",
+    "reference2.md": "```\n[t]: docs/a.md\n```\n[x][t] §9.9 is bare: the definition is in a fence\n",
     "docs/regions2.md": "<!-- citations: docs/index.md -->\n<!-- citations: docs/a.md -->\n| §1.3 |\n<!-- /citations -->\n"
                         "| §7.7 |\n<!-- /citations -->\n<!-- /citations -->\n<!-- citations: docs/a.md -->\n",
     "docs/index.md": "# Index\n\n| §1.1 One | [sub/b.md](sub/b.md#11-one) |\n| §1.2–1.3 Two | [spec.md](spec.md) |\n",
@@ -766,10 +751,9 @@ SELF_TEST_FILES = {
     "docs/bare.md": "# Bare\n\n## 2.1 Here\n\nSee §2.1 and §2.2; docs/a.md §1.3, §2.1 is a citation.\n\n- §2.3 is bare\n",
     "bare.swift": "// §7.7 is not checked outside docs/; nor is https://example.com/README.md §2.\n",
 }
-SELF_TEST_PATHS = [name for name in SELF_TEST_FILES if name not in ("docs/a.md", "docs/c.md", "docs/sub/b.md",
-                                                                     "docs/spec.md", "docs/conventions.md",
-                                                                     "docs/fenced.md", "docs/index.md", "docs/r.md",
-                                                                     "docs/example.md", "docs/index3.md")] + ["./docs/example.md"]
+SELF_TEST_FIXTURES = ("docs/a.md", "docs/c.md", "docs/sub/b.md", "docs/spec.md", "docs/conventions.md", "docs/fenced.md",
+                      "docs/index.md", "docs/r.md", "docs/example.md", "docs/index3.md", "docs/index5.md")
+SELF_TEST_PATHS = [name for name in SELF_TEST_FILES if name not in SELF_TEST_FIXTURES] + ["./docs/example.md"]
 SELF_TEST_PROBLEMS = [
     "link-target.md:1: docs/a.md §3.2: no heading 3.2 in docs/a.md",
     "link-text.md:1: missing.md §4.10: no such file",
@@ -834,6 +818,7 @@ SELF_TEST_PROBLEMS = [
     "strings.swift:12: docs/a.md §9.3: no heading 9.3 in docs/a.md",
     "code-span.md:1: missing.md §8.7: no such file",
     "heading-forms.md:1: docs/a.md §9.1: no heading 9.1 in docs/a.md",
+    "heading-forms.md:1: docs/a.md §1.5: no heading 1.5 in docs/a.md",
     "docs/regions2.md:5: docs/index.md §7.7: no heading 7.7 in docs/index.md or the file its index maps it to",
     "docs/regions2.md:7: <!-- /citations --> with no region open",
     "docs/regions2.md:8: <!-- citations: docs/a.md --> is never closed",
