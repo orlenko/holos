@@ -273,7 +273,7 @@ commands behind the buttons: Recover when `SessionRecoveryCommand.rebuilds` woul
 meeting whose transcript cannot be read qualifies) or the meeting is interrupted, never for a
 damaged manifest or a transcript from a newer Holos; Label Speakers for speaker state none,
 notLabelled, failed, or interrupted, or (any state but unreadable) while a missed language of
-a meeting in several can be detected now (`LanguageWork.ready`, docs/meeting-design.md §4.14 step 5), with a
+a meeting in several can be detected now (`LanguageWork.ready`, docs/meeting/languages.md §4.14 step 5), with a
 readable transcript and audio, not interrupted. No
 lease-taking action while the app uses the meeting or another process holds it (liveness
 capturing, processing, maintenance).

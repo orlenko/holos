@@ -37,7 +37,7 @@ final class JoinChoice: NSObject {
     init(_ request: ReviewJoinRequest) { self.request = request }
 }
 
-/// Joining a row to the row before it, the inverse of Return's split (docs/meeting-design.md §5.10), as removing the
+/// Joining a row to the row before it, the inverse of Return's split (docs/meeting/review-window.md §5.10), as removing the
 /// line break between two paragraphs of text: in edit mode, Backspace with the caret at the very start of a row's
 /// first word and nothing changed joins that row to the row before it, and forward Delete at the very end of a row's
 /// last word joins the row after it; outside edit mode, a row's first word offers Join With Previous Turn in its

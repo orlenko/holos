@@ -7,14 +7,13 @@ by agents and humans. Where this file and older docs disagree, this file wins; f
 
 Read first: the `README.md` of each module you touch, then the doc sections its code cites.
 
-- The meeting design is split by topic into `docs/conventions.md` (section 1) and `docs/meeting/*.md` (session
-  format, recorder, app controls, post-processing, speaker labels, people and voices, exports, retention). They
-  mostly describe current behaviour (`docs/conventions.md §1.2` is a build plan, and some subsections still name
-  the PR that built them; their 5.x subsections come from the build plan, which the code cites for behaviour).
-  Sections keep their numbers, and `docs/meeting-design.md` lists the file each is in. It still holds sections
-  4.14–4.17 (current behaviour) and the rest of the build plan and review log (sections 0, 5 and 6–10), where
-  `docs/meeting-design.md §5.10` (Review window) and `docs/meeting-design.md §5.11` (online calls) still hold
-  behaviour the code cites, so read the cited subsection, not the whole plan.
+- The meeting design is split by topic into `docs/conventions.md` (section 1) and one file per feature in
+  `docs/meeting/`. They mostly describe current behaviour (`docs/conventions.md §1.2` is a build plan, and some
+  subsections still name the PR that built them). Their 5.x subsections come from the build plan but hold behaviour
+  the code cites, for example `docs/meeting/review-window.md §5.10` (Review window) and
+  `docs/meeting/online-calls-echo.md §5.11` (online calls), so read the cited subsection, not the whole section.
+  Sections keep their numbers, and `docs/meeting-design.md` lists the file each is in. The rest of the build plan
+  and its review log are in `docs/archive/meeting-plan-2026-09.md`.
 - `docs/design.md` describes the user-facing tools, one heading per feature. `docs/contracts.md` lists the
   cross-module contracts. `docs/status.md` says what is verified and what is pending.
 - `docs/architecture-roadmap.md` lists the planned structural changes and their status. Check it before

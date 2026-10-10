@@ -4,7 +4,7 @@ import HolosSpeakers
 import HolosStorage
 import os
 
-/// `voiceislocal session summarize` (docs/meeting-design.md §4.17): the title, summary, key points and action items of
+/// `voiceislocal session summarize` (docs/meeting/titles-summaries.md §4.17): the title, summary, key points and action items of
 /// a finished meeting's current transcript, made on this Mac and saved as summary.json, then the transcript files
 /// rewritten with them.
 ///

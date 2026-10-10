@@ -25,7 +25,7 @@ public enum SpeakerLabelState: String, Codable, Sendable {
 }
 
 /// meeting.json's languages that the current transcript of a meeting in several languages misses, or that the
-/// recorded transcript stands in for, which Label Speakers would detect again (docs/meeting-design.md §4.14).
+/// recorded transcript stands in for, which Label Speakers would detect again (docs/meeting/languages.md §4.14).
 public struct LanguageWork: Codable, Sendable, Equatable {
     /// The languages missed or stood in for, in meeting.json's order ("en-CA").
     public var languages: [String]

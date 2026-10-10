@@ -7,7 +7,7 @@ import HolosMeeting
 import HolosStorage
 import os
 
-/// Meeting titles and summaries in the app (docs/meeting-design.md §4.17): `voiceislocal session summarize` runs in the
+/// Meeting titles and summaries in the app (docs/meeting/titles-summaries.md §4.17): `voiceislocal session summarize` runs in the
 /// background for one meeting at a time, once a meeting's transcript is final and again when a final transcript
 /// replaces it. `MeetingSummaryJobs` keeps the requests and picks from its scans; `BackgroundJobCoordinator` runs them
 /// with final transcripts and echo analyses. Nothing here blocks or slows a meeting's save: nothing starts while a

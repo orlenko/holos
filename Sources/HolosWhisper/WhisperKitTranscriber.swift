@@ -3,7 +3,7 @@ import HolosCore
 import os
 @preconcurrency import WhisperKit
 
-/// `DeepTranscriber` over WhisperKit (docs/meeting-design.md §4.16): the installed Whisper model on the Neural Engine,
+/// `DeepTranscriber` over WhisperKit (docs/meeting/deep-transcription.md §4.16): the installed Whisper model on the Neural Engine,
 /// with the decoding settings measured for meetings: the meeting's language when it has one, the vocabulary prompt on
 /// every chunk, voice-activity chunking, word timestamps, and WhisperKit's default temperature fallback and
 /// compression-ratio and log-probability thresholds (which kept it out of the repetition loops whisper.cpp fell into),

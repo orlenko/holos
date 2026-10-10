@@ -2,7 +2,7 @@ import Foundation
 import HolosCore
 
 /// Merges one transcription of a meeting per language into one transcript, choosing the language passage by passage
-/// (docs/meeting-design.md §4.14). Pure: no file IO, and the language identification is passed in, so it is tested
+/// (docs/meeting/languages.md §4.14). Pure: no file IO, and the language identification is passed in, so it is tested
 /// with synthetic transcripts.
 ///
 /// The rule, validated on a 3 h 43 min bilingual (French and English) meeting against Otter:

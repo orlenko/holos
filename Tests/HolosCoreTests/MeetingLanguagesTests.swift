@@ -2,7 +2,7 @@ import Foundation
 import HolosCore
 import Testing
 
-// A meeting's languages (docs/meeting-design.md §4.14): the list the recorder, the import, and post-processing take,
+// A meeting's languages (docs/meeting/languages.md §4.14): the list the recorder, the import, and post-processing take,
 // and the optional fields that record them.
 
 @Test func meetingLanguagesKeepEachLanguageOnceInOrder() {

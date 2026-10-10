@@ -3,7 +3,7 @@ import HolosCore
 import HolosStorage
 import os
 
-/// The echo catch-up as a `BackgroundJobKind` (docs/meeting-design.md §5.11, "Catching up in the app"): calls that miss
+/// The echo catch-up as a `BackgroundJobKind` (docs/meeting/online-calls-echo.md §5.11, "Catching up in the app"): calls that miss
 /// their echo analysis, as the app's scan finds them (`EchoCatchUpSchedule.scan`), get `voiceislocal session
 /// echo-analyze`, newest first. Catch-up work: after asked-for work, before automatic final transcripts and summaries.
 /// Nothing is saved: a run a quit cut short leaves the analysis missing, so the next launch's scan finds it again.

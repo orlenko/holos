@@ -5,7 +5,7 @@ import Testing
 import HolosTestSupport
 
 // `SessionArchive.saveTranscriptRevision`: a transcription in another language kept beside the current transcript,
-// never made current (docs/meeting-design.md §4.14).
+// never made current (docs/meeting/languages.md §4.14).
 
 private func revisionTranscript(locale: String, createdAt seconds: TimeInterval) -> Transcript {
     Transcript(createdAt: Date(timeIntervalSince1970: seconds), source: "mic", locale: locale, backend: .speech,

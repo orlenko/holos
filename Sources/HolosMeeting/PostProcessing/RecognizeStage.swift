@@ -82,7 +82,7 @@ enum RecognizeStage {
     }
 
     /// `voiceData` with only the centroids of clusters whose speaker the labels' view lists with the acoustic echo
-    /// `mask` hidden (docs/meeting-design.md §5.11): a microphone cluster that is mostly echo, or whose turns are all
+    /// `mask` hidden (docs/meeting/online-calls-echo.md §5.11): a microphone cluster that is mostly echo, or whose turns are all
     /// echo, sounds like the far end and must not take a person's one-to-one match from the real system speaker.
     /// Unchanged without a mask or voice data.
     static func withoutEcho(_ voiceData: SessionVoiceData?, run: DiarizationRun, transcript: Transcript,

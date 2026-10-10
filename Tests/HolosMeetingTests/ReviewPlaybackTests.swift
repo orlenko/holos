@@ -2,7 +2,7 @@ import Foundation
 @testable import HolosMeeting
 import Testing
 
-// Review playback (docs/meeting-design.md §5.10): the word and turn at the play head, ⌘←/⌘→, clicking a word,
+// Review playback (docs/meeting/review-window.md §5.10): the word and turn at the play head, ⌘←/⌘→, clicking a word,
 // following playback, the speed setting, and what VoiceOver hears. Helpers are prefixed `playback`.
 
 private let playbackTurns: [(start: Double, end: Double)] = [

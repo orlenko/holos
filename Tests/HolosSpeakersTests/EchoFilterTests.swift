@@ -4,7 +4,7 @@ import HolosCore
 import HolosTestSupport
 @testable import HolosSpeakers
 
-// Microphone echo of system audio in calls (docs/meeting-design.md §5.11, PR11).
+// Microphone echo of system audio in calls (docs/meeting/online-calls-echo.md §5.11).
 
 /// A segment on `track` with measured words, word i at `start + i × wordSeconds`, each lasting `wordSeconds`.
 private func echoSegment(_ id: String, _ words: [String], track: String, start: Double,

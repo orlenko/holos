@@ -34,7 +34,7 @@ struct Record: AsyncParsableCommand {
                 """)
         @Option(help: "Session display name (default: Meeting).") var name: String?
         /// The app's start panel passes it when the user left the name it suggested: the Meetings list may then show a
-        /// generated title instead (docs/meeting-design.md §4.17).
+        /// generated title instead (docs/meeting/titles-summaries.md §4.17).
         @Flag(help: .hidden) var defaultName = false
         @Option(help: """
             Audio sources: mic (the built-in microphone unless --microphone default), system, or mic+system (the \
@@ -97,7 +97,7 @@ struct Record: AsyncParsableCommand {
             // Decision 9 (docs/meeting/recorder.md §4.12): mic records the built-in microphone (unless --microphone
             // default) and refuses to start without it ("The built-in microphone is unavailable. Open the lid and try
             // again."); mic+system records the system default input, and without any input device system audio alone.
-            // With --languages, the first is transcribed live, and every one again after the recording (docs/meeting-design.md §4.14).
+            // With --languages, the first is transcribed live, and every one again after the recording (docs/meeting/languages.md §4.14).
             let (locale, languages) = await meetingLanguages.resolved(recognition)
             let options = RecordingOptions(name: name ?? "Meeting", source: source, locale: locale,
                                            backend: recognition.backend, root: directory.map(fileURL) ?? HolosPaths.sessions,

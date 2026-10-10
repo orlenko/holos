@@ -5,7 +5,7 @@ import HolosStorage
 import os
 
 /// A session's saved audio as one AVFoundation composition, for playback in the review window
-/// (docs/meeting-design.md §5.10). Nothing is copied or rendered: the composition references the chunk files.
+/// (docs/meeting/review-window.md §5.10). Nothing is copied or rendered: the composition references the chunk files.
 public enum SessionAudioComposition {
     private static let log = Logger(subsystem: "ca.orlenko.holos.app", category: "review")
 

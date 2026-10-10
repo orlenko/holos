@@ -7,7 +7,7 @@ import HolosWhisper
 import Synchronization
 
 extension Session {
-    /// `voiceislocal session deep-transcribe` (docs/meeting-design.md §4.16).
+    /// `voiceislocal session deep-transcribe` (docs/meeting/deep-transcription.md §4.16).
     struct DeepTranscribe: AsyncParsableCommand {
         static let configuration = CommandConfiguration(
             commandName: "deep-transcribe",
@@ -45,7 +45,7 @@ extension Session {
         mutating func run() async throws {
             let session = try SessionLocator.resolve(path)
             // One pass at a time on this Mac, held for the command's whole life: the app reads from the lock that a
-            // pass is running, on which meeting, and which process to signal (docs/meeting-design.md §4.16, "App").
+            // pass is running, on which meeting, and which process to signal (docs/meeting/deep-transcription.md §4.16, "App").
             let sessionID = (try? SessionArchive.readManifest(at: session).id)
                 ?? session.deletingPathExtension().lastPathComponent
             guard let held = try DeepTranscriptionLock.take(
@@ -109,7 +109,7 @@ extension Session {
     }
 }
 
-/// The deep transcription pass's inputs (docs/meeting-design.md §4.16): the installed WhisperKit model under
+/// The deep transcription pass's inputs (docs/meeting/deep-transcription.md §4.16): the installed WhisperKit model under
 /// `DeepTranscriptionModel.root` (`HOLOS_WHISPER_MODELS_DIR`, else `<supportRoot>/Models/whisperkit`), the user's
 /// words.json, and the names of the people the app knows.
 func makeDeepTranscriptionDependencies() -> DeepTranscriptionDependencies {

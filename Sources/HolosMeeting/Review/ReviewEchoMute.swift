@@ -5,7 +5,7 @@ import HolosSpeakers
 import HolosStorage
 import os
 
-/// The microphone's volume through a meeting's review playback (docs/meeting-design.md §5.10): full where the
+/// The microphone's volume through a meeting's review playback (docs/meeting/review-window.md §5.10): full where the
 /// microphone has speech of its own, silent where it only picked up the call from the speakers (the echo), with short
 /// linear ramps between. Pure.
 public struct ReviewMicVolume: Sendable, Equatable {

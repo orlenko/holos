@@ -1,7 +1,7 @@
 import Foundation
 import HolosMeeting
 
-/// The wiring of `BackgroundJobCoordinator` (docs/meeting-design.md §4.16 "App", §4.17, §5.11 "Catching up in the
+/// The wiring of `BackgroundJobCoordinator` (docs/meeting/deep-transcription.md §4.16 "App", docs/meeting/titles-summaries.md §4.17, docs/meeting/online-calls-echo.md §5.11 "Catching up in the
 /// app"): final transcripts (`meeting.deep.jobs`), echo analyses (`meeting.echo`) and summaries
 /// (`meeting.summaries.jobs`), one job at a time.
 extension HolosAppDelegate {

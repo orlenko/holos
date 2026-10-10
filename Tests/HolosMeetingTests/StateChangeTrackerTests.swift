@@ -2,7 +2,7 @@ import Foundation
 @testable import HolosMeeting
 import Testing
 
-// StateChangeTracker (docs/meeting-design.md §5.10): the review window redraws its footer on every playback state
+// StateChangeTracker (docs/meeting/review-window.md §5.10): the review window redraws its footer on every playback state
 // change. Helpers are prefixed `tracker`.
 
 /// The review player's states, as the window sees them.

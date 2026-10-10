@@ -7,7 +7,7 @@ import HolosStorage
 import IOKit.ps
 import os
 
-/// Deep transcription after meetings in the app (docs/meeting-design.md §4.16, "App"): the queue, its power policy,
+/// Deep transcription after meetings in the app (docs/meeting/deep-transcription.md §4.16, "App"): the queue, its power policy,
 /// and the model's install. The pass itself is `voiceislocal session deep-transcribe`, run as a maintenance command
 /// by `coordinator`.
 ///

@@ -1,8 +1,8 @@
 import Foundation
 import HolosCore
 
-/// Where a job stands against the others (docs/meeting-design.md §4.17, "Work the user asked for goes before automatic
-/// work"; §5.11, "Catching up in the app"): lower goes first.
+/// Where a job stands against the others (docs/meeting/titles-summaries.md §4.17, "Work the user asked for goes before automatic
+/// work"; docs/meeting/online-calls-echo.md §5.11, "Catching up in the app"): lower goes first.
 public enum BackgroundJobPriority: Int, Comparable, Sendable {
     /// Asked for from a meeting's menu (Make Final Transcript Now, Summarize Again).
     case askedFor
@@ -143,7 +143,7 @@ extension BackgroundJobKind {
     public func settled(_ sessionID: String) {}
 }
 
-/// Which job goes next among the ones the kinds would start (docs/meeting-design.md §4.17, §5.11). Pure.
+/// Which job goes next among the ones the kinds would start (docs/meeting/titles-summaries.md §4.17, docs/meeting/online-calls-echo.md §5.11). Pure.
 public enum BackgroundJobOrder {
     public struct Situation: Sendable, Equatable {
         /// A meeting is starting, recording, or saving; or another background job runs (any process holding

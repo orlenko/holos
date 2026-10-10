@@ -1,6 +1,6 @@
 import Foundation
 
-/// One stretch of a track for the deep transcriber (docs/meeting-design.md §4.16): 16 kHz mono Float32 samples, the
+/// One stretch of a track for the deep transcriber (docs/meeting/deep-transcription.md §4.16): 16 kHz mono Float32 samples, the
 /// language to transcribe them in, and the vocabulary prompt given to every chunk.
 public struct DeepTranscriptionRequest: Sendable {
     /// 16 kHz mono samples, -1...1.
@@ -53,7 +53,7 @@ public struct DeepTranscribedSegment: Sendable, Equatable {
     }
 }
 
-/// A local speech-to-text model run over saved audio after a meeting (docs/meeting-design.md §4.16). The command-line
+/// A local speech-to-text model run over saved audio after a meeting (docs/meeting/deep-transcription.md §4.16). The command-line
 /// tool's is WhisperKit's (`HolosWhisper`); tests pass fakes and never load a model.
 public protocol DeepTranscriber: Sendable {
     /// What made the transcript, recorded in it (`Transcript.engine`): "whisper:<model>".
@@ -66,7 +66,7 @@ public protocol DeepTranscriber: Sendable {
                     progress: @escaping @Sendable (Double) -> Void) async throws -> [DeepTranscribedSegment]
 }
 
-/// Whether the deep-transcription model is on this Mac (docs/meeting-design.md §4.16), from files only.
+/// Whether the deep-transcription model is on this Mac (docs/meeting/deep-transcription.md §4.16), from files only.
 public enum DeepModelStatus: String, Codable, Sendable, Equatable {
     case notInstalled
     /// `voiceislocal setup --whisper` is downloading or checking it now.

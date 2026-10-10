@@ -1,8 +1,8 @@
 # HolosMeeting
 
 Meetings end to end, without AppKit: recording, the app's controllers, everything after the stop, Review, people
-and voice profiles. The files in `docs/meeting/` and `docs/meeting-design.md §4.14–§4.17, §5.10, §5.11` are the
-spec; `docs/meeting/recorder.md §4.1` is the recorder ↔ app protocol.
+and voice profiles. The files in `docs/meeting/` are the spec; `docs/meeting/recorder.md §4.1` is the
+recorder ↔ app protocol.
 
 **Owns** (by folder)
 - Recorder (top level): `RecordingWorkflow.run` (the recorder loop the `voiceislocal record start` child runs; its

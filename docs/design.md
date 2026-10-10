@@ -1247,7 +1247,7 @@ words with the on-device model:
    transcript pointer is saved but publishing its mapped speaker head fails, Review retries
    that publication from the still-current old head; a later automatic pass does the same
    before it may relabel or export. Words the person types in Review's edit mode are a
-   `reviewEdit` fix made in the unfixed base as well (docs/meeting-design.md §5.10, "Editing
+   `reviewEdit` fix made in the unfixed base as well (docs/meeting/review-window.md §5.10, "Editing
    words"), so every later pass keeps them and never replaces them; their Revert is another
    edit back to what the recognizer wrote. Deleting every word of a segment there empties the
    segment in both revisions and keeps what it held beside it (`TranscriptSegment.removed`): a
@@ -1318,7 +1318,7 @@ Face) uses the network.
   transcription as a candidate, so `eval compare --local latest` measures it against a
   cloud run without changing the meeting.
 
-docs/meeting-design.md §4.16 has the stage, files, thresholds and measurements.
+docs/meeting/deep-transcription.md §4.16 has the stage, files, thresholds and measurements.
 
 ### Meetings list
 
@@ -1363,7 +1363,7 @@ replaces it, in the background, one meeting at a time, never while a meeting rec
 (Settings › Meetings › "Title and summarize meetings with Apple Intelligence", on by default).
 Without Apple Intelligence the rows show the date, length and people, with no error. The
 transcript files get the summary, key points and action items (Markdown and JSON);
-`voiceislocal session summarize` makes them from Terminal. docs/meeting-design.md §4.17 has the
+`voiceislocal session summarize` makes them from Terminal. docs/meeting/titles-summaries.md §4.17 has the
 method, files and measurements.
 
 Every action stays: double-click or Return opens (the live transcript, Review, or the
@@ -1452,7 +1452,7 @@ own link and voice (docs/meeting/speaker-labels.md §4.9, "Speakers with the sam
 
 Optionally capture the screen during a meeting (Settings › Meetings, off by default;
 the start panel's "Capture screen" for one meeting), so text on slides and shared
-screens can help the transcript (meeting-design §4.15). It is the whole main display,
+screens can help the transcript (docs/meeting/screen-context.md §4.15). It is the whole main display,
 not a chosen window: picking a window in every meeting proved impractical, and since
 no online model is involved the images never leave the Mac. Voice is Local's own
 windows are excluded, so the live transcript is not read back into the context. Only

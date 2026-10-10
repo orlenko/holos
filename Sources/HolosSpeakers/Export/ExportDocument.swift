@@ -39,11 +39,11 @@ public struct ExportDocument: Sendable, Equatable {
     public var projection: SpeakerProjection?
     public var gaps: [TimelineGap]
     public var markers: [TimelineMarker]
-    /// The generated summary (summary.json, docs/meeting-design.md §4.17); used only when it was made from
+    /// The generated summary (summary.json, docs/meeting/titles-summaries.md §4.17); used only when it was made from
     /// `transcript`.
     public var summary: ExportSummary?
     /// The Markdown heading when it is not the meeting's name (`metadata.name`): the meeting's title as Voice is Local
-    /// shows it (docs/meeting-design.md §4.17). Nil: the summary's title when `titleIsHeading`, else the name.
+    /// shows it (docs/meeting/titles-summaries.md §4.17). Nil: the summary's title when `titleIsHeading`, else the name.
     public var heading: String?
 
     public init(metadata: ExportMetadata, transcript: Transcript, run: DiarizationRun? = nil,
@@ -263,7 +263,7 @@ struct ExportContent {
     }
 
     /// The projection's turns as shown (`SpeakerProjection.shownTurns`: short interjections attached to a neighbour or
-    /// left out, docs/meeting-design.md §5.10), already in (start, track, id) order.
+    /// left out, docs/meeting/review-window.md §5.10), already in (start, track, id) order.
     private static func projectedTurns(_ projection: SpeakerProjection, transcript: Transcript,
                                        labels: [String: String], speakerOrder: [String: Int]) -> [ExportTurn] {
         var clusterOwner: [String: String] = [:]
@@ -463,7 +463,7 @@ struct TranscriptText {
 }
 
 extension Transcript {
-    /// The languages of a transcript merged from several (docs/meeting-design.md §4.14); nil for one language,
+    /// The languages of a transcript merged from several (docs/meeting/languages.md §4.14); nil for one language,
     /// including a transcript made one language's alone (`voiceislocal session languages` with one), so the exports
     /// name languages only when there is a choice between them.
     var mergedLanguages: [String]? {
@@ -473,7 +473,7 @@ extension Transcript {
 }
 
 /// Segment languages by segment ID (the first segment wins when IDs repeat), for a transcript merged from several
-/// languages (docs/meeting-design.md §4.14).
+/// languages (docs/meeting/languages.md §4.14).
 struct SegmentLanguages {
     private let merged: Bool
     private var languages: [String: String] = [:]

@@ -38,7 +38,7 @@ public enum MeetingSummaryModelError: Error, Sendable, Equatable {
     case busy
 }
 
-/// The model the summarizer asks (docs/meeting-design.md §4.17): Apple's on-device model in the command-line tool
+/// The model the summarizer asks (docs/meeting/titles-summaries.md §4.17): Apple's on-device model in the command-line tool
 /// (`voiceislocal session summarize`), a fake in tests. Each call is a fresh session with greedy sampling; `notes` and
 /// `summary` return structured output (`@Generable` in the live model), which `MeetingSummarizer` then checks.
 public struct MeetingSummaryModel: Sendable {
@@ -110,7 +110,7 @@ public struct MeetingSummaryStats: Sendable, Equatable, Codable {
 }
 
 /// Title, summary, key points and action items of a meeting from its transcript, with a model whose context is small
-/// (Apple's on-device model: 8,192 tokens on macOS 27), by map and reduce (docs/meeting-design.md §4.17):
+/// (Apple's on-device model: 8,192 tokens on macOS 27), by map and reduce (docs/meeting/titles-summaries.md §4.17):
 ///
 /// 1. The speaker-labelled transcript ("Alex: …" lines) is cut into parts that fit a prompt (`parts`); a turn longer
 ///    than a part is cut at sentence ends.

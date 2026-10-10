@@ -2,7 +2,7 @@ import CoreML
 import Foundation
 @preconcurrency import WhisperKit
 
-/// WhisperKit's `SegmentSeeker` with word timestamps that stay right when a prompt is given (docs/meeting-design.md
+/// WhisperKit's `SegmentSeeker` with word timestamps that stay right when a prompt is given (docs/meeting/deep-transcription.md
 /// §4.16).
 ///
 /// WhisperKit 1.1.0's decoder stores each position's alignment weights at its absolute index in the decoder input,

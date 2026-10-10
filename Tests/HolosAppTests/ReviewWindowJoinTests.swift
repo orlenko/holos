@@ -7,7 +7,7 @@ import HolosStorage
 import Testing
 @testable import HolosApp
 
-/// Joining rows through the review window itself (docs/meeting-design.md §5.10): a real `ReviewSession` over a
+/// Joining rows through the review window itself (docs/meeting/review-window.md §5.10): a real `ReviewSession` over a
 /// meeting written to a temporary folder (no audio), its window never shown. Each turn is a transcript segment of its
 /// own; speakers are "S1", "S2" (nil: the unknown speaker). Made-up words only.
 @MainActor

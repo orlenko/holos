@@ -47,7 +47,7 @@ let package = Package(
         .target(name: "HolosDiarization", dependencies: [
             "HolosCore", .product(name: "FluidAudio", package: "FluidAudio"),
         ], exclude: ["README.md"]),
-        // Deep transcription after a meeting (docs/meeting-design.md §4.16): WhisperKit's Core ML Whisper models. Only
+        // Deep transcription after a meeting (docs/meeting/deep-transcription.md §4.16): WhisperKit's Core ML Whisper models. Only
         // the command-line tool links it; the app runs the pass through voiceislocal.
         .target(name: "HolosWhisper", dependencies: [
             "HolosCore", .product(name: "WhisperKit", package: "WhisperKit"),

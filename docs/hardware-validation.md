@@ -59,7 +59,7 @@ the checklist below covers them.
 
 ## Long recordings
 
-These are the hardware checks of [meeting-design.md §7.2](meeting-design.md) for the
+These are the hardware checks of [archive/meeting-plan-2026-09.md §7.2](archive/meeting-plan-2026-09.md) for the
 long-recording work (PR2a: recorder loop, Int16 and mono system audio, capture pump,
 restarts and the `waiting` phase, disk policy, `status.json`, `control/`, the stop path;
 PR2b: sleep and power, device changes, the stall watchdog, microphone selection). The

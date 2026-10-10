@@ -5,7 +5,7 @@ import HolosSpeakers
 import HolosStorage
 import UniformTypeIdentifiers
 
-/// The transcript review window (docs/meeting-design.md §5.10): name the speakers of a meeting, play their audio,
+/// The transcript review window (docs/meeting/review-window.md §5.10): name the speakers of a meeting, play their audio,
 /// reassign, merge, split, confirm suggestions in bulk, find more speakers, undo, and export. The model is
 /// `ReviewSession` (HolosMeeting); this file only arranges views and routes actions to it. Every change shows at once
 /// and saves in the background; errors appear in the footer.
@@ -79,7 +79,7 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, NSM
     let searchField = NSSearchField()
     let exportPopUp = NSPopUpButton(frame: .zero, pullsDown: true)
     let screenTextButton = NSButton(title: "Screen Text…", target: nil, action: nil)
-    /// Edit mode (⌘E): word clicks edit the words instead of playing from them (docs/meeting-design.md §5.10,
+    /// Edit mode (⌘E): word clicks edit the words instead of playing from them (docs/meeting/review-window.md §5.10,
     /// "Editing words").
     let editButton = NSButton(title: "Edit Words", target: nil, action: nil)
     let editBanner = EditModeBanner()
@@ -1503,7 +1503,7 @@ final class ReviewWindow: NSObject, NSWindowDelegate, NSSearchFieldDelegate, NSM
     static func speakersTitle(hidden: Bool) -> String { hidden ? "Show Speakers" : "Hide Speakers" }
 
     /// Show Short Interjections (View menu): the short turns of the unknown speaker the list leaves out are listed
-    /// again (docs/meeting-design.md §5.10); the exports leave them out either way. Kept across windows.
+    /// again (docs/meeting/review-window.md §5.10); the exports leave them out either way. Kept across windows.
     @objc func toggleShortInterjections(_ sender: Any?) {
         review.showsShortInterjections.toggle()
         UserDefaults.standard.set(review.showsShortInterjections, forKey: Self.showInterjectionsKey)

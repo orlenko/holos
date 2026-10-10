@@ -16,7 +16,7 @@ func makeMeetingPostProcessor(options: PostProcessingOptions = .init()) -> Meeti
                          profiles: SpeakerProfileStore(), wordFixes: makeWordFixDependencies())
 }
 
-/// The voice sample source every CLI pass that post-processes passes (docs/meeting-design.md §5.11):
+/// The voice sample source every CLI pass that post-processes passes (docs/meeting/online-calls-echo.md §5.11):
 /// `makeVoiceSampleExtractor` for each session.
 let cliVoiceSamples = VoiceSampleSource.make { makeVoiceSampleExtractor(session: $0) }
 

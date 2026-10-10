@@ -4,7 +4,7 @@ import HolosCore
 import os
 import WhisperKit
 
-/// The deep-transcription model files (docs/meeting-design.md §4.16): where they live, whether they are installed, and
+/// The deep-transcription model files (docs/meeting/deep-transcription.md §4.16): where they live, whether they are installed, and
 /// how they are installed.
 ///
 /// Layout, under `DeepTranscriptionModel.root` (`<supportRoot>/Models/whisperkit`):

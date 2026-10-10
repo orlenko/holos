@@ -6,7 +6,7 @@ import HolosStorage
 import Testing
 @testable import HolosWhisper
 
-// Opt-in probe (docs/meeting-design.md §4.16): HOLOS_DEEP_PROBE_SESSION=<a copy of a .holos folder>, with the model
+// Opt-in probe (docs/meeting/deep-transcription.md §4.16): HOLOS_DEEP_PROBE_SESSION=<a copy of a .holos folder>, with the model
 // installed (HOLOS_WHISPER_MODELS_DIR), transcribes ten minutes of one track (HOLOS_DEEP_PROBE_TRACK, default system;
 // from HOLOS_DEEP_PROBE_START seconds, default 1200) and counts the recorded transcript's words there with no Whisper
 // word within 3 s. Prints numbers only.

@@ -3,7 +3,7 @@ import Testing
 import HolosCore
 @testable import HolosSpeakers
 
-// Short interjections of the unknown speaker (docs/meeting-design.md §5.10): hidden or attached to a neighbour in
+// Short interjections of the unknown speaker (docs/meeting/review-window.md §5.10): hidden or attached to a neighbour in
 // `SpeakerProjection.shownTurns` and the exports, never in `turns`. Synthetic text only.
 
 private let runID = "RUN-INTERJECTIONS"

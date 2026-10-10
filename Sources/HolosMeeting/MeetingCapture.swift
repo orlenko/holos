@@ -18,7 +18,7 @@ public struct CaptureRequest: Sendable, Equatable {
     /// part of the session timeline and of the gap before its first frame. Nil for epoch 0: the timeline starts when
     /// its capture has started.
     public var offsetHostTime: Double?
-    /// The optional screen capture (docs/meeting-design.md §4.15), saved into `sessionDirectory`.
+    /// The optional screen capture (docs/meeting/screen-context.md §4.15), saved into `sessionDirectory`.
     public var screen: ScreenCaptureTarget?
     public var sessionDirectory: URL?
     /// Carry a known system outage into a new epoch; only an accepted system frame clears it.

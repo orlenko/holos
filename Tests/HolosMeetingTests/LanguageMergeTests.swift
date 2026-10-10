@@ -3,7 +3,7 @@ import HolosCore
 @testable import HolosMeeting
 import Testing
 
-// `LanguageMerge` (docs/meeting-design.md §4.14): the per-window language choice, smoothing, and the segments it
+// `LanguageMerge` (docs/meeting/languages.md §4.14): the per-window language choice, smoothing, and the segments it
 // keeps, on synthetic transcriptions. A word's spelling says which language it reads as ("fr-3@en" is a French word
 // the English model heard), and `languageMergeScorer` reads it that way, as NLLanguageRecognizer reads real text.
 

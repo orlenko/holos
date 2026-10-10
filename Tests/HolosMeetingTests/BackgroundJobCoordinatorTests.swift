@@ -4,7 +4,7 @@ import HolosCore
 import Testing
 
 // `BackgroundJobCoordinator` with its three kinds, final transcripts, echo analyses and summaries
-// (docs/meeting-design.md §4.16 "App", §4.17, §5.11 "Catching up in the app"): the order between them, the holds,
+// (docs/meeting/deep-transcription.md §4.16 "App", docs/meeting/titles-summaries.md §4.17, docs/meeting/online-calls-echo.md §5.11 "Catching up in the app"): the order between them, the holds,
 // preemption, retries and the lock.
 // A fake runner stands for `CommandRunner` (no process starts) and an injected clock for the time; the meetings are
 // invented IDs.

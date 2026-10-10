@@ -674,7 +674,7 @@ selection, and the environment events that retry a waiting recorder.
   exit codes); add `RecordControl.swift` (`pause`, `resume`, `marker`, registered in
   `Record`'s `subcommands:`).
 - Docs: append a "Long recordings" section to `docs/hardware-validation.md` (H4–H10
-  procedures from docs/meeting-design.md §7.2).
+  procedures from docs/archive/meeting-plan-2026-09.md §7.2).
 - Tests: `Tests/HolosAudioTests/{Int16ChunkTests, FrameContinuityTests, ChunkWriterPumpTests}.swift`;
   `Tests/HolosMeetingTests/{RecorderMachineTests, DiskPolicyTests, ControlInboxTests, RecorderChannelTests, StatusWriterTests, RecorderEpochTests, LiveTrackTests, TranscriptCoverageTests, StopPathTests, SpeechFixtureTests}.swift`,
   helpers in `RecorderTestSupport.swift` (`fileprivate` or prefixed `recorder…`, §1.8).

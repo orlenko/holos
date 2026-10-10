@@ -94,11 +94,11 @@ final class MeetingAppState {
     weak var detailItem: NSMenuItem?
     /// Windows that give Holos a Dock icon while open.
     var windowsInDock: Set<String> = []
-    /// Deep transcription after meetings (docs/meeting-design.md §4.16, "App").
+    /// Deep transcription after meetings (docs/meeting/deep-transcription.md §4.16, "App").
     let deep = DeepTranscriptionAppState()
-    /// Meeting titles and summaries (docs/meeting-design.md §4.17).
+    /// Meeting titles and summaries (docs/meeting/titles-summaries.md §4.17).
     let summaries = MeetingSummaryAppState()
-    /// The acoustic echo analysis of calls that miss it (docs/meeting-design.md §5.11, "Catching up in the app").
+    /// The acoustic echo analysis of calls that miss it (docs/meeting/online-calls-echo.md §5.11, "Catching up in the app").
     let echo = EchoCatchUpJobs()
 }
 
@@ -1232,7 +1232,7 @@ extension HolosAppDelegate: NSMenuDelegate {
             self.setDockPresence(false, for: dockKey)
         }
         window.onRelabel = { [weak self] running in self?.reviewRelabelChanged(sessionID, running: running) }
-        // Word edits in Review teach corrections and offer word-list terms (docs/meeting-design.md §5.10).
+        // Word edits in Review teach corrections and offer word-list terms (docs/meeting/review-window.md §5.10).
         // Learned when the window closes, from every word edited in the meeting; existing corrections are kept.
         window.review.correctionsToLearn = { [weak self] edit in self?.reviewEditCorrections(edit) ?? [] }
         window.review.correctionsWriter = { [weak self] in self?.reviewCorrectionsWriter() }

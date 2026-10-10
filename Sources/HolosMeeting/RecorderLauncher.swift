@@ -55,7 +55,7 @@ import Synchronization
     ///
     /// The name is joined to its option: as a separate element, a name starting with "-" ("- standup") would be
     /// parsed as an option and the recorder would exit with a usage error. The language is joined the same way:
-    /// `--locale` for one, `--languages` for several (the first transcribed live, docs/meeting-design.md §4.14).
+    /// `--locale` for one, `--languages` for several (the first transcribed live, docs/meeting/languages.md §4.14).
     /// The values are those of `RecordingOptions(settings:…)`, the in-process recorder's options: no language means
     /// the recorder's default, and a recording without the microphone gets no `--microphone`.
     public nonisolated static func arguments(_ settings: MeetingStartSettings, sessionID: String, root: URL,

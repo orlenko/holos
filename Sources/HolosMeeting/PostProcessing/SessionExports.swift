@@ -164,7 +164,7 @@ public enum SessionExports {
                            meeting: snapshot.meetingInfoDamaged ? nil : snapshot.meeting)
     }
 
-    /// summary.json for the exports (docs/meeting-design.md §4.17), when one can be read and is current (`key`: made
+    /// summary.json for the exports (docs/meeting/titles-summaries.md §4.17), when one can be read and is current (`key`: made
     /// from this transcript with these speakers' names); otherwise the exports leave it out, so corrected speaker
     /// labels never sit beside a summary made with the old ones. Its title heads the Markdown export unless the user
     /// named the meeting.

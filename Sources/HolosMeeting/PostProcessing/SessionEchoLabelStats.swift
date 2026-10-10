@@ -4,7 +4,7 @@ import HolosSpeakers
 import HolosStorage
 import os
 
-/// What `voiceislocal session echo-label-stats` (hidden; docs/meeting-design.md §5.11) does, as a library call: for
+/// What `voiceislocal session echo-label-stats` (hidden; docs/meeting/online-calls-echo.md §5.11) does, as a library call: for
 /// each call given, what the evidence requirement of the acoustic echo word rule changes in its labels
 /// (`EchoLabelStats`), and their total. Counts only: no transcript text, names, word times, or folder paths (a session
 /// is named by its ID). It only reads, takes no lock (as `SpeakerSessionSnapshot.load`: every file it reads is replaced

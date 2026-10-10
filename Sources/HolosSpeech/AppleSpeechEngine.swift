@@ -83,7 +83,7 @@ public enum AppleSpeechEngine {
     }
 
     /// `accurate` (speech backend only): final results only, without `fastResults`, for saved audio transcribed after
-    /// a meeting, where nothing waits for the words (docs/meeting-design.md §4.14). Otherwise the progressive preset,
+    /// a meeting, where nothing waits for the words (docs/meeting/languages.md §4.14). Otherwise the progressive preset,
     /// whose fast, volatile results a live transcript needs.
     fileprivate static func makeModule(locale: String, backend: SpeechBackend,
                                        accurate: Bool = false) async throws -> Module {
@@ -149,7 +149,7 @@ public actor AppleSpeechSession {
     }
 
     /// `accurate`: final results only, without the progressive preset's fast results (speech backend), for saved
-    /// audio transcribed after a meeting (docs/meeting-design.md §4.14).
+    /// audio transcribed after a meeting (docs/meeting/languages.md §4.14).
     public static func make(locale: String, backend: SpeechBackend, contextualStrings: [String] = [],
                             accurate: Bool = false,
                             onUpdate: @escaping @Sendable (TranscriptUpdate) -> Void) async throws -> AppleSpeechSession {

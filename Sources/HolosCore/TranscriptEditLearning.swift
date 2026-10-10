@@ -1,6 +1,6 @@
 import Foundation
 
-/// What an edit of a meeting's words in Review teaches (docs/meeting-design.md §5.10, "Editing words"): learned
+/// What an edit of a meeting's words in Review teaches (docs/meeting/review-window.md §5.10, "Editing words"): learned
 /// corrections ("heard" → "meant", the list dictation and meeting word fixes use), and whether the new text looks like
 /// a name or term to offer for the word list. Pure; the caller says which words are dictionary words.
 public enum TranscriptEditLearning {

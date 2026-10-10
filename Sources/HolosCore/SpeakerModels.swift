@@ -375,7 +375,7 @@ public struct DroppedWords: Codable, Sendable, Equatable {
 }
 
 /// A segment whose every word a Review edit deleted (`TranscriptSegment.removed`), with the turns that held its words
-/// then (docs/meeting-design.md §5.10, "Editing words"): an undo or a Restore gives the words back to those turns.
+/// then (docs/meeting/review-window.md §5.10, "Editing words"): an undo or a Restore gives the words back to those turns.
 public struct RemovedSegmentTurns: Codable, Sendable, Equatable {
     public var segmentID: String
     public var turnIDs: [String]

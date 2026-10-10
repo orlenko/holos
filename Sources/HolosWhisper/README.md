@@ -1,6 +1,6 @@
 # HolosWhisper
 
-Deep transcription after a meeting with WhisperKit's Core ML Whisper models (`docs/meeting-design.md §4.16`). Of the
+Deep transcription after a meeting with WhisperKit's Core ML Whisper models (`docs/meeting/deep-transcription.md §4.16`). Of the
 products, only `HolosCLI` links it; the app runs the pass through `voiceislocal session deep-transcribe`.
 
 **Owns**

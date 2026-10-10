@@ -6,7 +6,7 @@ import HolosStorage
 import HolosTestSupport
 import Testing
 
-// Editing words in Review, the pure part (docs/meeting-design.md §5.10, "Editing words"): `TranscriptWordEdit` on
+// Editing words in Review, the pure part (docs/meeting/review-window.md §5.10, "Editing words"): `TranscriptWordEdit` on
 // hand-built transcripts. Helpers are prefixed `edit`.
 
 /// One timed segment: word `i` starts at `start + i` seconds and lasts 0.8 s.

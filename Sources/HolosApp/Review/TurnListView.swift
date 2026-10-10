@@ -3,7 +3,7 @@ import HolosCore
 import HolosMeeting
 import HolosSpeakers
 
-/// The right pane of the review window (docs/meeting-design.md §5.10): one row per paragraph (consecutive turns of one
+/// The right pane of the review window (docs/meeting/review-window.md §5.10): one row per paragraph (consecutive turns of one
 /// speaker, `ReviewParagraphs`) with a timestamp button that plays from there, the speaker pop-up (which lists a voice
 /// match's person first, "Jim (suggested)"), and the wrapping text, whose words play from where they are clicked.
 /// Uncertain rows look like any other: Next Uncertain finds them, and VoiceOver hears it on their pop-up. While the
