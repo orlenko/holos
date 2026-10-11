@@ -304,7 +304,8 @@ timeline and a larger local-model benchmark are follow-ups.
   Speaker…; a voice match first, "Jim (suggested)"), uncertain rows marked only for
   VoiceOver; Next Uncertain (⌘'), 1–9 to assign the selection, Split Turn (inside a turn
   it splits that turn; where a turn already starts it only breaks the paragraph, in the window; Backspace at a
-  row's start in edit mode, or Join With Previous Turn, joins it to the row before, taking its speaker), search, Find More Speakers (a relabel with a minimum of one
+  row's start in edit mode, or Join With Previous Turn, joins it to the row before, taking its speaker; keys typed while that join's speaker change
+  saves are refused with a beep, and the word field reopens once it is saved), search, Find More Speakers (a relabel with a minimum of one
   more speaker than found; names carry over, turn-level changes do not), Label Speakers on
   My Microphone for calls, Label Again after the transcript changed, Undo (⌘Z, the
   window's own changes, newest first), and Export (Save As… Markdown, text, JSON; Copy as
@@ -546,8 +547,10 @@ timeline and a larger local-model benchmark are follow-ups.
 - Reading section (docs/design.md "Reading section"): the main window's Reading (⌘5) makes
   the `voiceislocal read` file in the app. A New reading card takes an `https://` link or a
   document (typed, pasted with ⌘V, dropped anywhere on the section, or chosen; several files
-  at once are all added), a voice (Automatic, or the installed voices with the user's
-  languages first, Premium first and marked) with Preview, and a speed (0.8×–1.4×, an
+  at once are all added), a voice with Preview (a picker shared with Settings › Reading:
+  search across name, language, region and quality ignoring case and accents, a language
+  filter, Automatic, and an alphabetical list of natural and system voices; ↑/↓, Return,
+  Escape), and a speed (0.8×–1.4×, an
   estimated mapping onto the speech rate that has not been checked by ear). Readings are made
   one at a time in this process, each into `~/Music/Voice is Local/Readings/<Title>.m4a`
   (Settings › Reading changes the folder, default voice, and speed), and listed with their
@@ -566,7 +569,8 @@ timeline and a larger local-model benchmark are follow-ups.
   FluidAudio). `voiceislocal setup --natural-voices [--language fr]` or Settings › Reading
   (Download with the size, progress, Cancel, failure shown) installs a pack into
   `Application Support/Holos/Models/pocket-tts` (English about 530 MB, French about 1.9 GB) and
-  warms it up. Once installed, Automatic reads English with Alba and French with Estelle; 19
+  warms it up; one pack installs at a time (a shared `.install.lock` refuses a second install,
+  from the app or Terminal). Once installed, Automatic reads English with Alba and French with Estelle; 19
   English voices and Estelle are offered (voices with non-commercial recordings, `cosette` and
   `jean`, are not). Paragraphs are fed one at a time with a fixed seed (renders are
   byte-identical), with 0.6 s pauses between paragraphs and 0.9 s after a heading; speed is a
@@ -576,7 +580,7 @@ timeline and a larger local-model benchmark are follow-ups.
   install and download states, the tool's arguments and Stop); the real model was run from the
   CLI and the opt-in integration test (English 3.5× real time with the check, which takes about
   9 % of the time; French about 1× including an 11 s load, 2× after). Not yet: anything through
-  the app (Settings, the menus, Preview, a reading rendered by the bundled tool) seen on screen,
+  the app (Settings, the voice picker, Preview, a reading rendered by the bundled tool) seen on screen,
   a book-length reading, and listening to the speed-changed audio.
 - Dictation history (docs/design.md "Dictation history"): each finished dictation that
   produced text is kept in `Application Support/Holos/History/dictations.jsonl` (0600, one
