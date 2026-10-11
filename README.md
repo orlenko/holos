@@ -201,15 +201,18 @@ hour, title and author tags, a chapter at each heading). Paste an `https://` lin
 **New reading** field (⌘V also works with the list focused), or drop a PDF, Word, HTML,
 Markdown, RTF, OpenDocument or text file anywhere on the section, or use **Choose File…**
 (several files at once are all added). Pick a voice (Automatic is the best installed voice
-for the text's language; Premium voices are marked), hear it with **▶ Preview** (press again
-to stop), set **Speed** (0.8×–1.4×), and press **Make Audio** (Return).
+for the text's language): the Voice button opens a picker with **Search voices** (name,
+language, region or quality, e.g. "English premium"), a **Language** filter, and an
+alphabetical list with each voice's language, region and quality (↑/↓, Return to choose,
+Escape to leave it unchanged; Settings › Reading uses the same picker). Hear it with
+**▶ Preview** (press again to stop), set **Speed** (0.8×–1.4×), and press **Make Audio** (Return).
 
 **Natural voices** sound much closer to a person reading than Apple's: Kyutai's Pocket TTS,
 running on this Mac. Download them in Settings › Reading (English about 530 MB, French about
 1.9 GB; the size is on the button, and Cancel stops a download, which resumes next time);
 Apple's voices keep working meanwhile and without them. Once a language is downloaded,
-Automatic reads English with **Alba** and French with **Estelle**, and the Voice menu lists
-"Natural — Alba (English)" and the other natural voices first. Each paragraph is heard back
+Automatic reads English with **Alba** and French with **Estelle**, and the voice picker lists
+the natural voices alongside Apple's, marked "Natural". Each paragraph is heard back
 by Apple's on-device recognizer; one that comes out garbled is rendered again, and if it fails
 twice it is read by an Apple voice instead. From Terminal: `voiceislocal setup
 --natural-voices [--language fr]`, then `voiceislocal read <source> --voice pocket:en:alba`
