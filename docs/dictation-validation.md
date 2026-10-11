@@ -174,9 +174,12 @@ Voice › Manage Voices).
    ▶ Preview, Speed with 1.0×, Make Audio) over "Readings" and its empty text, and a
    footer naming `~/Music/Voice is Local/Readings`. Make Audio is off while the field is
    empty. Check light and dark mode and a narrow window (900 pt).
-2. **Voices**: the Voice pop-up starts with Automatic, then the voices of your languages
-   (Premium first, marked "(Premium)"), a separator, then the others; no novelty voices
-   (Bubbles, Zarvox). ▶ Preview speaks one sentence in the chosen voice's language at the
+2. **Voices**: the Voice button opens a picker with Search voices, a Language filter,
+   Automatic, and an alphabetical list; each row shows the name, then language, region and
+   quality; no novelty voices (Bubbles, Zarvox). "English premium" finds the Premium English
+   voices; choosing French in the filter lists French voices of every region. ↑/↓ move,
+   Return chooses, Escape closes without changing the voice. Settings › Reading has the same
+   picker. ▶ Preview speaks one sentence in the chosen voice's language at the
    chosen speed and turns into ■ Stop; pressing it again stops at once; moving the Speed
    slider while it speaks restarts it at the new speed. 0.8× and 1.4× should sound
    clearly slower and faster than 1.0× without sounding broken (the mapping is an estimate:

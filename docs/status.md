@@ -742,7 +742,8 @@ with Otter, not accuracy. Keeping overlapping speech (`exclusiveSegments` false)
 not raise disagreement, and a speaker-count hint did not recover merged speakers.
 See the [speaker evaluation](speaker-evaluation.md).
 
-Still requiring real-machine or user-data validation:
+Still requiring real-machine or user-data validation (one checklist of everything not yet tried by
+hand, grouped by how it gets covered: [manual-testing.md](manual-testing.md)):
 
 - Confirm microphone and system-audio permission prompts and ownership under the
   built, ad-hoc-signed CLI identity; smoke-test live capture and playback.

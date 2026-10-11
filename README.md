@@ -651,6 +651,7 @@ transcripts. It is gitignored; keep originals out of commits.
 - [Working on the code: module map and rules for contributors and agents](AGENTS.md)
 - [Future mobile apps (notes, not started)](docs/mobile-apps.md)
 - [Implementation status and validation gaps](docs/status.md)
+- [Manual testing: what has not been tried](docs/manual-testing.md)
 - [Design and feasibility](docs/design.md)
 - [Component and data contracts](docs/contracts.md)
 - [Implementation tasks and evaluation](docs/implementation.md)
