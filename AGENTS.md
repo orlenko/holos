@@ -191,7 +191,9 @@ Planned, see the [architecture roadmap](docs/architecture-roadmap.md) (`docs/arc
   point `HOLOS_DATA_DIR` and `HOLOS_SUPPORT_DIR` at a fresh temporary folder, replacing values set in the shell,
   and load the Testing macro plugin;
   `test-target.sh` builds only that target and its dependencies). Gate run: `./scripts/test.sh --no-parallel`. A
-  plain `swift test` can touch real data; never use it.
+  plain `swift test` can touch real data; never use it. Both take `--summary` (compile errors, the verdict and
+  failed tests only, plus the full log's path) and `--filter-file PATH` (one test-name pattern per line); read
+  that output instead of grepping the full run.
 - Shared helpers live in `Tests/HolosTestSupport` (`TemporaryDirectory`, `PollBudget`, `eventually`,
   `FileInspection`, `SeededNumbers`, transcript and audio fixtures) and `Tests/HolosSessionTestSupport`
   (`SessionFixtureBuilder`); see `Tests/HolosTestSupport/README.md`. Use them in new tests; HolosStorageTests and

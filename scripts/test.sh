@@ -1,6 +1,9 @@
 #!/bin/sh
 set -eu
 
+# Options of its own: --summary and --filter-file PATH (scripts/test-options.sh). Everything else goes to
+# `swift test` unchanged.
+
 # Keep the suite away from the user's real data: HOLOS_DATA_DIR (sessions) and HOLOS_SUPPORT_DIR
 # (Application Support files such as speaker models and voice profiles) always point into a fresh
 # temporary folder that is removed on exit. Values already set in the environment are replaced,
@@ -14,6 +17,7 @@ cleanup() {
 trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
+. "$(dirname "$0")/test-options.sh"
 
 if [ -n "${HOLOS_DATA_DIR:-}" ] || [ -n "${HOLOS_SUPPORT_DIR:-}" ]; then
     echo "test.sh: ignoring HOLOS_DATA_DIR/HOLOS_SUPPORT_DIR from the environment; tests use a temporary folder" >&2
@@ -39,9 +43,9 @@ fi
 
 status=0
 if [ -f "$plugin" ]; then
-    swift test --build-system swiftbuild --disable-xctest \
+    run_tests swift test --build-system swiftbuild --disable-xctest \
         -Xswiftc -load-plugin-library -Xswiftc "$plugin" "$@" || status=$?
 else
-    swift test --build-system swiftbuild --disable-xctest "$@" || status=$?
+    run_tests swift test --build-system swiftbuild --disable-xctest "$@" || status=$?
 fi
 exit "$status"
