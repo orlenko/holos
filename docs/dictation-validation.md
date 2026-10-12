@@ -435,6 +435,7 @@ behavior, and permission owner for each row.
 | Missing/denied permissions or assets | Clear setup status; no implicit asset download or microphone prompt on shortcut press. |
 | Long dictation and delayed finalization | Hold and speak beyond three minutes: Listening continues and finalized words keep streaming. Release to finish normally with the unwritten remainder handled as usual. Escape/Cancel Dictation still cancel. Startup does not hang past 120 seconds, and post-release finalization does not hang past 30 seconds. |
 | Unwritable target after a streamed prefix | The clipboard is unchanged; Copy Result holds only the unwritten tail, with its leading space, so pasting it after the prefix gives correctly spaced text. |
+| Silent hold past the screensaver delay | Set the screensaver to start after 1 minute. Hold the shortcut, say a few words, stay silent and still for 2 minutes, then speak and release. The screensaver does not start, the field keeps focus, and the last words land. After release, the screensaver starts again on its usual delay. |
 | Sleep/lock and wake | Capture stops; shortcut stays paused until manually re-enabled. |
 
 Also test the clipboard: after text Voice is Local could not write, the clipboard should

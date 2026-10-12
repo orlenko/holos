@@ -118,6 +118,10 @@ Show provisional words only in the overlay. On release, finalize, apply correcti
 revalidate the destination, and insert once. Esc cancels without insertion. The
 recognizer may stay warm while enabled, but the microphone is active only while
 dictating. Readiness must be visible so initial syllables are not silently lost.
+A held hotkey sends no further key events, so a long pause would leave the Mac idle
+and start the screensaver, which takes focus from the destination. From press until
+release, cancel or failure, hold an idle display-sleep assertion; it does not stop a
+lock the user asks for (a hot corner, Lock Screen).
 
 Prefer supported Accessibility text-range insertion. Use paste as a fallback with
 careful preservation of clipboard types and change-count checks. Never overwrite

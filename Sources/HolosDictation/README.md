@@ -20,6 +20,7 @@ Dictation without the UI: one microphone utterance at a time, and Run Again over
 
 **Invariants**
 - Listening has no duration cutoff; only startup and post-release finalization time out.
+- The display stays awake (an idle display-sleep assertion) while preparing or listening, and only then.
 - Settings read at the start of an utterance (locale, vocabulary, seam terms) do not change an utterance in
   progress.
 - Run Again writes nothing into any app and copies nothing.

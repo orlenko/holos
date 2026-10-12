@@ -2,6 +2,7 @@ import Foundation
 import HolosAudio
 import HolosCore
 import HolosSpeech
+import os
 
 public enum DictationPhase: Sendable, Equatable {
     case idle, preparing, listening, finalizing, result, failed
@@ -65,6 +66,8 @@ struct DictationDependencies {
     var permission: () -> String
     var makeCapture: () -> any DictationCapture
     var makeSpeech: (String, SpeechBackend, [String], @escaping @Sendable (TranscriptUpdate) -> Void) async throws -> any DictationSpeech
+    /// Keeps the display awake, and so the screensaver off, until the handle is released; nil when it cannot.
+    var keepDisplayAwake: (String) -> (any PowerAssertionHandle)? = { _ in nil }
 
     static var live: Self {
         Self(permission: { AudioCapture.microphonePermission },
@@ -72,8 +75,16 @@ struct DictationDependencies {
              makeSpeech: { locale, backend, vocabulary, onUpdate in
                  try await AppleSpeechSession.make(locale: locale, backend: backend,
                                                    contextualStrings: vocabulary, onUpdate: onUpdate)
+             },
+             keepDisplayAwake: { reason in
+                 do { return try PowerAssertion(reason: reason, kind: .display) } catch {
+                     log.error("No display-sleep assertion: \(error.localizedDescription, privacy: .public)")
+                     return nil
+                 }
              })
     }
+
+    private static let log = Logger(subsystem: "ca.orlenko.holos.app", category: "power")
 }
 
 /// One microphone utterance at a time. Calls are synchronous so hotkey handlers can capture the utterance ID immediately.
@@ -115,6 +126,9 @@ public final class DictationController {
     private var cleanupTask: Task<Void, Never>?
     private var startupWatchdogTask: Task<Void, Never>?
     private var finalizationWatchdogTask: Task<Void, Never>?
+    /// Held while preparing or listening (`publish`). A held hotkey sends no events, so without it a long pause lets
+    /// the Mac go idle and start the screensaver, which takes focus from the app the text goes to.
+    private var displayHold: (any PowerAssertionHandle)?
 
     /// Listening has no duration cutoff. Only startup and post-release finalization are timed out.
     public init(locale: String = DictationLanguage.standard, backend: SpeechBackend = .speech,
@@ -403,6 +417,13 @@ public final class DictationController {
 
     private func publish(_ newStatus: DictationStatus) {
         status = newStatus
+        switch newStatus.phase {
+        case .preparing, .listening:
+            if displayHold == nil { displayHold = dependencies.keepDisplayAwake("Voice is Local dictation") }
+        case .idle, .finalizing, .result, .failed:
+            displayHold?.release()
+            displayHold = nil
+        }
         onUpdate(newStatus)
     }
 
