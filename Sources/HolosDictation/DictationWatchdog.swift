@@ -1,8 +1,13 @@
 import Foundation
 
 /// The one timeout `DictationController` runs at a time: startup (until listening) or finalization (after release).
-/// Starting either cancels the other. A fired timeout calls its handler, which checks that the utterance is still in
-/// the timed phase (a cancelled sleep can still return, as a platform callback can).
+///
+/// Invariants:
+/// 1. At most one timeout is pending: starting one cancels the one before, and `cancel` cancels it.
+/// 2. A cancelled timeout never calls its handler, even when its sleep returns anyway (a cancelled sleep can still
+///    return, as a platform callback can).
+/// 3. A handler that does run may still be late; it checks that its utterance is still in the timed phase
+///    (`DictationController` invariant 2).
 @MainActor
 final class DictationWatchdog {
     private let startupTimeout: TimeInterval
@@ -28,11 +33,11 @@ final class DictationWatchdog {
     }
 
     private func start(_ timeout: TimeInterval, _ fire: @escaping @MainActor () -> Void) {
-        task?.cancel()
+        task?.cancel()  // invariant 1
         let sleep = sleep
         task = Task {
             try? await sleep(.seconds(timeout))
-            guard !Task.isCancelled else { return }
+            guard !Task.isCancelled else { return }  // invariant 2
             fire()
         }
     }
