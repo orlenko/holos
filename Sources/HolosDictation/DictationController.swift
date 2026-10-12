@@ -2,6 +2,7 @@ import Foundation
 import HolosAudio
 import HolosCore
 import HolosSpeech
+import os
 
 public enum DictationPhase: Sendable, Equatable {
     case idle, preparing, listening, finalizing, result, failed
@@ -65,6 +66,8 @@ struct DictationDependencies {
     var permission: () -> String
     var makeCapture: () -> any DictationCapture
     var makeSpeech: (String, SpeechBackend, [String], @escaping @Sendable (TranscriptUpdate) -> Void) async throws -> any DictationSpeech
+    /// Keeps the display awake, and so the screensaver off, until the handle is released; nil when it cannot.
+    var keepDisplayAwake: (String) -> (any PowerAssertionHandle)? = { _ in nil }
 
     static var live: Self {
         Self(permission: { AudioCapture.microphonePermission },
@@ -72,11 +75,27 @@ struct DictationDependencies {
              makeSpeech: { locale, backend, vocabulary, onUpdate in
                  try await AppleSpeechSession.make(locale: locale, backend: backend,
                                                    contextualStrings: vocabulary, onUpdate: onUpdate)
+             },
+             keepDisplayAwake: { reason in
+                 do { return try PowerAssertion(reason: reason, kind: .display) } catch {
+                     log.error("No display-sleep assertion: \(error.localizedDescription, privacy: .public)")
+                     return nil
+                 }
              })
     }
+
+    private static let log = Logger(subsystem: "ca.orlenko.holos.app", category: "power")
 }
 
 /// One microphone utterance at a time. Calls are synchronous so hotkey handlers can capture the utterance ID immediately.
+///
+/// Invariants:
+/// 1. `generation` names the utterance in progress, from `begin` until it publishes a result, a failure or idle;
+///    work for any other generation publishes nothing.
+/// 2. Only startup (preparing) and post-release finalization are timed out (`watchdog`); listening never is.
+/// 3. The display is kept awake (`displayHold`) exactly while the phase is preparing or listening: `publish` takes the
+///    hold on entering those phases and releases it on leaving them, so every way out lets it go.
+/// 4. Settings read at `begin` (locale, contextual strings, seam terms) never change an utterance in progress.
 @MainActor
 public final class DictationController {
     public private(set) var status = DictationStatus(phase: .idle)
@@ -93,9 +112,7 @@ public final class DictationController {
     public var frameTap: (@MainActor (UUID, PCMFrame) -> Void)?
 
     private let backend: SpeechBackend
-    private let startupTimeout: TimeInterval
-    private let finalizationTimeout: TimeInterval
-    private let sleep: @MainActor (Duration) async throws -> Void
+    private let watchdog: DictationWatchdog
     private let onUpdate: @MainActor (DictationStatus) -> Void
     private let dependencies: DictationDependencies
 
@@ -113,8 +130,9 @@ public final class DictationController {
     private var stopTask: Task<Void, Error>?
     private var finalizationTask: Task<Void, Never>?
     private var cleanupTask: Task<Void, Never>?
-    private var startupWatchdogTask: Task<Void, Never>?
-    private var finalizationWatchdogTask: Task<Void, Never>?
+    /// Invariant 3. A held hotkey sends no events, so without it a long pause lets the Mac go idle and start the
+    /// screensaver, which takes focus from the app the text goes to.
+    private var displayHold: (any PowerAssertionHandle)?
 
     /// Listening has no duration cutoff. Only startup and post-release finalization are timed out.
     public init(locale: String = DictationLanguage.standard, backend: SpeechBackend = .speech,
@@ -122,9 +140,8 @@ public final class DictationController {
                 onUpdate: @escaping @MainActor (DictationStatus) -> Void) {
         self.locale = locale
         self.backend = backend
-        self.startupTimeout = startupTimeout.isFinite && startupTimeout > 0 ? startupTimeout : 120
-        self.finalizationTimeout = 30
-        self.sleep = { try await Task.sleep(for: $0) }
+        self.watchdog = DictationWatchdog(startupTimeout: startupTimeout, finalizationTimeout: 30,
+                                          sleep: { try await Task.sleep(for: $0) })
         self.onUpdate = onUpdate
         self.dependencies = .live
     }
@@ -136,9 +153,8 @@ public final class DictationController {
          onUpdate: @escaping @MainActor (DictationStatus) -> Void) {
         self.locale = locale
         self.backend = backend
-        self.startupTimeout = startupTimeout.isFinite && startupTimeout > 0 ? startupTimeout : 120
-        self.finalizationTimeout = finalizationTimeout.isFinite && finalizationTimeout > 0 ? finalizationTimeout : 30
-        self.sleep = sleep
+        self.watchdog = DictationWatchdog(startupTimeout: startupTimeout, finalizationTimeout: finalizationTimeout,
+                                          sleep: sleep)
         self.onUpdate = onUpdate
         self.dependencies = dependencies
     }
@@ -160,7 +176,6 @@ public final class DictationController {
         feedTask = nil
         stopTask = nil
         finalizationTask = nil
-        finalizationWatchdogTask = nil
         publish(.init(phase: .preparing, utteranceID: id))
         guard generation == id else { return true }
 
@@ -171,12 +186,7 @@ public final class DictationController {
                           message: Self.permissionMessage(permission)))
             return true
         }
-        let sleep = sleep, startupTimeout = startupTimeout
-        startupWatchdogTask = Task { [weak self] in
-            try? await sleep(.seconds(startupTimeout))
-            guard !Task.isCancelled else { return }
-            self?.startupTimedOut(id)
-        }
+        watchdog.startStartup { [weak self] in self?.startupTimedOut(id) }
         let locale = locale, vocabulary = contextualStrings
         prepareTask = Task { [weak self] in await self?.prepare(id, locale: locale, vocabulary: vocabulary) }
         return true
@@ -187,14 +197,14 @@ public final class DictationController {
         switch status.phase {
         case .preparing:
             releaseRequested = true
-            startupWatchdogTask?.cancel()
+            watchdog.cancel()
             publish(.init(phase: .finalizing, utteranceID: id,
                           message: "Finishing startup after key release."))
             guard generation == id else { return }
             startFinalizationWatchdog(id)
             prepareTask?.cancel()
         case .listening:
-            startupWatchdogTask?.cancel()
+            watchdog.cancel()
             publish(.init(phase: .finalizing, utteranceID: id, text: status.text,
                           committedText: status.committedText))
             guard generation == id else { return }
@@ -260,9 +270,8 @@ public final class DictationController {
                 finishReleasedBeforeReady(id)
                 return
             }
-            // The startup watchdog protects preparation only, never active dictation.
-            startupWatchdogTask?.cancel()
-            startupWatchdogTask = nil
+            // Invariant 2: the startup watchdog protects preparation only, never active dictation.
+            watchdog.cancel()
             publish(.init(phase: .listening, utteranceID: id))
             feedTask = Task { [weak self] in
                 guard let self else { return }
@@ -306,8 +315,7 @@ public final class DictationController {
             generation = nil
             releaseRequested = false
             reducer = TranscriptReducer()
-            startupWatchdogTask?.cancel()
-            finalizationWatchdogTask?.cancel()
+            watchdog.cancel()
             capture = nil
             speech = nil
             publish(.init(phase: .result, utteranceID: id, text: text))
@@ -333,8 +341,7 @@ public final class DictationController {
     private func finishReleasedBeforeReady(_ id: UUID) {
         guard generation == id else { return }
         generation = nil
-        startupWatchdogTask?.cancel()
-        finalizationWatchdogTask?.cancel()
+        watchdog.cancel()
         capture = nil
         speech = nil
         publish(.init(phase: .failed, utteranceID: id,
@@ -351,8 +358,7 @@ public final class DictationController {
         generation = nil
         releaseRequested = false
         reducer = TranscriptReducer()
-        startupWatchdogTask?.cancel()
-        finalizationWatchdogTask?.cancel()
+        watchdog.cancel()
         prepareTask?.cancel()
         feedTask?.cancel()
         finalizationTask?.cancel()
@@ -392,18 +398,25 @@ public final class DictationController {
     }
 
     private func startFinalizationWatchdog(_ id: UUID) {
-        finalizationWatchdogTask?.cancel()
-        let sleep = sleep, finalizationTimeout = finalizationTimeout
-        finalizationWatchdogTask = Task { [weak self] in
-            try? await sleep(.seconds(finalizationTimeout))
-            guard !Task.isCancelled else { return }
-            self?.finalizationTimedOut(id)
-        }
+        watchdog.startFinalization { [weak self] in self?.finalizationTimedOut(id) }
     }
 
     private func publish(_ newStatus: DictationStatus) {
+        // Invariant 3: taken once on entering preparing or listening (a refused hold is not retried on every
+        // transcript update), released on leaving them.
+        let wasActive = Self.keepsDisplayAwake(status.phase)
         status = newStatus
+        if Self.keepsDisplayAwake(newStatus.phase) {
+            if !wasActive { displayHold = dependencies.keepDisplayAwake("Voice is Local dictation") }
+        } else {
+            displayHold?.release()
+            displayHold = nil
+        }
         onUpdate(newStatus)
+    }
+
+    private static func keepsDisplayAwake(_ phase: DictationPhase) -> Bool {
+        phase == .preparing || phase == .listening
     }
 
     private static func permissionMessage(_ value: String) -> String {
