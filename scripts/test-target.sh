@@ -21,6 +21,8 @@ case "$target" in
     *Tests) ;;
     *) echo "Not a test target: $target" >&2; exit 64 ;;
 esac
+# Before the cd, so a relative --filter-file path names a file in the caller's directory.
+. "$(dirname "$0")/test-options.sh"
 cd "$(dirname "$0")/.."
 if [ ! -d "Tests/$target" ]; then
     echo "No such test target: Tests/$target" >&2
@@ -36,7 +38,6 @@ cleanup() {
 trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
-. scripts/test-options.sh
 
 # As in scripts/test.sh: sessions and support files always go to a fresh temporary folder; values already set in
 # the environment are replaced, so a shell that points them at real data cannot leak into a test run.
