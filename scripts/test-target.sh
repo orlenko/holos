@@ -8,7 +8,8 @@ set -eu
 #
 # Only that target and the modules it depends on are built: not WhisperKit, FluidAudio, the app, or the other test
 # targets unless the target needs them. Options after the target (`--filter`, `--skip`, `--no-parallel`, ...) go to
-# Swift Testing as `swift test` passes them.
+# Swift Testing as `swift test` passes them. --summary and --filter-file PATH work as in scripts/test.sh
+# (scripts/test-options.sh).
 
 if [ $# -lt 1 ]; then
     echo "usage: $0 <TestTarget> [test options...]" >&2
@@ -35,6 +36,7 @@ cleanup() {
 trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
+. scripts/test-options.sh
 
 # As in scripts/test.sh: sessions and support files always go to a fresh temporary folder; values already set in
 # the environment are replaced, so a shell that points them at real data cannot leak into a test run.
@@ -57,10 +59,15 @@ if [ "$toolchain_usr" = "$swiftc_path" ] || [ ! -x "$helper" ]; then
     exit 1
 fi
 
+status=0
 if [ -f "$plugin" ]; then
-    swift build --build-system swiftbuild --target "$target" -Xswiftc -load-plugin-library -Xswiftc "$plugin"
+    run_tests swift build --build-system swiftbuild --target "$target" -Xswiftc -load-plugin-library -Xswiftc "$plugin" \
+        || status=$?
 else
-    swift build --build-system swiftbuild --target "$target"
+    run_tests swift build --build-system swiftbuild --target "$target" || status=$?
+fi
+if [ "$status" -ne 0 ]; then
+    exit "$status"
 fi
 
 # `swift test --skip-build` would open every test target's bundle, and fails on the ones this build did not make.
@@ -77,6 +84,5 @@ for folder in "$developer/Library/Developer" "$developer/Platforms/MacOSX.platfo
 done
 export DYLD_FRAMEWORK_PATH="$frameworks${DYLD_FRAMEWORK_PATH:+:$DYLD_FRAMEWORK_PATH}"
 export DYLD_LIBRARY_PATH="$libraries${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}"
-status=0
-"$helper" --test-bundle-path "$bundle" "$@" "$bundle" --testing-library swift-testing || status=$?
+run_tests "$helper" --test-bundle-path "$bundle" "$@" "$bundle" --testing-library swift-testing || status=$?
 exit "$status"

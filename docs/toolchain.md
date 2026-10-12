@@ -35,5 +35,18 @@ edited and does not compile yet, this is also the way to test a library in
 isolation. Shared test helpers are in `Tests/HolosTestSupport` (see its README). Warnings about nonexistent Command Line Tools framework
 search directories have not prevented builds or tests here.
 
+Both scripts take two options of their own (`scripts/test-options.sh`):
+
+```sh
+./scripts/test.sh --no-parallel --summary
+./scripts/test-target.sh HolosStorageTests --summary --filter-file filters.txt
+```
+
+`--summary` prints only compile errors, `Build complete`, the `Test run with ...` line
+and each failed test (`✘`), then the path of a log file with the full output; the exit
+status is the run's. If the run fails without such a line (a crash), the last 20 lines
+of the log are printed too. `--filter-file PATH` reads test-name patterns, one per
+line (blank lines and `#` comments skipped), and passes them as one `--filter`.
+
 The initial package build may fetch `swift-argument-parser`. The test script does
 not install speech models, request recording permissions, or run speech inference.
