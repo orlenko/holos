@@ -2,6 +2,7 @@ import Foundation
 import Testing
 import HolosCore
 import HolosAudio
+import Synchronization
 @testable import HolosDictation
 
 @Test @MainActor func deniedPermissionNeverStartsCapture() {
@@ -71,9 +72,10 @@ private actor FakeSpeech: DictationSpeech {
     func releaseFinish() { holdFinish = false; finishWaiter?.resume(); finishWaiter = nil }
 }
 
-private final class FakeDisplayHold: PowerAssertionHandle, @unchecked Sendable {
-    private(set) var releases = 0
-    func release() { releases += 1 }
+private final class FakeDisplayHold: PowerAssertionHandle {
+    private let count = Mutex(0)
+    var releases: Int { count.withLock { $0 } }
+    func release() { count.withLock { $0 += 1 } }
 }
 
 @MainActor
@@ -618,4 +620,23 @@ func hungSpeechOrMicrophoneStartupStillTimesOut(microphone: Bool) async {
     #expect(controller.begin())
     #expect(controller.status.phase == .failed)
     #expect(holds.map(\.releases) == [1])
+}
+
+@Test @MainActor func aRefusedDisplayHoldIsAskedForOncePerUtterance() async {
+    let harness = Harness()
+    var dependencies = harness.dependencies
+    var requests = 0
+    dependencies.keepDisplayAwake = { _ in
+        requests += 1
+        return nil
+    }
+    let controller = DictationController(dependencies: dependencies) { _ in }
+    #expect(controller.begin())
+    #expect(await eventually { controller.status.phase == .listening })
+    harness.emit(.init(segment: .init(start: 0, end: 1, text: "hello"), isFinal: false))
+    harness.emit(.init(segment: .init(start: 0, end: 1, text: "hello world"), isFinal: false))
+    #expect(await eventually { controller.status.text == "hello world" })
+    controller.end()
+    #expect(await eventually { controller.status.phase == .result })
+    #expect(requests == 1)
 }
