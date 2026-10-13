@@ -3,7 +3,7 @@ import Testing
 
 /// Invariants:
 /// 1. The one waiting query is resumed once; releasing before it starts also completes that later query.
-private actor HeldLocaleQuery {
+actor HeldLocaleQuery {
     private var released = false
     private var continuation: CheckedContinuation<[String], Never>?
 

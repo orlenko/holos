@@ -1600,10 +1600,7 @@ final class HolosAppDelegate: NSObject, NSApplicationDelegate {
                 self.assetState = "installed"
                 self.show("Speech model for \(name) ready; enable dictation when ready")
                 // The Setup Assistant finished while this downloaded (in this run or before a quit or its reopen).
-                if self.enableWhenSpeechModelInstalled {
-                    self.enableWhenSpeechModelInstalled = false
-                    self.enableDictationFromSetup(deferred: true)
-                }
+                self.resumeDeferredDictationSetup()
             } catch {
                 self.installingAssets = false
                 // Cancelled by the quit (the assistant's reopen included): the saved intent stays for the next launch.

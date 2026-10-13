@@ -60,11 +60,14 @@ struct Doctor: AsyncParsableCommand {
         for pack in NaturalVoicePack.allCases {
             Console.output("Natural voices (\(pack.languageName)): \(report.naturalVoices?[pack.rawValue]?.summary ?? "unknown")")
         }
-        // A language only DictationTranscriber has (dictation's recognizer for it, `RecognizerLocales.backend(for:)`).
-        let onlyDictation = RecognizerLocales(speech: speech.supportedLocales, dictation: dictation.supportedLocales)
-            .backend(for: locale) == .dictation
-        Console.output("Install transcription assets with: voiceislocal setup --locale \(locale)"
-            + (onlyDictation ? " --backend dictation" : ""))
+        let recognizers = RecognizerLocales(speech: speech.supportedLocales, dictation: dictation.supportedLocales)
+        if let backend = recognizers.knownBackend(for: locale) {
+            Console.output("Install transcription assets with: voiceislocal setup --locale \(locale)"
+                + (backend == .dictation ? " --backend dictation" : ""))
+        } else {
+            Console.output(recognizers.isComplete ? "No Apple recognizer supports \(locale)."
+                : "Language lists are incomplete; retry doctor for an installation command.")
+        }
         if speakerModels != .verified { Console.output("Install speaker models with: voiceislocal setup --speakers") }
         if whisperModel == .notInstalled {
             Console.output("Install the deep transcription model with: voiceislocal setup --whisper (about 1.6 GB)")

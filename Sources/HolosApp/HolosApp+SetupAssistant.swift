@@ -219,6 +219,18 @@ extension HolosAppDelegate {
         enable()
     }
 
+    /// A validated asset refresh resumes setup's pending work after recovery changes the language or backend.
+    /// The intent stays pending until `enable` succeeds; session suspension still requires an explicit enable.
+    func resumeDeferredDictationSetup() {
+        guard enableWhenSpeechModelInstalled, !installingAssets, !enabling,
+              dictationSession.allowsSetupEnable(deferred: true) else { return }
+        switch assistantFlow.enable(setupAssistantFacts()) {
+        case .now: enableDictationFromSetup(deferred: true)
+        case .afterSpeechModelInstall: installAssets()
+        case .afterReopen, .alreadyOn, .notPossible: break
+        }
+    }
+
     /// At launch, before the assistant's window: resumes what the assistant started or deferred and a quit (its
     /// planned reopen included) cut short. The speech model install restarts when dictation waits for it, and turns
     /// dictation on when it ends; the speaker-model install restarts when it had not ended.

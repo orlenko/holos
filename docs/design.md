@@ -165,9 +165,17 @@ backend's list on a later language load. Picker groups are rebuilt from those ca
 each backend's supported-language query waits at most five seconds, with a timeout treated
 as a missing list to retry. An asset check is discarded if its language or recognizer has
 changed while it ran.
+Asset checks wait at most fifteen seconds, and an install at most fifteen minutes; a timeout
+ends the app's wait with an error and cancels the request. Doctor recommends an installation
+command only when a supported-language list confirms the backend, including `--backend dictation`
+for a language that needs it; incomplete lists without a match ask for another check.
 The same configuration check covers failed enable attempts and install completion:
 a stale enable result retries the current choice, and a stale install result refreshes
 the current choice's asset state while retaining any deferred setup intent.
+Every validated asset refresh can fulfill that intent when the current model and permissions
+are ready. Finish defers enabling while an older install is running, even when the recovered
+language's model is already installed; the pending intent clears once enabling succeeds.
+If the recovered choice still needs a model, the pending setup installs that model instead.
 Known language lists are shared within the process between live dictation and Run Again,
 so a temporarily empty response cannot make replay choose a different recognizer. When
 a recovered list changes the default language, an active dictation keeps its original

@@ -36,6 +36,15 @@ private let recognizers = RecognizerLocales(
     #expect(!recognizers.isEmpty)
 }
 
+@Test func incompleteInventoriesDoNotConfirmAnUnsupportedBackend() {
+    let partial = RecognizerLocales(speech: ["en_CA"], dictation: [])
+    #expect(partial.knownBackend(for: "ru-RU") == nil)
+    #expect(partial.knownBackend(for: "en-CA") == .speech)
+    #expect(RecognizerLocales.unknown.knownBackend(for: "ru-RU") == nil)
+    #expect(recognizers.knownBackend(for: "ru-RU") == .dictation)
+    #expect(recognizers.knownBackend(for: "zz-ZZ") == nil)
+}
+
 @Test func dictationOffersBothListsAndMeetingsTheSpeechOne() {
     #expect(recognizers.dictationLocales
         == ["de-DE", "en-CA", "en-IN", "en-US", "fr-CA", "fr-FR", "ru-RU", "uk-UA"])

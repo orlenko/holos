@@ -38,12 +38,17 @@ public struct RecognizerLocales: Sendable, Equatable {
     /// "ru-RU"), `.speech` first. `.speech` when neither has the language (or the lists are unknown), so the
     /// recognizer reports it as unsupported as before.
     public func backend(for locale: String) -> SpeechBackend {
+        knownBackend(for: locale) ?? .speech
+    }
+
+    /// A backend confirmed by the loaded lists; nil distinguishes unknown support from the recognition fallback.
+    public func knownBackend(for locale: String) -> SpeechBackend? {
         let wanted = DictationLanguage.identifier(locale)
         if speech.contains(wanted) { return .speech }
         if dictation.contains(wanted) { return .dictation }
         if speech.contains(where: { DictationLanguage.sameLanguage($0, wanted) }) { return .speech }
         if dictation.contains(where: { DictationLanguage.sameLanguage($0, wanted) }) { return .dictation }
-        return .speech
+        return nil
     }
 
     /// The dictation language for someone who has not picked one: `DictationLanguage.preferred` over every

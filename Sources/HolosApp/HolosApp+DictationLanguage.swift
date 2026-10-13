@@ -81,6 +81,7 @@ extension HolosAppDelegate {
             guard self.matchesDictationConfiguration(locale: locale, backend: backend) else { return }
             self.assetState = state
             self.updateSettings()
+            self.resumeDeferredDictationSetup()
         }
     }
 

@@ -6,35 +6,41 @@ import Speech
 
 public enum AppleSpeechEngine {
     private static let localeCache = RecognizerLocaleCache()
-    /// Exact readiness for the configured module, unlike the locale inventory.
+    /// Exact readiness for the configured module, unlike the locale inventory; bounded to fifteen seconds.
     public static func assetStatus(locale: String, backend: SpeechBackend) async throws -> String {
-        let module = try await makeModule(locale: locale, backend: backend)
-        switch await AssetInventory.status(forModules: [module.module]) {
-        case .unsupported: return "unsupported"
-        case .downloading: return "downloading"
-        case .supported: return "supported"
-        case .installed: return "installed"
-        @unknown default: return "unknown"
+        try await boundedAssetCall(timeout: .seconds(15)) {
+            let module = try await makeModule(locale: locale, backend: backend)
+            try Task.checkCancellation()
+            switch await AssetInventory.status(forModules: [module.module]) {
+            case .unsupported: return "unsupported"
+            case .downloading: return "downloading"
+            case .supported: return "supported"
+            case .installed: return "installed"
+            @unknown default: return "unknown"
+            }
         }
     }
 
     public static func capabilities(backend: SpeechBackend) async -> SpeechCapabilities {
-        let supported: [Locale]
-        let installed: [Locale]
+        let supported: [String]
+        let installed: [String]
         let available: Bool
         switch backend {
         case .speech:
-            supported = await SpeechTranscriber.supportedLocales
-            installed = await SpeechTranscriber.installedLocales
+            async let reportedSupported = boundedLocales { await SpeechTranscriber.supportedLocales.map(\.identifier) }
+            async let reportedInstalled = boundedLocales { await SpeechTranscriber.installedLocales.map(\.identifier) }
+            supported = await reportedSupported
+            installed = await reportedInstalled
             available = SpeechTranscriber.isAvailable
         case .dictation:
-            supported = await DictationTranscriber.supportedLocales
-            installed = await DictationTranscriber.installedLocales
+            async let reportedSupported = boundedLocales { await DictationTranscriber.supportedLocales.map(\.identifier) }
+            async let reportedInstalled = boundedLocales { await DictationTranscriber.installedLocales.map(\.identifier) }
+            supported = await reportedSupported
+            installed = await reportedInstalled
             available = !supported.isEmpty
         }
         return SpeechCapabilities(backend: backend, isAvailable: available,
-                                  supportedLocales: supported.map(\.identifier).sorted(),
-                                  installedLocales: installed.map(\.identifier).sorted())
+                                  supportedLocales: supported.sorted(), installedLocales: installed.sorted())
     }
 
     /// The backend's supported locale closest to the user's preferred languages (`DictationLanguage.preferred`): the
@@ -67,12 +73,17 @@ public enum AppleSpeechEngine {
     }
 
     public static func installAssets(locale: String, backend: SpeechBackend) async throws {
-        let module = try await makeModule(locale: locale, backend: backend)
-        if let request = try await AssetInventory.assetInstallationRequest(supporting: [module.module]) {
-            try await request.downloadAndInstall()
-        }
-        guard await AssetInventory.status(forModules: [module.module]) == .installed else {
-            throw HolosError.unavailable("Speech assets for \(locale) are not installed yet.")
+        try await boundedAssetCall(timeout: .seconds(900)) {
+            let module = try await makeModule(locale: locale, backend: backend)
+            try Task.checkCancellation()
+            if let request = try await AssetInventory.assetInstallationRequest(supporting: [module.module]) {
+                try Task.checkCancellation()
+                try await request.downloadAndInstall()
+            }
+            try Task.checkCancellation()
+            guard await AssetInventory.status(forModules: [module.module]) == .installed else {
+                throw HolosError.unavailable("Speech assets for \(locale) are not installed yet.")
+            }
         }
     }
 
@@ -143,11 +154,14 @@ public enum AppleSpeechEngine {
 
     fileprivate static func installedModule(locale: String, backend: SpeechBackend,
                                             accurate: Bool = false) async throws -> Module {
-        let module = try await makeModule(locale: locale, backend: backend, accurate: accurate)
-        guard await AssetInventory.status(forModules: [module.module]) == .installed else {
-            throw HolosError.unavailable("Speech assets for \(locale) are missing. Run setup first.")
+        try await boundedAssetCall(timeout: .seconds(15)) {
+            let module = try await makeModule(locale: locale, backend: backend, accurate: accurate)
+            try Task.checkCancellation()
+            guard await AssetInventory.status(forModules: [module.module]) == .installed else {
+                throw HolosError.unavailable("Speech assets for \(locale) are missing. Run setup first.")
+            }
+            return module
         }
-        return module
     }
 }
 
