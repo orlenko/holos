@@ -164,11 +164,12 @@ public enum DictationRerun {
                                       wordList: wordList, names: names, fixer: fixer, coder: coder), note)
     }
 
-    /// The recognizer's results for the audio at `url`, in order: the speech transcriber live dictation uses, with
-    /// `vocabulary` as its contextual strings, fed the file as 0.1 s frames.
+    /// The recognizer's results for the audio at `url`, in order: the recognizer live dictation uses for `locale`
+    /// (`RecognizerLocales.backend(for:)`), with `vocabulary` as its contextual strings, fed the file as 0.1 s frames.
     public static func recognize(_ url: URL, locale: String, vocabulary: [String]) async throws -> [String] {
         let frames = try DictationAudioFile.frames(of: url)
-        let session = try await AppleSpeechSession.make(locale: locale, backend: .speech,
+        let backend = await AppleSpeechEngine.recognizerLocales().backend(for: locale)
+        let session = try await AppleSpeechSession.make(locale: locale, backend: backend,
                                                         contextualStrings: vocabulary) { _ in }
         do {
             for frame in frames {

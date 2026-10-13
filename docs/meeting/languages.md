@@ -14,7 +14,7 @@ English+French mix or other multilingual environments) can be transcribed correc
 through post-processing. It's ok if post-processing takes a while, we don't care about
 instantaneous meeting feedback. The dictation stays monolingual."
 
-**Phase 1 (LANG1, PR #43).** The start panel's Language pop-up (the dictation languages,
+**Phase 1 (LANG1, PR #43).** The start panel's Language pop-up (the `SpeechTranscriber` languages,
 `DictationLanguage.groups`) sets the meeting language; UserDefaults `meetingLocales` keeps
 a list, the first used; `MeetingStartSettings.locales`; the recorder gets
 `--locale=<first>`; the manifest records one `locale`. Settings without a language (never

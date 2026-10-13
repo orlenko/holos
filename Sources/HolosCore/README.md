@@ -4,7 +4,8 @@ The values every other target shares, and text processing that needs no engine.
 
 **Owns**
 - Value types: `Models.swift` (`Transcript`, `TranscriptSegment`, `TimedWord`, `PCMFrame`, `HolosError`,
-  `HolosPaths`), `MeetingModels.swift` (recorder status, control requests, post-processing records),
+  `HolosPaths`, `SpeechBackend`), `RecognizerLocales` (each recognizer's languages; the one place that picks
+  dictation's recognizer for a language, docs/design.md "Dictation language and recognizer"), `MeetingModels.swift` (recorder status, control requests, post-processing records),
   `SpeakerModels.swift` (diarization runs, turns, edits, `SpeakerDiarizer`), `VoiceProfiles.swift`,
   `DeepTranscription.swift` (`DeepTranscriber`), `DictationHistory.swift`.
 - `HolosJSON` (the encoder and decoder for session files and the HolosStorage stores) and `OpenStringCode`.

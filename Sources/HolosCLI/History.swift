@@ -3,6 +3,7 @@ import Foundation
 import HolosCore
 import HolosDictation
 import HolosMeeting
+import HolosSpeech
 import HolosStorage
 
 /// `voiceislocal history`: the dictation history the app keeps on this Mac (docs/design.md "Dictation history").
@@ -141,7 +142,8 @@ struct History: ParsableCommand {
                 throw HolosError.invalidInput("Could not read words.json: \(error.localizedDescription)")
             }
             var chosen = language ?? preferences.language
-            if chosen == nil { chosen = await RecognitionOptions.defaultLocale(backend: .speech) }
+            // The app's default dictation language, over both recognizers (`RecognizerLocales.preferredDictation`).
+            if chosen == nil { chosen = await AppleSpeechEngine.recognizerLocales().preferredDictationForSystem() }
             let locale = chosen ?? DictationLanguage.standard
             let names = await PeopleNames().refreshed()
             let (pipeline, note) = DictationRerun.pipeline(language: locale, removeFillers: preferences.removeFillers,

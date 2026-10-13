@@ -269,8 +269,9 @@ timeline and a larger local-model benchmark are follow-ups.
   computer's audio alone and that warning, and a microphone-only meeting waits with "The
   built-in microphone is off. Open the lid to continue recording." An external default
   input keeps recording.
-- Meeting languages: the start panel's Language pop-up (the dictation languages, the last
-  choice remembered in `meetingLocales`) sets the language a meeting is transcribed in
+- Meeting languages: the start panel's Language pop-up (the `SpeechTranscriber` languages, the
+  last choice remembered in `meetingLocales`; until one is chosen, the dictation language when
+  `SpeechTranscriber` has it, else the closest one it has) sets the language a meeting is transcribed in
   live (`record start --locale`); "Also detect" adds up to two more, for meetings that mix
   languages. Their speech models are checked in the panel and installed only on Install….
   With several, meeting.json records them (`languages`), and post-processing (stage
@@ -349,7 +350,9 @@ timeline and a larger local-model benchmark are follow-ups.
   menu bar app. Dictation is disabled on first launch; the user explicitly grants
   Microphone and Accessibility, picks the dictation language (by default the supported one closest to
   the macOS preferred languages, `en-CA` when none is; any language Apple's
-  SpeechTranscriber supports), installs that language's speech model, and enables the
+  SpeechTranscriber or DictationTranscriber supports, such as Russian and Ukrainian, which
+  only DictationTranscriber has), installs that language's speech model for the recognizer
+  it needs, and enables the
   chosen hold-to-talk shortcut. Right Option is the default choice, with
   Control–Option–Space available instead. It previews speech and finalizes on
   release; Esc cancels even during finalization. Until the default language is

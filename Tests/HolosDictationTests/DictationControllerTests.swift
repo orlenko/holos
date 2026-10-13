@@ -87,6 +87,8 @@ private final class Harness {
     var update: (@Sendable (TranscriptUpdate) -> Void)?
     /// The locale of each recognizer made, in order.
     var locales: [String] = []
+    /// The kind of each recognizer made, in order.
+    var backends: [SpeechBackend] = []
     /// The contextual strings of each recognizer made, in order.
     var vocabularies: [[String]] = []
     /// Each display hold taken, in order.
@@ -94,8 +96,9 @@ private final class Harness {
 
     var dependencies: DictationDependencies {
         DictationDependencies(permission: { "authorized" }, makeCapture: { self.capture },
-            makeSpeech: { locale, _, vocabulary, onUpdate in
+            makeSpeech: { locale, backend, vocabulary, onUpdate in
                 self.locales.append(locale)
+                self.backends.append(backend)
                 self.vocabularies.append(vocabulary)
                 self.update = onUpdate
                 if self.delaySpeech {
@@ -179,6 +182,26 @@ private final class DictationSleeper {
     #expect(harness.locales == ["en-CA", "fr-CA"])
     controller.cancel()
     harness.releaseSpeech()
+}
+
+/// Each utterance takes the recognizer its language needs when it begins: Russian, which only the dictation
+/// transcriber has, uses it; a change of language or lists after `begin` waits for the next utterance.
+@Test @MainActor func theRecognizerFollowsTheLanguageFromTheNextUtterance() async {
+    let harness = Harness(); harness.delaySpeech = true
+    let controller = DictationController(locale: "en-CA", dependencies: harness.dependencies) { _ in }
+    controller.recognizers = RecognizerLocales(speech: ["en_CA"], dictation: ["en_CA", "ru_RU"])
+    for locale in ["en-CA", "ru-RU", "en-CA"] {
+        controller.locale = locale
+        #expect(await eventually { controller.begin() })
+        controller.locale = locale == "ru-RU" ? "en-CA" : "ru-RU"  // before the recognizer is made
+        controller.recognizers = .unknown
+        #expect(await eventually { harness.speechWaiter != nil })
+        controller.cancel()
+        harness.releaseSpeech()
+        controller.recognizers = RecognizerLocales(speech: ["en_CA"], dictation: ["en_CA", "ru_RU"])
+    }
+    #expect(harness.locales == ["en-CA", "ru-RU", "en-CA"])
+    #expect(harness.backends == [.speech, .dictation, .speech])
 }
 
 /// A reload of words.json or corrections.json sets new contextual strings while an utterance starts; it keeps the

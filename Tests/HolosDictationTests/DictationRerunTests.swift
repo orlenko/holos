@@ -30,7 +30,9 @@ private func synthesizedDictation(in folder: URL, store: DictationHistoryStore, 
 func runAgainRecognizesASavedDictationAndNamesTheNewCorrection() async throws {
     let status: String
     do {
-        status = try await AppleSpeechEngine.assetStatus(locale: rerunLocale, backend: .speech)
+        // The model of the recognizer Run Again picks for the language.
+        let backend = await AppleSpeechEngine.recognizerLocales().backend(for: rerunLocale)
+        status = try await AppleSpeechEngine.assetStatus(locale: rerunLocale, backend: backend)
     } catch {
         status = "error: \(error.localizedDescription)"
     }

@@ -60,7 +60,11 @@ struct Doctor: AsyncParsableCommand {
         for pack in NaturalVoicePack.allCases {
             Console.output("Natural voices (\(pack.languageName)): \(report.naturalVoices?[pack.rawValue]?.summary ?? "unknown")")
         }
-        Console.output("Install transcription assets with: voiceislocal setup --locale \(locale)")
+        // A language only DictationTranscriber has (dictation's recognizer for it, `RecognizerLocales.backend(for:)`).
+        let onlyDictation = RecognizerLocales(speech: speech.supportedLocales, dictation: dictation.supportedLocales)
+            .backend(for: locale) == .dictation
+        Console.output("Install transcription assets with: voiceislocal setup --locale \(locale)"
+            + (onlyDictation ? " --backend dictation" : ""))
         if speakerModels != .verified { Console.output("Install speaker models with: voiceislocal setup --speakers") }
         if whisperModel == .notInstalled {
             Console.output("Install the deep transcription model with: voiceislocal setup --whisper (about 1.6 GB)")

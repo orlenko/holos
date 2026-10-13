@@ -145,6 +145,38 @@ fails with Accessibility granted does the app name Input Monitoring as the fallb
 and show it in Settings. Validate under the actual installed app identity, not just
 `swift run`.
 
+#### Dictation language and recognizer
+
+Dictation listens in one language, chosen in Settings and the Setup Assistant from the
+languages of both of Apple's recognizers, grouped English, French, then the rest
+(`DictationLanguage.groups`). `SpeechTranscriber` (backend `speech`, the progressive preset)
+has English, French and a few more; `DictationTranscriber` (backend `dictation`, the
+time-indexed long-dictation preset with volatile results) has about fifty more, among them
+Russian and Ukrainian. `RecognizerLocales.backend(for:)` (HolosCore) is the one place that
+picks a language's recognizer: `speech` when `SpeechTranscriber` has the language, else
+`dictation` when `DictationTranscriber` has it, then the same by language alone ("ru"),
+`speech` first; `speech` when neither has it, so the recognizer reports it as unsupported.
+The default for someone who has not picked a language (`preferredDictation`) is the one
+closest to the macOS preferred languages over both lists, taken from `SpeechTranscriber`'s
+list whenever it has that language.
+
+`DictationController` reads the language and picks its recognizer when each utterance
+starts (`begin`), so a change applies from the next one. The speech model that Settings and
+the Setup Assistant check and install is the chosen recognizer's for that language, and Run
+Again recognizes with the recognizer the current language needs. History records each
+dictation's language, not its recognizer, which follows from the language. The contextual
+strings (word list and learned corrections) go to either recognizer through
+`AnalysisContext`, best effort as before. The language-specific text steps stay limited to
+English and French: joining at pauses ("Pauses inside a sentence"), filler removal, spoken
+code's symbol words and Apple Intelligence's fix; in another language (German, Russian,
+Ukrainian alike) results join as recognized, no fillers are removed, the fix is shown as
+"not yet tried", and spoken code runs without the model, on the English and French symbol
+words.
+
+Meetings keep `SpeechTranscriber` and its languages: the start panel lists only those, and
+with no meeting language chosen it takes the dictation language when `SpeechTranscriber` has
+it, else the closest one it has (`RecognizerLocales.meetingLanguage`).
+
 #### Spoken paths and commands
 
 Settings › Dictation › **Write spoken paths and commands as code** (on by default)
@@ -927,8 +959,9 @@ record another writer removed meanwhile leaves it removed.
 
 Run Again (History detail, ⌘R; `voiceislocal history rerun`) reads the file back as 0.1 s
 frames and feeds them to the recognizer live dictation uses (`AppleSpeechSession`, the
-speech backend's progressive preset, the current dictation language, the word list and the
-learned corrections' words as contextual strings), then runs the text steps of live dictation
+current dictation language with the recognizer it needs, "Dictation language and
+recognizer", the word list and the learned corrections' words as contextual strings), then
+runs the text steps of live dictation
 (`DictationTextPipeline`, HolosCore): the results joined as dictation joins them ("Pauses
 inside a sentence"), filler removal and corrections as on the final text,
 and, when Apple Intelligence's fix is on and available, the fix as dictation streams it:
@@ -958,8 +991,10 @@ to judge a change on the user's real dictations. The command reads the history, 
 corrections file (Application Support/Holos/corrections.json), the word list (words.json),
 and the app's saved settings
 (its defaults domain `ca.orlenko.holos.app`: `dictationLocale`, `removeFillers`,
-`aiFixMisheard`); it writes nothing. The recognizer needs the language's speech model
-installed for the process running it.
+`aiFixMisheard`); it writes nothing. Without a saved language it takes the app's default
+(`RecognizerLocales.preferredDictation`). The recognizer needs the language's speech model
+installed for the process running it (`voiceislocal setup --locale ru-RU --backend dictation`
+for a language only `DictationTranscriber` has).
 
 ### First-launch setup
 

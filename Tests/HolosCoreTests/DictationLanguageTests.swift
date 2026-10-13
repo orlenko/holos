@@ -43,7 +43,8 @@ import Testing
 
 @Test func languageIsUnknownUntilTheSupportedListLoadsUnlessSaved() {
     func resolve(_ saved: String?, _ supported: [String]?) -> String? {
-        DictationLanguage.resolved(saved: saved, supported: supported, preferredLanguages: ["fr-CA"], region: "CA")
+        DictationLanguage.resolved(saved: saved, recognizers: supported.map { RecognizerLocales(speech: $0, dictation: []) },
+                                   preferredLanguages: ["fr-CA"], region: "CA")
     }
     // Not loaded yet: a saved choice stands; the default is not known (not en-CA).
     #expect(resolve(nil, nil) == nil)
